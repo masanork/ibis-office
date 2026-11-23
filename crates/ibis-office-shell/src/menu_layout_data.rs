@@ -636,6 +636,7 @@ pub(super) const SHEET: &[MenuSpec] = &[
         ] },
         LayoutItem::Cmd("file.open"),
         LayoutItem::Cmd("file.open-folder"),
+        LayoutItem::Cmd("xlsx.cbom-compare"),
         LayoutItem::Cmd("xlsx.sbom-refresh"),
         LayoutItem::Cmd("xlsx.sbom-actions"),
         LayoutItem::Cmd("file.open-repository"),

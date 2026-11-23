@@ -9,6 +9,7 @@ use std::fmt::Write;
 
 mod crypto;
 pub use crypto::compare_xlsx as compare_cbom_xlsx;
+pub use crypto::is_cbom_inventory;
 mod ledger;
 pub use ledger::{can_refresh, open_action_queue, refresh_xlsx};
 

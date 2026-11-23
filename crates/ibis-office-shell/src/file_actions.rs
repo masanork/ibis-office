@@ -13,6 +13,31 @@ use crate::format::with_format;
 
 use crate::editor::SlideEditor;
 
+#[cfg(not(target_family = "wasm"))]
+fn compare_cbom_files(source: &crate::read_file::CbomSource, path: &std::path::Path) -> Result<ibis_formats::Opened, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    fn read(path: &std::path::Path) -> Result<(std::borrow::Cow<'_, str>, Vec<u8>), String> {
+        const LIMIT: u64 = 32 * 1024 * 1024;
+        let mut data = Vec::new();
+        std::fs::File::open(path).and_then(|file| file.take(LIMIT + 1).read_to_end(&mut data))
+            .map_err(|err| format!("{}: {err}", path.display()))?;
+        if data.len() as u64 > LIMIT {
+            return Err(format!("{} exceeds the 32 MiB input limit", path.display()));
+        }
+        Ok((path.file_name().unwrap_or(path.as_os_str()).to_string_lossy(), data))
+    }
+
+    let (old_name, old) = read(&source.path)?;
+    if <[u8; 32]>::from(Sha256::digest(&old)) != source.digest {
+        return Err(crate::i18n::text("xlsx.cbom-source-changed").to_string());
+    }
+    let (new_name, new) = read(path)?;
+    let report = ibis_formats::sbom_review::compare_cbom_xlsx([(&old_name, &old), (&new_name, &new)])?;
+    ibis_formats::open(report).map_err(|err| err.to_string())
+}
+
 impl SlideEditor {
     /// A new, empty file of `kind`: in this window when it shows no
     /// document, else in a new window.
@@ -88,6 +113,42 @@ impl SlideEditor {
         // (A document gets its default design; a new presentation opens without the speaker notes.)
         with_format!(self, new_file_shown(self, cx));
         self.document.reset_history();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub fn can_compare_cbom(&self) -> bool {
+        self.cbom_source.is_some()
+    }
+
+    /// Compare the imported CBOM with a second file in a separate workbook.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn compare_open_cbom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self.cbom_source.clone() else { return };
+        self.commit_edit(window, cx);
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            extensions: vec!["json".into()],
+            multiple: false,
+            prompt: Some(crate::i18n::text("xlsx.cbom-select-new").into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let result = cx.background_executor().spawn(async move {
+                // XLSX construction needs more stack than macOS dispatch workers provide.
+                std::thread::Builder::new().name("cbom-comparison".into()).stack_size(8 * 1024 * 1024)
+                    .spawn(move || compare_cbom_files(&source, &path))
+                    .map_err(|error| error.to_string())?
+                    .join().map_err(|_| "CBOM comparison worker failed".to_string())?
+            }).await;
+            this.update_in(cx, |this, _, cx| match result {
+                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                    editor.show_new(opened, next_new_file_name(ibis_formats::Kind::Workbook), window, cx)
+                }),
+                Err(error) => this.set_status(crate::i18n::format("xlsx.cbom-compare-failed", &[("error", &error)]), cx),
+            }).ok();
+        }).detach();
     }
 
     /// Show today's findings that require attention without editing the source.
@@ -1173,4 +1234,25 @@ pub fn export_program() -> Result<std::path::PathBuf, String> {
 #[cfg(not(target_family = "wasm"))]
 fn i18n_status(on: bool) -> String {
     crate::i18n::text(if on { "_shell.saved-with-password" } else { "_shell.saved-without-password" }).to_string()
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod cbom_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn cbom_comparison_checks_the_opened_source_identity() {
+        let samples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/fixtures/cbom");
+        let old = samples.join("payment-before.cdx.json");
+        let new = samples.join("payment-after.cdx.json");
+        let loaded = crate::read_file::read_file(&old).unwrap();
+        let mut source = loaded.cbom_source.unwrap();
+        assert_eq!(source.digest, <[u8; 32]>::from(Sha256::digest(std::fs::read(&old).unwrap())));
+        let opened = compare_cbom_files(&source, &new).unwrap();
+        assert_eq!(opened.presentation.workbook.as_ref().unwrap().sheets[0].name, "Asset changes");
+
+        source.path = new.clone();
+        assert!(compare_cbom_files(&source, &new).is_err());
+    }
 }

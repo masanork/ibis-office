@@ -1701,3 +1701,7 @@ folder.reference	Reference folder
 folder.model-disclosure	Files and excerpts read by the assistant will be sent to the configured model.
 folder.tool-reference	Folder reference
 folder.preview-partial	Preview shows the first part of the file.
+xlsx.cbom-compare	Compare with another CBOM…
+xlsx.cbom-select-new	Choose the newer CycloneDX JSON
+xlsx.cbom-compare-failed	Could not compare the CBOMs: {error}
+xlsx.cbom-source-changed	The original CBOM has changed. Reopen it before comparing.

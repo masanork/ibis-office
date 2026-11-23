@@ -3045,6 +3045,16 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     }
     #[cfg(not(target_family = "wasm"))]
     {
+        if editor.can_compare_cbom() {
+            let mut entry = MenuItem::tr("xlsx.cbom-compare").icon("compare_arrows")
+                .on(|this, window, cx| this.compare_open_cbom(window, cx)).into();
+            for (_, entries) in menus.menus.iter_mut() {
+                match insert_after(entries, "file.open", entry) {
+                    Ok(()) => break,
+                    Err(back) => entry = back,
+                }
+            }
+        }
         if ibis_formats::sbom_review::can_refresh(editor.presentation()) {
             for (anchor, item) in [
                 ("file.open", MenuItem::tr("xlsx.sbom-refresh").icon("refresh")

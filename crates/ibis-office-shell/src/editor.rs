@@ -642,6 +642,8 @@ pub struct SlideEditor {
     /// A Standard-encrypted document remains read-only until saved as a copy.
     pub standard_read_only: bool,
     pub(crate) structured_preview: bool,
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) cbom_source: Option<crate::read_file::CbomSource>,
     /// Preserve the original path even after creating an editable copy.
     #[cfg(not(target_family = "wasm"))]
     pub standard_source_path: Option<std::path::PathBuf>,
@@ -981,6 +983,8 @@ impl SlideEditor {
             phone_view_only: false,
             standard_read_only: false,
             structured_preview: false,
+            #[cfg(not(target_family = "wasm"))]
+            cbom_source: None,
             #[cfg(not(target_family = "wasm"))]
             standard_source_path: None,
             jtd_original: None,
@@ -1325,6 +1329,8 @@ impl SlideEditor {
     pub fn load(&mut self, mut presentation: Presentation, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.standard_read_only = false;
         self.structured_preview = false;
+        #[cfg(not(target_family = "wasm"))]
+        { self.cbom_source = None; }
         #[cfg(target_family = "wasm")]
         { self.web_law_source = None; }
         #[cfg(any(target_os = "android", target_family = "wasm"))]
@@ -1878,6 +1884,7 @@ impl SlideEditor {
                         let extension = crate::format::info(ibis_formats::Kind::of(&loaded.presentation)).extension;
                         this.load(loaded.presentation, format!("{stem}.{extension}").into(), window, cx);
                         this.set_opened_source(loaded.source, production_image);
+                        this.cbom_source = loaded.cbom_source;
                         this.path = None;
                         this.document.set_file(None);
                     } else {
@@ -2545,6 +2552,8 @@ impl SlideEditor {
         let standard_read_only = self.standard_read_only;
         let structured_preview = self.structured_preview;
         #[cfg(not(target_family = "wasm"))]
+        let cbom_source = self.cbom_source.clone();
+        #[cfg(not(target_family = "wasm"))]
         let standard_source_path = self.standard_source_path.clone();
         #[cfg(not(target_family = "wasm"))]
         let protection_password = self.protection_password.clone();
@@ -2591,7 +2600,7 @@ impl SlideEditor {
                 editor.standard_read_only = standard_read_only;
                 editor.structured_preview = structured_preview;
                 #[cfg(not(target_family = "wasm"))]
-                { editor.standard_source_path = standard_source_path; editor.protection_password = protection_password; }
+                { editor.standard_source_path = standard_source_path; editor.protection_password = protection_password; editor.cbom_source = cbom_source; }
                 editor.jtd_original = jtd_original;
                 editor.jtd_gallery = jtd_gallery;
                 editor.jtd_gallery_body = jtd_gallery_body;

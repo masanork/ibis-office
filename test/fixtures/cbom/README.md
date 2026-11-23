@@ -16,6 +16,10 @@ The related-material `value` field is excluded from the workbook. The sample ill
 
 ## Compare two releases
 
+In the desktop app, open `payment-before.cdx.json`. Choose **File → Compare with another CBOM…**, select `payment-after.cdx.json`, and save the new workbook as `payment-crypto-changes.xlsx`. The first file stays open. If it has changed on disk, reopen it before comparing.
+
+The same comparison is available from the command line.
+
 ```sh
 ibisOffice --export cbom-compare \
   --old-sbom payment-before.cdx.json --new-sbom payment-after.cdx.json \

@@ -6,6 +6,14 @@
 #[cfg(not(target_family = "wasm"))]
 use crate::timing;
 
+/// The disk identity of the CBOM used to generate a workbook.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone)]
+pub(crate) struct CbomSource {
+    pub path: std::path::PathBuf,
+    pub digest: [u8; 32],
+}
+
 /// A file read for editing: its model, and what saving it needs.
 #[cfg(not(target_family = "wasm"))]
 pub struct Loaded {
@@ -17,6 +25,7 @@ pub struct Loaded {
     pub jtd_original: Option<Vec<u8>>,
     pub jtd_gallery: bool,
     pub structured_preview: bool,
+    pub(crate) cbom_source: Option<CbomSource>,
     pub(crate) image_provenance: Option<crate::image_provenance::Report>,
     pub(crate) exr_exposure: Option<ibis_formats::production_image::ExrExposure>,
     pub(crate) csv_stream: Option<std::sync::mpsc::Receiver<ibis_formats::CsvProgressiveChunk>>,
@@ -75,7 +84,7 @@ fn load_production_image(
     image_provenance: Option<crate::image_provenance::Report>,
 ) -> Loaded {
     crate::render::preload::Preload::start_for_next(&opened.presentation);
-    Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, exr_exposure, image_provenance }
+    Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, cbom_source: None, exr_exposure, image_provenance }
 }
 
 /// Run `read` for the file at `path`. One file's reader going wrong must close that file only: every window shares this
@@ -225,7 +234,7 @@ fn read_file_data(
         let presentation = format.read(data.into())?;
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, exr_exposure: None, image_provenance: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, cbom_source: None, exr_exposure: None, image_provenance: None });
     }
     let extension = path.extension().and_then(|e| e.to_str());
     if let Some((opened, exr_exposure)) = ibis_formats::production_image::open_with_exposure(extension, &data)? {
@@ -237,7 +246,7 @@ fn read_file_data(
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
         crate::render::preload::Preload::start_for_next(&presentation);
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: Some(data), jtd_gallery, structured_preview: false, exr_exposure: None, image_provenance: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: Some(data), jtd_gallery, structured_preview: false, cbom_source: None, exr_exposure: None, image_provenance: None });
     }
     let standard_encryption = ibis_formats::ibis_ooxml::encryption::is_standard_encrypted(&data);
     let read_fs_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
@@ -252,6 +261,7 @@ fn read_file_data(
     // An old binary file (.xls, .ppt, .doc): read by its content, not by its extension.
     let is_legacy_binary = ibis_formats::is_legacy_binary(&data);
     let external_document_format = ibis_formats::docx_convert::DocxConvertFormat::from_path(path);
+    let mut cbom_source = None;
     let open_result = if let Some(law_md) = ibis_formats::lawtext::path_input_to_markdown(path, &data).map_err(|e| {
         note_open_failed(path);
         e.to_string()
@@ -273,6 +283,10 @@ fn read_file_data(
     } else {
         None
     } {
+        if ibis_formats::sbom_review::is_cbom_inventory(&opened.presentation) {
+            use sha2::{Digest, Sha256};
+            cbom_source = Some(CbomSource { path: path.to_owned(), digest: Sha256::digest(&data).into() });
+        }
         Ok((opened, None))
     } else if let Some(extension) = extension.filter(|ext| ibis_formats::structured_preview::supports_extension(ext)) {
         let opened = crate::structured_preview::open(extension, &data)?;
@@ -280,7 +294,7 @@ fn read_file_data(
         return Ok(Loaded {
             presentation: opened.presentation, source: std::sync::Arc::new(opened.source),
             password: None, standard_encryption: false, csv_stream: None,
-            jtd_original: None, jtd_gallery: false, structured_preview: true,
+            jtd_original: None, jtd_gallery: false, structured_preview: true, cbom_source: None,
             exr_exposure: None, image_provenance: None,
         });
     } else if external_document_format == Some(ibis_formats::docx_convert::DocxConvertFormat::Markdown) {
@@ -312,7 +326,7 @@ fn read_file_data(
     let total_file_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
     eprintln!("ibisOffice timing: read_file total: {total_file_ms:.1} ms (fs::read: {read_fs_ms:.1} ms, open: {open_ms:.1} ms)");
     crate::render::preload::Preload::start_for_next(&opened.presentation);
-    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, jtd_original: None, jtd_gallery: false, structured_preview: false, exr_exposure: None, image_provenance: None })
+    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, jtd_original: None, jtd_gallery: false, structured_preview: false, cbom_source, exr_exposure: None, image_provenance: None })
 }
 
 /// Tell every format that the file at `path` could not be parsed (in the order of their registration, as they were told

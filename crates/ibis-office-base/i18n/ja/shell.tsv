@@ -1699,3 +1699,7 @@ folder.reference	参照フォルダー
 folder.model-disclosure	アシスタントが参照したファイル名や抜粋は、設定されたモデルに送信されます。
 folder.tool-reference	フォルダーの参照資料
 folder.preview-partial	ファイルの先頭部分をプレビューしています。
+xlsx.cbom-compare	別のCBOMと比較…
+xlsx.cbom-select-new	新版のCycloneDX JSONを選択
+xlsx.cbom-compare-failed	CBOMを比較できませんでした（{error}）
+xlsx.cbom-source-changed	元のCBOMが更新されています。開き直してから比較してください。
