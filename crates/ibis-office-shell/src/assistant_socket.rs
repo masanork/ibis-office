@@ -34,12 +34,28 @@ type Request = (Value, Instant, mpsc::Sender<Value>);
 pub struct SocketLifetime {
     path: PathBuf,
     closed: Arc<AtomicBool>,
+    registration: Option<(PathBuf, PathBuf)>,
+}
+
+impl SocketLifetime {
+    pub(crate) fn includes_document(&self, document: Option<&Path>) -> bool {
+        self.registration.as_ref().is_none_or(|(root, _)| {
+            document.and_then(|path| path.canonicalize().ok())
+                .is_some_and(|path| path.starts_with(root))
+        })
+    }
 }
 
 impl Drop for SocketLifetime {
     fn drop(&mut self) {
         self.closed.store(true, Ordering::Release);
         let _ = fs::remove_file(&self.path);
+        if let Some((_, record)) = &self.registration {
+            let _ = fs::remove_file(record);
+            if let Some(directory) = record.parent() {
+                let _ = fs::remove_dir(directory);
+            }
+        }
     }
 }
 
@@ -64,10 +80,16 @@ impl BoundSocket {
         let lifetime = SocketLifetime {
             path: path.to_owned(),
             closed: Arc::new(AtomicBool::new(false)),
+            registration: None,
         };
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         listener.set_nonblocking(true)?;
         Ok(Self { listener, lifetime })
+    }
+
+    pub fn register(mut self, root: PathBuf, record: PathBuf) -> Self {
+        self.lifetime.registration = Some((root, record));
+        self
     }
 
     pub fn start(self, editor: &mut SlideEditor, window: &Window, cx: &mut Context<SlideEditor>) {
@@ -98,6 +120,9 @@ impl BoundSocket {
                 let response = editor.update_in(cx, |editor, window, cx| {
                     if Instant::now() >= deadline {
                         return json!({"error":"Assistant request expired"});
+                    }
+                    if !editor.assistant_document_is_shared() {
+                        return json!({"error":"the active document is outside the shared Assistant workspace"});
                     }
                     if request["op"] == "status" {
                         return editor.assistant_connection_status();

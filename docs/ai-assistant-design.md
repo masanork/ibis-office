@@ -61,6 +61,19 @@ MCP クライアントは終了・再起動しても同じ GUI ウィンドウ�
 
 `--read-only` で MCP を起動した場合は状態と結果の取得のみ公開する。最近の256イベントと32ターンの概要をウィンドウ内に保持する。イベントの履歴が範囲外になると `history_truncated` を返す。結果に含まれる文書の値やモデル出力はデータとして扱う。ファイル操作用の既存MCPツールには従来どおり `--allow-dir` が必要。
 
+### 作業フォルダーから接続先を見つける
+
+macOS・Linux では、利用者が GUI の起動時に共有するフォルダーを指定できる。
+
+```sh
+ibisOffice --assistant-workspace /absolute/path/to/project /absolute/path/to/project/report.xlsx
+ibisOffice --mcp --assistant-workspace /absolute/path/to/project
+```
+
+MCP の `assistant_list_sessions` は同じ作業フォルダーに共有されたウィンドウと文書のパスを返す。`assistant_prompt` や `assistant_result` に対象の `session_id` を渡す。クライアントを再起動した後も同じウィンドウのセッション ID と実行 ID で結果を取得できる。ウィンドウが共有範囲外の文書を開いている間は一覧から外れ、実行済みの依頼の結果はそのセッションから引き続き取得できる。
+
+接続情報は同一 OS ユーザー専用のローカル領域に置く。共有は起動時の指定で有効になり、通常終了時に登録を削除する。応答しない登録は一覧に出さない。`--read-only` では一覧・状態・結果だけを使える。既存の `--assistant-socket` は個別ウィンドウへの直接接続として使える。
+
 以下は導入時の設計メモ。
 
 ## 目的

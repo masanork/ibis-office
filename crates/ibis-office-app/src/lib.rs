@@ -419,6 +419,7 @@ pub fn init(cx: &mut App) {
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
 struct Args {
     assistant_socket: Option<std::path::PathBuf>,
+    assistant_workspace: Option<std::path::PathBuf>,
     path: Option<std::path::PathBuf>,
     slide: Option<usize>,
     export: Option<String>,
@@ -493,6 +494,7 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
         let mut value = || iter.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
             "--assistant-socket" => args.assistant_socket = Some(value()?.into()),
+            "--assistant-workspace" => args.assistant_workspace = Some(value()?.into()),
             "--read-only" => args.read_only = true,
             "--slide" => args.slide = Some(value()?.parse().map_err(|_| "--slide needs a slide number".to_string())?),
             "--export" => args.export = Some(value()?),
@@ -565,7 +567,10 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
             }
         }
     }
-    if args.assistant_socket.is_some() {
+    if args.assistant_socket.is_some() && args.assistant_workspace.is_some() {
+        return Err("choose --assistant-socket or --assistant-workspace".into());
+    }
+    if args.assistant_socket.is_some() || args.assistant_workspace.is_some() {
         if !cfg!(any(target_os = "macos", target_os = "linux")) {
             return Err("Assistant connections are available on macOS and Linux".into());
         }
@@ -1088,12 +1093,25 @@ pub fn run_native() {
         }
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let assistant_socket = args.assistant_socket.as_deref().map(|path| {
-        shell::assistant_socket::BoundSocket::bind(path).unwrap_or_else(|error| {
-            eprintln!("ibisOffice: cannot open Assistant socket {}: {error}", path.display());
+    let assistant_socket = {
+        use ibis_mcp::assistant_workspace::{REGISTRATION_NAME, SOCKET_NAME, Workspace};
+        use shell::assistant_socket::BoundSocket;
+        let bind = || -> std::io::Result<Option<BoundSocket>> {
+            if let Some(path) = &args.assistant_socket {
+                return BoundSocket::bind(path).map(Some);
+            }
+            let Some(path) = &args.assistant_workspace else { return Ok(None) };
+            let workspace = Workspace::open(path)?;
+            let registration = workspace.register()?;
+            let socket = BoundSocket::bind(&registration.path().join(SOCKET_NAME))?;
+            let record = registration.keep().join(REGISTRATION_NAME);
+            Ok(Some(socket.register(workspace.root().to_owned(), record)))
+        };
+        bind().unwrap_or_else(|error| {
+            eprintln!("ibisOffice: cannot open Assistant connection: {error}");
             std::process::exit(2);
         })
-    });
+    };
     if args.export.as_deref() == Some("pdfa-validate") {
         match pdfa_validation::run(
             args.path.as_deref().expect("PDF path checked by parser"),
@@ -1125,6 +1143,7 @@ pub fn run_native() {
         && !args.timing
         && !args.read_only
         && args.assistant_socket.is_none()
+        && args.assistant_workspace.is_none()
         && args.slide.is_none()
         && args.ai_query.is_none()
         && std::env::var_os("IBIS_NO_SINGLE_INSTANCE").is_none();

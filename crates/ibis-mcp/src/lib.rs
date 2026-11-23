@@ -6,6 +6,8 @@
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod live_assistant;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod assistant_workspace;
 mod cli;
 mod protocol;
 mod stdio;

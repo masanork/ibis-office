@@ -866,9 +866,20 @@ impl SlideEditor {
 
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn emit_assistant_event(&self, event: serde_json::Value) {
-        if let Some(output) = &self.assistant_output {
+        if let Some(output) = &self.assistant_output
+            && self.assistant_document_is_shared()
+        {
             let _ = output.send(event);
         }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn assistant_document_is_shared(&self) -> bool {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if let Some(socket) = &self.assistant_socket {
+            return socket.includes_document(self.file_path().as_deref());
+        }
+        true
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1680,13 +1691,13 @@ impl SlideEditor {
         skill: Option<ibis_formats::agent_skill::Skill>,
         cx: &mut Context<Self>,
     ) {
-        let output = self.assistant_output.clone();
+        let output = self.assistant_output.as_ref().filter(|_| self.assistant_document_is_shared()).cloned();
+        let trace = output.is_some();
         let emit = move |event| {
             if let Some(output) = &output {
                 let _ = output.send(event);
             }
         };
-        let trace = self.assistant_output.is_some();
         let kind = self.ai_doc_kind();
         let formula_only = formula_messages.is_some();
         let mut draft = (!formula_only).then(|| self.assistant_turn());

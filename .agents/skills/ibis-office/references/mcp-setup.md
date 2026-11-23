@@ -72,3 +72,14 @@ ibisOffice --mcp --assistant-socket /absolute/path/to/session/assistant.sock
 Use the actual path printed by `printf '%s\n' "$session_dir"` in the first shell. Configure the second command as a separate MCP server when you also use file tools. Add `--read-only` for a connection that only inspects live Assistant status and results. Add `--allow-dir` if that server also needs access to files on disk. The socket belongs to the GUI window. A new client process can reconnect while the window stays open.
 
 Use `tools/list` to confirm the connection. File operations use their own `document_id` handles. Live Assistant operations use `run_id` and work on the open GUI window, including unsaved changes.
+
+### Discover windows in a shared workspace
+
+On a build that supports `--assistant-workspace`, use the same workspace directory in both the GUI and MCP commands.
+
+```sh
+ibisOffice --assistant-workspace /absolute/path/to/project /absolute/path/to/project/report.xlsx
+ibisOffice --mcp --assistant-workspace /absolute/path/to/project
+```
+
+Call `assistant_list_sessions`, select the intended document, and pass its `session_id` to live tools. Use both the session ID and the run ID when polling `assistant_result` after reconnecting.

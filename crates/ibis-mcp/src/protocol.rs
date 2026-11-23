@@ -42,8 +42,8 @@ impl Server {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(crate) fn with_live_assistant(mut self, socket: std::path::PathBuf, read_only: bool) -> Self {
-        self.assistant = Some(crate::live_assistant::LiveAssistant { socket, read_only });
+    pub(crate) fn with_live_assistant(mut self, assistant: crate::live_assistant::LiveAssistant) -> Self {
+        self.assistant = Some(assistant);
         self
     }
 

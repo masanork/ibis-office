@@ -5756,6 +5756,7 @@ name = "ibis-mcp"
 version = "0.8.0"
 dependencies = [
  "ibis-doc-service",
+ "libc",
  "serde_json",
  "tempfile",
 ]

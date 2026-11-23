@@ -3,12 +3,19 @@ use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
+use crate::assistant_workspace::Workspace;
+
+pub(crate) enum Endpoint {
+    Socket(PathBuf),
+    Workspace(Workspace),
+}
+
 pub(crate) struct LiveAssistant {
-    pub(crate) socket: PathBuf,
+    pub(crate) endpoint: Endpoint,
     pub(crate) read_only: bool,
 }
 
@@ -47,20 +54,37 @@ const TOOLS: &[(&str, &str, &str, bool)] = &[
 
 impl LiveAssistant {
     pub(crate) fn schemas(&self) -> impl Iterator<Item = Value> + '_ {
-        TOOLS.iter().filter(|tool| !self.read_only || tool.3).map(|(name, op, description, read)| {
-            let (properties, required) = match *op {
+        let workspace = matches!(self.endpoint, Endpoint::Workspace(_));
+        let discovery = workspace.then(|| json!({
+            "name":"assistant_list_sessions",
+            "description":"List explicitly shared Assistant windows in the configured workspace. Use the returned session_id to target a window.",
+            "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
+            "annotations":{"readOnlyHint":true}
+        }));
+        discovery.into_iter().chain(TOOLS.iter().filter(|tool| !self.read_only || tool.3).map(move |(name, op, description, read)| {
+            let (mut properties, mut required) = match *op {
                 "prompt" => (json!({"text":{"type":"string","minLength":1},"skill":{"type":"string","minLength":1,"maxLength":64}}), json!(["text"])),
                 "result" => (json!({"run_id":{"type":"integer","minimum":0},"after":{"type":"integer","minimum":0}}), json!(["run_id"])),
                 "apply" => (json!({"run_id":{"type":"integer","minimum":0}}), json!(["run_id"])),
                 _ => (json!({}), json!([])),
             };
+            if workspace {
+                properties["session_id"] = json!({"type":"string","description":"Session ID from assistant_list_sessions."});
+                required.as_array_mut().unwrap().push(json!("session_id"));
+            }
             json!({"name":name,"description":description,"inputSchema":{
                 "type":"object","properties":properties,"required":required,"additionalProperties":false,
             },"annotations":{"readOnlyHint":read,"destructiveHint":false,"openWorldHint":!read}})
-        })
+        }))
     }
 
     pub(crate) fn call(&self, name: &str, args: Option<&Value>) -> Option<Result<Value, String>> {
+        if name == "assistant_list_sessions" {
+            let Endpoint::Workspace(workspace) = &self.endpoint else {
+                return None;
+            };
+            return Some(list_sessions(workspace, args));
+        }
         let (_, op, _, _) = TOOLS
             .iter()
             .find(|tool| tool.0 == name && (!self.read_only || tool.3))?;
@@ -68,10 +92,25 @@ impl LiveAssistant {
     }
 
     fn request(&self, op: &str, args: Option<&Value>) -> Result<Value, String> {
-        let args = args
+        let mut args = args
             .filter(|args| !args.is_null())
             .cloned()
             .unwrap_or_else(|| json!({}));
+        let socket = match &self.endpoint {
+            Endpoint::Socket(socket) => socket.clone(),
+            Endpoint::Workspace(workspace) => {
+                let id = args
+                    .as_object_mut()
+                    .and_then(|args| args.remove("session_id"));
+                let id = id
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .ok_or("session_id is required")?;
+                workspace
+                    .socket(id)
+                    .ok_or("Assistant session is unavailable in this workspace")?
+            }
+        };
         let keys: &[&str] = match op {
             "prompt" => &["text", "skill"],
             "result" => &["run_id", "after"],
@@ -92,41 +131,79 @@ impl LiveAssistant {
             return Err("text is required".into());
         }
         if args.get("skill").is_some_and(|value| {
-            value.as_str().is_none_or(|name| name.trim().is_empty() || name.len() > 64)
+            value
+                .as_str()
+                .is_none_or(|name| name.trim().is_empty() || name.len() > 64)
         }) {
             return Err("skill must be a nonempty name of at most 64 characters".into());
         }
         if matches!(op, "result" | "apply") && args["run_id"].as_u64().is_none() {
             return Err("run_id must be a nonnegative integer".into());
         }
-        if args.get("after").is_some_and(|after| after.as_u64().is_none()) {
+        if args
+            .get("after")
+            .is_some_and(|after| after.as_u64().is_none())
+        {
             return Err("after must be a nonnegative integer".into());
         }
-        let mut request = args;
-        request["op"] = json!(op);
-        let mut bytes = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
-        if bytes.len() >= 256 * 1024 {
-            return Err("Assistant request exceeds 256 KiB".into());
-        }
-        bytes.push(b'\n');
-        let exchange = || -> std::io::Result<Value> {
-            let mut socket = UnixStream::connect(&self.socket)?;
-            socket.set_write_timeout(Some(Duration::from_secs(5)))?;
-            socket.set_read_timeout(Some(Duration::from_secs(5)))?;
-            socket.write_all(&bytes)?;
-            let mut line = Vec::new();
-            BufReader::new(socket)
-                .take(5 * 1024 * 1024)
-                .read_until(b'\n', &mut line)?;
-            Ok(serde_json::from_slice(&line)?)
-        };
-        let response = exchange()
-            .map_err(|error| format!("cannot communicate with the GUI Assistant: {error}"))?;
-        if let Some(error) = response["error"].as_str() {
-            return Err(error.to_owned());
-        }
-        Ok(response)
+        args["op"] = json!(op);
+        exchange(&socket, &args, Duration::from_secs(5))
     }
+}
+
+fn exchange(path: &Path, request: &Value, timeout: Duration) -> Result<Value, String> {
+    let mut bytes = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    if bytes.len() >= 256 * 1024 {
+        return Err("Assistant request exceeds 256 KiB".into());
+    }
+    bytes.push(b'\n');
+    let send = || -> std::io::Result<Value> {
+        let mut socket = UnixStream::connect(path)?;
+        socket.set_write_timeout(Some(timeout))?;
+        socket.set_read_timeout(Some(timeout))?;
+        socket.write_all(&bytes)?;
+        let mut line = Vec::new();
+        BufReader::new(socket)
+            .take(5 * 1024 * 1024)
+            .read_until(b'\n', &mut line)?;
+        Ok(serde_json::from_slice(&line)?)
+    };
+    let response =
+        send().map_err(|error| format!("cannot communicate with the GUI Assistant: {error}"))?;
+    if let Some(error) = response["error"].as_str() {
+        return Err(error.to_owned());
+    }
+    Ok(response)
+}
+
+fn list_sessions(workspace: &Workspace, args: Option<&Value>) -> Result<Value, String> {
+    if args.is_some_and(|args| {
+        !args.is_null() && !args.as_object().is_some_and(|args| args.is_empty())
+    }) {
+        return Err("unexpected Assistant discovery arguments".into());
+    }
+
+    let mut sessions = Vec::new();
+    for (id, socket) in workspace.sessions().map_err(|error| error.to_string())? {
+        let Ok(status) = exchange(&socket, &json!({"op":"status"}), Duration::from_millis(250))
+        else {
+            continue;
+        };
+        sessions.push(json!({
+            "session_id":id,
+            "path":status["path"],
+            "document_ready":status["document_ready"],
+            "streaming":status["streaming"],
+            "awaiting_review":!status["review"].is_null(),
+        }));
+    }
+    sessions.sort_unstable_by(|a, b| {
+        a["path"]
+            .as_str()
+            .cmp(&b["path"].as_str())
+            .then_with(|| a["session_id"].as_str().cmp(&b["session_id"].as_str()))
+    });
+    Ok(json!({"sessions":sessions}))
 }
 
 #[cfg(test)]
@@ -136,7 +213,7 @@ mod tests {
     #[test]
     fn read_only_connection_excludes_write_tools() {
         let assistant = LiveAssistant {
-            socket: PathBuf::new(),
+            endpoint: Endpoint::Socket(PathBuf::new()),
             read_only: true,
         };
         assert_eq!(assistant.schemas().count(), 2);
@@ -162,7 +239,7 @@ mod tests {
     #[test]
     fn apply_requires_a_valid_run_id() {
         let assistant = LiveAssistant {
-            socket: PathBuf::new(),
+            endpoint: Endpoint::Socket(PathBuf::new()),
             read_only: false,
         };
         for args in [json!({}), json!({"run_id":-1}), json!({"run_id":"1"})] {
