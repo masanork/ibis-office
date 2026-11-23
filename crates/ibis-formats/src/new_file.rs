@@ -16,6 +16,8 @@ const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relations
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const HEAD: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
 
+const COLOR_MAP: &str = r#"<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>"#;
+
 /// Wide (16:9) slides, 33.867 × 19.05 cm, as PowerPoint makes a new
 /// presentation.
 const WIDTH: i64 = 12_192_000;
@@ -84,7 +86,7 @@ fn master() -> String {
         .collect();
     let other_style: String = (0..9).map(|i| level(i + 1, 1800, 457_200 * i as i64, 0, false, false)).collect();
     format!(
-        r#"{HEAD}<p:sldMaster xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}">{}<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/><p:sldLayoutId id="2147483650" r:id="rId2"/><p:sldLayoutId id="2147483651" r:id="rId3"/></p:sldLayoutIdLst><p:txStyles>{title_style}<p:bodyStyle>{body_style}</p:bodyStyle><p:otherStyle><a:defPPr><a:defRPr lang="ja-JP"/></a:defPPr>{other_style}</p:otherStyle></p:txStyles></p:sldMaster>"#,
+        r#"{HEAD}<p:sldMaster xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}">{}{COLOR_MAP}<p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/><p:sldLayoutId id="2147483650" r:id="rId2"/><p:sldLayoutId id="2147483651" r:id="rId3"/></p:sldLayoutIdLst><p:txStyles>{title_style}<p:bodyStyle>{body_style}</p:bodyStyle><p:otherStyle><a:defPPr><a:defRPr lang="ja-JP"/></a:defPPr>{other_style}</p:otherStyle></p:txStyles></p:sldMaster>"#,
         tree(&format!("{title}{body}")).replacen("<p:cSld>", r#"<p:cSld><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg>"#, 1)
     )
 }
@@ -136,6 +138,21 @@ fn theme_of(name: &str, scheme: &[(&str, &str)], major: &str, minor: &str) -> St
     )
 }
 
+fn notes_master() -> String {
+    let empty = "<a:bodyPr/><a:lstStyle/><a:p/>";
+    let shapes = placeholder(
+        2, "スライド イメージ", Some("sldImg"), None,
+        Some((914_400, 914_400, 5_029_200, 2_829_000)), empty,
+    ) + &placeholder(
+        3, "ノート", Some("body"), Some(1),
+        Some((914_400, 4_114_800, 5_029_200, 4_114_800)), empty,
+    );
+    format!(
+        r#"{HEAD}<p:notesMaster xmlns:a="{A}" xmlns:p="{P}">{}{COLOR_MAP}<p:notesStyle><a:lvl1pPr><a:defRPr sz="1200"/></a:lvl1pPr></p:notesStyle></p:notesMaster>"#,
+        tree(&shapes),
+    )
+}
+
 /// The bytes of a new, empty presentation.
 pub fn new_presentation() -> Result<Vec<u8>, Error> {
     let empty_title = r#"<a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr kumimoji="1" lang="ja-JP" altLang="en-US"/></a:p>"#;
@@ -156,13 +173,14 @@ pub fn new_presentation() -> Result<Vec<u8>, Error> {
         tree(&(placeholder(2, "タイトル 1", Some("ctrTitle"), None, None, empty_title) + &placeholder(3, "サブタイトル 2", Some("subTitle"), Some(1), None, empty_title)))
     );
     let presentation = format!(
-        r#"{HEAD}<p:presentation xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}" saveSubsetFonts="1"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst><p:sldSz cx="{WIDTH}" cy="{HEIGHT}"/><p:notesSz cx="6858000" cy="9144000"/><p:defaultTextStyle><a:defPPr><a:defRPr lang="ja-JP"/></a:defPPr></p:defaultTextStyle></p:presentation>"#
+        r#"{HEAD}<p:presentation xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}" saveSubsetFonts="1"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:notesMasterIdLst><p:notesMasterId r:id="rId6"/></p:notesMasterIdLst><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst><p:sldSz cx="{WIDTH}" cy="{HEIGHT}"/><p:notesSz cx="6858000" cy="9144000"/><p:defaultTextStyle><a:defPPr><a:defRPr lang="ja-JP"/></a:defPPr></p:defaultTextStyle></p:presentation>"#
     );
     let ct = |part: &str, kind: &str| format!(r#"<Override PartName="/{part}" ContentType="application/vnd.openxmlformats-officedocument.{kind}+xml"/>"#);
     let content_types = format!(
-        r#"{HEAD}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>{}{}{}{}{}{}{}{}{}</Types>"#,
+        r#"{HEAD}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>{}{}{}{}{}{}{}{}{}{}</Types>"#,
         ct("ppt/presentation.xml", "presentationml.presentation.main"),
         ct("ppt/slideMasters/slideMaster1.xml", "presentationml.slideMaster"),
+        ct("ppt/notesMasters/notesMaster1.xml", "presentationml.notesMaster"),
         ct("ppt/slideLayouts/slideLayout1.xml", "presentationml.slideLayout"),
         ct("ppt/slideLayouts/slideLayout2.xml", "presentationml.slideLayout"),
         ct("ppt/slideLayouts/slideLayout3.xml", "presentationml.slideLayout"),
@@ -183,9 +201,12 @@ pub fn new_presentation() -> Result<Vec<u8>, Error> {
                 ("rId3", "presProps", "presProps.xml"),
                 ("rId4", "viewProps", "viewProps.xml"),
                 ("rId5", "theme", "theme/theme1.xml"),
+                ("rId6", "notesMaster", "notesMasters/notesMaster1.xml"),
             ]),
         ),
         ("ppt/slideMasters/slideMaster1.xml", master()),
+        ("ppt/notesMasters/notesMaster1.xml", notes_master()),
+        ("ppt/notesMasters/_rels/notesMaster1.xml.rels", rels(&[("rId1", "theme", "../theme/theme1.xml")])),
         (
             "ppt/slideMasters/_rels/slideMaster1.xml.rels",
             rels(&[

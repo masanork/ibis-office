@@ -31,6 +31,7 @@
 //!   - CriticMarkup Tracked Changes & Comments: `{++insert++}`, `{--delete--}`, `{~~old~>new~~}`, `{>>author: comment<<}`
 //!   - Inline Data URI images `![alt](data:image/png;base64,...){width=... height=...}`
 
+mod marp;
 mod metafile_preview;
 mod myst;
 mod obsidian;
@@ -200,7 +201,7 @@ pub fn is_presentation_markdown(data: &[u8]) -> bool {
     let Some((fm, _)) = roundtrip::frontmatter(trimmed) else {
         return false;
     };
-    fm.lines().any(|line| {
+    marp::enabled(fm) || fm.lines().any(|line| {
         let Some((key, value)) = line.split_once(':') else {
             return false;
         };
@@ -208,8 +209,7 @@ pub fn is_presentation_markdown(data: &[u8]) -> bool {
         let value = value.trim().trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase();
         matches!(
             (key.as_str(), value.as_str()),
-            ("marp", "true")
-                | ("slides", "true")
+            ("slides", "true")
                 | ("type", "presentation" | "slides" | "pptx")
         )
     })
@@ -7474,20 +7474,21 @@ pub fn open_markdown_presentation_with_base_dir(
 ) -> Result<Opened, Error> {
     let raw_text = String::from_utf8(data)
         .map_err(|_| Error::new("Markdown ファイルが有効な UTF-8 ではありません"))?;
-    let slide_chunks = split_markdown_slides(&raw_text);
+    let raw_text = raw_text.trim_start_matches('\u{feff}');
+    let frontmatter = roundtrip::frontmatter(raw_text.trim_start()).map(|(fm, _)| fm);
+    let is_marp = frontmatter.is_some_and(marp::enabled);
+    let slide_chunks = split_markdown_slides(raw_text, is_marp);
     let blank = crate::blank::blank_file(crate::Kind::Presentation)?;
     let mut opened = crate::save::open(blank)?;
-    let trimmed = raw_text.trim_start_matches('\u{feff}').trim_start();
-    if let Some((frontmatter, _)) = trimmed.strip_prefix("---\n")
-        .or_else(|| trimmed.strip_prefix("---\r\n")).and_then(split_frontmatter_body)
-        && let Some(size) = frontmatter.lines().find_map(|line| line.strip_prefix("pptx_size:"))
-    {
+    if let Some(size) = frontmatter.and_then(|fm| fm.lines().find_map(|line| line.strip_prefix("pptx_size:"))) {
         let [width, height]: [i64; 2] = serde_json::from_str(size)
             .map_err(|_| Error::new("pptx_size の指定が不正です"))?;
         if !(1..=i64::from(i32::MAX)).contains(&width) || !(1..=i64::from(i32::MAX)).contains(&height) {
             return Err(Error::new("pptx_size の指定が不正です"));
         }
         opened.presentation.slide_size = EmuSize::new(width, height);
+    } else if let Some(size) = frontmatter.filter(|_| is_marp).and_then(marp::size) {
+        opened.presentation.slide_size = size;
     }
 
     let mut next_shape_id: u64 = 100;
@@ -7524,7 +7525,7 @@ pub fn open_markdown_presentation_with_base_dir(
     for (idx, chunk) in slide_chunks.iter().enumerate() {
         let positioned = chunk.starts_with(PPTX_SLIDE_MARKER);
         let chunk = chunk.strip_prefix(PPTX_SLIDE_MARKER).unwrap_or(chunk);
-        let (clean_chunk, notes) = extract_slide_notes(chunk);
+        let (clean_chunk, notes) = marp::extract_notes(chunk, is_marp);
         let parsed = open_markdown_with_base_dir(clean_chunk.into_bytes(), base_dir)?;
         let Some(flow) = parsed.presentation.flow.as_ref() else {
             continue;
@@ -7829,7 +7830,9 @@ pub fn open_markdown_presentation_with_base_dir(
             }
         }
 
-        let _ = notes;
+        if let Some(notes) = notes {
+            opened.presentation.slides[idx].notes = notes;
+        }
     }
 
     Ok(opened)
@@ -7837,7 +7840,11 @@ pub fn open_markdown_presentation_with_base_dir(
 
 /// Export a PowerPoint `Presentation` to Markdown (`---`-separated slides).
 pub fn export_presentation_markdown(p: &Presentation) -> String {
-    let mut out = format!("---\nmarp: true\npptx_size: [{},{}]\n---\n\n", p.slide_size.width, p.slide_size.height);
+    let mut out = String::from("---\nmarp: true\n");
+    if let Some(preset) = marp::size_preset(p.slide_size) {
+        out.push_str(&format!("size: {preset}\n"));
+    }
+    out.push_str(&format!("pptx_size: [{},{}]\n---\n\n", p.slide_size.width, p.slide_size.height));
     for (idx, slide) in p.slides.iter().enumerate() {
         if idx > 0 {
             out.push_str("\n---\n\n");
@@ -7905,11 +7912,7 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                 _ => out.truncate(position),
             }
         }
-        if !slide.notes.trim().is_empty() {
-            out.push_str("<!-- notes: ");
-            out.push_str(slide.notes.trim());
-            out.push_str(" -->\n\n");
-        }
+        marp::write_notes(&slide.notes, &mut out);
     }
     out
 }
@@ -7938,27 +7941,26 @@ fn serialize_slide_paragraph(para: &ibis_doc_model::Paragraph, out: &mut String)
     }
 }
 
-fn split_markdown_slides(text: &str) -> Vec<String> {
-    let mut body = text.trim();
-    if let Some(after) = body.strip_prefix("---") {
-        if after.starts_with('\n') || after.starts_with("\r\n") {
-            let mut off = 3;
-            for line in after.split_inclusive('\n') {
-                off += line.len();
-                if line.trim() == "---" {
-                    body = body[off..].trim();
-                    break;
-                }
-            }
-        }
-    }
+fn split_markdown_slides(text: &str, is_marp: bool) -> Vec<String> {
+    let text = text.trim();
+    let body = roundtrip::frontmatter(text).map_or(text, |(_, body)| body.trim());
 
     let mut chunks: Vec<String> = Vec::new();
     let mut cur: Vec<&str> = Vec::new();
     let mut in_fence = None;
-    for line in body.lines() {
+    let mut lines = body.lines();
+    while let Some(line) = lines.next() {
         let t = line.trim();
-        if !is_fenced_line(t, &mut in_fence) && (t == "---" || t == "***" || t == "___") {
+        if is_fenced_line(t, &mut in_fence) {
+            cur.push(line);
+            continue;
+        }
+        if let Some(comment) = marp::block_comment(line, lines.clone()) {
+            cur.push(line);
+            cur.extend(lines.by_ref().take(comment.following_lines));
+            continue;
+        }
+        if matches!(t, "---" | "***" | "___") || (is_marp && is_horizontal_rule(t)) {
             let joined = cur.join("\n").trim().to_string();
             if !joined.is_empty() {
                 chunks.push(joined);
@@ -7973,14 +7975,23 @@ fn split_markdown_slides(text: &str) -> Vec<String> {
         chunks.push(last);
     }
 
-    if chunks.len() <= 1 && !body.starts_with(PPTX_SLIDE_MARKER) {
+    if !is_marp && chunks.len() <= 1 && !body.starts_with(PPTX_SLIDE_MARKER) {
         // Fallback: split on top-level `# ` headings if multiple exist.
         let mut h_chunks: Vec<String> = Vec::new();
         let mut h_cur: Vec<&str> = Vec::new();
-        let mut in_f = None;
-        for line in body.lines() {
-            let t = line.trim();
-            if !is_fenced_line(t, &mut in_f) && line.starts_with("# ") && !h_cur.is_empty() {
+        let mut in_fence = None;
+        let mut lines = body.lines();
+        while let Some(line) = lines.next() {
+            if is_fenced_line(line.trim(), &mut in_fence) {
+                h_cur.push(line);
+                continue;
+            }
+            if let Some(comment) = marp::block_comment(line, lines.clone()) {
+                h_cur.push(line);
+                h_cur.extend(lines.by_ref().take(comment.following_lines));
+                continue;
+            }
+            if line.starts_with("# ") && !h_cur.is_empty() {
                 let s = h_cur.join("\n").trim().to_string();
                 if !s.is_empty() {
                     h_chunks.push(s);
@@ -8003,33 +8014,6 @@ fn split_markdown_slides(text: &str) -> Vec<String> {
     } else {
         chunks
     }
-}
-
-fn extract_slide_notes(chunk: &str) -> (String, Option<String>) {
-    let mut body_lines: Vec<&str> = Vec::new();
-    let mut notes: Vec<String> = Vec::new();
-    let mut fence = None;
-    for line in chunk.lines() {
-        let t = line.trim();
-        if is_fenced_line(t, &mut fence) {
-            body_lines.push(line);
-            continue;
-        }
-        if let Some(inner) = t.strip_prefix("<!-- notes:").and_then(|s| s.strip_suffix("-->")) {
-            let note = inner.trim();
-            if !note.is_empty() {
-                notes.push(note.to_string());
-            }
-        } else {
-            body_lines.push(line);
-        }
-    }
-    let notes_opt = if notes.is_empty() {
-        None
-    } else {
-        Some(notes.join("\n"))
-    };
-    (body_lines.join("\n"), notes_opt)
 }
 
 fn shape_text_body_mut(kind: &mut ShapeKind) -> Option<&mut ibis_doc_model::TextBody> {
@@ -9562,6 +9546,64 @@ Front caption
         assert_eq!(shapes[2].text_body().unwrap().paragraphs[1].runs[0].text, "Edited paragraph");
         assert_eq!(shapes[3].frame, EmuRect::new(1000000, 650000, 2400000, 900000));
         assert_eq!(shapes[3].text_body().unwrap().paragraphs[0].runs[0].text, "Front caption");
+    }
+
+    #[test]
+    fn marp_size_and_multiline_notes_survive_pptx_edits() {
+        let input = br"---
+marp: true
+size: '4:3'
+---
+
+# First
+## Details
+# Same slide
+
+<!--
+theme: gaia
+_paginate: false
+-->
+
+<!--
+First speaker line.
+---
+Still a note.
+-->
+
+---
+
+# Second
+
+<!-- Second speaker note. -->
+";
+        let saved = import_markdown_to_pptx_bytes(input).unwrap();
+        let mut opened = crate::open(saved).unwrap();
+        assert_eq!(opened.presentation.slide_size, EmuSize::new(9144000, 6858000));
+        assert_eq!(opened.presentation.slides.len(), 2);
+        assert_eq!(opened.presentation.slides[0].notes, "First speaker line.\n---\nStill a note.");
+        assert_eq!(opened.presentation.slides[1].notes, "Second speaker note.");
+        opened.presentation.slides[0].notes.push_str("\nEdited in PPTX.");
+        let title = opened.presentation.slides[0].shapes.iter_mut()
+            .filter_map(|shape| shape.text_body_mut())
+            .flat_map(|body| &mut body.paragraphs)
+            .flat_map(|paragraph| &mut paragraph.runs)
+            .find(|run| run.text == "First")
+            .unwrap();
+        title.text = "Edited title".into();
+
+        let edited = opened.source.save(&opened.presentation, SaveOptions::default()).unwrap();
+        let markdown = export_presentation_markdown(&crate::read(&edited).unwrap());
+        assert!(markdown.contains("size: 4:3"));
+        assert!(markdown.contains("Same slide"));
+        assert!(markdown.contains("# Edited title"));
+        assert!(markdown.contains("<!-- First speaker line."));
+        let rebuilt = import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap();
+        let presentation = crate::read(&rebuilt).unwrap();
+        assert_eq!(presentation.slides.len(), 2);
+        assert_eq!(presentation.slides[0].notes, "First speaker line.\n---\nStill a note.\nEdited in PPTX.");
+        assert_eq!(presentation.slides[1].notes, "Second speaker note.");
+        let single = b"---\nmarp: true\n---\n# One slide\n\n# Another heading\n";
+        assert_eq!(open_markdown_presentation(single.to_vec()).unwrap().presentation.slides.len(), 1);
     }
 
     #[test]
