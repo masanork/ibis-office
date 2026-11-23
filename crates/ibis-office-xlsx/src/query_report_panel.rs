@@ -802,11 +802,14 @@ pub(crate) fn refresh_report_scenario() {
     assert!(review_text("行数　削除"));
     assert!(review_text("重複コード　変更　許容上限 1 件・診断なし → 許容上限 0 件・診断あり"));
     std::fs::write(&next, "code,amount\n001,12\n001,12\n").unwrap();
-    button_probe::click(&mut scene, "ai-sqlite-select");
-    scene.answer_path_prompt(|options| {
-        assert!(options.multiple);
-        Some(vec![next.clone()])
-    });
+    let bind_trial = |scene: &mut Scenario| {
+        button_probe::click(scene, "assistant-check-binding-0-0");
+        scene.answer_path_prompt(|options| {
+            assert!(!options.multiple);
+            Some(vec![next.clone()])
+        });
+    };
+    bind_trial(&mut scene);
     let check_trial = |scene: &mut Scenario| {
         button_probe::clear();
         scene.update(|_, _, cx| cx.notify());
@@ -835,6 +838,7 @@ pub(crate) fn refresh_report_scenario() {
     assert_eq!(saved_checks(&mut scene), informational);
 
     stage(&mut scene, &blocking);
+    bind_trial(&mut scene);
     check_trial(&mut scene);
     button_probe::click(&mut scene, "ai-workbook-apply");
     assert_eq!(saved_checks(&mut scene), blocking);

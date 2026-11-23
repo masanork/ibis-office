@@ -222,6 +222,10 @@ struct AssistantReview {
     check_sql_open: bool,
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     check_trial: Option<ReportCheckTrial>,
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    check_bindings: std::collections::BTreeMap<String, std::collections::BTreeMap<usize, std::path::PathBuf>>,
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    check_binding_request: u64,
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -236,17 +240,22 @@ struct ReportCheckTrial {
 fn report_trial_paths(
     definition: &serde_json::Value,
     selected: &[std::path::PathBuf],
+    explicit: Option<&std::collections::BTreeMap<usize, std::path::PathBuf>>,
 ) -> Result<Vec<std::path::PathBuf>, String> {
     let sources = definition["sources"]
         .as_array()
         .filter(|sources| !sources.is_empty())
         .ok_or("この帳票の元ファイルが定義されていません。")?;
-    if sources.len() == 1 && selected.len() == 1 {
-        return Ok(selected.to_vec());
-    }
     sources
         .iter()
-        .map(|source| {
+        .enumerate()
+        .map(|(index, source)| {
+            if let Some(path) = explicit.and_then(|files| files.get(&index)) {
+                return Ok(path.clone());
+            }
+            if sources.len() == 1 && selected.len() == 1 {
+                return Ok(selected[0].clone());
+            }
             let name = source["file"]
                 .as_str()
                 .ok_or("帳票の元ファイル名を確認できません。")?;
@@ -258,7 +267,7 @@ fn report_trial_paths(
                 (_, Some(_)) => Err(format!(
                     "「{name}」と同名のファイルが複数あります。1つだけ選択してください。"
                 )),
-                _ => Err(format!("分析ファイルに「{name}」を選択してください。")),
+                _ => Err(format!("「{name}」に使うファイルを割り当ててください。")),
             }
         })
         .collect()
@@ -1002,6 +1011,39 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn pick_trial_binding(
+        &mut self, table: String, index: usize, window: &mut Window, cx: &mut Context<Self>,
+    ) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_PICK: AtomicU64 = AtomicU64::new(1);
+
+        let Some(review) = self.ai_assistant.as_mut().and_then(|panel| panel.assistant_review.as_mut()) else { return };
+        let request = NEXT_PICK.fetch_add(1, Ordering::Relaxed);
+        let file_id = self.file_id;
+        review.check_binding_request = request;
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true, directories: false, multiple: false,
+            extensions: ibis_doc_service::DATASET_EXTENSIONS.iter().map(|ext| ext.to_string()).collect(),
+            prompt: Some("この入力に使うファイルを選択".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let _ = this.update(cx, |editor, cx| {
+                if editor.file_id == file_id
+                    && let Some(review) = editor.ai_assistant.as_mut()
+                        .and_then(|panel| panel.assistant_review.as_mut())
+                        .filter(|review| review.check_binding_request == request)
+                {
+                    review.check_bindings.entry(table).or_default().insert(index, path);
+                    review.check_trial = None;
+                    cx.notify();
+                }
+            });
+        }).detach();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn trial_report_checks(&mut self, table: String, cx: &mut Context<Self>) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_TRIAL: AtomicU64 = AtomicU64::new(1);
@@ -1021,13 +1063,8 @@ impl SlideEditor {
         {
             return;
         }
-        let Some((_, selected)) = panel
-            .analysis_sources
-            .as_ref()
-            .filter(|(id, _)| *id == file_id)
-        else {
-            return;
-        };
+        let selected = panel.analysis_sources.as_ref().filter(|(id, _)| *id == file_id)
+            .map_or(&[][..], |(_, paths)| paths.as_slice());
         let Some(definition) = review
             .turn
             .draft
@@ -1039,7 +1076,7 @@ impl SlideEditor {
             return;
         };
         let id = NEXT_TRIAL.fetch_add(1, Ordering::Relaxed);
-        let paths = match report_trial_paths(definition, selected) {
+        let paths = match report_trial_paths(definition, selected, review.check_bindings.get(&table)) {
             Ok(paths) => paths,
             Err(error) => {
                 review.check_trial = Some(ReportCheckTrial {
@@ -1570,6 +1607,10 @@ impl SlideEditor {
                                         preview, history_start, check_sql_open: false,
                                         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                                         check_trial: None,
+                                        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                                        check_bindings: Default::default(),
+                                        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                                        check_binding_request: 0,
                                     });
                                 } else {
                                     editor.finish_assistant_navigation(&turn, cx);
@@ -2322,6 +2363,10 @@ impl SlideEditor {
             turn, commands, preview, history_start: panel.history.len(), check_sql_open: false,
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             check_trial: None,
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            check_bindings: Default::default(),
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            check_binding_request: 0,
         });
         cx.notify();
     }
@@ -4135,9 +4180,8 @@ impl SlideEditor {
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             let check_trial = (!changes.is_empty()).then(|| {
                 use gpui_kit::component::Disableable as _;
-                let selected = panel.analysis_sources.as_ref().is_some_and(|(id, paths)| {
-                    *id == self.file_id && !paths.is_empty()
-                });
+                let selected = panel.analysis_sources.as_ref().filter(|(id, _)| *id == self.file_id)
+                    .map_or(&[][..], |(_, paths)| paths.as_slice());
                 let busy = review.check_trial.as_ref().is_some_and(|trial| trial.outcome.is_none());
                 let tables: std::collections::BTreeSet<_> = changes.iter().map(|change| change.table)
                     .filter(|table| review.turn.draft.presentation().workbook.as_ref()
@@ -4145,16 +4189,31 @@ impl SlideEditor {
                     .collect();
                 let buttons = tables.into_iter().enumerate().map(|(index, table)| {
                     let table = table.to_owned();
+                    let definition = &review.turn.draft.presentation().workbook.as_ref().unwrap().query_reports[&table];
+                    let explicit = review.check_bindings.get(&table);
+                    let ready = report_trial_paths(definition, selected, explicit).is_ok();
+                    let bindings = definition["sources"].as_array().into_iter().flatten().enumerate().map(|(slot, source)| {
+                        let table = table.clone();
+                        let name = source["file"].as_str().unwrap_or_default();
+                        let label = explicit.and_then(|files| files.get(&slot))
+                            .and_then(|path| path.file_name())
+                            .map_or_else(|| format!("{name} に割り当て"), |file| format!("{name} → {}", file.to_string_lossy()));
+                        let id = SharedString::from(format!("assistant-check-binding-{index}-{slot}"));
+                        let button = Button::new(id.clone()).small().label(label).disabled(busy)
+                            .on_click(cx.listener(move |this, _, window, cx| this.pick_trial_binding(table.clone(), slot, window, cx)));
+                        #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+                        let button = crate::scenario::button_probe::observe(button, id.into());
+                        button
+                    }).collect::<Vec<_>>();
                     let id = SharedString::from(format!("assistant-check-trial-{index}"));
                     let button = Button::new(id.clone()).small().label(format!("{table} のチェックを試す"))
-                        .disabled(!selected || busy)
+                        .disabled(!ready || busy)
                         .on_click(cx.listener(move |this, _, _, cx| this.trial_report_checks(table.clone(), cx)));
                     #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
                     let button = crate::scenario::button_probe::observe(button, id.into());
-                    button
+                    v_flex().gap_1().children(bindings).child(button)
                 });
                 v_flex().gap_1().children(buttons)
-                    .when(!selected, |column| column.child(div().text_xs().child("試すには分析ファイルを選択してください。複数の元ファイルがある帳票では、保存時と同じ名前を使います。")))
                     .children(review.check_trial.as_ref().map(|trial| {
                         div().id("assistant-check-trial-result").max_h(px(140.0)).overflow_y_scroll()
                             .child(report_check_review_text(trial.text()))
@@ -4493,6 +4552,20 @@ mod assistant_review_tests {
             kind: "function".into(),
             function: ToolCallFunction { name: name.into(), arguments: arguments.into() },
         }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn draft_report_bindings_override_names_in_saved_source_order() {
+        use std::{collections::BTreeMap, path::PathBuf};
+        let definition = serde_json::json!({"sources":[{"file":"facts.csv"},{"file":"labels.csv"}]});
+        let selected = [PathBuf::from("labels.csv")];
+        let renamed = PathBuf::from("facts-next.csv");
+        assert!(super::report_trial_paths(&definition, &selected, None).is_err());
+        assert_eq!(
+            super::report_trial_paths(&definition, &selected, Some(&BTreeMap::from([(0, renamed.clone())]))).unwrap(),
+            [renamed, selected[0].clone()],
+        );
     }
 
     #[test]
