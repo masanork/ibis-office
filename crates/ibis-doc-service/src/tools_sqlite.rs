@@ -477,6 +477,10 @@ fn run_session_query(
     max_rows: usize,
     max_bytes: usize,
 ) -> Result<SqliteRows, ToolError> {
+    #[cfg(feature = "report-profiling")]
+    let _timer = ibis_doc_model::query::report_profile::Timer::start(
+        ibis_doc_model::query::report_profile::Phase::Sql,
+    );
     session
         .query(
             args.str_arg("sql")?,
@@ -1364,8 +1368,13 @@ fn batch_query_results(
     // Finish each source group and drop its session before loading the next.
     for (_, reports) in groups {
         let (_, name, _, query) = &reports[0];
-        let session = batch_session(service, query, arrow_disk)
-            .map_err(|error| report_error(name, error))?;
+        let session = {
+            #[cfg(feature = "report-profiling")]
+            let _timer = ibis_doc_model::query::report_profile::Timer::start(
+                ibis_doc_model::query::report_profile::Phase::Stage,
+            );
+            batch_session(service, query, arrow_disk).map_err(|error| report_error(name, error))?
+        };
         let input = report_input_schema(&session).map_err(|error| report_error(name, error))?;
         for (index, name, definition, query) in reports {
             let (rows, checks) = refresh_query_in_session(&session, &query, &definition, preview)

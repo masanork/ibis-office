@@ -6,6 +6,9 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+report-profiling = []
+
 [dependencies]
 ibis-calc.workspace = true
 ibis-m-lang.workspace = true

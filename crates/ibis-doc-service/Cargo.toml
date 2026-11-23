@@ -6,6 +6,9 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+report-profiling = ["ibis-doc-model/report-profiling"]
+
 [dependencies]
 ibis-doc-model.workspace = true
 ibis-formats.workspace = true

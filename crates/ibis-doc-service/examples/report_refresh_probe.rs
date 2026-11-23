@@ -108,6 +108,8 @@ mod desktop {
         let mut timings = Vec::new();
         let mut results = Vec::new();
         for _ in 0..2 {
+            #[cfg(feature = "report-profiling")]
+            ibis_doc_model::query::report_profile::take();
             let mut preview_ms = 0.0;
             let mut apply_ms = 0.0;
             for tables in &groups {
@@ -135,7 +137,18 @@ mod desktop {
                 apply_ms += start.elapsed().as_secs_f64() * 1000.0;
                 assert_eq!(preview["reports"], apply["reports"]);
             }
-            timings.push(json!({"preview_ms":preview_ms,"apply_ms":apply_ms}));
+            let timing = json!({"preview_ms":preview_ms,"apply_ms":apply_ms});
+            #[cfg(feature = "report-profiling")]
+            let timing = {
+                let mut timing = timing;
+                let profile = ibis_doc_model::query::report_profile::take();
+                timing["schema_ms"] = json!(profile.schema.as_secs_f64() * 1000.0);
+                timing["stage_ms"] =
+                    json!(profile.stage.saturating_sub(profile.schema).as_secs_f64() * 1000.0);
+                timing["sql_ms"] = json!(profile.sql.as_secs_f64() * 1000.0);
+                timing
+            };
+            timings.push(timing);
             let cells = columns
                 .iter()
                 .map(|column| {

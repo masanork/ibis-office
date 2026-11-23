@@ -98,6 +98,8 @@ pub(super) fn visit_json_lines(
         add_sql_column(name, &mut indices, &mut columns, &mut types)?;
     }
     // The first pass retains only the schema, including fields first seen late.
+    #[cfg(feature = "report-profiling")]
+    let schema_timer = super::report_profile::Timer::start(super::report_profile::Phase::Schema);
     visit_lines(&mut input, max_bytes, |fields, location| {
         for (name, raw) in fields {
             let index = match indices.get(&name) {
@@ -118,6 +120,8 @@ pub(super) fn visit_json_lines(
     for (column, ty) in columns.iter_mut().zip(types) {
         column.ty = ty.unwrap_or(QType::Any);
     }
+    #[cfg(feature = "report-profiling")]
+    drop(schema_timer);
     visit(&columns, None)?;
     if !schema_only {
         input.rewind().map_err(|error| error.to_string())?;
