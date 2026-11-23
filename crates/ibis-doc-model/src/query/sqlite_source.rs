@@ -576,7 +576,7 @@ impl SqliteQuerySession {
                 .map_err(|error| error.to_string())?;
             for row in &table.rows {
                 for (index, value) in row.iter().enumerate() {
-                    let value = dataset_value(value, table.columns[index].ty)?;
+                    let value = dataset_value(value.clone(), table.columns[index].ty)?;
                     stmt.bind_at(NonZeroUsize::new(index + 1).unwrap(), value)
                         .map_err(|error| error.to_string())?;
                 }
@@ -597,20 +597,20 @@ impl SqliteQuerySession {
     }
 }
 
-fn dataset_value(value: &CellValue, ty: QType) -> Result<Value, String> {
+fn dataset_value(value: CellValue, ty: QType) -> Result<Value, String> {
     Ok(match value {
         CellValue::Empty => Value::Null,
-        CellValue::Text(text) => Value::from_text(text.clone()),
+        CellValue::Text(text) => Value::from_text(text),
         CellValue::Number(value)
             if matches!(ty, QType::Whole | QType::Int32)
                 && value.is_finite()
                 && value.fract() == 0.0
                 && value.abs() < (1u64 << 53) as f64 =>
         {
-            Value::Numeric(Numeric::Integer(*value as i64))
+            Value::Numeric(Numeric::Integer(value as i64))
         }
-        CellValue::Number(value) if value.is_finite() => Value::from_f64(*value),
-        CellValue::Bool(value) => Value::Numeric(Numeric::Integer(i64::from(*value))),
+        CellValue::Number(value) if value.is_finite() => Value::from_f64(value),
+        CellValue::Bool(value) => Value::Numeric(Numeric::Integer(i64::from(value))),
         _ => return Err("Unsupported dataset value".into()),
     })
 }
@@ -687,6 +687,92 @@ impl DiskDataset {
     }
 }
 
+const STAGED_BATCH_TEXT_BYTES: usize = 64 * 1024;
+
+struct StagedInsert {
+    single: turso_core::Statement,
+    multi: Option<turso_core::Statement>,
+    values: Vec<Value>,
+    batch_rows: usize,
+    batch_text_bytes: usize,
+}
+
+impl StagedInsert {
+    fn new(connection: &Arc<Connection>, table: &str, width: usize, batch: bool) -> Result<Self, String> {
+        let placeholders = format!("({})", vec!["?"; width].join(", "));
+        let prepare = |rows| {
+            let values = vec![placeholders.as_str(); rows].join(", ");
+            connection.prepare(format!("INSERT INTO {table} VALUES {values}"))
+                .map_err(|error| error.to_string())
+        };
+        let batch_rows = if batch { (64 / width).clamp(1, 32) } else { 1 };
+        Ok(Self {
+            single: prepare(1)?,
+            multi: (batch_rows > 1).then(|| prepare(batch_rows)).transpose()?,
+            values: Vec::with_capacity(batch_rows * width),
+            batch_rows,
+            batch_text_bytes: 0,
+        })
+    }
+
+    fn push(&mut self, columns: &[QColumn], row: Vec<CellValue>) -> Result<(), String> {
+        if row.len() != columns.len() {
+            return Err("Dataset row does not match its schema".into());
+        }
+        if self.multi.is_none() {
+            let values = row
+                .into_iter()
+                .zip(columns)
+                .map(|(value, column)| dataset_value(value, column.ty));
+            return Self::run(&mut self.single, values);
+        }
+        let row_text_bytes = row.iter().map(|value| match value {
+            CellValue::Text(text) => text.len(),
+            _ => 0,
+        }).sum::<usize>();
+        if self.batch_text_bytes + row_text_bytes > STAGED_BATCH_TEXT_BYTES {
+            self.flush(columns.len())?;
+        }
+        let values = row
+            .into_iter()
+            .zip(columns)
+            .map(|(value, column)| dataset_value(value, column.ty));
+        if row_text_bytes > STAGED_BATCH_TEXT_BYTES {
+            return Self::run(&mut self.single, values);
+        }
+        for value in values {
+            self.values.push(value?);
+        }
+        self.batch_text_bytes += row_text_bytes;
+        if self.values.len() == self.batch_rows * columns.len() {
+            let stmt = self.multi.as_mut().ok_or("Missing batched dataset insert")?;
+            Self::run(stmt, self.values.drain(..).map(Ok))?;
+            self.batch_text_bytes = 0;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self, width: usize) -> Result<(), String> {
+        let mut values = self.values.drain(..);
+        while values.len() > 0 {
+            Self::run(&mut self.single, values.by_ref().take(width).map(Ok))?;
+        }
+        self.batch_text_bytes = 0;
+        Ok(())
+    }
+
+    fn run(
+        stmt: &mut turso_core::Statement,
+        values: impl Iterator<Item = Result<Value, String>>,
+    ) -> Result<(), String> {
+        for (index, value) in values.enumerate() {
+            stmt.bind_at(NonZeroUsize::new(index + 1).unwrap(), value?)
+                .map_err(|error| error.to_string())?;
+        }
+        stmt.run_ignore_rows().and_then(|_| stmt.reset()).map_err(|error| error.to_string())
+    }
+}
+
 impl SqliteQuerySession {
     /// Stage Arrow sources in a private temporary database for reuse by several SELECTs.
     pub fn from_arrow_disk(
@@ -734,7 +820,8 @@ impl SqliteQuerySession {
         let mut staged_schema = SqliteInputSchema::new();
         for (alias, source) in sources {
             let identifier = sql_identifier(alias);
-            let mut insert = None;
+            let mut insert: Option<StagedInsert> = None;
+            let mut width = 0;
             let mut rows = 0usize;
             {
                 #[cfg(feature = "report-profiling")]
@@ -745,20 +832,11 @@ impl SqliteQuerySession {
                 #[cfg(feature = "report-profiling")]
                 let _timer = Timer::start(Phase::Write);
                 if let Some(row) = row {
-                    let stmt: &mut turso_core::Statement =
-                        insert.as_mut().ok_or("Missing dataset schema")?;
-                    for (index, (value, column)) in row.iter().zip(columns).enumerate() {
-                        stmt.bind_at(
-                            NonZeroUsize::new(index + 1).unwrap(),
-                            dataset_value(value, column.ty)?,
-                        )
-                        .map_err(|error| error.to_string())?;
-                    }
-                    stmt.run_ignore_rows()
-                        .and_then(|_| stmt.reset())
-                        .map_err(|error| error.to_string())?;
+                    let insert = insert.as_mut().ok_or("Missing dataset schema")?;
+                    insert.push(columns, row)?;
                     rows += 1;
                     if rows.is_multiple_of(4096) {
+                        insert.flush(width)?;
                         execute("COMMIT")?;
                         execute("BEGIN")?;
                     }
@@ -769,17 +847,21 @@ impl SqliteQuerySession {
                         .collect::<Vec<_>>();
                     execute(&format!("CREATE TABLE {identifier} ({})", names.join(", ")))?;
                     staged_schema.insert(alias.clone(), staged_column_types(columns));
-                    let parameters = vec!["?"; names.len()].join(", ");
-                    insert = Some(
-                        connection
-                            .prepare(format!("INSERT INTO {identifier} VALUES ({parameters})"))
-                            .map_err(|error| error.to_string())?,
-                    );
+                    width = names.len();
+                    insert = Some(StagedInsert::new(
+                        &connection,
+                        &identifier,
+                        width,
+                        matches!(source, DiskDataset::JsonLines(..)),
+                    )?);
                 }
                 Ok(())
             })?;
             #[cfg(feature = "report-profiling")]
             let _timer = Timer::start(Phase::Write);
+            if let Some(insert) = &mut insert {
+                insert.flush(width)?;
+            }
             execute("COMMIT")?;
         }
         connection.set_query_only(true);
@@ -906,6 +988,42 @@ fn execute_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_lines_batches_preserve_row_order_and_large_values() {
+        use std::io::{BufWriter, Write};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rows.jsonl");
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        let large_text = "x".repeat(30_000);
+        for seq in 0..4_102 {
+            let mut row = serde_json::json!({"seq":seq, "amount":seq as f64 / 2.0, "a":"001"});
+            if matches!(seq, 34 | 35 | 37) {
+                row["a"] = serde_json::json!(large_text);
+                row["b"] = serde_json::json!(large_text);
+            }
+            if seq == 37 {
+                row["c"] = serde_json::json!(large_text);
+            }
+            writeln!(writer, "{row}").unwrap();
+        }
+        writer.flush().unwrap();
+        drop(writer);
+        let source = DiskDataset::JsonLines(
+            path,
+            ["seq", "amount", "a", "b", "c"].map(String::from).to_vec(),
+        );
+        let table = source.collect_bounded(30_000, 1_000_000).unwrap();
+        let memory = SqliteQuerySession::from_datasets(&[("facts".into(), table)]).unwrap();
+        let disk = SqliteQuerySession::from_disk_datasets(&[("facts".into(), source)]).unwrap();
+        let sql = "SELECT seq, amount, length(a), length(b), length(c) FROM facts ORDER BY rowid";
+        let expected = memory.query(sql, &[], 5_000, 1_048_576).unwrap();
+        let actual = disk.query(sql, &[], 5_000, 1_048_576).unwrap();
+        assert!(!actual.truncated);
+        assert_eq!(actual.rows.len(), 4_102);
+        assert_eq!(actual.rows, expected.rows);
+    }
 
     #[test]
     fn opens_sqlite_format_read_only_and_preserves_values() {
