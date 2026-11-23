@@ -93,7 +93,7 @@ fn action_queue_xlsx(book: &Presentation, today: NaiveDate) -> Result<Vec<u8>, S
         })
         .collect::<Vec<_>>();
     let summary = format!("{} finding(s) require attention as of {today}.", rows.len());
-    workbook([
+    let tables: [Table; 2] = [
         ("Action required", &[
             "Reasons", "Ecosystem", "Package", "OSV ID", "Latest version",
             "Owner", "Due date", "Decision", "Rationale", "Evidence", "Review flag",
@@ -103,7 +103,8 @@ fn action_queue_xlsx(book: &Presentation, today: NaiveDate) -> Result<Vec<u8>, S
             vec![summary],
             vec!["A snapshot of the source review. Record decisions in the original workbook and reopen this view to refresh it.".into()],
         ]),
-    ])
+    ];
+    write_workbook(tables)
 }
 
 /// Build an action queue using the local date.
@@ -217,7 +218,7 @@ mod tests {
         .collect::<Vec<_>>();
         row.extend(item("Alice", "2026-11-22", "Deferred").tracking);
         row.push(String::new());
-        let source = crate::open(workbook([("Findings", HEADERS, vec![row])]).unwrap()).unwrap();
+        let source = crate::open(write_workbook([("Findings", HEADERS, vec![row])]).unwrap()).unwrap();
         let report = crate::open(
             action_queue_xlsx(&source.presentation, parse_due("2026-11-23").unwrap()).unwrap(),
         )

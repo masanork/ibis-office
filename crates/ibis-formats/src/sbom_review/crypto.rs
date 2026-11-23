@@ -2,9 +2,10 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
-use super::{Row, Table, array, component_tree, inventory, parse, write_workbook};
+use super::{
+    Row, Table, array, comparison_input_artifacts, component_tree, inventory, parse, write_workbook,
+};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 const ASSET_COLUMNS: &[&str] = &[
@@ -294,18 +295,6 @@ pub fn compare_xlsx(inputs: [(&str, &[u8]); 2]) -> Result<Vec<u8>, String> {
         &changed_refs,
     );
     let systems = impact::systems(&dependents, &old.graph, &new.graph);
-    let evidence = ["Old CBOM", "New CBOM"]
-        .into_iter()
-        .zip(inputs)
-        .map(|(role, (name, bytes))| {
-            vec![
-                role.into(),
-                name.into(),
-                format!("{:x}", Sha256::digest(bytes)),
-            ]
-        })
-        .collect();
-
     // These headers match the asset view with a leading change column.
     const ASSET_DIFF_COLUMNS: &[&str] = &[
         "Change",
@@ -351,7 +340,7 @@ pub fn compare_xlsx(inputs: [(&str, &[u8]); 2]) -> Result<Vec<u8>, String> {
         ("Asset providers", impact::PROVIDER_COLUMNS, providers),
         ("Changed asset fields", &["BOM reference", "Name", "Field", "Old", "New"], field_changes),
         ("Relationship changes", &["Change", "Source reference", "Source", "Relationship", "Target reference", "Target"], relationship_changes),
-        ("Input artifacts", &["Role", "File", "SHA-256"], evidence),
+        comparison_input_artifacts(["Old CBOM", "New CBOM"].into_iter().zip(inputs)),
         ("Comparison notes", &["Topic", "Details"], vec![
             vec!["Start here".into(), overview.into()],
             vec!["Dependency and provision".into(), "Dependency impact shows one shortest declared path per dependent and snapshot. Asset providers shows direct provides declarations.".into()],

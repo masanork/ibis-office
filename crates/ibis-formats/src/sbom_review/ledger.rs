@@ -213,7 +213,7 @@ fn merge(findings: Findings, mut previous: BTreeMap<Key, Previous>, updating: bo
 pub fn refresh_xlsx(book: &Presentation, input: (&str, &[u8])) -> Result<Vec<u8>, String> {
     let previous = previous(book)?;
     let findings = scan(&parse(input)?)?;
-    workbook([
+    write_workbook([
         ("Findings", HEADERS, merge(findings, previous, true)),
         input_artifact(input),
         ("Notes", &["Scope"], vec![vec![
@@ -257,7 +257,7 @@ mod tests {
                 "https://example.test/ticket".into(),
             ]);
         }
-        let opened = findings(workbook([("Findings", HEADERS, records)]).unwrap());
+        let opened = findings(write_workbook([("Findings", HEADERS, records)]).unwrap());
         let latest = scan_json(&[("updated", "2.0"), ("new", "1.0"), ("same", "1.0")]);
         let updated = findings(
             refresh_xlsx(&opened.presentation, ("latest.osv.json", latest.as_bytes())).unwrap(),
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn earlier_comparison_workbooks_can_be_refreshed() {
         let previous = findings(
-            workbook([(
+            write_workbook([(
                 "Findings",
                 &[
                     "Ecosystem",
@@ -328,7 +328,7 @@ mod tests {
                     "New scan",
                     "Fixed versions (old scan)",
                     "Advisory URL",
-                ],
+                ] as &[_],
                 vec![vec![
                     "npm".into(),
                     "demo".into(),

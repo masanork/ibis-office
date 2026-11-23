@@ -398,18 +398,7 @@ pub fn review_xlsx(inputs: [(&str, &[u8]); 4]) -> Result<Vec<u8>, String> {
             row
         })
         .collect();
-    let evidence = ROLES
-        .into_iter()
-        .zip(inputs)
-        .map(|(role, (name, bytes))| {
-            vec![
-                role.into(),
-                name.into(),
-                format!("{:x}", Sha256::digest(bytes)),
-            ]
-        })
-        .collect();
-    workbook([
+    let tables: [Table; 5] = [
         (
             "Findings",
             &[
@@ -442,9 +431,10 @@ pub fn review_xlsx(inputs: [(&str, &[u8]); 4]) -> Result<Vec<u8>, String> {
             COMPONENT_COLUMNS,
             components(&documents[1])?,
         ),
-        ("Input artifacts", &["Role", "File", "SHA-256"], evidence),
+        comparison_input_artifacts(ROLES.into_iter().zip(inputs)),
         ("Notes", &["Scope"], vec![vec![COVERAGE.into()]]),
-    ])
+    ];
+    write_workbook(tables)
 }
 
 /// Export a single CycloneDX SBOM or OSV-Scanner report as an XLSX workbook.
@@ -482,7 +472,7 @@ fn table_xlsx_from(doc: &Value, input: (&str, &[u8])) -> Result<Vec<u8>, String>
         tables.push(input_artifact(input));
         return write_workbook(tables);
     }
-    workbook([
+    write_workbook([
         ("Findings", ledger::HEADERS, ledger::rows(scan(doc)?)),
         input_artifact(input),
     ])
@@ -496,8 +486,20 @@ fn input_artifact((name, bytes): (&str, &[u8])) -> Table {
     )
 }
 
-fn workbook<const N: usize>(tables: [Table; N]) -> Result<Vec<u8>, String> {
-    write_workbook(tables)
+fn comparison_input_artifacts<'a>(
+    inputs: impl IntoIterator<Item = (&'static str, (&'a str, &'a [u8]))>,
+) -> Table {
+    let rows = inputs
+        .into_iter()
+        .map(|(role, (name, bytes))| {
+            vec![
+                role.into(),
+                name.into(),
+                format!("{:x}", Sha256::digest(bytes)),
+            ]
+        })
+        .collect();
+    ("Input artifacts", &["Role", "File", "SHA-256"], rows)
 }
 
 fn write_workbook(tables: impl IntoIterator<Item = Table>) -> Result<Vec<u8>, String> {
@@ -728,10 +730,27 @@ mod tests {
             sheet(2).cell(2, 5).unwrap().text,
             "pkg:cargo/example-crate@1.1.0"
         );
-        assert_eq!(
-            sheet(3).cell(1, 2).unwrap().text,
-            format!("{:x}", Sha256::digest(&bytes[0]))
-        );
+        let artifacts = sheet(3);
+        for (column, header) in (0..).zip(["Role", "File", "SHA-256"]) {
+            assert_eq!(artifacts.cell(0, column).unwrap().text, header);
+        }
+        for (row, ((role, name), input)) in (1..).zip(
+            [
+                ("Old SBOM", "old.cdx.json"),
+                ("New SBOM", "new.cdx.json"),
+                ("Old scan", "old.osv.json"),
+                ("New scan", "new.osv.json"),
+            ]
+            .into_iter()
+            .zip(&bytes),
+        ) {
+            assert_eq!(artifacts.cell(row, 0).unwrap().text, role);
+            assert_eq!(artifacts.cell(row, 1).unwrap().text, name);
+            assert_eq!(
+                artifacts.cell(row, 2).unwrap().text,
+                format!("{:x}", Sha256::digest(input))
+            );
+        }
         assert_eq!(sheet(4).cell(1, 0).unwrap().text, COVERAGE);
     }
 
