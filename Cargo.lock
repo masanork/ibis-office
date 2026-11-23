@@ -5951,6 +5951,7 @@ dependencies = [
 name = "ibis-office-shell"
 version = "0.8.0"
 dependencies = [
+ "base64 0.22.1",
  "c2pa",
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
@@ -5965,6 +5966,7 @@ dependencies = [
  "gpui-pre-platform",
  "gpui-pre-wgpu",
  "gpui-pre-windows",
+ "hmac 0.12.1",
  "ibis-calc",
  "ibis-doc-model",
  "ibis-doc-service",
@@ -5989,7 +5991,9 @@ dependencies = [
  "same-file",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "similar",
+ "time",
  "ttf-parser",
  "usvg 0.46.0",
  "wasm-bindgen",

@@ -44,6 +44,10 @@ similar = { version = "2.7", default-features = false, features = ["text"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 ibis-doc-service.workspace = true
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+time = { version = "0.3", features = ["formatting", "macros"] }
 image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg", "tiff"] }
 # The random bytes of a password-protected save (the OS generator on every OS: /dev/urandom is not on Windows).
 getrandom = "0.3"

@@ -3,6 +3,10 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Assistant API client with SSE streaming and tool calling.
 
+#[cfg(not(target_family = "wasm"))]
+#[path = "ai_bedrock.rs"]
+mod bedrock;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -42,7 +46,8 @@ impl AiConfig {
         let name = match provider {
             Provider::OpenAi => "OpenAI 互換 API",
             Provider::Anthropic => "Claude API",
-            Provider::Bedrock => "Amazon Bedrock",
+            Provider::Bedrock => "Amazon Bedrock（API キー）",
+            Provider::BedrockProfile { .. } => "Amazon Bedrock（AWS プロファイル）",
         };
         Ok((name, config.model))
     }
@@ -359,11 +364,12 @@ fn default_reasoning_effort(model: &str, has_tools: bool) -> Option<&'static str
 }
 
 #[cfg(not(target_family = "wasm"))]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 enum Provider {
     OpenAi,
     Anthropic,
     Bedrock,
+    BedrockProfile { region: Option<String> },
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -377,7 +383,7 @@ impl Provider {
                 .map(|value| value.trim().to_string())
                 .filter(|s| !s.is_empty())
         };
-        let provider = match env("IBIS_AI_PROVIDER").as_deref() {
+        let mut provider = match env("IBIS_AI_PROVIDER").as_deref() {
             Some("openai") => Self::OpenAi,
             Some("anthropic" | "claude") => Self::Anthropic,
             Some("bedrock") => Self::Bedrock,
@@ -398,6 +404,7 @@ impl Provider {
                 }
                 (Some(_), None) => Self::Anthropic,
                 (None, Some(_)) => Self::Bedrock,
+                (None, None) if env("IBIS_BEDROCK_MODEL_ID").is_some() => Self::Bedrock,
                 (None, None) => Self::OpenAi,
             },
         };
@@ -424,37 +431,38 @@ impl Provider {
                 } else {
                     ("AWS_BEARER_TOKEN_BEDROCK", "IBIS_BEDROCK_MODEL_ID")
                 };
-                let api_key =
-                    env(key_name).ok_or_else(|| format!("{key_name} を設定してください。"))?;
+                let api_key = env(key_name);
                 let model = env("IBIS_AI_MODEL")
                     .or_else(|| env(model_name))
                     .ok_or_else(|| {
                         format!("IBIS_AI_MODEL または {model_name} を設定してください。")
                     })?;
                 let base_url = if provider == Self::Anthropic {
+                    if api_key.is_none() {
+                        return Err(format!("{key_name} を設定してください。"));
+                    }
                     "https://api.anthropic.com/v1".into()
                 } else {
-                    let region = env("AWS_REGION")
-                        .or_else(|| env("AWS_DEFAULT_REGION"))
-                        .ok_or_else(|| {
+                    let region = env("AWS_REGION").or_else(|| env("AWS_DEFAULT_REGION"));
+                    if api_key.is_none() {
+                        if let Some(region) = &region {
+                            bedrock::messages_url(region)?;
+                        }
+                        provider = Self::BedrockProfile { region };
+                        String::new()
+                    } else {
+                        let region = region.ok_or_else(|| {
                             "AWS_REGION または AWS_DEFAULT_REGION を設定してください。".to_string()
                         })?;
-                    if !region.bytes().all(|byte| {
-                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
-                    }) || region.starts_with('-')
-                        || region.ends_with('-')
-                    {
-                        return Err("AWS リージョンの形式が無効です。".into());
+                        bedrock::messages_url(&region)?
+                            .trim_end_matches("/messages")
+                            .to_string()
                     }
-                    let suffix = if region.starts_with("cn-") {
-                        "amazonaws.com.cn"
-                    } else {
-                        "amazonaws.com"
-                    };
-                    format!("https://bedrock-runtime.{region}.{suffix}/anthropic/v1")
                 };
+                let api_key = api_key.unwrap_or_default();
                 (base_url, model, api_key)
             }
+            Self::BedrockProfile { .. } => unreachable!(),
         };
         Ok((
             provider,
@@ -627,7 +635,7 @@ pub async fn stream_chat_completion(
     let initial = default_reasoning_effort(&config.model, !tools.is_empty());
     match stream_chat_completion_once(
         config,
-        provider,
+        Provider::OpenAi,
         messages,
         tools.clone(),
         initial,
@@ -645,8 +653,15 @@ pub async fn stream_chat_completion(
             } else {
                 Some("none")
             };
-            stream_chat_completion_once(config, provider, messages, tools, fallback, &mut on_delta)
-                .await
+            stream_chat_completion_once(
+                config,
+                Provider::OpenAi,
+                messages,
+                tools,
+                fallback,
+                &mut on_delta,
+            )
+            .await
         }
         Err(err) => Err(err),
     }
@@ -682,26 +697,37 @@ async fn stream_chat_completion_once(
         )
     };
     // Send curl configuration over stdin so credentials stay out of process arguments.
-    let quote = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
-    let payload = std::str::from_utf8(&payload).expect("JSON is UTF-8");
-    let mut curl_config = format!("data = \"{}\"\n", quote(payload));
-    if !config.api_key.is_empty() {
-        if config.api_key.bytes().any(|byte| byte.is_ascii_control()) {
-            return Err("API キーに無効な文字が含まれています。".into());
-        }
-        let header = if provider == Provider::OpenAi {
-            "Authorization: Bearer "
-        } else {
-            "x-api-key: "
-        };
-        curl_config.push_str(&format!(
-            "header = \"{header}{}\"\n",
-            quote(&config.api_key)
-        ));
-    }
+    let api_key = config.api_key.clone();
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<Result<Option<String>, String>>();
 
+    let openai = provider == Provider::OpenAi;
     std::thread::spawn(move || {
+        let (url, api_key) = if let Provider::BedrockProfile { region } = &provider {
+            match bedrock::profile_connection(region.clone()) {
+                Ok(connection) => connection,
+                Err(error) => {
+                    let _ = tx.unbounded_send(Err(error));
+                    return;
+                }
+            }
+        } else {
+            (url, api_key)
+        };
+        let quote = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
+        let payload = std::str::from_utf8(&payload).expect("JSON is UTF-8");
+        let mut curl_config = format!("data = \"{}\"\n", quote(payload));
+        if !api_key.is_empty() {
+            if api_key.bytes().any(|byte| byte.is_ascii_control()) {
+                let _ = tx.unbounded_send(Err("API キーに無効な文字が含まれています。".into()));
+                return;
+            }
+            let header = if openai {
+                "Authorization: Bearer "
+            } else {
+                "x-api-key: "
+            };
+            curl_config.push_str(&format!("header = \"{header}{}\"\n", quote(&api_key)));
+        }
         const STATUS_MARKER: &str = "__IBIS_HTTP_STATUS__:";
         let mut cmd = Command::new("curl");
         cmd.arg("--disable")
@@ -713,7 +739,7 @@ async fn stream_chat_completion_once(
             .args(["-X", "POST"])
             .args(["-H", "Content-Type: application/json"])
             .args(["-H", "Accept: text/event-stream"]);
-        if provider != Provider::OpenAi {
+        if !openai {
             cmd.args(["-H", "anthropic-version: 2023-06-01"]);
         }
         cmd.args(["--config", "-"])
@@ -789,7 +815,7 @@ async fn stream_chat_completion_once(
         }
         if let Some(code) = http_status {
             if code >= 400 {
-                let _ = tx.unbounded_send(Err(if provider == Provider::OpenAi {
+                let _ = tx.unbounded_send(Err(if openai {
                     format!("HTTP {code}: {}", raw_body.trim())
                 } else {
                     format!("Messages API のリクエストに失敗しました (HTTP {code})。")
@@ -804,7 +830,7 @@ async fn stream_chat_completion_once(
     while let Some(item) = rx.next().await {
         match item? {
             None => break,
-            Some(line) => match if provider == Provider::OpenAi {
+            Some(line) => match if openai {
                 parser.feed_line(&line)?
             } else {
                 parser.feed_messages_line(&line)?
@@ -1173,6 +1199,25 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.api_key, "saved-key");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn bedrock_model_can_select_aws_profile_auth_without_a_token() {
+        let saved = AiConfig {
+            base_url: String::new(),
+            model: String::new(),
+            api_key: String::new(),
+        };
+        let (provider, config) = Provider::resolve(&saved, |name| match name {
+            "IBIS_BEDROCK_MODEL_ID" => Some("global.anthropic.test-model".into()),
+            "AWS_PROFILE" => Some("bedrock-sso".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(provider == Provider::BedrockProfile { region: None });
+        assert_eq!(config.model, "global.anthropic.test-model");
+        assert!(config.api_key.is_empty());
     }
 
     #[cfg(not(target_family = "wasm"))]
