@@ -17,6 +17,19 @@ use crate::shell::chrome::{SidebarPanel, action_button, panel_message};
 use crate::shell::editor::SlideEditor;
 use crate::shell::i18n::{format, text};
 
+fn saved_check_text(value: String) -> AnyElement {
+    #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+    {
+        let id = SharedString::from(format!("query-report-check-text:{value}"));
+        return crate::shell::scenario::button_probe::observe_control(
+            div().id(id.clone()).whitespace_normal().child(value),
+            id.into(),
+        ).into_any_element();
+    }
+    #[cfg(not(all(feature = "scenarios", any(target_os = "macos", target_os = "linux"))))]
+    div().whitespace_normal().child(value).into_any_element()
+}
+
 struct ReportChoice {
     name: String,
     sheet: String,
@@ -437,14 +450,14 @@ impl SlideEditor {
                         || text("query.report-check-informational").to_string(),
                         |max| format("query.report-check-limit", &[("max", &max)]),
                     );
-                    list = list.child(div().text_sm().child(format(
+                    list = list.child(div().text_sm().child(saved_check_text(format(
                         "query.report-saved-check",
                         &[
                             ("name", &name),
                             ("limit", &limit),
                             ("diagnostic", &diagnostic_label)
                         ],
-                    )));
+                    ))));
                     if report.check_details_open {
                         for (label, sql) in [
                             ("query.report-count-sql", check["sql"].as_str()),
@@ -460,7 +473,7 @@ impl SlideEditor {
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .child(text(label)),
                                         )
-                                        .child(div().whitespace_normal().child(sql.to_owned())),
+                                        .child(saved_check_text(sql.to_owned())),
                                 );
                             }
                         }
@@ -699,7 +712,7 @@ impl SlideEditor {
 #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn refresh_report_scenario() {
     use crate::shell::scenario::{Scenario, button_probe};
-    use ibis_doc_model::{Document, SheetCommand};
+    use ibis_doc_model::Document;
 
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("monthly.csv");
@@ -716,27 +729,82 @@ pub(crate) fn refresh_report_scenario() {
             }),
         ).unwrap();
         let mut draft = Document::new(editor.presentation().clone());
-        let (_, mut commands) = export.stage(&mut draft, ibis_doc_service::DraftToolContext {
+        let (_, commands) = export.stage(&mut draft, ibis_doc_service::DraftToolContext {
             workbook: ibis_doc_service::WorkbookToolContext { active_sheet: Some(slide), ..Default::default() },
             ..Default::default()
         }).unwrap();
-        let mut definition = ibis_doc_service::query_report_definition(
-            draft.presentation(), &json!({"table":"QueryResult1"}),
-        ).unwrap();
-        definition["checks"] = json!([{
-            "name":"重複コード",
-            "sql":"SELECT count(*) FROM (SELECT code FROM monthly GROUP BY code HAVING count(*) > 1)",
-            "max":0,
-            "diagnostic":{"sql":"SELECT code, count(*) FROM monthly GROUP BY code HAVING count(*) > 1"},
-        }]);
-        commands.push(Command::Sheet(SheetCommand::SetQueryReport { table:"QueryResult1".into(), definition }));
         editor.document.execute(commands).unwrap();
-        editor.open_queries_panel(cx);
     });
 
     let _probe = button_probe::Probe::new();
-    scene.update(|_, _, cx| cx.notify());
-    button_probe::click(&mut scene, "queries-report-refresh");
+    let report = json!({"table":"QueryResult1"});
+    let saved_checks = |scene: &mut Scenario| scene.with(|editor, _| {
+        ibis_doc_service::query_report_definition(editor.presentation(), &report).unwrap()["checks"].clone()
+    });
+    let informational = json!([{"name":"行数","sql":"SELECT count(*) FROM monthly"}]);
+    let blocking = json!([{
+        "name":"重複コード",
+        "sql":"SELECT count(*) FROM (SELECT code FROM monthly GROUP BY code HAVING count(*) > 1)",
+        "max":0,
+        "diagnostic":{"sql":"SELECT code, count(*) FROM monthly GROUP BY code HAVING count(*) > 1"},
+    }]);
+    let stage = |scene: &mut Scenario, checks: &Value| {
+        scene.update(|editor, window, cx| {
+            editor.stage_scenario_workbook_tool(
+                "xlsx_set_query_report_checks",
+                json!({"table":"QueryResult1","checks":checks}),
+                window,
+                cx,
+            );
+        });
+    };
+    let open_report = |scene: &mut Scenario| {
+        scene.update(|editor, _, cx| {
+            editor.close_ai_assistant_panel(cx);
+            editor.open_queries_panel(cx);
+        });
+        button_probe::click(scene, "queries-report-refresh");
+    };
+
+    let visible = |value: &str| {
+        button_probe::bounds(&format!("query-report-check-text:{value}")).is_some()
+    };
+    let initial_sql = informational[0]["sql"].as_str().unwrap();
+    let initial_summary = format("query.report-saved-check", &[
+        ("name", &"行数"),
+        ("limit", &text("query.report-check-informational")),
+        ("diagnostic", &text("query.report-no-diagnostic")),
+    ]);
+    stage(&mut scene, &informational);
+    assert!(saved_checks(&mut scene).is_null());
+    button_probe::click(&mut scene, "ai-workbook-apply");
+    assert_eq!(saved_checks(&mut scene), informational);
+    open_report(&mut scene);
+    assert!(visible(&initial_summary));
+    assert!(!visible(initial_sql));
+    button_probe::click(&mut scene, "query-report-check-details-0");
+    assert!(visible(initial_sql));
+    button_probe::click(&mut scene, "query-report-check-details-0");
+    button_probe::click(&mut scene, "query-reports-back");
+    button_probe::click(&mut scene, "queries-close");
+
+    stage(&mut scene, &blocking);
+    assert_eq!(saved_checks(&mut scene), informational);
+    button_probe::click(&mut scene, "ai-workbook-apply");
+    assert_eq!(saved_checks(&mut scene), blocking);
+    button_probe::clear();
+    open_report(&mut scene);
+    let updated_sql = blocking[0]["sql"].as_str().unwrap();
+    let diagnostic_sql = blocking[0]["diagnostic"]["sql"].as_str().unwrap();
+    let updated_summary = format("query.report-saved-check", &[
+        ("name", &"重複コード"),
+        ("limit", &format("query.report-check-limit", &[("max", &0)])),
+        ("diagnostic", &text("query.report-has-diagnostic")),
+    ]);
+    assert!(visible(&updated_summary));
+    assert!(!visible(&initial_summary));
+    assert!(!visible(updated_sql));
+    assert!(!visible(diagnostic_sql));
 
     let details_open = |scene: &mut Scenario| {
         scene.with(|editor, _| {
@@ -756,6 +824,9 @@ pub(crate) fn refresh_report_scenario() {
     assert!(!details_open(&mut scene));
     button_probe::click(&mut scene, "query-report-check-details-0");
     assert!(details_open(&mut scene));
+    assert!(visible(updated_sql));
+    assert!(visible(diagnostic_sql));
+    assert!(!visible(initial_sql));
     button_probe::click(&mut scene, "query-report-check-details-0");
     assert!(!details_open(&mut scene));
 

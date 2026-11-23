@@ -915,24 +915,7 @@ impl SlideEditor {
         let trace = self.assistant_output.is_some();
         let kind = self.ai_doc_kind();
         let formula_only = formula_messages.is_some();
-        let mut draft = (!formula_only).then(|| {
-            let base = self.presentation().clone();
-            let path = self.file_path();
-            let mut draft = Document::new(base.clone());
-            draft.set_file(path.as_ref().map(|path| path.to_string_lossy().into_owned()));
-            AssistantTurn {
-                base,
-                draft,
-                path,
-                file_id: self.file_id,
-                source: self.source.clone(),
-                active: self.current_slide,
-                selection: with_format!(self, ai_sheet_selection(self, self.current_slide)),
-                navigate: false,
-                private_chart_source: false,
-                source_edit: None,
-            }
-        });
+        let mut draft = (!formula_only).then(|| self.assistant_turn());
         let (run_id, history_start, mut messages_to_send) = {
             let Some(p) = self.ai_assistant.as_mut() else {
                 return;
@@ -1979,6 +1962,52 @@ impl SlideEditor {
             .get(idx - 1)
             .map(|s| s.id)
             .ok_or_else(|| format!("slide {idx} not found"))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn assistant_turn(&self) -> AssistantTurn {
+        let base = self.presentation().clone();
+        let path = self.file_path();
+        let mut draft = Document::new(base.clone());
+        draft.set_file(path.as_ref().map(|path| path.to_string_lossy().into_owned()));
+        AssistantTurn {
+            base,
+            draft,
+            path,
+            file_id: self.file_id,
+            source: self.source.clone(),
+            active: self.current_slide,
+            selection: with_format!(self, ai_sheet_selection(self, self.current_slide)),
+            navigate: false,
+            private_chart_source: false,
+            source_edit: None,
+        }
+    }
+
+    /// Substitute a deterministic model tool call in a scenario. Apply through the normal sidebar.
+    #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+    pub fn stage_scenario_workbook_tool(
+        &mut self, name: &str, arguments: serde_json::Value, window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        assert!(spreadsheet_tool_definitions().iter().any(|tool| tool.function.name == name));
+        self.open_ai_assistant_panel(window, cx);
+        let mut turn = self.assistant_turn();
+        let call = ToolCall {
+            id: name.into(), kind: "function".into(),
+            function: crate::ai_client::ToolCallFunction {
+                name: name.into(), arguments: arguments.to_string(),
+            },
+        };
+        let (result, commands, label) =
+            self.stage_assistant_tool(AiDocKind::Xlsx, &call, &mut turn, &[], cx);
+        assert!(!commands.is_empty() && turn.draft.presentation() != &turn.base, "{result}");
+        let preview = workbook_preview(&turn, &[label]);
+        let panel = self.ai_assistant.as_mut().unwrap();
+        panel.assistant_review = Some(AssistantReview {
+            turn, commands, preview, history_start: panel.history.len(),
+        });
+        cx.notify();
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -3752,6 +3781,10 @@ impl SlideEditor {
         });
         #[cfg(not(target_family = "wasm"))]
         let pending_box = panel.assistant_review.as_ref().map(|review| {
+            let apply = Button::new("ai-workbook-apply").primary().small().label("適用")
+                .on_click(cx.listener(|this, _, _, cx| this.finish_assistant_review(true, cx)));
+            #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+            let apply = crate::scenario::button_probe::observe(apply, "ai-workbook-apply".into());
             v_flex()
                 .gap_2()
                 .p_2()
@@ -3762,8 +3795,7 @@ impl SlideEditor {
                 .child(div().id("ai-workbook-preview").max_h(px(180.0)).overflow_y_scroll()
                     .text_xs().child(review.preview.clone()))
                 .child(h_flex().gap_2()
-                    .child(Button::new("ai-workbook-apply").primary().small().label("適用")
-                        .on_click(cx.listener(|this, _, _, cx| this.finish_assistant_review(true, cx))))
+                    .child(apply)
                     .child(Button::new("ai-workbook-discard").ghost().small().label("破棄")
                         .on_click(cx.listener(|this, _, _, cx| this.finish_assistant_review(false, cx)))))
                 .into_any_element()
