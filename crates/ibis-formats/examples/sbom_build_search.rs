@@ -33,11 +33,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         remaining = remaining
             .checked_sub(bytes.len() as u64)
             .ok_or("The combined SBOM inputs exceed 32 MiB")?;
-        sources.push((path.to_string_lossy(), bytes));
+        sources.push((path.to_string_lossy().into_owned(), bytes));
     }
     let inputs = sources
         .iter()
-        .map(|(path, bytes)| (path.as_ref(), bytes.as_slice()))
+        .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
         .collect::<Vec<_>>();
     let bytes = ibis_formats::sbom_review::search_sbom_builds_xlsx(&inputs, &purl)?;
     let parent = output
