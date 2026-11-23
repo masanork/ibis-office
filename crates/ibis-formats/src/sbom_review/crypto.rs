@@ -46,16 +46,30 @@ const RELATIONSHIP_COLUMNS: &[&str] = &[
     "Target",
 ];
 
+mod impact;
+
 struct CryptoInventory {
     assets: Vec<Row>,
     edges: Vec<Row>,
+    graph: impact::Graph,
 }
 
-fn collect(doc: &Value, items: &[(&Value, &str)]) -> Result<CryptoInventory, String> {
+fn collect(
+    doc: &Value,
+    items: &[(&Value, &str)],
+    trace_dependencies: bool,
+) -> Result<CryptoInventory, String> {
     let mut assets = Vec::new();
     let mut crypto_refs = BTreeSet::new();
     let mut names = BTreeMap::new();
+    let mut graph = impact::Graph::default();
+    if trace_dependencies {
+        graph.services(doc)?;
+    }
     for &(component, parent) in items {
+        if trace_dependencies {
+            graph.describe(component, component["type"].as_str().unwrap_or_default());
+        }
         let reference = component["bom-ref"].as_str().unwrap_or_default();
         if !reference.is_empty() {
             names.insert(reference, component["name"].as_str().unwrap_or_default());
@@ -99,6 +113,7 @@ fn collect(doc: &Value, items: &[(&Value, &str)]) -> Result<CryptoInventory, Str
         return Ok(CryptoInventory {
             assets,
             edges: Vec::new(),
+            graph,
         });
     }
 
@@ -112,7 +127,10 @@ fn collect(doc: &Value, items: &[(&Value, &str)]) -> Result<CryptoInventory, Str
                 .iter()
                 .filter_map(Value::as_str)
             {
-                if crypto_refs.contains(source) || crypto_refs.contains(target) {
+                if trace_dependencies
+                    || crypto_refs.contains(source)
+                    || crypto_refs.contains(target)
+                {
                     edges.insert((source, kind, target));
                 }
             }
@@ -120,6 +138,12 @@ fn collect(doc: &Value, items: &[(&Value, &str)]) -> Result<CryptoInventory, Str
     }
     let rows: Vec<Row> = edges
         .into_iter()
+        .filter(|(source, kind, target)| {
+            if trace_dependencies {
+                graph.add(source, kind, target);
+            }
+            crypto_refs.contains(source) || crypto_refs.contains(target)
+        })
         .map(|(source, kind, target)| {
             vec![
                 source.into(),
@@ -133,6 +157,7 @@ fn collect(doc: &Value, items: &[(&Value, &str)]) -> Result<CryptoInventory, Str
     Ok(CryptoInventory {
         assets,
         edges: rows,
+        graph,
     })
 }
 
@@ -148,7 +173,7 @@ pub fn is_cbom_inventory(book: &ibis_doc_model::Presentation) -> bool {
 }
 
 pub(super) fn tables(doc: &Value, items: &[(&Value, &str)]) -> Result<Vec<Table>, String> {
-    let CryptoInventory { assets, edges } = collect(doc, items)?;
+    let CryptoInventory { assets, edges, .. } = collect(doc, items, false)?;
     if assets.is_empty() {
         return Ok(Vec::new());
     }
@@ -177,7 +202,7 @@ fn comparison_input(input: (&str, &[u8])) -> Result<CryptoInventory, String> {
             }
         }
     }
-    collect(&doc, &items)
+    collect(&doc, &items, true)
 }
 
 fn with_status(status: &str, mut row: Row) -> Row {
@@ -193,19 +218,19 @@ pub fn compare_xlsx(inputs: [(&str, &[u8]); 2]) -> Result<Vec<u8>, String> {
     let mut asset_changes = Vec::new();
     let mut field_changes = Vec::new();
     let index_assets =
-        |rows: Vec<Row>, unmatched: &str, changes: &mut Vec<Row>| -> BTreeMap<String, Row> {
+        |rows: &[Row], unmatched: &str, changes: &mut Vec<Row>| -> BTreeMap<String, Row> {
             let mut indexed = BTreeMap::new();
             for row in rows {
                 if row[2].is_empty() {
-                    changes.push(with_status(unmatched, row));
+                    changes.push(with_status(unmatched, row.clone()));
                 } else {
-                    indexed.insert(row[2].clone(), row);
+                    indexed.insert(row[2].clone(), row.clone());
                 }
             }
             indexed
         };
-    let mut after = index_assets(new.assets, "Unmatched in new BOM", &mut asset_changes);
-    for (reference, before) in index_assets(old.assets, "Unmatched in old BOM", &mut asset_changes)
+    let mut after = index_assets(&new.assets, "Unmatched in new BOM", &mut asset_changes);
+    for (reference, before) in index_assets(&old.assets, "Unmatched in old BOM", &mut asset_changes)
     {
         if let Some(current) = after.remove(&reference) {
             if before != current {
@@ -227,13 +252,18 @@ pub fn compare_xlsx(inputs: [(&str, &[u8]); 2]) -> Result<Vec<u8>, String> {
         }
     }
     asset_changes.extend(after.into_values().map(|row| with_status("Added", row)));
-    let index_edges = |rows: Vec<Row>| -> BTreeMap<[String; 3], Row> {
-        rows.into_iter()
-            .map(|row| ([row[0].clone(), row[2].clone(), row[3].clone()], row))
+    let index_edges = |rows: &[Row]| -> BTreeMap<[String; 3], Row> {
+        rows.iter()
+            .map(|row| {
+                (
+                    [row[0].clone(), row[2].clone(), row[3].clone()],
+                    row.clone(),
+                )
+            })
             .collect()
     };
-    let old_edges = index_edges(old.edges);
-    let new_edges = index_edges(new.edges);
+    let old_edges = index_edges(&old.edges);
+    let new_edges = index_edges(&new.edges);
     let mut relationship_changes = Vec::new();
     for (status, from, to) in [
         ("Removed", &old_edges, &new_edges),
@@ -245,6 +275,19 @@ pub fn compare_xlsx(inputs: [(&str, &[u8]); 2]) -> Result<Vec<u8>, String> {
                 .map(|(_, row)| with_status(status, row.clone())),
         );
     }
+    let changed_refs: BTreeSet<_> = asset_changes
+        .iter()
+        .map(|row| &row[3])
+        .chain(
+            relationship_changes
+                .iter()
+                .flat_map(|row| [&row[1], &row[4]]),
+        )
+        .filter(|reference| !reference.is_empty())
+        .cloned()
+        .collect();
+    let (dependents, providers) =
+        impact::rows([("Old CBOM", &old), ("New CBOM", &new)], &changed_refs);
     let evidence = ["Old CBOM", "New CBOM"]
         .into_iter()
         .zip(inputs)
@@ -286,10 +329,13 @@ pub fn compare_xlsx(inputs: [(&str, &[u8]); 2]) -> Result<Vec<u8>, String> {
         ("Changed asset fields", &["BOM reference", "Name", "Field", "Old", "New"], field_changes),
         ("Relationship changes", &["Change", "Source reference", "Source", "Relationship", "Target reference", "Target"], relationship_changes),
         ("Input artifacts", &["Role", "File", "SHA-256"], evidence),
+        ("Dependency impact", impact::DEPENDENCY_COLUMNS, dependents),
+        ("Asset providers", impact::PROVIDER_COLUMNS, providers),
         ("Comparison notes", &["Scope"], vec![
             vec!["Assets are matched by exact BOM reference. Use stable references across releases. Assets without a reference appear as unmatched.".into()],
             vec!["Relationships are matched by source reference, kind and target reference. A changed target appears as a removed edge and an added edge.".into()],
             vec!["The tables compare selected metadata and declarations. Confirm actual runtime use and PQC migration separately.".into()],
+            vec!["Dependency impact traces one shortest dependsOn path per dependent and snapshot. Asset providers lists direct provides declarations separately.".into()],
         ]),
     ])
 }
@@ -346,6 +392,35 @@ mod tests {
             ["Added", "provider", "provides", "ml-dsa"]
         );
         assert!(sheet(2).cell(5, 0).is_none());
+        assert_eq!(
+            book.workbook.as_ref().unwrap().sheets[4].name,
+            "Dependency impact"
+        );
+        assert_eq!(
+            values(4, 1, &[0, 1, 3, 7]),
+            ["Old CBOM", "rsa", "payments", "payments → cert → rsa"]
+        );
+        assert_eq!(
+            values(4, 2, &[0, 1, 3, 7]),
+            ["Old CBOM", "cert", "payments", "payments → cert"]
+        );
+        assert_eq!(
+            values(4, 3, &[0, 1, 3, 7]),
+            ["New CBOM", "ml-dsa", "payments", "payments → cert → ml-dsa"]
+        );
+        assert_eq!(
+            values(4, 4, &[0, 1, 3, 7]),
+            ["New CBOM", "cert", "payments", "payments → cert"]
+        );
+        assert!(sheet(4).cell(5, 0).is_none());
+        assert_eq!(
+            values(5, 1, &[0, 1, 3, 6]),
+            ["Old CBOM", "rsa", "provider", "provides"]
+        );
+        assert_eq!(
+            values(5, 2, &[0, 1, 3, 6]),
+            ["New CBOM", "ml-dsa", "provider", "provides"]
+        );
         assert_eq!(
             sheet(3).cell(1, 2).unwrap().text,
             format!("{:x}", Sha256::digest(before))
