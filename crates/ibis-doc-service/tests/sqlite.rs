@@ -1340,11 +1340,17 @@ fn query_report_check_blocks_unmatched_keys_in_service_and_assistant() {
         "sql":"SELECT count(*) AS matches FROM facts JOIN labels USING (code)",
         "datasets":[{"source":facts,"alias":"facts"},{"source":labels,"alias":"labels"}],
     }))["table"].clone();
+    let diagnostics_sql = "SELECT f.code AS unmatched_key, typeof(f.code) AS key_type, count(*) AS occurrences
+FROM facts AS f
+WHERE NOT EXISTS (SELECT 1 FROM labels AS l WHERE l.code = f.code)
+GROUP BY f.code, typeof(f.code)
+ORDER BY occurrences DESC, key_type, unmatched_key
+LIMIT 20";
     call(&mut service, "xlsx_set_query_report_checks", json!({
         "document_id":id, "table":table, "checks":[{
             "name":"マスタ未登録",
             "sql":"SELECT count(*) FROM facts f WHERE NOT EXISTS (SELECT 1 FROM labels l WHERE l.code = f.code)",
-            "max":0,
+            "max":0, "diagnostic":{"sql":diagnostics_sql},
         }],
     }));
     call(&mut service, "app_save_document", json!({"document_id":id,"path":saved}));
@@ -1361,12 +1367,6 @@ fn query_report_check_blocks_unmatched_keys_in_service_and_assistant() {
         prepare_selected_report_batch(&selected, request, definitions).unwrap()
     };
 
-    let diagnostics_sql = "SELECT f.code AS unmatched_key, typeof(f.code) AS key_type, count(*) AS occurrences
-FROM facts AS f
-WHERE NOT EXISTS (SELECT 1 FROM labels AS l WHERE l.code = f.code)
-GROUP BY f.code, typeof(f.code)
-ORDER BY occurrences DESC, key_type, unmatched_key
-LIMIT 20";
     for (facts_json, labels_csv, schema_changed, expected_key) in [
         ("{\"code\":1}\n", "code,label\n001,North\n", true, json!([1,"integer",1])),
         ("{\"code\":\"001\"}\n", "code,label\n002,South\n", false, json!(["001","text",1])),
@@ -1380,7 +1380,10 @@ LIMIT 20";
         assert!(preview["snapshot_id"].is_null());
         assert_eq!(preview["reports"][0]["schema_changes"].is_array(), schema_changed);
         assert_eq!(preview["reports"][0]["checks"], json!([
-            {"name":"マスタ未登録","count":1,"max":0,"passed":false},
+            {"name":"マスタ未登録","count":1,"max":0,"passed":false,"diagnostic":{
+                "columns":["unmatched_key","key_type","occurrences"],
+                "rows":[expected_key],"truncated":false,
+            }},
         ]));
         let diagnostics = call(&mut service, "sqlite_query", json!({
             "sql":diagnostics_sql,"limit":20,
@@ -1418,6 +1421,7 @@ LIMIT 20";
     }));
     assert_eq!(preview["blocked"], false);
     assert_eq!(preview["reports"][0]["checks"][0]["count"], 0);
+    assert!(preview["reports"][0]["checks"][0]["diagnostic"].is_null());
     let (assistant, commands) = assistant_batch(&draft, false)
         .stage(&mut draft, DraftToolContext::default()).unwrap();
     assert!(!commands.is_empty());

@@ -1331,6 +1331,7 @@ fn batch_query_results(
     reports: Vec<(String, Value)>,
 ) -> Result<Vec<QueryReportResult>, ToolError> {
     let bindings = batch_bindings(args)?;
+    let preview = args.opt_bool("preview")?.unwrap_or(false);
     let arrow_disk = args.opt_bool("arrow_disk")?.unwrap_or(false);
     let mut groups: Vec<(Value, Vec<_>)> = Vec::new();
     for (index, (name, definition)) in reports.into_iter().enumerate() {
@@ -1365,7 +1366,7 @@ fn batch_query_results(
             .map_err(|error| report_error(name, error))?;
         let input = report_input_schema(&session).map_err(|error| report_error(name, error))?;
         for (index, name, definition, query) in reports {
-            let (rows, checks) = refresh_query_in_session(&session, &query, &definition)
+            let (rows, checks) = refresh_query_in_session(&session, &query, &definition, preview)
                 .map_err(|error| report_error(&name, error))?;
             let review = RefreshReview { checks, input_schema: input.clone() };
             results.push((index, QueryReportResult { name, definition, rows, review }));
@@ -1580,7 +1581,7 @@ pub fn prepare_selected_report_batch(
 
 pub(crate) const SET_QUERY_REPORT_CHECKS: Tool = Tool {
     name: "xlsx_set_query_report_checks",
-    description: "Save read-only count checks on a query report. Checks run with its source bindings on every refresh. An empty list removes its checks.",
+    description: "Save read-only count checks on a query report. Checks run with its source bindings on every refresh. Optional diagnostics return example rows in previews. An empty list removes its checks.",
     access: Access::Edit,
     returns_content: false,
     schema: || {
@@ -1597,6 +1598,10 @@ pub(crate) const SET_QUERY_REPORT_CHECKS: Tool = Tool {
                             ("sql", string("One SELECT using the report's bound tables, returning one nonnegative integer.")),
                             ("params", json!({"type":"array","maxItems":100,"items":{"type":["string","number","null"]}})),
                             ("max", integer("Optional highest accepted count. Omit for an informational check.")),
+                            ("diagnostic", object(&[
+                                ("sql", string("Optional read-only SELECT for examples when the check finds issues during preview.")),
+                                ("params", json!({"type":"array","maxItems":100,"items":{"type":["string","number","null"]}})),
+                            ], &["sql"])),
                         ], &["name","sql"]),
                     }),
                 ),
@@ -1614,7 +1619,7 @@ fn validate_report_checks(value: &Value) -> Result<&[Value], ToolError> {
         .ok_or_else(|| ToolError::invalid("checks must be an array of up to four count queries"))?;
     let mut names = std::collections::HashSet::new();
     for check in checks {
-        crate::edit::only_known(check, &["name", "sql", "params", "max"])?;
+        crate::edit::only_known(check, &["name", "sql", "params", "max", "diagnostic"])?;
         let name = check.str_arg("name")?;
         if name.trim().is_empty() || name.chars().count() > 80 || !names.insert(name) {
             return Err(ToolError::invalid(
@@ -1624,6 +1629,12 @@ fn validate_report_checks(value: &Value) -> Result<&[Value], ToolError> {
         validate_sqlite_select(check.str_arg("sql")?)
             .map_err(|error| ToolError::invalid(format!("{name}: {error}")))?;
         sql_params(check)?;
+        if let Some(diagnostic) = check.get("diagnostic") {
+            crate::edit::only_known(diagnostic, &["sql", "params"])?;
+            validate_sqlite_select(diagnostic.str_arg("sql")?)
+                .map_err(|error| ToolError::invalid(format!("{name} diagnostic: {error}")))?;
+            sql_params(diagnostic)?;
+        }
         if let Some(max) = check.get("max")
             && !max.as_i64().is_some_and(|max| max >= 0)
         {
@@ -1702,7 +1713,7 @@ fn refresh_query_result(
     definition: &Value,
 ) -> Result<(SqliteRows, RefreshReview), ToolError> {
     let session = query_session(service, args)?;
-    let (rows, checks) = refresh_query_in_session(&session, args, definition)?;
+    let (rows, checks) = refresh_query_in_session(&session, args, definition, false)?;
     let input_schema = report_input_schema(&session)?;
     Ok((rows, RefreshReview { checks, input_schema }))
 }
@@ -1711,6 +1722,7 @@ fn refresh_query_in_session(
     session: &SqliteQuerySession,
     args: &Value,
     definition: &Value,
+    preview: bool,
 ) -> Result<(SqliteRows, Vec<Value>), ToolError> {
     let checks = definition
         .get("checks")
@@ -1734,7 +1746,21 @@ fn refresh_query_in_session(
             })?;
             let max = check["max"].as_i64();
             let passed = max.map(|max| count <= max);
-            Ok(json!({"name":name,"count":count,"max":max,"passed":passed}))
+            let mut summary = json!({"name":name,"count":count,"max":max,"passed":passed});
+            if preview && count > 0 && passed != Some(true)
+                && let Some(diagnostic) = check.get("diagnostic")
+            {
+                summary["diagnostic"] = match run_session_query(session, diagnostic, 20, 2 * 1024) {
+                    Ok(result) => json!({
+                        "columns":result.columns, "rows":result.rows, "truncated":result.truncated,
+                    }),
+                    Err(error) => {
+                        let message: String = error.message.chars().take(256).collect();
+                        json!({"error":{"code":error.code,"message":message}})
+                    }
+                };
+            }
+            Ok(summary)
         })
         .collect::<Result<Vec<_>, ToolError>>()?;
     let rows = require_complete(run_session_query(session, args, 10_000, 4 * 1024 * 1024)?)?;

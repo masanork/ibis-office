@@ -3165,5 +3165,7 @@ query.report-metric	{column} · {previous} → {current}（差 {delta}）
 query.report-metric-rate	{column} · {previous} → {current}（差 {delta}、{rate}%）
 query.report-check	{name} · {count} 件
 query.report-check-max	{name} · {count} 件（上限 {max}）
+query.report-diagnostic-error	診断クエリに失敗しました（{message}）
+query.report-diagnostic-truncated	診断結果の一部を省略しました。
 query.report-back	戻る
 query.report-limit	一度に選べるレポートは12件までです。

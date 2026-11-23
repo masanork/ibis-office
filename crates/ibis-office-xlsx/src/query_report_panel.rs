@@ -82,7 +82,7 @@ impl QueryReportPanel {
             .collect();
         Some((
             paths,
-            json!({"bindings":bindings,"tables":tables,"metrics":metrics}),
+            json!({"bindings":bindings,"tables":tables,"metrics":metrics,"preview":true}),
         ))
     }
 
@@ -555,6 +555,21 @@ impl SlideEditor {
                         )
                     };
                     body = body.child(div().text_sm().child(line));
+                    let diagnostic = &check["diagnostic"];
+                    if let Some(message) = diagnostic["error"]["message"].as_str() {
+                        body = body.child(div().text_sm().child(format(
+                            "query.report-diagnostic-error", &[("message", &message)],
+                        )));
+                    }
+                    if let Some(rows) = diagnostic["rows"].as_array().filter(|rows| !rows.is_empty()) {
+                        body = body.child(div().text_sm().child(diagnostic["columns"].to_string()));
+                        for row in rows {
+                            body = body.child(div().text_sm().child(row.to_string()));
+                        }
+                    }
+                    if diagnostic["truncated"] == true {
+                        body = body.child(div().text_sm().child(text("query.report-diagnostic-truncated")));
+                    }
                 }
             }
         }
@@ -622,6 +637,7 @@ pub(crate) fn refresh_report_scenario() {
             "name":"重複コード",
             "sql":"SELECT count(*) FROM (SELECT code FROM monthly GROUP BY code HAVING count(*) > 1)",
             "max":0,
+            "diagnostic":{"sql":"SELECT code, count(*) FROM monthly GROUP BY code HAVING count(*) > 1"},
         }]);
         commands.push(Command::Sheet(SheetCommand::SetQueryReport { table:"QueryResult1".into(), definition }));
         editor.document.execute(commands).unwrap();
@@ -707,6 +723,7 @@ pub(crate) fn refresh_report_scenario() {
         let review = panel.review.as_ref().unwrap();
         assert_eq!(review.result["blocked"], true);
         assert_eq!(review.result["reports"][0]["checks"][0]["count"], 1);
+        assert_eq!(review.result["reports"][0]["checks"][0]["diagnostic"]["rows"], json!([["001",2]]));
         assert!(review.commands.is_empty());
     });
     assert_eq!(amount(&mut scene), Some(CellValue::Number(24.0)));

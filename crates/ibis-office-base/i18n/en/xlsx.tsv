@@ -3168,5 +3168,7 @@ query.report-metric	{column} · {previous} → {current} (change {delta})
 query.report-metric-rate	{column} · {previous} → {current} (change {delta}, {rate}%)
 query.report-check	{name} · {count}
 query.report-check-max	{name} · {count} (maximum {max})
+query.report-diagnostic-error	Diagnostic query failed ({message})
+query.report-diagnostic-truncated	Diagnostic results were truncated.
 query.report-back	Back
 query.report-limit	Select up to 12 reports at a time.
