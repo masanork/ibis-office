@@ -11,6 +11,7 @@ use gpui_kit::*;
 
 use crate::{editor::SlideEditor, i18n::text};
 
+pub(crate) mod assistant;
 mod commit_changes;
 mod graph;
 mod working_tree;
@@ -32,6 +33,7 @@ struct Entry {
 
 struct Revision {
     id: gix::ObjectId,
+    parent: Option<gix::ObjectId>,
     title: String,
     date: String,
     exists: bool,
@@ -158,7 +160,19 @@ fn history(
     start: gix::ObjectId,
     path: &Path,
 ) -> Result<(Vec<Revision>, Option<gix::ObjectId>)> {
-    let mut repo = gix::open(repo)?;
+    let repo = gix::open(repo)?;
+    scoped_history(repo, start, path, false)
+}
+
+fn scoped_history(
+    mut repo: gix::Repository,
+    start: gix::ObjectId,
+    path: &Path,
+    include_trees: bool,
+) -> Result<(Vec<Revision>, Option<gix::ObjectId>)> {
+    if path.as_os_str().is_empty() && !include_trees {
+        return Ok((Vec::new(), None));
+    }
     repo.object_cache_size(8 * 1024 * 1024);
     let mut revisions = Vec::new();
     let mut next = Some(start);
@@ -177,20 +191,18 @@ fn history(
         } else {
             commit.parent_ids().next().map(|parent| parent.detach())
         };
-        let entry = commit
-            .tree()?
-            .lookup_entry_by_path(path)?
-            .filter(|entry| entry.mode().is_blob());
-        let before = match next {
-            Some(parent) => repo
-                .find_commit(parent)?
-                .tree()?
-                .lookup_entry_by_path(path)?
-                .filter(|entry| entry.mode().is_blob()),
-            None => None,
+        let tree_entry = |commit: &gix::Commit<'_>| -> Result<_> {
+            let tree = commit.tree()?;
+            if path.as_os_str().is_empty() {
+                return Ok(Some((tree.id, gix::objs::tree::EntryKind::Tree.into())));
+            }
+            Ok(tree.lookup_entry_by_path(path)?
+                .filter(|entry| entry.mode().is_blob() || include_trees && entry.mode().is_tree())
+                .map(|entry| (entry.object_id(), entry.mode())))
         };
-        let signature = |entry: &gix::object::tree::Entry<'_>| (entry.object_id(), entry.mode());
-        if entry.as_ref().map(signature) != before.as_ref().map(signature) {
+        let entry = tree_entry(&commit)?;
+        let before = next.map(|parent| tree_entry(&repo.find_commit(parent)?)).transpose()?.flatten();
+        if entry != before {
             let raw = String::from_utf8_lossy(commit.message_raw_sloppy());
             let title = raw.lines().next().unwrap_or_default().to_string();
             let date = commit
@@ -200,6 +212,7 @@ fn history(
                 .unwrap_or_default();
             revisions.push(Revision {
                 id,
+                parent: next,
                 title,
                 date,
                 exists: entry.is_some(),
@@ -210,17 +223,18 @@ fn history(
 }
 
 fn blob(repo: &gix::Repository, id: gix::ObjectId, path: &Path) -> Result<Vec<u8>> {
+    optional_blob(repo, id, path)?.ok_or_else(|| "File is absent in this revision".into())
+}
+
+fn optional_blob(repo: &gix::Repository, id: gix::ObjectId, path: &Path) -> Result<Option<Vec<u8>>> {
     let tree = repo.find_commit(id)?.tree()?;
-    let Some(entry) = tree
-        .lookup_entry_by_path(path)?
-        .filter(|entry| entry.mode().is_blob())
-    else {
-        return Err("File is absent in this revision".into());
+    let Some(entry) = tree.lookup_entry_by_path(path)?.filter(|entry| entry.mode().is_blob()) else {
+        return Ok(None);
     };
     if repo.find_header(entry.object_id())?.size() > MAX_PREVIEW_BYTES {
         return Err("Git file is too large to preview".into());
     }
-    Ok(entry.object()?.data.clone())
+    Ok(Some(entry.object()?.data.clone()))
 }
 
 fn markdown_block(content: &str, language: &str) -> Vec<u8> {
@@ -292,13 +306,7 @@ fn compare(
     if old_text.contains('\0') || new_text.contains('\0') {
         return Err("Text comparison requires UTF-8 files".into());
     }
-    let diff = similar::TextDiff::configure()
-        .timeout(std::time::Duration::from_secs(1))
-        .diff_lines(old_text, new_text);
-    let patch = diff
-        .unified_diff()
-        .header(&short(old), &short(new))
-        .to_string();
+    let patch = unified_diff(old_text, new_text, &short(old), &short(new));
     let markdown = if patch.is_empty() {
         text("git.no-changes").to_string().into_bytes()
     } else {
@@ -307,6 +315,15 @@ fn compare(
     Ok(RevisionPreview::ReadOnly(
         ibis_formats::markdown::open_markdown(markdown)?,
     ))
+}
+
+fn unified_diff(old: &str, new: &str, old_label: &str, new_label: &str) -> String {
+    similar::TextDiff::configure()
+        .timeout(std::time::Duration::from_secs(1))
+        .diff_lines(old, new)
+        .unified_diff()
+        .header(old_label, new_label)
+        .to_string()
 }
 
 impl SlideEditor {

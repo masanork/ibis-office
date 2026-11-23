@@ -16,17 +16,17 @@ pub(crate) use ui::FolderPane;
 const SCAN_LIMIT: usize = 10_000;
 const TEXT_BYTES: usize = 512 * 1024;
 const RESULT_BYTES: usize = 24 * 1024;
-const OFFICE: &[&str] = &["docx", "docm", "dotx", "xlsx", "xlsm", "pptx", "pptm"];
+pub(crate) const OFFICE: &[&str] = &["docx", "docm", "dotx", "xlsx", "xlsm", "pptx", "pptm"];
 const TEXT: &[&str] = &["md", "markdown", "txt", "csv", "tsv", "json", "yaml", "yml"];
 
-fn extension(path: &Path) -> String {
+pub(crate) fn extension(path: &Path) -> String {
     path.extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("")
         .to_ascii_lowercase()
 }
 
-fn visible(name: &str) -> bool {
+pub(crate) fn visible(name: &str) -> bool {
     !name.starts_with('.') && !name.starts_with("~$")
 }
 
@@ -162,7 +162,7 @@ const OFFICE_READS: &[&str] = &[
     "pptx_get_notes",
 ];
 
-pub(crate) fn tools() -> [ToolDefinition; 3] {
+pub(crate) fn tools() -> [ToolDefinition; 6] {
     let tool = |name, description, properties, required| ToolDefinition {
         kind: "function",
         function: ToolFunctionDef {
@@ -193,6 +193,14 @@ pub(crate) fn tools() -> [ToolDefinition; 3] {
                 "operation":{"type":"string","enum":OFFICE_READS},"arguments":{"type":"object"}}),
             json!(["path"]),
         ),
+        tool("git_status", "Read Git index and working-tree changes under the open folder. Optional path is relative to the folder. Pass next_offset to continue.",
+            json!({"path":{"type":"string"},"offset":{"type":"integer","minimum":0}}), json!([])),
+        tool("git_log", "Read first-parent commits that changed a file or directory under the open folder. Omit path for the folder itself. Pass next_cursor to continue, even if a page is empty.",
+            json!({"path":{"type":"string"},"cursor":{"type":"string"}}), json!([])),
+        tool("git_diff", "Compare one folder-relative file between two full commit SHAs from git_log. Office files are compared as extracted Markdown. Pass next_offset to continue.",
+            json!({"path":{"type":"string"},"old_commit":{"type":"string"},"new_commit":{"type":"string"},"offset":{"type":"integer","minimum":0}}),
+            json!(["path","old_commit","new_commit"])),
+
     ]
 }
 
@@ -254,7 +262,7 @@ pub(crate) struct FolderResult {
 }
 
 pub(crate) fn recognizes(name: &str) -> bool {
-    matches!(name, "folder_list" | "folder_search" | "folder_read")
+    matches!(name, "folder_list" | "folder_search" | "folder_read" | "git_status" | "git_log" | "git_diff")
 }
 
 pub(crate) fn run(folder: &Folder, call: &ToolCall) -> Result<FolderResult, String> {
@@ -319,9 +327,14 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall) -> Result<FolderResult, Stri
             let reference = FolderReference::new(relative, location);
             (json!({"path":relative,"content":result}), vec![reference])
         }
+        name @ ("git_status" | "git_log" | "git_diff") => (
+            crate::git_workspace::assistant::run(&folder.root, name, &args, offset)
+                .map_err(|error| error.to_string())?,
+            Vec::new(),
+        ),
         _ => return Err("Unknown folder tool.".into()),
     };
-    if value.to_string().len() > RESULT_BYTES {
+    if !call.function.name.starts_with("git_") && value.to_string().len() > RESULT_BYTES {
         return Err("Result too large. Request a smaller range or fewer lines.".into());
     }
     Ok(FolderResult { value, references })
