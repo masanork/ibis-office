@@ -261,16 +261,23 @@ impl SlideEditor {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let definitions =
-                        ibis_doc_service::batch_query_report_definitions(&base, &args)?;
-                    let batch =
-                        ibis_doc_service::prepare_selected_report_batch(&paths, args, definitions)?;
-                    let (result, commands) = batch.review(&base)?;
-                    Ok::<_, ibis_doc_service::ToolError>(ReviewedRefresh {
-                        base,
-                        result,
-                        commands,
-                    })
+                    // Sheet commands can exceed the macOS dispatch-worker stack,
+                    // particularly in debug builds. Keep this work off the UI thread.
+                    std::thread::Builder::new()
+                        .name("query-report-review".into())
+                        .stack_size(8 * 1024 * 1024)
+                        .spawn(move || -> Result<ReviewedRefresh, ibis_doc_service::ToolError> {
+                            let definitions =
+                                ibis_doc_service::batch_query_report_definitions(&base, &args)?;
+                            let batch = ibis_doc_service::prepare_selected_report_batch(
+                                &paths, args, definitions,
+                            )?;
+                            let (result, commands) = batch.review(&base)?;
+                            Ok(ReviewedRefresh { base, result, commands })
+                        })
+                        .map_err(|error| ibis_doc_service::ToolError::new("internal", error.to_string()))?
+                        .join()
+                        .map_err(|_| ibis_doc_service::ToolError::new("internal", "Query report review worker failed"))?
                 })
                 .await;
             let _ = this.update(cx, |editor, cx| {
