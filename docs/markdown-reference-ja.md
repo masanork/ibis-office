@@ -216,6 +216,22 @@ ibisOffice --export xlsx --out-dir rebuilt markdown/workbook.md
 
 `marp: true` の原稿は横罫線でスライドを区切ります。`headingDivider: 2` でATX見出しのレベル1・2を、`headingDivider: [1, 3]` でレベル1・3を区切りにできます。フロントマターでは、レベルを YAML のブロック配列でも指定できます。指定がなければ見出しが複数あっても同じスライドに置きます。 [Marpの見出し区切り](https://marp.app/docs/guide/heading-divider)
 
+```markdown
+---
+marp: true
+headingDivider:
+  - 1
+  - 3
+---
+
+# 最初のスライド
+
+## 同じスライドの小見出し
+
+### 次のスライド
+```
+
+
 フロントマターと単独行から始まるコメントの `size: 16:9` と `size: 4:3` に対応し、`pptx_size` がある場合はそちらを優先します。
 
 単独行から始まる HTML コメントは、対応する Marp ディレクティブを含むものや ibisOffice の位置注記を除き、複数行でも PPTX の発表者ノートに入ります。従来の `<!-- notes: … -->` も読み書きできます。コードフェンス内のコメントはコードとして扱います。
@@ -398,6 +414,33 @@ PPTX の表でも横結合・縦結合の印を使えます。横と縦を組み
 - `style_set` は `default` / `casual` / `centered` / `formal` / `elegant` / `modern` / `simple` / `minimalist`。
 - `paragraph_spacing` は `default` / `no_space`（`no_paragraph_space`、`none`）/ `compact` / `tight` / `open` / `relaxed` / `double`。
 
+### 形式指定と OKF のタグ
+
+通常の文書には形式指定は不要です。OKF の型と形式指定を併記する原稿では、`type` に知識項目の型、`x-ibis-format` に開き方を書きます。たとえば `type: presentation` の知識項目を文書として開くには `x-ibis-format: document` を併記します。スライドには `x-ibis-format: presentation`、Lawtext には `x-ibis-format: lawtext` を使えます。形式判定の詳細は [入出力仕様](markdown-yaml-spec-ja.md#入力と処理経路) を参照してください。
+
+```markdown
+---
+type: Metric
+title: 月次売上
+description: 月ごとの売上合計
+tags: [finance, 月次]
+---
+
+# 月次売上
+```
+
+原稿を `.md` で保存し、そのフォルダーを開きます。先頭に空でない文字列の `type` がある Markdown を OKF の知識項目として扱います。`index.md` と `log.md` は予約ファイルです。
+
+| フォルダーペインまたは Assistant の `folder_list` の検索語 | 一致する項目 |
+| --- | --- |
+| `type:metric` | 型に `metric` を含む項目 |
+| `tag:finance` または `tag:月次` | 指定したタグを含む項目 |
+| `tag:finance, ops` | `tags: "finance, ops"` のようにカンマを含む一つのタグを持つ項目 |
+
+タグは大文字・小文字を区別せず、一つずつ完全一致で検索します。`tags: [finance, ops]` は二つのタグなので `tag:finance` と `tag:ops` で個別に探せます。YAML のブロック配列でも同じように書けます。
+
+DOCX の文書プロパティからは `title`、`description`、`tags` に反映できます。既存タグの中にカンマがある場合や複数行の値など、安全に反映できない編集は診断され、元の YAML 値が残ります。これらの値は Markdown 原稿の YAML で直接編集できます。
+
 ### MyST・Obsidian の取り込み（試験対応）
 
 同じ Markdown 原稿に、通常の記法と以下の構文を混在させられます。
@@ -411,11 +454,23 @@ DOCX からは ibisOffice の Markdown 記法（`{#results}`、`[結果](#result
 
 MyST のコードフェンスまたはコロンフェンスで囲んだ `{figure} 画像パス` は、インライン画像とキャプション段落に変換します。`:alt:` を画像の代替テキスト、Word互換の `:label:` または `:name:` をキャプションのブックマークに使います。固定寸法の `width`・`height` と、左右・中央の `align` に対応します。DOCXからは標準Markdownの画像・段落・アンカーで書き出します。
 
-#### 別ノートへのリンク解決の設計案
 
-リンク解決の範囲は、利用者が開いたフォルダー、または Git ワークスペースで選択した作業ツリー・コミットです。ファイル一覧は既存の Git ツリーやローカルのファイル一覧から取得し、Markdown の読み込みとリンク先の探索を分けます。過去コミットを見ているときは、リンク先も同じコミットから開きます。
+```markdown
+:::{figure} images/results.png
+:alt: 月別売上の棒グラフ
+:label: fig_results
+:width: 80mm
+:align: center
 
-最初は `[[資料/手順]]` のようなルート基準パスと、一意に特定できる `[[手順]]` を対象にします。同名ファイルは候補を表示し、見つからないリンクは原稿の文字列を保持します。同名検索はファイル名の索引で始められます。見出し・ブロック、別名、バックリンクを扱う段階で必要な索引を追加します。Obsidian の Vault は既存フォルダーとして開けるため、リンク解決に専用の保管形式は不要です。 [Obsidian の内部リンク](https://obsidian.md/help/Linking%2Bnotes%2Band%2Bfiles/Internal%2Blinks)
+月別の売上集計。
+:::
+
+[図を参照](#fig_results)
+```
+
+#### 別ノートへのリンク
+
+デスクトップで開いたフォルダーでは、`[[資料/手順]]` はフォルダー基準のパス、`[[手順]]` は一意なファイル名として解決します。同名ファイルがある場合は `[[資料/手順#詳細|手順の詳細]]` のようにパスを指定してください。過去の Git コミットを閲覧しているときは、リンク先も同じコミットから開きます。Obsidian の Vault は既存フォルダーとして開けます。 [Obsidian の内部リンク](https://obsidian.md/help/Linking%2Bnotes%2Band%2Bfiles/Internal%2Blinks)
 
 ### ネイティブグラフの chart フェンス
 
