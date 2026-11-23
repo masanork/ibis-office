@@ -654,6 +654,19 @@ fn dataset_alias<'a>(
     Ok(alias)
 }
 
+fn parquet_filters<'a>(spec: &'a Value, kind: &str) -> Result<Vec<(&'a str, ParquetPredicate)>, ToolError> {
+    let Some(filters) = spec.get("where") else { return Ok(Vec::new()) };
+    if kind != "parquet" {
+        return Err(ToolError::invalid("where is only used for Parquet datasets"));
+    }
+    filters.as_object()
+        .filter(|items| (1..=MAX_FILTERS).contains(&items.len()))
+        .ok_or_else(|| ToolError::invalid(format!("where must have 1 to {MAX_FILTERS} conditions")))?
+        .iter()
+        .map(|(name, value)| Ok((name.as_str(), parquet_predicate(value)?)))
+        .collect()
+}
+
 fn dataset_columns(spec: &Value, kind: &str) -> Result<Vec<String>, ToolError> {
     match spec.get("columns") {
         None => Ok(Vec::new()),
@@ -733,17 +746,7 @@ fn visit_datasets(
         }
         let table_name = spec.opt_str("table")?;
         let columns = dataset_columns(spec, kind)?;
-        let filters = match spec.get("where") {
-            None => Vec::new(),
-            Some(_) if kind != "parquet" => {
-                return Err(ToolError::invalid("where is only used for Parquet datasets"));
-            }
-            Some(value) => value.as_object()
-                .filter(|items| (1..=MAX_FILTERS).contains(&items.len()))
-                .ok_or_else(|| ToolError::invalid(format!("where must have 1 to {MAX_FILTERS} conditions")))?
-                .iter().map(|(name, value)| Ok((name.as_str(), parquet_predicate(value)?)))
-                .collect::<Result<Vec<_>, ToolError>>()?,
-        };
+        let filters = parquet_filters(spec, kind)?;
         if kind != "sqlite" && table_name.is_some() {
             return Err(ToolError::invalid("table is only used for SQLite datasets"));
         }
@@ -1246,7 +1249,7 @@ fn report_error(name: &str, error: ToolError) -> ToolError {
 }
 
 fn streamable_kind(kind: &str) -> bool {
-    matches!(kind, "arrow_ipc" | "json_lines" | "avro")
+    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet")
 }
 
 fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) -> Result<SqliteQuerySession, ToolError> {
@@ -1268,8 +1271,9 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
             bounded.push(spec.clone());
             continue;
         }
-        if spec.get("where").is_some() || !spec["table"].is_null() {
-            return Err(ToolError::invalid("Arrow IPC, JSON Lines and Avro do not accept source filters or table names"));
+        let filters = parquet_filters(spec, kind)?;
+        if !spec["table"].is_null() {
+            return Err(ToolError::invalid("table is only used for SQLite datasets"));
         }
         let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
         if !metadata.is_file() || metadata.len() > service.limits.max_file_size {
@@ -1279,6 +1283,7 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
         let source = match kind {
             "arrow_ipc" => DiskDataset::ArrowIpc(path, columns),
             "json_lines" => DiskDataset::JsonLines(path, columns),
+            "parquet" => DiskDataset::Parquet(path, columns, filters.into_iter().map(|(name, value)| (name.to_owned(), value)).collect()),
             _ => DiskDataset::Avro(path, columns),
         };
         sources.push((alias, source));
@@ -1322,6 +1327,8 @@ fn batch_session(service: &Service, query: &Value, arrow_disk: bool) -> Result<S
     match memory_query_session(service, query) {
         Err(error) if has_streaming && [
             DATASET_MEMORY_LIMIT,
+            "Parquet source exceeds the query editor's size limit",
+            "Parquet text exceeds the import limit",
             "Arrow IPC source exceeds the query editor's table size limit",
             "Arrow IPC decoded buffers exceed the 128 MiB limit",
             "Arrow IPC text exceeds the 128 MiB limit",

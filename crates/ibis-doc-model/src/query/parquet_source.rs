@@ -379,6 +379,7 @@ pub fn read_parquet_bounded(
     read_parquet_filtered(path, selected, &[], max_cells, max_text)
 }
 
+#[derive(Clone, Copy)]
 pub enum ParquetBound {
     Lt,
     Le,
@@ -402,6 +403,7 @@ impl ParquetBound {
     }
 }
 
+#[derive(Clone)]
 pub enum ParquetPredicate {
     Equal(CellValue),
     Range(Vec<(ParquetBound, CellValue)>),
@@ -513,6 +515,40 @@ fn read_columns_bounded(
     sql_filters: Option<&[(&str, ParquetPredicate)]>,
     limits: Option<(usize, usize)>,
 ) -> Result<QTable, String> {
+    let mut table = QTable::default();
+    scan_columns(path, selected, rows_loaded, expected, sql_filters, limits, limits.is_none(),
+        |columns, row| {
+            if let Some(row) = row {
+                table.rows.push(row);
+            } else {
+                table.columns = columns.to_vec();
+            }
+            Ok(())
+        },
+    )?;
+    Ok(table)
+}
+
+pub(super) fn visit_parquet(
+    path: &Path,
+    selected: &[String],
+    filters: &[(&str, ParquetPredicate)],
+    schema_only: bool,
+    visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
+) -> Result<(), String> {
+    scan_columns(path, selected, 0, None, Some(filters), None, schema_only, visit)
+}
+
+fn scan_columns(
+    path: &Path,
+    selected: &[String],
+    rows_loaded: usize,
+    expected: Option<&[QColumn]>,
+    sql_filters: Option<&[(&str, ParquetPredicate)]>,
+    limits: Option<(usize, usize)>,
+    schema_only: bool,
+    mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
+) -> Result<(), String> {
     let reader = open(path)?;
     let meta = reader.metadata().file_metadata();
     let schema = meta.schema();
@@ -575,18 +611,22 @@ fn read_columns_bounded(
         }
         Ok((index, value))
     }).collect::<Result<Vec<_>, String>>()?;
-    let Some((max_cells, mut max_text)) = limits else {
-        return Ok(QTable { columns, rows: Vec::new() });
-    };
+    if schema_only {
+        return visit(&columns, None);
+    }
     let rows = (rows_loaded as u64).saturating_add(meta.num_rows() as u64);
-    if width > 16_384 || rows >= 1_048_576 || (filters.is_empty() && (width as u64).saturating_mul(rows) > max_cells as u64)
+    if let Some((max_cells, _)) = limits
+        && (width > 16_384 || rows >= 1_048_576
+            || (filters.is_empty() && (width as u64).saturating_mul(rows) > max_cells as u64))
     {
         return Err("Parquet source exceeds the query editor's size limit".into());
     }
-    let mut table = QTable {
-        columns,
-        rows: Vec::new(),
-    };
+    if limits.is_none() && !(1..=256).contains(&width) {
+        return Err("datasets require 1 to 256 columns".into());
+    }
+    visit(&columns, None)?;
+    let mut count = rows_loaded;
+    let mut max_text = limits.map_or(128 * 1024 * 1024, |(_, max_text)| max_text);
     let projection = Type::group_type_builder(schema.name())
         .with_fields(projected)
         .build()
@@ -610,8 +650,13 @@ fn read_columns_bounded(
                     continue 'rows;
                 }
             }
-            if (rows_loaded + table.rows.len() + 1).saturating_mul(width) > max_cells {
+            count += 1;
+            if limits.is_some_and(|(max_cells, _)| count.saturating_mul(width) > max_cells) {
                 return Err("Parquet source exceeds the query editor's size limit".into());
+            }
+            if limits.is_none() {
+                // Bound individual rows without imposing a cumulative text budget on disk staging.
+                max_text = 128 * 1024 * 1024;
             }
             let mut values = Vec::with_capacity(width);
             for ((name, field), text_list) in fields.into_iter().zip(text_lists.iter().copied()) {
@@ -627,10 +672,10 @@ fn read_columns_bounded(
                 }
                 values.push(value);
             }
-            table.rows.push(values);
+            visit(&columns, Some(values))?;
         }
     }
-    Ok(table)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -672,6 +717,33 @@ mod tests {
             group.close().unwrap();
         }
         writer.close().unwrap();
+    }
+
+    #[test]
+    fn stages_a_filtered_projection_over_the_cell_budget() {
+        use super::super::{DiskDataset, SqliteQuerySession};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.parquet");
+        write_grouped_fixture(&path, 8, 10_000, true);
+        let selected = ["label".into(), "amount".into()];
+        let filters = [("id", ParquetPredicate::Range(vec![
+            (ParquetBound::Ge, CellValue::Number(-20_000.0)),
+        ]))];
+        assert!(read_parquet_filtered(&path, &selected, &filters, 100_000, 8 * 1024 * 1024)
+            .unwrap_err().contains("size limit"));
+        let source = DiskDataset::Parquet(
+            path,
+            selected.to_vec(),
+            filters.into_iter().map(|(name, filter)| (name.to_owned(), filter)).collect(),
+        );
+        let session = SqliteQuerySession::from_disk_datasets(&[("facts".into(), source)]).unwrap();
+        let rows = session.query(
+            "SELECT count(*), count(amount), count(DISTINCT label), min(amount), max(amount) FROM facts",
+            &[], 1, 1024,
+        ).unwrap();
+        assert!(!rows.truncated);
+        assert_eq!(serde_json::json!(rows.rows), serde_json::json!([[60_000, 60_000, 6, -20_000, 39_999]]));
     }
 
     #[test]

@@ -619,6 +619,7 @@ pub enum DiskDataset {
     ArrowIpc(std::path::PathBuf, Vec<String>),
     JsonLines(std::path::PathBuf, Vec<String>),
     Avro(std::path::PathBuf, Vec<String>),
+    Parquet(std::path::PathBuf, Vec<String>, Vec<(String, super::ParquetPredicate)>),
     Table(QTable),
 }
 
@@ -656,6 +657,10 @@ impl DiskDataset {
                 super::json_lines_source::visit_json_lines(path, selected, schema_only, visit)
             }
             Self::Avro(path, selected) => super::avro_source::visit_avro(path, selected, schema_only, visit),
+            Self::Parquet(path, selected, filters) => {
+                let filters = filters.iter().map(|(name, value)| (name.as_str(), value.clone())).collect::<Vec<_>>();
+                super::parquet_source::visit_parquet(path, selected, &filters, schema_only, visit)
+            }
             Self::Table(table) => {
                 visit(&table.columns, None)?;
                 if schema_only {
@@ -850,7 +855,7 @@ impl SqliteQuerySession {
                     width = names.len();
                     let batch = matches!(
                         source,
-                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::Avro(..)
+                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..)
                     );
                     #[cfg(feature = "report-profiling")]
                     let batch = batch && !super::report_profile::single_row_inserts_forced();
