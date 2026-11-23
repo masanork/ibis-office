@@ -642,6 +642,10 @@ impl FormatEditor for Document {
         editor.run_flow(commands, cx) && editor.document.undo_len() > before
     }
 
+    fn reveal_ai_paragraph(editor: &mut SlideEditor, id: u32, cx: &mut Context<SlideEditor>) {
+        reveal_body_paragraph(editor, id, cx);
+    }
+
     fn ai_docx_cursor_paragraph(editor: &crate::shell::editor::SlideEditor) -> Option<u32> {
         editor.doc_state().and_then(|s| s.caret).map(|p| p.para)
     }

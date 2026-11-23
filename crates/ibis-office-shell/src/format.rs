@@ -339,6 +339,8 @@ pub trait FormatEditor {
     ) {
     }
 
+    fn reveal_ai_paragraph(_editor: &mut SlideEditor, _id: u32, _cx: &mut Context<SlideEditor>) {}
+
     /// Active caret paragraph index for AI Assistant (docx only).
     fn ai_docx_cursor_paragraph(_editor: &SlideEditor) -> Option<u32> {
         None
@@ -1376,6 +1378,7 @@ pub trait FormatDriver: Sync {
     fn step_page(&self, _editor: &mut SlideEditor, _forward: bool, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
     fn ai_sheet_selection(&self, _editor: &SlideEditor, _slide: SlideId) -> Option<ibis_doc_model::sheet::CellRange>;
     fn set_ai_sheet_selection(&self, _editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange);
+    fn reveal_ai_paragraph(&self, editor: &mut SlideEditor, id: u32, cx: &mut Context<SlideEditor>);
     fn ai_docx_cursor_paragraph(&self, _editor: &SlideEditor) -> Option<u32>;
     fn ai_selection_plain_text(&self, _editor: &SlideEditor) -> Option<String>;
     fn ai_editable_source(&self, editor: &SlideEditor, kind: crate::ai_tools::EditableSourceKind) -> Result<crate::ai_tools::EditableSource, String>;
@@ -1639,6 +1642,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn set_ai_sheet_selection(&self, _editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange) {
         F::set_ai_sheet_selection(_editor, _slide, _range);
+    }
+    fn reveal_ai_paragraph(&self, editor: &mut SlideEditor, id: u32, cx: &mut Context<SlideEditor>) {
+        F::reveal_ai_paragraph(editor, id, cx);
     }
     fn ai_docx_cursor_paragraph(&self, _editor: &SlideEditor) -> Option<u32> {
         F::ai_docx_cursor_paragraph(_editor)

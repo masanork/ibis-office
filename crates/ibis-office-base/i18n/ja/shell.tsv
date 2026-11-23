@@ -1687,3 +1687,15 @@ xlsx.sbom-refresh	脆弱性レビューを更新…
 xlsx.sbom-refresh-failed	脆弱性レビューを更新できませんでした（{error}）
 xlsx.sbom-actions	脆弱性レビューの要対応を表示…
 xlsx.sbom-actions-failed	脆弱性レビューの要対応を開けませんでした（{error}）
+file.open-folder	フォルダーを開く…
+folder.filter	ファイル名・パスで絞り込む
+folder.more	さらに表示
+folder.refresh	更新
+folder.close	フォルダーを閉じる
+folder.error	フォルダーまたはファイルを開けませんでした
+folder.moved	フォルダーの場所が変わりました。開き直してください。
+folder.partial	一覧に含められない項目があるか、走査の上限に達しました。
+folder.reference	参照フォルダー
+folder.model-disclosure	アシスタントが参照したファイル名や抜粋は、設定されたモデルに送信されます。
+folder.tool-reference	フォルダーの参照資料
+folder.preview-partial	ファイルの先頭部分をプレビューしています。
