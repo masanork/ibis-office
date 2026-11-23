@@ -177,57 +177,84 @@ pub(super) fn markdown_tables(doc: &LawDoc) -> (Vec<Option<usize>>, Vec<String>)
 }
 
 pub(super) fn restore_tables(doc: &mut LawDoc, encoded: &str, padded_markdown_rows: bool) {
-    restore_tables_with_anchors(doc, encoded, padded_markdown_rows, &[]);
+    restore_tables_with_anchors(doc, Some(encoded), padded_markdown_rows, &[], false);
+}
+
+fn table_diagnostic(location: impl Into<String>, issue: SourceIssue) -> SourceDiagnostic {
+    SourceDiagnostic { extension: "lawtext", location: location.into(), issue }
 }
 
 pub(super) fn restore_tables_with_anchors(
     doc: &mut LawDoc,
-    encoded: &str,
+    encoded: Option<&str>,
     padded: bool,
-    anchors: &[Option<usize>],
+    anchors: &[Option<Result<usize, SourceIssue>>],
+    require_ids: bool,
 ) -> Vec<SourceDiagnostic> {
-    // Retain the original indices, including invalid entries, for local source references.
-    let fragments = serde_json::from_str::<Vec<String>>(encoded).unwrap_or_default();
+    let anchored = require_ids || anchors.iter().any(Option::is_some);
+    if anchored && anchors.len() != doc.appdx_tables.len() {
+        return vec![table_diagnostic("law_appdx_source_ids", SourceIssue::Invalid)];
+    }
+    let fragments = match encoded {
+        Some(encoded) => match serde_json::from_str::<Vec<String>>(encoded) {
+            Ok(fragments) => fragments,
+            Err(_) => return vec![table_diagnostic("law_appdx_tables", SourceIssue::Invalid)],
+        },
+        None if require_ids => return vec![table_diagnostic("law_appdx_tables", SourceIssue::Missing)],
+        None => Vec::new(),
+    };
+    // Empty entries intentionally reserve IDs after table deletion.
     let slots: Vec<_> = fragments.iter().map(|xml| SavedAppdxTable::read(xml)).collect();
-    let fallback: Vec<_> = slots.iter().enumerate()
-        .filter(|(id, _)| !anchors.contains(&Some(*id)))
-        .filter_map(|(_, snapshot)| snapshot.clone())
-        .collect();
+    let legacy: Vec<_> = slots.iter().flatten().cloned().collect();
+    let mut claims = std::collections::BTreeMap::<usize, usize>::new();
+    for id in anchors.iter().filter_map(|anchor| anchor.as_ref()?.as_ref().ok()) {
+        *claims.entry(*id).or_default() += 1;
+    }
     let mut diagnostics = Vec::new();
+    for (id, (xml, snapshot)) in fragments.iter().zip(&slots).enumerate() {
+        if xml.is_empty() || claims.contains_key(&id) {
+            continue;
+        }
+        match snapshot {
+            None => diagnostics.push(table_diagnostic(format!("law_appdx_tables[{id}]"), SourceIssue::Invalid)),
+            Some(snapshot) if anchored => diagnostics.push(table_diagnostic(
+                &snapshot.table.title, SourceIssue::Missing,
+            )),
+            Some(_) => {}
+        }
+    }
     for (index, table) in doc.appdx_tables.iter_mut().enumerate() {
-        let snapshot = if let Some(id) = anchors.get(index).copied().flatten() {
-            // Rich Markdown renders each GFM header cell as bold.
-            if let Some(header) = table.rows.first_mut()
-                && header.iter().filter(|cell| !cell.is_empty()).all(|cell| {
-                    cell.strip_prefix("**").and_then(|text| text.strip_suffix("**")).is_some()
-                })
-            {
-                for cell in header.iter_mut().filter(|cell| !cell.is_empty()) {
-                    *cell = cell[2..cell.len() - 2].to_owned();
+        let anchor = anchors.get(index).and_then(Option::as_ref);
+        let mut id = None;
+        let result = match anchor {
+            Some(Err(_)) => Err(SourceIssue::Invalid),
+            Some(Ok(source_id)) if claims[source_id] > 1 => Err(SourceIssue::Ambiguous),
+            Some(Ok(source_id)) => {
+                id = Some(*source_id);
+                match slots.get(*source_id) {
+                    Some(Some(source)) => {
+                        normalize_rich_header(table);
+                        snapshot_for(std::slice::from_ref(source), table, padded)
+                            .map(Cow::into_owned)
+                            .ok_or(SourceIssue::Incompatible)
+                    }
+                    Some(None) if !fragments[*source_id].is_empty() => Err(SourceIssue::Invalid),
+                    _ => Err(SourceIssue::Missing),
                 }
             }
-            if anchors.iter().filter(|candidate| **candidate == Some(id)).count() > 1 {
-                Err(SourceIssue::Ambiguous)
-            } else {
-                let source = slots.get(id).and_then(Option::as_ref)
-                    .ok_or(SourceIssue::Missing);
-                source.and_then(|source| {
-                    snapshot_for(std::slice::from_ref(source), table, padded)
-                        .map(Cow::into_owned)
-                        .ok_or(SourceIssue::Incompatible)
-                })
+            None if anchored => continue,
+            None => {
+                if !legacy.iter().any(|saved| saved.table.title == table.title) {
+                    continue;
+                }
+                snapshot_for(&legacy, table, padded).map(Cow::into_owned)
+                    .ok_or(SourceIssue::Incompatible)
             }
-        } else {
-            let snapshot = snapshot_for(&fallback, table, padded).map(Cow::into_owned);
-            if snapshot.is_none() && !fallback.iter().any(|saved| saved.table.title == table.title) {
-                continue;
-            }
-            snapshot.ok_or(SourceIssue::Incompatible)
         };
-        match snapshot {
+        match result {
             Ok(snapshot) => {
                 table.rows.clone_from(&snapshot.table.rows);
-                if let Some(id) = anchors.get(index).copied().flatten() {
+                if let Some(id) = id {
                     doc.appdx_table_markdown_ids.insert(index, id);
                 }
                 doc.appdx_table_anchors.insert(index, doc.appdx_table_xml.len());
@@ -235,14 +262,22 @@ pub(super) fn restore_tables_with_anchors(
             }
             Err(issue) => {
                 doc.unresolved_appdx_tables.insert(index);
-                diagnostics.push(SourceDiagnostic {
-                    extension: "lawtext",
-                    location: table.title.clone(),
-                    issue,
-                });
+                diagnostics.push(table_diagnostic(&table.title, issue));
             }
-
         }
     }
     diagnostics
+}
+
+fn normalize_rich_header(table: &mut LawAppdxTable) {
+    // Rich Markdown renders each GFM header cell as bold.
+    if let Some(header) = table.rows.first_mut()
+        && header.iter().filter(|cell| !cell.is_empty()).all(|cell| {
+            cell.strip_prefix("**").and_then(|text| text.strip_suffix("**")).is_some()
+        })
+    {
+        for cell in header.iter_mut().filter(|cell| !cell.is_empty()) {
+            *cell = cell[2..cell.len() - 2].to_owned();
+        }
+    }
 }

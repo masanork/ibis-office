@@ -64,6 +64,7 @@ pub enum SourceIssue {
     Missing,
     Ambiguous,
     Incompatible,
+    Invalid,
 }
 
 impl SourceIssue {
@@ -72,6 +73,7 @@ impl SourceIssue {
             Self::Missing => "missing",
             Self::Ambiguous => "ambiguous",
             Self::Incompatible => "incompatible",
+            Self::Invalid => "invalid",
         }
     }
 }

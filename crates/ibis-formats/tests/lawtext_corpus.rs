@@ -414,8 +414,43 @@ fn table_anchors_follow_reordered_markdown_and_report_duplicate_references() {
 
     let duplicate = reordered.replace("ibis_law_table_1", "ibis_law_table_0");
     let (_, diagnostics) = parse_markdown_law_with_diagnostics(&duplicate).unwrap();
-    assert_eq!(diagnostics.len(), 2);
-    assert!(diagnostics.iter().all(|result| result.issue == SourceIssue::Ambiguous));
+    assert_eq!(diagnostics.iter().filter(|result| result.issue == SourceIssue::Ambiguous).count(), 2);
+    assert!(diagnostics.iter().any(|result| result.issue == SourceIssue::Missing));
+}
+
+#[test]
+fn broken_markdown_table_sources_are_reported_without_overwriting_edits() {
+    use ibis_formats::lawtext::{parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
+    use ibis_formats::markdown::SourceIssue;
+
+    let source = include_str!("lawtext/food-labeling-table.xml");
+    let original = to_markdown(&parse_law_xml(source).unwrap());
+    let edited = original.replace("| 形質 |", "| 形質区分 |");
+    let unmarked = edited.replace(" {#ibis_law_table_0}", "");
+    let replace_fragments = |markdown: &str, replacement: &str| {
+        markdown.lines().map(|line| {
+            if line.starts_with("law_appdx_tables:") { replacement } else { line }
+        }).collect::<Vec<_>>().join("\n")
+    };
+    for (markdown, issue) in [
+        (unmarked.clone(), SourceIssue::Missing),
+        (edited.replace("ibis_law_table_0", "ibis_law_table_999"), SourceIssue::Missing),
+        (edited.replace("ibis_law_table_0", "ibis_law_table_bad"), SourceIssue::Invalid),
+        (replace_fragments(&edited, r#"law_appdx_tables: ["<not-a-table/>"]"#), SourceIssue::Invalid),
+        (replace_fragments(&unmarked, "law_appdx_tables: [broken"), SourceIssue::Invalid),
+        (replace_fragments(&edited, ""), SourceIssue::Missing),
+    ] {
+        let (law, diagnostics) = parse_markdown_law_with_diagnostics(&markdown).unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic.issue == issue), "{diagnostics:?}");
+        let xml = to_law_xml(&law);
+        assert!(xml.contains("形質区分"));
+        assert!(!xml.contains("rowspan="));
+    }
+
+    let legacy = unmarked.replace("law_appdx_source_ids: true\n", "");
+    let (law, diagnostics) = parse_markdown_law_with_diagnostics(&legacy).unwrap();
+    assert!(diagnostics.is_empty());
+    assert!(to_law_xml(&law).contains("rowspan=\"2\""));
 }
 
 #[test]

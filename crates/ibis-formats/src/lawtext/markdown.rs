@@ -62,7 +62,7 @@ fn to_markdown_with_articles(
     if table_source_ids.iter().any(Option::is_some)
         && let Ok(encoded) = serde_json::to_string(&table_fragments)
     {
-        out.push_str(&format!("law_appdx_tables: {encoded}\n"));
+        out.push_str(&format!("law_appdx_source_ids: true\nlaw_appdx_tables: {encoded}\n"));
     }
     if preserve_editing_metadata && !doc.appdx_fragment_xml.is_empty()
         && let Ok(encoded) = serde_json::to_string(&doc.appdx_fragment_xml)
@@ -329,6 +329,7 @@ pub fn parse_markdown_law_with_diagnostics(
 ) -> Result<(LawDoc, Vec<crate::markdown::SourceDiagnostic>), Error> {
     let mut doc = LawDoc::default();
     let mut table_xml = None;
+    let mut source_ids_required = false;
     let mut fragment_positions = None;
     let mut suppl_positions = None;
     let mut body = md.trim_start_matches('\u{feff}');
@@ -349,6 +350,7 @@ pub fn parse_markdown_law_with_diagnostics(
                     "law_appdx_fragment_positions" | "law_appdx_style_positions" => fragment_positions = Some(v),
                     "law_appdx_fragments" | "law_appdx_styles" => doc.appdx_fragment_xml = read_encoded_appdx_fragments(&v),
                     "law_suppl_positions" => suppl_positions = Some(v),
+                    "law_appdx_source_ids" => source_ids_required = v == "true",
                     "law_appdx_tables" => table_xml = Some(v),
                     "law_num" => doc.law_num = v,
                     "era" => doc.era = Some(v),
@@ -415,7 +417,7 @@ pub fn parse_markdown_law_with_diagnostics(
             }
             let (heading, source_id) = heading.strip_suffix('}')
                 .and_then(|heading| heading.rsplit_once(TABLE_SOURCE_ANCHOR))
-                .and_then(|(heading, id)| Some((heading, Some(id.parse().ok()?))))
+                .map(|(heading, id)| (heading, Some(id.parse::<usize>().map_err(|_| crate::markdown::SourceIssue::Invalid))))
                 .unwrap_or((heading, None));
             lawtext_lines.push(heading.to_string());
             if heading.starts_with("別表") && !heading.contains('。') {
@@ -471,11 +473,8 @@ pub fn parse_markdown_law_with_diagnostics(
         doc.appdx_fragment_positions = read_encoded_positions(&encoded, doc.appdx_fragment_xml.len());
     }
     doc.appdx_tables = std::mem::take(&mut parsed.appdx_tables);
-    if table_anchors.len() != doc.appdx_tables.len() {
-        table_anchors.clear();
-    }
     let diagnostics = restore_tables_with_anchors(
-        &mut doc, table_xml.as_deref().unwrap_or("[]"), true, &table_anchors,
+        &mut doc, table_xml.as_deref(), true, &table_anchors, source_ids_required,
     );
     Ok((doc, diagnostics))
 }
