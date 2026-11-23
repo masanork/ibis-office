@@ -252,3 +252,26 @@ fn markdown_keeps_visible_text_and_discards_stale_sentence_metadata() {
             .contains("ibis-law-sentences")
     );
 }
+
+#[test]
+fn lawtext_title_metadata_keeps_empty_attributes_and_plain_title() {
+    let source = concat!(
+        ":law-title-attrs: <LawTitle Kana=\"しけんほう\" Abbrev=\"\" AbbrevKana=\"よみ&#10;かた\"/>\n",
+        "試験法（令和七年法律第一号）\n\n第一条 規定を定める。",
+    );
+    let law = ibis_formats::lawtext::parse_law_input(source).unwrap();
+    assert!(ibis_formats::lawtext::is_lawtext(source.as_bytes()));
+    assert_eq!(law.law_title, "試験法");
+    assert_eq!(law.law_title_attributes.abbrev.as_deref(), Some(""));
+    assert_eq!(
+        law.law_title_attributes.abbrev_kana.as_deref(),
+        Some("よみ\nかた")
+    );
+    assert_eq!(law, parse_lawtext(&to_lawtext(&law)).unwrap());
+    let markdown = input_to_markdown(source.as_bytes()).unwrap().unwrap();
+    assert!(markdown.contains("# 試験法\n"));
+    assert_eq!(
+        law,
+        ibis_formats::lawtext::parse_markdown_law(&markdown).unwrap()
+    );
+}

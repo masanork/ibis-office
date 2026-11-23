@@ -164,3 +164,6 @@ XMLから直接読み込んだ項・号・号の細分は、本文が同じ間�
 
 
 項見出しの `ParagraphCaption` と、識別用の `Num` 属性からは復元できない表示用の `ParagraphNum` も保持します。たとえば `Num="1"` に表示用の「１」がある場合、項の識別番号と表示用の「１」を別々に記録します。Lawtextでは項の文の前にXML要素として記録し、編集用Markdownでは一行の本文の末尾にあるHTMLコメントに含めます。Markdown上で本文を修正しても、コメント内の項見出しと表示番号を引き継ぎます。
+
+
+法令名の読み `Kana`、略称 `Abbrev`、略称の読み `AbbrevKana` を保持します。ibisOfficeのLawtextでは題名の前に `:law-title-attrs: <LawTitle Kana="しけんほう" Abbrev=""/>` を置き、編集用Markdownではフロントマターの `law_title_attributes` に記録します。属性の空欄と省略は区別します。
