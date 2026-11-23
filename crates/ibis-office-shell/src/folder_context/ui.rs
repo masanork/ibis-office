@@ -127,7 +127,7 @@ impl SlideEditor {
         let Some(file) = self.file_path() else { return false };
         let Some(target) = pane.folder.link_from_file(&file, url) else { return false };
         match target {
-            Ok(path) => self.open_folder_file(&path, window, cx),
+            Ok(reference) => self.open_folder_reference(&reference, window, cx),
             Err(error) => self.show_alert(text("folder.error"), error.into(), cx),
         }
         true
@@ -269,6 +269,13 @@ impl SlideEditor {
                     .and_then(|index| self.presentation().slides.get(index))
                 {
                     self.set_current_slide(slide.id);
+                }
+            }
+            Some(ReferencePosition::Heading(fragment)) => {
+                if let Some(id) = self.presentation().flow.as_deref()
+                    .and_then(|doc| ibis_formats::markdown::heading_fragment(doc, fragment))
+                {
+                    with_format!(self, reveal_ai_paragraph(self, id, cx));
                 }
             }
             Some(ReferencePosition::Paragraph(id)) => {

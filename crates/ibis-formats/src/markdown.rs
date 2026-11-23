@@ -218,6 +218,51 @@ pub fn is_presentation_markdown(data: &[u8]) -> bool {
     })
 }
 
+/// Resolve a Markdown heading fragment in the loaded document. Explicit
+/// bookmarks take priority over generated heading IDs.
+pub fn heading_fragment(doc: &FlowDocument, fragment: &str) -> Option<u32> {
+    let fragment = percent_encoding::percent_decode_str(fragment).decode_utf8().ok()?;
+    if fragment.is_empty() {
+        return None;
+    }
+    let paragraphs = ibis_doc_model::flow_command::all_paragraphs(doc);
+    if let Some(paragraph) = paragraphs.iter()
+        .find(|paragraph| paragraph.bookmarks.iter().any(|bookmark| bookmark == fragment.as_ref()))
+    {
+        return Some(paragraph.id);
+    }
+
+    let mut used = std::collections::HashSet::new();
+    let mut next_suffix = HashMap::new();
+    for paragraph in paragraphs {
+        if ibis_doc_model::flow_command::heading_level(&doc.styles, paragraph).is_none() {
+            continue;
+        }
+        let slug: String = paragraph.text().trim().chars()
+            .flat_map(char::to_lowercase)
+            .filter_map(|ch| match ch {
+                ' ' | '\t' => Some('-'),
+                '-' | '_' => Some(ch),
+                ch if ch.is_alphanumeric() => Some(ch),
+                _ => None,
+            })
+            .collect();
+        if slug.is_empty() {
+            continue;
+        }
+        let mut candidate = slug.clone();
+        let suffix = next_suffix.entry(slug.clone()).or_insert(1);
+        while !used.insert(candidate.clone()) {
+            candidate = format!("{slug}-{suffix}");
+            *suffix += 1;
+        }
+        if candidate == fragment {
+            return Some(paragraph.id);
+        }
+    }
+    None
+}
+
 /// Read a Markdown document into a [`Presentation`] whose `flow` is the rich [`FlowDocument`].
 pub fn read_markdown(data: &[u8]) -> Result<Presentation, Error> {
     Ok(open_markdown(data.to_vec())?.presentation)
@@ -9636,6 +9681,18 @@ Front caption
         assert_eq!(shapes[2].text_body().unwrap().paragraphs[1].runs[0].text, "Edited paragraph");
         assert_eq!(shapes[3].frame, EmuRect::new(1000000, 650000, 2400000, 900000));
         assert_eq!(shapes[3].text_body().unwrap().paragraphs[0].runs[0].text, "Front caption");
+    }
+
+    #[test]
+    fn heading_fragments_resolve_bookmarks_escaped_text_and_duplicates() {
+        let opened = open_markdown(b"# Overview {#custom}\n\n## Details!\n\n## Details\n\n## \xE6\xB3\xA8\xE8\xA8\x98\n\nJust text.\n".to_vec()).unwrap();
+        let doc = opened.presentation.flow.unwrap();
+        let paragraphs = ibis_doc_model::flow_command::all_paragraphs(&doc);
+        for (fragment, index) in [("custom", 0), ("details", 1), ("details-1", 2), ("%E6%B3%A8%E8%A8%98", 3)] {
+            assert_eq!(heading_fragment(&doc, fragment), Some(paragraphs[index].id));
+        }
+        assert_eq!(heading_fragment(&doc, "just-text"), None);
+        assert_eq!(heading_fragment(&doc, "%FF"), None);
     }
 
     #[test]

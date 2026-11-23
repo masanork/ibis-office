@@ -164,7 +164,7 @@ impl Folder {
         Ok(real)
     }
 
-    fn link_from_file(&self, file: &Path, url: &str) -> Option<Result<String, String>> {
+    fn link_from_file(&self, file: &Path, url: &str) -> Option<Result<FolderReference, String>> {
         if url.starts_with("//")
             || url.split(['/', '?', '#']).next().is_some_and(|head| head.contains(':'))
             || !matches!(extension(file).as_str(), "md" | "markdown")
@@ -173,7 +173,13 @@ impl Folder {
         }
         let relative = file.strip_prefix(&self.root).ok()?;
         let components = relative.iter().map(|part| part.to_str()).collect::<Option<Vec<_>>>()?;
-        Some(self.reference_path(&components.join("/"), url))
+        let from = components.join("/");
+        Some(self.reference_path(&from, url).map(|path| FolderReference {
+            path,
+            position: url.split_once('#').and_then(|(_, fragment)| {
+                (!fragment.is_empty()).then(|| ReferencePosition::Heading(fragment.to_owned()))
+            }),
+        }))
     }
 
     fn reference_path(&self, from: &str, reference: &str) -> Result<String, String> {
@@ -287,6 +293,7 @@ pub(crate) struct FolderReference {
 enum ReferencePosition {
     Cells { sheet: String, range: String },
     Paragraph(u32),
+    Heading(String),
     Slide(usize),
 }
 
@@ -791,7 +798,9 @@ mod tests {
         .unwrap();
         assert_eq!(read.references[0].path, "README.md");
         let source = folder.root.join("資料/metric.md");
-        assert_eq!(folder.link_from_file(&source, "../README.md"), Some(Ok("README.md".into())));
+        let reference = folder.link_from_file(&source, "../README.md#read-me").unwrap().unwrap();
+        assert_eq!(reference.path, "README.md");
+        assert!(matches!(reference.position, Some(ReferencePosition::Heading(fragment)) if fragment == "read-me"));
         assert!(folder.link_from_file(&source, "../../README.md").unwrap().is_err());
         assert!(folder.link_from_file(&source, "https://example.com/README.md").is_none());
         assert_eq!(folder.reference_path("index.md", "[[metric]]").unwrap(), "資料/metric.md");
