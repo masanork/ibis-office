@@ -670,7 +670,7 @@ fn parquet_filters<'a>(spec: &'a Value, kind: &str) -> Result<Vec<(&'a str, Parq
 fn dataset_columns(spec: &Value, kind: &str) -> Result<Vec<String>, ToolError> {
     match spec.get("columns") {
         None => Ok(Vec::new()),
-        Some(_) if kind != "parquet" && !streamable_kind(kind) => Err(ToolError::invalid(
+        Some(_) if !matches!(kind, "parquet" | "arrow_ipc" | "json_lines" | "avro") => Err(ToolError::invalid(
             "columns is only used for Parquet, Arrow IPC, JSON Lines and Avro datasets",
         )),
         Some(value) => value
@@ -1249,7 +1249,7 @@ fn report_error(name: &str, error: ToolError) -> ToolError {
 }
 
 fn streamable_kind(kind: &str) -> bool {
-    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet")
+    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite")
 }
 
 fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) -> Result<SqliteQuerySession, ToolError> {
@@ -1272,7 +1272,7 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
             continue;
         }
         let filters = parquet_filters(spec, kind)?;
-        if !spec["table"].is_null() {
+        if kind != "sqlite" && !spec["table"].is_null() {
             return Err(ToolError::invalid("table is only used for SQLite datasets"));
         }
         let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
@@ -1284,6 +1284,8 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
             "arrow_ipc" => DiskDataset::ArrowIpc(path, columns),
             "json_lines" => DiskDataset::JsonLines(path, columns),
             "parquet" => DiskDataset::Parquet(path, columns, filters.into_iter().map(|(name, value)| (name.to_owned(), value)).collect()),
+            "sqlite" => DiskDataset::Sqlite(path, spec.opt_str("table")?
+                .ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?.to_owned()),
             _ => DiskDataset::Avro(path, columns),
         };
         sources.push((alias, source));
@@ -1327,6 +1329,8 @@ fn batch_session(service: &Service, query: &Value, arrow_disk: bool) -> Result<S
     match memory_query_session(service, query) {
         Err(error) if has_streaming && [
             DATASET_MEMORY_LIMIT,
+            "SQLite table exceeds the query editor's table size limit",
+            "SQLite text exceeds the import limit",
             "Parquet source exceeds the query editor's size limit",
             "Parquet text exceeds the import limit",
             "Arrow IPC source exceeds the query editor's table size limit",

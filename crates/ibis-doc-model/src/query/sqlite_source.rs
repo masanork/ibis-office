@@ -313,22 +313,41 @@ fn read_sqlite_table_impl(
         check_sidecars(path)?;
         return Ok(result);
     };
+    scan_sqlite_rows(&mut stmt, &mut result.columns, Some((max_cells, max_text)), |row| {
+        result.rows.push(row);
+        Ok(())
+    })?;
+    check_sidecars(&path.canonicalize().map_err(|error| error.to_string())?)?;
+    Ok(result)
+}
+
+fn scan_sqlite_rows(
+    stmt: &mut turso_core::Statement,
+    columns: &mut [QColumn],
+    limits: Option<(usize, usize)>,
+    mut visit: impl FnMut(Vec<CellValue>) -> Result<(), String>,
+) -> Result<(), String> {
+    let width = columns.len();
     let mut types = vec![None; width];
-    let mut text_budget = max_text;
+    let mut text_budget = limits.map_or(MAX_TEXT_BYTES, |(_, text)| text);
+    let mut height = 0usize;
     while let Some(row) = stmt
         .run_one_step_blocking(|| Ok(()), || Ok(()))
         .map_err(|error| error.to_string())?
     {
-        let height = result.rows.len() + 1;
-        if height > MAX_ROWS || height.saturating_mul(width) > max_cells {
+        height += 1;
+        if limits.is_some_and(|(max_cells, _)| {
+            height > MAX_ROWS || height.saturating_mul(width) > max_cells
+        }) {
             return Err("SQLite table exceeds the query editor's table size limit".into());
         }
+        if limits.is_none() {
+            text_budget = MAX_TEXT_BYTES;
+        }
         let mut values = Vec::with_capacity(width);
-        for (index, inferred) in types.iter_mut().enumerate() {
-            let value = row.get_value(index).as_ref();
-            let (value, kind) = cell(value, &mut text_budget).map_err(|error| {
-                format!("Row {height}, {}: {error}", result.columns[index].name)
-            })?;
+        for (index, (inferred, column)) in types.iter_mut().zip(columns.iter()).enumerate() {
+            let (value, kind) = cell(row.get_value(index).as_ref(), &mut text_budget)
+                .map_err(|error| format!("Row {height}, {}: {error}", column.name))?;
             if let Some(kind) = kind {
                 *inferred = Some(match (*inferred, kind) {
                     (None, kind) => kind,
@@ -341,13 +360,44 @@ fn read_sqlite_table_impl(
             }
             values.push(value);
         }
-        result.rows.push(values);
+        visit(values)?;
     }
-    for (column, inferred) in result.columns.iter_mut().zip(types) {
+    for (column, inferred) in columns.iter_mut().zip(types) {
         column.ty = inferred.unwrap_or(QType::Any);
     }
-    check_sidecars(&path.canonicalize().map_err(|error| error.to_string())?)?;
-    Ok(result)
+    Ok(())
+}
+
+fn visit_sqlite_table(
+    path: &Path,
+    table: &str,
+    schema_only: bool,
+    mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
+) -> Result<(), String> {
+    if schema_only {
+        return visit(&sqlite_dataset_columns(path, table)?, None);
+    }
+    let path = path.canonicalize().map_err(|error| error.to_string())?;
+    let (_database, connection) = open(&path)?;
+    let identifier = checked_table(&connection, table)?;
+    // Keep type inference and copying on the same read snapshot.
+    connection.prepare("BEGIN").and_then(|mut stmt| stmt.run_ignore_rows())
+        .map_err(|error| error.to_string())?;
+    let mut stmt = connection.prepare(format!("SELECT * FROM main.{identifier}"))
+        .map_err(|error| error.to_string())?;
+    let width = stmt.num_columns();
+    if !(1..=256).contains(&width) {
+        return Err("datasets require 1 to 256 columns".into());
+    }
+    let mut columns = (0..width).map(|index| QColumn {
+        name: stmt.get_column_name(index).into_owned(),
+        ty: QType::Any,
+    }).collect::<Vec<_>>();
+    scan_sqlite_rows(&mut stmt, &mut columns, None, |_| Ok(()))?;
+    stmt.reset().map_err(|error| error.to_string())?;
+    visit(&columns, None)?;
+    scan_sqlite_rows(&mut stmt, &mut columns.clone(), None, |row| visit(&columns, Some(row)))?;
+    check_sidecars(&path)
 }
 
 fn cell(
@@ -619,6 +669,7 @@ pub enum DiskDataset {
     ArrowIpc(std::path::PathBuf, Vec<String>),
     JsonLines(std::path::PathBuf, Vec<String>),
     Avro(std::path::PathBuf, Vec<String>),
+    Sqlite(std::path::PathBuf, String),
     Parquet(std::path::PathBuf, Vec<String>, Vec<(String, super::ParquetPredicate)>),
     Table(QTable),
 }
@@ -661,6 +712,7 @@ impl DiskDataset {
                 let filters = filters.iter().map(|(name, value)| (name.as_str(), value.clone())).collect::<Vec<_>>();
                 super::parquet_source::visit_parquet(path, selected, &filters, schema_only, visit)
             }
+            Self::Sqlite(path, table) => visit_sqlite_table(path, table, schema_only, visit),
             Self::Table(table) => {
                 visit(&table.columns, None)?;
                 if schema_only {
@@ -855,7 +907,7 @@ impl SqliteQuerySession {
                     width = names.len();
                     let batch = matches!(
                         source,
-                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..)
+                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..)
                     );
                     #[cfg(feature = "report-profiling")]
                     let batch = batch && !super::report_profile::single_row_inserts_forced();
@@ -994,6 +1046,34 @@ fn execute_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stages_sqlite_above_cell_budget_preserving_type_and_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.sqlite");
+        {
+            let database = Database::open_file(
+                Arc::new(PlatformIO::new().unwrap()), path.to_str().unwrap(), Arc::new(SqliteDialect),
+            ).unwrap();
+            let connection = database.connect().unwrap();
+            for sql in [
+                "CREATE TABLE facts (n, code)",
+                "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<50002) INSERT INTO facts SELECT n, CASE WHEN n%2=0 THEN '001' ELSE NULL END FROM seq",
+                "PRAGMA wal_checkpoint(TRUNCATE)",
+            ] {
+                connection.prepare(sql).unwrap().run_ignore_rows().unwrap();
+            }
+        }
+        let before = fs::read(&path).unwrap();
+        let source = DiskDataset::Sqlite(path.clone(), "facts".into());
+        let session = SqliteQuerySession::from_disk_datasets(&[("facts".into(), source)]).unwrap();
+        let result = session.query(
+            "SELECT count(*), sum(n), count(code), min(code), min(typeof(n)) FROM facts",
+            &[], 1, 1024,
+        ).unwrap();
+        assert_eq!(serde_json::json!(result.rows), serde_json::json!([[50002,1250125003_i64,25001,"001","integer"]]));
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
 
     #[test]
     fn json_lines_batches_preserve_row_order_and_large_values() {
