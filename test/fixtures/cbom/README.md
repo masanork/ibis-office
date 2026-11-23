@@ -31,3 +31,5 @@ Open the XLSX in ibisOffice. **Asset changes** shows RSA-2048 and its related ke
 Keep `bom-ref` values stable for the same asset or endpoint across releases. An asset with a missing reference is listed as unmatched. Changes to edge targets appear as removal and addition. **Input artifacts** records the two filenames and SHA-256 values. This fixture describes fictional BOM declarations for an inventory comparison.
 
 **Dependency impact** traces declared `dependsOn` edges back to dependent components and services. The payment service reaches RSA-2048 through its certificate in the old snapshot and ML-DSA-65 through that certificate in the new snapshot. Each row shows one shortest path in that snapshot. **Asset providers** lists the crypto library’s direct `provides` declarations separately.
+
+**System impact summary** groups the affected applications and services by BOM reference. For the sample, `payments` has one row with the changed certificate and RSA-2048 on the old side, and the changed certificate and ML-DSA-65 on the new side. **Dependency impact** retains the individual paths.

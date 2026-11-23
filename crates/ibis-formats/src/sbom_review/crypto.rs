@@ -286,8 +286,14 @@ pub fn compare_xlsx(inputs: [(&str, &[u8]); 2]) -> Result<Vec<u8>, String> {
         .filter(|reference| !reference.is_empty())
         .cloned()
         .collect();
-    let (dependents, providers) =
-        impact::rows([("Old CBOM", &old), ("New CBOM", &new)], &changed_refs);
+    let (dependents, providers) = impact::rows(
+        [
+            (impact::SNAPSHOT_LABELS[0], &old),
+            (impact::SNAPSHOT_LABELS[1], &new),
+        ],
+        &changed_refs,
+    );
+    let systems = impact::systems(&dependents, &old.graph, &new.graph);
     let evidence = ["Old CBOM", "New CBOM"]
         .into_iter()
         .zip(inputs)
@@ -331,11 +337,13 @@ pub fn compare_xlsx(inputs: [(&str, &[u8]); 2]) -> Result<Vec<u8>, String> {
         ("Input artifacts", &["Role", "File", "SHA-256"], evidence),
         ("Dependency impact", impact::DEPENDENCY_COLUMNS, dependents),
         ("Asset providers", impact::PROVIDER_COLUMNS, providers),
+        ("System impact summary", impact::SYSTEM_COLUMNS, systems),
         ("Comparison notes", &["Scope"], vec![
             vec!["Assets are matched by exact BOM reference. Use stable references across releases. Assets without a reference appear as unmatched.".into()],
             vec!["Relationships are matched by source reference, kind and target reference. A changed target appears as a removed edge and an added edge.".into()],
             vec!["The tables compare selected metadata and declarations. Confirm actual runtime use and PQC migration separately.".into()],
             vec!["Dependency impact traces one shortest dependsOn path per dependent and snapshot. Asset providers lists direct provides declarations separately.".into()],
+            vec!["System impact summary groups changed dependency targets by application or service BOM reference. Blank asset cells indicate no path to a changed asset in that snapshot.".into()],
         ]),
     ])
 }
@@ -412,6 +420,28 @@ mod tests {
             values(4, 4, &[0, 1, 3, 7]),
             ["New CBOM", "cert", "payments", "payments → cert"]
         );
+        assert_eq!(
+            book.workbook.as_ref().unwrap().sheets[6].name,
+            "System impact summary"
+        );
+        assert_eq!(
+            values(6, 1, &[0, 1, 2, 3, 4]),
+            [
+                "payments",
+                "Demo payment service",
+                "Demo payment service",
+                "application",
+                "application"
+            ]
+        );
+        assert_eq!(
+            values(6, 1, &[5, 6]),
+            [
+                "Demo payment certificate [cert] · RSA-2048 [rsa]",
+                "Demo payment certificate [cert] · ML-DSA-65 [ml-dsa]"
+            ]
+        );
+        assert!(sheet(6).cell(2, 0).is_none());
         assert!(sheet(4).cell(5, 0).is_none());
         assert_eq!(
             values(5, 1, &[0, 1, 3, 6]),

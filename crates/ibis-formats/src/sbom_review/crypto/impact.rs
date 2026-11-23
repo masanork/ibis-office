@@ -49,6 +49,8 @@ impl Graph {
     }
 }
 
+pub(super) const SNAPSHOT_LABELS: [&str; 2] = ["Old CBOM", "New CBOM"];
+
 pub(super) const DEPENDENCY_COLUMNS: &[&str] = &[
     "Snapshot",
     "Asset reference",
@@ -68,6 +70,64 @@ pub(super) const PROVIDER_COLUMNS: &[&str] = &[
     "Provider type",
     "Relationship",
 ];
+
+pub(super) const SYSTEM_COLUMNS: &[&str] = &[
+    "System reference",
+    "Old system",
+    "New system",
+    "Old type",
+    "New type",
+    "Old changed assets",
+    "New changed assets",
+];
+
+/// Summarize the same declared paths as the detail sheet, keyed by BOM reference.
+pub(super) fn systems(paths: &[Row], old: &Graph, new: &Graph) -> Vec<Row> {
+    let mut systems: BTreeMap<&str, [BTreeSet<(&str, &str)>; 2]> = BTreeMap::new();
+    for path in paths {
+        let (asset_ref, asset, system_ref) = (path[1].as_str(), path[2].as_str(), path[3].as_str());
+        let (_, old_type) = old.node(system_ref);
+        let (_, new_type) = new.node(system_ref);
+        if ![old_type, new_type]
+            .iter()
+            .any(|kind| matches!(*kind, "application" | "service"))
+        {
+            continue;
+        }
+        let snapshot = usize::from(path[0] == SNAPSHOT_LABELS[1]);
+        systems.entry(system_ref).or_default()[snapshot].insert((asset_ref, asset));
+    }
+
+    systems
+        .into_iter()
+        .map(|(reference, assets)| {
+            let (old_name, old_type) = old.node(reference);
+            let (new_name, new_type) = new.node(reference);
+            let [old_assets, new_assets] = assets.map(|items| {
+                items
+                    .into_iter()
+                    .map(|(reference, name)| {
+                        if name.is_empty() {
+                            reference.to_owned()
+                        } else {
+                            format!("{name} [{reference}]")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            });
+            vec![
+                reference.into(),
+                old_name.into(),
+                new_name.into(),
+                old_type.into(),
+                new_type.into(),
+                old_assets,
+                new_assets,
+            ]
+        })
+        .collect()
+}
 
 pub(super) fn rows(
     snapshots: [(&str, &CryptoInventory); 2],
@@ -174,5 +234,20 @@ mod tests {
         );
         assert_eq!(providers.len(), 2);
         assert_eq!(providers[0][3], "provider");
+
+        let new = Graph::default();
+        let summary = systems(&dependents[..2], &inventory.graph, &new);
+        assert_eq!(
+            summary,
+            [vec![
+                "system",
+                "system",
+                "",
+                "service",
+                "",
+                "Algorithm [asset]",
+                "",
+            ]]
+        );
     }
 }
