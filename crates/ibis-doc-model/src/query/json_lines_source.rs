@@ -816,6 +816,140 @@ mod tests {
     }
 
     #[test]
+    fn catalog_and_projections_recover_at_the_next_physical_line() {
+        use super::super::DiskDataset;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recovery.ndjson");
+        let prefix = b"{\"event\":\"before\",\"nested\":{\"id\":1}}\r\n";
+        // A valid last record need not have a newline.
+        let suffix = b"{\"event\":\"after\",\"nested\":{\"id\":2,\"late\":true}}";
+        let at_limit = [b"{\"discarded\":\"".as_slice(), &vec![b'x'; MAX_LINE_BYTES]].concat();
+        let mut oversized_with_delimiter = at_limit.clone();
+        oversized_with_delimiter.truncate(MAX_LINE_BYTES);
+        oversized_with_delimiter.push(b'\n');
+
+        for (label, broken, expected) in [
+            ("blank", b"  \r\n".as_slice(), "Expected one JSON object"),
+            (
+                "truncated object",
+                b"{\"event\":\n",
+                "Expected one JSON object",
+            ),
+            (
+                "trailing value",
+                b"{\"event\":\"discarded\"} {}\n",
+                "Expected one JSON object",
+            ),
+            (
+                "array",
+                b"[{\"event\":\"discarded\"}]\n",
+                "Expected one JSON object",
+            ),
+            ("null", b"null\n", "Expected one JSON object"),
+            (
+                "invalid UTF-8",
+                b"{\"event\":\"\xff\"}\n",
+                "Expected one JSON object",
+            ),
+            (
+                "oversized without delimiter in buffer",
+                &[at_limit.as_slice(), b"\r\n"].concat(),
+                "JSON Lines record exceeds 1 MiB",
+            ),
+            (
+                "oversized ending with delimiter in buffer",
+                oversized_with_delimiter.as_slice(),
+                "JSON Lines record exceeds 1 MiB",
+            ),
+        ] {
+            std::fs::write(&path, [prefix, broken, suffix].concat()).unwrap();
+            let catalog = json_lines_fields(&path).unwrap();
+            assert_eq!(
+                (catalog.valid_records, catalog.invalid_records),
+                (2, 1),
+                "{label}"
+            );
+            let late = catalog
+                .fields
+                .iter()
+                .find(|field| field.path == "/nested/late")
+                .unwrap();
+            assert_eq!(late.occurrences, 1, "{label}");
+
+            for dataset in [
+                DiskDataset::RecoverableJsonLines(path.clone(), vec!["event".into()]),
+                DiskDataset::JsonLinesPaths(path.clone(), vec!["/event".into()]),
+            ] {
+                let rows = dataset.collect_bounded(32, 2048).unwrap().rows;
+                assert_eq!(rows.len(), 3, "{label}");
+                for (index, row) in rows.iter().enumerate() {
+                    assert_eq!(row[0], CellValue::Number((index + 1) as f64), "{label}");
+                }
+                assert_eq!(
+                    rows[0][1..],
+                    [CellValue::Empty, CellValue::Text("before".into())],
+                    "{label}"
+                );
+                assert!(
+                    matches!(&rows[1][1], CellValue::Text(error) if error.starts_with(expected)),
+                    "{label}: {:?}",
+                    rows[1]
+                );
+                assert_eq!(rows[1][2], CellValue::Empty, "{label}");
+                assert_eq!(
+                    rows[2][1..],
+                    [CellValue::Empty, CellValue::Text("after".into())],
+                    "{label}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_reports_a_cell_limit_only_when_the_field_is_selected() {
+        use super::super::DiskDataset;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text-limit.jsonl");
+        let input = format!(
+            "{{\"event\":\"first\",\"detail\":\"{}\"}}\n{{\"event\":\"next\",\"detail\":\"ok\"}}",
+            "x".repeat(MAX_TEXT_UNITS + 1),
+        );
+        std::fs::write(&path, input).unwrap();
+        let catalog = json_lines_fields(&path).unwrap();
+        assert_eq!((catalog.valid_records, catalog.invalid_records), (2, 0));
+
+        let events = DiskDataset::JsonLinesPaths(path.clone(), vec!["/event".into()])
+            .collect_bounded(16, 256)
+            .unwrap();
+        assert_eq!(
+            events.rows[0][1..],
+            [CellValue::Empty, CellValue::Text("first".into())]
+        );
+
+        let details = DiskDataset::JsonLinesPaths(path, vec!["/detail".into()])
+            .collect_bounded(16, 256)
+            .unwrap();
+        assert_eq!(
+            details.rows[0],
+            [
+                CellValue::Number(1.0),
+                CellValue::Text("Text exceeds the spreadsheet cell limit".into()),
+                CellValue::Empty,
+            ]
+        );
+        assert_eq!(
+            details.rows[1],
+            [
+                CellValue::Number(2.0),
+                CellValue::Empty,
+                CellValue::Text("ok".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_invalid_records_and_precision_loss_with_line_numbers() {
         for record in [
             "[]",
