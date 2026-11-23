@@ -5701,6 +5701,7 @@ dependencies = [
  "krilla",
  "lewton",
  "miniz_oxide 0.8.9",
+ "percent-encoding",
  "pure_jpegls",
  "roxmltree 0.21.1",
  "rustybuzz",

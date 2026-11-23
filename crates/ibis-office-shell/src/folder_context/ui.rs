@@ -267,7 +267,7 @@ impl SlideEditor {
             if query.is_empty() {
                 *path != "index.md"
             } else {
-                path.to_lowercase().contains(&query)
+                pane.folder.matches(path, &query)
             }
         });
         if let Some(index) = pane

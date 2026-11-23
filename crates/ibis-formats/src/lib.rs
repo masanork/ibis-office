@@ -68,6 +68,7 @@ pub mod docx_convert;
 pub mod html_export;
 pub mod lawtext;
 pub mod markdown;
+pub mod okf;
 pub mod mermaid;
 pub(crate) mod drawing_table_style;
 pub mod geometry;

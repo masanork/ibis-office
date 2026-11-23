@@ -2,7 +2,8 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
-use std::io::Read;
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 
 use ibis_doc_model::ai_sheet::parse_cell_range;
@@ -34,6 +35,7 @@ pub(crate) fn visible(name: &str) -> bool {
 pub(crate) struct Folder {
     root: PathBuf,
     files: Vec<String>,
+    concept_types: BTreeMap<String, String>,
     truncated: bool,
     skipped: usize,
 }
@@ -95,12 +97,40 @@ impl Folder {
             }
         }
         files.sort_unstable();
-        Ok(Self {
+        let mut folder = Self {
             root,
             files,
+            concept_types: BTreeMap::new(),
             truncated: remaining == 0,
             skipped,
-        })
+        };
+        folder.concept_types = folder
+            .files
+            .iter()
+            .filter(|path| path.ends_with(".md"))
+            .filter_map(|path| {
+                let file = std::fs::File::open(folder.resolve(path).ok()?).ok()?;
+                let mut reader = BufReader::new(file.take(64 * 1024));
+                let mut frontmatter = String::new();
+                if reader.read_line(&mut frontmatter).ok()? == 0
+                    || !matches!(frontmatter.as_str(), "---\n" | "---\r\n")
+                {
+                    return None;
+                }
+                loop {
+                    let start = frontmatter.len();
+                    if reader.read_line(&mut frontmatter).ok()? == 0 {
+                        return None;
+                    }
+                    if matches!(&frontmatter[start..], "---\n" | "---\r\n" | "---") {
+                        break;
+                    }
+                }
+                let metadata = ibis_formats::okf::concept(path, &frontmatter).ok()??;
+                Some((path.clone(), metadata["type"].as_str()?.to_owned()))
+            })
+            .collect();
+        Ok(folder)
     }
 
     pub(crate) fn name(&self) -> String {
@@ -141,6 +171,42 @@ impl Folder {
         Ok(real)
     }
 
+    fn reference_path(&self, from: &str, reference: &str) -> Result<String, String> {
+        self.resolve(from)?;
+        if let Some(wiki) = reference.strip_prefix("[[").and_then(|text| text.strip_suffix("]]")) {
+            let target = wiki.split(['|', '#']).next().unwrap_or("").trim();
+            if target.is_empty() {
+                return Ok(from.to_owned());
+            }
+            let matches_path = |path: &str| path == target || path.strip_suffix(".md") == Some(target);
+            if target.contains('/') {
+                return self.files.iter().find(|path| matches_path(path)).cloned()
+                    .ok_or_else(|| "Wiki link target was not found in the open folder.".into());
+            }
+            let mut candidates = self.files.iter().filter(|path| {
+                path.rsplit('/').next().is_some_and(matches_path)
+            });
+            let first = candidates.next().ok_or("Wiki link target was not found in the open folder.")?;
+            if candidates.next().is_some() || self.truncated || self.skipped > 0 {
+                return Err("Wiki link is ambiguous or the folder listing is incomplete. Use a root-relative path.".into());
+            }
+            return Ok(first.clone());
+        }
+        ibis_formats::okf::resolve(from, reference)
+            .map(|(path, _)| path)
+            .ok_or_else(|| "The link does not identify a file inside the open folder.".into())
+    }
+
+    fn matches(&self, path: &str, query: &str) -> bool {
+        if let Some(kind) = query.strip_prefix("type:") {
+            self.concept_types
+                .get(path)
+                .is_some_and(|actual| actual.to_lowercase().contains(kind.trim()))
+        } else {
+            path.to_lowercase().contains(query)
+        }
+    }
+
     pub(crate) fn has_index(&self) -> bool {
         self.files.iter().any(|path| path == "index.md")
     }
@@ -176,7 +242,7 @@ pub(crate) fn tools() -> [ToolDefinition; 6] {
     [
         tool(
             "folder_list",
-            "List reference files in the open folder, optionally filtering paths by text. Paths are relative to the folder.",
+            "List reference files in the open folder, optionally filtering paths by text or knowledge type (type:Metric). Paths are relative to the folder.",
             json!({"query":{"type":"string"},"offset":{"type":"integer","minimum":0}}),
             json!([]),
         ),
@@ -188,8 +254,8 @@ pub(crate) fn tools() -> [ToolDefinition; 6] {
         ),
         tool(
             "folder_read",
-            "Read a folder reference. Markdown (including OKF index.md), text, CSV, JSON and YAML use offset (0-based line) and limit. For Office files use an operation and its arguments; examples: docx_list_paragraphs with offset and limit, xlsx_get_cells with sheet and range, pptx_get_slide with slide. Omit operation for the outline, sheets or slides.",
-            json!({"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1},
+            "Read a folder reference. Markdown (including OKF index.md), text, CSV, JSON and YAML use offset (0-based line) and limit. With from, resolve path as an OKF URI reference or a Wiki link in the folder. For Office files use an operation and its arguments; examples: docx_list_paragraphs with offset and limit, xlsx_get_cells with sheet and range, pptx_get_slide with slide. Omit operation for the outline, sheets or slides.",
+            json!({"path":{"type":"string"},"from":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1},
                 "operation":{"type":"string","enum":OFFICE_READS},"arguments":{"type":"object"}}),
             json!(["path"]),
         ),
@@ -275,7 +341,7 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall) -> Result<FolderResult, Stri
             let mut matches = folder
                 .files
                 .iter()
-                .filter(|path| path.to_lowercase().contains(&query))
+                .filter(|path| folder.matches(path, &query))
                 .skip(offset);
             let files: Vec<_> = matches.by_ref().take(50).collect();
             let next = matches.next().map(|_| offset.saturating_add(files.len()));
@@ -286,7 +352,14 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall) -> Result<FolderResult, Stri
         }
         "folder_search" => search(folder, &args, offset)?,
         "folder_read" => {
-            let relative = required_string(&args, "path")?;
+            let target = required_string(&args, "path")?;
+            let resolved;
+            let relative = if let Some(from) = args["from"].as_str() {
+                resolved = folder.reference_path(from, target)?;
+                &resolved
+            } else {
+                target
+            };
             let path = folder.resolve(relative)?;
             let ext = extension(&path);
             let result = if TEXT.contains(&ext.as_str()) {
@@ -600,6 +673,37 @@ mod tests {
                 },
             },
         )
+    }
+
+    #[test]
+    fn okf_type_filter_and_relative_read_share_the_open_folder() {
+        let fixture = Fixture::new();
+        fixture.write("資料/metric.md", "---\ntype: Metric\n---\n# Metric\n");
+        fixture.write("index.md", "---\ntype: Metric\n---\n# Index\n");
+        fixture.write("README.md", "# Read me\n");
+        let folder = Folder::scan(&fixture.0).unwrap();
+        let list = call(&folder, "folder_list", json!({"query":"type:metric"})).unwrap();
+        assert_eq!(list.value["files"], json!(["資料/metric.md"]));
+        let read = call(
+            &folder,
+            "folder_read",
+            json!({"from":"資料/metric.md","path":"../README.md"}),
+        )
+        .unwrap();
+        assert_eq!(read.references[0].path, "README.md");
+        assert_eq!(folder.reference_path("index.md", "[[metric]]").unwrap(), "資料/metric.md");
+        fixture.write("metric.md", "# Duplicate\n");
+        let folder = Folder::scan(&fixture.0).unwrap();
+        assert!(folder.reference_path("index.md", "[[metric]]").is_err());
+        assert_eq!(folder.reference_path("index.md", "[[資料/metric]]").unwrap(), "資料/metric.md");
+        assert!(
+            call(
+                &folder,
+                "folder_read",
+                json!({"from":"資料/metric.md","path":"../../README.md"})
+            )
+            .is_err()
+        );
     }
 
     #[test]

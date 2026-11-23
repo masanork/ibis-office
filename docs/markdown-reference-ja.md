@@ -6,6 +6,8 @@ title: "Docs Markdown Reference Manual"
 
 ## ibisOffice と Docs
 
+[参照仕様・互換性の範囲・検証方法](markdown-compatibility-ja.md) に、外部仕様と実装の対応をまとめています。
+
 改正前後の法令から文書を生成する手順は [法令XML・Lawtextから法案五点セットを起案する](lawtext-five-set-ja.md) を参照してください。
 
 ibisOffice は、Word（DOCX）、Excel（XLSX）、PowerPoint（PPTX）のファイルを開き、編集して保存できるオフィススイートです。製品全体については [ibisOffice の日本語 README](../README-ja.md) を参照してください。

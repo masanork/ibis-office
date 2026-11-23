@@ -1689,7 +1689,7 @@ xlsx.sbom-refresh-failed	脆弱性レビューを更新できませんでした�
 xlsx.sbom-actions	脆弱性レビューの要対応を表示…
 xlsx.sbom-actions-failed	脆弱性レビューの要対応を開けませんでした（{error}）
 file.open-folder	フォルダーを開く…
-folder.filter	ファイル名・パスで絞り込む
+folder.filter	ファイル名、パス、type:Metric
 folder.more	さらに表示
 folder.refresh	更新
 folder.close	フォルダーを閉じる
