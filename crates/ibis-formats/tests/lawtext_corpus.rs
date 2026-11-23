@@ -172,7 +172,9 @@ fn audit_reports_xml_model_changes_and_preserves_required_lawtext_attributes() {
         assert!(model.iter().all(|change| change["path"] != path));
     }
     assert!(lawtext.is_empty(), "{lawtext:?}");
+    assert_eq!(report["markdown_roundtrip_changes"], serde_json::json!([]));
     assert!(report["output_xsd"].is_null());
+    assert!(report["markdown_output_xsd"].is_null());
 }
 
 #[test]

@@ -152,7 +152,8 @@ cargo run --locked -p ibis-formats --bin ibis-lawtext-audit -- \
 
 - `xml_model_changes` は原XMLと、ibisOfficeの内部表現から書き出したXMLの差です。
 - `lawtext_roundtrip_changes` は内部表現から出したXMLと、Lawtextを経由した後のXMLの差です。
-- `output_xsd` はLawtextを経由した後のXMLのスキーマ検証結果です。`--xsd` を省略した場合は `null` になります。検証で不適合が見つかった場合は、JSONを書き出して終了コード `2` を返します。実行エラーは `1` です。
+- `markdown_roundtrip_changes` は内部表現から出したXMLと、編集用Markdownを経由した後のXMLの差です。
+- `output_xsd` はLawtext経由、`markdown_output_xsd` は編集用Markdown経由のXMLのスキーマ検証結果です。`--xsd` を省略した場合は両方とも `null` になります。どちらかが不適合なら、JSONを書き出して終了コード `2` を返します。実行エラーは `1` です。
 
 差分の位置には条・項・号の `Num`、附則の `AmendLawNum` と、同じ位置キーの出現順を用います。診断は要素・属性・テキストの差を示します。対応付けた要素の相対順が変わった場合は、親要素の位置に `child_order_changed` を表示します。同じ識別子の要素や識別子を持たない同種の要素は出現順で対応付けます。属性順と整形用の空白は比較対象外です。要素を失った場合は、その配下をまとめて親要素の位置に表示します。
 

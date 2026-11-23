@@ -6,11 +6,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::process::ExitCode;
 
-use ibis_formats::lawtext::{parse_law_xml, parse_lawtext, to_law_xml, to_lawtext};
+use ibis_formats::lawtext::{parse_law_xml, parse_lawtext, parse_markdown_law, to_law_xml, to_lawtext, to_markdown};
 use roxmltree::{Document, Node};
 use serde_json::{Value, json};
 
-const USAGE: &str = "Usage: ibis-lawtext-audit INPUT.xml [--xsd SCHEMA.xsd]\n    Write a JSON report of XML model and Lawtext round-trip differences.\n    Exit 2 if an XSD was supplied and the final XML is invalid.";
+const USAGE: &str = "Usage: ibis-lawtext-audit INPUT.xml [--xsd SCHEMA.xsd]\n    Write a JSON report of XML model, Lawtext, and editable Markdown round-trip differences.\n    Exit 2 if an XSD was supplied and either round-trip XML is invalid.";
 
 fn node_key(node: Node<'_, '_>) -> String {
     let tag = node.tag_name().name();
@@ -178,18 +178,22 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let original = fs::read_to_string(input)?;
     let law = parse_law_xml(&original)?;
     let model_xml = to_law_xml(&law);
-    let roundtrip_xml = to_law_xml(&parse_lawtext(&to_lawtext(&law))?);
-    let schema_result = schema
-        .as_deref()
-        .map(|schema| validate_xsd(&roundtrip_xml, schema))
-        .transpose()?;
-    let invalid = schema_result
-        .as_ref()
-        .is_some_and(|result| result["valid"] == false);
+    let lawtext_xml = to_law_xml(&parse_lawtext(&to_lawtext(&law))?);
+    let markdown_xml = to_law_xml(&parse_markdown_law(&to_markdown(&law))?);
+    let validate = |xml: &str| {
+        schema.as_deref().map(|schema| validate_xsd(xml, schema)).transpose()
+    };
+    let lawtext_xsd = validate(&lawtext_xml)?;
+    let markdown_xsd = validate(&markdown_xml)?;
+    let invalid = [lawtext_xsd.as_ref(), markdown_xsd.as_ref()].into_iter()
+        .flatten()
+        .any(|result| result["valid"] == false);
     let report = json!({
         "xml_model_changes": structural_changes(&original, &model_xml)?,
-        "lawtext_roundtrip_changes": structural_changes(&model_xml, &roundtrip_xml)?,
-        "output_xsd": schema_result,
+        "lawtext_roundtrip_changes": structural_changes(&model_xml, &lawtext_xml)?,
+        "markdown_roundtrip_changes": structural_changes(&model_xml, &markdown_xml)?,
+        "output_xsd": lawtext_xsd,
+        "markdown_output_xsd": markdown_xsd,
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(if invalid {
