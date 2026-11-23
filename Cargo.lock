@@ -6052,8 +6052,11 @@ dependencies = [
 name = "ibis-pdf"
 version = "0.8.0"
 dependencies = [
+ "aes",
+ "cbc",
  "hayro-interpret",
  "kurbo 0.13.1",
+ "md-5",
  "miniz_oxide 0.8.9",
  "roxmltree 0.21.1",
  "sha2 0.10.9",

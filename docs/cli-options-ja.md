@@ -285,7 +285,7 @@ ibisOffice --export pdf --handout 2 --print-color bw --print-frame \
 ibisOffice --export md --out-dir ./out input.pdf
 ```
 
-PDF・XPS（OXPS を含む）・OFD の抽出可能な本文をページ順に書き出します。行の順序は文字の位置から推定します。ビューアで復号できた図形・画像は、ページ上の配置を持つ SVG として本文に添えます。画像だけのページは OCR を行いません。段落や表の意味構造、署名、原本と同じ組版の復元には別の処理が必要です。DOCX・PPTX の EMF/WMF は Markdown 内に元の画像データを保持します。一般のブラウザーでの EMF/WMF 表示は閲覧環境に依存します。
+PDF・XPS（OXPS を含む）・OFD の抽出可能な本文をページ順に書き出します。パスワードなしで開ける暗号化 PDF（所有者が印刷・複写だけを制限したもの。Standard セキュリティハンドラの RC4・AES-128・AES-256）は復号して読みます。利用者パスワードが必要な PDF はその旨を報告します。行の順序は文字の位置から推定します。ビューアで復号できた図形・画像は、ページ上の配置を持つ SVG として本文に添えます。画像だけのページは OCR を行いません。段落や表の意味構造、署名、原本と同じ組版の復元には別の処理が必要です。DOCX・PPTX の EMF/WMF は Markdown 内に元の画像データを保持します。一般のブラウザーでの EMF/WMF 表示は閲覧環境に依存します。
 
 表の列位置を保つには `--text-layout physical` を付けます。各ページの本文を ```` ```text ```` ブロックに入れ、文字を紙面上の位置に応じた桁に置きます（半角 1 桁・全角 2 桁、`pdftotext -layout` 相当）。Markdown のエスケープはしません。既定の `--text-layout reading` は、各行を語の間を空白 1 つで区切った Markdown として書き出します。
 
