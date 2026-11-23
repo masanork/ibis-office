@@ -3182,3 +3182,5 @@ query.report-diagnostic-error	Diagnostic query failed ({message})
 query.report-diagnostic-truncated	Diagnostic results were truncated.
 query.report-back	Back
 query.report-limit	Select up to 12 reports at a time.
+query.report-parameter-choose	Choose a value
+query.report-parameter-error	Report parameter choices are unavailable or incompatible.

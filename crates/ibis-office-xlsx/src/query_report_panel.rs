@@ -10,10 +10,11 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 use ibis_doc_model::{CellValue, Command, Presentation};
+use ibis_doc_service::{ReportParameterControl, ReportParameterKind, report_parameter_controls};
 use serde_json::{Value, json};
 
 use crate::ext::*;
-use crate::shell::chrome::{SidebarPanel, action_button, panel_message};
+use crate::shell::chrome::{Dropdown, DropdownItem, SidebarPanel, action_button, panel_message};
 use crate::shell::editor::SlideEditor;
 use crate::shell::i18n::{format, text};
 
@@ -30,6 +31,31 @@ fn saved_check_text(value: String) -> AnyElement {
     div().whitespace_normal().child(value).into_any_element()
 }
 
+fn parameter_choices(workbook: &Presentation, control: &ReportParameterControl) -> Vec<(Value, String)> {
+    let Some(sheet) = workbook.slides.iter()
+        .find(|slide| slide.name.as_deref() == Some(&control.sheet))
+        .and_then(ibis_doc_model::sheet_calc::sheet_of_slide) else { return Vec::new() };
+    let Some(range) = ibis_doc_model::ai_sheet::parse_cell_range(&control.range) else { return Vec::new() };
+    (range.first_row..=range.last_row).filter_map(|row| {
+        let value = match (&sheet.cell(row, range.first_column)?.value, control.kind) {
+            (CellValue::Text(text), ReportParameterKind::Text) => json!(text),
+            (CellValue::Number(v), ReportParameterKind::Integer) if v.fract() == 0.0 && v.abs() <= (1_u64 << 53) as f64 => json!(*v as i64),
+            (CellValue::Number(v), ReportParameterKind::Number) => json!(v),
+            _ => return None,
+        };
+        if !control.kind.accepts(&value) {
+            return None;
+        }
+        let shown = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+        let label = match &sheet.cell(row, range.last_column)?.value {
+            CellValue::Text(name) if name == &shown => name.clone(),
+            CellValue::Text(name) if !name.trim().is_empty() => format!("{shown} · {name}"),
+            _ => shown,
+        };
+        Some((value, label))
+    }).collect()
+}
+
 struct ReportChoice {
     name: String,
     sheet: String,
@@ -38,6 +64,7 @@ struct ReportChoice {
     selected: bool,
     metrics: BTreeSet<String>,
     check_details_open: bool,
+    controls: Option<Vec<(ReportParameterControl, Value)>>,
 }
 
 struct ReviewedRefresh {
@@ -49,6 +76,7 @@ struct ReviewedRefresh {
 pub(crate) struct QueryReportPanel {
     reports: Vec<ReportChoice>,
     files: BTreeMap<String, PathBuf>,
+    parameter_values: BTreeMap<String, Value>,
     review: Option<ReviewedRefresh>,
     message: String,
     busy: bool,
@@ -64,6 +92,24 @@ impl QueryReportPanel {
             .collect()
     }
 
+    fn controls(&self) -> Option<BTreeMap<&str, (&ReportParameterControl, Option<&Value>)>> {
+        let mut controls: BTreeMap<_, (&ReportParameterControl, Option<&Value>)> = BTreeMap::new();
+        for report in self.reports.iter().filter(|report| report.selected) {
+            for (control, saved) in report.controls.as_ref()? {
+                let supplied = self.parameter_values.get(&control.name);
+                let (first, value) = controls.entry(control.name.as_str())
+                    .or_insert((control, Some(supplied.unwrap_or(saved))));
+                if first.kind != control.kind || first.sheet != control.sheet || first.range != control.range {
+                    return None;
+                }
+                if supplied.is_none() && *value != Some(saved) {
+                    *value = None;
+                }
+            }
+        }
+        Some(controls)
+    }
+
     fn request(&self) -> Option<(Vec<PathBuf>, Value)> {
         let tables: Vec<_> = self
             .reports
@@ -74,6 +120,9 @@ impl QueryReportPanel {
         if !(1..=12).contains(&tables.len()) {
             return None;
         }
+        let parameter_values = self.controls()?.into_iter()
+            .map(|(name, (_, value))| Some((name, value?.clone())))
+            .collect::<Option<BTreeMap<_, _>>>()?;
         let mut paths = Vec::new();
         let mut bindings = BTreeMap::new();
         for file in self.sources().keys() {
@@ -96,7 +145,7 @@ impl QueryReportPanel {
             .collect();
         Some((
             paths,
-            json!({"bindings":bindings,"tables":tables,"metrics":metrics,"preview":true}),
+            json!({"bindings":bindings,"tables":tables,"metrics":metrics,"parameter_values":parameter_values,"preview":true}),
         ))
     }
 
@@ -171,6 +220,12 @@ impl SlideEditor {
                     selected: false,
                     metrics: BTreeSet::new(),
                     check_details_open: false,
+                    controls: report_parameter_controls(definition).ok().map(|controls| {
+                        controls.into_iter().map(|control| {
+                            let value = definition["params"][control.slot - 1].clone();
+                            (control, value)
+                        }).collect()
+                    }),
                 });
             }
         }
@@ -182,6 +237,7 @@ impl SlideEditor {
             panel.reports = Some(QueryReportPanel {
                 reports,
                 files: BTreeMap::new(),
+                parameter_values: BTreeMap::new(),
                 review: None,
                 message: String::new(),
                 busy: false,
@@ -381,7 +437,7 @@ impl SlideEditor {
         let workbook = self.presentation().workbook.as_ref()?;
         let generation = panel.generation;
         let busy = panel.busy;
-        let can_preview = panel.request().is_some() && !busy;
+        let mut can_preview = panel.request().is_some() && !busy;
         let can_apply = !read_only
             && !busy
             && panel
@@ -389,6 +445,50 @@ impl SlideEditor {
                 .as_ref()
                 .is_some_and(|review| !review.commands.is_empty());
         let mut body = v_flex().gap_2().px(gpui_kit::px(18.)).py(gpui_kit::px(8.));
+        if let Some(controls) = panel.controls() {
+            let owner = cx.entity().downgrade();
+            for (index, (name, (control, selected))) in controls.into_iter().enumerate() {
+                let choices = parameter_choices(self.presentation(), control);
+                let mut label = None;
+                let entries = choices.into_iter().map(|(value, display)| {
+                    let checked = selected.is_some_and(|selected| {
+                        if control.kind == ReportParameterKind::Number {
+                            selected.as_f64() == value.as_f64()
+                        } else {
+                            selected == &value
+                        }
+                    });
+                    if checked {
+                        label = Some(display.clone());
+                    }
+                    let name = name.to_owned();
+                    DropdownItem::new(display).checked(checked).on_select(std::rc::Rc::new(move |editor: &mut SlideEditor, _, cx| {
+                        if let Some(panel) = editor.query_reports_mut()
+                            .filter(|panel| !panel.busy && panel.generation == generation)
+                        {
+                            panel.parameter_values.insert(name.clone(), value.clone());
+                            panel.invalidate();
+                            cx.notify();
+                        }
+                    })).menu().into()
+                }).collect::<Vec<_>>();
+                can_preview &= label.is_some();
+                if entries.is_empty() {
+                    body = body.child(format!("{} · {}", control.label, text("query.report-parameter-error")));
+                    continue;
+                }
+                body = body.child(control.label.clone()).child(
+                    Dropdown::from_entries(
+                        "query-report-parameter",
+                        label.unwrap_or_else(|| text("query.report-parameter-choose").to_string()),
+                        entries, true, index, &owner,
+                    )
+                        .fill_width().disabled(busy),
+                );
+            }
+        } else {
+            body = body.child(text("query.report-parameter-error"));
+        }
         if panel.reports.is_empty() {
             body = body.child(text("query.report-empty"));
         } else {

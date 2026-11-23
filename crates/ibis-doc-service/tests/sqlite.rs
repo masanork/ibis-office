@@ -1592,3 +1592,48 @@ fn json_lines_catalog_paths_build_a_reopenable_table() {
     ).unwrap();
     assert_eq!(definition["sources"][0]["paths"], paths);
 }
+
+#[test]
+fn saved_report_selectors_bind_typed_values_and_apply_the_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("values.csv");
+    let blank = dir.path().join("blank.xlsx");
+    std::fs::write(&source, "id\n1\n").unwrap();
+    std::fs::write(&blank, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut service = Service::new(&[dir.path().to_owned()], false, Limits::default());
+    let id = service.call("app_open_document", &json!({"path":blank})).unwrap()["document_id"].clone();
+    let sheet = service.call("xlsx_list_sheets", &json!({"document_id":id})).unwrap()["sheets"][0]["name"].clone();
+    let control = |name, slot, kind, range| {
+        json!({"name":name,"label":name,"slot":slot,"kind":kind,"sheet":sheet,"range":range})
+    };
+    for (anchor, sql, params, controls) in [
+        ("A1", "SELECT ?1 AS code, ?2 AS year FROM src", json!(["001",8]), json!([
+            control("code", 1, "text", "J1:K2"), control("year", 2, "integer", "M1:N3")
+        ])),
+        ("E1", "SELECT ?1 AS code FROM src", json!(["001"]), json!([
+            control("code", 1, "text", "J1:K2")
+        ])),
+    ] {
+        service.call("sqlite_query_to_table", &json!({
+            "document_id":id,"destination_sheet":sheet,"anchor":anchor,"sql":sql,"params":params,
+            "datasets":[{"source":source,"alias":"src"}],"parameter_controls":controls,
+        })).unwrap();
+    }
+    let preview = |service: &mut Service, values| service.call("sqlite_refresh_query_reports", &json!({
+        "document_id":id,"bindings":{"values.csv":source},"parameter_values":values,"preview":true,
+    }));
+    assert!(preview(&mut service, json!({"code":1})).unwrap_err().to_string().contains("Wrong type"));
+    assert!(preview(&mut service, json!({"year":"9"})).unwrap_err().to_string().contains("Wrong type"));
+    assert!(preview(&mut service, json!({"unknown":9})).unwrap_err().to_string().contains("Unknown report parameter"));
+    let reviewed = preview(&mut service, json!({"year":9})).unwrap();
+    let main = json!({"document_id":id,"table":"QueryResult1"});
+    let fixed = json!({"document_id":id,"table":"QueryResult2"});
+    assert_eq!(service.call("xlsx_list_query_reports", &main).unwrap()["definition"]["params"], json!(["001",8]));
+    assert!(!reviewed["snapshot_id"].is_null());
+    service.call("sqlite_refresh_query_reports", &json!({"document_id":id,"snapshot_id":reviewed["snapshot_id"]})).unwrap();
+    assert_eq!(service.call("xlsx_list_query_reports", &main).unwrap()["definition"]["params"], json!(["001",9]));
+    assert_eq!(service.call("xlsx_list_query_reports", &fixed).unwrap()["definition"]["params"], json!(["001"]));
+    let rows = service.call("xlsx_get_cells", &json!({"document_id":id,"sheet":sheet,"range":"A2:B2"})).unwrap();
+    assert_eq!(rows["rows"][0][0], "001");
+    assert_eq!(rows["rows"][0][1].as_f64(), Some(9.0));
+}

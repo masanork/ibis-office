@@ -74,6 +74,14 @@ const TOOLS: &[Tool] = &[
                 document_id(),
                 ("destination_sheet", string("Worksheet for the new table.")),
                 ("anchor", string("Top-left cell in A1 form.")),
+                ("parameter_controls", json!({"type":"array","maxItems":12,"items":object(&[
+                    ("name", string("Shared parameter name across reports.")),
+                    ("label", string("Selector label.")),
+                    ("slot", integer("One-based position in params.")),
+                    ("kind", json!({"type":"string","enum":["text","integer","number"]})),
+                    ("sheet", string("Worksheet containing choices.")),
+                    ("range", string("Two columns, database value followed by display label. Exclude headers.")),
+                ], &["name","label","slot","kind","sheet","range"])})),
             ]);
             object(
                 &props,
@@ -92,6 +100,7 @@ const TOOLS: &[Tool] = &[
                 &[
                     document_id(),
                     ("table", string("Table name from xlsx_list_query_reports.")),
+                    parameter_values_property(),
                     (
                         "sources",
                         json!({"type":"array","minItems":1,"maxItems":8,"items":string("File path in an allowed folder. Use the order in the saved report.")}),
@@ -111,6 +120,7 @@ const TOOLS: &[Tool] = &[
             object(
                 &[
                     document_id(),
+                    parameter_values_property(),
                     ("snapshot_id", string("Apply the most recent successful preview without rereading its sources.")),
                     (
                         "bindings",
@@ -980,6 +990,90 @@ fn source_kind(path: &Path) -> &'static str {
     }
 }
 
+fn parameter_values_property() -> (&'static str, Value) {
+    ("parameter_values", json!({"type":"object","maxProperties":12,
+        "description":"Override typed control values by name for the selected reports.",
+        "additionalProperties":{"type":["string","number"]}}))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportParameterKind {
+    Text,
+    Integer,
+    Number,
+}
+
+impl ReportParameterKind {
+    pub fn accepts(self, value: &Value) -> bool {
+        match self {
+            Self::Text => value.as_str().is_some_and(|text| text.len() <= 1024),
+            Self::Integer => value.as_i64().is_some(),
+            Self::Number => value.as_i64().is_some() || (value.is_f64() && value.as_f64().is_some_and(f64::is_finite)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportParameterControl {
+    pub name: String,
+    pub label: String,
+    pub slot: usize,
+    pub kind: ReportParameterKind,
+    pub sheet: String,
+    pub range: String,
+}
+
+pub fn report_parameter_controls(definition: &Value) -> Result<Vec<ReportParameterControl>, ToolError> {
+    let Some(raw) = definition.get("parameter_controls") else { return Ok(Vec::new()) };
+    let controls: Vec<ReportParameterControl> = serde_json::from_value(raw.clone())
+        .map_err(|_| ToolError::invalid("Invalid report parameter controls"))?;
+    let mut names = std::collections::BTreeSet::new();
+    let mut slots = std::collections::BTreeSet::new();
+    if controls.len() > 12 {
+        return Err(ToolError::invalid("Too many report parameter controls"));
+    }
+    for control in &controls {
+        let range = ibis_doc_model::ai_sheet::parse_cell_range(&control.range);
+        if control.name.is_empty() || control.name.len() > 64
+            || !control.name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+            || control.label.trim().is_empty() || control.label.len() > 256
+            || control.sheet.trim().is_empty() || !names.insert(&control.name)
+            || !slots.insert(control.slot) || !(1..=100).contains(&control.slot)
+            || !control.kind.accepts(&definition["params"][control.slot.saturating_sub(1)])
+            || !range.is_some_and(|r| r.last_column - r.first_column == 1 && r.last_row - r.first_row < 10_000)
+        {
+            return Err(ToolError::invalid(format!("Invalid report parameter control: {}", control.name)));
+        }
+    }
+    Ok(controls)
+}
+
+fn validate_parameter_values<'a>(
+    args: &Value,
+    definitions: impl IntoIterator<Item = &'a Value>,
+) -> Result<(), ToolError> {
+    let Some(values) = args.get("parameter_values") else { return Ok(()) };
+    let values = values.as_object().filter(|v| v.len() <= 12)
+        .ok_or_else(|| ToolError::invalid("Invalid report parameter values"))?;
+    let mut known = std::collections::BTreeSet::new();
+    for definition in definitions {
+        for control in report_parameter_controls(definition)? {
+            if let Some(value) = values.get(&control.name) {
+                if !control.kind.accepts(value) {
+                    return Err(ToolError::invalid(format!("Wrong type for report parameter {}", control.name)));
+                }
+                known.insert(control.name);
+            }
+        }
+    }
+    if let Some(name) = values.keys().find(|name| !known.contains(*name)) {
+        return Err(ToolError::invalid(format!("Unknown report parameter {name}")));
+    }
+    Ok(())
+}
+
 fn saved_definition(args: &Value) -> Result<Value, ToolError> {
     let source = |path: &str, spec: &Value| {
         let path = Path::new(path);
@@ -1003,10 +1097,14 @@ fn saved_definition(args: &Value) -> Result<Value, ToolError> {
     } else {
         vec![source(args.str_arg(PATH)?, &Value::Null)]
     };
-    let definition = json!({
+    let mut definition = json!({
         "sql":args["sql"], "params":args.get("params").cloned().unwrap_or_else(|| json!([])),
         "sources":sources,
     });
+    if let Some(controls) = args.get("parameter_controls") {
+        definition["parameter_controls"] = controls.clone();
+        report_parameter_controls(&definition)?;
+    }
     if definition.to_string().len() > REPORT_DEFINITION_BYTES {
         return Err(ToolError::invalid(
             "The saved report definition exceeds 32 KiB",
@@ -1051,7 +1149,13 @@ fn bound_query(definition: &Value, args: &Value) -> Result<Value, ToolError> {
                 expected.len()
             ))
         })?;
-    let mut query = json!({"sql":definition["sql"],"params":definition["params"]});
+    let mut params = definition["params"].clone();
+    for control in report_parameter_controls(definition)? {
+        if let Some(value) = args["parameter_values"].get(&control.name) {
+            params[control.slot - 1] = value.clone();
+        }
+    }
+    let mut query = json!({"sql":definition["sql"],"params":params});
     let datasets = sources
         .iter()
         .zip(expected)
@@ -1103,6 +1207,7 @@ fn set_input_schema(definition: &mut Value, schema: &SqliteInputSchema) -> bool 
 struct RefreshReview {
     checks: Vec<Value>,
     input_schema: Option<SqliteInputSchema>,
+    changed_params: Option<Value>,
 }
 
 impl RefreshReview {
@@ -1117,24 +1222,30 @@ impl RefreshReview {
         if !self.checks.is_empty() {
             summary["checks"] = json!(self.checks);
         }
-        let Some(current) = &self.input_schema else {
-            summary["input_schema_status"] = json!("unavailable");
-            return;
-        };
+        let mut next = definition.clone();
+        if let Some(params) = &self.changed_params {
+            next["params"] = params.clone();
+        }
         let previous = definition.get("input_schema")
             .and_then(|schema| serde_json::from_value::<SqliteInputSchema>(schema.clone()).ok());
-        if previous.as_ref() == Some(current) {
-            return;
+        let current = self.input_schema.as_ref();
+        let schema_changed = current.is_some() && previous.as_ref() != current;
+        match current {
+            Some(schema) if schema_changed => {
+                if !set_input_schema(&mut next, schema) {
+                    summary["input_schema_status"] = json!("unavailable");
+                }
+            }
+            None => summary["input_schema_status"] = json!("unavailable"),
+            _ => {}
         }
-        let mut next = definition.clone();
-        if set_input_schema(&mut next, current) {
+        if next != *definition {
             commands.push(Command::Sheet(SheetCommand::SetQueryReport {
                 table: summary["table"].as_str().expect("refresh summary has a table name").to_owned(),
                 definition: next,
             }));
-        } else {
-            summary["input_schema_status"] = json!("unavailable");
         }
+        let Some(current) = current.filter(|_| schema_changed) else { return };
         if let Some(previous) = previous {
             let mut changes = Vec::new();
             let mut count = 0;
@@ -1170,8 +1281,9 @@ impl RefreshReview {
 fn refresh_query_table(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let open = crate::tools_xlsx::workbook_document(service, args.str_arg("document_id")?)?;
     let definition = query_report_definition(open.document.presentation(), args)?;
-    let (rows, review) =
-        refresh_query_result(service, &bound_query(&definition, args)?, &definition)?;
+    validate_parameter_values(args, [&definition])?;
+    let query = bound_query(&definition, args)?;
+    let (rows, review) = refresh_query_result(service, &query, &definition)?;
     apply_single_refresh(service, args, rows, &definition, &review)
 }
 
@@ -1209,6 +1321,7 @@ pub fn prepare_selected_query_refresh(
         *entry = json!(selected_file(paths, entry)?);
     }
     let service = selected_file_service(paths);
+    validate_parameter_values(&args, [&definition])?;
     let (rows, review) =
         refresh_query_result(&service, &bound_query(&definition, &args)?, &definition)?;
     Ok(SqliteTableExport {
@@ -1426,6 +1539,7 @@ fn batch_query_results(
     reports: Vec<(String, Value)>,
 ) -> Result<Vec<QueryReportResult>, ToolError> {
     let bindings = batch_bindings(args)?;
+    validate_parameter_values(args, reports.iter().map(|(_, definition)| definition))?;
     let preview = args.opt_bool("preview")?.unwrap_or(false);
     let arrow_disk = args.opt_bool("arrow_disk")?.unwrap_or(false);
     let mut groups: Vec<(Value, Vec<_>)> = Vec::new();
@@ -1439,7 +1553,13 @@ fn batch_query_results(
                 bindings.get(file).filter(|path| path.is_string())
                     .ok_or_else(|| ToolError::invalid(format!("Missing file binding for {file}")))
             }).collect::<Result<Vec<_>, _>>()?;
-            bound_query(&definition, &json!({"sources":sources}))
+            {
+                let mut supplied = json!({"sources":sources});
+                if let Some(values) = args.get("parameter_values") {
+                    supplied["parameter_values"] = values.clone();
+                }
+                bound_query(&definition, &supplied)
+            }
         })().map_err(|error| report_error(&name, error))?;
         let key = json!({"datasets":query["datasets"],"path":query["path"]});
         let entry = (index, name, definition, query);
@@ -1468,7 +1588,8 @@ fn batch_query_results(
         for (index, name, definition, query) in reports {
             let (rows, checks) = refresh_query_in_session(&session, &query, &definition, preview)
                 .map_err(|error| report_error(&name, error))?;
-            let review = RefreshReview { checks, input_schema: input.clone() };
+            let changed_params = changed_report_params(&definition, &query)?;
+            let review = RefreshReview { checks, input_schema: input.clone(), changed_params };
             results.push((index, QueryReportResult { name, definition, rows, review }));
         }
     }
@@ -1807,6 +1928,18 @@ fn set_query_report_checks(service: &mut Service, args: &Value) -> Result<Value,
     Ok(crate::edit::edited(id, open, summary, Vec::new()))
 }
 
+fn changed_report_params(definition: &Value, query: &Value) -> Result<Option<Value>, ToolError> {
+    if definition["params"] == query["params"] {
+        return Ok(None);
+    }
+    let mut next = definition.clone();
+    next["params"] = query["params"].clone();
+    if next.to_string().len() > REPORT_DEFINITION_BYTES {
+        return Err(ToolError::invalid("The updated report definition exceeds 32 KiB"));
+    }
+    Ok(Some(query["params"].clone()))
+}
+
 fn refresh_query_result(
     service: &Service,
     args: &Value,
@@ -1815,7 +1948,8 @@ fn refresh_query_result(
     let session = query_session(service, args)?;
     let (rows, checks) = refresh_query_in_session(&session, args, definition, false)?;
     let input_schema = report_input_schema(&session)?;
-    Ok((rows, RefreshReview { checks, input_schema }))
+    let changed_params = changed_report_params(definition, args)?;
+    Ok((rows, RefreshReview { checks, input_schema, changed_params }))
 }
 
 fn refresh_query_in_session(
