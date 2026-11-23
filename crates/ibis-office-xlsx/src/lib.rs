@@ -695,6 +695,17 @@ fn outer_contexts(state: &crate::shell::menu_context::ContextState) -> Vec<crate
 }
 
 impl FormatEditor for Workbook {
+    fn preview_assistant_report_refresh(
+        editor: &mut SlideEditor, table: &str,
+        files: std::collections::BTreeMap<String, std::path::PathBuf>,
+        cx: &mut Context<SlideEditor>,
+    ) {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        crate::query_report_panel::QueryReportPanelExtCrate::open_assistant_report_refresh(editor, table, files, cx);
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        let _ = (editor, table, files, cx);
+    }
+
     fn ai_sheet_selection(
         editor: &crate::shell::editor::SlideEditor,
         slide: ibis_doc_model::SlideId,

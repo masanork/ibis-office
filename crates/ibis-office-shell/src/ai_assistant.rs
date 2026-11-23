@@ -137,6 +137,8 @@ pub struct AiAssistantState {
     pub _prompt_subscription: Subscription,
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     analysis_sources: Option<(u64, Vec<std::path::PathBuf>)>,
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    report_refresh_handoff: Option<ReportRefreshHandoff>,
     /// Allowlist from `GET /api/ai/models`. Desktop leaves this empty.
     #[allow(dead_code)]
     pub browser_models: Vec<BrowserModel>,
@@ -233,7 +235,16 @@ struct ReportCheckTrial {
     id: u64,
     table: String,
     files: String,
+    refresh_files: Option<std::collections::BTreeMap<String, std::path::PathBuf>>,
     outcome: Option<Result<Vec<serde_json::Value>, String>>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+struct ReportRefreshHandoff {
+    file_id: u64,
+    table: String,
+    definition: serde_json::Value,
+    files: std::collections::BTreeMap<String, std::path::PathBuf>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -932,6 +943,8 @@ impl SlideEditor {
                 _prompt_subscription,
                 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                 analysis_sources: None,
+                #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                report_refresh_handoff: None,
                 browser_models: Vec::new(),
                 browser_status: String::new(),
                 browser_pending: None,
@@ -1083,6 +1096,7 @@ impl SlideEditor {
                     id,
                     table,
                     files: String::new(),
+                    refresh_files: None,
                     outcome: Some(Err(error)),
                 });
                 cx.notify();
@@ -1095,10 +1109,24 @@ impl SlideEditor {
             .map(|name| name.to_string_lossy())
             .collect::<Vec<_>>()
             .join("、");
+        // Batch refresh binds by saved filename. Conflicting files for the same
+        // saved name cannot be represented by that existing interface.
+        let refresh_files = definition["sources"].as_array().and_then(|sources| {
+            let mut bindings = std::collections::BTreeMap::new();
+            for (source, path) in sources.iter().zip(&paths) {
+                let name = source["file"].as_str()?;
+                if bindings.get(name).is_some_and(|previous| previous != path) {
+                    return None;
+                }
+                bindings.insert(name.to_owned(), path.clone());
+            }
+            Some(bindings)
+        });
         review.check_trial = Some(ReportCheckTrial {
             id,
             table,
             files,
+            refresh_files,
             outcome: None,
         });
         let definition = definition.clone();
@@ -1729,11 +1757,35 @@ impl SlideEditor {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn open_reviewed_report_refresh(&mut self, cx: &mut Context<Self>) {
+        let Some(handoff) = self.ai_assistant.as_mut()
+            .and_then(|panel| panel.report_refresh_handoff.take()) else { return };
+        let current = self.presentation().workbook.as_ref()
+            .and_then(|book| book.query_reports.get(&handoff.table));
+        if self.file_id == handoff.file_id && current == Some(&handoff.definition) {
+            with_format!(self, preview_assistant_report_refresh(self, &handoff.table, handoff.files, cx));
+        }
+        cx.notify();
+    }
+
     #[cfg(not(target_family = "wasm"))]
     fn finish_assistant_review(&mut self, apply: bool, cx: &mut Context<Self>) {
         let Some(panel) = self.ai_assistant.as_mut() else { return };
-        let Some(review) = panel.assistant_review.take() else { return };
+        let Some(mut review) = panel.assistant_review.take() else { return };
         let run_id = panel.run_id;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        let handoff = review.check_trial.take().and_then(|trial| {
+            if !matches!(trial.outcome, Some(Ok(_))) {
+                return None;
+            }
+            let definition = review.turn.draft.presentation().workbook.as_ref()?
+                .query_reports.get(&trial.table)?.clone();
+            Some(ReportRefreshHandoff {
+                file_id: review.turn.file_id, table: trial.table, definition,
+                files: trial.refresh_files?,
+            })
+        });
         let AssistantReview { turn, commands, history_start, .. } = review;
         let (kind, message) = if !apply {
             (UiMessageKind::Assistant, "変更案を破棄しました。".into())
@@ -1765,6 +1817,10 @@ impl SlideEditor {
             }));
         }
         if let Some(panel) = self.ai_assistant.as_mut() {
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            {
+                panel.report_refresh_handoff = if apply && kind != UiMessageKind::Error { handoff } else { None };
+            }
             if kind == UiMessageKind::Error || !apply {
                 panel.history.truncate(history_start);
             }
@@ -4477,12 +4533,28 @@ impl SlideEditor {
                 .child(format!("{} · {}", crate::i18n::text("folder.reference"), pane.folder.name()))
                 .child(crate::i18n::text("folder.model-disclosure")))
         });
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        let report_refresh = panel.report_refresh_handoff.as_ref().filter(|handoff| {
+            !streaming && !awaiting_review && handoff.file_id == self.file_id
+                && self.presentation().workbook.as_ref()
+                    .and_then(|book| book.query_reports.get(&handoff.table)) == Some(&handoff.definition)
+        }).map(|handoff| {
+            let button = Button::new("assistant-report-refresh-handoff").small()
+                .label(format!("このファイルで {} の更新プレビューへ", handoff.table))
+                .on_click(cx.listener(|this, _, _, cx| this.open_reviewed_report_refresh(cx)));
+            #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+            let button = crate::scenario::button_probe::observe(button, "assistant-report-refresh-handoff".into());
+            button.into_any_element()
+        });
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        let report_refresh: Option<AnyElement> = None;
         let content = content
             .child(header)
             .children(sqlite_controls)
             .children(browser_box)
             .children(settings_box)
             .children(pending_box)
+            .children(report_refresh)
             .child(scrollable_msgs);
 
         #[cfg(target_family = "wasm")]

@@ -191,6 +191,20 @@ impl SlideEditor {
         cx.notify();
     }
 
+    pub(crate) fn open_assistant_report_refresh(
+        &mut self, table: &str, files: BTreeMap<String, PathBuf>, cx: &mut Context<Self>,
+    ) {
+        self.close_ai_assistant_panel(cx);
+        self.open_queries_panel(cx);
+        self.open_query_report_panel(cx);
+        let Some(panel) = self.query_reports_mut() else { return };
+        for report in &mut panel.reports {
+            report.selected = report.name == table;
+        }
+        panel.files = files;
+        self.preview_query_reports(cx);
+    }
+
     fn query_reports_mut(&mut self) -> Option<&mut QueryReportPanel> {
         self.sheet_state_mut()?
             .panels
@@ -836,14 +850,57 @@ pub(crate) fn refresh_report_scenario() {
     button_probe::click(&mut scene, "assistant-report-check-sql");
     button_probe::click(&mut scene, "ai-workbook-discard");
     assert_eq!(saved_checks(&mut scene), informational);
+    assert!(button_probe::bounds("assistant-report-refresh-handoff").is_none());
 
+    let wait_for_review = |scene: &mut Scenario| {
+        for _ in 0..100 {
+            let (ready, busy, message) = scene.with(|editor, _| {
+                let panel = editor
+                    .wb()
+                    .panels
+                    .queries
+                    .as_ref()
+                    .unwrap()
+                    .reports
+                    .as_ref()
+                    .unwrap();
+                (panel.review.is_some(), panel.busy, panel.message.clone())
+            });
+            if ready {
+                return;
+            }
+            assert!(busy, "report preview failed: {message}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            scene.wait(20);
+        }
+        panic!("report preview did not complete");
+    };
     stage(&mut scene, &blocking);
     bind_trial(&mut scene);
     check_trial(&mut scene);
     button_probe::click(&mut scene, "ai-workbook-apply");
     assert_eq!(saved_checks(&mut scene), blocking);
+
+    // The trial failed on duplicated rows. The handoff rereads the same path
+    // after the source is repaired and starts a new preview without editing.
+    std::fs::write(&next, "code,amount\n001,18\n").unwrap();
     button_probe::clear();
-    open_report(&mut scene);
+    scene.update(|_, _, cx| cx.notify());
+    button_probe::click(&mut scene, "assistant-report-refresh-handoff");
+    wait_for_review(&mut scene);
+    scene.update(|editor, _, _| {
+        let panel = editor.query_reports_mut().unwrap();
+        assert_eq!(panel.files.get("monthly.csv"), Some(&next));
+        let review = panel.review.as_ref().unwrap();
+        assert_eq!(review.result["blocked"], false);
+        assert_eq!(review.result["reports"][0]["checks"][0]["count"], 0);
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(
+            editor.presentation().slide(editor.current_slide).unwrap()
+        ).unwrap();
+        assert_eq!(sheet.cell(1, 1).unwrap().value, CellValue::Number(24.0));
+    });
+    button_probe::click(&mut scene, "query-reports-back");
+    button_probe::click(&mut scene, "queries-report-refresh");
     let updated_sql = blocking[0]["sql"].as_str().unwrap();
     let diagnostic_sql = blocking[0]["diagnostic"]["sql"].as_str().unwrap();
     let updated_summary = format("query.report-saved-check", &[
@@ -907,29 +964,6 @@ pub(crate) fn refresh_report_scenario() {
         panel.reports[0].metrics.insert("amount".into());
         cx.notify();
     });
-    let wait_for_review = |scene: &mut Scenario| {
-        for _ in 0..100 {
-            let (ready, busy, message) = scene.with(|editor, _| {
-                let panel = editor
-                    .wb()
-                    .panels
-                    .queries
-                    .as_ref()
-                    .unwrap()
-                    .reports
-                    .as_ref()
-                    .unwrap();
-                (panel.review.is_some(), panel.busy, panel.message.clone())
-            });
-            if ready {
-                return;
-            }
-            assert!(busy, "report preview failed: {message}");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            scene.wait(20);
-        }
-        panic!("report preview did not complete");
-    };
     let amount = |scene: &mut Scenario| {
         scene.with(|editor, _| {
             let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(
