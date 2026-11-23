@@ -21,3 +21,6 @@ pub use stdio::serve;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod assistant_endpoint;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod workbook_assistant;

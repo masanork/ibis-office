@@ -54,7 +54,7 @@ getrandom = "0.3"
 same-file = "1"
 ibis-office-updater = { path = "../ibis-office-updater" }
 notify = "7"
-futures = { version = "0.3", default-features = false, features = ["std"] }
+futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-pre-macos = { version = "=0.3.6", optional = true }

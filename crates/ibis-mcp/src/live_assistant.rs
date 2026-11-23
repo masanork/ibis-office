@@ -39,6 +39,12 @@ const TOOLS: &[(&str, &str, &str, bool)] = &[
         false,
     ),
     (
+        "assistant_inspect_workbook",
+        "inspect_workbook",
+        "Start a workbook inspection on a headless Workbook Assistant. Pass an XLSX path relative to the workspace and use assistant_result to follow the run.",
+        false,
+    ),
+    (
         "assistant_apply",
         "apply",
         "Apply the pending undoable document edit for this run ID. Call only when the user explicitly asks to apply the changes. This does not save the document or apply source edits.",
@@ -61,10 +67,11 @@ impl LiveAssistant {
             "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
             "annotations":{"readOnlyHint":true}
         }));
-        discovery.into_iter().chain(TOOLS.iter().filter(|tool| !self.read_only || tool.3).map(move |(name, op, description, read)| {
+        discovery.into_iter().chain(TOOLS.iter().filter(move |tool| (!self.read_only || tool.3) && (workspace || tool.1 != "inspect_workbook")).map(move |(name, op, description, read)| {
             let (mut properties, mut required) = match *op {
                 "prompt" => (json!({"text":{"type":"string","minLength":1},"skill":{"type":"string","minLength":1,"maxLength":64}}), json!(["text"])),
                 "result" => (json!({"run_id":{"type":"integer","minimum":0},"after":{"type":"integer","minimum":0}}), json!(["run_id"])),
+                "inspect_workbook" => (json!({"path":{"type":"string","minLength":1}}), json!(["path"])),
                 "apply" => (json!({"run_id":{"type":"integer","minimum":0}}), json!(["run_id"])),
                 _ => (json!({}), json!([])),
             };
@@ -87,7 +94,8 @@ impl LiveAssistant {
         }
         let (_, op, _, _) = TOOLS
             .iter()
-            .find(|tool| tool.0 == name && (!self.read_only || tool.3))?;
+            .find(|tool| tool.0 == name && (!self.read_only || tool.3)
+                && (matches!(self.endpoint, Endpoint::Workspace(_)) || tool.1 != "inspect_workbook"))?;
         Some(self.request(op, args))
     }
 
@@ -115,6 +123,7 @@ impl LiveAssistant {
             "prompt" => &["text", "skill"],
             "result" => &["run_id", "after"],
             "apply" => &["run_id"],
+            "inspect_workbook" => &["path"],
             _ => &[],
         };
         if args

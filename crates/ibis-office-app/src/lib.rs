@@ -1095,6 +1095,20 @@ pub fn run_native() {
         }
         return;
     }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if std::env::args().nth(1).as_deref() == Some("--assistant-headless-workbook") {
+        let mut paths = std::env::args_os().skip(2);
+        let Some(workspace) = paths.next().filter(|_| paths.next().is_none()) else {
+            eprintln!("usage: ibisOffice --assistant-headless-workbook <workspace>");
+            std::process::exit(2);
+        };
+        ibis_calc::eval::convert::set_clock(clock::calc_clock);
+        if let Err(error) = shell::assistant_socket::run_workbook_assistant(std::path::Path::new(&workspace)) {
+            eprintln!("ibisOffice Workbook Assistant: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     register_hooks();
     // TODAY, NOW and a date typed without its year read the local time.
     ibis_calc::eval::convert::set_clock(clock::calc_clock);

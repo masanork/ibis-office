@@ -80,6 +80,14 @@ MCP の `assistant_list_sessions` は同じ作業フォルダーに共有され�
 
 デモはモデルを呼び出さず、文書は開かない。結果は実行先のプロセスが生きている間、GUI と同じジャーナル上限で保持される。MCP プロセスを終了して起動し直しても同じセッション ID と実行 ID を使える。
 
+### ヘッドレスでブックを調べる
+
+macOS・Linux では、GUI と同じモデル設定で `ibisOffice --assistant-headless-workbook /absolute/path/to/project` を起動できる。MCP を同じ作業フォルダーに接続し、`assistant_list_sessions` から Workbook Assistant を選ぶ。`assistant_inspect_workbook` には `session_id` とワークスペース相対の `path`（例 `reports/report.xlsx`）を渡す。
+
+文書サービスがブックを読み取り専用で開き、最大24シートの使用範囲と各シート最大4件の数式例を採取する。数式候補の探索は各シートの最初の構造上の所見100件を対象とする。シート名、使用範囲、数式例を設定済みモデルに渡して要約する。元のブックへの書き込みは行わない。
+
+`assistant_result` は `run_id` で進捗、数式などの根拠、要約、エラーコードを返す。MCP を切断しても実行先が処理を続ける。実行先ごとに同時実行は1件で、処理中の新規依頼はエラーを返す。`--read-only` のクライアントは実行先と結果を確認できる。
+
 以下は導入時の設計メモ。
 
 ## 目的
