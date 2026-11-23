@@ -20,6 +20,8 @@ const INVALID_PARAMS: i64 = -32602;
 
 pub struct Server {
     service: Service,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    assistant: Option<crate::live_assistant::LiveAssistant>,
 }
 
 fn failure(id: &Value, code: i64, message: &str, data: Option<Value>) -> Value {
@@ -32,7 +34,17 @@ fn failure(id: &Value, code: i64, message: &str, data: Option<Value>) -> Value {
 
 impl Server {
     pub fn new(service: Service) -> Self {
-        Self { service }
+        Self {
+            service,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            assistant: None,
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn with_live_assistant(mut self, socket: std::path::PathBuf, read_only: bool) -> Self {
+        self.assistant = Some(crate::live_assistant::LiveAssistant { socket, read_only });
+        self
     }
 
     pub fn parse_error(message: &str) -> Value {
@@ -98,6 +110,9 @@ impl Server {
                         })
                     })
                     .collect();
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                let tools: Vec<Value> = tools.into_iter()
+                    .chain(self.assistant.iter().flat_map(|assistant| assistant.schemas())).collect();
                 ok(json!({ "tools": tools }))
             }
             "tools/call" => self.call(id, params),
@@ -109,6 +124,20 @@ impl Server {
         let Some(name) = params.get("name").and_then(Value::as_str) else {
             return failure(id, INVALID_PARAMS, "name is required", None);
         };
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if let Some(assistant) = &self.assistant
+            && let Some(result) = assistant.call(name, params.get("arguments"))
+        {
+            let (value, is_error) = match result {
+                Ok(value) => (value, false),
+                Err(message) => (json!({"error":{"code":"assistant_connection","message":message}}), true),
+            };
+            return json!({"jsonrpc":"2.0","id":id,"result":{
+                "content":[{"type":"text","text":value.to_string()}],
+                "structuredContent":value,"isError":is_error,
+                "_meta":{"io.ibisoffice/untrusted-content":NOTICE},
+            }});
+        }
         // A tool the server does not offer (in read-only mode too) is not there.
         let Some(tool) = self.service.tools().into_iter().find(|t| t.name == name) else {
             return failure(id, INVALID_PARAMS, &format!("unknown tool {name}"), None);

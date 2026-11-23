@@ -419,6 +419,7 @@ pub fn init(cx: &mut App) {
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
 struct Args {
     assistant_stdio: bool,
+    assistant_socket: Option<std::path::PathBuf>,
     path: Option<std::path::PathBuf>,
     slide: Option<usize>,
     export: Option<String>,
@@ -493,6 +494,7 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
         let mut value = || iter.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
             "--assistant-stdio" => args.assistant_stdio = true,
+            "--assistant-socket" => args.assistant_socket = Some(value()?.into()),
             "--read-only" => args.read_only = true,
             "--slide" => args.slide = Some(value()?.parse().map_err(|_| "--slide needs a slide number".to_string())?),
             "--export" => args.export = Some(value()?),
@@ -565,12 +567,15 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
             }
         }
     }
-    if args.assistant_stdio {
+    if args.assistant_stdio && args.assistant_socket.is_some() {
+        return Err("use only one Assistant connection option".into());
+    }
+    if args.assistant_stdio || args.assistant_socket.is_some() {
         if !cfg!(any(target_os = "macos", target_os = "linux")) {
-            return Err("--assistant-stdio is available on macOS and Linux".into());
+            return Err("Assistant connections are available on macOS and Linux".into());
         }
         if args.export.is_some() || args.timing || args.quit_after_first_frame {
-            return Err("--assistant-stdio requires a regular GUI session".into());
+            return Err("Assistant connections require a regular GUI session".into());
         }
     }
     if args.export.as_deref() == Some("pdfa-validate") {
@@ -1087,6 +1092,13 @@ pub fn run_native() {
             std::process::exit(2);
         }
     };
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let assistant_socket = args.assistant_socket.as_deref().map(|path| {
+        shell::assistant_socket::BoundSocket::bind(path).unwrap_or_else(|error| {
+            eprintln!("ibisOffice: cannot open Assistant socket {}: {error}", path.display());
+            std::process::exit(2);
+        })
+    });
     if args.export.as_deref() == Some("pdfa-validate") {
         match pdfa_validation::run(
             args.path.as_deref().expect("PDF path checked by parser"),
@@ -1118,6 +1130,7 @@ pub fn run_native() {
         && !args.timing
         && !args.read_only
         && !args.assistant_stdio
+        && args.assistant_socket.is_none()
         && args.slide.is_none()
         && args.ai_query.is_none()
         && std::env::var_os("IBIS_NO_SINGLE_INSTANCE").is_none();
@@ -1233,6 +1246,10 @@ pub fn run_native() {
                     if assistant_stdio {
                         shell::assistant_stdio::start(editor, window, true, cx);
                     }
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    if let Some(socket) = assistant_socket {
+                        socket.start(editor, window, cx);
+                    }
                     let (position, destination) = std::sync::mpsc::channel();
                     let read = move || {
                         let (loaded, paragraph) = receiver.recv()
@@ -1251,6 +1268,10 @@ pub fn run_native() {
                     #[cfg(any(target_os = "macos", target_os = "linux"))]
                     if assistant_stdio {
                         shell::assistant_stdio::start(editor, _window, false, _cx);
+                    }
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    if let Some(socket) = assistant_socket {
+                        socket.start(editor, _window, _cx);
                     }
                 }),
             }

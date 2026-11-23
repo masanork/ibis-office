@@ -404,6 +404,8 @@ pub struct SlideEditor {
     pub zoom_trigger_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     #[cfg(not(target_family = "wasm"))]
     pub(crate) assistant_output: Option<std::sync::mpsc::Sender<serde_json::Value>>,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) assistant_socket: Option<crate::assistant_socket::SocketLifetime>,
     pub ai_assistant: Option<crate::ai_assistant::AiAssistantState>,
     _zoom_subscription: Subscription,
     /// The status bar's list of zooms is open.
@@ -853,6 +855,8 @@ impl SlideEditor {
             bar_keys: Default::default(),
             #[cfg(not(target_family = "wasm"))]
             assistant_output: None,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            assistant_socket: None,
             ai_assistant: None,
             _zoom_subscription: zoom_subscription,
             zoom_menu_open: false,

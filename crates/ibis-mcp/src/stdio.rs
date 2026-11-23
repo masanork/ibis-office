@@ -13,8 +13,11 @@ use crate::protocol::Server;
 const MAX_MESSAGE: usize = 32 * 1024 * 1024;
 
 /// Read the messages of `input` and write the answers to `output` until the input is closed.
-pub fn serve(service: Service, mut input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
-    let mut server = Server::new(service);
+pub fn serve(service: Service, input: impl BufRead, output: impl Write) -> std::io::Result<()> {
+    serve_server(Server::new(service), input, output)
+}
+
+pub(crate) fn serve_server(mut server: Server, mut input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
     let mut line = Vec::new();
     loop {
         line.clear();

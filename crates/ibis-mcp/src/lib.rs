@@ -4,6 +4,8 @@
 //! The MCP server (GitHub issue #159, `tasks/doc/design/2026-11-17-159-mcp.md`): a thin door over `ibis-doc-service`. The protocol's versions are
 //! in `protocol.rs` alone (2026-07-28 is the main one, 2025-11-25 is answered too); the tools, their arguments and their results are the catalog's.
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod live_assistant;
 mod cli;
 mod protocol;
 mod stdio;

@@ -24,7 +24,7 @@ struct Request {
 
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
-enum Command {
+pub(crate) enum Command {
     Open,
     SetInput { text: String },
     Send,
@@ -121,7 +121,7 @@ fn read_requests(
     }
 }
 
-fn dispatch(
+pub(crate) fn dispatch(
     editor: &mut SlideEditor,
     command: Command,
     window: &mut Window,

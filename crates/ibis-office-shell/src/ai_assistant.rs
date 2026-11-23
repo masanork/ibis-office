@@ -860,6 +860,19 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn assistant_connection_status(&self) -> serde_json::Value {
+        let panel = self.ai_assistant.as_ref();
+        let review = panel.and_then(|panel| panel.assistant_review.as_ref());
+        json!({
+            "path": self.file_path(),
+            "document_ready": self.check_assistant_stdio_document().is_ok(),
+            "streaming": panel.is_some_and(|panel| panel.streaming),
+            "run_id": panel.map(|panel| panel.run_id),
+            "review": review.map(|review| &review.preview),
+        })
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) fn submit_assistant_stdio_prompt(
         &mut self,
         text: String,
