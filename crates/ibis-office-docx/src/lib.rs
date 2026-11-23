@@ -588,6 +588,24 @@ fn outer_contexts(state: &crate::shell::menu_context::ContextState) -> Vec<crate
     out
 }
 
+#[cfg(not(target_family = "wasm"))]
+fn source_export_note(
+    diagnostics: &[ibis_formats::markdown::SourceDiagnostic],
+) -> Option<Option<SharedString>> {
+    if diagnostics.is_empty() {
+        return None;
+    }
+    let locations = diagnostics.iter().take(3)
+        .map(|diagnostic| diagnostic.location.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(Some(crate::shell::i18n::format(
+        "file.markdown-source-unrestored",
+        &[("count", &diagnostics.len()), ("locations", &locations)],
+    ).into()))
+}
+
+
 impl FormatEditor for Document {
     fn ai_editable_source(editor: &SlideEditor, kind: crate::shell::ai_tools::EditableSourceKind) -> Result<crate::shell::ai_tools::EditableSource, String> {
         use crate::shell::ai_tools::{EditableSource, EditableSourceKind};
@@ -862,23 +880,30 @@ impl FormatEditor for Document {
             }
             return Some(
                 ibis_formats::docx_convert::export_docx_format(editor.presentation(), ibis_formats::docx_convert::DocxConvertFormat::Markdown)
-                    .map(|bytes| FileBytes { bytes, protect: false, note: None })
+                    .map(|bytes| {
+                        let diagnostics = ibis_formats::markdown::document_markdown_source_diagnostics(editor.presentation());
+                        FileBytes { bytes, protect: false, note: source_export_note(&diagnostics) }
+                    })
                     .map_err(|e| e.to_string()),
             );
         }
-        if extension.eq_ignore_ascii_case("xml") {
-            return Some(
-                ibis_formats::lawtext::export_presentation_to_law_xml(editor.presentation())
-                    .map(|xml| FileBytes { bytes: xml.into_bytes(), protect: false, note: None })
-                    .map_err(|e| e.to_string()),
-            );
-        }
-        if extension.eq_ignore_ascii_case("lawtext") {
-            return Some(
-                ibis_formats::lawtext::export_presentation_to_lawtext(editor.presentation())
-                    .map(|lt| FileBytes { bytes: lt.into_bytes(), protect: false, note: None })
-                    .map_err(|e| e.to_string()),
-            );
+        let law_xml = extension.eq_ignore_ascii_case("xml");
+        if law_xml || extension.eq_ignore_ascii_case("lawtext") {
+            let parse = ibis_formats::lawtext::parse_markdown_law_with_diagnostics;
+            let parsed = if let Some(markdown) = editor.markdown_source_text() {
+                parse(markdown)
+            } else {
+                ibis_formats::markdown::export_presentation_to_markdown(editor.presentation())
+                    .and_then(|markdown| parse(&markdown))
+            };
+            return Some(parsed.map(|(law, diagnostics)| {
+                let text = if law_xml {
+                    ibis_formats::lawtext::to_law_xml(&law)
+                } else {
+                    ibis_formats::lawtext::to_lawtext(&law)
+                };
+                FileBytes { bytes: text.into_bytes(), protect: false, note: source_export_note(&diagnostics) }
+            }).map_err(|e| e.to_string()));
         }
         if extension.eq_ignore_ascii_case("dotx") || extension.eq_ignore_ascii_case("dotm") {
             return Some(source.save_template(editor.presentation(), ibis_formats::SaveOptions::default()).map(|bytes| FileBytes { bytes, protect: true, note: None }).map_err(|e| e.to_string()));

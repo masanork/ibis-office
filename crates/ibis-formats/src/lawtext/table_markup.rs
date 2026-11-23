@@ -6,7 +6,7 @@
 
 use std::borrow::Cow;
 
-use crate::markdown::roundtrip::{SourceIssue, reconcile_source};
+use crate::markdown::roundtrip::{SourceDiagnostic, SourceIssue, reconcile_source};
 
 use super::model::{LawAppdxTable, LawDoc};
 use super::xml::{child_elem, collect_text, push_xml_escaped};
@@ -137,28 +137,112 @@ pub(super) fn snapshot_for<'a>(
     }
 }
 
-pub(super) fn encode_tables(doc: &LawDoc) -> Option<String> {
-    let snapshots: Vec<_> = doc.appdx_tables.iter()
-        .filter_map(|table| snapshot_for(&doc.appdx_table_xml, table, false))
-        .collect();
-    if snapshots.is_empty() {
+pub(super) fn document_snapshot(doc: &LawDoc, index: usize) -> Option<Cow<'_, SavedAppdxTable>> {
+    if doc.unresolved_appdx_tables.contains(&index) {
         return None;
     }
+    let table = &doc.appdx_tables[index];
+    if let Some(saved) = doc.appdx_table_anchors.get(&index)
+        .and_then(|&slot| doc.appdx_table_xml.get(slot))
+        .filter(|saved| saved.table == *table)
+    {
+        return Some(Cow::Borrowed(saved));
+    }
+    snapshot_for(&doc.appdx_table_xml, table, false)
+}
+
+pub(super) fn encode_tables(doc: &LawDoc) -> Option<String> {
+    let snapshots: Vec<_> = (0..doc.appdx_tables.len())
+        .filter_map(|index| document_snapshot(doc, index))
+        .collect();
     let fragments: Vec<_> = snapshots.iter().map(|snapshot| snapshot.xml.as_str()).collect();
-    serde_json::to_string(&fragments).ok()
+    (!fragments.is_empty()).then(|| serde_json::to_string(&fragments).ok()).flatten()
+}
+
+pub(super) fn markdown_tables(doc: &LawDoc) -> (Vec<Option<usize>>, Vec<String>) {
+    let mut slots = vec![String::new(); doc.appdx_table_markdown_ids.values().max().map_or(0, |id| id + 1)];
+    let ids = (0..doc.appdx_tables.len()).map(|index| {
+        let snapshot = document_snapshot(doc, index)?;
+        let id = if let Some(&id) = doc.appdx_table_markdown_ids.get(&index) {
+            slots[id] = snapshot.xml.clone();
+            id
+        } else {
+            let id = slots.len();
+            slots.push(snapshot.xml.clone());
+            id
+        };
+        Some(id)
+    }).collect();
+    (ids, slots)
 }
 
 pub(super) fn restore_tables(doc: &mut LawDoc, encoded: &str, padded_markdown_rows: bool) {
-    let Ok(fragments) = serde_json::from_str::<Vec<String>>(encoded) else {
-        return;
-    };
-    let snapshots: Vec<_> = fragments.iter()
-        .filter_map(|xml| SavedAppdxTable::read(xml))
+    restore_tables_with_anchors(doc, encoded, padded_markdown_rows, &[]);
+}
+
+pub(super) fn restore_tables_with_anchors(
+    doc: &mut LawDoc,
+    encoded: &str,
+    padded: bool,
+    anchors: &[Option<usize>],
+) -> Vec<SourceDiagnostic> {
+    // Retain the original indices, including invalid entries, for local source references.
+    let fragments = serde_json::from_str::<Vec<String>>(encoded).unwrap_or_default();
+    let slots: Vec<_> = fragments.iter().map(|xml| SavedAppdxTable::read(xml)).collect();
+    let fallback: Vec<_> = slots.iter().enumerate()
+        .filter(|(id, _)| !anchors.contains(&Some(*id)))
+        .filter_map(|(_, snapshot)| snapshot.clone())
         .collect();
-    for table in &mut doc.appdx_tables {
-        if let Some(snapshot) = snapshot_for(&snapshots, table, padded_markdown_rows) {
-            table.rows.clone_from(&snapshot.table.rows);
-            doc.appdx_table_xml.push(snapshot.into_owned());
+    let mut diagnostics = Vec::new();
+    for (index, table) in doc.appdx_tables.iter_mut().enumerate() {
+        let snapshot = if let Some(id) = anchors.get(index).copied().flatten() {
+            // Rich Markdown renders each GFM header cell as bold.
+            if let Some(header) = table.rows.first_mut()
+                && header.iter().filter(|cell| !cell.is_empty()).all(|cell| {
+                    cell.strip_prefix("**").and_then(|text| text.strip_suffix("**")).is_some()
+                })
+            {
+                for cell in header.iter_mut().filter(|cell| !cell.is_empty()) {
+                    *cell = cell[2..cell.len() - 2].to_owned();
+                }
+            }
+            if anchors.iter().filter(|candidate| **candidate == Some(id)).count() > 1 {
+                Err(SourceIssue::Ambiguous)
+            } else {
+                let source = slots.get(id).and_then(Option::as_ref)
+                    .ok_or(SourceIssue::Missing);
+                source.and_then(|source| {
+                    snapshot_for(std::slice::from_ref(source), table, padded)
+                        .map(Cow::into_owned)
+                        .ok_or(SourceIssue::Incompatible)
+                })
+            }
+        } else {
+            let snapshot = snapshot_for(&fallback, table, padded).map(Cow::into_owned);
+            if snapshot.is_none() && !fallback.iter().any(|saved| saved.table.title == table.title) {
+                continue;
+            }
+            snapshot.ok_or(SourceIssue::Incompatible)
+        };
+        match snapshot {
+            Ok(snapshot) => {
+                table.rows.clone_from(&snapshot.table.rows);
+                if let Some(id) = anchors.get(index).copied().flatten() {
+                    doc.appdx_table_markdown_ids.insert(index, id);
+                }
+                doc.appdx_table_anchors.insert(index, doc.appdx_table_xml.len());
+                doc.appdx_table_xml.push(snapshot);
+            }
+            Err(issue) => {
+                doc.unresolved_appdx_tables.insert(index);
+                diagnostics.push(SourceDiagnostic {
+                    extension: "lawtext",
+                    location: table.title.clone(),
+                    issue,
+                });
+            }
+
         }
     }
+    diagnostics
 }

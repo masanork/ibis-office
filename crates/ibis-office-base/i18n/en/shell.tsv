@@ -981,6 +981,7 @@ jtd.export-html	HTML (preview; partial lines omitted)
 jtd.html-exported	Converted to HTML. Partial table lines, unsupported formatting and images are omitted.
 file.standard-read-only	This Office 2007 encrypted file is read-only. Save a copy to edit it using newer encryption.
 file.standard-source-protected	The original Office 2007 encrypted file cannot be overwritten. Save under a different name.
+file.markdown-source-unrestored	Original source could not be restored at {count} locations ({locations})
 file.standard-copy-saved	The copy was saved with newer encryption. The original file was not changed.
 file.standard-copy-format	Save the copy in an Office format to keep password protection.
 start.version	ver.{version}

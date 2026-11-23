@@ -4,7 +4,7 @@
 //! Editable law Markdown and article locators.
 
 use crate::Error;
-use super::table_markup::{encode_tables, restore_tables};
+use super::table_markup::{markdown_tables, restore_tables_with_anchors};
 use super::{is_law_xml, parse_law_xml};
 use super::model::{
     LawArticle, LawDoc, LawNode, LawParagraphLabels, LawSentenceContent, LawSubitem,
@@ -23,6 +23,8 @@ use super::markup::{
     parse_lawtext_sentence_elements,
 };
 use super::text::{LAWTEXT_SUPPL_APPENDICES, encode_suppl_appendices, is_lawtext, parse_lawtext};
+
+const TABLE_SOURCE_ANCHOR: &str = " {#ibis_law_table_";
 
 /// Export a [`LawDoc`] to Markdown with YAML frontmatter so it can be edited
 /// in ibisOffice (DOCX / PPTX) and converted back to Lawtext or e-Gov 法令標準XML.
@@ -52,7 +54,14 @@ fn to_markdown_with_articles(
         let encoded = serde_json::Value::String(toc.clone());
         out.push_str(&format!("law_toc: {encoded}\n"));
     }
-    if preserve_editing_metadata && let Some(encoded) = encode_tables(doc) {
+    let (table_source_ids, table_fragments) = if preserve_editing_metadata {
+        markdown_tables(doc)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    if table_source_ids.iter().any(Option::is_some)
+        && let Ok(encoded) = serde_json::to_string(&table_fragments)
+    {
         out.push_str(&format!("law_appdx_tables: {encoded}\n"));
     }
     if preserve_editing_metadata && !doc.appdx_fragment_xml.is_empty()
@@ -127,12 +136,16 @@ fn to_markdown_with_articles(
             write_markdown_node(&mut out, node, 3, preserve_editing_metadata, &mut |article, start, end| record(Some(index), article, start, end));
         }
     }
-    for appdx in &doc.appdx_tables {
+    for (index, appdx) in doc.appdx_tables.iter().enumerate() {
         if let Some(rel) = appdx.related_article_num.as_deref() {
-            out.push_str(&format!("## {}（{}）\n\n", appdx.title, rel));
+            out.push_str(&format!("## {}（{}）", appdx.title, rel));
         } else {
-            out.push_str(&format!("## {}\n\n", appdx.title));
+            out.push_str(&format!("## {}", appdx.title));
         }
+        if let Some(Some(source_id)) = table_source_ids.get(index) {
+            out.push_str(&format!("{TABLE_SOURCE_ANCHOR}{source_id}}}"));
+        }
+        out.push_str("\n\n");
         if !appdx.rows.is_empty() {
             let cols = appdx.rows.iter().map(|r| r.len()).max().unwrap_or(1);
             for (r_idx, row) in appdx.rows.iter().enumerate() {
@@ -307,6 +320,13 @@ fn write_markdown_subitem(out: &mut String, sub: &LawSubitem, preserve_sentences
 
 /// Parse a Lawtext-flavoured Markdown document back into a [`LawDoc`].
 pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
+    parse_markdown_law_with_diagnostics(md).map(|(doc, _)| doc)
+}
+
+/// Parse editable law Markdown and report source fragments that could not be reused.
+pub fn parse_markdown_law_with_diagnostics(
+    md: &str,
+) -> Result<(LawDoc, Vec<crate::markdown::SourceDiagnostic>), Error> {
     let mut doc = LawDoc::default();
     let mut table_xml = None;
     let mut fragment_positions = None;
@@ -368,6 +388,7 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
         }
     }
     let mut seen_first_article = false;
+    let mut table_anchors = Vec::new();
     for raw in body.lines() {
         let trimmed = raw.trim();
         if trimmed.is_empty() || trimmed.starts_with("> 法令番号:") {
@@ -392,7 +413,14 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
                 lawtext_lines.push(art_title);
                 continue;
             }
+            let (heading, source_id) = heading.strip_suffix('}')
+                .and_then(|heading| heading.rsplit_once(TABLE_SOURCE_ANCHOR))
+                .and_then(|(heading, id)| Some((heading, Some(id.parse().ok()?))))
+                .unwrap_or((heading, None));
             lawtext_lines.push(heading.to_string());
+            if heading.starts_with("別表") && !heading.contains('。') {
+                table_anchors.push(source_id);
+            }
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("- ") {
@@ -421,6 +449,9 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
                 continue;
             }
         }
+        if trimmed.starts_with("別表") && !trimmed.contains('。') {
+            table_anchors.push(None);
+        }
         lawtext_lines.push(trimmed.into_owned());
     }
 
@@ -440,8 +471,11 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
         doc.appdx_fragment_positions = read_encoded_positions(&encoded, doc.appdx_fragment_xml.len());
     }
     doc.appdx_tables = std::mem::take(&mut parsed.appdx_tables);
-    if let Some(encoded) = table_xml {
-        restore_tables(&mut doc, &encoded, true);
+    if table_anchors.len() != doc.appdx_tables.len() {
+        table_anchors.clear();
     }
-    Ok(doc)
+    let diagnostics = restore_tables_with_anchors(
+        &mut doc, table_xml.as_deref().unwrap_or("[]"), true, &table_anchors,
+    );
+    Ok((doc, diagnostics))
 }

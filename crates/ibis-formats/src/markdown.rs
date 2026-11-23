@@ -34,6 +34,7 @@
 mod metafile_preview;
 mod shape_text;
 pub(crate) mod roundtrip;
+pub use roundtrip::{SourceDiagnostic, SourceIssue};
 mod picture_anchor;
 
 use std::collections::{BTreeMap, HashMap};
@@ -1721,6 +1722,7 @@ fn populate_toc_blocks(doc: &mut FlowDocument) {
 // ============================================================================
 
 fn apply_frontmatter(fm: &str, doc: &mut FlowDocument, ctx: &mut ParseContext<'_>) {
+    roundtrip::preserve_profile(fm, &mut doc.properties);
     let mut map: BTreeMap<String, String> = BTreeMap::new();
     let mut current_section: Option<String> = None;
 
@@ -6232,6 +6234,9 @@ fn serialize_frontmatter(doc: &FlowDocument) -> String {
         lines.push("even_and_odd_headers: true".to_owned());
     }
     let props: &DocProperties = &doc.properties;
+    if let Some(profile) = roundtrip::saved_profile(props) {
+        lines.extend(profile.lines().map(str::to_owned));
+    }
     if let Some(title) = props.title.as_deref().filter(|s| !s.is_empty()) {
         lines.push(format!("title: {}", quote_yaml_if_needed(title)));
     }
@@ -6889,10 +6894,38 @@ fn write_named_fence(language: &str, source: &str, out: &mut String) {
     out.push_str("\n\n");
 }
 
-fn serialize_chart(chart: &Chart, alternate_source: Option<&str>, out: &mut String) {
+fn mermaid_chart_source<'a>(chart: &'a Chart, alternate: Option<&'a str>) -> Result<&'a str, SourceIssue> {
     let validate = |source| mermaid_source_matches(chart, source).then_some(source);
-    let source = roundtrip::reconcile_source(alternate_source, validate)
-        .or_else(|_| roundtrip::reconcile_source(chart.mermaid_source.as_str(), validate));
+    roundtrip::reconcile_source(alternate, validate)
+        .or_else(|issue| match chart.mermaid_source.as_str() {
+            Some(source) if Some(source) != alternate => roundtrip::reconcile_source(Some(source), validate),
+            _ => Err(issue),
+        })
+}
+
+/// Report Mermaid chart sources that no longer describe the exported document charts.
+pub fn document_markdown_source_diagnostics(presentation: &Presentation) -> Vec<SourceDiagnostic> {
+    let Some(flow) = &presentation.flow else { return Vec::new(); };
+    ibis_doc_model::flow_command::all_paragraphs_everywhere(flow).into_iter()
+        .filter_map(|paragraph| {
+            let [run] = paragraph.runs.as_slice() else { return None; };
+            let FlowRunKind::Shape(shape) = &run.kind else { return None; };
+            let ShapeKind::Chart(chart) = &shape.kind else { return None; };
+            let issue = mermaid_chart_source(chart, None).err()?;
+            (issue != SourceIssue::Missing).then(|| SourceDiagnostic {
+                extension: "mermaid",
+                location: chart.title.as_ref().map_or_else(
+                    || format!("#{:?}", shape.id),
+                    |title| title.text.clone(),
+                ),
+                issue,
+            })
+        })
+        .collect()
+}
+
+fn serialize_chart(chart: &Chart, alternate_source: Option<&str>, out: &mut String) {
+    let source = mermaid_chart_source(chart, alternate_source);
     if let Ok(source) = source {
         write_mermaid_fence(source, out);
         return;
@@ -9247,6 +9280,11 @@ xychart-beta
             }
         }
         assert!(changed, "pie chart value should be editable");
+        let diagnostics = document_markdown_source_diagnostics(&edited);
+        assert_eq!(diagnostics.len(), 2);
+        assert!(diagnostics.iter().all(|item| {
+            item.extension == "mermaid" && item.issue == SourceIssue::Incompatible
+        }));
         let edited_md = export_markdown(edited.flow.as_ref().unwrap(), &edited.media);
         assert!(edited_md.contains("```chart\ntype: pie"), "edited pie should leave Mermaid:\n{edited_md}");
         assert!(edited_md.contains("```chart\ntype: line"), "edited line should leave Mermaid:\n{edited_md}");

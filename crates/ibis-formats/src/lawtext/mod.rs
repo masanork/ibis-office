@@ -48,7 +48,7 @@ pub use model::{
 };
 pub use xml::{parse_law_xml, to_law_xml};
 pub use text::{is_lawtext, parse_lawtext, to_lawtext};
-pub use markdown::{export_ai_law, parse_markdown_law, to_markdown};
+pub use markdown::{export_ai_law, parse_markdown_law, parse_markdown_law_with_diagnostics, to_markdown};
 pub(crate) use markdown::MARKDOWN_SENTENCE_COMMENT;
 use text::write_lawtext_node;
 use syntax::{

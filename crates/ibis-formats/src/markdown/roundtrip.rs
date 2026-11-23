@@ -15,6 +15,10 @@ pub(crate) fn has_document_type(text: &str, expected: &str) -> bool {
     let Some((metadata, _)) = frontmatter(text) else {
         return false;
     };
+    document_type_is(metadata, expected)
+}
+
+fn document_type_is(metadata: &str, expected: &str) -> bool {
     metadata.lines().any(|line| {
         if line.starts_with(char::is_whitespace) {
             return false;
@@ -26,11 +30,58 @@ pub(crate) fn has_document_type(text: &str, expected: &str) -> bool {
     })
 }
 
+const PROFILE_PROPERTY: &str = "ibisOffice.MarkdownProfile";
+
+pub(super) fn preserve_profile(metadata: &str, properties: &mut ibis_doc_model::DocProperties) {
+    if !document_type_is(metadata, "lawtext") {
+        return;
+    }
+    let profile = metadata.lines().filter(|line| {
+        !line.starts_with(char::is_whitespace) && line.split_once(':').is_some_and(|(key, _)| {
+            let key = key.trim_end();
+            key.starts_with("law_") || matches!(
+                key, "type" | "era" | "year" | "promulgate_month" | "promulgate_day" | "num" | "lang"
+            )
+        })
+    }).collect::<Vec<_>>().join("\n");
+    properties.custom.retain(|property| property.name != PROFILE_PROPERTY);
+    properties.custom.push(ibis_doc_model::CustomProperty {
+        name: PROFILE_PROPERTY.to_owned(),
+        value: ibis_doc_model::CustomPropertyValue::Text(profile),
+    });
+}
+
+pub(super) fn saved_profile(properties: &ibis_doc_model::DocProperties) -> Option<&str> {
+    let property = properties.custom.iter().find(|property| property.name == PROFILE_PROPERTY)?;
+    match &property.value {
+        ibis_doc_model::CustomPropertyValue::Text(text) if document_type_is(text, "lawtext") => Some(text),
+        _ => None,
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SourceIssue {
+pub enum SourceIssue {
     Missing,
     Ambiguous,
     Incompatible,
+}
+
+impl SourceIssue {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Ambiguous => "ambiguous",
+            Self::Incompatible => "incompatible",
+        }
+    }
+}
+
+/// An authored Markdown extension that could not be written back to its source.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SourceDiagnostic {
+    pub extension: &'static str,
+    pub location: String,
+    pub issue: SourceIssue,
 }
 
 /// Reuse or update source only when a single eligible snapshot can be reconciled.

@@ -379,6 +379,46 @@ fn appendix_style_metadata_keeps_multiple_forms_and_rejects_invalid_fragments() 
 }
 
 #[test]
+fn table_anchors_follow_reordered_markdown_and_report_duplicate_references() {
+    use ibis_formats::lawtext::{parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
+    use ibis_formats::markdown::SourceIssue;
+
+    let source = include_str!("lawtext/food-labeling-table.xml");
+    let (head, rest) = source.split_once("<AppdxTable>").unwrap();
+    let (table, tail) = rest.split_once("</AppdxTable>").unwrap();
+    let first = format!("<AppdxTable Num=\"1\">{table}</AppdxTable>");
+    let second = format!("<AppdxTable Num=\"2\">{table}</AppdxTable>");
+    let document = parse_law_xml(&format!("{head}{first}{second}{tail}")).unwrap();
+    let markdown = to_markdown(&document);
+    let first_start = markdown.find("\n## 別表").unwrap();
+    let second_start = first_start + 1 + markdown[first_start + 1..].find("\n## 別表").unwrap();
+    let header = &markdown[..first_start];
+    let first_md = &markdown[first_start..second_start];
+    let second_md = markdown[second_start..].replace("| 形質 |", "| 形質区分 |");
+    let reordered = format!("{header}{second_md}\n{first_md}");
+    let (document, diagnostics) = parse_markdown_law_with_diagnostics(&reordered).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let saved = to_markdown(&document);
+    assert!(saved.find("ibis_law_table_1").unwrap() < saved.find("ibis_law_table_0").unwrap());
+    let output = to_law_xml(&document);
+    let edited = second.replace(">形質</Sentence>", ">形質区分</Sentence>");
+    assert!(output.find(&edited).unwrap() < output.find(&first).unwrap());
+
+    let opened = ibis_formats::markdown::open_markdown(reordered.as_bytes().to_vec()).unwrap();
+    let docx = opened.source.save(&opened.presentation, Default::default()).unwrap();
+    let reopened = ibis_formats::read(&docx).unwrap();
+    let markdown = ibis_formats::markdown::export_presentation_to_markdown(&reopened).unwrap();
+    let (restored, diagnostics) = parse_markdown_law_with_diagnostics(&markdown).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert!(to_law_xml(&restored).contains(&edited), "{markdown}");
+
+    let duplicate = reordered.replace("ibis_law_table_1", "ibis_law_table_0");
+    let (_, diagnostics) = parse_markdown_law_with_diagnostics(&duplicate).unwrap();
+    assert_eq!(diagnostics.len(), 2);
+    assert!(diagnostics.iter().all(|result| result.issue == SourceIssue::Ambiguous));
+}
+
+#[test]
 fn mixed_appendices_keep_their_order_even_when_a_table_cell_is_edited() {
     use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
 

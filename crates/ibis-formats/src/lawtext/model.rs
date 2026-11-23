@@ -3,7 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Statutory document and amendment-comparison model.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Structural division kind within `MainProvision` or `SupplProvision`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +278,9 @@ pub struct LawDoc {
     pub suppl_provisions: Vec<SupplProvision>,
     pub(super) suppl_appendices: BTreeMap<usize, SupplAppendices>,
     pub appdx_tables: Vec<LawAppdxTable>,
+    pub(super) unresolved_appdx_tables: BTreeSet<usize>,
+    pub(super) appdx_table_markdown_ids: BTreeMap<usize, usize>,
+    pub(super) appdx_table_anchors: BTreeMap<usize, usize>,
     pub(super) appdx_table_xml: Vec<super::table_markup::SavedAppdxTable>,
 }
 
@@ -304,6 +307,9 @@ impl Default for LawDoc {
             suppl_provisions: Vec::new(),
             suppl_appendices: BTreeMap::new(),
             appdx_tables: Vec::new(),
+            unresolved_appdx_tables: BTreeSet::new(),
+            appdx_table_markdown_ids: BTreeMap::new(),
+            appdx_table_anchors: BTreeMap::new(),
             appdx_table_xml: Vec::new(),
         }
     }

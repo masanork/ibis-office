@@ -10,7 +10,7 @@ use super::model::{
     LawTitleAttributes, SupplProvision,
 };
 use super::syntax::to_fullwidth_digits;
-use super::table_markup::{SavedAppdxTable, parse_appdx_table, snapshot_for};
+use super::table_markup::{SavedAppdxTable, parse_appdx_table, document_snapshot};
 
 /// Parse an e-Gov 法令標準XML string into a [`LawDoc`].
 pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
@@ -78,10 +78,11 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
         match appendix.tag_name().name() {
             "SupplProvision" => out.suppl_positions.push(out.appdx_tables.len() + out.appdx_fragment_xml.len()),
             "AppdxTable" => {
-                out.appdx_tables.push(parse_appdx_table(appendix));
                 if let Some(snapshot) = SavedAppdxTable::read(&xml[appendix.range()]) {
+                    out.appdx_table_anchors.insert(out.appdx_tables.len(), out.appdx_table_xml.len());
                     out.appdx_table_xml.push(snapshot);
                 }
+                out.appdx_tables.push(parse_appdx_table(appendix));
             }
             name if APPDX_FRAGMENT_NAMES.contains(&name) && appendix.tag_name().namespace().is_none() => {
                 if let Some(fragment) = read_xml_fragment(&xml[appendix.range()], APPDX_FRAGMENT_NAMES) {
@@ -475,7 +476,7 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
     }
     out.push_str("    </MainProvision>\n");
     let appendices = merge_body_order(
-        doc.appdx_tables.iter().map(BodyEntry::Table),
+        (0..doc.appdx_tables.len()).map(BodyEntry::Table),
         doc.appdx_fragment_xml.iter().map(|xml| BodyEntry::Fragment(xml)),
         &doc.appdx_fragment_positions,
         usize::MAX,
@@ -498,7 +499,7 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
 }
 
 enum BodyEntry<'a> {
-    Table(&'a super::model::LawAppdxTable),
+    Table(usize),
     Fragment(&'a str),
     Supplement(usize),
 }
@@ -554,8 +555,9 @@ fn write_appdx_fragment(out: &mut String, fragment: &str) {
     out.push('\n');
 }
 
-fn write_appdx_table(out: &mut String, doc: &LawDoc, appdx: &super::model::LawAppdxTable) {
-    if let Some(snapshot) = snapshot_for(&doc.appdx_table_xml, appdx, false) {
+fn write_appdx_table(out: &mut String, doc: &LawDoc, index: usize) {
+    let appdx = &doc.appdx_tables[index];
+    if let Some(snapshot) = document_snapshot(doc, index) {
         out.push_str("    ");
         out.push_str(&snapshot.xml);
         out.push('\n');

@@ -152,6 +152,7 @@ cargo run --locked -p ibis-formats --bin ibis-lawtext-audit -- \
 
 - `xml_model_changes` は原XMLと、ibisOfficeの内部表現から書き出したXMLの差です。
 - `lawtext_roundtrip_changes` は内部表現から出したXMLと、Lawtextを経由した後のXMLの差です。
+- `markdown_source_diagnostics` は編集用Markdownから復元できなかった元ソースの位置と理由です。
 - `markdown_roundtrip_changes` は内部表現から出したXMLと、編集用Markdownを経由した後のXMLの差です。
 - `output_xsd` はLawtext経由、`markdown_output_xsd` は編集用Markdown経由のXMLのスキーマ検証結果です。`--xsd` を省略した場合は両方とも `null` になります。どちらかが不適合なら、JSONを書き出して終了コード `2` を返します。実行エラーは `1` です。
 
@@ -178,6 +179,8 @@ XMLから直接読み込んだ項・号・号の細分は、本文が同じ間�
 元のXMLに目次 `TOC` がある場合は、項目・順序・属性をそのXML断片として保持します。Lawtextでは `:law-toc:` 行、編集用Markdownではフロントマターの `law_toc` に記録します。本文の編章構成を編集した場合は、元の目次も確認してください。目次を本文から再生成する機能は別途必要です。
 
 ### 別表と様式の検証例
+
+編集用Markdownでは、別表の見出しに `{#ibis_law_table_0}` のような識別子を付け、フロントマターにあるXML断片と対応付けます。別表を移動するときは見出しも一緒に移してください。識別子がない既存文書は題名とセル構成で照合します。
 
 食品表示基準の別表第十八では、セルの縦結合と罫線を原XMLの別表断片として保持します。Lawtextと編集用Markdownで表題・関連条文・セルの構成が一致し、編集したセルが単一の平文の文であれば、元のXML断片の該当箇所だけを書き換えます。行やセルの数が変わった場合や、ルビや複数文を持つセルを編集した場合は、平文から表を再構成します。食品表示法に基づく検査の際に用いる様式では、`AppdxStyle` のXML断片を保持します。法令本文直下の図（`AppdxFig`）、注記（`AppdxNote`）、書式（`AppdxFormat`）、算式（`Appdx`）も同様に、Lawtextの `:law-appdx-fragments:` 行と編集用Markdownの `law_appdx_fragments` に記録します。様式名、書字方向、図の参照先（`Fig/@src`）が復元されます。参照先のPDFなどは元の相対パスに別途配置してください。別表とこれらの別添が混在する場合は、各別添より前にある別表の数をメタデータに保持し、法令XML出力で元の位置に戻します。本文直下の附則が別添の間にある場合も、相対順序を記録して復元します。旧形式の様式用メタデータも読み込めます。位置情報のない既存文書では別表の後に別添を出力します。いずれも往復後のXMLは公式XSDに適合しました。構造の欠落は診断JSONで確認できます。 [食品表示基準](https://laws.e-gov.go.jp/law/427M60000002010) [様式を定める命令](https://laws.e-gov.go.jp/law/427M60000042001/)
 

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::process::ExitCode;
 
-use ibis_formats::lawtext::{parse_law_xml, parse_lawtext, parse_markdown_law, to_law_xml, to_lawtext, to_markdown};
+use ibis_formats::lawtext::{parse_law_xml, parse_lawtext, parse_markdown_law_with_diagnostics, to_law_xml, to_lawtext, to_markdown};
 use roxmltree::{Document, Node};
 use serde_json::{Value, json};
 
@@ -179,7 +179,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let law = parse_law_xml(&original)?;
     let model_xml = to_law_xml(&law);
     let lawtext_xml = to_law_xml(&parse_lawtext(&to_lawtext(&law))?);
-    let markdown_xml = to_law_xml(&parse_markdown_law(&to_markdown(&law))?);
+    let (markdown_law, source_diagnostics) = parse_markdown_law_with_diagnostics(&to_markdown(&law))?;
+    let markdown_xml = to_law_xml(&markdown_law);
     let validate = |xml: &str| {
         schema.as_deref().map(|schema| validate_xsd(xml, schema)).transpose()
     };
@@ -194,6 +195,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         "markdown_roundtrip_changes": structural_changes(&model_xml, &markdown_xml)?,
         "output_xsd": lawtext_xsd,
         "markdown_output_xsd": markdown_xsd,
+        "markdown_source_diagnostics": source_diagnostics.iter().map(|diagnostic| json!({
+            "extension": diagnostic.extension,
+            "location": diagnostic.location,
+            "issue": diagnostic.issue.as_str(),
+        })).collect::<Vec<_>>(),
     });
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(if invalid {
