@@ -55,6 +55,10 @@ fn verifies_amendment_after_xml_and_lawtext_round_trips() {
     );
     for (name, xml) in [("old", OLD_XML), ("new", new_xml.as_str())] {
         let original = parse_law_xml(xml).unwrap();
+        let exported_xml = to_law_xml(&original);
+        assert!(exported_xml.contains("<Ruby>例<Rt>れい</Rt></Ruby>外"));
+        assert!(exported_xml.contains("<TOCArticle Num=\"1\">"));
+        assert!(exported_xml.contains("<TOCSupplProvision>"));
         let lawtext = to_lawtext(&original);
         let roundtrip = parse_law_xml(&to_law_xml(&parse_lawtext(&lawtext).unwrap())).unwrap();
         assert_eq!(roundtrip, original, "{name} round trip");
@@ -144,12 +148,10 @@ fn audit_reports_xml_model_changes_and_preserves_required_lawtext_attributes() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("test.xml");
     let xml = include_str!("lawtext/supplementary-amendment.xml").replace(
-        "<MainProvision>",
-        concat!(
-            "<EnactStatement>試験法を公布する。</EnactStatement>",
-            "<TOC><TOCLabel>目次</TOCLabel></TOC><MainProvision>",
-        ),
+        "<TOC>",
+        "<EnactStatement>試験法を公布する。</EnactStatement><TOC>",
     );
+    let xml = xml.replace("<LawBody>", "<LawBody Subject=\"試験法の件名\">");
     std::fs::write(&path, xml).unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_ibis-lawtext-audit"))
         .arg(path)
@@ -164,7 +166,7 @@ fn audit_reports_xml_model_changes_and_preserves_required_lawtext_attributes() {
     let model = report["xml_model_changes"].as_array().unwrap();
     let lawtext = report["lawtext_roundtrip_changes"].as_array().unwrap();
     assert!(model.iter().any(|change| {
-        change["kind"] == "element_removed" && change["path"] == "/Law/LawBody[1]/TOC[1]"
+        change["kind"] == "attribute_removed" && change["path"] == "/Law/LawBody[1]/@Subject"
     }));
     for path in ["/Law/@PromulgateMonth", "/Law/@PromulgateDay"] {
         assert!(model.iter().all(|change| change["path"] != path));

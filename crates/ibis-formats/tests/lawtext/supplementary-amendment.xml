@@ -3,6 +3,11 @@
   <LawNum>令和七年法律第一号</LawNum>
   <LawBody>
     <LawTitle Kana="しけんほう" Abbrev="" AbbrevKana="試験&amp;通称&quot;（例）">試験法</LawTitle>
+    <TOC>
+      <TOCLabel>目次</TOCLabel>
+      <TOCArticle Num="1"><ArticleTitle>第一条</ArticleTitle><ArticleCaption>（基準）</ArticleCaption></TOCArticle>
+      <TOCSupplProvision><SupplProvisionLabel>附　則</SupplProvisionLabel></TOCSupplProvision>
+    </TOC>
     <MainProvision>
       <Article Num="1">
         <ArticleTitle>第一条</ArticleTitle>

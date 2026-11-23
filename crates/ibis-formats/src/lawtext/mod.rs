@@ -263,6 +263,7 @@ pub struct LawTitleAttributes {
 }
 
 const LAWTEXT_TITLE_ATTRIBUTES: &str = ":law-title-attrs: ";
+const LAWTEXT_TOC: &str = ":law-toc: ";
 
 /// Top-level AST for an e-Gov 法令標準XML / Lawtext document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,6 +279,7 @@ pub struct LawDoc {
     pub law_type: Option<String>,
     pub lang: Option<String>,
     pub enact_statement: Option<String>,
+    toc_xml: Option<String>,
     pub preamble: Option<String>,
     pub main_provision: Vec<LawNode>,
     pub suppl_provisions: Vec<SupplProvision>,
@@ -298,6 +300,7 @@ impl Default for LawDoc {
             law_type: None,
             lang: Some("ja".to_string()),
             enact_statement: None,
+            toc_xml: None,
             preamble: None,
             main_provision: Vec::new(),
             suppl_provisions: Vec::new(),
@@ -373,6 +376,7 @@ pub fn is_lawtext(data: &[u8]) -> bool {
             let line = line.trim();
             lawtext_attributes(line).is_some() || line.strip_prefix(LAWTEXT_TITLE_ATTRIBUTES)
                 .and_then(parse_title_attributes_fragment).is_some()
+                || line.starts_with(LAWTEXT_TOC)
         });
     let Some(first) = lines.next() else {
         return false;
@@ -465,6 +469,7 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
             out.enact_statement = Some(s);
         }
     }
+    out.toc_xml = child_elem(body, "TOC").and_then(|toc| read_toc_fragment(&xml[toc.range()]));
     if let Some(pre) = child_elem(body, "Preamble") {
         let s = collect_text(pre);
         if !s.is_empty() {
@@ -516,6 +521,20 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
         });
     }
     Ok(out)
+}
+
+fn read_toc_fragment(xml: &str) -> Option<String> {
+    let doc = roxmltree::Document::parse(xml).ok()?;
+    let node = doc.root_element();
+    if !node.has_tag_name("TOC") || node.tag_name().namespace().is_some() {
+        return None;
+    }
+    Some(xml[node.range()].to_string())
+}
+
+fn read_encoded_toc(encoded: &str) -> Option<String> {
+    let toc = serde_json::from_str::<String>(encoded).ok()?;
+    read_toc_fragment(&toc)
 }
 
 fn parse_title_attributes(node: roxmltree::Node<'_, '_>) -> LawTitleAttributes {
@@ -819,6 +838,11 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
         push_xml_escaped(&mut out, enact);
         out.push_str("</EnactStatement>\n");
     }
+    if let Some(toc) = &doc.toc_xml {
+        out.push_str("    ");
+        out.push_str(toc);
+        out.push('\n');
+    }
     if let Some(pre) = doc.preamble.as_deref().filter(|s| !s.is_empty()) {
         out.push_str("    <Preamble><Paragraph Num=\"1\"><ParagraphNum/><ParagraphSentence><Sentence>");
         push_xml_escaped(&mut out, pre);
@@ -1120,6 +1144,10 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
         write_title_attributes_fragment(&mut out, &doc.law_title_attributes);
         out.push('\n');
     }
+    if let Some(toc) = &doc.toc_xml {
+        let encoded = serde_json::Value::String(toc.clone());
+        out.push_str(&format!("{LAWTEXT_TOC}{encoded}\n"));
+    }
     if !out.is_empty() {
         out.push('\n');
     }
@@ -1380,6 +1408,13 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
         doc.law_title_attributes = attributes;
         lines.next();
     }
+    if let Some(toc) = lines.peek()
+        .and_then(|line| line.trim().strip_prefix(LAWTEXT_TOC))
+        .and_then(read_encoded_toc)
+    {
+        doc.toc_xml = Some(toc);
+        lines.next();
+    }
     let mut header = lines.clone();
     if let (Some(title), Some(number)) = (
         header.next().map(str::trim).filter(|title| !title.contains('（') && !title.starts_with('第')),
@@ -1613,6 +1648,10 @@ fn to_markdown_with_articles(
         out.push_str("law_title_attributes: ");
         write_title_attributes_fragment(&mut out, &doc.law_title_attributes);
         out.push('\n');
+    }
+    if preserve_editing_metadata && let Some(toc) = &doc.toc_xml {
+        let encoded = serde_json::Value::String(toc.clone());
+        out.push_str(&format!("law_toc: {encoded}\n"));
     }
     if !doc.law_num.is_empty() {
         out.push_str(&format!("law_num: {}\n", doc.law_num));
@@ -1863,6 +1902,7 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
                                 doc.law_title_attributes = attributes;
                             }
                         }
+                        "law_toc" => doc.toc_xml = read_encoded_toc(&v),
                         "law_num" => doc.law_num = v,
                         "era" => doc.era = Some(v),
                         "year" => doc.year = Some(v),
