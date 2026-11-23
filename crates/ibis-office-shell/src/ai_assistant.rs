@@ -708,63 +708,6 @@ impl SlideEditor {
         }).detach();
     }
 
-    #[cfg(not(target_family = "wasm"))]
-    fn pick_old_lawtext_for_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            extensions: vec![
-                "xml".to_string(),
-                "lawtext".to_string(),
-                "txt".to_string(),
-                "md".to_string(),
-            ],
-            multiple: false,
-            prompt: Some("比較対象の現行法令 (.xml / .lawtext / .md) を選択".into()),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else {
-                return;
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
-            let Ok(bytes) = std::fs::read(&path) else {
-                return;
-            };
-            let Ok(text) = String::from_utf8(bytes) else {
-                return;
-            };
-            let file_name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("現行法令")
-                .to_string();
-            let _ = this.update(cx, |editor, cx| {
-                if let Err(err) = parse_law_input_str(&text) {
-                    if let Some(p) = editor.ai_assistant.as_mut() {
-                        p.messages.push(UiMessage::new(
-                            UiMessageKind::Error,
-                            format!("現行法令「{file_name}」の解析に失敗しました: {err}"),
-                        ));
-                    }
-                    cx.notify();
-                    return;
-                }
-                if let Some(p) = editor.ai_assistant.as_mut() {
-                    p.pending_old_lawtext = Some((file_name.clone(), text));
-                }
-                editor.submit_ai_assistant_text(
-                    format!(
-                        "現行法令「{file_name}」を読み込みました。現在開いている文書（改正後）と比較して、generate_lawtext_5set と lint_lawtext を実行し、新旧対照表・改め文（検算付き）・参照条文・要綱案・理由案を作成してください。"
-                    ),
-                    cx,
-                );
-            });
-        })
-        .detach();
-    }
-
     fn save_ai_assistant_settings(&mut self, cx: &mut Context<Self>) {
         let Some(p) = self.ai_assistant.as_ref() else {
             return;
@@ -3081,7 +3024,7 @@ impl SlideEditor {
                             });
                         let Some(old_str) = old_src else {
                             return (
-                                json!({ "error": "old_lawtext が指定されていません（サイドバーから現行法令を選択するか、old_lawtext を渡してください）" }).to_string(),
+                                json!({ "error": "old_lawtext が指定されていません。現行法令を取得するか、old_lawtext を渡してください。" }).to_string(),
                                 None,
                                 "✗ generate_lawtext_5set: missing old_lawtext".to_string(),
                             );
@@ -3706,11 +3649,6 @@ impl SlideEditor {
                             "見出し・構成を提案",
                             "文書の内容に基づいて見出しや章立ての改善案を提案してください。",
                         ),
-                        (
-                            "ai-quick-law-lint",
-                            "法制執務 Lint チェック",
-                            "現在開いている文書を lint_lawtext でチェックし、参照切れ・接続詞階層・条番号・略称重複の指摘事項をわかりやすく報告してください。",
-                        ),
                     ],
                 ),
             };
@@ -3754,18 +3692,6 @@ impl SlideEditor {
                         .label(label)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.submit_ai_assistant_text(prompt_owned.clone(), cx);
-                        })),
-                );
-            }
-            #[cfg(not(target_family = "wasm"))]
-            if kind == AiDocKind::Docx {
-                quick_col = quick_col.child(
-                    Button::new("ai-quick-pick-old-law")
-                        .outline()
-                        .xsmall()
-                        .label("現行法令 (.xml / .lawtext) を選んで 5点セット生成...")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.pick_old_lawtext_for_assistant(window, cx);
                         })),
                 );
             }
