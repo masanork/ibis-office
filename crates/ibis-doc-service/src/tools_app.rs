@@ -174,6 +174,10 @@ fn close_document(service: &mut Service, args: &Value) -> Result<Value, ToolErro
         return Err(ToolError::new("discard_required", "the document has unsaved changes: save it, or close it with discard: true"));
     }
     service.documents.remove(id);
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    if service.report_refresh.as_ref().is_some_and(|review| review.document_id == id) {
+        service.report_refresh = None;
+    }
     Ok(json!({ "closed": true }))
 }
 

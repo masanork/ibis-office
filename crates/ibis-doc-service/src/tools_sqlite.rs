@@ -100,6 +100,7 @@ const TOOLS: &[Tool] = &[
             object(
                 &[
                     document_id(),
+                    ("snapshot_id", string("Apply the most recent successful preview without rereading its sources.")),
                     (
                         "bindings",
                         json!({
@@ -132,7 +133,7 @@ const TOOLS: &[Tool] = &[
                         boolean("Validate without editing and report row changes (default false)."),
                     ),
                 ],
-                &["document_id", "bindings"],
+                &["document_id"],
             )
         },
         run: refresh_query_reports,
@@ -1064,6 +1065,43 @@ fn disk_arrow_session(service: &Service, specs: &Value) -> Result<SqliteQuerySes
     SqliteQuerySession::from_arrow_disk(&sources).map_err(sqlite_error)
 }
 
+fn batch_session(
+    service: &Service,
+    query: &Value,
+    arrow_disk: bool,
+) -> Result<SqliteQuerySession, ToolError> {
+    const ARROW_MEMORY_FILE_BYTES: u64 = 8 * 1024 * 1024;
+    let datasets = &query["datasets"];
+    if arrow_disk {
+        return disk_arrow_session(service, datasets);
+    }
+    let arrow_only = datasets.as_array().is_some_and(|specs| {
+        !specs.is_empty() && specs.iter().all(|spec| {
+            spec["source"].as_str().is_some_and(|path| source_kind(Path::new(path)) == "arrow_ipc")
+        })
+    });
+    if !arrow_only {
+        return query_session(service, query);
+    }
+    let bytes = datasets.as_array().unwrap().iter().try_fold(0u64, |total, spec| {
+        let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, &["arrow", "ipc", "feather"], true)?;
+        let size = std::fs::metadata(path).map_err(sqlite_error)?.len();
+        Ok::<_, ToolError>(total.saturating_add(size))
+    })?;
+    if bytes > ARROW_MEMORY_FILE_BYTES {
+        return disk_arrow_session(service, datasets);
+    }
+    match query_session(service, query) {
+        Err(error) if [
+            "Arrow IPC source exceeds the query editor's table size limit",
+            "Arrow IPC decoded buffers exceed the 128 MiB limit",
+            "Arrow IPC text exceeds the 128 MiB limit",
+            "Arrow IPC list exceeds the text budget",
+        ].iter().any(|limit| error.message.ends_with(limit)) => disk_arrow_session(service, datasets),
+        result => result,
+    }
+}
+
 fn batch_query_results(
     service: &Service,
     args: &Value,
@@ -1071,50 +1109,45 @@ fn batch_query_results(
 ) -> Result<Vec<QueryReportResult>, ToolError> {
     let bindings = batch_bindings(args)?;
     let arrow_disk = args.opt_bool("arrow_disk")?.unwrap_or(false);
-    let mut staged = None;
-    reports
-        .into_iter()
-        .map(|(name, definition)| {
-            let (rows, checks) = (|| {
-                let sources = definition["sources"]
-                    .as_array()
-                    .filter(|sources| (1..=8).contains(&sources.len()))
-                    .ok_or_else(|| ToolError::invalid("Invalid saved report sources"))?;
-                let sources = sources
-                    .iter()
-                    .map(|source| {
-                        let file = source.str_arg("file")?;
-                        bindings
-                            .get(file)
-                            .filter(|path| path.is_string())
-                            .ok_or_else(|| {
-                                ToolError::invalid(format!("Missing file binding for {file}"))
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let query = bound_query(&definition, &json!({"sources":sources}))?;
-                if !arrow_disk {
-                    return refresh_query_result(service, &query, &definition);
-                }
-                let datasets = &query["datasets"];
-                if staged.is_none() {
-                    staged = Some((datasets.clone(), disk_arrow_session(service, datasets)?));
-                }
-                let (saved, session) = staged.as_ref().ok_or_else(|| ToolError::invalid("Missing staged Arrow session"))?;
-                if saved != datasets {
-                    return Err(ToolError::invalid("Disk staging requires identical Arrow IPC dataset bindings for all reports"));
-                }
-                refresh_query_in_session(session, &query, &definition)
-            })()
-            .map_err(|error| report_error(&name, error))?;
-            Ok(QueryReportResult {
-                name,
-                definition,
-                rows,
-                checks,
-            })
-        })
-        .collect()
+    let mut groups: Vec<(Value, Vec<_>)> = Vec::new();
+    for (index, (name, definition)) in reports.into_iter().enumerate() {
+        let query = (|| {
+            let sources = definition["sources"].as_array()
+                .filter(|sources| (1..=8).contains(&sources.len()))
+                .ok_or_else(|| ToolError::invalid("Invalid saved report sources"))?;
+            let sources = sources.iter().map(|source| {
+                let file = source.str_arg("file")?;
+                bindings.get(file).filter(|path| path.is_string())
+                    .ok_or_else(|| ToolError::invalid(format!("Missing file binding for {file}")))
+            }).collect::<Result<Vec<_>, _>>()?;
+            bound_query(&definition, &json!({"sources":sources}))
+        })().map_err(|error| report_error(&name, error))?;
+        let key = json!({"datasets":query["datasets"],"path":query["path"]});
+        let entry = (index, name, definition, query);
+        if let Some((_, reports)) = groups.iter_mut().find(|(existing, _)| *existing == key) {
+            reports.push(entry);
+        } else if arrow_disk && !groups.is_empty() {
+            return Err(report_error(&entry.1, ToolError::invalid(
+                "Explicit disk staging requires identical Arrow IPC dataset bindings for all reports",
+            )));
+        } else {
+            groups.push((key, vec![entry]));
+        }
+    }
+    let mut results = Vec::new();
+    // Finish each source group and drop its session before loading the next.
+    for (_, reports) in groups {
+        let (_, name, _, query) = &reports[0];
+        let session = batch_session(service, query, arrow_disk)
+            .map_err(|error| report_error(name, error))?;
+        for (index, name, definition, query) in reports {
+            let (rows, checks) = refresh_query_in_session(&session, &query, &definition)
+                .map_err(|error| report_error(&name, error))?;
+            results.push((index, QueryReportResult { name, definition, rows, checks }));
+        }
+    }
+    results.sort_unstable_by_key(|(index, _)| *index);
+    Ok(results.into_iter().map(|(_, result)| result).collect())
 }
 
 fn batch_metrics<'a>(
@@ -1208,11 +1241,55 @@ fn plan_batch_refresh(
     ))
 }
 
+pub(crate) struct ReviewedReportRefresh {
+    pub(crate) document_id: String,
+    snapshot_id: String,
+    base: ibis_doc_model::Presentation,
+    summary: Value,
+    commands: Vec<ibis_doc_model::Command>,
+}
+
 fn refresh_query_reports(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let open = crate::tools_xlsx::workbook_document(service, args.str_arg("document_id")?)?;
+    let id = args.str_arg("document_id")?;
+    if let Some(snapshot_id) = args.opt_str("snapshot_id")? {
+        crate::edit::only_known(args, &["document_id", "snapshot_id"])?;
+        if !service.report_refresh.as_ref().is_some_and(|review| review.document_id == id && review.snapshot_id == snapshot_id) {
+            return Err(ToolError::invalid("Unknown or expired report preview. Preview the refresh again."));
+        }
+        let review = service.report_refresh.take().unwrap();
+        let open = crate::tools_xlsx::workbook_document(service, id)?;
+        if open.document.presentation() != &review.base {
+            return Err(ToolError::invalid("Workbook changed since preview. Preview the refresh again."));
+        }
+        crate::edit::execute(open, review.commands)?;
+        let mut summary = review.summary;
+        summary["preview"] = json!(false);
+        return Ok(crate::edit::edited(id, open, summary, Vec::new()));
+    }
+    service.report_refresh = None;
+    let open = crate::tools_xlsx::workbook_document(service, id)?;
     let reports = batch_query_report_definitions(open.document.presentation(), args)?;
     let results = batch_query_results(service, args, reports)?;
-    apply_batch_refresh(service, args, results)
+    if !args.opt_bool("preview")?.unwrap_or(false) {
+        return apply_batch_refresh(service, args, results);
+    }
+    let snapshot_id = service.new_document_id();
+    let open = crate::tools_xlsx::workbook_document(service, id)?;
+    let base = open.document.presentation();
+    let (mut summary, commands) = plan_batch_refresh(base, args, results, true)?;
+    let reviewed = if summary["blocked"] != true {
+        let reviewed = ReviewedReportRefresh {
+            document_id: id.to_owned(), snapshot_id: snapshot_id.clone(),
+            base: base.clone(), summary: summary.clone(), commands,
+        };
+        summary["snapshot_id"] = json!(snapshot_id);
+        Some(reviewed)
+    } else {
+        None
+    };
+    let result = crate::edit::edited(id, open, summary, Vec::new());
+    service.report_refresh = reviewed;
+    Ok(result)
 }
 
 pub struct SqliteReportBatch {

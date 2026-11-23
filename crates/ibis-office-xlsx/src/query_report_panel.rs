@@ -668,3 +668,87 @@ pub(crate) fn refresh_report_scenario() {
     });
     assert_eq!(amount(&mut scene), Some(CellValue::Number(24.0)));
 }
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn arrow_report_snapshot_scenario() {
+    use crate::shell::scenario::{Scenario, button_probe};
+    use ibis_doc_model::Document;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("lookup.ipc");
+    let small = include_bytes!("../../ibis-doc-service/tests/fixtures/query-lookup.ipc");
+    let large = include_bytes!("../../ibis-doc-service/tests/fixtures/query-large-lookup.ipc");
+    std::fs::write(&source, small).unwrap();
+
+    let mut scene = Scenario::new_document(ibis_formats::Kind::Workbook);
+    scene.update(|editor, _, cx| {
+        for (anchor, sql) in [
+            ("A1", "SELECT count(*) AS n FROM lookup"),
+            ("D1", "SELECT count(code) AS n FROM lookup"),
+        ] {
+            let mut draft = Document::new(editor.presentation().clone());
+            let export = ibis_doc_service::prepare_selected_datasets_export(
+                std::slice::from_ref(&source),
+                json!({"sql":sql,"anchor":anchor,"datasets":[
+                    {"source":"1","alias":"lookup","columns":["code","labels"]},
+                ]}),
+            ).unwrap();
+            let (_, commands) = export.stage(&mut draft, ibis_doc_service::DraftToolContext {
+                workbook: ibis_doc_service::WorkbookToolContext {
+                    active_sheet: Some(editor.current_slide), ..Default::default()
+                },
+                ..Default::default()
+            }).unwrap();
+            editor.document.execute(commands).unwrap();
+        }
+        editor.open_queries_panel(cx);
+    });
+
+    let _probe = button_probe::Probe::new();
+    scene.update(|_, _, cx| cx.notify());
+    button_probe::click(&mut scene, "queries-report-refresh");
+    scene.update(|editor, _, cx| {
+        let panel = editor.query_reports_mut().unwrap();
+        panel.files.insert("lookup.ipc".into(), source.clone());
+        for report in &mut panel.reports {
+            report.metrics.insert("n".into());
+        }
+        cx.notify();
+    });
+
+    let preview = |scene: &mut Scenario, expected: u32| {
+        button_probe::click(scene, "query-reports-preview");
+        for _ in 0..500 {
+            let (result, busy, message) = scene.with(|editor, _| {
+                let panel = editor.wb().panels.queries.as_ref().unwrap().reports.as_ref().unwrap();
+                (panel.review.as_ref().map(|review| review.result.clone()), panel.busy, panel.message.clone())
+            });
+            if let Some(result) = result {
+                let reports = result["reports"].as_array().unwrap();
+                assert_eq!(reports.len(), 2);
+                for report in reports {
+                    assert_eq!(report["metrics"][0]["current"].as_f64(), Some(f64::from(expected)));
+                }
+                return;
+            }
+            assert!(busy, "report preview failed: {message}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            scene.wait(20);
+        }
+        panic!("Arrow report preview did not complete");
+    };
+
+    preview(&mut scene, 4);
+    std::fs::write(&source, large).unwrap();
+    preview(&mut scene, 50_001);
+    std::fs::write(&source, small).unwrap();
+    button_probe::click(&mut scene, "query-reports-apply");
+    scene.with(|editor, _| {
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(
+            editor.presentation().slide(editor.current_slide).unwrap(),
+        ).unwrap();
+        for column in [0, 3] {
+            assert_eq!(sheet.cell(1, column).map(|cell| &cell.value), Some(&CellValue::Number(50_001.0)));
+        }
+    });
+}

@@ -1071,5 +1071,29 @@ fn disk_staged_arrow_reports_share_a_batch_after_reopening() {
     }));
     assert_eq!(applied["reports"].as_array().unwrap().len(), 2);
     assert_eq!(applied["dirty"], true);
+    std::fs::write(&stream, include_bytes!("fixtures/query-large-lookup.ipc")).unwrap();
+    let preview = call("sqlite_refresh_query_reports", json!({
+        "document_id":id,"bindings":{"input.feather":stream},"preview":true,
+        "metrics":[{"table":"QueryResult1","column":"n"}],
+    }));
+    assert_eq!(preview["reports"][0]["metrics"][0]["current"].as_f64(), Some(50_001.0));
+    std::fs::remove_file(&stream).unwrap();
+    let applied = call("sqlite_refresh_query_reports", json!({
+        "document_id":id,"snapshot_id":preview["snapshot_id"],
+    }));
+    assert_eq!(applied["preview"], false);
+    assert_eq!(applied["reports"], preview["reports"]);
+    let sheet = call("xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"].clone();
+    assert_eq!(call("xlsx_get_cells", json!({
+        "document_id":id,"sheet":sheet,"range":"A2",
+    }))["rows"][0][0].as_f64(), Some(50_001.0));
+    let stale = call("sqlite_refresh_query_reports", json!({
+        "document_id":id,"bindings":{"input.feather":file},"preview":true,
+    }));
+    call("xlsx_set_cells", json!({"document_id":id,"sheet":sheet,"range":"B20","values":"changed"}));
+    let error = service.call("sqlite_refresh_query_reports", &json!({
+        "document_id":id,"snapshot_id":stale["snapshot_id"],
+    })).unwrap_err();
+    assert!(error.message.contains("Workbook changed"));
     std::fs::remove_dir_all(dir).unwrap();
 }
