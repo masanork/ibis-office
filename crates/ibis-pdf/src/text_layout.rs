@@ -274,7 +274,7 @@ fn vertical_text(segments: &[Segment], layout: TextLayout) -> String {
     }
     let mut tiers = merged;
     let mut out = String::new();
-    for (t, (_, _, members)) in tiers.iter_mut().enumerate() {
+    for (t, (tier_top, _, members)) in tiers.iter_mut().enumerate() {
         if t > 0 {
             out.push('\n');
         }
@@ -284,6 +284,13 @@ fn vertical_text(segments: &[Segment], layout: TextLayout) -> String {
         });
         for &i in members.iter() {
             let s = &segments[i];
+            // Physical: the column starts as far down the tier as it stands (a paragraph's first column one character
+            // down, a column whose first characters the page draws as figures by that much).
+            if layout == TextLayout::Physical {
+                for _ in 0..((s.top - *tier_top) / s.width.max(1.0)).round().max(0.0) as usize {
+                    out.push('\u{3000}');
+                }
+            }
             let mut prev: Option<&Glyph> = None;
             for g in &s.glyphs {
                 if let Some(p) = prev {
@@ -544,6 +551,19 @@ mod tests {
         column(&mut chars, "この告示は", 235.0, 10.0, 10.0);
         let text = page_text(&PageTextIndex { chars }, TextLayout::Reading);
         assert_eq!(text, "内閣総理大臣\n総務大臣\n附 則\nこの告示は\n");
+    }
+
+    #[test]
+    fn the_physical_layout_starts_each_column_as_far_down_as_it_stands() {
+        // A paragraph: its first column one character down, the next at the top; then a column two characters down.
+        let mut chars = Vec::new();
+        column(&mut chars, "地方公共団体", 200.0, 10.0, 10.0);
+        column(&mut chars, "情報システム", 185.0, 0.0, 10.0);
+        column(&mut chars, "庁内連携", 170.0, 20.0, 10.0);
+        let physical = page_text(&PageTextIndex { chars: chars.clone() }, TextLayout::Physical);
+        assert_eq!(physical, "\u{3000}地方公共団体\n情報システム\n\u{3000}\u{3000}庁内連携\n");
+        // Reading keeps the text alone.
+        assert_eq!(page_text(&PageTextIndex { chars }, TextLayout::Reading), "地方公共団体\n情報システム\n庁内連携\n");
     }
 
     #[test]
