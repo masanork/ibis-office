@@ -236,7 +236,18 @@ headingDivider:
 
 単独行から始まる HTML コメントは、対応する Marp ディレクティブを含むものや ibisOffice の位置注記を除き、複数行でも PPTX の発表者ノートに入ります。従来の `<!-- notes: … -->` も読み書きできます。コードフェンス内のコメントはコードとして扱います。
 
-PPTX からは ibisOffice の位置注記を含む Markdown を書き出します。Marp テーマの CSS、背景・ページ番号のディレクティブ、独自サイズのプリセットは往復の対象外です。元のテーマや指定を使って再レンダリングする場合は Marp 原稿とテーマ CSS を保管してください。
+ページ番号はフロントマターの `paginate: true` で表示します。単独行の HTML コメントでも指定できます。`<!-- paginate: false -->` はそのスライド以降で表示を止め、`<!-- _paginate: false -->` はそのスライドだけ表示を止めます。
+
+| 値 | 表示 | 番号の進み方 |
+| --- | --- | --- |
+| `true` | 表示 | 進める |
+| `false` | 非表示 | 進める |
+| `hold` | 表示 | 前の番号を維持 |
+| `skip` | 非表示 | 進めない |
+
+表紙を数えない場合は、フロントマターに `paginate: true` と `_paginate: skip` を併記します。PPTX ではスライド右下に編集可能なテキストボックスを作ります。Markdown に戻すと番号と配置をテキストボックスとして保持し、スライドの並べ替え後はテキストを編集できます。 [Marpitのページ番号](https://marpit.marp.app/directives#pagination)
+
+PPTX からは ibisOffice の位置注記を含む Markdown を書き出します。Marp テーマの CSS、背景やページ番号の元ディレクティブ、独自サイズのプリセットは往復の対象外です。元のテーマや指定を使って再レンダリングする場合は Marp 原稿とテーマ CSS を保管してください。
 
 ### PPTX の要素の位置と重なり順
 
@@ -462,7 +473,7 @@ stale_after: "2026-12-01"
 
 旧 OOMarkdown 原稿で目次・参考文献一覧を指定していた行は、`[[toc]]` を `::: toc`、`[[bibliography]]` を `::: bibliography`、`[[bibliography:1041]]` を `::: bibliography 1041` に置き換えてください。DOCX に保存済みのフィールドは、Markdown に書き出すと新しい記法になります。
 
-DOCX からは ibisOffice の Markdown 記法（`{#results}`、`[結果](#results)`、`> [!NOTE]` など）で書き出します。元の記法で編集を続ける場合は Markdown 原稿を保管してください。MyST の自動参照番号・引用や、Obsidian の埋め込み・折りたたみ付き callout は試験対応の対象外です。
+DOCX からは ibisOffice の Markdown 記法（`{#results}`、`[結果](#results)`、`> [!NOTE]` など）で書き出します。元の記法で編集を続ける場合は Markdown 原稿を保管してください。MyST の自動参照番号・引用や、Obsidian のノート埋め込み・折りたたみ付き callout は試験対応の対象外です。
 
 MyST のコードフェンスまたはコロンフェンスで囲んだ `{figure} 画像パス` は、インライン画像とキャプション段落に変換します。`:alt:` を画像の代替テキスト、Word互換の `:label:` または `:name:` をキャプションのブックマークに使います。固定寸法の `width`・`height` と、左右・中央の `align` に対応します。DOCXからは標準Markdownの画像・段落・アンカーで書き出します。
 
@@ -499,6 +510,12 @@ E=mc^2
 #### 別ノートへのリンク
 
 デスクトップで開いたフォルダーでは、`[[資料/手順]]` はフォルダー基準のパス、`[[手順]]` は一意なファイル名として解決します。同名ファイルがある場合は `[[資料/手順#詳細|手順の詳細]]` のようにパスを指定してください。過去の Git コミットを閲覧しているときは、リンク先も同じコミットから開きます。Obsidian の Vault は既存フォルダーとして開けます。 [Obsidian の内部リンク](https://obsidian.md/help/Linking%2Bnotes%2Band%2Bfiles/Internal%2Blinks)
+
+#### Obsidian の画像埋め込み
+
+原稿と同じディレクトリーまたはその下にある画像を `![[images/chart.png]]` で取り込めます。`![[images/chart.png|120]]` は幅を、`![[images/chart.png|120x80]]` は幅と高さをピクセル単位で指定します。ファイルを開くときに原稿のディレクトリーを使える環境が対象です。
+
+参照できない画像は元の記法が本文に残ります。DOCX などから Markdown に戻すと、取り込んだ画像は通常の Markdown 画像になります。 [Obsidianの画像埋め込み](https://help.obsidian.md/embeds)
 
 ### ネイティブグラフの chart フェンス
 

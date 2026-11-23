@@ -125,6 +125,7 @@ pub fn is_markdown(data: &[u8]) -> bool {
             || l == "\\columnbreak"
             || l.trim_end() == "[TOC]"
             || myst::reference(l).is_some()
+            || obsidian::image_embed(l).is_some()
             || obsidian::local_link(l).is_some()
             || obsidian::file_link(l).is_some()
             || l.starts_with("$$")
@@ -4887,6 +4888,23 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             }
         }
 
+        if let Some((length, path, width, height)) = obsidian::image_embed(rest)
+            && let Some((format, data)) = load_local_image(path, ctx.base_dir)
+        {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            let size = resolve_image_size(&data, format, width, height);
+            let media = ctx.fresh_media_id();
+            ctx.media.push(Media { id: media, format, data: data.into() });
+            let mut run = FlowRun::new(
+                FlowRunKind::Picture { media, size, look: PictureLook::default() },
+                FlowRunStyle::default(),
+            );
+            run.format = base_fmt.clone();
+            out.push(run);
+            i += length;
+            continue;
+        }
+
         // Inline image: `![alt](data:image/...;base64,...){width=... height=...}`
         if let Some(after_bang) = rest.strip_prefix("![") {
             if let Some(alt_end) = after_bang.find("](") {
@@ -7735,10 +7753,11 @@ pub fn open_markdown_presentation_with_base_dir(
         Chart(&'a Chart),
     }
 
+    let mut pagination = marp::Pagination::new(frontmatter.unwrap_or_default());
     for (idx, chunk) in slide_chunks.iter().enumerate() {
         let positioned = chunk.starts_with(PPTX_SLIDE_MARKER);
         let chunk = chunk.strip_prefix(PPTX_SLIDE_MARKER).unwrap_or(chunk);
-        let (clean_chunk, notes) = marp::extract_notes(chunk, is_marp);
+        let (clean_chunk, notes, page) = pagination.parse_slide(chunk, is_marp);
         let parsed = open_markdown_with_base_dir(clean_chunk.into_bytes(), base_dir)?;
         let Some(flow) = parsed.presentation.flow.as_ref() else {
             continue;
@@ -8041,6 +8060,13 @@ pub fn open_markdown_presentation_with_base_dir(
                 shape.flip_h = placement.flip_h;
                 shape.flip_v = placement.flip_v;
             }
+        }
+
+        if let Some(page) = page.filter(|_| !positioned) {
+            let size = opened.presentation.slide_size;
+            opened.presentation.slides[idx].shapes.push(marp::page_number_shape(
+                page, size, fresh_shape_id(),
+            ));
         }
 
         if let Some(notes) = notes {
@@ -9381,7 +9407,7 @@ series:
         std::fs::write(&outside, &png).unwrap();
 
         let md = format!(
-            "# Image Test\n\n![sample](images/chart.png)\n\n![escape](../ibis_md_outside_test.png)\n\n![abs]({})\n",
+            "# Image Test\n\n![sample](images/chart.png)\n\n![escape](../ibis_md_outside_test.png)\n\n![abs]({})\n\n![[images/chart.png|120]]\n\n![[images/chart.png|80x60]]\n\n![[../ibis_md_outside_test.png]]\n\n![[images/missing.png]]\n",
             outside.display()
         );
         let opened = open_markdown_with_base_dir(md.into_bytes(), Some(&dir)).expect("open_markdown_with_base_dir");
@@ -9397,11 +9423,18 @@ series:
                 }
             }
         }
-        assert_eq!(pictures.len(), 1, "only relative image inside base_dir should be loaded");
+        assert_eq!(pictures.len(), 3, "only images inside base_dir should be loaded");
         assert_eq!(pictures[0].2, "sample");
         // 400x200 => 2:1 aspect ratio at 96 DPI (9525 EMU/px)
         assert_eq!(pictures[0].1.width, 400 * 9_525);
         assert_eq!(pictures[0].1.height, 200 * 9_525);
+
+        assert_eq!(pictures[1].1, EmuSize::new(120 * 9_525, 60 * 9_525));
+        assert_eq!(pictures[2].1, EmuSize::new(80 * 9_525, 60 * 9_525));
+        let exported = export_markdown(flow, &opened.presentation.media);
+        assert_eq!(exported.matches("data:image/png;base64,").count(), 3);
+        assert!(exported.contains("![[images/missing.png]]"));
+        assert!(exported.contains("![[../ibis_md_outside_test.png]]"));
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&outside);
@@ -9932,6 +9965,61 @@ E=mc^2
             let deck = import_markdown_to_pptx_bytes(source.as_bytes()).unwrap();
             assert_eq!(crate::read(&deck).unwrap().slides.len(), 3);
         }
+    }
+
+    #[test]
+    fn marp_pagination_respects_scope_and_keeps_editable_numbers_on_round_trip() {
+        let source = br"---
+marp: true
+paginate: true
+_paginate: skip
+---
+
+# Title
+
+---
+
+# First numbered
+
+---
+
+<!-- _paginate: hold -->
+
+# Same number
+
+---
+
+<!-- paginate: false -->
+
+# Hidden but counted
+
+---
+
+# Also hidden
+
+---
+
+<!-- paginate: true -->
+<!-- notes: paginate: false -->
+
+# Visible again
+";
+        let pptx = import_markdown_to_pptx_bytes(source).unwrap();
+        let presentation = crate::read(&pptx).unwrap();
+        let numbers = |deck: &Presentation| {
+            let frame = marp::page_number_shape(1, deck.slide_size, ShapeId(1)).frame;
+            deck.slides.iter().map(|slide| {
+                slide.shapes.iter().find(|shape| shape.frame == frame)
+                    .and_then(|shape| shape.text_body())
+                    .map(|body| body.paragraphs[0].runs[0].text.clone())
+            }).collect::<Vec<_>>()
+        };
+        let expected = [None, Some("1".into()), Some("1".into()), None, None, Some("4".into())];
+        assert_eq!(numbers(&presentation), expected);
+        assert_eq!(presentation.slides[5].notes.trim(), "paginate: false");
+        let markdown = export_presentation_markdown(&presentation);
+        let rebuilt = import_markdown_to_pptx_bytes(markdown.as_bytes()).unwrap();
+        assert_eq!(numbers(&crate::read(&rebuilt).unwrap()), expected);
     }
 
     #[test]

@@ -63,3 +63,35 @@ pub(super) fn format_file_link(url: &str, label: &str) -> Option<String> {
         Some(format!("[[{target}|{label}]]"))
     }
 }
+
+pub(super) fn image_embed(input: &str) -> Option<(usize, &str, Option<i64>, Option<i64>)> {
+    fn pixels(value: &str) -> Option<i64> {
+        let px: u32 = value.parse().ok()?;
+        (px > 0).then(|| i64::from(px) * 9_525)
+    }
+    let (contents, _) = input.strip_prefix("![[")?.split_once("]]")?;
+    let (path, width, height) = match contents.split_once('|') {
+        Some((path, size)) => {
+            let (width, height) = if let Some((w, h)) = size.split_once('x') {
+                (pixels(w)?, Some(pixels(h)?))
+            } else {
+                (pixels(size)?, None)
+            };
+            (path, Some(width), height)
+        }
+        None => (contents, None, None),
+    };
+    let path = path.trim();
+    if path.is_empty() || path.contains(['[', ']', ':', '#', '?', '\\', '\r', '\n']) {
+        return None;
+    }
+    let extension = std::path::Path::new(path)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase();
+    matches!(
+        extension.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "tif" | "tiff"
+    )
+    .then_some((contents.len() + 5, path, width, height))
+}

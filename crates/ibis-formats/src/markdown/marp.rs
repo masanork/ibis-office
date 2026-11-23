@@ -52,7 +52,8 @@ pub(super) fn heading_dividers(metadata: &str, body: &str) -> Vec<u8> {
             .last()
     }
     let settings = serde_saphyr::from_str::<serde_json::Map<String, serde_json::Value>>(metadata);
-    let mut selected = settings.ok()
+    let mut selected = settings
+        .ok()
         .and_then(|settings| settings.get("headingDivider").cloned())
         .map(|value| match value {
             serde_json::Value::String(value) => value,
@@ -178,38 +179,147 @@ pub(super) fn write_notes(notes: &str, out: &mut String) {
     out.push_str(" -->\n\n");
 }
 
-pub(super) fn extract_notes(chunk: &str, is_marp: bool) -> (String, Option<String>) {
-    let mut body = Vec::new();
-    let mut notes = Vec::new();
-    let mut fence = None;
-    let mut lines = chunk.lines();
-    while let Some(line) = lines.next() {
-        if !super::is_fenced_line(line.trim(), &mut fence)
-            && let Some(comment) = block_comment(line, lines.clone())
-        {
-            let text = comment.text.trim();
-            let directive = is_marp && is_directive(text);
-            let note = text
-                .strip_prefix("notes:")
-                .or_else(|| (is_marp && !text.starts_with("pptx-") && !directive).then_some(text));
-            if let Some(note) = note {
-                let note = note.trim();
-                if !note.is_empty() {
-                    notes.push(note.to_owned());
-                }
-            }
-            if note.is_some() || directive {
-                lines.by_ref().take(comment.following_lines).for_each(drop);
-                continue;
-            }
-            body.push(line);
-            body.extend(lines.by_ref().take(comment.following_lines));
-        } else {
-            body.push(line);
+#[derive(Clone, Copy, Default)]
+enum PageMode {
+    Show,
+    #[default]
+    Hide,
+    Hold,
+    Skip,
+}
+
+impl PageMode {
+    fn parse(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "true" => Self::Show,
+            "hold" => Self::Hold,
+            "skip" => Self::Skip,
+            _ => Self::Hide,
         }
     }
-    (
-        body.join("\n"),
-        (!notes.is_empty()).then(|| notes.join("\n")),
-    )
+}
+
+pub(super) struct Pagination {
+    mode: PageMode,
+    number: usize,
+    first_slide: Option<PageMode>,
+}
+
+impl Pagination {
+    pub(super) fn new(metadata: &str) -> Self {
+        let mut pagination = Self {
+            mode: PageMode::Hide,
+            number: 0,
+            first_slide: None,
+        };
+        for (key, value) in metadata
+            .lines()
+            .filter(|line| !line.starts_with(char::is_whitespace))
+            .filter_map(setting)
+        {
+            match key {
+                "paginate" => pagination.mode = PageMode::parse(value),
+                "_paginate" => pagination.first_slide = Some(PageMode::parse(value)),
+                _ => {}
+            }
+        }
+        pagination
+    }
+
+    pub(super) fn parse_slide(
+        &mut self,
+        chunk: &str,
+        is_marp: bool,
+    ) -> (String, Option<String>, Option<usize>) {
+        let mut body = Vec::new();
+        let mut notes = Vec::new();
+        let mut spot = self.first_slide.take();
+        let mut fence = None;
+        let mut lines = chunk.lines();
+        while let Some(line) = lines.next() {
+            if !super::is_fenced_line(line.trim(), &mut fence)
+                && let Some(comment) = block_comment(line, lines.clone())
+            {
+                let text = comment.text.trim();
+                let directive = is_marp && is_directive(text);
+                let note = text.strip_prefix("notes:").or_else(|| {
+                    (is_marp && !text.starts_with("pptx-") && !directive).then_some(text)
+                });
+                if let Some(note) = note {
+                    let note = note.trim();
+                    if !note.is_empty() {
+                        notes.push(note.to_owned());
+                    }
+                }
+                if directive && note.is_none() {
+                    for (key, value) in text.lines().filter_map(setting) {
+                        match key {
+                            "paginate" => self.mode = PageMode::parse(value),
+                            "_paginate" => spot = Some(PageMode::parse(value)),
+                            _ => {}
+                        }
+                    }
+                }
+                if note.is_some() || directive {
+                    lines.by_ref().take(comment.following_lines).for_each(drop);
+                    continue;
+                }
+                body.push(line);
+                body.extend(lines.by_ref().take(comment.following_lines));
+            } else {
+                body.push(line);
+            }
+        }
+        let page = is_marp
+            .then(|| self.next_page(spot.unwrap_or(self.mode)))
+            .flatten();
+        (
+            body.join("\n"),
+            (!notes.is_empty()).then(|| notes.join("\n")),
+            page,
+        )
+    }
+
+    fn next_page(&mut self, mode: PageMode) -> Option<usize> {
+        if matches!(mode, PageMode::Show | PageMode::Hide) {
+            self.number += 1;
+        }
+        if matches!(mode, PageMode::Show | PageMode::Hold) {
+            self.number = self.number.max(1);
+            Some(self.number)
+        } else {
+            None
+        }
+    }
+}
+
+pub(super) fn page_number_shape(
+    number: usize,
+    size: EmuSize,
+    id: ibis_doc_model::ShapeId,
+) -> ibis_doc_model::Shape {
+    use ibis_doc_model::{
+        EmuRect, Paragraph, Run, RunStyle, Shape, ShapeKind, TextAlign, TextBody,
+    };
+    let frame = EmuRect::new(
+        size.width * 85 / 100,
+        size.height * 91 / 100,
+        size.width / 8,
+        size.height * 7 / 100,
+    );
+    let body = TextBody {
+        paragraphs: vec![Paragraph {
+            align: Some(TextAlign::Right),
+            runs: vec![Run {
+                text: number.to_string(),
+                style: RunStyle {
+                    font_size: Some(1200),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    Shape::new(id, frame, ShapeKind::TextBox(body))
 }
