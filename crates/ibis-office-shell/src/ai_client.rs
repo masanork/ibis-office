@@ -40,18 +40,6 @@ impl AiConfig {
         config
     }
 
-    #[cfg(not(target_family = "wasm"))]
-    pub fn active_connection() -> Result<(&'static str, String), String> {
-        let (provider, config) = Provider::resolve(&Self::load_saved(), process_env)?;
-        let name = match provider {
-            Provider::OpenAi | Provider::OpenAiResponses => "OpenAI 互換 API",
-            Provider::Anthropic => "Claude API",
-            Provider::Bedrock => "Amazon Bedrock（API キー）",
-            Provider::BedrockProfile { .. } => "Amazon Bedrock（AWS プロファイル）",
-        };
-        Ok((name, config.model))
-    }
-
     /// Load only saved values for editing. Environment credentials never enter the form.
     pub fn load_saved() -> Self {
         let get = |key| {
@@ -382,7 +370,87 @@ fn default_reasoning_effort(model: &str, has_tools: bool) -> Option<&'static str
 }
 
 #[cfg(not(target_family = "wasm"))]
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnectionChoice {
+    Auto,
+    OpenAi,
+    Claude,
+    BedrockKey,
+    BedrockProfile,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl ConnectionChoice {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Auto,
+        Self::OpenAi,
+        Self::Claude,
+        Self::BedrockKey,
+        Self::BedrockProfile,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "自動選択",
+            Self::OpenAi => "OpenAI 互換 API",
+            Self::Claude => "Claude API（環境変数）",
+            Self::BedrockKey => "Amazon Bedrock（API キー）",
+            Self::BedrockProfile => "Amazon Bedrock（AWS プロファイル）",
+        }
+    }
+
+    fn resolve(
+        self,
+        saved: &AiConfig,
+        env: impl Fn(&str) -> Option<String>,
+    ) -> Result<NativeConnection, String> {
+        let (provider, config) = Provider::resolve(saved, |name| match (self, name) {
+            (Self::OpenAi, "IBIS_AI_PROVIDER") => Some("openai".into()),
+            (Self::Claude, "IBIS_AI_PROVIDER") => Some("anthropic".into()),
+            (Self::BedrockKey | Self::BedrockProfile, "IBIS_AI_PROVIDER") => Some("bedrock".into()),
+            (Self::BedrockProfile, "AWS_BEARER_TOKEN_BEDROCK") => None,
+            _ => env(name),
+        })?;
+        if self == Self::BedrockKey && provider != Provider::Bedrock {
+            return Err("AWS_BEARER_TOKEN_BEDROCK を設定してください。".into());
+        }
+        Ok(NativeConnection { provider, config })
+    }
+
+    pub(crate) fn load(self) -> Result<NativeConnection, String> {
+        self.resolve(&AiConfig::load_saved(), process_env)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct NativeConnection {
+    provider: Provider,
+    config: AiConfig,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl NativeConnection {
+    pub(crate) fn caption(&self) -> (&'static str, String) {
+        let choice = match self.provider {
+            Provider::OpenAi | Provider::OpenAiResponses => ConnectionChoice::OpenAi,
+            Provider::Anthropic => ConnectionChoice::Claude,
+            Provider::Bedrock => ConnectionChoice::BedrockKey,
+            Provider::BedrockProfile { .. } => ConnectionChoice::BedrockProfile,
+        };
+        (choice.label(), self.config.model.clone())
+    }
+
+    pub(crate) fn check_profile(&self) -> Result<(), String> {
+        if let Provider::BedrockProfile { region } = &self.provider {
+            bedrock::profile_connection(region.clone())?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone, PartialEq, Eq)]
 enum Provider {
     OpenAi,
     OpenAiResponses,
@@ -771,13 +839,16 @@ fn accept_responses_line(
 /// Retry once on a Chat Completions reasoning-effort mismatch, using Responses
 /// when the server explicitly suggests it.
 #[cfg(not(target_family = "wasm"))]
-pub async fn stream_chat_completion(
-    config: &AiConfig,
+pub(crate) async fn stream_chat_completion(
+    connection: &NativeConnection,
     messages: &[ChatMessage],
     tools: Vec<ToolDefinition>,
     mut on_delta: impl FnMut(&str),
 ) -> Result<CompletionOutcome, String> {
-    let (provider, mut config) = Provider::resolve(config, process_env)?;
+    let NativeConnection {
+        provider,
+        mut config,
+    } = connection.clone();
     if provider == Provider::OpenAi
         && let Some(url) = openai_responses_url(&config)
     {
@@ -1539,6 +1610,35 @@ pub(crate) fn fetch_egov_law_xml(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn explicit_connection_choice_overrides_automatic_environment_selection() {
+        let saved = AiConfig {
+            base_url: DEFAULT_BASE_URL.into(),
+            model: DEFAULT_MODEL.into(),
+            api_key: "stored-openai-key".into(),
+        };
+        let env = |name: &str| match name {
+            "IBIS_AI_PROVIDER" => Some("openai".into()),
+            "ANTHROPIC_API_KEY" => Some("anthropic-key".into()),
+            "ANTHROPIC_MODEL" => Some("claude-model".into()),
+            "AWS_BEARER_TOKEN_BEDROCK" => Some("bedrock-key".into()),
+            "AWS_REGION" => Some("ap-northeast-1".into()),
+            _ => None,
+        };
+        let claude = ConnectionChoice::Claude.resolve(&saved, env).unwrap();
+        assert!(claude.provider == Provider::Anthropic);
+        assert_eq!(claude.config.api_key, "anthropic-key");
+        let profile = ConnectionChoice::BedrockProfile
+            .resolve(&saved, env)
+            .unwrap();
+        assert!(matches!(profile.provider, Provider::BedrockProfile { .. }));
+        assert!(profile.config.api_key.is_empty());
+        let key = ConnectionChoice::BedrockKey.resolve(&saved, env).unwrap();
+        assert!(key.provider == Provider::Bedrock);
+        assert_eq!(key.config.api_key, "bedrock-key");
+    }
 
     #[cfg(not(target_family = "wasm"))]
     #[test]

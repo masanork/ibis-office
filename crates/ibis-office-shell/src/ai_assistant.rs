@@ -36,7 +36,7 @@ use crate::with_format;
 
 use crate::ai_client::{AiConfig, BrowserModel, ChatMessage, ToolCall, stream_chat_completion};
 #[cfg(not(target_family = "wasm"))]
-use crate::ai_client::ToolDefinition;
+use crate::ai_client::{ConnectionChoice, NativeConnection, ToolDefinition};
 #[cfg(target_family = "wasm")]
 use crate::ai_client::{
     abort_browser_stream, browser_csrf, explain_ai_error, fit_browser_messages, load_browser_catalog, set_browser_csrf,
@@ -135,6 +135,14 @@ pub struct AiAssistantState {
     pub model_input: Entity<InputState>,
     pub api_key_input: Entity<InputState>,
     pub show_settings: bool,
+    #[cfg(not(target_family = "wasm"))]
+    connection_choice: ConnectionChoice,
+    #[cfg(not(target_family = "wasm"))]
+    connection: Option<NativeConnection>,
+    #[cfg(not(target_family = "wasm"))]
+    connecting: bool,
+    #[cfg(not(target_family = "wasm"))]
+    connection_error: Option<String>,
     pub show_tool_logs: bool,
     pub messages: Vec<UiMessage>,
     pub history: Vec<ChatMessage>,
@@ -946,6 +954,14 @@ impl SlideEditor {
                 api_key_input,
                 show_settings: false,
                 #[cfg(not(target_family = "wasm"))]
+                connection_choice: ConnectionChoice::Auto,
+                #[cfg(not(target_family = "wasm"))]
+                connection: None,
+                #[cfg(not(target_family = "wasm"))]
+                connecting: false,
+                #[cfg(not(target_family = "wasm"))]
+                connection_error: None,
+                #[cfg(not(target_family = "wasm"))]
                 show_tool_logs: self.assistant_output.is_some(),
                 #[cfg(target_family = "wasm")]
                 show_tool_logs: false,
@@ -1406,6 +1422,54 @@ impl SlideEditor {
         cx.notify();
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    fn connect_ai_assistant(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = self.ai_assistant.as_mut() else {
+            return;
+        };
+        if panel.streaming || panel.connecting || panel.assistant_review.is_some() {
+            return;
+        }
+        let choice = panel.connection_choice;
+        let panel_id = panel.prompt_input.entity_id();
+        panel.connecting = true;
+        panel.connection_error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let connection = choice.load()?;
+                    connection.check_profile()?;
+                    Ok::<_, String>(connection)
+                })
+                .await;
+            let _ = this.update(cx, |editor, cx| {
+                let Some(panel) = editor.ai_assistant.as_mut() else {
+                    return;
+                };
+                if panel.prompt_input.entity_id() != panel_id {
+                    return;
+                }
+                panel.connecting = false;
+                match result {
+                    Ok(connection) => {
+                        if panel.connection.as_ref() != Some(&connection) {
+                            panel.history.clear();
+                            panel.pending_old_lawtext = None;
+                        }
+                        panel.connection = Some(connection);
+                        panel.show_settings = false;
+                    }
+                    Err(error) => panel.connection_error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     fn save_ai_assistant_settings(&mut self, cx: &mut Context<Self>) {
         let Some(p) = self.ai_assistant.as_ref() else {
             return;
@@ -1416,10 +1480,7 @@ impl SlideEditor {
             api_key: p.api_key_input.read(cx).value().trim().to_string(),
         };
         cfg.save();
-        if let Some(p) = self.ai_assistant.as_mut() {
-            p.show_settings = false;
-        }
-        cx.notify();
+        self.connect_ai_assistant(cx);
     }
 
     fn stop_ai_assistant(&mut self, cx: &mut Context<Self>) {
@@ -1538,6 +1599,29 @@ impl SlideEditor {
         let kind = self.ai_doc_kind();
         let formula_only = formula_messages.is_some();
         let mut draft = (!formula_only).then(|| self.assistant_turn());
+        let connection = {
+            let Some(panel) = self.ai_assistant.as_mut() else {
+                return;
+            };
+            if panel.connecting {
+                return;
+            }
+            match panel
+                .connection
+                .clone()
+                .map_or_else(|| ConnectionChoice::Auto.load(), Ok)
+            {
+                Ok(connection) => connection,
+                Err(error) => {
+                    emit(json!({"event":"error","message":error}));
+                    panel
+                        .messages
+                        .push(UiMessage::new(UiMessageKind::Error, error));
+                    cx.notify();
+                    return;
+                }
+            }
+        };
         let (run_id, history_start, mut messages_to_send) = {
             let Some(p) = self.ai_assistant.as_mut() else {
                 return;
@@ -1599,7 +1683,6 @@ impl SlideEditor {
             }
         }
 
-        let cfg = AiConfig::load_saved();
         let tools: Vec<ToolDefinition> = if formula_only {
             Vec::new()
         } else {
@@ -1668,7 +1751,7 @@ impl SlideEditor {
                 }
 
                 let outcome = stream_chat_completion(
-                    &cfg,
+                    &connection,
                     &messages_to_send,
                     tools.clone(),
                     |delta| {
@@ -4188,18 +4271,25 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         let connection = v_flex().w_full().gap_1().text_xs().whitespace_normal();
         #[cfg(not(target_family = "wasm"))]
-        let connection = match AiConfig::active_connection() {
-            Ok((provider, model)) => connection
-                .child(
-                    div()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(format!("接続先：{provider}")),
-                )
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(format!("モデル：{model}")),
-                ),
+        let connection = match panel
+            .connection
+            .clone()
+            .map_or_else(|| ConnectionChoice::Auto.load(), Ok)
+        {
+            Ok(active) => {
+                let (provider, model) = active.caption();
+                connection
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("接続先：{provider}")),
+                    )
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("モデル：{model}")),
+                    )
+            }
             Err(error) => connection.child(format!("接続設定：{error}")),
         };
         #[cfg(target_family = "wasm")]
@@ -4301,6 +4391,25 @@ impl SlideEditor {
 
         #[cfg(not(target_family = "wasm"))]
         let settings_box = show_settings.then(|| {
+            use gpui_kit::component::Disableable as _;
+            let choice = panel.connection_choice;
+            let disabled = streaming || panel.connecting || panel.assistant_review.is_some();
+            let options: Vec<_> = ConnectionChoice::ALL
+                .into_iter()
+                .map(|option| {
+                    crate::chrome::DropdownItem::new(option.label())
+                        .checked(choice == option)
+                        .on_select(std::rc::Rc::new(move |editor, _, cx| {
+                            if let Some(panel) = editor.ai_assistant.as_mut()
+                                && !panel.connecting
+                            {
+                                panel.connection_choice = option;
+                                panel.connection_error = None;
+                                cx.notify();
+                            }
+                        }))
+                })
+                .collect();
             v_flex()
                 .gap_2()
                 .p_2()
@@ -4309,25 +4418,58 @@ impl SlideEditor {
                 .border_color(cx.theme().border)
                 .bg(cx.theme().secondary.opacity(0.4))
                 .child(
-                    div()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("OpenAI 互換 API の保存設定"),
+                    crate::chrome::Dropdown::new(
+                        "ai-assistant-connection",
+                        choice.label(),
+                        options,
+                        &cx.weak_entity(),
+                    )
+                    .searchable(false)
+                    .fill_width()
+                    .disabled(disabled),
                 )
                 .child(
-                    div().text_xs().child("Claude API と Amazon Bedrock は起動時の環境変数で設定できます。"),
-                )
-                .child(Input::new(&base_url_input).small())
-                .child(Input::new(&model_input).small())
-                .child(Input::new(&api_key_input).small())
-                .child(
-                    Button::new("ai-assistant-save-settings")
+                    Button::new("ai-assistant-connect")
                         .primary()
                         .small()
-                        .label("設定を保存")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.save_ai_assistant_settings(cx);
-                        })),
+                        .label(if panel.connecting {
+                            "確認中…"
+                        } else {
+                            "接続"
+                        })
+                        .disabled(disabled)
+                        .on_click(cx.listener(|this, _, _, cx| this.connect_ai_assistant(cx))),
+                )
+                .children(
+                    panel
+                        .connection_error
+                        .as_ref()
+                        .map(|error| div().text_xs().child(error.clone())),
+                )
+                .when(
+                    matches!(choice, ConnectionChoice::Auto | ConnectionChoice::OpenAi),
+                    |settings| {
+                        settings
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("OpenAI 互換 API の保存設定"),
+                            )
+                            .child(Input::new(&base_url_input).small())
+                            .child(Input::new(&model_input).small())
+                            .child(Input::new(&api_key_input).small())
+                            .child(
+                                Button::new("ai-assistant-save-settings")
+                                    .outline()
+                                    .small()
+                                    .disabled(disabled)
+                                    .label("保存して接続")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.save_ai_assistant_settings(cx);
+                                    })),
+                            )
+                    },
                 )
         });
         #[cfg(target_family = "wasm")]
