@@ -232,6 +232,12 @@ fn markdown_keeps_visible_text_and_discards_stale_sentence_metadata() {
     assert!(item_xml.contains("<ItemSentence><Sentence>号を編集する。</Sentence>"));
     assert!(!item_xml.contains("ただし、除外例を設ける。"));
     assert!(!xml.contains("ibis-law-sentences"));
+    let columns = "給付の種類 特例給付及び通常給付";
+    assert!(markdown.contains(&format!("{columns} <!-- ibis-law-sentences ")));
+    let edited_columns = markdown.replacen(columns, "給付の区分を編集する。", 1);
+    let columns_xml = to_law_xml(&parse_markdown_law(&edited_columns).unwrap());
+    assert!(columns_xml.contains("<ItemSentence><Sentence>給付の区分を編集する。</Sentence>"));
+    assert!(!columns_xml.contains("<Column"));
     let ai = ibis_formats::lawtext::export_ai_law(source.as_bytes())
         .unwrap()
         .unwrap();
