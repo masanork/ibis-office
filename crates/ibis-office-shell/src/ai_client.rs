@@ -1340,6 +1340,11 @@ pub(crate) fn search_egov_law(args: crate::ai_tools::SearchEgovLawArgs) -> Resul
     parse_egov_search(&output.stdout, date, keyword)
 }
 
+#[cfg(target_family = "wasm")]
+pub(crate) fn search_egov_law(_args: crate::ai_tools::SearchEgovLawArgs) -> Result<Value, String> {
+    Err("e-Gov 法令検索は Web 版では未対応です。デスクトップ版をご利用ください。".into())
+}
+
 #[cfg(not(target_family = "wasm"))]
 fn valid_egov_date(date: &str) -> bool {
     let [year, month, day]: [&str; 3] = match date.split('-').collect::<Vec<_>>().try_into() {
@@ -1437,7 +1442,6 @@ fn parse_egov_search(raw: &[u8], date: &str, keyword: &str) -> Result<Value, Str
 }
 
 /// A versioned statute and its decoded e-Gov XML body.
-#[cfg(not(target_family = "wasm"))]
 pub(crate) struct EgovLaw {
     pub law_id: String,
     pub title: String,
@@ -1521,6 +1525,15 @@ pub(crate) fn fetch_egov_law_xml(
         .map_err(|_| "e-Gov API の法令本文が有効な UTF-8 ではありません。".to_string())?;
     let source_url = egov_revision_url(&revision);
     Ok(EgovLaw { law_id, title, revision, source_url, xml })
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) fn fetch_egov_law_xml(
+    _law_title: Option<&str>,
+    _law_num: Option<&str>,
+    _law_id: Option<&str>,
+) -> Result<EgovLaw, String> {
+    Err("e-Gov 法令の取得は Web 版では未対応です。デスクトップ版をご利用ください。".into())
 }
 
 #[cfg(test)]
