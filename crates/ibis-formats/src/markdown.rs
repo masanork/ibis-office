@@ -374,7 +374,7 @@ pub fn import_markdown_to_xlsx_bytes(data: &[u8]) -> Result<Vec<u8>, Error> {
 
 /// Open a Markdown document's GFM tables as an Excel workbook (`.xlsx` model).
 pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
-    use ibis_doc_model::sheet_ops::{StructureEdit, apply_structure, valid_sheet_name};
+    use ibis_doc_model::sheet_ops::valid_sheet_name;
 
     let text = std::str::from_utf8(&data).map_err(|_| Error::new("Markdown ファイルが UTF-8 ではありません"))?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -414,28 +414,18 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
             None => (0, 0),
         };
         content.cells = markdown_workbook_cells(flow, marker.is_some(), &mut content, date1904, origin)?.into();
-        if let Some(MarkdownSheetMarker { name, validations, hidden_rows, hidden_columns, .. }) = marker {
+        let name = if let Some(MarkdownSheetMarker { name, validations, hidden_rows, hidden_columns, .. }) = marker {
             content.validations = validations;
             apply_markdown_hidden_axis(&hidden_rows, &mut content.rows, &mut content.hidden_rows, content.default_row);
             apply_markdown_hidden_axis(&hidden_columns, &mut content.columns, &mut content.hidden_columns, content.default_column);
             if !valid_sheet_name(presentation, &name, (index == 0).then_some(0)) {
                 return Err(Error::new(format!("無効または重複したシート名です: {name}")));
             }
-            let edit = if index == 0 {
-                StructureEdit::RenameSheet { sheet: 0, name }
-            } else {
-                let slide = presentation.new_slide_id();
-                let shape = presentation.new_shape_id();
-                StructureEdit::AddSheet { sheet: index, name, slide, shape, content: Arc::new(content.clone()) }
-            };
-            apply_structure(presentation, &edit);
-            Arc::make_mut(presentation.workbook.as_mut().unwrap()).structure.push(edit);
-        }
-        if index == 0 {
-            let shape = presentation.slides[0].shapes.iter_mut().find(|shape| matches!(shape.kind, ShapeKind::Sheet(_)))
-                .ok_or_else(|| Error::new("白紙のシートが見つかりません"))?;
-            shape.kind = ShapeKind::Sheet(Arc::new(content));
-        }
+            Some(name)
+        } else {
+            None
+        };
+        crate::workbook_assembly::install_sheet(presentation, index, name, content)?;
     }
     let workbook = Arc::make_mut(presentation.workbook.as_mut().unwrap());
     let preserve_name_formulas = !defined_names.is_empty();
@@ -9775,6 +9765,11 @@ xychart-beta
             .save(&opened.presentation, Default::default())
             .expect("save xlsx");
         let reread = crate::read(&saved).expect("reread xlsx");
+        let workbook = reread.workbook.as_deref().unwrap();
+        assert_eq!(workbook.sheets.len(), 1);
+        let blank = crate::open(crate::blank_file(crate::Kind::Workbook).unwrap()).unwrap();
+        let default_tab = &blank.presentation.workbook.as_deref().unwrap().sheets[0];
+        assert_eq!(workbook.sheets[0].name, default_tab.name);
         let exported = export_presentation_to_markdown(&reread).expect("export xlsx to markdown");
         assert!(exported.contains("| Product | Qty | Price |"));
         assert!(exported.contains("| Apple | 10 | 120 |"));
@@ -9787,9 +9782,9 @@ xychart-beta
 
 ## 売上
 
-| 区分 | 金額 |
-| --- | --- |
-| 国内 | 42 |
+| 区分 | 金額 | 参照 |
+| --- | --- | --- |
+| 国内 | 42 | 5 <!-- xlsx-formula:"=Sheet1!B2" --> |
 
 <!-- xlsx-sheet "Sheet1" -->
 
@@ -9812,6 +9807,9 @@ xychart-beta
             let contents = ibis_doc_model::sheet_calc::sheet_of_slide(slide).unwrap();
             assert_eq!(contents.cell(1, 1).unwrap().text, value);
         }
+        let first = workbook.slide(sheets[0].slide.unwrap()).unwrap();
+        let first = ibis_doc_model::sheet_calc::sheet_of_slide(first).unwrap();
+        assert_eq!(first.cell(1, 2).unwrap().formula.as_deref(), Some("Sheet1!B2"));
         let markdown = export_workbook_markdown(&workbook).unwrap();
         assert!(markdown.contains(r#"<!-- xlsx-sheet "空白" -->"#));
         let rebuilt = import_markdown_to_xlsx_bytes(markdown.as_bytes()).unwrap();
