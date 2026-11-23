@@ -152,6 +152,9 @@ fn audit_reports_xml_model_changes_and_preserves_required_lawtext_attributes() {
     assert!(model.iter().any(|change| {
         change["kind"] == "element_removed" && change["path"] == "/Law/LawBody[1]/TOC[1]"
     }));
+    for path in ["/Law/@PromulgateMonth", "/Law/@PromulgateDay"] {
+        assert!(model.iter().all(|change| change["path"] != path));
+    }
     assert_eq!(
         lawtext,
         &[serde_json::json!({
@@ -166,6 +169,7 @@ fn audit_reports_xml_model_changes_and_preserves_required_lawtext_attributes() {
 fn reads_combined_lawtext_root_attributes_before_a_split_title() {
     let source = concat!(
         "[Era=\"Reiwa\"][Year=\"07\"] [Num=\"001\"]\r\n",
+        "[PromulgateMonth=\"06\"][PromulgateDay=\"09\"]\r\n",
         "[LawType=\"Act\"][Lang=\"en\"]\r\n\r\n",
         "試験法\r\n（令和七年法律第一号）\r\n\r\n第一条 規定を定める。",
     );
@@ -175,6 +179,8 @@ fn reads_combined_lawtext_root_attributes_before_a_split_title() {
     assert_eq!(doc.law_num, "令和七年法律第一号");
     assert_eq!(doc.era.as_deref(), Some("Reiwa"));
     assert_eq!(doc.year.as_deref(), Some("07"));
+    assert_eq!(doc.promulgate_month.as_deref(), Some("06"));
+    assert_eq!(doc.promulgate_day.as_deref(), Some("09"));
     assert_eq!(doc.num.as_deref(), Some("001"));
     assert_eq!(doc.law_type.as_deref(), Some("Act"));
     assert_eq!(doc.lang.as_deref(), Some("en"));

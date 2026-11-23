@@ -157,6 +157,8 @@ pub struct LawDoc {
     pub law_num: String,
     pub era: Option<String>,
     pub year: Option<String>,
+    pub promulgate_month: Option<String>,
+    pub promulgate_day: Option<String>,
     pub num: Option<String>,
     pub law_type: Option<String>,
     pub lang: Option<String>,
@@ -174,6 +176,8 @@ impl Default for LawDoc {
             law_num: String::new(),
             era: None,
             year: None,
+            promulgate_month: None,
+            promulgate_day: None,
             num: None,
             law_type: None,
             lang: Some("ja".to_string()),
@@ -317,6 +321,8 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
     let mut out = LawDoc {
         era: root.attribute("Era").map(str::to_string),
         year: root.attribute("Year").map(str::to_string),
+        promulgate_month: root.attribute("PromulgateMonth").map(str::to_string),
+        promulgate_day: root.attribute("PromulgateDay").map(str::to_string),
         num: root.attribute("Num").map(str::to_string),
         law_type: root.attribute("LawType").map(str::to_string),
         lang: root.attribute("Lang").map(str::to_string),
@@ -555,6 +561,8 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
     push_opt_attr(&mut out, "Lang", doc.lang.as_deref());
     push_opt_attr(&mut out, "LawType", doc.law_type.as_deref());
     push_opt_attr(&mut out, "Num", doc.num.as_deref());
+    push_opt_attr(&mut out, "PromulgateMonth", doc.promulgate_month.as_deref());
+    push_opt_attr(&mut out, "PromulgateDay", doc.promulgate_day.as_deref());
     push_opt_attr(&mut out, "Year", doc.year.as_deref());
     out.push_str(">\n");
     if !doc.law_num.is_empty() {
@@ -791,6 +799,8 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
     for (name, value) in [
         ("Era", doc.era.as_deref()),
         ("Year", doc.year.as_deref()),
+        ("PromulgateMonth", doc.promulgate_month.as_deref()),
+        ("PromulgateDay", doc.promulgate_day.as_deref()),
         ("Num", doc.num.as_deref()),
         ("LawType", doc.law_type.as_deref()),
         ("Lang", doc.lang.as_deref().filter(|lang| *lang != "ja")),
@@ -953,6 +963,8 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
             match name {
                 "Era" => doc.era = Some(value),
                 "Year" => doc.year = Some(value),
+                "PromulgateMonth" => doc.promulgate_month = Some(value),
+                "PromulgateDay" => doc.promulgate_day = Some(value),
                 "Num" => doc.num = Some(value),
                 "LawType" => doc.law_type = Some(value),
                 "Lang" => doc.lang = Some(value),
@@ -1196,6 +1208,12 @@ fn to_markdown_with_articles(
     if let Some(year) = doc.year.as_deref() {
         out.push_str(&format!("year: {year}\n"));
     }
+    if let Some(month) = doc.promulgate_month.as_deref() {
+        out.push_str(&format!("promulgate_month: {month}\n"));
+    }
+    if let Some(day) = doc.promulgate_day.as_deref() {
+        out.push_str(&format!("promulgate_day: {day}\n"));
+    }
     if let Some(num) = doc.num.as_deref() {
         out.push_str(&format!("num: {num}\n"));
     }
@@ -1377,6 +1395,8 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
                         "law_num" => doc.law_num = v,
                         "era" => doc.era = Some(v),
                         "year" => doc.year = Some(v),
+                        "promulgate_month" => doc.promulgate_month = Some(v),
+                        "promulgate_day" => doc.promulgate_day = Some(v),
                         "num" => doc.num = Some(v),
                         "law_type" => doc.law_type = Some(v),
                         "lang" => doc.lang = Some(v),
