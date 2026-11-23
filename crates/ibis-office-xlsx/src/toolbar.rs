@@ -3046,14 +3046,18 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     #[cfg(not(target_family = "wasm"))]
     {
         if ibis_formats::sbom_review::can_refresh(editor.presentation()) {
-            let mut entry = MenuItem::tr("xlsx.sbom-refresh")
-                .icon("refresh")
-                .on(|this, window, cx| this.refresh_sbom_review(window, cx))
-                .into();
-            for (_, entries) in menus.menus.iter_mut() {
-                match insert_after(entries, "file.open", entry) {
-                    Ok(()) => break,
-                    Err(back) => entry = back,
+            for (anchor, item) in [
+                ("file.open", MenuItem::tr("xlsx.sbom-refresh").icon("refresh")
+                    .on(|this, window, cx| this.refresh_sbom_review(window, cx))),
+                ("xlsx.sbom-refresh", MenuItem::tr("xlsx.sbom-actions").icon("filter_list")
+                    .on(|this, window, cx| this.open_sbom_action_queue(window, cx))),
+            ] {
+                let mut entry = item.into();
+                for (_, entries) in menus.menus.iter_mut() {
+                    match insert_after(entries, anchor, entry) {
+                        Ok(()) => break,
+                        Err(back) => entry = back,
+                    }
                 }
             }
         }

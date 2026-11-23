@@ -90,6 +90,24 @@ impl SlideEditor {
         self.document.reset_history();
     }
 
+    /// Show today's findings that require attention without editing the source.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn open_sbom_action_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_edit(window, cx);
+        let review = self.presentation().clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx.background_executor().spawn(async move {
+                ibis_formats::sbom_review::open_action_queue(&review)
+            }).await;
+            this.update_in(cx, |this, _, cx| match result {
+                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                    editor.show_new(opened, next_new_file_name(ibis_formats::Kind::Workbook), window, cx)
+                }),
+                Err(error) => this.set_status(crate::i18n::format("xlsx.sbom-actions-failed", &[("error", &error)]), cx),
+            }).ok();
+        }).detach();
+    }
+
     /// Open a refreshed review as a new workbook, keeping the source and its edits open.
     #[cfg(not(target_family = "wasm"))]
     pub fn refresh_sbom_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {

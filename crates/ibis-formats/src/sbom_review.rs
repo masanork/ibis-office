@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 mod ledger;
-pub use ledger::{can_refresh, refresh_xlsx};
+pub use ledger::{can_refresh, open_action_queue, refresh_xlsx};
 
 type Package = (String, String);
 type Inventory = BTreeMap<Package, BTreeSet<String>>;

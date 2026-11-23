@@ -3,7 +3,10 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
 use super::*;
+
+mod queue;
 use ibis_doc_model::{CellValue, Presentation, sheet::Sheet, sheet_calc::sheet_of_slide};
+pub use queue::open_action_queue;
 
 pub(super) const TRACKING: [&str; 6] = [
     "Owner",
@@ -84,6 +87,7 @@ fn previous(book: &Presentation) -> Result<BTreeMap<Key, Previous>, String> {
         header(sheet, "Last reported versions").or_else(|| header(sheet, "Old scan"));
     let identity = ["Ecosystem", "Package", "OSV ID"].map(col);
     let annotations = TRACKING.map(|name| header(sheet, name));
+    let date1904 = book.workbook.as_ref().is_some_and(|book| book.date1904);
     let mut entries = BTreeMap::new();
     let rows: BTreeSet<_> = sheet
         .cells
@@ -100,7 +104,13 @@ fn previous(book: &Presentation) -> Result<BTreeMap<Key, Previous>, String> {
                 })
         };
         let [ecosystem, package, id] = identity.map(text);
-        let tracking = annotations.map(|column| column.map(text).unwrap_or_default().to_owned());
+        let mut tracking =
+            annotations.map(|column| column.map(text).unwrap_or_default().to_owned());
+        if let Some(date) =
+            annotations[1].and_then(|column| queue::due_text(sheet, row, column, date1904))
+        {
+            tracking[1] = date;
+        }
         if [ecosystem, package, id]
             .iter()
             .any(|value| value.is_empty())

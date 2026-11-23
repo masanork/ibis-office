@@ -113,6 +113,8 @@ In the desktop app, use **File → Open** to open supported JSON as an editable 
 
 Use **File → Refresh vulnerability review…** to select a new OSV-Scanner JSON file. The app opens a new workbook with the current review notes and flags newly detected, changed-version, and re-detected findings. Rows missing from the latest scan retain their last reported versions. Refer to the original workbook for comparison SBOMs and additional sheets.
 
+**File → Show findings requiring action…** opens a dated workbook with missing owners, overdue responses, expired exceptions, and scan changes that require review. Enter the due date as a spreadsheet date or as `YYYY-MM-DD`. For decisions marked `Deferred` or `Risk accepted`, the due date is the exception review deadline. The deadline day is inclusive. Record decisions in the original workbook.
+
 ---
 
 ## Print & Export Options
