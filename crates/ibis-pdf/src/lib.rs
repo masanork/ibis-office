@@ -9,6 +9,7 @@
 pub mod acroform;
 pub mod container;
 pub mod cos;
+pub mod crypt;
 #[cfg(feature = "interpret")]
 pub mod interpret;
 pub mod pdfa;

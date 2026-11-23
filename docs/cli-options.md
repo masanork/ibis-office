@@ -267,7 +267,7 @@ ibisOffice --export pdf --handout 2 --print-color bw --print-frame \
 ibisOffice --export md --out-dir ./out input.pdf
 ```
 
-PDF, XPS (including OXPS), and OFD export extractable text in page order. Reading order within a page is inferred from character positions. Graphics and images decoded by the viewer are included in a positioned SVG for each page. Image-only pages require separate OCR. Semantic tables, signatures, and reproduction of the original layout require separate processing. DOCX and PPTX Markdown round trips preserve the original EMF/WMF media bytes. Display of those formats in a browser depends on the viewer.
+PDF, XPS (including OXPS), and OFD export extractable text in page order. Encrypted PDFs that open without a password (the owner only restricted printing or copying: RC4, AES-128 or AES-256 with the Standard security handler) are decrypted; a PDF that needs a user password reports so. Reading order within a page is inferred from character positions. Graphics and images decoded by the viewer are included in a positioned SVG for each page. Image-only pages require separate OCR. Semantic tables, signatures, and reproduction of the original layout require separate processing. DOCX and PPTX Markdown round trips preserve the original EMF/WMF media bytes. Display of those formats in a browser depends on the viewer.
 
 To keep the columns of tables, add `--text-layout physical`: each page's text goes into a ```` ```text ```` block, with each character at the column its position on the page gives (a half-width character one column, a full-width character two, like `pdftotext -layout`), and without Markdown escapes. The default, `--text-layout reading`, writes each line as Markdown with single spaces between words.
 
