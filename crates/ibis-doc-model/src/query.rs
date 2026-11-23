@@ -26,7 +26,7 @@ pub use avro_source::read_avro;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod sqlite_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use sqlite_source::{DATASET_MEMORY_LIMIT, DiskDataset, SqlitePredicate, SqliteQuerySession, SqliteRows, SqliteScalar, read_sqlite_table, read_sqlite_table_bounded, sqlite_columns, sqlite_count, sqlite_query, sqlite_query_datasets, sqlite_tables, validate_sqlite_select};
+pub use sqlite_source::{DATASET_MEMORY_LIMIT, DiskDataset, SqlitePredicate, SqliteQuerySession, SqliteRows, SqliteScalar, read_sqlite_table, read_sqlite_table_bounded, sqlite_columns, sqlite_count, sqlite_dataset_columns, sqlite_query, sqlite_query_datasets, sqlite_tables, validate_sqlite_select};
 mod book;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod parquet_source;
@@ -35,7 +35,7 @@ mod json_lines_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use json_lines_source::{json_array_choices, read_json_array, read_json_lines};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use parquet_source::{parquet_columns, parquet_files_columns, parquet_folder_files, read_parquet_folder, read_parquet, read_parquet_bounded, read_parquet_columns, read_parquet_filtered, read_parquet_files, ParquetBound, ParquetColumn, ParquetPredicate};
+pub use parquet_source::{parquet_columns, parquet_dataset_columns, parquet_files_columns, parquet_folder_files, read_parquet_folder, read_parquet, read_parquet_bounded, read_parquet_columns, read_parquet_filtered, read_parquet_files, ParquetBound, ParquetColumn, ParquetPredicate};
 mod codec;
 mod cond;
 mod expr;

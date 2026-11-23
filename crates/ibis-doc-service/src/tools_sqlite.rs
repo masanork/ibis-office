@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, read_arrow_ipc_dataset, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
-    sqlite_count, sqlite_tables, validate_sqlite_select,
+    SqliteRows, SqliteScalar, read_arrow_ipc_dataset, parquet_dataset_columns, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
+    sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
 
@@ -36,6 +36,14 @@ const TOOLS: &[Tool] = &[
         returns_content: true,
         schema: || object(&[source_path(), table_name()], &[PATH, "table"]),
         run: describe_table,
+    },
+    Tool {
+        name: "sqlite_describe_datasets",
+        description: "Inspect SQL column names and storage types before writing a query. Use the same datasets array as sqlite_query. Returns schema without rows.",
+        access: Access::Read,
+        returns_content: true,
+        schema: || object(&[datasets_property()], &["datasets"]),
+        run: describe_datasets,
     },
     Tool {
         name: "sqlite_query",
@@ -384,39 +392,43 @@ fn query_properties() -> Vec<(&'static str, Value)> {
             "sql",
             string("One SQLite SELECT or WITH query. Use positional ? parameters."),
         ),
-        (
-            "datasets",
-            json!({
-                "type":"array","minItems":1,"maxItems":8,
-                "description":"Use an in-memory database containing only these CSV, Parquet, Arrow IPC, JSON Lines, Avro and/or SQLite tables.",
-                "items":object(&[
-                    ("source", string("Path to a CSV, Parquet, Arrow IPC, JSON Lines, Avro or SQLite file in an allowed folder.")),
-                    ("alias", string("SQL table name to register for this dataset.")),
-                    ("table", string("Source table name, required for SQLite files.")),
-                    ("where", json!({
-                        "type":"object","minProperties":1,"maxProperties":MAX_FILTERS,
-                        "additionalProperties":{"anyOf":[
-                            {"type":["string","number","boolean","null"]},
-                            {"type":"object","minProperties":1,"additionalProperties":false,"properties":{
-                                "lt":{"type":["string","number"]},"lte":{"type":["string","number"]},
-                                "gt":{"type":["string","number"]},"gte":{"type":["string","number"]}
-                            }}
-                        ]},
-                        "description":"Parquet only: equality or range conditions, combined with AND. Scalar null matches missing values."
-                    })),
-                    ("columns", json!({
-                        "type":"array","minItems":1,"maxItems":256,"uniqueItems":true,
-                        "items":{"type":"string","minLength":1},
-                        "description":"Parquet, Arrow IPC, JSON Lines and Avro: exact column names to load, in order. Omit to load all columns."
-                    })),
-                ], &["source","alias"]),
-            }),
-        ),
+        datasets_property(),
         (
             "params",
             json!({"type":"array","maxItems":100,"items":{"type":["string","number","null"]}}),
         ),
     ]
+}
+
+fn datasets_property() -> (&'static str, Value) {
+    (
+        "datasets",
+        json!({
+            "type":"array","minItems":1,"maxItems":8,
+            "description":"Register these CSV, Parquet, Arrow IPC, JSON Lines, Avro and/or SQLite tables.",
+            "items":object(&[
+                ("source", string("Path to a CSV, Parquet, Arrow IPC, JSON Lines, Avro or SQLite file in an allowed folder.")),
+                ("alias", string("SQL table name to register for this dataset.")),
+                ("table", string("Source table name, required for SQLite files.")),
+                ("where", json!({
+                    "type":"object","minProperties":1,"maxProperties":MAX_FILTERS,
+                    "additionalProperties":{"anyOf":[
+                        {"type":["string","number","boolean","null"]},
+                        {"type":"object","minProperties":1,"additionalProperties":false,"properties":{
+                            "lt":{"type":["string","number"]},"lte":{"type":["string","number"]},
+                            "gt":{"type":["string","number"]},"gte":{"type":["string","number"]}
+                        }}
+                    ]},
+                    "description":"Parquet only: equality or range conditions, combined with AND. Scalar null matches missing values."
+                })),
+                ("columns", json!({
+                    "type":"array","minItems":1,"maxItems":256,"uniqueItems":true,
+                    "items":{"type":"string","minLength":1},
+                    "description":"Parquet, Arrow IPC, JSON Lines and Avro: exact column names to load, in order. Omit to load all columns."
+                })),
+            ], &["source","alias"]),
+        }),
+    )
 }
 
 fn sql_params(args: &Value) -> Result<Vec<Option<SqliteScalar<'_>>>, ToolError> {
@@ -653,7 +665,49 @@ fn dataset_columns(spec: &Value, kind: &str) -> Result<Vec<String>, ToolError> {
     }
 }
 
+fn describe_datasets(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &["datasets"])?;
+    let mut result = Vec::new();
+    let envelope_bytes = r#"{"datasets":[]}"#.len();
+    let mut remaining = service.limits.page_bytes.saturating_sub(envelope_bytes);
+    visit_datasets(service, &args["datasets"], true, |alias, kind, source_table, table| {
+        let columns: Vec<_> = table.columns.into_iter().map(|column| {
+            let sql_type = match column.ty {
+                QType::Any => "DYNAMIC",
+                QType::Text => "TEXT",
+                QType::Whole | QType::Int32 | QType::Logical => "INTEGER",
+                _ => "REAL",
+            };
+            json!({"name": column.name, "sql_type": sql_type})
+        }).collect();
+        let mut entry = json!({"alias": alias, "format": kind, "columns": columns});
+        if let Some(name) = source_table {
+            entry["table"] = json!(name);
+        }
+        let bytes = entry.to_string().len() + usize::from(!result.is_empty());
+        remaining = remaining.checked_sub(bytes)
+            .ok_or_else(|| ToolError::new("result_too_large", "Dataset schema exceeds the response limit"))?;
+        result.push(entry);
+        Ok(())
+    })?;
+    Ok(json!({"datasets": result}))
+}
+
 fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable)>, ToolError> {
+    let mut datasets = Vec::new();
+    visit_datasets(service, specs, false, |alias, _, _, table| {
+        datasets.push((alias.to_owned(), table));
+        Ok(())
+    })?;
+    Ok(datasets)
+}
+
+fn visit_datasets(
+    service: &Service,
+    specs: &Value,
+    schema_only: bool,
+    mut visit: impl FnMut(&str, &str, Option<&str>, QTable) -> Result<(), ToolError>,
+) -> Result<(), ToolError> {
     use ibis_doc_model::CellValue;
     let specs = specs
         .as_array()
@@ -662,16 +716,21 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
     let mut aliases = std::collections::HashSet::new();
     let mut cells = 100_000usize;
     let mut text = 8 * 1024 * 1024usize;
-    specs.iter().map(|spec| {
+    for spec in specs {
         crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where"])?;
         let alias = dataset_alias(spec, &mut aliases)?;
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
-        if !metadata.is_file() || metadata.len() > service.limits.max_file_size.min(32 * 1024 * 1024) {
+        let kind = source_kind(&path);
+        let limit = if schema_only && kind != "json_lines" {
+            service.limits.max_file_size
+        } else {
+            service.limits.max_file_size.min(32 * 1024 * 1024)
+        };
+        if !metadata.is_file() || metadata.len() > limit {
             return Err(ToolError::invalid("dataset must be a regular file within the input size limit"));
         }
         let table_name = spec.opt_str("table")?;
-        let kind = source_kind(&path);
         let columns = dataset_columns(spec, kind)?;
         let filters = match spec.get("where") {
             None => Vec::new(),
@@ -684,20 +743,40 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
                 .iter().map(|(name, value)| Ok((name.as_str(), parquet_predicate(value)?)))
                 .collect::<Result<Vec<_>, ToolError>>()?,
         };
-        let table = if is_sqlite(&path) {
-            let name = table_name.ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?;
-            read_sqlite_table_bounded(&path, name, cells, text).map_err(sqlite_error)?
+        if kind != "sqlite" && table_name.is_some() {
+            return Err(ToolError::invalid("table is only used for SQLite datasets"));
+        }
+        let schema = |columns| QTable { columns, rows: Vec::new() };
+        let table = if kind == "csv" {
+            read_csv_dataset(&path, cells, text, schema_only)?
         } else {
-            if table_name.is_some() {
-                return Err(ToolError::invalid("table is only used for SQLite datasets"));
-            }
-            match kind {
-                "parquet" => read_parquet_filtered(&path, &columns, &filters, cells, text).map_err(sqlite_error)?,
-                "arrow_ipc" => read_arrow_ipc_dataset(&path, &columns, cells, text).map_err(sqlite_error)?,
-                "json_lines" => DiskDataset::JsonLines(path, columns).collect_bounded(cells, text).map_err(sqlite_error)?,
-                "avro" => DiskDataset::Avro(path, columns).collect_bounded(cells, text).map_err(sqlite_error)?,
-                _ => read_csv_dataset(&path, cells, text)?,
-            }
+            match (kind, schema_only) {
+                ("sqlite", _) => {
+                    let name = table_name.ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?;
+                    if schema_only {
+                        sqlite_dataset_columns(&path, name).map(schema)
+                    } else {
+                        read_sqlite_table_bounded(&path, name, cells, text)
+                    }
+                }
+                ("parquet", true) => parquet_dataset_columns(&path, &columns, &filters).map(schema),
+                ("parquet", false) => read_parquet_filtered(&path, &columns, &filters, cells, text),
+                ("arrow_ipc", true) => DiskDataset::ArrowIpc(path, columns).columns().map(schema),
+                ("arrow_ipc", false) => read_arrow_ipc_dataset(&path, &columns, cells, text),
+                ("json_lines" | "avro", _) => {
+                    let source = if kind == "json_lines" {
+                        DiskDataset::JsonLines(path, columns)
+                    } else {
+                        DiskDataset::Avro(path, columns)
+                    };
+                    if schema_only {
+                        source.columns().map(schema)
+                    } else {
+                        source.collect_bounded(cells, text)
+                    }
+                }
+                _ => return Err(ToolError::invalid("unsupported dataset format")),
+            }.map_err(sqlite_error)?
         };
         if table.columns.is_empty() || table.columns.len() > 256 {
             return Err(ToolError::invalid("datasets require 1 to 256 columns"));
@@ -709,11 +788,12 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
                 text = text.checked_sub(value.len()).ok_or_else(|| ToolError::invalid("datasets exceed the text size limit"))?;
             }
         }
-        Ok((alias.to_owned(), table))
-    }).collect()
+        visit(alias, kind, table_name, table)?;
+    }
+    Ok(())
 }
 
-fn read_csv_dataset(path: &Path, max_cells: usize, max_text: usize) -> Result<QTable, ToolError> {
+fn read_csv_dataset(path: &Path, max_cells: usize, max_text: usize, schema_only: bool) -> Result<QTable, ToolError> {
     use ibis_doc_model::CellValue;
     use std::io::Read;
     let mut bytes = Vec::new();
@@ -734,23 +814,25 @@ fn read_csv_dataset(path: &Path, max_cells: usize, max_text: usize) -> Result<QT
     if headers.len() > 256 || headers.iter().any(|header| header.trim().is_empty()) {
         return Err(ToolError::invalid("CSV needs 1 to 256 nonblank headers"));
     }
-    let width = headers.len();
-    let mut rows = Vec::new();
-    for record in records {
-        if record.len() != width || (rows.len() + 1) * width > max_cells {
-            return Err(ToolError::invalid(
-                "CSV rows must match their header width and fit the cell limit",
-            ));
-        }
-        rows.push(record.into_iter().map(CellValue::Text).collect());
-    }
-    let columns = headers
+    let columns: Vec<_> = headers
         .into_iter()
         .map(|name| QColumn {
             name,
             ty: QType::Text,
         })
         .collect();
+    let mut rows = Vec::new();
+    if !schema_only {
+        let width = columns.len();
+        for record in records {
+            if record.len() != width || (rows.len() + 1) * width > max_cells {
+                return Err(ToolError::invalid(
+                    "CSV rows must match their header width and fit the cell limit",
+                ));
+            }
+            rows.push(record.into_iter().map(CellValue::Text).collect());
+        }
+    }
     Ok(QTable { columns, rows })
 }
 

@@ -132,6 +132,8 @@ fn mcp_sqlite_queries_are_available_in_read_only_mode() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("analysis.sqlite3");
     std::fs::write(&path, include_bytes!("../../ibis-doc-model/src/query/fixtures/external.sqlite3")).unwrap();
+    let csv = dir.path().join("labels.csv");
+    std::fs::write(&csv, "code,label\n001,市役所\n").unwrap();
     let service = Service::new(&[dir.path().to_path_buf()], true, Limits::default());
     let answers = talk(service, &[
         request(1, "tools/list", json!({})),
@@ -143,10 +145,17 @@ fn mcp_sqlite_queries_are_available_in_read_only_mode() {
             "name":"sqlite_query",
             "arguments":{"path":path,"sql":"SELECT ? AS label","params":["分析"]},
         })),
+        request(4, "tools/call", json!({
+            "name":"sqlite_describe_datasets",
+            "arguments":{"datasets":[{"source":csv,"alias":"labels"}]},
+        })),
     ]);
     let tools = answers[0]["result"]["tools"].as_array().unwrap();
     assert!(tools.iter().any(|tool| tool["name"] == "sqlite_count_rows" && tool["annotations"]["readOnlyHint"] == true));
     assert!(tools.iter().any(|tool| tool["name"] == "sqlite_query" && tool["annotations"]["readOnlyHint"] == true));
+    assert!(tools.iter().any(|tool| {
+        tool["name"] == "sqlite_describe_datasets" && tool["annotations"]["readOnlyHint"] == true
+    }));
     assert!(!tools.iter().any(|tool| tool["name"] == "sqlite_query_to_table" || tool["name"] == "xlsx_create_pivot"));
     let result = &answers[1]["result"];
     assert_eq!(result["isError"], false);
@@ -157,4 +166,12 @@ fn mcp_sqlite_queries_are_available_in_read_only_mode() {
     assert!(query["_meta"]["io.ibisoffice/untrusted-content"].is_string());
     assert_eq!(query["structuredContent"]["columns"], json!(["label"]));
     assert_eq!(query["structuredContent"]["rows"], json!([["分析"]]));
+    let schema = &answers[3]["result"];
+    assert_eq!(schema["isError"], false);
+    assert!(schema["_meta"]["io.ibisoffice/untrusted-content"].is_string());
+    assert_eq!(schema["structuredContent"], json!({"datasets":[
+        {"alias":"labels","format":"csv","columns":[
+            {"name":"code","sql_type":"TEXT"},{"name":"label","sql_type":"TEXT"},
+        ]},
+    ]}));
 }

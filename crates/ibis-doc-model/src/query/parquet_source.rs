@@ -367,7 +367,7 @@ fn read_columns(
     rows_loaded: usize,
     expected: Option<&[QColumn]>,
 ) -> Result<QTable, String> {
-    read_columns_bounded(path, selected, rows_loaded, expected, None, 5_000_000, usize::MAX)
+    read_columns_bounded(path, selected, rows_loaded, expected, None, Some((5_000_000, usize::MAX)))
 }
 
 pub fn read_parquet_bounded(
@@ -493,7 +493,16 @@ pub fn read_parquet_filtered(
     max_cells: usize,
     max_text: usize,
 ) -> Result<QTable, String> {
-    read_columns_bounded(path, selected, 0, None, Some(filters), max_cells, max_text)
+    read_columns_bounded(path, selected, 0, None, Some(filters), Some((max_cells, max_text)))
+}
+
+/// Read the projected SQL schema and validate filters using Parquet metadata.
+pub fn parquet_dataset_columns(
+    path: &Path,
+    selected: &[String],
+    filters: &[(&str, ParquetPredicate)],
+) -> Result<Vec<QColumn>, String> {
+    Ok(read_columns_bounded(path, selected, 0, None, Some(filters), None)?.columns)
 }
 
 fn read_columns_bounded(
@@ -502,8 +511,7 @@ fn read_columns_bounded(
     rows_loaded: usize,
     expected: Option<&[QColumn]>,
     sql_filters: Option<&[(&str, ParquetPredicate)]>,
-    max_cells: usize,
-    mut max_text: usize,
+    limits: Option<(usize, usize)>,
 ) -> Result<QTable, String> {
     let reader = open(path)?;
     let meta = reader.metadata().file_metadata();
@@ -567,6 +575,9 @@ fn read_columns_bounded(
         }
         Ok((index, value))
     }).collect::<Result<Vec<_>, String>>()?;
+    let Some((max_cells, mut max_text)) = limits else {
+        return Ok(QTable { columns, rows: Vec::new() });
+    };
     let rows = (rows_loaded as u64).saturating_add(meta.num_rows() as u64);
     if width > 16_384 || rows >= 1_048_576 || (filters.is_empty() && (width as u64).saturating_mul(rows) > max_cells as u64)
     {

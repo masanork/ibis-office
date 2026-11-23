@@ -276,6 +276,19 @@ pub fn read_sqlite_table_bounded(
     max_cells: usize,
     max_text: usize,
 ) -> Result<QTable, String> {
+    read_sqlite_table_impl(path, table, Some((max_cells, max_text)))
+}
+
+/// Read the columns exposed by SELECT * without stepping through any rows.
+pub fn sqlite_dataset_columns(path: &Path, table: &str) -> Result<Vec<QColumn>, String> {
+    Ok(read_sqlite_table_impl(path, table, None)?.columns)
+}
+
+fn read_sqlite_table_impl(
+    path: &Path,
+    table: &str,
+    limits: Option<(usize, usize)>,
+) -> Result<QTable, String> {
     let (_database, connection) = open(path)?;
     let identifier = checked_table(&connection, table)?;
     let mut stmt = connection
@@ -294,6 +307,10 @@ pub fn read_sqlite_table_bounded(
     let mut result = QTable {
         columns,
         rows: Vec::new(),
+    };
+    let Some((max_cells, max_text)) = limits else {
+        check_sidecars(path)?;
+        return Ok(result);
     };
     let mut types = vec![None; width];
     let mut text_budget = max_text;
@@ -551,20 +568,33 @@ pub(super) fn charge_dataset_text(row: &[CellValue], budget: &mut usize) -> Resu
 }
 
 impl DiskDataset {
+    pub fn columns(&self) -> Result<Vec<QColumn>, String> {
+        let mut result = Vec::new();
+        self.visit(true, |columns, _| {
+            result = columns.to_vec();
+            Ok(())
+        })?;
+        Ok(result)
+    }
+
     fn visit(
         &self,
+        schema_only: bool,
         mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
     ) -> Result<(), String> {
         match self {
             Self::ArrowIpc(path, selected) => {
-                super::arrow_ipc_source::visit_arrow_ipc(path, selected, visit)
+                super::arrow_ipc_source::visit_arrow_ipc(path, selected, schema_only, visit)
             }
             Self::JsonLines(path, selected) => {
-                super::json_lines_source::visit_json_lines(path, selected, visit)
+                super::json_lines_source::visit_json_lines(path, selected, schema_only, visit)
             }
-            Self::Avro(path, selected) => super::avro_source::visit_avro(path, selected, visit),
+            Self::Avro(path, selected) => super::avro_source::visit_avro(path, selected, schema_only, visit),
             Self::Table(table) => {
                 visit(&table.columns, None)?;
+                if schema_only {
+                    return Ok(());
+                }
                 for row in &table.rows {
                     visit(&table.columns, Some(row.clone()))?;
                 }
@@ -575,7 +605,7 @@ impl DiskDataset {
 
     pub fn collect_bounded(&self, max_cells: usize, mut max_text: usize) -> Result<QTable, String> {
         let mut table = QTable::default();
-        self.visit(|columns, row| {
+        self.visit(false, |columns, row| {
             if let Some(row) = row {
                 if columns.len().saturating_mul(table.rows.len() + 1) > max_cells {
                     return Err(DATASET_MEMORY_LIMIT.into());
@@ -634,7 +664,7 @@ impl SqliteQuerySession {
             let mut insert = None;
             let mut rows = 0usize;
             execute("BEGIN")?;
-            source.visit(|columns, row| {
+            source.visit(false, |columns, row| {
                 if let Some(row) = row {
                     let stmt: &mut turso_core::Statement =
                         insert.as_mut().ok_or("Missing dataset schema")?;

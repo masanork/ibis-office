@@ -432,12 +432,38 @@ fn sqlite_queries_join_registered_csv_and_sqlite_datasets() {
         {"source":database,"table":"sales \"2026\"","alias":"facts"},
         {"source":csv,"alias":"labels"},
     ]});
+    let schema_args = json!({"datasets": args["datasets"]});
+    let schema = service.call("sqlite_describe_datasets", &schema_args).unwrap();
+    assert_eq!(schema, json!({"datasets":[
+        {"alias":"facts","format":"sqlite","table":"sales \"2026\"","columns":[
+            {"name":"code","sql_type":"DYNAMIC"},
+            {"name":"amount","sql_type":"DYNAMIC"},
+            {"name":"remark","sql_type":"DYNAMIC"},
+        ]},
+        {"alias":"labels","format":"csv","columns":[
+            {"name":"code","sql_type":"TEXT"},
+            {"name":"label","sql_type":"TEXT"},
+        ]},
+    ]}));
+    let selected = [database.clone(), csv.clone()];
+    let numbered = json!({"datasets":[
+        {"source":"1","table":"sales \"2026\"","alias":"facts"},
+        {"source":"2","alias":"labels"},
+    ]});
+    assert_eq!(
+        run_selected_datasets_tool(&selected, "sqlite_describe_datasets", numbered.clone()).unwrap(),
+        schema
+    );
+    assert!(run_selected_datasets_tool(&selected, "sqlite_describe_datasets", schema_args.clone()).is_err());
+    let mut invalid = numbered;
+    invalid["datasets"][0]["source"] = json!("3");
+    assert!(run_selected_datasets_tool(&selected, "sqlite_describe_datasets", invalid).is_err());
+    assert!(Service::new(&[], true, Limits::default()).call("sqlite_describe_datasets", &schema_args).is_err());
     let mcp = service.call("sqlite_query", &args).unwrap();
     assert_eq!(
         mcp["rows"],
         json!([["001", "", null], ["002", "窓口", "ok"]])
     );
-    let selected = [database.clone(), csv.clone()];
     let assistant_args = json!({"sql":sql,"datasets":[
         {"source":"1","table":"sales \"2026\"","alias":"facts"},
         {"source":"2","alias":"labels"},
@@ -998,6 +1024,20 @@ fn arrow_ipc_and_parquet_join_and_refresh_from_a_saved_report() {
             {"source":lookup,"alias":"labels","columns":["labels","code"]},
         ],
     });
+    let schema = call("sqlite_describe_datasets", json!({"datasets":[
+        {"source":facts,"alias":"facts","columns":["amount","code"],"where":{"amount":{"gte":100}}},
+        {"source":lookup,"alias":"labels","columns":["labels","code"]},
+        {"source":stream,"alias":"stream","columns":["code"]},
+    ]}));
+    assert_eq!(schema, json!({"datasets":[
+        {"alias":"facts","format":"parquet","columns":[
+            {"name":"amount","sql_type":"INTEGER"},{"name":"code","sql_type":"TEXT"},
+        ]},
+        {"alias":"labels","format":"arrow_ipc","columns":[
+            {"name":"labels","sql_type":"TEXT"},{"name":"code","sql_type":"TEXT"},
+        ]},
+        {"alias":"stream","format":"arrow_ipc","columns":[{"name":"code","sql_type":"TEXT"}]},
+    ]}));
     assert_eq!(call("sqlite_query", args.clone())["rows"], json!([
         ["001",100,"[\"甲\",null,\"甲\"]","integer"],
         ["002",200,"[]","integer"],
@@ -1116,6 +1156,16 @@ fn json_lines_and_avro_stream_into_shared_report_snapshots() {
         {"source":lines,"alias":"labels","columns":["code","labels","late"]},
         {"source":avro,"alias":"facts","columns":["amount","code"]},
     ]);
+    let schema = call("sqlite_describe_datasets", json!({"datasets": sources}));
+    assert_eq!(schema, json!({"datasets":[
+        {"alias":"labels","format":"json_lines","columns":[
+            {"name":"code","sql_type":"TEXT"},{"name":"labels","sql_type":"TEXT"},
+            {"name":"late","sql_type":"INTEGER"},
+        ]},
+        {"alias":"facts","format":"avro","columns":[
+            {"name":"amount","sql_type":"INTEGER"},{"name":"code","sql_type":"TEXT"},
+        ]},
+    ]}));
     let preview = call("sqlite_query", json!({
         "datasets":sources,
         "sql":"SELECT f.code, f.amount, j.key, j.value, l.late FROM facts f JOIN labels l USING(code) LEFT JOIN json_each(l.labels) j ON true ORDER BY f.code, j.key",
