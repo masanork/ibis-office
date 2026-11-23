@@ -101,7 +101,7 @@ unset AWS_BEARER_TOKEN_BEDROCK
 /Applications/Docs.app/Contents/MacOS/ibisOffice
 ```
 
-アプリは AWS CLI の認証情報からリクエストごとに短期間有効な Bedrock トークンを作り、ストリーミングに使う。AWS のキーや生成したトークンはアプリの設定に保存しない。推論リージョンは `AWS_REGION`、`AWS_DEFAULT_REGION`、AWS プロファイルの `region` の順で参照する。SSO 用の `sso_region` と推論リージョンは別々に設定できる。既存の Bedrock API キーが環境変数にある場合は、そのキーを優先する。
+アプリは AWS CLI の認証情報を使って Bedrock Runtime のストリーミングリクエストを SigV4 で署名する。AWS の認証情報はアプリの設定に保存しない。推論リージョンは `AWS_REGION`、`AWS_DEFAULT_REGION`、AWS プロファイルの `region` の順で参照する。SSO 用の `sso_region` と推論リージョンは別々に設定できる。既存の Bedrock API キーが環境変数にある場合は、そのキーを優先する。
 
 ### 3. `crates/ibis-office-shell`（LLM クライアント & サイドバー UI）
 

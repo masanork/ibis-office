@@ -443,7 +443,7 @@ impl NativeConnection {
 
     pub(crate) fn check_profile(&self) -> Result<(), String> {
         if let Provider::BedrockProfile { region } = &self.provider {
-            bedrock::profile_connection(region.clone())?;
+            bedrock::check_profile(region.clone())?;
         }
         Ok(())
     }
@@ -963,19 +963,16 @@ async fn stream_chat_completion_once(
     let api_key = config.api_key.clone();
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<Result<Option<String>, String>>();
 
+    let model = config.model.clone();
     let openai = responses || provider == Provider::OpenAi;
     std::thread::spawn(move || {
-        let (url, api_key) = if let Provider::BedrockProfile { region } = &provider {
-            match bedrock::profile_connection(region.clone()) {
-                Ok(connection) => connection,
-                Err(error) => {
-                    let _ = tx.unbounded_send(Err(error));
-                    return;
-                }
-            }
-        } else {
-            (url, api_key)
-        };
+        if let Provider::BedrockProfile { region } = provider {
+            let result = bedrock::stream_profile(region, &model, &payload, |event| {
+                tx.unbounded_send(Ok(Some(event))).is_ok()
+            });
+            let _ = tx.unbounded_send(result.map(|()| None));
+            return;
+        }
         let quote = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
         let payload = std::str::from_utf8(&payload).expect("JSON is UTF-8");
         let mut curl_config = format!("data = \"{}\"\n", quote(payload));

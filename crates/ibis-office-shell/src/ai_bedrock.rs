@@ -2,16 +2,19 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
+use std::io::{Read, Write};
 use std::process::{Command, Output, Stdio};
 
 use base64::Engine as _;
-use hmac::{Hmac, Mac};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use super::percent_encode_component;
 
 pub(super) fn messages_url(region: &str) -> Result<String, String> {
+    Ok(format!("{}/anthropic/v1/messages", runtime_url(region)?))
+}
+
+fn runtime_url(region: &str) -> Result<String, String> {
     if region.is_empty()
         || !region
             .bytes()
@@ -26,9 +29,7 @@ pub(super) fn messages_url(region: &str) -> Result<String, String> {
     } else {
         "amazonaws.com"
     };
-    Ok(format!(
-        "https://bedrock-runtime.{region}.{suffix}/anthropic/v1/messages"
-    ))
+    Ok(format!("https://bedrock-runtime.{region}.{suffix}"))
 }
 
 fn aws(args: &[&str]) -> Result<Output, String> {
@@ -61,7 +62,7 @@ struct Credentials {
     session_token: Option<String>,
 }
 
-pub(super) fn profile_connection(region: Option<String>) -> Result<(String, String), String> {
+fn profile_credentials(region: Option<String>) -> Result<(String, Credentials), String> {
     let region = match region {
         Some(region) => region,
         None => {
@@ -74,7 +75,7 @@ pub(super) fn profile_connection(region: Option<String>) -> Result<(String, Stri
             String::from_utf8_lossy(&output.stdout).trim().to_string()
         }
     };
-    let url = messages_url(&region)?;
+    runtime_url(&region)?;
     let output = aws(&[
         "configure",
         "export-credentials",
@@ -88,54 +89,148 @@ pub(super) fn profile_connection(region: Option<String>) -> Result<(String, Stri
     }
     let credentials: Credentials = serde_json::from_slice(&output.stdout)
         .map_err(|_| "AWS CLI の認証情報を読み取れませんでした。".to_string())?;
-    let timestamp = time::OffsetDateTime::now_utc()
-        .format(time::macros::format_description!(
-            "[year][month][day]T[hour][minute][second]Z"
-        ))
-        .map_err(|_| "AWS 署名用の現在時刻を取得できませんでした。".to_string())?;
-    Ok((url, bearer_token(&credentials, &region, &timestamp)))
+    Ok((region, credentials))
 }
 
-/// Sign the CallWithBearerToken request used by AWS's Bedrock token generator.
-fn bearer_token(credentials: &Credentials, region: &str, timestamp: &str) -> String {
-    fn mac(key: &[u8], value: &str) -> [u8; 32] {
-        let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
-        mac.update(value.as_bytes());
-        mac.finalize().into_bytes().into()
-    }
+pub(super) fn check_profile(region: Option<String>) -> Result<(), String> {
+    profile_credentials(region).map(|_| ())
+}
 
-    let date = &timestamp[..8];
-    let scope = format!("{date}/{region}/bedrock/aws4_request");
-    let credential = percent_encode_component(&format!("{}/{scope}", credentials.access_key_id));
-    let mut query = format!(
-        "Action=CallWithBearerToken&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential={credential}&X-Amz-Date={timestamp}&X-Amz-Expires=300",
+pub(super) fn stream_profile(
+    region: Option<String>,
+    model: &str,
+    payload: &[u8],
+    mut emit: impl FnMut(String) -> bool,
+) -> Result<(), String> {
+    let (region, credentials) = profile_credentials(region)?;
+    let url = format!(
+        "{}/model/{}/invoke-with-response-stream",
+        runtime_url(&region)?,
+        percent_encode_component(model)
+    );
+    let mut request: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|error| format!("Bedrock のリクエストを読み取れませんでした: {error}"))?;
+    let fields = request
+        .as_object_mut()
+        .expect("Messages request is an object");
+    fields.remove("model");
+    fields.remove("stream");
+    fields.insert("anthropic_version".into(), "bedrock-2023-05-31".into());
+
+    let quote = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut config = format!(
+        "user = \"{}:{}\"\ndata = \"{}\"\n",
+        quote(&credentials.access_key_id),
+        quote(&credentials.secret_access_key),
+        quote(&request.to_string()),
     );
     if let Some(token) = &credentials.session_token {
-        query.push_str("&X-Amz-Security-Token=");
-        query.push_str(&percent_encode_component(token));
+        config.push_str(&format!(
+            "header = \"X-Amz-Security-Token: {}\"\n",
+            quote(token)
+        ));
     }
-    query.push_str("&X-Amz-SignedHeaders=host");
-    let host = "bedrock.amazonaws.com";
-    let payload_hash = Sha256::digest([]);
-    let request = format!("POST\n/\n{query}\nhost:{host}\n\nhost\n{payload_hash:x}");
-    let request_hash = Sha256::digest(request.as_bytes());
-    let message = format!("AWS4-HMAC-SHA256\n{timestamp}\n{scope}\n{request_hash:x}");
-    let date_key = mac(
-        format!("AWS4{}", credentials.secret_access_key).as_bytes(),
-        date,
-    );
-    let region_key = mac(&date_key, region);
-    let service_key = mac(&region_key, "bedrock");
-    let signing_key = mac(&service_key, "aws4_request");
-    let signature = mac(&signing_key, &message)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    let signed = format!("{host}/?{query}&X-Amz-Signature={signature}&Version=1");
-    format!(
-        "bedrock-api-key-{}",
-        base64::engine::general_purpose::STANDARD.encode(signed)
-    )
+    let mut child = Command::new("curl")
+        .args([
+            "--disable",
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--no-buffer",
+            "--proto",
+            "=https",
+            "--connect-timeout",
+            "15",
+            "--max-time",
+            "180",
+            "--aws-sigv4",
+            &format!("aws:amz:{region}:bedrock"),
+            "--header",
+            "Content-Type: application/json",
+            "--header",
+            "Accept: application/vnd.amazon.eventstream",
+            "--header",
+            "X-Amzn-Bedrock-Accept: application/json",
+            "--config",
+            "-",
+            "--globoff",
+            "--url",
+            &url,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("curl を起動できませんでした: {error}"))?;
+    let result: Result<bool, String> = (|| {
+        child
+            .stdin
+            .take()
+            .expect("piped stdin")
+            .write_all(config.as_bytes())
+            .map_err(|error| format!("Bedrock のリクエストを送信できませんでした: {error}"))?;
+        let mut reader = std::io::BufReader::new(child.stdout.take().expect("piped stdout"));
+        while let Some(event) = read_event(&mut reader)? {
+            if !emit(format!("data: {event}")) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })();
+    if !matches!(result, Ok(true)) {
+        let _ = child.kill();
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    if result? && !output.status.success() {
+        return Err(format!(
+            "Bedrock の SigV4 リクエストに失敗しました: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+fn read_event(reader: &mut impl Read) -> Result<Option<String>, String> {
+    let mut prelude = [0; 12];
+    let read_error = |error| format!("Bedrock のイベントストリームを読み取れませんでした: {error}");
+    if reader.read(&mut prelude[..1]).map_err(read_error)? == 0 {
+        return Ok(None);
+    }
+    reader.read_exact(&mut prelude[1..]).map_err(read_error)?;
+    let word = |bytes: &[u8]| u32::from_be_bytes(bytes.try_into().expect("four bytes"));
+    let length = word(&prelude[..4]) as usize;
+    let headers = word(&prelude[4..8]) as usize;
+    if !(16..=16 * 1024 * 1024).contains(&length)
+        || headers > length - 16
+        || crc32fast::hash(&prelude[..8]) != word(&prelude[8..])
+    {
+        return Err("Bedrock のイベントヘッダーが無効です。".into());
+    }
+    let mut frame = vec![0; length - 12];
+    reader.read_exact(&mut frame).map_err(read_error)?;
+    let crc_start = frame.len() - 4;
+    let mut crc = crc32fast::Hasher::new();
+    crc.update(&prelude);
+    crc.update(&frame[..crc_start]);
+    if crc.finalize() != word(&frame[crc_start..]) {
+        return Err("Bedrock のイベントのチェックサムが一致しません。".into());
+    }
+    let wrapper: serde_json::Value = serde_json::from_slice(&frame[headers..crc_start])
+        .map_err(|_| "Bedrock のイベントが無効です。".to_string())?;
+    let encoded = wrapper["bytes"].as_str().ok_or_else(|| {
+        wrapper["message"]
+            .as_str()
+            .unwrap_or("Bedrock から推論エラーが返りました。")
+            .to_string()
+    })?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| "Bedrock のイベントを復号できませんでした。".to_string())?;
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "Bedrock のイベントが有効な UTF-8 ではありません。".into())
 }
 
 #[cfg(test)]
@@ -143,21 +238,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bedrock_signature_matches_botocore_with_session_credentials() {
-        let credentials = Credentials {
-            access_key_id: "AKIDEXAMPLE".into(),
-            secret_access_key: "example-secret".into(),
-            session_token: Some("sample+/=".into()),
-        };
-        let token = bearer_token(&credentials, "ap-northeast-1", "20261123T000000Z");
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(token.strip_prefix("bedrock-api-key-").unwrap())
-            .unwrap();
-        let signed = std::str::from_utf8(&decoded).unwrap();
-        assert!(signed.contains("X-Amz-Security-Token=sample%2B%2F%3D"));
-        assert!(signed.ends_with(concat!(
-            "&X-Amz-Signature=03e9988d1a9f3942817b52b61df3edecc1bf858239c76463e2aaf7fb81f50407",
-            "&Version=1"
-        )));
+    fn decodes_bedrock_event_frames_and_rejects_corruption() {
+        let event = r#"{"type":"message_stop"}"#;
+        let body = serde_json::json!({
+            "bytes": base64::engine::general_purpose::STANDARD.encode(event)
+        })
+        .to_string();
+        let mut frame = Vec::new();
+        frame.extend((16 + body.len() as u32).to_be_bytes());
+        frame.extend(0u32.to_be_bytes());
+        frame.extend(crc32fast::hash(&frame).to_be_bytes());
+        frame.extend(body.as_bytes());
+        frame.extend(crc32fast::hash(&frame).to_be_bytes());
+        assert_eq!(
+            read_event(&mut frame.as_slice()).unwrap().as_deref(),
+            Some(event)
+        );
+        frame[12] ^= 1;
+        assert!(read_event(&mut frame.as_slice()).is_err());
     }
 }
