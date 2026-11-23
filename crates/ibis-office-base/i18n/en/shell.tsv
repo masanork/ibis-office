@@ -1742,3 +1742,10 @@ ai.workspace-memory	Use folder memory (MEMORY.md)
 ai.tool-round-limit	The Assistant reached its tool-call limit and discarded the draft.
 ai.history-budget-exceeded	The conversation exceeds the model input budget. The conversation is preserved. Try a smaller request or adjust the model context limit.
 ai.history-compacted	Earlier turns were summarized for the next model request. The original conversation is kept.
+structured.open	Open Structured Data…
+structured.outline	Heading Outline
+structured.search	Search records or fields
+structured.invalid	Invalid JSON
+structured.size-limit	The viewer can open files up to 128 MiB.
+structured.more	More
+structured.records-limit	Showing the first 1,000,000 lines.

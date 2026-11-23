@@ -61,6 +61,8 @@ mod document_compare;
 mod git_workspace;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod folder_context;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod structured_view;
 pub mod selection_handles;
 pub mod autocorrect;
 pub mod autorecover;

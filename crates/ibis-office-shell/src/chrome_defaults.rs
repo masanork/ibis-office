@@ -182,6 +182,8 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
         sub("file.new", "note_add", new_items),
         item("file.open", "folder_open").shortcut("⌘O").on(|this, window, cx| this.open_file(&crate::actions::Open, window, cx)).into(),
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        item("structured.open", "folder_open").on(|this, window, cx| this.pick_structured_data(window, cx)).into(),
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         item("file.open-folder", "folder_open").on(|this, window, cx| this.pick_folder(window, cx)).into(),
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         item("file.open-repository", "folder_open").on(|this, window, cx| this.pick_git_repository(window, cx)).into(),
@@ -324,6 +326,9 @@ pub fn view_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
             SEP,
             item("view.zoom-dialog", "").on(|this, window, cx| this.open_zoom_dialog(window, cx)).into(),
         ]),
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        item("structured.outline", "format_list_bulleted").disabled(editor.presentation().flow.is_none())
+            .on(|this, window, cx| this.open_structured_outline(window, cx)).into(),
         item("view.fullscreen", "fullscreen").shortcut("⌃⌘F").on(|_, window, _| window.toggle_fullscreen()).into(),
     ]);
     entries

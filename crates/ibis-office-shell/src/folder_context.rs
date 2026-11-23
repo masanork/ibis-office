@@ -21,7 +21,7 @@ const SCAN_LIMIT: usize = 10_000;
 const TEXT_BYTES: usize = 512 * 1024;
 const RESULT_BYTES: usize = 24 * 1024;
 pub(crate) const OFFICE: &[&str] = &["docx", "docm", "dotx", "xlsx", "xlsm", "pptx", "pptm"];
-const TEXT: &[&str] = &["md", "markdown", "txt", "csv", "tsv", "json", "yaml", "yml"];
+const TEXT: &[&str] = &["md", "markdown", "txt", "csv", "tsv", "json", "jsonl", "ndjson", "yaml", "yml"];
 
 pub(crate) fn extension(path: &Path) -> String {
     path.extension()

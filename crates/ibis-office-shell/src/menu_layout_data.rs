@@ -17,6 +17,7 @@ pub(super) const DOC: &[MenuSpec] = &[
             LayoutItem::Cmd("file.new.presentation"),
         ] },
         LayoutItem::Cmd("file.open"),
+        LayoutItem::Cmd("structured.open"),
         LayoutItem::Cmd("file.open-folder"),
         LayoutItem::Cmd("file.open-repository"),
         LayoutItem::Sub { id: Some("file.recent"), label_key: "file.recent", items: &[
@@ -380,6 +381,7 @@ pub(super) const DOC: &[MenuSpec] = &[
         LayoutItem::CmdOrPlanned { id: "draw.hide-ink", key: "menu.planned.doc.review.18" },
     ] },
     MenuSpec { id: MenuId::View, items: &[
+        LayoutItem::Cmd("structured.outline"),
         LayoutItem::Cmd("docx.view.immersive-reader"),
         LayoutItem::Sub { id: Some("docx.interaction"), label_key: "docx.interaction", items: &[
             LayoutItem::Cmd("docx.interaction.editing"),
@@ -635,6 +637,7 @@ pub(super) const SHEET: &[MenuSpec] = &[
             LayoutItem::Cmd("file.new.presentation"),
         ] },
         LayoutItem::Cmd("file.open"),
+        LayoutItem::Cmd("structured.open"),
         LayoutItem::Cmd("file.open-folder"),
         LayoutItem::Cmd("xlsx.cbom-compare"),
         LayoutItem::Cmd("xlsx.sbom-refresh"),
@@ -988,6 +991,7 @@ pub(super) const SHEET: &[MenuSpec] = &[
         LayoutItem::Cmd("xlsx.hide-ink"),
     ] },
     MenuSpec { id: MenuId::View, items: &[
+        LayoutItem::Cmd("structured.outline"),
         LayoutItem::Cmd("xlsx.normal-view"),
         LayoutItem::Cmd("xlsx.page-break-preview"),
         LayoutItem::Cmd("xlsx.page-layout"),
@@ -1264,6 +1268,7 @@ pub(super) const SLIDE: &[MenuSpec] = &[
             LayoutItem::Cmd("file.new.workbook"),
         ] },
         LayoutItem::Cmd("file.open"),
+        LayoutItem::Cmd("structured.open"),
         LayoutItem::Cmd("file.open-folder"),
         LayoutItem::Cmd("file.open-repository"),
         LayoutItem::Sub { id: Some("file.recent"), label_key: "file.recent", items: &[
@@ -1521,6 +1526,7 @@ pub(super) const SLIDE: &[MenuSpec] = &[
         LayoutItem::CmdOrPlanned { id: "draw.hide-ink", key: "menu.planned.slide.review.10" },
     ] },
     MenuSpec { id: MenuId::View, items: &[
+        LayoutItem::Cmd("structured.outline"),
         LayoutItem::Cmd("pptx.normal-view"),
         LayoutItem::Cmd("pptx.outline-view"),
         LayoutItem::CmdAs { id: "pptx.grid-view", label_key: "menu.as.slide.pptx.grid-view" },
