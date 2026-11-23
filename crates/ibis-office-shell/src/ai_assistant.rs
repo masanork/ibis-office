@@ -1214,15 +1214,18 @@ impl SlideEditor {
         let paths = picker.selected.clone();
         let file_id = self.file_id;
         self.commit_edit(window, cx);
-        let baseline = self.document.presentation().clone();
-        let Some(book) = baseline.workbook.as_ref() else { return };
+        let presentation = self.document.presentation();
+        let Some(book) = presentation.workbook.as_ref() else { return };
         let name = (1..).map(|n| format!("JSONL {n}")).find(|name|
-            ibis_doc_model::sheet_ops::valid_sheet_name(&baseline, name, None)).unwrap();
+            ibis_doc_model::sheet_ops::valid_sheet_name(presentation, name, None)).unwrap();
+        let index = book.sheets.len();
         let slide = self.document.ids().new_slide_id();
         let add = Command::Sheet(SheetCommand::AddSheet {
-            index: book.sheets.len(), name: name.clone(), sheet: slide,
+            index, name: name.clone(), sheet: slide,
             shape: self.document.ids().new_shape_id(),
         });
+        // Reserving IDs updates the presentation counters. Capture the baseline afterward.
+        let baseline = self.document.presentation().clone();
         let args = json!({
             "destination_sheet": name,
             "anchor": "A1",
