@@ -188,9 +188,14 @@ fn column_segments(mut upright: Vec<Glyph>) -> Vec<Segment> {
     upright.sort_by(|a, b| b.center_x().total_cmp(&a.center_x()).then(a.top.total_cmp(&b.top)));
     let mut columns: Vec<(f32, f32, Vec<Glyph>)> = Vec::new();
     for g in upright {
-        let h = g.height();
-        match columns.iter_mut().find(|(cx, ch, _)| (cx - g.center_x()).abs() <= 0.5 * ch.max(h)) {
-            Some((_, _, glyphs)) => glyphs.push(g),
+        // A character's size across the column: its height, or for a glyph turned a quarter (a Latin letter set
+        // sideways, as tall as its advance) its width. The column is as wide as its widest character.
+        let h = g.height().max(g.x1 - g.x0);
+        match columns.iter_mut().find(|(cx, ch, _)| (*cx - g.center_x()).abs() <= 0.5 * ch.max(h)) {
+            Some((_, ch, glyphs)) => {
+                *ch = ch.max(h);
+                glyphs.push(g);
+            }
             None => columns.push((g.center_x(), h, vec![g])),
         }
     }
@@ -564,6 +569,22 @@ mod tests {
         assert_eq!(physical, "\u{3000}地方公共団体\n情報システム\n\u{3000}\u{3000}庁内連携\n");
         // Reading keeps the text alone.
         assert_eq!(page_text(&PageTextIndex { chars }, TextLayout::Reading), "地方公共団体\n情報システム\n庁内連携\n");
+    }
+
+    #[test]
+    fn a_column_starting_with_a_sideways_letter_is_as_wide_as_its_characters() {
+        // "API連携" down a column two characters below the top of the tier: A, P, I turned a quarter (one em across,
+        // half an em down), then 連携. The column beside it starts at the top.
+        let mut chars = Vec::new();
+        column(&mut chars, "地方公共団体", 215.0, 0.0, 10.0);
+        for (i, ch) in "API".chars().enumerate() {
+            let op = chars.len();
+            let top = 20.0 + i as f32 * 5.0;
+            chars.push(CharBox { ch, rect_pt: PdfRect { x0: 200.0, y0: top, x1: 210.0, y1: top + 5.0 }, vertical: true, stream_op_index: op });
+        }
+        column(&mut chars, "連携", 200.0, 35.0, 10.0);
+        let physical = page_text(&PageTextIndex { chars }, TextLayout::Physical);
+        assert_eq!(physical, "地方公共団体\n\u{3000}\u{3000}API連携\n");
     }
 
     #[test]
