@@ -1238,7 +1238,7 @@ fn i18n_status(on: bool) -> String {
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod cbom_tests {
-    use super::*;
+    use super::compare_cbom_files;
     use sha2::{Digest, Sha256};
 
     #[test]
