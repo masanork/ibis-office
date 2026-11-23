@@ -24,9 +24,8 @@ pub fn start(
     let socket = BoundSocket::bind_workspace(&root)?;
     let busy = Arc::new(AtomicBool::new(false));
     let summarize = Arc::new(summarize);
-    let mut next_run = 0u64;
 
-    let (lifetime, _, worker) = socket.start(move |(request, deadline, answer), events| {
+    let (lifetime, _, worker) = socket.start("inspect_workbook", move |(request, deadline, answer), events| {
         let response = match request["op"].as_str() {
             Some("status") => json!({
                 "kind":"headless", "label":"Workbook Assistant",
@@ -38,10 +37,12 @@ pub fn start(
             }
             Some("inspect_workbook") => match workbook_path(&request["path"], &root) {
                 Err(error) => json!({"error":error}),
-                Ok(_) if busy.load(Ordering::Acquire) => json!({"error":"an Assistant run is already running"}),
+                Ok(_) if request["queue_phase"] == "admit" => json!({"accepted":true}),
+                Ok(_) if busy.load(Ordering::Acquire) => json!({"retry":true}),
                 Ok(path) => {
-                    let run = next_run;
-                    next_run += 1;
+                    let Some(run) = request["run_id"].as_u64() else {
+                        return answer.send(json!({"error":"run_id is required"})).map_err(io::Error::other);
+                    };
                     busy.store(true, Ordering::Release);
                     emit(events, json!({"event":"started","run_id":run}));
                     let (root, busy, summarize, events) =
@@ -142,10 +143,8 @@ fn inspect(
         );
         inspected.push(sheet_evidence);
     }
-    Ok(
-        json!({"sheet_count":sheets.len(),"sheets":inspected,
-        "sampling":"At most 24 sheets, first 100 structural findings per sheet, at most 4 formula examples per sheet."}),
-    )
+    Ok(json!({"sheet_count":sheets.len(),"sheets":inspected,
+        "sampling":"At most 24 sheets, first 100 structural findings per sheet, at most 4 formula examples per sheet."}))
 }
 
 fn emit(events: &mpsc::Sender<Value>, event: Value) {

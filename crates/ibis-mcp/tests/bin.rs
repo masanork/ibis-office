@@ -73,10 +73,8 @@ fn headless_assistant_results_survive_mcp_client_exit() {
     assert_eq!(outcome["isError"], false);
     let result = &outcome["structuredContent"];
     assert_eq!(result["summary"]["state"], "completed");
-    assert_eq!(
-        result["events"][1]["text"],
-        "Headless Assistant demo response."
-    );
+    assert!(result["events"].as_array().unwrap().iter().any(|event|
+        event["event"] == "message" && event["text"] == "Headless Assistant demo response."));
     let denied = call("assistant_apply", json!({"session_id":id,"run_id":run}));
     assert_eq!(denied["isError"], true);
     drop(endpoint);
@@ -89,7 +87,7 @@ fn headless_assistant_results_survive_mcp_client_exit() {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
-fn workbook_assistant_reports_progress_busy_and_failures_across_client_processes() {
+fn workbook_assistant_reports_queue_progress_and_failures_across_client_processes() {
     use std::sync::{Mutex, mpsc};
     use std::time::{Duration, Instant};
 
@@ -128,7 +126,14 @@ fn workbook_assistant_reports_progress_busy_and_failures_across_client_processes
     let running = result(run);
     assert_eq!(running["summary"]["state"], "running");
     assert!(running["events"].as_array().unwrap().iter().any(|event| event["stage"] == "summarizing"));
-    assert!(send("report.xlsx").to_string().contains("already running"));
+    let second = send("report.xlsx");
+    assert_eq!(second["structuredContent"]["state"], "queued");
+    let queued = &second["structuredContent"]["run_id"];
+    assert_ne!(queued, run);
+    let missing = send("missing.xlsx");
+    let missing = &missing["structuredContent"]["run_id"];
+    assert_eq!(result(queued)["summary"]["state"], "queued");
+    assert_eq!(result(missing)["summary"]["state"], "queued");
     finish.send(()).unwrap();
     let wait = |run: &Value, state: &str| {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -143,8 +148,13 @@ fn workbook_assistant_reports_progress_busy_and_failures_across_client_processes
     };
     let completed = wait(run, "completed");
     assert!(completed["events"].as_array().unwrap().iter().any(|event| event["text"] == "Workbook summary"));
-    let missing = send("missing.xlsx");
-    let failed = wait(&missing["structuredContent"]["run_id"], "error");
+    evidence_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(result(queued)["summary"]["state"], "running");
+    assert_eq!(result(missing)["summary"]["state"], "queued");
+    finish.send(()).unwrap();
+    let second_done = wait(queued, "completed");
+    assert_eq!(second_done["run_id"], *queued);
+    let failed = wait(missing, "error");
     assert_eq!(failed["summary"]["event"]["code"], "file_not_found");
     drop(endpoint);
     worker.join().unwrap();

@@ -16,7 +16,7 @@ pub fn start(
 ) {
     let (requests, mut inbox) = async_channel::unbounded::<Request>();
     let (lifetime, output, _worker) =
-        socket.start(move |request, _| requests.unbounded_send(request).map_err(io::Error::other));
+        socket.start("prompt", move |request, _| requests.unbounded_send(request).map_err(io::Error::other));
     editor.assistant_socket = Some(lifetime);
     editor.assistant_output = Some(output);
     cx.spawn_in(window, async move |editor, cx| {
@@ -61,8 +61,27 @@ pub fn start(
                         if request.get("skill").is_some_and(|value| !value.is_string()) {
                             return json!({"error":"skill must be a string"});
                         }
+                        if request["queue_phase"] == "admit" {
+                            return match editor.check_assistant_connection_document() {
+                                Ok(()) if !text.trim().is_empty() => json!({"accepted":true,
+                                    "target":{"file_id":editor.file_id,"path":editor.file_path()}}),
+                                Ok(()) => json!({"error":"prompt text is required"}),
+                                Err(message) => json!({"error":message}),
+                            };
+                        }
+                        let target = json!({"file_id":editor.file_id,"path":editor.file_path()});
+                        if request["queue_target"] != target {
+                            return json!({"error":"the queued Assistant request targets a different document"});
+                        }
+                        if editor.assistant_prompt_is_busy() {
+                            return json!({"retry":true});
+                        }
+                        let Some(run_id) = request["run_id"].as_u64() else {
+                            return json!({"error":"run_id is required"});
+                        };
                         return match editor.submit_assistant_socket_prompt(
                             text,
+                            run_id,
                             request["skill"].as_str(),
                             window,
                             cx,

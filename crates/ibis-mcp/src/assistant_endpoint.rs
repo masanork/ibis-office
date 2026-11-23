@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread,
@@ -24,8 +24,15 @@ use crate::assistant_workspace::{SOCKET_NAME, Workspace};
 const MAX_LINE: u64 = 256 * 1024;
 const MAX_EVENTS: usize = 256;
 const MAX_RUNS: usize = 32;
+const MAX_QUEUED: usize = 16;
+const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_EVENT_BYTES: usize = 16 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
+
+pub fn next_run_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 pub type Request = (Value, Instant, mpsc::Sender<Value>);
 
@@ -90,6 +97,7 @@ impl BoundSocket {
 
     pub fn start(
         self,
+        queue_operation: &'static str,
         mut dispatch: impl FnMut(Request, &mpsc::Sender<Value>) -> io::Result<()> + Send + 'static,
     ) -> (SocketLifetime, mpsc::Sender<Value>, thread::JoinHandle<()>) {
         let (output, events) = mpsc::channel();
@@ -98,12 +106,21 @@ impl BoundSocket {
         let closed = lifetime.closed.clone();
         let worker = thread::spawn(move || {
             let mut journal = Journal::default();
+            let mut inbox = Inbox::default();
             let mut forward = |request| dispatch(request, &output_for_dispatch);
             while !closed.load(Ordering::Acquire) {
                 journal.record(events.try_iter());
+                inbox.advance(&mut forward, &mut journal);
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        let _ = respond(stream, &mut forward, &mut journal, &events);
+                        let _ = respond(
+                            stream,
+                            &mut forward,
+                            &mut journal,
+                            &events,
+                            &mut inbox,
+                            queue_operation,
+                        );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(25));
@@ -118,8 +135,7 @@ impl BoundSocket {
 
 pub fn start_demo(workspace: &Path) -> io::Result<(SocketLifetime, thread::JoinHandle<()>)> {
     let socket = BoundSocket::bind_workspace(workspace)?;
-    let mut next_run = 0u64;
-    let (lifetime, _events, worker) = socket.start(move |(request, _, answer), events| {
+    let (lifetime, _events, worker) = socket.start("prompt", move |(request, _, answer), events| {
         let response = match request["op"].as_str() {
             Some("status") => json!({
                 "kind":"headless","label":"Assistant demo","path":null,"document_ready":false,"streaming":false,
@@ -128,8 +144,12 @@ pub fn start_demo(workspace: &Path) -> io::Result<(SocketLifetime, thread::JoinH
             Some("prompt") if request["text"].as_str().is_some_and(|text| !text.trim().is_empty())
                 && request.get("skill").is_none() =>
             {
-                let run_id = next_run;
-                next_run += 1;
+                if request["queue_phase"] == "admit" {
+                    return answer.send(json!({"accepted":true})).map_err(io::Error::other);
+                }
+                let Some(run_id) = request["run_id"].as_u64() else {
+                    return answer.send(json!({"error":"run_id is required"})).map_err(io::Error::other);
+                };
                 for event in [
                     json!({"event":"started","run_id":run_id}),
                     json!({"event":"message","run_id":run_id,"text":"Headless Assistant demo response."}),
@@ -154,6 +174,81 @@ pub fn run_demo(workspace: &Path) -> io::Result<()> {
 }
 
 #[derive(Default)]
+struct Inbox {
+    pending: VecDeque<Value>,
+    retry_after: Option<Instant>,
+}
+
+fn forward(
+    request: Value,
+    dispatch: &mut impl FnMut(Request) -> io::Result<()>,
+) -> io::Result<Value> {
+    let (tx, rx) = mpsc::channel();
+    dispatch((request, Instant::now() + IO_TIMEOUT, tx))?;
+    rx.recv_timeout(IO_TIMEOUT).map_err(io::Error::other)
+}
+
+impl Inbox {
+    fn enqueue(
+        &mut self,
+        mut request: Value,
+        dispatch: &mut impl FnMut(Request) -> io::Result<()>,
+        journal: &mut Journal,
+    ) -> io::Result<Value> {
+        if self.pending.len() >= MAX_QUEUED {
+            return Ok(json!({"error":"Assistant inbox is full"}));
+        }
+        request["queue_phase"] = json!("admit");
+        let admission = forward(request.clone(), dispatch)?;
+        if admission["accepted"] != true {
+            return Ok(admission);
+        }
+        let run_id = next_run_id();
+        request["run_id"] = json!(run_id);
+        request["queue_phase"] = json!("start");
+        request["queue_target"] = admission["target"].clone();
+        self.pending.push_back(request);
+        journal.record(std::iter::once(json!({"event":"queued","run_id":run_id})));
+        Ok(json!({"run_id":run_id,"state":"queued"}))
+    }
+
+    fn advance(
+        &mut self,
+        dispatch: &mut impl FnMut(Request) -> io::Result<()>,
+        journal: &mut Journal,
+    ) {
+        if self
+            .retry_after
+            .is_some_and(|deadline| deadline > Instant::now())
+        {
+            return;
+        }
+        if let Some(request) = self.pending.front() {
+            let run_id = request["run_id"].clone();
+            match forward(request.clone(), dispatch) {
+                Ok(response) if response["retry"] == true => {
+                    self.retry_after = Some(Instant::now() + RETRY_INTERVAL);
+                    return;
+                }
+                Ok(response) if response["run_id"] == run_id => {}
+                response => {
+                    let message = response
+                        .as_ref()
+                        .ok()
+                        .and_then(|value| value["error"].as_str())
+                        .unwrap_or("Assistant could not start the queued request");
+                    journal.record(std::iter::once(
+                        json!({"event":"error","run_id":run_id,"message":message}),
+                    ));
+                }
+            }
+            self.retry_after = None;
+            self.pending.pop_front();
+        }
+    }
+}
+
+#[derive(Default)]
 struct Journal {
     cursor: u64,
     events: VecDeque<Value>,
@@ -169,6 +264,7 @@ impl Journal {
                     "event":event["event"], "run_id":event["run_id"], "truncated":true,
                 });
             }
+            event["sequence"] = json!(self.cursor);
             if event["event"] == "reset" {
                 for summary in self.runs.values_mut() {
                     if matches!(
@@ -181,6 +277,7 @@ impl Journal {
             }
             if let Some(run) = event["run_id"].as_u64() {
                 let state = match event["event"].as_str() {
+                    Some("queued") => Some("queued"),
                     Some("started") => Some("running"),
                     Some("review") => Some("awaiting_review"),
                     Some("completed") if event["review"] != true => Some("completed"),
@@ -192,11 +289,23 @@ impl Journal {
                 if let Some(state) = state {
                     self.runs.insert(run, json!({"state":state,"event":event}));
                     if self.runs.len() > MAX_RUNS {
-                        self.runs.pop_first();
+                        let oldest = self
+                            .runs
+                            .iter()
+                            .filter(|(_, value)| {
+                                !matches!(
+                                    value["state"].as_str(),
+                                    Some("queued" | "running" | "awaiting_review")
+                                )
+                            })
+                            .min_by_key(|(_, value)| value["event"]["sequence"].as_u64())
+                            .map(|(&id, _)| id);
+                        if let Some(id) = oldest {
+                            self.runs.remove(&id);
+                        }
                     }
                 }
             }
-            event["sequence"] = json!(self.cursor);
             if self.events.len() == MAX_EVENTS {
                 self.events.pop_front();
             }
@@ -233,6 +342,8 @@ fn respond(
     dispatch: &mut impl FnMut(Request) -> io::Result<()>,
     journal: &mut Journal,
     events: &mpsc::Receiver<Value>,
+    inbox: &mut Inbox,
+    queue_operation: &str,
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
@@ -247,10 +358,15 @@ fn respond(
     let response = if request["op"] == "result" {
         journal.record(events.try_iter());
         journal.result(&request)
+    } else if request["op"] == queue_operation {
+        inbox.enqueue(request, dispatch, journal)?
     } else {
-        let (tx, rx) = mpsc::channel();
-        dispatch((request, Instant::now() + IO_TIMEOUT, tx))?;
-        rx.recv_timeout(IO_TIMEOUT).map_err(io::Error::other)?
+        let status = request["op"] == "status";
+        let mut response = forward(request, dispatch)?;
+        if status && response.is_object() && response.get("error").is_none() {
+            response["queued_count"] = json!(inbox.pending.len());
+        }
+        response
     };
     serde_json::to_writer(&mut stream, &response)?;
     stream.write_all(b"\n")
@@ -259,6 +375,41 @@ fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_runs_survive_rollover_and_full_inbox_does_not_admit_more() {
+        let mut inbox = Inbox::default();
+        let mut journal = Journal::default();
+        let mut admit = |(_, _, answer): Request| {
+            answer
+                .send(json!({"accepted":true}))
+                .map_err(io::Error::other)
+        };
+        let mut ids = Vec::new();
+        for _ in 0..MAX_QUEUED {
+            let value = inbox
+                .enqueue(
+                    json!({"op":"prompt","text":"test"}),
+                    &mut admit,
+                    &mut journal,
+                )
+                .unwrap();
+            ids.push(value["run_id"].as_u64().unwrap());
+        }
+        assert_eq!(
+            inbox
+                .enqueue(json!({"op":"prompt"}), &mut admit, &mut journal)
+                .unwrap()["error"],
+            "Assistant inbox is full"
+        );
+        journal.record(
+            (0..MAX_RUNS as u64).map(|i| json!({"event":"completed","run_id":i+1_000_000})),
+        );
+        assert!(
+            ids.iter()
+                .all(|id| journal.result(&json!({"run_id":id}))["summary"]["state"] == "queued")
+        );
+    }
 
     #[test]
     fn retained_review_outcome_survives_event_stream_rollover() {

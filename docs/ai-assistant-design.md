@@ -76,6 +76,12 @@ MCP の `assistant_list_sessions` は同じ作業フォルダーに共有され�
 
 接続情報は同一 OS ユーザー専用のローカル領域に置く。共有は起動時の指定で有効になり、通常終了時に登録を削除する。応答しない登録は一覧に出さない。`--read-only` では一覧・状態・結果だけを使える。既存の `--assistant-socket` は個別ウィンドウへの直接接続として使える。
 
+### 受信キュー
+
+GUI の `assistant_prompt` とヘッドレスの `assistant_inspect_workbook` は、受付時に `run_id` と `state: "queued"` を返す。1実行先に最大16件まで待機でき、先に受け付けた依頼から実行する。再接続後は同じ実行 ID で `assistant_result` を呼び、`queued`、`running`、`completed` やエラーを追える。
+
+GUIでは前の変更案が確定または破棄されるまで次の依頼は待つ。受付時の文書が切り替わった場合、その依頼はエラーになる。待機列とジャーナルは実行先プロセスが所有する。
+
 ### 固定応答のヘッドレス実行先
 
 開発・検証用に、macOS・Linux で `ibisOffice --assistant-headless-demo /absolute/path/to/project` を実行できる。GUI と同じソケット受付、作業フォルダー登録、結果ジャーナルを使う。通常のMCPクライアントから `assistant_list_sessions` で `kind: "headless"` の実行先を取得し、`assistant_prompt` に `session_id` と指示を渡す。固定応答を `assistant_result` で取得できる。各実行先の `operations` はその実行先が対応する操作を示す。
@@ -88,7 +94,7 @@ macOS・Linux では、GUI と同じモデル設定で `ibisOffice --assistant-h
 
 文書サービスがブックを読み取り専用で開き、最大24シートの使用範囲と各シート最大4件の数式例を採取する。数式候補の探索は各シートの最初の構造上の所見100件を対象とする。シート名、使用範囲、数式例を設定済みモデルに渡して要約する。元のブックへの書き込みは行わない。
 
-`assistant_result` は `run_id` で進捗、数式などの根拠、要約、エラーコードを返す。MCP を切断しても実行先が処理を続ける。実行先ごとに同時実行は1件で、処理中の新規依頼はエラーを返す。`--read-only` のクライアントは実行先と結果を確認できる。
+`assistant_result` は `run_id` で進捗、数式などの根拠、要約、エラーコードを返す。MCP を切断しても実行先が処理を続ける。実行先ごとに同時実行は1件で、処理中の新規依頼は受付順に待機する。`--read-only` のクライアントは実行先と結果を確認できる。
 
 以下は導入時の設計メモ。
 

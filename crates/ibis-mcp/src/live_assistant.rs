@@ -37,13 +37,13 @@ const TOOLS: &[(&str, &str, &str, bool)] = &[
     (
         "assistant_prompt",
         "prompt",
-        "Send a prompt to the selected Assistant endpoint and return its run ID. Pass a skill name only when the user selects it. Inspect any resulting proposal before applying.",
+        "Queue a prompt on the selected Assistant endpoint and return its run ID. Pass a skill name only when the user selects it. Inspect any resulting proposal before applying.",
         false,
     ),
     (
         "assistant_inspect_workbook",
         "inspect_workbook",
-        "Start a workbook inspection on a headless Workbook Assistant. Pass an XLSX path relative to the workspace and use assistant_result to follow the run.",
+        "Queue a workbook inspection on a headless Workbook Assistant. Pass an XLSX path relative to the workspace and use assistant_result to follow the run.",
         false,
     ),
     (
@@ -232,7 +232,9 @@ mod tests {
             endpoint: Endpoint::Socket(PathBuf::new()),
             read_only: true,
         };
-        assert_eq!(assistant.schemas().count(), 2);
+        let names: Vec<_> = assistant.schemas().map(|schema| schema["name"].clone()).collect();
+        assert_eq!(names, [json!("assistant_analysis_context"), json!("assistant_status"), json!("assistant_result")]);
+        assert!(assistant.call("assistant_preview_analysis", None).is_none());
         assert!(assistant.call("assistant_reset", None).is_none());
         assert!(
             assistant

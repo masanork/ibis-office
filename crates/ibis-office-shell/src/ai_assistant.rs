@@ -911,6 +911,7 @@ impl SlideEditor {
     pub(crate) fn submit_assistant_socket_prompt(
         &mut self,
         text: &str,
+        run_id: u64,
         skill: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -925,8 +926,12 @@ impl SlideEditor {
         }
         let skill = skill.map(|name| self.load_assistant_skill(name)).transpose()?;
         self.open_ai_assistant_panel(window, cx);
-        self.submit_desktop_assistant(prompt.to_owned(), None, skill, cx);
-        Ok(self.ai_assistant.as_ref().expect("assistant sidebar opened").run_id)
+        self.submit_desktop_assistant(prompt.to_owned(), None, skill, Some(run_id), cx);
+        if self.ai_assistant.as_ref().is_some_and(|panel| panel.streaming && panel.run_id == run_id) {
+            Ok(run_id)
+        } else {
+            Err("the Assistant could not start the queued prompt".into())
+        }
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -961,7 +966,12 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn check_assistant_connection_document(&self) -> Result<(), &'static str> {
+    pub(crate) fn assistant_prompt_is_busy(&self) -> bool {
+        self.ai_assistant.as_ref().is_some_and(|panel| panel.connecting || panel.check_prompt_available().is_err())
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn check_assistant_connection_document(&self) -> Result<(), &'static str> {
         if !self.has_document || self.watch.opening_path.is_some() {
             return Err("open a document before using the Assistant");
         }
@@ -1671,7 +1681,7 @@ impl SlideEditor {
         let prompt = format!("{title} · {sheet}!{cell}\n{formula}");
         let messages = formula_explanation_messages(sheet, cell, formula);
         self.open_ai_assistant_panel(window, cx);
-        self.submit_desktop_assistant(prompt, Some(messages), None, cx);
+        self.submit_desktop_assistant(prompt, Some(messages), None, None, cx);
     }
 
     fn submit_ai_assistant_text(&mut self, prompt: String, cx: &mut Context<Self>) {
@@ -1685,7 +1695,7 @@ impl SlideEditor {
         #[cfg(not(any(target_family = "wasm", target_os = "linux", target_os = "macos", target_os = "windows")))]
         let skill = None;
         #[cfg(not(target_family = "wasm"))]
-        self.submit_desktop_assistant(prompt, None, skill, cx);
+        self.submit_desktop_assistant(prompt, None, skill, None, cx);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -1694,6 +1704,7 @@ impl SlideEditor {
         prompt: String,
         formula_messages: Option<Vec<ChatMessage>>,
         skill: Option<ibis_formats::agent_skill::Skill>,
+        queued_run_id: Option<u64>,
         cx: &mut Context<Self>,
     ) {
         let output = self.assistant_output.as_ref().filter(|_| self.assistant_document_is_shared()).cloned();
@@ -1737,8 +1748,15 @@ impl SlideEditor {
                 return;
             }
             // A completion from a closed panel must never match a reopened panel.
-            static NEXT_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            p.run_id = NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            p.run_id = queued_run_id.unwrap_or_else(|| {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                { ibis_mcp::assistant_endpoint::next_run_id() }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                {
+                    static NEXT_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                    NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                }
+            });
             p.streaming = true;
             p.streaming_text.clear();
             if trace {
