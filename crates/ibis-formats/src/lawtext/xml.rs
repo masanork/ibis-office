@@ -76,6 +76,7 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
     }
     for appendix in body.children().filter(roxmltree::Node::is_element) {
         match appendix.tag_name().name() {
+            "SupplProvision" => out.suppl_positions.push(out.appdx_tables.len() + out.appdx_fragment_xml.len()),
             "AppdxTable" => {
                 out.appdx_tables.push(parse_appdx_table(appendix));
                 if let Some(snapshot) = SavedAppdxTable::read(&xml[appendix.range()]) {
@@ -93,6 +94,9 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
     }
     if out.appdx_fragment_positions.first() == Some(&out.appdx_tables.len()) {
         out.appdx_fragment_positions.clear();
+    }
+    if out.suppl_positions.last() == Some(&0) {
+        out.suppl_positions.clear();
     }
     out.bind_suppl_appendices();
     Ok(out)
@@ -136,9 +140,18 @@ fn read_encoded_fragments(encoded: &str, names: &[&str]) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn read_encoded_appdx_fragment_positions(encoded: &str, fragment_count: usize) -> Vec<usize> {
+pub(super) fn encode_suppl_positions(doc: &LawDoc) -> Option<String> {
+    let &last = doc.suppl_positions.last()?;
+    let positions: Vec<_> = doc.suppl_positions.iter().copied()
+        .chain(std::iter::repeat(last))
+        .take(doc.suppl_provisions.len())
+        .collect();
+    serde_json::to_string(&positions).ok()
+}
+
+pub(super) fn read_encoded_positions(encoded: &str, count: usize) -> Vec<usize> {
     let positions: Vec<usize> = serde_json::from_str(encoded).unwrap_or_default();
-    if positions.len() == fragment_count && positions.is_sorted() {
+    if positions.len() == count && positions.is_sorted() {
         positions
     } else {
         Vec::new()
@@ -461,41 +474,78 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
         write_xml_node(&mut out, node, 3);
     }
     out.push_str("    </MainProvision>\n");
-    for (index, suppl) in doc.suppl_provisions.iter().enumerate() {
-        out.push_str("    <SupplProvision");
-        push_opt_attr(&mut out, "AmendLawNum", suppl.amend_law_num.as_deref());
-        if suppl.extract {
-            out.push_str(" Extract=\"true\"");
+    let appendices = merge_body_order(
+        doc.appdx_tables.iter().map(BodyEntry::Table),
+        doc.appdx_fragment_xml.iter().map(|xml| BodyEntry::Fragment(xml)),
+        &doc.appdx_fragment_positions,
+        usize::MAX,
+    );
+    let entries = merge_body_order(
+        appendices,
+        (0..doc.suppl_provisions.len()).map(BodyEntry::Supplement),
+        &doc.suppl_positions,
+        0,
+    );
+    for entry in entries {
+        match entry {
+            BodyEntry::Table(table) => write_appdx_table(&mut out, doc, table),
+            BodyEntry::Fragment(xml) => write_appdx_fragment(&mut out, xml),
+            BodyEntry::Supplement(index) => write_suppl_provision(&mut out, doc, index),
         }
-        out.push_str(">\n");
-        out.push_str("      <SupplProvisionLabel>");
-        push_xml_escaped(&mut out, &suppl.label);
-        out.push_str("</SupplProvisionLabel>\n");
-        for node in &suppl.nodes {
-            write_xml_node(&mut out, node, 3);
-        }
-        for fragment in doc.suppl_appendices(index) {
-            out.push_str("      ");
-            out.push_str(fragment);
-            out.push('\n');
-        }
-        out.push_str("    </SupplProvision>\n");
-    }
-    let mut fragments = doc.appdx_fragment_xml.iter();
-    let mut positions = doc.appdx_fragment_positions.iter().copied().peekable();
-    for (index, appdx) in doc.appdx_tables.iter().enumerate() {
-        while positions.next_if_eq(&index).is_some() {
-            if let Some(fragment) = fragments.next() {
-                write_appdx_fragment(&mut out, fragment);
-            }
-        }
-        write_appdx_table(&mut out, doc, appdx);
-    }
-    for fragment in fragments {
-        write_appdx_fragment(&mut out, fragment);
     }
     out.push_str("  </LawBody>\n</Law>\n");
     out
+}
+
+enum BodyEntry<'a> {
+    Table(&'a super::model::LawAppdxTable),
+    Fragment(&'a str),
+    Supplement(usize),
+}
+
+// Each secondary slot counts how many primary entries precede it.
+fn merge_body_order<'a>(
+    mut primary: impl Iterator<Item = BodyEntry<'a>> + 'a,
+    secondary: impl Iterator<Item = BodyEntry<'a>> + 'a,
+    positions: &'a [usize],
+    default_slot: usize,
+) -> impl Iterator<Item = BodyEntry<'a>> + 'a {
+    let mut secondary = secondary.enumerate().peekable();
+    let mut emitted_primary = 0;
+    std::iter::from_fn(move || {
+        if secondary.peek().is_some_and(|(index, _)| {
+            positions.get(*index).copied().unwrap_or(default_slot) <= emitted_primary
+        }) {
+            return secondary.next().map(|(_, entry)| entry);
+        }
+        if let Some(entry) = primary.next() {
+            emitted_primary += 1;
+            return Some(entry);
+        }
+        secondary.next().map(|(_, entry)| entry)
+    })
+}
+
+fn write_suppl_provision(out: &mut String, doc: &LawDoc, index: usize) {
+    let suppl = &doc.suppl_provisions[index];
+    out.push_str("    <SupplProvision");
+    push_opt_attr(out, "AmendLawNum", suppl.amend_law_num.as_deref());
+    if suppl.extract {
+        out.push_str(" Extract=\"true\"");
+    }
+    out.push_str(">\n");
+    out.push_str("      <SupplProvisionLabel>");
+    push_xml_escaped(out, &suppl.label);
+    out.push_str("</SupplProvisionLabel>\n");
+    for node in &suppl.nodes {
+        write_xml_node(out, node, 3);
+    }
+    for fragment in doc.suppl_appendices(index) {
+        out.push_str("      ");
+        out.push_str(fragment);
+        out.push('\n');
+    }
+    out.push_str("    </SupplProvision>\n");
 }
 
 fn write_appdx_fragment(out: &mut String, fragment: &str) {

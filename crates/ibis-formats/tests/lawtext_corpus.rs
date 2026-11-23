@@ -361,8 +361,9 @@ fn mixed_appendices_keep_their_order_even_when_a_table_cell_is_edited() {
     let note = r#"<AppdxNote Num="2"><AppdxNoteTitle>注一</AppdxNoteTitle><FigStruct><Fig src="./pict/note.pdf"/></FigStruct></AppdxNote>"#;
     let format = r#"<AppdxFormat Num="3"><AppdxFormatTitle WritingMode="horizontal">書式一</AppdxFormatTitle></AppdxFormat>"#;
     let formula = "<Appdx><ArithFormulaNum>算式一</ArithFormulaNum><ArithFormula/></Appdx>";
+    let supplement = r#"<SupplProvision AmendLawNum="令和七年内閣府令第一号"><SupplProvisionLabel>附則</SupplProvisionLabel><Paragraph Num="1"><ParagraphNum/><ParagraphSentence><Sentence>公布の日から施行する。</Sentence></ParagraphSentence></Paragraph></SupplProvision>"#;
     let xml = format!(
-        "{before}{figure}<AppdxTable>{table}</AppdxTable>{note}{format}\n<AppdxStyle>{form}</AppdxStyle><AppdxTable>{}</AppdxTable>{formula}{after}",
+        "{before}{figure}<AppdxTable>{table}</AppdxTable>{supplement}{note}{format}\n<AppdxStyle>{form}</AppdxStyle><AppdxTable>{}</AppdxTable>{formula}{after}",
         table.replace("別表第十八", "別表第十九"),
     );
     let source = parse_law_xml(&xml).unwrap();
@@ -370,12 +371,19 @@ fn mixed_appendices_keep_their_order_even_when_a_table_cell_is_edited() {
     assert!(ibis_formats::lawtext::is_lawtext(lawtext.as_bytes()));
     let markdown = to_markdown(&source).replacen("| 形質 |", "| 形質区分 |", 1);
     for (roundtrip, expected_cell) in [
+        (source, "形質"),
         (parse_lawtext(&lawtext).unwrap(), "形質"),
         (parse_markdown_law(&markdown).unwrap(), "形質区分"),
     ] {
         let output = to_law_xml(&roundtrip);
         let xml = roxmltree::Document::parse(&output).unwrap();
         let body = xml.root_element().children().find(|node| node.has_tag_name("LawBody")).unwrap();
+        let entries: Vec<_> = body.children()
+            .filter(roxmltree::Node::is_element)
+            .map(|node| node.tag_name().name())
+            .filter(|tag| *tag == "SupplProvision" || tag.starts_with("Appdx"))
+            .collect();
+        assert!(entries.windows(4).any(|items| items == ["AppdxFig", "AppdxTable", "SupplProvision", "AppdxNote"]));
         let appendices: Vec<_> = body.children()
             .filter(|node| node.is_element() && node.tag_name().name().starts_with("Appdx"))
             .collect();

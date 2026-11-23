@@ -273,6 +273,8 @@ pub struct LawDoc {
     pub(super) appdx_fragment_xml: Vec<String>,
     pub preamble: Option<String>,
     pub main_provision: Vec<LawNode>,
+    // Number of top-level appendices preceding each supplementary provision.
+    pub(super) suppl_positions: Vec<usize>,
     pub suppl_provisions: Vec<SupplProvision>,
     pub(super) suppl_appendices: BTreeMap<usize, SupplAppendices>,
     pub appdx_tables: Vec<LawAppdxTable>,
@@ -298,6 +300,7 @@ impl Default for LawDoc {
             appdx_fragment_xml: Vec::new(),
             preamble: None,
             main_provision: Vec::new(),
+            suppl_positions: Vec::new(),
             suppl_provisions: Vec::new(),
             suppl_appendices: BTreeMap::new(),
             appdx_tables: Vec::new(),
@@ -377,5 +380,8 @@ impl LawDoc {
             self.suppl_appendices.remove(&key);
         }
         self.suppl_provisions.remove(index);
+        if index < self.suppl_positions.len() {
+            self.suppl_positions.remove(index);
+        }
     }
 }

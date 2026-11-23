@@ -14,7 +14,7 @@ use super::syntax::{
     to_fullwidth_digits,
 };
 use super::xml::{
-    parse_title_attributes_fragment, read_encoded_appdx_fragment_positions, read_encoded_appdx_fragments, read_encoded_suppl_appendices, read_encoded_toc, write_title_attributes_fragment,
+    parse_title_attributes_fragment, encode_suppl_positions, read_encoded_positions, read_encoded_appdx_fragments, read_encoded_suppl_appendices, read_encoded_toc, write_title_attributes_fragment,
 };
 use super::markup::{
     lawtext_paragraph_text, lawtext_sentence_text, parse_lawtext_paragraph,
@@ -26,6 +26,7 @@ use super::table_markup::{encode_tables, restore_tables};
 const LAWTEXT_TITLE_ATTRIBUTES: &str = ":law-title-attrs: ";
 const LEGACY_LAWTEXT_STYLES: &str = ":law-appdx-styles: ";
 const LEGACY_LAWTEXT_STYLE_POSITIONS: &str = ":law-appdx-style-positions: ";
+const LAWTEXT_SUPPL_POSITIONS: &str = ":law-suppl-positions: ";
 const LAWTEXT_FRAGMENT_POSITIONS: &str = ":law-appdx-fragment-positions: ";
 const LAWTEXT_FRAGMENTS: &str = ":law-appdx-fragments: ";
 pub(super) const LAWTEXT_SUPPL_APPENDICES: &str = ":law-suppl-appendices: ";
@@ -86,6 +87,7 @@ pub fn is_lawtext(data: &[u8]) -> bool {
                 || line.starts_with(LAWTEXT_TOC) || line.starts_with(LAWTEXT_TABLES)
                 || line.starts_with(LAWTEXT_ENACT_STATEMENT) || line.starts_with(LAWTEXT_FRAGMENTS)
                 || line.starts_with(LAWTEXT_FRAGMENT_POSITIONS)
+                || line.starts_with(LAWTEXT_SUPPL_POSITIONS)
                 || line.starts_with(LEGACY_LAWTEXT_STYLES)
                 || line.starts_with(LEGACY_LAWTEXT_STYLE_POSITIONS)
         });
@@ -138,6 +140,9 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
         && let Ok(encoded) = serde_json::to_string(&doc.appdx_fragment_positions)
     {
         out.push_str(&format!("{LAWTEXT_FRAGMENT_POSITIONS}{encoded}\n"));
+    }
+    if let Some(encoded) = encode_suppl_positions(doc) {
+        out.push_str(&format!("{LAWTEXT_SUPPL_POSITIONS}{encoded}\n"));
     }
     if !out.is_empty() {
         out.push('\n');
@@ -344,9 +349,11 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
         let line = line.trim();
         line.strip_prefix(LAWTEXT_FRAGMENT_POSITIONS).or_else(|| line.strip_prefix(LEGACY_LAWTEXT_STYLE_POSITIONS))
     }) {
-        doc.appdx_fragment_positions = read_encoded_appdx_fragment_positions(encoded, doc.appdx_fragment_xml.len());
+        doc.appdx_fragment_positions = read_encoded_positions(encoded, doc.appdx_fragment_xml.len());
         lines.next();
     }
+    let suppl_positions = lines.next_if(|line| line.trim().starts_with(LAWTEXT_SUPPL_POSITIONS))
+        .and_then(|line| line.trim().strip_prefix(LAWTEXT_SUPPL_POSITIONS));
     let mut header = lines.clone();
     if let (Some(title), Some(number)) = (
         header.next().map(str::trim).filter(|title| !title.contains('（') && !title.starts_with('第')),
@@ -514,6 +521,9 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
     flush_all_divisions(&mut div_stack, &mut doc, in_suppl);
     if let Some(encoded) = table_xml {
         restore_tables(&mut doc, encoded, false);
+    }
+    if let Some(encoded) = suppl_positions {
+        doc.suppl_positions = read_encoded_positions(encoded, doc.suppl_provisions.len());
     }
     doc.bind_suppl_appendices();
     Ok(doc)
