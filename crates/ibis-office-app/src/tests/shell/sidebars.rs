@@ -23,6 +23,7 @@ pub fn all() -> Vec<(&'static str, fn())> {
         ("shell::sidebars_disabled_when_unavailable", disabled_when_unavailable),
         ("shell::sidebars_checked_state", checked_state),
         ("shell::sidebars_follow_the_selected_shape_on_a_sheet", follow_selected_shape_on_sheet),
+        ("shell::sidebars_presentation_assistant", presentation_assistant),
         ("shell::sidebars_search_index", search_index),
         ("shell::sidebars_i18n_complete", i18n_complete),
         ("shell::sidebars_submenu_rows_within_limit", submenu_rows_within_limit),
@@ -406,4 +407,19 @@ fn follow_selected_shape_on_sheet() {
     s.update(move |e, w, cx| handler(e, w, cx));
     s.settle();
     assert!(s.with(|e, _| e.sheet_state().unwrap().panels.frame.is_some()), "the pane is open");
+}
+
+fn presentation_assistant() {
+    use crate::shell::chrome::LAST_SIDEBAR_TITLE;
+
+    let mut s = Scenario::new_document(Kind::Presentation);
+    let item = sidebar_items(&mut s)
+        .into_iter()
+        .find(|item| item.id == "sidebar.ai-assistant")
+        .expect("Assistant is listed in the Sidebar submenu");
+    assert!(item.enabled());
+    let handler = item.handler.expect("Assistant has a menu handler");
+    LAST_SIDEBAR_TITLE.with(|title| title.borrow_mut().clear());
+    s.update(move |editor, window, cx| handler(editor, window, cx));
+    LAST_SIDEBAR_TITLE.with(|title| assert_eq!(title.borrow().as_str(), "Assistant"));
 }
