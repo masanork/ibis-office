@@ -6,6 +6,8 @@
 
 use std::borrow::Cow;
 
+use crate::markdown::roundtrip::{SourceIssue, reconcile_source};
+
 use super::model::{LawAppdxTable, LawDoc};
 use super::xml::{child_elem, collect_text, push_xml_escaped};
 
@@ -126,16 +128,13 @@ pub(super) fn snapshot_for<'a>(
             && snapshot.table.rows.iter().zip(&table.rows)
                 .all(|(stored, visible)| visible.starts_with(stored))
     };
-    let mut exact = snapshots.iter().filter(same_text);
-    if let Some(snapshot) = exact.next() {
-        return exact.next().is_none().then_some(Cow::Borrowed(snapshot));
+    match reconcile_source(snapshots.iter().filter(same_text), |snapshot| Some(Cow::Borrowed(snapshot))) {
+        Err(SourceIssue::Missing) => reconcile_source(
+            snapshots.iter().filter(|snapshot| same_shape(&snapshot.table, table, padded)),
+            |snapshot| update_cells(snapshot, table).map(Cow::Owned),
+        ).ok(),
+        result => result.ok(),
     }
-    let mut compatible = snapshots.iter().filter(|snapshot| same_shape(&snapshot.table, table, padded));
-    let snapshot = compatible.next()?;
-    if compatible.next().is_some() {
-        return None;
-    }
-    update_cells(snapshot, table).map(Cow::Owned)
 }
 
 pub(super) fn encode_tables(doc: &LawDoc) -> Option<String> {

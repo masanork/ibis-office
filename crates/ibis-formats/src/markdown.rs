@@ -33,6 +33,7 @@
 
 mod metafile_preview;
 mod shape_text;
+pub(crate) mod roundtrip;
 mod picture_anchor;
 
 use std::collections::{BTreeMap, HashMap};
@@ -76,18 +77,16 @@ pub fn is_markdown(data: &[u8]) -> bool {
     }
 
     // Check YAML frontmatter at top of file.
-    if let Some(after_open) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) {
-        if let Some((fm, _rest)) = split_frontmatter_body(after_open) {
-            if fm.lines().any(|l| {
-                let l = l.trim();
-                !l.is_empty()
-                    && !l.starts_with('#')
-                    && l.split_once(':').is_some_and(|(k, _)| {
-                        !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-                    })
-            }) {
-                return true;
-            }
+    if let Some((fm, _rest)) = roundtrip::frontmatter(trimmed) {
+        if fm.lines().any(|l| {
+            let l = l.trim();
+            !l.is_empty()
+                && !l.starts_with('#')
+                && l.split_once(':').is_some_and(|(k, _)| {
+                    !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                })
+        }) {
+            return true;
         }
     }
 
@@ -195,10 +194,7 @@ pub fn is_presentation_markdown(data: &[u8]) -> bool {
         return false;
     };
     let trimmed = text.trim_start_matches('\u{feff}').trim_start();
-    let Some(after_open) = trimmed.strip_prefix("---\n").or_else(|| trimmed.strip_prefix("---\r\n")) else {
-        return false;
-    };
-    let Some((fm, _)) = split_frontmatter_body(after_open) else {
+    let Some((fm, _)) = roundtrip::frontmatter(trimmed) else {
         return false;
     };
     fm.lines().any(|line| {
@@ -1418,14 +1414,9 @@ fn parse_markdown_into(
     let mut frontmatter_text = None;
 
     let trimmed_start = text.trim_start_matches(['\n', '\r']);
-    if let Some(after_open) = trimmed_start
-        .strip_prefix("---\n")
-        .or_else(|| trimmed_start.strip_prefix("---\r\n"))
-    {
-        if let Some((fm, rest)) = split_frontmatter_body(after_open) {
-            frontmatter_text = Some(fm);
-            body_text = rest;
-        }
+    if let Some((fm, rest)) = roundtrip::frontmatter(trimmed_start) {
+        frontmatter_text = Some(fm);
+        body_text = rest;
     }
 
     let mut ctx = ParseContext {
@@ -6484,7 +6475,7 @@ fn serialize_paragraph(
             }
             FlowRunKind::Shape(shape) => {
                 if let ShapeKind::Chart(chart) = &shape.kind {
-                    serialize_chart(chart, out);
+                    serialize_chart(chart, None, out);
                     return;
                 }
             }
@@ -6898,8 +6889,11 @@ fn write_named_fence(language: &str, source: &str, out: &mut String) {
     out.push_str("\n\n");
 }
 
-fn serialize_chart(chart: &Chart, out: &mut String) {
-    if let Some(source) = chart.mermaid_source.as_str().filter(|source| mermaid_source_matches(chart, source)) {
+fn serialize_chart(chart: &Chart, alternate_source: Option<&str>, out: &mut String) {
+    let validate = |source| mermaid_source_matches(chart, source).then_some(source);
+    let source = roundtrip::reconcile_source(alternate_source, validate)
+        .or_else(|_| roundtrip::reconcile_source(chart.mermaid_source.as_str(), validate));
+    if let Ok(source) = source {
         write_mermaid_fence(source, out);
         return;
     }
@@ -7828,12 +7822,7 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                         .get(&shape.id)
                         .filter(|alt| alt.title == "__mermaid__")
                         .map(|alt| alt.description.as_str());
-                    let source = from_alt.or_else(|| chart.mermaid_source.as_str());
-                    if let Some(source) = source.filter(|source| mermaid_source_matches(chart, source)) {
-                        write_mermaid_fence(source, &mut out);
-                    } else {
-                        serialize_chart(chart, &mut out);
-                    }
+                    serialize_chart(chart, from_alt, &mut out);
                 }
                 _ => out.truncate(position),
             }

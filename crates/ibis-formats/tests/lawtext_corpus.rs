@@ -2,6 +2,19 @@
 use ibis_formats::lawtext::{input_to_markdown, parse_law_xml, parse_lawtext, to_lawtext};
 
 #[test]
+fn explicit_law_markdown_uses_the_document_type_in_frontmatter() {
+    use ibis_formats::lawtext::{parse_law_input, to_markdown};
+
+    let law = parse_law_xml(include_str!("lawtext/supplementary-amendment.xml")).unwrap();
+    let markdown = to_markdown(&law)
+        .replace("type: lawtext", "type: \"lawtext\"")
+        .replacen("\n---\n", "\n...\n", 1);
+    let parsed = parse_law_input(&markdown).unwrap();
+    assert_eq!(parsed.main_provision, law.main_provision);
+    assert_eq!(parsed.suppl_provisions, law.suppl_provisions);
+}
+
+#[test]
 fn egov_constitution_opens_as_markdown_and_lawtext() {
     let xml = include_str!("lawtext/321CONSTITUTION.xml");
     let law = parse_law_xml(xml).unwrap();

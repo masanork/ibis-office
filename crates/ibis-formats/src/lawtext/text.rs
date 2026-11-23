@@ -68,8 +68,7 @@ fn lawtext_attributes(mut line: &str) -> Option<Vec<(&str, String)>> {
     (line.is_empty() && !attributes.is_empty()).then_some(attributes)
 }
 
-/// Return `true` when `data` looks like a Lawtext document (`.law.txt` / `.lawtext`)
-/// or Markdown with `type: lawtext` frontmatter.
+/// Return `true` when `data` looks like native Lawtext (`.law.txt` / `.lawtext`).
 pub fn is_lawtext(data: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(data) else {
         return false;

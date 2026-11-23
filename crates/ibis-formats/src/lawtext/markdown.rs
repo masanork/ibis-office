@@ -312,36 +312,33 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
     let mut fragment_positions = None;
     let mut suppl_positions = None;
     let mut body = md.trim_start_matches('\u{feff}');
-    if let Some(after_open) = body.strip_prefix("---\n").or_else(|| body.strip_prefix("---\r\n")) {
-        if let Some(end_idx) = after_open.find("\n---") {
-            let fm = &after_open[..end_idx];
-            body = &after_open[end_idx + 4..];
-            for line in fm.lines() {
-                if let Some((k, v)) = line.split_once(':') {
-                    let v = v.trim().to_string();
-                    match k.trim() {
-                        "law_title" => doc.law_title = v,
-                        "law_title_attributes" => {
-                            if let Some(attributes) = parse_title_attributes_fragment(&v) {
-                                doc.law_title_attributes = attributes;
-                            }
+    if let Some((fm, rest)) = crate::markdown::roundtrip::frontmatter(body) {
+        body = rest;
+        for line in fm.lines() {
+            if let Some((k, v)) = line.split_once(':') {
+                let v = v.trim().to_string();
+                match k.trim() {
+                    "law_title" => doc.law_title = v,
+                    "law_title_attributes" => {
+                        if let Some(attributes) = parse_title_attributes_fragment(&v) {
+                            doc.law_title_attributes = attributes;
                         }
-                        "law_enact_statement" => doc.enact_statement = serde_json::from_str(&v).ok(),
-                        "law_toc" => doc.toc_xml = read_encoded_toc(&v),
-                        "law_appdx_fragment_positions" | "law_appdx_style_positions" => fragment_positions = Some(v),
-                        "law_appdx_fragments" | "law_appdx_styles" => doc.appdx_fragment_xml = read_encoded_appdx_fragments(&v),
-                        "law_suppl_positions" => suppl_positions = Some(v),
-                        "law_appdx_tables" => table_xml = Some(v),
-                        "law_num" => doc.law_num = v,
-                        "era" => doc.era = Some(v),
-                        "year" => doc.year = Some(v),
-                        "promulgate_month" => doc.promulgate_month = Some(v),
-                        "promulgate_day" => doc.promulgate_day = Some(v),
-                        "num" => doc.num = Some(v),
-                        "law_type" => doc.law_type = Some(v),
-                        "lang" => doc.lang = Some(v),
-                        _ => {}
                     }
+                    "law_enact_statement" => doc.enact_statement = serde_json::from_str(&v).ok(),
+                    "law_toc" => doc.toc_xml = read_encoded_toc(&v),
+                    "law_appdx_fragment_positions" | "law_appdx_style_positions" => fragment_positions = Some(v),
+                    "law_appdx_fragments" | "law_appdx_styles" => doc.appdx_fragment_xml = read_encoded_appdx_fragments(&v),
+                    "law_suppl_positions" => suppl_positions = Some(v),
+                    "law_appdx_tables" => table_xml = Some(v),
+                    "law_num" => doc.law_num = v,
+                    "era" => doc.era = Some(v),
+                    "year" => doc.year = Some(v),
+                    "promulgate_month" => doc.promulgate_month = Some(v),
+                    "promulgate_day" => doc.promulgate_day = Some(v),
+                    "num" => doc.num = Some(v),
+                    "law_type" => doc.law_type = Some(v),
+                    "lang" => doc.lang = Some(v),
+                    _ => {}
                 }
             }
         }
