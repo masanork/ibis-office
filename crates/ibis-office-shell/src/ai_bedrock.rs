@@ -92,8 +92,8 @@ fn profile_credentials(region: Option<String>) -> Result<(String, Credentials), 
     Ok((region, credentials))
 }
 
-pub(super) fn check_profile(region: Option<String>) -> Result<(), String> {
-    profile_credentials(region).map(|_| ())
+pub(super) fn check_profile(region: Option<String>) -> Result<String, String> {
+    profile_credentials(region).map(|(region, _)| region)
 }
 
 pub(super) fn stream_profile(

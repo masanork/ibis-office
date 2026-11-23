@@ -16,6 +16,9 @@ pub const SETTING_BASE_URL: &str = "ai.base_url";
 pub const SETTING_MODEL: &str = "ai.model";
 pub const SETTING_API_KEY: &str = "ai.api_key";
 
+#[cfg(not(target_family = "wasm"))]
+const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-6.1-terra";
 
@@ -375,16 +378,18 @@ pub(crate) enum ConnectionChoice {
     Auto,
     OpenAi,
     Claude,
+    Gemini,
     BedrockKey,
     BedrockProfile,
 }
 
 #[cfg(not(target_family = "wasm"))]
 impl ConnectionChoice {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Auto,
         Self::OpenAi,
         Self::Claude,
+        Self::Gemini,
         Self::BedrockKey,
         Self::BedrockProfile,
     ];
@@ -394,6 +399,7 @@ impl ConnectionChoice {
             Self::Auto => "自動選択",
             Self::OpenAi => "OpenAI 互換 API",
             Self::Claude => "Claude API（環境変数）",
+            Self::Gemini => "Google Gemini（環境変数）",
             Self::BedrockKey => "Amazon Bedrock（API キー）",
             Self::BedrockProfile => "Amazon Bedrock（AWS プロファイル）",
         }
@@ -407,6 +413,7 @@ impl ConnectionChoice {
         let (provider, config) = Provider::resolve(saved, |name| match (self, name) {
             (Self::OpenAi, "IBIS_AI_PROVIDER") => Some("openai".into()),
             (Self::Claude, "IBIS_AI_PROVIDER") => Some("anthropic".into()),
+            (Self::Gemini, "IBIS_AI_PROVIDER") => Some("gemini".into()),
             (Self::BedrockKey | Self::BedrockProfile, "IBIS_AI_PROVIDER") => Some("bedrock".into()),
             (Self::BedrockProfile, "AWS_BEARER_TOKEN_BEDROCK") => None,
             _ => env(name),
@@ -415,6 +422,18 @@ impl ConnectionChoice {
             return Err("AWS_BEARER_TOKEN_BEDROCK を設定してください。".into());
         }
         Ok(NativeConnection { provider, config })
+    }
+
+    pub(crate) fn option_label(self, saved: &AiConfig) -> String {
+        if self
+            .resolve(saved, process_env)
+            .and_then(|connection| connection.check_configuration())
+            .is_ok()
+        {
+            self.label().into()
+        } else {
+            format!("{}（未設定）", self.label())
+        }
     }
 
     pub(crate) fn load(self) -> Result<NativeConnection, String> {
@@ -433,6 +452,7 @@ pub(crate) struct NativeConnection {
 impl NativeConnection {
     pub(crate) fn caption(&self) -> (&'static str, String) {
         let choice = match self.provider {
+            Provider::OpenAi if self.config.base_url == GEMINI_BASE_URL => ConnectionChoice::Gemini,
             Provider::OpenAi | Provider::OpenAiResponses => ConnectionChoice::OpenAi,
             Provider::Anthropic => ConnectionChoice::Claude,
             Provider::Bedrock => ConnectionChoice::BedrockKey,
@@ -441,9 +461,26 @@ impl NativeConnection {
         (choice.label(), self.config.model.clone())
     }
 
-    pub(crate) fn check_profile(&self) -> Result<(), String> {
-        if let Provider::BedrockProfile { region } = &self.provider {
-            bedrock::check_profile(region.clone())?;
+    pub(crate) fn endpoint(&self) -> Option<&str> {
+        let (_, endpoint) = self.config.base_url.split_once("://")?;
+        let authority = endpoint.split(['/', '?', '#']).next()?;
+        let host = authority.rsplit('@').next()?;
+        (!host.is_empty()).then_some(host)
+    }
+
+    fn check_configuration(&self) -> Result<(), String> {
+        if self.endpoint() == Some("api.openai.com") && self.config.api_key.is_empty() {
+            return Err("OPENAI_API_KEY を設定するか、設定欄に API キーを入力してください。".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_connection(&mut self) -> Result<(), String> {
+        self.check_configuration()?;
+        if let Provider::BedrockProfile { region } = &mut self.provider {
+            let selected_region = bedrock::check_profile(region.clone())?;
+            self.config.base_url = bedrock::messages_url(&selected_region)?;
+            *region = Some(selected_region);
         }
         Ok(())
     }
@@ -470,17 +507,32 @@ impl Provider {
                 .map(|value| value.trim().to_string())
                 .filter(|s| !s.is_empty())
         };
-        let mut provider = match env("IBIS_AI_PROVIDER").as_deref() {
+        let requested = env("IBIS_AI_PROVIDER");
+        if requested.as_deref() == Some("gemini") {
+            let api_key = env("GEMINI_API_KEY").ok_or("GEMINI_API_KEY を設定してください。")?;
+            let model =
+                env("GEMINI_MODEL").ok_or("GEMINI_MODEL にモデル ID を設定してください。")?;
+            return Ok((
+                Self::OpenAi,
+                AiConfig {
+                    base_url: GEMINI_BASE_URL.into(),
+                    model,
+                    api_key,
+                },
+            ));
+        }
+        let mut provider = match requested.as_deref() {
             Some("openai") => Self::OpenAi,
             Some("anthropic" | "claude") => Self::Anthropic,
             Some("bedrock") => Self::Bedrock,
-            Some(_) => return Err("IBIS_AI_PROVIDER: openai / anthropic / bedrock".into()),
+            Some(_) => return Err("IBIS_AI_PROVIDER: openai / anthropic / bedrock / gemini".into()),
             None if env("CLAUDE_CODE_USE_BEDROCK").as_deref() == Some("1") => Self::Bedrock,
             None if !saved.api_key.is_empty()
                 || !saved.base_url.is_empty()
                 || !saved.model.is_empty()
                 || env("IBIS_AI_API_KEY").is_some()
-                || env("OPENAI_API_KEY").is_some() =>
+                || env("OPENAI_API_KEY").is_some()
+                || env("OPENAI_BASE_URL").is_some() =>
             {
                 Self::OpenAi
             }
@@ -500,17 +552,21 @@ impl Provider {
         let (base_url, model, api_key) = match provider {
             Self::OpenAi => {
                 let saved_value = |value: &String| (!value.is_empty()).then(|| value.clone());
-                (
-                    env("IBIS_AI_BASE_URL")
-                        .or_else(|| saved_value(&saved.base_url))
-                        .unwrap_or_else(|| DEFAULT_BASE_URL.into()),
-                    env("IBIS_AI_MODEL")
-                        .or_else(|| saved_value(&saved.model))
-                        .unwrap_or_else(|| DEFAULT_MODEL.into()),
+                let custom_base = env("IBIS_AI_BASE_URL").or_else(|| saved_value(&saved.base_url));
+                let standard_base = env("OPENAI_BASE_URL").filter(|_| custom_base.is_none());
+                let api_key = if standard_base.is_some() {
+                    env("OPENAI_API_KEY")
+                } else {
                     saved_value(&saved.api_key)
                         .or_else(|| env("IBIS_AI_API_KEY"))
                         .or_else(|| env("OPENAI_API_KEY"))
-                        .unwrap_or_default(),
+                };
+                (
+                    custom_base.or(standard_base).unwrap_or_else(|| DEFAULT_BASE_URL.into()),
+                    env("IBIS_AI_MODEL")
+                        .or_else(|| saved_value(&saved.model))
+                        .unwrap_or_else(|| DEFAULT_MODEL.into()),
+                    api_key.unwrap_or_default(),
                 )
             }
             Self::Anthropic | Self::Bedrock => {
@@ -1607,6 +1663,44 @@ pub(crate) fn fetch_egov_law_xml(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn gemini_uses_standard_environment_and_google_endpoint() {
+        let saved = AiConfig {
+            base_url: DEFAULT_BASE_URL.into(),
+            model: DEFAULT_MODEL.into(),
+            api_key: "stored-openai-key".into(),
+        };
+        let env = |name: &str| match name {
+            "GEMINI_API_KEY" => Some("gemini-key".into()),
+            "GEMINI_MODEL" => Some("gemini-example".into()),
+            "OPENAI_API_KEY" => Some("openai-key".into()),
+            _ => None,
+        };
+        let connection = ConnectionChoice::Gemini.resolve(&saved, env).unwrap();
+        assert_eq!(connection.config.api_key, "gemini-key");
+        assert_eq!(connection.caption(), ("Google Gemini（環境変数）", "gemini-example".into()));
+        assert_eq!(connection.endpoint(), Some("generativelanguage.googleapis.com"));
+        assert!(ConnectionChoice::Gemini.resolve(&saved, |_| None).is_err());
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn standard_openai_base_uses_the_environment_key_instead_of_the_gui_key() {
+        let saved = AiConfig {
+            base_url: String::new(),
+            model: DEFAULT_MODEL.into(),
+            api_key: "stored-openai-key".into(),
+        };
+        let connection = ConnectionChoice::OpenAi.resolve(&saved, |name| match name {
+            "OPENAI_BASE_URL" => Some("https://gateway.example/v1".into()),
+            "OPENAI_API_KEY" => Some("gateway-key".into()),
+            _ => None,
+        }).unwrap();
+        assert_eq!(connection.endpoint(), Some("gateway.example"));
+        assert_eq!(connection.config.api_key, "gateway-key");
+    }
 
     #[cfg(not(target_family = "wasm"))]
     #[test]

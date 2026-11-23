@@ -87,6 +87,12 @@ Claude API と Bedrock のモデル指定は `ANTHROPIC_MODEL`、`IBIS_AI_MODEL`
 
 OpenAI 公式エンドポイントで GPT-6.2 系を使う場合、Assistant はツール呼び出しに対応する Responses API を選択する。\`/responses\` まで含めたURLも設定できる。会話の継続に必要な出力項目はアプリ側で再送し、Responses API へのリクエストには \`store: false\` を指定する。
 
+#### サイドバーから接続先を選ぶ
+
+「設定」のプルダウンで接続先を選び、「接続」を押して反映する。設定が不足している候補には「未設定」と表示し、接続ボタンを押すと必要な設定を案内する。反映後はサービス名、接続先ホスト、モデルがサイドバーに表示される。AWS プロファイルを使う場合は接続時に AWS CLI の認証情報を確認する。モデルの推論はメッセージを送ったときに実行する。
+
+OpenAI 互換 API では、GUI または `IBIS_AI_BASE_URL` に接続先が指定されていない場合、`OPENAI_BASE_URL` と `OPENAI_API_KEY` を使える。Google Gemini はプルダウンで選び、`GEMINI_API_KEY` と `GEMINI_MODEL` を設定する。Google の OpenAI 互換エンドポイントに接続する。
+
 #### Bedrock に AWS IAM Identity Center (SSO) で接続
 
 AWS CLI v2 でプロファイルを作成し、ログインしてから同じシェルでアプリを起動する。

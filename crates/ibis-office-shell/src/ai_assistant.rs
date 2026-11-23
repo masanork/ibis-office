@@ -1439,8 +1439,8 @@ impl SlideEditor {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let connection = choice.load()?;
-                    connection.check_profile()?;
+                    let mut connection = choice.load()?;
+                    connection.check_connection()?;
                     Ok::<_, String>(connection)
                 })
                 .await;
@@ -4284,6 +4284,11 @@ impl SlideEditor {
                             .text_color(cx.theme().muted_foreground)
                             .child(format!("接続先：{provider}")),
                     )
+                    .children(active.endpoint().map(|endpoint| {
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(endpoint.to_string())
+                    }))
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
@@ -4394,10 +4399,11 @@ impl SlideEditor {
             use gpui_kit::component::Disableable as _;
             let choice = panel.connection_choice;
             let disabled = streaming || panel.connecting || panel.assistant_review.is_some();
+            let saved = AiConfig::load_saved();
             let options: Vec<_> = ConnectionChoice::ALL
                 .into_iter()
                 .map(|option| {
-                    crate::chrome::DropdownItem::new(option.label())
+                    crate::chrome::DropdownItem::new(option.option_label(&saved))
                         .checked(choice == option)
                         .on_select(std::rc::Rc::new(move |editor, _, cx| {
                             if let Some(panel) = editor.ai_assistant.as_mut()
