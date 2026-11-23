@@ -1,0 +1,12 @@
+form:
+  id: training-completion
+  version: 1
+fields:
+  course.title:
+    type: text
+    maxChars: 24
+  completed:
+    type: date-ja
+  serial:
+    type: text
+    maxChars: 5

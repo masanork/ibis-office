@@ -1,0 +1,7 @@
+form:
+  id: training-completion
+  version: 1
+claims:
+  training: course.title
+  completion_date: completed
+  number: serial

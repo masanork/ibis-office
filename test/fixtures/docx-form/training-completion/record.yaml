@@ -1,0 +1,8 @@
+form:
+  id: training-completion
+  version: 1
+data:
+  course:
+    title: 安全研修（サンプル）
+  completed: "2026-04-01"
+  serial: "00123"
