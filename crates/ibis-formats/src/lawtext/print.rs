@@ -44,16 +44,17 @@ footer: '- {page} -'
 impl Legislation5SetPackage {
     /// Produce one editable DOCX with section layouts based on published bill sets.
     pub fn to_print_docx(&self) -> Result<Vec<u8>, Error> {
-        let bill = self.bill_markdown.replace(
-            &self.aratame_draft.full_text,
-            &self
-                .aratame_draft
-                .full_text
-                .lines()
-                .map(str::trim)
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-        );
+        let mut bill_draft = String::new();
+        let mut previous_is_row = false;
+        for line in self.aratame_draft.full_text.lines().map(str::trim) {
+            let is_row = line.starts_with('|') && line.ends_with('|');
+            if !bill_draft.is_empty() {
+                bill_draft.push_str(if previous_is_row && is_row { "\n" } else { "\n\n" });
+            }
+            bill_draft.push_str(line);
+            previous_is_row = is_row;
+        }
+        let bill = self.bill_markdown.replace(&self.aratame_draft.full_text, &bill_draft);
         // Keep the comparison markup and contents from the common diff pipeline.
         let comparison = comparison_markdown(&self.shinkyu_markdown);
         let outline = numbered_outline(&self.youkou_markdown);

@@ -366,3 +366,49 @@ fn audit_reports_reordered_siblings_without_counting_removals_as_reordering() {
     assert_eq!(change["after"][0], "LawTitle[1]");
     assert_eq!(report["lawtext_roundtrip_changes"], serde_json::json!([]));
 }
+
+#[test]
+fn generates_and_reapplies_the_two_food_labeling_tables_added_in_2024() {
+    use ibis_doc_model::flow::Block;
+    use ibis_formats::lawtext::{ShinkyuOptions, build_5set_package};
+
+    let old = parse_law_xml(include_str!("lawtext/food-labeling-2024-before.xml")).unwrap();
+    let new = parse_law_xml(include_str!("lawtext/food-labeling-2024-after.xml")).unwrap();
+    let package = build_5set_package(&old, &new, "", &ShinkyuOptions::default());
+    let clauses = &package.aratame_draft.clauses;
+    assert_eq!(clauses.len(), 2);
+    for (clause, anchor, title) in [
+        (&clauses[0], "別表第二十五", "別表第二十六"),
+        (&clauses[1], "別表第二十六", "別表第二十七"),
+    ] {
+        assert_eq!(clause.target, title);
+        assert!(clause.text.starts_with(&format!(
+            "{anchor}の次に次の別表を加える。\n{title}\n（第二条関係）"
+        )));
+        assert!(clause.text.contains("| --- | --- |"));
+    }
+    let verification = &package.aratame_verification;
+    assert!(
+        verification.is_exact_match,
+        "{:?}",
+        verification.diagnostics
+    );
+    assert_eq!(verification.applied_ops, 2);
+    assert_eq!(verification.simulated_new.appdx_tables, new.appdx_tables);
+
+    let docx = ibis_formats::open(package.to_print_docx().unwrap()).unwrap();
+    let flow = docx.presentation.flow.unwrap();
+    let rows: Vec<_> = flow
+        .body
+        .iter()
+        .filter_map(|block| {
+            if let Block::Table(table) = block {
+                Some(table.rows.len())
+            } else {
+                None
+            }
+        })
+        .take(2)
+        .collect();
+    assert_eq!(rows, [2, 4]);
+}

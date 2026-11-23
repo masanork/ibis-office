@@ -3152,7 +3152,7 @@ fn is_table_separator(s: &str) -> bool {
         })
 }
 
-fn split_table_row(s: &str) -> Vec<String> {
+pub(crate) fn split_table_row(s: &str) -> Vec<String> {
     let inner = s
         .trim()
         .strip_prefix('|')

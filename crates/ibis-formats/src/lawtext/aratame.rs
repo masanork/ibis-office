@@ -10,7 +10,7 @@ use super::diff::{
     AmendmentIr, ArticleChange, ArticleChangeKind, DiffOp, ItemChange, NodeChangeKind, diff_laws,
 };
 use super::{
-    LawArticle, LawDoc, LawItem, LawNode, LawParagraph, parse_article_header,
+    LawAppdxTable, LawArticle, LawDoc, LawItem, LawNode, LawParagraph, parse_article_header,
     parse_numbered_paragraph, to_fullwidth_digits, write_lawtext_node,
 };
 use crate::Error;
@@ -232,10 +232,15 @@ pub fn generate_aratame_draft(old: &LawDoc, new: &LawDoc) -> AratameDraft {
                 }
             }
             NodeChangeKind::Added => {
-                clauses.push(AratameClause {
-                    target: at.title.clone(),
-                    text: format!("附則の次に次の別表を加える。\n{}", at.title),
-                });
+                if let Some(index) = new.appdx_tables.iter().position(|table| table.title == at.title) {
+                    let anchor = index.checked_sub(1)
+                        .map_or("附則", |previous| new.appdx_tables[previous].title.as_str());
+                    let table = &new.appdx_tables[index];
+                    clauses.push(AratameClause {
+                        target: at.title.clone(),
+                        text: format!("{anchor}の次に次の別表を加える。\n{}", format_added_table(table)),
+                    });
+                }
             }
             NodeChangeKind::Deleted => {
                 clauses.push(AratameClause {
@@ -594,6 +599,47 @@ pub fn apply_aratame(old: &LawDoc, aratame_text: &str) -> (LawDoc, usize, Vec<St
             }
         }
 
+        if let Some(anchor) = line.strip_suffix("の次に次の別表を加える。") {
+            let start = idx;
+            if lines.get(idx).is_some_and(|line| {
+                let line = line.trim();
+                line.starts_with("別表") && !is_aratame_command_line(line)
+            }) {
+                idx += 1;
+                if lines.get(idx).is_some_and(|line| {
+                    let line = line.trim();
+                    !line.is_empty() && !line.starts_with('|') && !is_aratame_command_line(line)
+                }) {
+                    idx += 1;
+                }
+                while lines.get(idx).is_some_and(|line| line.trim().starts_with('|')) {
+                    idx += 1;
+                }
+            }
+            let Some(table) = parse_added_table(&lines[start..idx]) else {
+                diagnostics.push(format!("「{anchor}」の次に加える別表の本文を解析できません。"));
+                continue;
+            };
+            if doc.appdx_tables.iter().any(|existing| existing.title == table.title) {
+                diagnostics.push(format!("追加対象の別表「{}」は既に存在します。", table.title));
+                continue;
+            }
+            let index = if anchor == "附則" {
+                Some(0)
+            } else {
+                let mut matches = doc.appdx_tables.iter().enumerate()
+                    .filter(|(_, table)| table.title == anchor);
+                matches.next().filter(|_| matches.next().is_none()).map(|(index, _)| index + 1)
+            };
+            if let Some(index) = index {
+                doc.appdx_tables.insert(index, table);
+                applied += 1;
+            } else {
+                diagnostics.push(format!("追加位置の別表「{anchor}」を一意に特定できません。"));
+            }
+            continue;
+        }
+
         // 4. 条の追加: 第○条の次に次の一条を加える。
         if let Some(prev_title) = line.strip_suffix("の次に次の一条を加える。") {
             let mut block_lines = Vec::new();
@@ -756,6 +802,62 @@ pub fn apply_aratame(old: &LawDoc, aratame_text: &str) -> (LawDoc, usize, Vec<St
     }
 
     (doc, applied, diagnostics)
+}
+
+fn format_added_table(table: &LawAppdxTable) -> String {
+    use std::fmt::Write;
+
+    let mut out = table.title.clone();
+    if let Some(related) = &table.related_article_num {
+        let _ = write!(out, "\n{related}");
+    }
+    for (index, row) in table.rows.iter().enumerate() {
+        out.push_str("\n|");
+        for cell in row {
+            let escaped = cell.replace('&', "&amp;").replace('<', "&lt;")
+                .replace('|', "\\|").replace('\r', "&#13;").replace('\n', "<br>");
+            let _ = write!(out, " {escaped} |");
+        }
+        if index == 0 {
+            out.push_str("\n|");
+            for _ in row {
+                out.push_str(" --- |");
+            }
+        }
+    }
+    out
+}
+
+fn parse_added_table(block: &[&str]) -> Option<LawAppdxTable> {
+    use crate::markdown::split_table_row;
+
+    let title = block.first()?.trim();
+    let mut lines = block[1..].iter().map(|line| line.trim()).peekable();
+    let related_article_num = if lines.peek().is_some_and(|line| !line.starts_with('|')) {
+        lines.next().map(str::to_string)
+    } else {
+        None
+    };
+    let header = lines.next()?;
+    let separator = lines.next()?;
+    let read_row = |line: &str| -> Option<Vec<String>> {
+        if !line.starts_with('|') || !line.ends_with('|') || line.len() < 2 {
+            return None;
+        }
+        Some(split_table_row(line).into_iter().map(|cell| {
+            cell.replace("<br>", "\n").replace("&#13;", "\r").replace("&lt;", "<").replace("&amp;", "&")
+        }).collect())
+    };
+    let first_row = read_row(header)?;
+    let separator = read_row(separator)?;
+    if separator.len() != first_row.len() || separator.iter().any(|cell| cell != "---") {
+        return None;
+    }
+    let mut rows = vec![first_row];
+    for line in lines {
+        rows.push(read_row(line)?);
+    }
+    Some(LawAppdxTable { title: title.to_string(), related_article_num, rows })
 }
 
 fn apply_replace_in_string(
@@ -1122,6 +1224,25 @@ mod tests {
         let verify = verify_aratame(&old_doc, broken_aratame, &new_doc);
         assert!(!verify.is_exact_match);
         assert!(!verify.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn inserts_added_table_after_supplements_and_preserves_cell_text() {
+        let old = LawDoc::default();
+        let mut new = old.clone();
+        new.appdx_tables.push(LawAppdxTable {
+            title: "別表第一".into(),
+            related_article_num: Some("第一条関係".into()),
+            rows: vec![vec!["区分".into(), "記載事項".into()],
+                vec!["A | B".into(), "一行目\n二行目 & <br>".into()]],
+        });
+        let draft = generate_aratame_draft(&old, &new);
+        assert!(draft.full_text.contains("附則の次に次の別表を加える。"));
+        assert!(verify_aratame(&old, &draft.full_text, &new).is_exact_match);
+        let (unchanged, applied, diagnostics) = apply_aratame(&old, "附則の次に次の別表を加える。\n別表第一");
+        assert!(unchanged.appdx_tables.is_empty());
+        assert_eq!(applied, 0);
+        assert!(!diagnostics.is_empty());
     }
 
     #[test]
