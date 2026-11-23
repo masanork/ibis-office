@@ -124,6 +124,7 @@ pub fn is_markdown(data: &[u8]) -> bool {
             || l == "\\columnbreak"
             || l.trim_end() == "[TOC]"
             || obsidian::local_link(l).is_some()
+            || obsidian::file_link(l).is_some()
             || l.starts_with("$$")
             || is_horizontal_rule(l)
             || is_ordered_list_line(l)
@@ -5013,23 +5014,27 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             }
         }
 
-        if rest.starts_with("[[#")
-            && !text[..i].ends_with(['!', '['])
-            && let Some((len, anchor, label)) = obsidian::local_link(rest)
-        {
-            flush_plain(&mut plain, &mut out, base_fmt);
-            let mut run = FlowRun::new(FlowRunKind::Text(label.into()), FlowRunStyle::default());
-            run.format = link_format(base_fmt);
-            let escaped = if is_word_bookmark(anchor) {
-                anchor.to_owned()
-            } else {
-                percent_encoding::utf8_percent_encode(anchor, percent_encoding::NON_ALPHANUMERIC)
-                    .to_string()
-            };
-            run.link = Some(Link::Anchor(escaped));
-            out.push(run);
-            i += len;
-            continue;
+        if rest.starts_with("[[") && !text[..i].ends_with(['!', '[']) {
+            let link = obsidian::local_link(rest).map(|(len, anchor, label)| {
+                let escaped = if is_word_bookmark(anchor) {
+                    anchor.to_owned()
+                } else {
+                    percent_encoding::utf8_percent_encode(anchor, percent_encoding::NON_ALPHANUMERIC)
+                        .to_string()
+                };
+                (len, Link::Anchor(escaped), label)
+            }).or_else(|| obsidian::file_link(rest).map(|(len, target, label)| {
+                (len, Link::Url(format!("[[{target}]]")), label)
+            }));
+            if let Some((len, link, label)) = link {
+                flush_plain(&mut plain, &mut out, base_fmt);
+                let mut run = FlowRun::new(FlowRunKind::Text(label.into()), FlowRunStyle::default());
+                run.format = link_format(base_fmt);
+                run.link = Some(link);
+                out.push(run);
+                i += len;
+                continue;
+            }
         }
 
         // Inline code: `` `code` ``
@@ -7411,11 +7416,11 @@ fn serialize_runs(
         if let Some(link) = &run.link
             && !piece.is_empty()
         {
-            let target = match link {
-                Link::Url(u) => u.clone(),
-                Link::Anchor(b) => format!("#{b}"),
+            piece = match link {
+                Link::Url(url) => obsidian::format_file_link(url, &piece)
+                    .unwrap_or_else(|| format!("[{piece}]({url})")),
+                Link::Anchor(bookmark) => format!("[{piece}](#{bookmark})"),
             };
-            piece = format!("[{piece}]({target})");
         }
 
         if let Some(rev) = &run.revision
@@ -9693,6 +9698,22 @@ Front caption
         assert_eq!(shapes[2].text_body().unwrap().paragraphs[1].runs[0].text, "Edited paragraph");
         assert_eq!(shapes[3].frame, EmuRect::new(1000000, 650000, 2400000, 900000));
         assert_eq!(shapes[3].text_body().unwrap().paragraphs[0].runs[0].text, "Front caption");
+    }
+
+    #[test]
+    fn obsidian_file_links_preserve_paths_aliases_and_unsupported_embeds() {
+        let source = "[[手順]]、[[資料/手順#詳細|開く]]、![[資料/手順]]、`[[手順]]`。";
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        let flow = opened.presentation.flow.unwrap();
+        let paragraphs = ibis_doc_model::flow_command::all_paragraphs(&flow);
+        let links: Vec<_> = paragraphs[0].runs.iter().filter_map(|run| match &run.link {
+            Some(Link::Url(url)) => Some(url.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(links, ["[[手順]]", "[[資料/手順#詳細]]"]);
+        assert_eq!(export_markdown(&flow, &[]).trim(), source);
+        let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+        assert_eq!(export_docx_to_markdown(&docx).unwrap().trim(), source);
     }
 
     #[test]

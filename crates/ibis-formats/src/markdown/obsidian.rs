@@ -30,3 +30,36 @@ pub(super) fn local_link(input: &str) -> Option<(usize, &str, &str)> {
     }
     Some((contents.len() + 5, anchor, alias))
 }
+
+/// File references remain workspace-relative until a folder resolves them.
+pub(super) fn file_link(input: &str) -> Option<(usize, &str, &str)> {
+    let (contents, _) = input.strip_prefix("[[")?.split_once("]]")?;
+    let (target, alias) = contents.split_once('|').unwrap_or((contents, contents));
+    let path = target.split('#').next()?;
+    if path.trim().is_empty()
+        || target.contains(['[', ']', ':', '\\', '\n', '\r'])
+        || path
+            .split('/')
+            .any(|part| part.trim().is_empty() || part.starts_with('.'))
+        || target.split_once('#').is_some_and(|(_, fragment)| {
+            fragment.trim().is_empty() || fragment.starts_with('^') || fragment.contains('#')
+        })
+        || alias.trim().is_empty()
+        || alias.contains(['[', ']', '|', '\n', '\r'])
+    {
+        return None;
+    }
+    Some((contents.len() + 4, target, alias))
+}
+
+pub(super) fn format_file_link(url: &str, label: &str) -> Option<String> {
+    let (consumed, target, _) = file_link(url)?;
+    if consumed != url.len() || label.contains(['[', ']', '|', '\n', '\r']) {
+        return None;
+    }
+    if label == target {
+        Some(format!("[[{target}]]"))
+    } else {
+        Some(format!("[[{target}|{label}]]"))
+    }
+}

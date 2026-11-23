@@ -29,6 +29,11 @@ pub(crate) fn extension(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
+fn reference_target(reference: &str) -> &str {
+    reference.strip_prefix("[[").and_then(|wiki| wiki.strip_suffix("]]"))
+        .map_or(reference, |wiki| wiki.split_once('|').map_or(wiki, |(target, _)| target))
+}
+
 pub(crate) fn visible(name: &str) -> bool {
     !name.starts_with('.') && !name.starts_with("~$")
 }
@@ -176,7 +181,7 @@ impl Folder {
         let from = components.join("/");
         Some(self.reference_path(&from, url).map(|path| FolderReference {
             path,
-            position: url.split_once('#').and_then(|(_, fragment)| {
+            position: reference_target(url).split_once('#').and_then(|(_, fragment)| {
                 (!fragment.is_empty()).then(|| ReferencePosition::Heading(fragment.to_owned()))
             }),
         }))
@@ -808,6 +813,10 @@ mod tests {
         let folder = Folder::scan(&fixture.0).unwrap();
         assert!(folder.reference_path("index.md", "[[metric]]").is_err());
         assert_eq!(folder.reference_path("index.md", "[[資料/metric]]").unwrap(), "資料/metric.md");
+        let reference = folder.link_from_file(&source, "[[資料/metric#Details]]").unwrap().unwrap();
+        assert_eq!(reference.path, "資料/metric.md");
+        assert!(matches!(reference.position, Some(ReferencePosition::Heading(heading)) if heading == "Details"));
+        assert!(folder.link_from_file(&source, "[[metric]]").unwrap().is_err());
         assert!(
             call(
                 &folder,
