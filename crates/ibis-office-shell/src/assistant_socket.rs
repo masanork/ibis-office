@@ -21,7 +21,7 @@ use futures::{StreamExt, channel::mpsc as async_channel};
 use gpui_kit::{Context, Window};
 use serde_json::{Value, json};
 
-use crate::{assistant_stdio, editor::SlideEditor};
+use crate::editor::SlideEditor;
 
 const MAX_LINE: u64 = 256 * 1024;
 const MAX_EVENTS: usize = 256;
@@ -102,14 +102,19 @@ impl BoundSocket {
                     if request["op"] == "status" {
                         return editor.assistant_connection_status();
                     }
-                    match serde_json::from_value(request) {
-                        Ok(command) => match assistant_stdio::dispatch(editor, command, window, cx)
-                        {
-                            Ok(run_id) => json!({"ok":true,"run_id":run_id}),
+                    if request["op"] == "prompt"
+                        && let Some(text) = request["text"].as_str()
+                    {
+                        return match editor.submit_assistant_socket_prompt(
+                            text.to_owned(),
+                            window,
+                            cx,
+                        ) {
+                            Ok(run_id) => json!({"run_id":run_id}),
                             Err(message) => json!({"error":message}),
-                        },
-                        Err(error) => json!({"error":error.to_string()}),
+                        };
                     }
+                    json!({"error":"unsupported Assistant request"})
                 });
                 let Ok(response) = response else { break };
                 let _ = answer.send(response);

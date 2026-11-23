@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use ibis_doc_service::{Limits, Service};
 
-const HELP: &str = "ibisOffice --mcp [--allow-dir <folder>]... [--read-only] [--max-documents N] [--max-file-size MB]\n\n\
+const HELP: &str = "ibisOffice --mcp [--allow-dir <folder>]... [--read-only] [--max-documents N] [--max-file-size MB] [--assistant-socket <path>]\n\n\
 Runs a Model Context Protocol server on standard input and output: docx, xlsx and pptx files under the allowed folders can be read, edited and saved by an AI.\n\
   --allow-dir <folder>   a folder whose files may be opened and saved (repeatable; with none, no file is reachable)\n\
   --assistant-socket <path>  connect to a running GUI Assistant (Linux/macOS)\n\
@@ -108,10 +108,12 @@ mod tests {
 
     #[test]
     fn the_arguments_are_read_or_refused() {
-        let (dirs, read_only, limits) = parse(args(&["--allow-dir", "/a", "--allow-dir", "/b", "--read-only", "--max-documents", "3", "--max-file-size", "10"])).unwrap().unwrap();
+        let (dirs, read_only, limits, socket) = parse(args(&["--allow-dir", "/a", "--allow-dir", "/b", "--read-only", "--max-documents", "3", "--max-file-size", "10"])).unwrap().unwrap();
         assert_eq!((dirs.len(), read_only, limits.max_documents, limits.max_file_size), (2, true, 3, 10 * 1024 * 1024));
-        let (dirs, read_only, limits) = parse(args(&[])).unwrap().unwrap();
+        assert!(socket.is_none());
+        let (dirs, read_only, limits, socket) = parse(args(&[])).unwrap().unwrap();
         assert_eq!((dirs.len(), read_only, limits.max_file_size), (0, false, 200 * 1024 * 1024));
+        assert!(socket.is_none());
         assert!(parse(args(&["--help"])).unwrap().is_none());
         for bad in [&["--nope"][..], &["--allow-dir"], &["--max-documents", "0"], &["--max-file-size", "x"]] {
             assert!(parse(args(bad)).is_err(), "{bad:?}");

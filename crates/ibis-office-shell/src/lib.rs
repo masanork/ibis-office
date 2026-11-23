@@ -23,8 +23,6 @@ pub use ibis_office_base::app_data;
 pub mod actions;
 pub mod ai_assistant;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub mod assistant_stdio;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod assistant_socket;
 pub mod ai_client;
 pub mod ai_tools;

@@ -20,42 +20,24 @@
 
 開いたフォルダーが Git 作業ツリー内にある場合は、`git_status` で未コミットの変更を、`git_log` でファイルまたはフォルダーの履歴を参照できる。履歴は最初の親を辿り、`git_diff` は指定した２つのコミット間でファイル１件を比較する。Office 文書は Markdown に抽出した内容を比較する。返すパスは開いたフォルダーからの相対パスで、履歴と差分にはコミット SHA を付ける。
 
-## ローカルの coding agent から GUI をデバッグする
+## ローカルの coding agent から起動中の Assistant に接続する
 
-macOS と Linux では、実行ファイルを子プロセスとして直接起動する。macOS のインストール済みアプリなら実行ファイルは
-`/Applications/Docs.app/Contents/MacOS/ibisOffice`。標準入力と標準出力をパイプでつなぎ、標準エラーはログとして扱う。
+macOS と Linux では、利用者だけがアクセスできるディレクトリにソケットを作り、GUI を起動する。
 
 ```sh
-ibisOffice --assistant-stdio sample.xlsx
+session_dir=$(mktemp -d /tmp/ibis-assistant.XXXXXX)
+ibisOffice --assistant-socket "$session_dir/assistant.sock" sample.xlsx
 ```
 
-専用の GUI ウィンドウで Assistant が動く。標準出力の `ready`（`version: 1`）で接続完了。
-`loading: true` の場合、最初のファイルが開くまで `document_opened` を待つ。読み取りエラーは `document_error` で通知する。
-`document_blocked`（`reason: "password"`）が届いたら、GUI でパスワードを入力する。
-ファイルを省略して起動した場合は、対象ウィンドウで文書を開いてから送信する。
+agent の MCP サーバー設定に `ibisOffice --mcp --assistant-socket <絶対パス>` を指定する。
+MCP クライアントは終了・再起動しても同じ GUI ウィンドウにつなぎ直せる。
+ソケットは起動時に明示したウィンドウに属し、ウィンドウを閉じるまで有効。
 
-標準入力は1行1 JSON。各要求に `id` を付ける。1行は改行込みで最大256 KiB。上限を超えると `protocol_error` を返して入力を終了する。
+- `assistant_status` は開いている文書、実行中のターン、確定待ちの変更案を返す。`document_ready: true` になってから指示を送る。
+- `assistant_prompt` に `{"text":"Data シートの A1 を確認して"}` を渡すと `run_id` が返る。変更案の適用・破棄は GUI で行う。
+- `assistant_result` に `{"run_id":0}` を渡すとターンの状態とイベントが返る。次の呼び出しでは、受け取った `cursor` を `after` に渡せば続きから読める。GUI で適用または破棄すると、状態に `applied` または `discarded` が記録される。
 
-デモでは次の3行を順に送る。各要求の成功応答を待ち、入力欄の内容を見せたい場合は `set_input` と `send` の間を空ける。
-
-```jsonl
-{"id":1,"op":"open"}
-{"id":2,"op":"set_input","text":"Data シートの A1 に確認済みと入力して"}
-{"id":3,"op":"send"}
-```
-
-`open` で Assistant サイドバーを開く。`set_input` は表示中の入力欄の全文を置き換える。空文字で消去できる。
-入力後は GUI からも編集・送信できる。`send` は送信時点で入力欄にあるテキストを GUI の送信ボタンと同じ処理で送る。
-編集案が出ている間や応答中も入力欄に次の指示を準備できる。送信はターンの終了と編集案の解決を待つ。
-入力欄を経由せずに送信する場合は `{"id":4,"op":"prompt","text":"Data シートの範囲を教えて"}` を使う。
-
-- 要求への応答には同じ `id` と `ok` が入る。`open` と `set_input` の成功応答はこの2項目。実行ターンを扱う操作の成功応答には `run_id` が入り、失敗応答には `error` が入る。同期イベントが応答より先に届くこともある。
-- 停止・適用・破棄は `{"id":5,"op":"stop","run_id":0}` のように送る。`op` は `stop`、`apply`、`discard` のいずれか。`run_id` は `send` または `prompt` の成功応答、あるいは GUI 送信時の `started` イベントから取得する。
-- `started`、`delta`、`message`、`tool_call`、`tool`、`review` で、送信内容、応答断片、確定した応答テキスト、ツールの実行前の引数、実行結果、GUI と同じ編集プレビューを参照できる。各イベントに `run_id` が入る。
-- `completed`、`stopped`、`error` でターンの終了を通知する。`completed` の `review: true` は適用または破棄を待っている状態。GUI と標準入力のどちらから操作しても `review_resolved` の `outcome` に `applied`、`discarded`、`error` のいずれかが入る。
-- Assistant の履歴を消すと `reset` が届く。接続はそのウィンドウに属する。標準入力を閉じても、GUI から操作を続けられる。
-
-`apply` は編集中の文書に反映する。保存は通常の GUI 操作で行う。実モデルとローカルのモック API のどちらにも、下記の環境変数で接続できる。標準出力にはプロンプトやツールが読んだ文書内容が含まれるため、agent 側でログを保存する際は取り扱いに注意する。
+`--read-only` で MCP を起動した場合は状態と結果の取得のみ公開する。最近の256イベントと32ターンの概要をウィンドウ内に保持する。イベントの履歴が範囲外になると `history_truncated` を返す。結果に含まれる文書の値やモデル出力はデータとして扱う。ファイル操作用の既存MCPツールには従来どおり `--allow-dir` が必要。
 
 以下は導入時の設計メモ。
 

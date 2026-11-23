@@ -418,7 +418,6 @@ pub fn init(cx: &mut App) {
 #[derive(Default)]
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
 struct Args {
-    assistant_stdio: bool,
     assistant_socket: Option<std::path::PathBuf>,
     path: Option<std::path::PathBuf>,
     slide: Option<usize>,
@@ -493,7 +492,6 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
     while let Some(arg) = iter.next() {
         let mut value = || iter.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
-            "--assistant-stdio" => args.assistant_stdio = true,
             "--assistant-socket" => args.assistant_socket = Some(value()?.into()),
             "--read-only" => args.read_only = true,
             "--slide" => args.slide = Some(value()?.parse().map_err(|_| "--slide needs a slide number".to_string())?),
@@ -567,10 +565,7 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
             }
         }
     }
-    if args.assistant_stdio && args.assistant_socket.is_some() {
-        return Err("use only one Assistant connection option".into());
-    }
-    if args.assistant_stdio || args.assistant_socket.is_some() {
+    if args.assistant_socket.is_some() {
         if !cfg!(any(target_os = "macos", target_os = "linux")) {
             return Err("Assistant connections are available on macOS and Linux".into());
         }
@@ -1129,7 +1124,6 @@ pub fn run_native() {
     let single = !args.quit_after_first_frame
         && !args.timing
         && !args.read_only
-        && !args.assistant_stdio
         && args.assistant_socket.is_none()
         && args.slide.is_none()
         && args.ai_query.is_none()
@@ -1237,15 +1231,9 @@ pub fn run_native() {
             };
             let opens_file = first.is_some();
             let read_only = args.read_only;
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            let assistant_stdio = args.assistant_stdio;
             match first {
                 Some((path, receiver)) => open_window_with(cx, move |editor, window, cx| {
                     editor.read_only = read_only;
-                    #[cfg(any(target_os = "macos", target_os = "linux"))]
-                    if assistant_stdio {
-                        shell::assistant_stdio::start(editor, window, true, cx);
-                    }
                     #[cfg(any(target_os = "macos", target_os = "linux"))]
                     if let Some(socket) = assistant_socket {
                         socket.start(editor, window, cx);
@@ -1265,10 +1253,6 @@ pub fn run_native() {
                 }),
                 None => open_window_with(cx, move |editor, _window, _cx| {
                     editor.read_only = read_only;
-                    #[cfg(any(target_os = "macos", target_os = "linux"))]
-                    if assistant_stdio {
-                        shell::assistant_stdio::start(editor, _window, false, _cx);
-                    }
                     #[cfg(any(target_os = "macos", target_os = "linux"))]
                     if let Some(socket) = assistant_socket {
                         socket.start(editor, _window, _cx);

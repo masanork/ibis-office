@@ -865,7 +865,8 @@ impl SlideEditor {
         let review = panel.and_then(|panel| panel.assistant_review.as_ref());
         json!({
             "path": self.file_path(),
-            "document_ready": self.check_assistant_stdio_document().is_ok(),
+            "file_id": self.file_id,
+            "document_ready": self.check_assistant_connection_document().is_ok(),
             "streaming": panel.is_some_and(|panel| panel.streaming),
             "run_id": panel.map(|panel| panel.run_id),
             "review": review.map(|review| &review.preview),
@@ -873,7 +874,7 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(crate) fn submit_assistant_stdio_prompt(
+    pub(crate) fn submit_assistant_socket_prompt(
         &mut self,
         text: String,
         window: &mut Window,
@@ -883,7 +884,7 @@ impl SlideEditor {
         if prompt.is_empty() {
             return Err("prompt text is empty");
         }
-        self.check_assistant_stdio_document()?;
+        self.check_assistant_connection_document()?;
         if let Some(panel) = &self.ai_assistant {
             panel.check_prompt_available()?;
         }
@@ -893,64 +894,13 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn check_assistant_stdio_document(&self) -> Result<(), &'static str> {
+    fn check_assistant_connection_document(&self) -> Result<(), &'static str> {
         if !self.has_document || self.watch.opening_path.is_some() {
             return Err("open a document before sending a prompt");
         }
         if self.kind() == ibis_formats::Kind::Pdf {
             return Err("the Assistant is unavailable in the PDF viewer");
         }
-        Ok(())
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(crate) fn open_assistant_stdio(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<(), &'static str> {
-        self.check_assistant_stdio_document()?;
-        self.open_ai_assistant_panel(window, cx);
-        Ok(())
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(crate) fn set_assistant_stdio_input(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) -> Result<(), &'static str> {
-        self.check_assistant_stdio_document()?;
-        let panel = self.assistant_stdio_open_panel()?;
-        panel.prompt_input.update(cx, |input, cx| input.set_value(text, window, cx));
-        Ok(())
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(crate) fn send_assistant_stdio(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<u64, &'static str> {
-        self.check_assistant_stdio_document()?;
-        self.assistant_stdio_open_panel()?;
-        self.send_ai_assistant_input(window, cx)?;
-        Ok(self.ai_assistant.as_ref().expect("assistant sidebar opened").run_id)
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn assistant_stdio_open_panel(&self) -> Result<&AiAssistantState, &'static str> {
-        self.ai_assistant.as_ref().filter(|_| self.sidebar_open).ok_or("the Assistant sidebar is closed")
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(crate) fn stop_assistant_stdio(&mut self, run_id: u64, cx: &mut Context<Self>) -> Result<(), &'static str> {
-        if !self.ai_assistant.as_ref().is_some_and(|p| p.run_id == run_id && p.streaming) {
-            return Err("no active assistant turn for this run");
-        }
-        self.stop_ai_assistant(cx);
-        Ok(())
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(crate) fn review_assistant_stdio(
-        &mut self,
-        run_id: u64,
-        apply: bool,
-        cx: &mut Context<Self>,
-    ) -> Result<(), &'static str> {
-        if !self.ai_assistant.as_ref().is_some_and(|p| p.run_id == run_id && p.assistant_review.is_some()) {
-            return Err("no pending assistant review for this run");
-        }
-        self.finish_assistant_review(apply, cx);
         Ok(())
     }
 
