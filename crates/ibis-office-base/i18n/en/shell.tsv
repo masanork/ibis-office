@@ -1685,3 +1685,5 @@ git.pin-base	Pin as base candidate
 git.use-pinned-base	Use pinned base
 git.pinned-base	Pinned base
 git.pin-base-short	Pin base
+xlsx.sbom-refresh	Refresh vulnerability review…
+xlsx.sbom-refresh-failed	Could not refresh vulnerability review: {error}

@@ -109,6 +109,10 @@ ibisOffice --export sbom-table bom.cdx.json --out-file components.xlsx
 ibisOffice --export sbom-table scan.osv.json --out-file findings.xlsx
 ```
 
+In the desktop app, use **File → Open** to open supported JSON as an editable unsaved workbook. Fill in the owner, due date, decision, rationale, and evidence URL in `Findings` and save it as XLSX.
+
+Use **File → Refresh vulnerability review…** to select a new OSV-Scanner JSON file. The app opens a new workbook with the current review notes and flags newly detected, changed-version, and re-detected findings. Rows missing from the latest scan retain their last reported versions. Refer to the original workbook for comparison SBOMs and additional sheets.
+
 ---
 
 ## Print & Export Options

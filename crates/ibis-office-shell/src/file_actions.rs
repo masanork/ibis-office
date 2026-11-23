@@ -90,6 +90,46 @@ impl SlideEditor {
         self.document.reset_history();
     }
 
+    /// Open a refreshed review as a new workbook, keeping the source and its edits open.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn refresh_sbom_review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_edit(window, cx);
+        if !ibis_formats::sbom_review::can_refresh(self.presentation()) {
+            return;
+        }
+        let previous = self.presentation().clone();
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            extensions: vec!["json".into()],
+            multiple: false,
+            prompt: Some(crate::i18n::text("xlsx.sbom-refresh").into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let result = cx.background_executor().spawn(async move {
+                use std::io::Read;
+                const LIMIT: u64 = 32 * 1024 * 1024;
+                let mut data = Vec::new();
+                std::fs::File::open(&path).and_then(|file| file.take(LIMIT + 1).read_to_end(&mut data))
+                    .map_err(|err| err.to_string())?;
+                if data.len() as u64 > LIMIT {
+                    return Err("Scan exceeds the 32 MiB input limit".into());
+                }
+                let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+                let bytes = ibis_formats::sbom_review::refresh_xlsx(&previous, (&name, &data))?;
+                ibis_formats::open(bytes).map_err(|err| err.to_string())
+            }).await;
+            this.update_in(cx, |this, _, cx| match result {
+                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                    editor.show_new(opened, next_new_file_name(ibis_formats::Kind::Workbook), window, cx)
+                }),
+                Err(error) => this.set_status(crate::i18n::format("xlsx.sbom-refresh-failed", &[("error", &error)]), cx),
+            }).ok();
+        }).detach();
+    }
+
     /// ファイル > 新規 > テンプレートから新規作成… (New from Template...)
     pub fn new_from_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_edit(window, cx);

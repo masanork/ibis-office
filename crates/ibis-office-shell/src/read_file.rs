@@ -94,6 +94,18 @@ pub fn catch_read_panic<T>(path: &std::path::Path, read: impl FnOnce() -> Result
 #[cfg(all(test, not(target_family = "wasm")))]
 mod stack_tests {
     #[test]
+    fn osv_json_opens_as_an_editable_workbook() {
+        let path = std::env::temp_dir().join(format!("ibis-review-{}.osv.json", std::process::id()));
+        std::fs::write(&path, br#"{"results":[]}"#).unwrap();
+        let loaded = super::read_file(&path);
+        std::fs::remove_file(path).unwrap();
+        let loaded = loaded.unwrap();
+        assert_eq!(ibis_formats::Kind::of(&loaded.presentation), ibis_formats::Kind::Workbook);
+        assert!(ibis_formats::sbom_review::can_refresh(&loaded.presentation));
+        assert!(!loaded.structured_preview);
+    }
+
+    #[test]
     fn automatic_csv_read_works_from_a_small_stack() {
         let path = std::env::temp_dir().join(format!("ibis-csv-small-stack-{}-{}.csv", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -255,6 +267,13 @@ fn read_file_data(
         e.to_string()
     })? {
         ibis_formats::markdown::open_markdown_with_base_dir(fhir_md.into_bytes(), path.parent()).map(|opened| (opened, None))
+    } else if let Some(opened) = if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
+        let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+        ibis_formats::sbom_review::open_table((&name, &data))?
+    } else {
+        None
+    } {
+        Ok((opened, None))
     } else if let Some(extension) = extension.filter(|ext| ibis_formats::structured_preview::supports_extension(ext)) {
         let opened = crate::structured_preview::open(extension, &data)?;
         crate::render::preload::Preload::start_for_next(&opened.presentation);

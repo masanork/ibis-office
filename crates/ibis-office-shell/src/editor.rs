@@ -1866,6 +1866,8 @@ impl SlideEditor {
                         this.path = None;
                         this.document.set_file(None);
                     } else if production_image
+                        || (ibis_formats::Kind::of(&loaded.presentation) == ibis_formats::Kind::Workbook
+                            && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")))
                         || path.extension().is_some_and(|e| ["xls", "ods", "ppt", "pps", "pot", "odp", "otp", "odt", "ott", "doc", "dot", "rtf", "txt", "text", "html", "htm", "pdf"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
                         // An old workbook or presentation (or an OpenDocument workbook) is read as a new .xlsx or .pptx: saving asks where, and leaves the old file as it is.
                         let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

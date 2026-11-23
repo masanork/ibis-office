@@ -7,6 +7,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
+mod ledger;
+pub use ledger::{can_refresh, refresh_xlsx};
+
 type Package = (String, String);
 type Inventory = BTreeMap<Package, BTreeSet<String>>;
 type Findings = BTreeMap<(Package, String), Finding>;
@@ -359,7 +362,7 @@ pub fn review_xlsx(inputs: [(&str, &[u8]); 4]) -> Result<Vec<u8>, String> {
             let new = new_scan.get(key);
             let after = new_bom.get(package);
             let plain = str::to_owned;
-            vec![
+            let mut row = vec![
                 status(old, new, after).into(),
                 package.0.clone(),
                 package.1.clone(),
@@ -370,7 +373,9 @@ pub fn review_xlsx(inputs: [(&str, &[u8]); 4]) -> Result<Vec<u8>, String> {
                 versions(after, plain),
                 versions(old.map(|f| &f.fixed).filter(|f| !f.is_empty()), plain),
                 advisory_url(id).unwrap_or_default(),
-            ]
+            ];
+            row.resize(row.len() + ledger::TRACKING.len(), String::new());
+            row
         })
         .collect();
     let evidence = ROLES
@@ -398,6 +403,12 @@ pub fn review_xlsx(inputs: [(&str, &[u8]); 4]) -> Result<Vec<u8>, String> {
                 "New SBOM",
                 "Fixed versions (old scan)",
                 "Advisory URL",
+                "Owner",
+                "Due date",
+                "Decision",
+                "Rationale",
+                "Evidence",
+                "Review flag",
             ],
             rows,
         ),
@@ -418,56 +429,46 @@ pub fn review_xlsx(inputs: [(&str, &[u8]); 4]) -> Result<Vec<u8>, String> {
 
 /// Export a single CycloneDX SBOM or OSV-Scanner report as an XLSX workbook.
 pub fn table_xlsx(input: (&str, &[u8])) -> Result<Vec<u8>, String> {
-    let doc = parse(input)?;
-    let table: Table = if doc.get("bomFormat").is_some() {
-        inventory(&doc)?;
-        ("Components", COMPONENT_COLUMNS, components(&doc)?)
-    } else {
-        let findings = scan(&doc)?;
-        let rows = findings
-            .into_iter()
-            .flat_map(|((package, id), finding)| {
-                let fixed = versions(
-                    Some(&finding.fixed).filter(|values| !values.is_empty()),
-                    str::to_owned,
-                );
-                let url = advisory_url(&id).unwrap_or_default();
-                finding.versions.into_iter().map(move |version| {
-                    vec![
-                        package.0.clone(),
-                        package.1.clone(),
-                        version,
-                        id.clone(),
-                        fixed.clone(),
-                        url.clone(),
-                    ]
-                })
-            })
-            .collect();
-        (
-            "Findings",
-            &[
-                "Ecosystem",
-                "Package",
-                "Version",
-                "OSV ID",
-                "Fixed versions",
-                "Advisory URL",
-            ],
-            rows,
-        )
+    table_xlsx_from(&parse(input)?, input)
+}
+
+/// Recognize supported JSON exports without claiming unrelated JSON files.
+pub fn open_table(input: (&str, &[u8])) -> Result<Option<crate::Opened>, String> {
+    let Ok(doc) = parse(input) else {
+        return Ok(None);
     };
-    workbook([
-        table,
-        (
-            "Input artifact",
-            &["File", "SHA-256"],
-            vec![vec![
-                input.0.into(),
-                format!("{:x}", Sha256::digest(input.1)),
-            ]],
-        ),
-    ])
+    let osv = doc["results"].as_array().is_some_and(|results| {
+        doc.get("experimental_config").is_some()
+            || (!results.is_empty()
+                && results.iter().all(|result| {
+                    result.get("source").is_some() && result.get("packages").is_some()
+                }))
+            || input.0.to_ascii_lowercase().ends_with(".osv.json")
+    });
+    if doc["bomFormat"] != "CycloneDX" && !osv {
+        return Ok(None);
+    }
+    crate::open(table_xlsx_from(&doc, input)?)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+fn table_xlsx_from(doc: &Value, input: (&str, &[u8])) -> Result<Vec<u8>, String> {
+    let table: Table = if doc.get("bomFormat").is_some() {
+        inventory(doc)?;
+        ("Components", COMPONENT_COLUMNS, components(doc)?)
+    } else {
+        ("Findings", ledger::HEADERS, ledger::rows(scan(doc)?))
+    };
+    workbook([table, input_artifact(input)])
+}
+
+fn input_artifact((name, bytes): (&str, &[u8])) -> Table {
+    (
+        "Input artifact",
+        &["File", "SHA-256"],
+        vec![vec![name.into(), format!("{:x}", Sha256::digest(bytes))]],
+    )
 }
 
 fn workbook<const N: usize>(tables: [Table; N]) -> Result<Vec<u8>, String> {
@@ -720,7 +721,7 @@ mod tests {
                 .contains("fixed version listed")
         );
         assert_eq!(findings.frozen, Some((0, 1)));
-        assert_eq!(findings.auto_filter.as_ref().unwrap().range.last_column, 9);
+        assert_eq!(findings.auto_filter.as_ref().unwrap().range.last_column, 15);
         assert_eq!(
             sheet(2).cell(2, 5).unwrap().text,
             "pkg:cargo/example-crate@1.1.0"

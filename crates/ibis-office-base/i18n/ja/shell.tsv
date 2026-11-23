@@ -1683,3 +1683,5 @@ git.pin-base	旧版候補に登録
 git.use-pinned-base	候補を旧版に指定
 git.pinned-base	旧版候補
 git.pin-base-short	候補に登録
+xlsx.sbom-refresh	脆弱性レビューを更新…
+xlsx.sbom-refresh-failed	脆弱性レビューを更新できませんでした（{error}）

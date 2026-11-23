@@ -3043,6 +3043,21 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
             Err(back) => recover_entry = back,
         }
     }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        if ibis_formats::sbom_review::can_refresh(editor.presentation()) {
+            let mut entry = MenuItem::tr("xlsx.sbom-refresh")
+                .icon("refresh")
+                .on(|this, window, cx| this.refresh_sbom_review(window, cx))
+                .into();
+            for (_, entries) in menus.menus.iter_mut() {
+                match insert_after(entries, "file.open", entry) {
+                    Ok(()) => break,
+                    Err(back) => entry = back,
+                }
+            }
+        }
+    }
     // ファイル > 開いて修復… (XLSX-FILE-020)
     let mut repair_file_entry: MenuEntry = MenuItem::tr("xlsx.open-and-repair")
         .icon("cleaning_services")

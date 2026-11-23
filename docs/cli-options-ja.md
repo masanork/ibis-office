@@ -127,6 +127,10 @@ ibisOffice --export sbom-table bom.cdx.json --out-file components.xlsx
 ibisOffice --export sbom-table scan.osv.json --out-file findings.xlsx
 ```
 
+デスクトップ版では **ファイル → 開く** から対応する JSON を開くと、編集可能な未保存のブックになります。`Findings` に担当・期限・判断・理由・証拠 URL を記入し、XLSX として保存できます。
+
+**ファイル → 脆弱性レビューを更新…** で新しい OSV-Scanner JSON を選ぶと、現在の判断欄を引き継いだ新規ブックが開きます。新規検出、バージョン変更、再検出を要確認として表示します。未検出の行は最後に検出されたバージョンとともに残ります。比較元の SBOM や追加のワークシートは元のブックで参照できます。
+
 ---
 
 ## 印刷・エクスポート詳細オプション
