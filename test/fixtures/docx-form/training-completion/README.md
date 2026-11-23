@@ -1,6 +1,6 @@
 # 研修修了証のレビュー試用
 
-所要時間は5〜10分です。CLIを使って、印刷用の証明書と発行システムに渡すクレーム候補を確認します。個票は2件とも架空です。
+所要時間は5〜10分です。CLIでレビュー用HTMLを生成し、ブラウザーで印刷用の証明書と発行システムに渡すクレーム候補を確認します。個票は2件とも架空です。
 
 ## 参加者の課題
 
@@ -16,26 +16,12 @@ fixture=test/fixtures/docx-form/training-completion
 review_dir="$(mktemp -d)"
 
 cargo run --locked -q -p ibis-formats --bin docx_form -- \
-  preview-html-claims "$fixture/layout.html" "$fixture/form.yaml" \
-  "$fixture/record.yaml" "$fixture/claims.yaml" > "$review_dir/preview.json"
-
-python3 - "$review_dir" <<'PY'
-import json
-from pathlib import Path
-import sys
-
-directory = Path(sys.argv[1])
-preview = json.loads((directory / "preview.json").read_text(encoding="utf-8"))
-(directory / "certificate.html").write_text(preview["html"], encoding="utf-8")
-(directory / "claims.json").write_text(
-    json.dumps(preview["claims"], ensure_ascii=False, indent=2) + "\n",
-    encoding="utf-8",
-)
-print(directory)
-PY
+  review-html-claims "$fixture/layout.html" "$fixture/form.yaml" \
+  "$fixture/record.yaml" "$fixture/claims.yaml" "$review_dir/review.html"
+printf '%s\n' "$review_dir/review.html"
 ```
 
-表示されたディレクトリの `certificate.html` をブラウザー、`claims.json` をテキストエディターで開きます。
+表示された `review.html` をブラウザーで開きます。紙面と照合してから、「クレームをJSONで保存」で引き渡し用のファイルを保存します。
 
 ```sh
 cargo run --locked -q -p ibis-formats --bin docx_form -- \
@@ -60,4 +46,4 @@ cargo run --locked -q -p ibis-formats --bin docx_form -- \
 | 管理番号と引き渡し | `number` が文字列 `"00123"` で、引き渡すファイルが `claims.json` だと分かる。 |
 | 切り詰め時の対応 | エラー内の `serial` を管理番号と対応付け、5文字の欄に6文字を入れたことにたどり着ける。番号を独断で短くせず、個票の原本か帳票の字数上限を確認する。 |
 
-HTMLとJSONを行き来する負担、引き渡すファイルの見分け方、`serial` から紙面の欄を特定できたかを記録します。画面化する場合は、この観察結果をもとに同時表示、クレームだけの保存、エラーに帳票の欄名を出す機能の優先度を決めます。
+紙面とクレームの照合で迷った箇所、引き渡すファイルの見分け方、`serial` から紙面の欄を特定できたかを記録します。エラーから欄を特定しづらい場合は、帳票の欄名や字数をどこに出すと判断しやすいか確認します。

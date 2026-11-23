@@ -180,3 +180,12 @@ cargo run --locked -p ibis-formats --bin docx_form -- \
 対応表に指定した全項目について、印刷レイアウトへの差し込み、空欄の有無、字数上限による切り詰めを確認します。クレームが条件を満たさない場合はエラーになります。HTMLのレイアウトは、従来の帳票と同様に信頼できるひな型を使い、差し込み位置を印刷されるテキストに置いてください。実際の用紙サイズでの収まりは印刷プレビューで確認します。既存の帳票生成には対応表は不要です。
 
 [架空の研修修了証で試す](../test/fixtures/docx-form/training-completion/README.md)と、正常な個票と切り詰めが起きる個票で、紙面の照合とクレーム候補の取り出しを確認できます。
+
+同じ入力をブラウザーで確認するには、レビュー用HTMLを新しいファイルに出力します。
+
+```sh
+cargo run --locked -p ibis-formats --bin docx_form -- \
+  review-html-claims layout.html form.yaml record.yaml claims.yaml review.html
+```
+
+`review.html` を開くと紙面とクレーム候補を照合できます。「クレームをJSONで保存」で候補だけを保存します。レビュー用HTMLには個票の内容が含まれます。紙面のスタイルや画像は、ひな型に埋め込めるものを使用してください。

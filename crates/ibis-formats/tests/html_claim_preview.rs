@@ -67,6 +67,41 @@ fn previews_printed_claims_with_original_types() {
             serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
             preview
         );
+        let run_review = || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_docx_form"))
+                .current_dir(dir.path())
+                .args([
+                    "review-html-claims",
+                    "layout.html",
+                    "form.json",
+                    "record.json",
+                    "claims.json",
+                    "review.html",
+                ])
+                .output()
+                .unwrap()
+        };
+        let output = run_review();
+        assert!(output.status.success(), "{output:?}");
+        let page = std::fs::read_to_string(dir.path().join("review.html")).unwrap();
+        assert!(page.contains("sandbox srcdoc=\"&lt;p&gt;安全研修 令和8年4月1日 00123"));
+        assert!(page.contains("note</code>（3文字、上限2文字）"));
+        let encoded = page
+            .split_once("data:application/json;base64,")
+            .unwrap()
+            .1
+            .split('"')
+            .next()
+            .unwrap();
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let downloaded: serde_json::Value =
+            serde_json::from_slice(&STANDARD.decode(encoded).unwrap()).unwrap();
+        assert_eq!(downloaded, preview["claims"]);
+        assert!(!run_review().status.success());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("review.html")).unwrap(),
+            page
+        );
     }
 
     let error = preview_html_claims("{{serial}}", &definition, &record, &mapping).unwrap_err();
