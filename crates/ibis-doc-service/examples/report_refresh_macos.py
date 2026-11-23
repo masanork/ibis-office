@@ -26,11 +26,14 @@ def temporary_database_bytes(root):
     return total
 
 
-def measure(probe, mode, seed, source, reports, scratch):
+def measure(probe, mode, seed, source, reports, scratch, workload=None):
     with tempfile.TemporaryDirectory(dir=scratch) as directory:
         root = Path(directory)
+        command = ["/usr/bin/time", "-l", probe, mode, seed, source, str(reports)]
+        if workload is not None:
+            command.append(workload)
         with subprocess.Popen(
-            ["/usr/bin/time", "-l", probe, mode, seed, source, str(reports)],
+            command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

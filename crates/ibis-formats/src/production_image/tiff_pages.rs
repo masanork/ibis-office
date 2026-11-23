@@ -17,7 +17,10 @@ pub(super) fn open(bytes: &[u8]) -> Result<crate::Opened, String> {
     if !pages.more_images() {
         let orientation = orientation(&mut pages);
         let mut image = match first() {
-            Ok(image) => image,
+            Ok(mut image) => {
+                straighten_decoded_alpha(&mut image, &mut pages)?;
+                image
+            }
             Err(image::ImageError::Limits(_)) => super::large_tiff::preview(bytes, pages)?,
             Err(error) => return Err(error.to_string()),
         };
@@ -79,7 +82,10 @@ fn page_image(bytes: &[u8], pages: &mut Decoder<Cursor<&[u8]>>) -> Result<Dynami
         .0;
     let reader = || HeaderOverlay::new(bytes, offset).map(BufReader::new);
     let mut image = match super::decode_raster_reader(reader()?, ImageFormat::Tiff, 4) {
-        Ok(image) => image,
+        Ok(mut image) => {
+            straighten_decoded_alpha(&mut image, pages)?;
+            image
+        }
         Err(image::ImageError::Limits(_)) => {
             let decoder = Decoder::new(reader()?).map_err(|error| error.to_string())?;
             super::large_tiff::preview(bytes, decoder)?
@@ -92,6 +98,55 @@ fn page_image(bytes: &[u8], pages: &mut Decoder<Cursor<&[u8]>>) -> Result<Dynami
     } else {
         image
     })
+}
+
+fn straighten_decoded_alpha(
+    image: &mut DynamicImage,
+    decoder: &mut Decoder<Cursor<&[u8]>>,
+) -> Result<(), String> {
+    if !matches!(
+        image,
+        DynamicImage::ImageRgba8(_) | DynamicImage::ImageRgba16(_)
+    ) {
+        return Ok(());
+    }
+    let alpha = decoder
+        .find_tag_unsigned_vec::<u16>(Tag::ExtraSamples)
+        .map_err(|error| error.to_string())?;
+    if alpha.as_deref() == Some(&[1]) {
+        match image {
+            DynamicImage::ImageRgba8(image) => straighten_rgba8(image.as_mut()),
+            DynamicImage::ImageRgba16(image) => straighten_rgba16(image.as_mut()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn straighten_rgba8(data: &mut [u8]) {
+    for pixel in data.chunks_exact_mut(4) {
+        let alpha = u32::from(pixel[3]);
+        for channel in &mut pixel[..3] {
+            *channel = straight_color(u32::from(*channel), alpha, 255) as u8;
+        }
+    }
+}
+
+pub(super) fn straighten_rgba16(data: &mut [u16]) {
+    for pixel in data.chunks_exact_mut(4) {
+        let alpha = u32::from(pixel[3]);
+        for channel in &mut pixel[..3] {
+            *channel = straight_color(u32::from(*channel), alpha, 65_535) as u16;
+        }
+    }
+}
+
+pub(super) fn straight_color(sample: u32, alpha: u32, max: u32) -> u32 {
+    if alpha == 0 {
+        0
+    } else {
+        ((sample * max + alpha / 2) / alpha).min(max)
+    }
 }
 
 fn orientation(decoder: &mut Decoder<Cursor<&[u8]>>) -> Orientation {
@@ -273,6 +328,56 @@ mod tests {
         let preview =
             image::load_from_memory(&opened.presentation.media.last().unwrap().data).unwrap();
         assert_eq!((preview.width(), preview.height()), (20, 2_048));
+    }
+
+    #[test]
+    fn normal_and_oversized_rgba_pages_match_after_alpha_conversion() {
+        for widths in [&[2_u32][..], &[2, 8_200][..]] {
+            let mut file = Cursor::new(Vec::new());
+            let mut encoder = TiffEncoder::new(&mut file).unwrap();
+            for &width in widths {
+                let mut page = encoder.new_image::<colortype::RGBA8>(width, 1).unwrap();
+                page.encoder().write_tag(Tag::ExtraSamples, 1_u16).unwrap();
+                page.write_data(&[32, 16, 64, 64].repeat(width as usize))
+                    .unwrap();
+            }
+            let opened = open(&file.into_inner()).unwrap();
+            let assert_colors = |opened: &crate::Opened| {
+                assert_eq!(opened.presentation.media.len(), widths.len());
+                for media in &opened.presentation.media {
+                    let image = image::load_from_memory(&media.data).unwrap().into_rgba8();
+                    assert!(image.pixels().all(|pixel| pixel.0 == [128, 64, 255, 64]));
+                }
+            };
+            assert_colors(&opened);
+            let docx = opened
+                .source
+                .save(&opened.presentation, Default::default())
+                .unwrap();
+            assert_colors(&crate::open(docx).unwrap());
+        }
+    }
+
+    #[test]
+    fn preserves_straight_alpha_and_16_bit_precision() {
+        let mut file = Cursor::new(Vec::new());
+        let mut encoder = TiffEncoder::new(&mut file).unwrap();
+        for tag in [1_u16, 2] {
+            let mut page = encoder.new_image::<colortype::RGBA16>(2, 1).unwrap();
+            page.encoder().write_tag(Tag::ExtraSamples, tag).unwrap();
+            page.write_data(&[129, 129, 0, 258, 0, 0, 0, 0]).unwrap();
+        }
+        let opened = open(&file.into_inner()).unwrap();
+        let media = &opened.presentation.media;
+        let first = image::load_from_memory(&media[0].data)
+            .unwrap()
+            .into_rgba16();
+        let second = image::load_from_memory(&media[1].data)
+            .unwrap()
+            .into_rgba16();
+        assert_eq!(first.get_pixel(0, 0).0, [32_768, 32_768, 0, 258]);
+        assert_eq!(second.get_pixel(0, 0).0, [129, 129, 0, 258]);
+        assert_eq!(first.get_pixel(1, 0).0, [0; 4]);
     }
 
     #[test]

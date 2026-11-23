@@ -515,6 +515,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
     if let Some(encoded) = table_xml {
         restore_tables(&mut doc, encoded, false);
     }
+    doc.bind_suppl_appendices();
     Ok(doc)
 }
 

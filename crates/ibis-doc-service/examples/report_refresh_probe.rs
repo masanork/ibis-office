@@ -2,7 +2,7 @@
 
 //! Measure the report refresh service with shared or separate previews.
 //! Generate matching Arrow IPC, JSON Lines and Avro inputs with `generate <directory> <rows>`.
-//! Measure with `shared|separate <seed> <input> [reports]`. Use different directories for
+//! Measure with `shared|separate <seed> <input> [reports] [workload.json]`. Use different directories for
 //! the seed and each input size. Generate fixtures in a separate process from the measurement.
 //! Build with `--features report-profiling` for the JSON Lines schema pass, remaining
 //! staging work, and SQL execution timings. Set `IBIS_REPORT_PROBE_SINGLE_ROW=1`
@@ -18,8 +18,16 @@ mod streaming_fixtures;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod desktop {
     use ibis_doc_service::{Limits, Service};
+    use serde::Deserialize;
     use serde_json::{Value, json};
     use std::{path::PathBuf, time::Instant};
+
+    #[derive(Deserialize)]
+    struct Workload {
+        columns: Vec<String>,
+        queries: Vec<String>,
+        dimension_file: String,
+    }
 
     pub fn run() {
         let mut args = std::env::args_os().skip(1);
@@ -56,6 +64,23 @@ mod desktop {
                 .expect("Expected a report count")
         });
         assert!((2..=12).contains(&report_count), "Expected 2 to 12 reports");
+        let workload: Option<Workload> = args.next().map(|path| {
+            serde_json::from_slice(&std::fs::read(path).unwrap()).expect("Invalid workload JSON")
+        });
+        if let Some(workload) = &workload {
+            assert_eq!(workload.queries.len(), report_count);
+        }
+        let mut datasets = vec![json!({"source":seed,"alias":"facts","columns":["code","amount"]})];
+        let mut bindings = json!({seed.file_name().unwrap().to_str().unwrap():input});
+        if let Some(workload) = &workload {
+            datasets[0]["columns"] = json!(workload.columns);
+            datasets.push(json!({
+                "source":seed.parent().unwrap().join(&workload.dimension_file),
+                "alias":"dimension",
+            }));
+            bindings[&workload.dimension_file] =
+                json!(input.parent().unwrap().join(&workload.dimension_file));
+        }
         let temp = tempfile::tempdir().unwrap();
         let workbook = temp.path().join("probe.xlsx");
         std::fs::write(
@@ -88,7 +113,9 @@ mod desktop {
             .collect::<Vec<_>>();
         for (index, column) in columns.iter().enumerate() {
             let anchor = format!("{column}1");
-            let sql = if index == 0 {
+            let sql = if let Some(workload) = &workload {
+                workload.queries[index].clone()
+            } else if index == 0 {
                 "SELECT count(*) AS n FROM facts".to_owned()
             } else {
                 format!("SELECT count(*) AS n FROM facts WHERE code = '001' AND amount < {index}")
@@ -97,7 +124,7 @@ mod desktop {
                 "sqlite_query_to_table",
                 json!({
                     "document_id":id,"destination_sheet":sheet,"anchor":anchor,"sql":sql,
-                    "datasets":[{"source":seed,"alias":"facts","columns":["code","amount"]}],
+                    "datasets":datasets,
                 }),
             );
             tables.push(
@@ -129,7 +156,7 @@ mod desktop {
                     "sqlite_refresh_query_reports",
                     json!({
                         "document_id":id,"preview":true,"tables":tables,"metrics":metrics,
-                        "bindings":{seed.file_name().unwrap().to_str().unwrap():input},
+                        "bindings":bindings,
                     }),
                 );
                 preview_ms += start.elapsed().as_secs_f64() * 1000.0;

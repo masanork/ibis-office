@@ -218,11 +218,19 @@ pub struct SupplProvision {
     pub nodes: Vec<LawNode>,
 }
 
+impl SupplProvision {
+    fn has_same_heading(&self, other: &Self) -> bool {
+        self.amend_law_num == other.amend_law_num
+            && self.extract == other.extract
+            && self.label == other.label
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SupplAppendices {
-    amend_law_num: Option<String>,
-    extract: bool,
-    label: String,
+    provision: SupplProvision,
+    unique_heading: bool,
+    occurrence: usize,
     fragments: Vec<String>,
 }
 
@@ -302,23 +310,61 @@ impl LawDoc {
     pub(super) fn push_suppl_provision(&mut self, suppl: SupplProvision, fragments: Vec<String>) {
         if !fragments.is_empty() {
             self.suppl_appendices.insert(self.suppl_provisions.len(), SupplAppendices {
-                amend_law_num: suppl.amend_law_num.clone(),
-                extract: suppl.extract,
-                label: suppl.label.clone(),
+                provision: suppl.clone(),
+                unique_heading: false,
+                occurrence: 0,
                 fragments,
             });
         }
         self.suppl_provisions.push(suppl);
     }
 
+    // Bind after parsing, when the complete bodies are available to distinguish repeated headings.
+    pub(super) fn bind_suppl_appendices(&mut self) {
+        for (&index, saved) in &mut self.suppl_appendices {
+            let provision = &self.suppl_provisions[index];
+            if saved.provision != *provision {
+                saved.provision.clone_from(provision);
+            }
+            saved.unique_heading = self.suppl_provisions.iter()
+                .filter(|other| provision.has_same_heading(other))
+                .take(2)
+                .count() == 1;
+            saved.occurrence = self.suppl_provisions[..index].iter()
+                .filter(|other| *other == provision)
+                .count();
+        }
+    }
+
+    fn suppl_appendix_key(&self, index: usize) -> Option<usize> {
+        if self.suppl_appendices.is_empty() {
+            return None;
+        }
+        let provision = self.suppl_provisions.get(index)?;
+        let candidates = self.suppl_appendices.iter()
+            .filter(|(_, saved)| provision.has_same_heading(&saved.provision));
+        let occurrence = self.suppl_provisions[..index].iter()
+            .filter(|other| *other == provision)
+            .count();
+        for (&key, saved) in candidates {
+            if saved.provision == *provision && saved.occurrence == occurrence {
+                return Some(key);
+            }
+            if saved.unique_heading
+                && self.suppl_provisions.iter()
+                    .filter(|other| provision.has_same_heading(other))
+                    .take(2)
+                    .count() == 1
+            {
+                return Some(key);
+            }
+        }
+        None
+    }
+
     pub(super) fn suppl_appendices(&self, index: usize) -> &[String] {
-        let Some(suppl) = self.suppl_provisions.get(index) else {
-            return &[];
-        };
-        self.suppl_appendices.get(&index)
-            .filter(|saved| saved.amend_law_num == suppl.amend_law_num
-                && saved.extract == suppl.extract && saved.label == suppl.label)
-            .map_or(&[], |saved| saved.fragments.as_slice())
+        self.suppl_appendix_key(index)
+            .map_or(&[], |key| self.suppl_appendices[&key].fragments.as_slice())
     }
 
     pub(super) fn take_suppl_provisions_from(&mut self, source: &mut Self) {
@@ -327,10 +373,9 @@ impl LawDoc {
     }
 
     pub(super) fn remove_suppl_provision(&mut self, index: usize) {
-        self.suppl_provisions.remove(index);
-        self.suppl_appendices.remove(&index);
-        for (position, appendices) in self.suppl_appendices.split_off(&index) {
-            self.suppl_appendices.insert(position - 1, appendices);
+        if let Some(key) = self.suppl_appendix_key(index) {
+            self.suppl_appendices.remove(&key);
         }
+        self.suppl_provisions.remove(index);
     }
 }

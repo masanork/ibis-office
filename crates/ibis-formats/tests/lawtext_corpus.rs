@@ -447,24 +447,39 @@ fn supplementary_appendices_roundtrip_under_their_own_headings_in_order() {
     );
     assert!(verification.diagnostics.is_empty(), "{:?}", verification.diagnostics);
 
-    let lawtext = to_lawtext(&document);
-    let markdown = to_markdown(&document);
-    assert!(markdown.contains("sample\\u002d\\u002dform.pdf"));
-    for restored in [parse_lawtext(&lawtext).unwrap(), parse_markdown_law(&markdown).unwrap()] {
-        let output = to_law_xml(&restored);
-        let xml = roxmltree::Document::parse(&output).unwrap();
-        let body = xml.root_element().children().find(|node| node.has_tag_name("LawBody")).unwrap();
-        let actual: Vec<_> = body.children()
-            .filter(|node| node.has_tag_name("SupplProvision"))
-            .map(|node| {
-                let fragments: Vec<_> = node.children()
-                    .filter(|child| child.is_element() && child.tag_name().name().starts_with("SupplProvisionAppdx"))
-                    .map(|child| &output[child.range()])
-                    .collect();
-                (node.attribute("AmendLawNum").unwrap(), fragments)
-            })
-            .collect();
-        assert_eq!(actual, [(first, vec![style, table, formula]), (second, vec![]), (third, vec![formula, style])]);
+    let mut reversed = document.clone();
+    reversed.suppl_provisions.reverse();
+    let repeated_input = input.replace(
+        &supplement(third, &format!("{formula}{style}")),
+        &supplement(first, &format!("{formula}{style}"))
+            .replace("公布の日から施行する。", "翌日から施行する。"),
+    );
+    let mut repeated = parse_law_xml(&repeated_input).unwrap();
+    repeated.suppl_provisions.swap(0, 2);
+    for (document, expected) in [
+        (document, [(first, vec![style, table, formula]), (second, vec![]), (third, vec![formula, style])]),
+        (reversed, [(third, vec![formula, style]), (second, vec![]), (first, vec![style, table, formula])]),
+        (repeated, [(first, vec![formula, style]), (second, vec![]), (first, vec![style, table, formula])]),
+    ] {
+        let lawtext = to_lawtext(&document);
+        let markdown = to_markdown(&document);
+        assert!(markdown.contains("sample\\u002d\\u002dform.pdf"));
+        for restored in [document, parse_lawtext(&lawtext).unwrap(), parse_markdown_law(&markdown).unwrap()] {
+            let output = to_law_xml(&restored);
+            let xml = roxmltree::Document::parse(&output).unwrap();
+            let body = xml.root_element().children().find(|node| node.has_tag_name("LawBody")).unwrap();
+            let actual: Vec<_> = body.children()
+                .filter(|node| node.has_tag_name("SupplProvision"))
+                .map(|node| {
+                    let fragments: Vec<_> = node.children()
+                        .filter(|child| child.is_element() && child.tag_name().name().starts_with("SupplProvisionAppdx"))
+                        .map(|child| &output[child.range()])
+                        .collect();
+                    (node.attribute("AmendLawNum").unwrap(), fragments)
+                })
+                .collect();
+            assert_eq!(actual, expected);
+        }
     }
 }
 
