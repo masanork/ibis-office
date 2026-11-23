@@ -707,6 +707,27 @@ fn powerpoint_3d_box(inner: Area, view: &ibis_doc_model::View3D, n_cat: usize, n
 }
 
 pub fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Resources) -> Div {
+    layout_chart(chart, frame, scale, res, None)
+}
+
+struct BarHit {
+    position: Point<Pixels>,
+    point: Option<(usize, usize)>,
+}
+
+/// Find the painted 2D bar under a chart-local pointer, as (series, point).
+pub fn chart_bar_at(chart: &Chart, frame: EmuRect, scale: f32, res: &Resources, position: Point<Pixels>) -> Option<(usize, usize)> {
+    if chart.ex.is_some()
+        || chart.groups.iter().any(|group| group.three_d.is_some() || !matches!(group.kind, ChartType::Bar { .. }))
+    {
+        return None;
+    }
+    let mut hit = BarHit { position, point: None };
+    let _ = layout_chart(chart, frame, scale, res, Some(&mut hit));
+    hit.point
+}
+
+fn layout_chart(chart: &Chart, frame: EmuRect, scale: f32, res: &Resources, mut hit: Option<&mut BarHit>) -> Div {
     if frame.width <= 0 || frame.height <= 0 {
         return div();
     }
@@ -1001,7 +1022,10 @@ pub fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Resources)
     if cut {
         marks.push(Mark::Clip(Some((plot.x, plot.y, plot.w, plot.h))));
     }
+    let mut series_offset = 0;
     for group in &chart.groups {
+        let first_series = series_offset;
+        series_offset += group.series.len();
         match group.kind {
             ChartType::Radar { style } => {
                 let s = scale_for(group);
@@ -1197,6 +1221,21 @@ pub fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Resources)
                         } else {
                             vec![(a, v0), (b, v0), (b, v1), (a, v1)]
                         };
+                        if let Some(hit) = hit.as_deref_mut()
+                            && (background(point_fill(series, ci)).is_some() || point_stroke(series, ci).is_some())
+                        {
+                            let (x, y) = (f32::from(hit.position.x), f32::from(hit.position.y));
+                            let ((left, right), (top, bottom)) = if horizontal {
+                                ((v0.min(v1), v0.max(v1)), (a, b))
+                            } else {
+                                ((a, b), (v0.min(v1), v0.max(v1)))
+                            };
+                            if x >= left.max(plot.x).max(0.0) && x < right.min(plot.right()).min(w)
+                                && y >= top.max(plot.y).max(0.0) && y < bottom.min(plot.bottom()).min(h)
+                            {
+                                hit.point = Some((first_series + si, ci));
+                            }
+                        }
                         // A 3-D bar stands a little back from the front plane, with sides.
                         let (shift_dx, shift_dy, ext_dx, ext_dy) = match depth {
                             Some((dx, dy)) => {
@@ -2624,6 +2663,10 @@ pub fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Resources)
 
     if let Some(table) = &chart.data_table {
         draw_data_table(chart, table, plot, horizontal, px_per_point, &mut marks, &mut labels);
+    }
+
+    if hit.is_some() {
+        return div();
     }
 
     #[cfg(all(target_os = "macos", feature = "scenarios"))]

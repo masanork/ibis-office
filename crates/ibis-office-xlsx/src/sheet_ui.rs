@@ -3814,6 +3814,10 @@ impl SlideEditor {
     /// The sheet and cells a reference points to: on the sheet named (by
     /// its tab's name, in any case) or the current one, cut to its grid.
     pub(crate) fn resolve_reference(&self, reference: &Reference) -> Option<(SlideId, CellRange)> {
+        self.resolve_reference_from(reference, self.current_slide)
+    }
+
+    pub(crate) fn resolve_reference_from(&self, reference: &Reference, default_sheet: SlideId) -> Option<(SlideId, CellRange)> {
         let slides = &self.presentation().slides;
         let slide = match &reference.sheet {
             Some(name) => {
@@ -3823,7 +3827,7 @@ impl SlideEditor {
                     tab.to_lowercase() == name
                 })?.1
             }
-            None => self.slide(),
+            None => self.presentation().slide(default_sheet)?,
         };
         let (_, sheet) = sheet_of(slide)?;
         let range = match &reference.target {
@@ -3838,7 +3842,7 @@ impl SlideEditor {
                 if matches!(target.target, Target::Name(_)) {
                     return None;
                 }
-                return self.resolve_reference(&target);
+                return self.resolve_reference_from(&target, default_sheet);
             }
         };
         let last_column = MAX_SHEET_COLUMNS.saturating_sub(1);
@@ -3862,6 +3866,11 @@ impl SlideEditor {
         let Some((slide, range)) = parse_reference(text).and_then(|r| self.resolve_reference(&r)) else {
             return false;
         };
+        self.jump_to_cell_range(slide, range, window, cx);
+        true
+    }
+
+    pub(crate) fn jump_to_cell_range(&mut self, slide: SlideId, range: CellRange, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_edit(window, cx);
         if slide != self.current_slide {
             self.select_slide(slide, window, cx);
@@ -3878,7 +3887,6 @@ impl SlideEditor {
         }
         self.status = None;
         cx.notify();
-        true
     }
 
     /// Ctrl+G or F5 (or ⌘G on Mac): open the ジャンプ dialog.

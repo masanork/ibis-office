@@ -147,8 +147,13 @@ impl SlideEditor {
         false
     }
 
-    /// A press on a form control, timeline or slicer.
+    /// A press on a form control, timeline, slicer or chart data point.
     pub(crate) fn xlsx_shape_press(&mut self, shape: ibis_doc_model::ShapeId, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if event.modifiers.platform && !event.modifiers.shift && !event.modifiers.alt && !event.modifiers.control
+            && self.chart_drill_down(shape, event.position, window, cx)
+        {
+            return true;
+        }
         if self.slide().shape(shape).is_some_and(|s| matches!(s.kind, ShapeKind::Control(_))) {
             self.commit_edit(window, cx);
             self.focus_handle.focus(window, cx);
@@ -173,6 +178,53 @@ impl SlideEditor {
             }
         }
         false
+    }
+
+    fn chart_drill_down(&mut self, id: ibis_doc_model::ShapeId, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let target = (|| {
+            let shape = self.slide().shape(id)?;
+            let ShapeKind::Chart(chart) = &shape.kind else { return None };
+            if shape.rotation != 0 || shape.flip_h || shape.flip_v || chart.cell_refs.is_empty() || self.page_layout_shown() {
+                return None;
+            }
+            let layout = self.slide_layout()?;
+            let frame = self.display_frame(shape);
+            let origin = layout.origin + self.main_pane_lead()
+                + point(px(frame.x as f32 * layout.scale), px(frame.y as f32 * layout.scale));
+            let (series, index) = crate::render::chart_view::chart_bar_at(
+                chart, ibis_doc_model::EmuRect { x: 0, y: 0, ..frame }, layout.scale, &self.resources, position - origin,
+            )?;
+            let refs = chart.cell_refs.get(series)?;
+            let source = |formula: &str| {
+                let reference = crate::sheet_ui::parse_reference(formula)?;
+                let (slide, range) = self.resolve_reference(&reference)?;
+                let (column, row) = chart_source_cell(range, index)?;
+                Some((slide, column, row))
+            };
+            let value = refs.values.as_deref().and_then(source);
+            for (slide, column, row) in refs.categories.as_deref().and_then(source).into_iter().chain(value) {
+                let (_, sheet) = crate::shell::editor::sheet_of(self.presentation().slide(slide)?)?;
+                let location = sheet.hyperlinks.iter().find_map(|link| {
+                    (link.target.is_none()
+                        && (link.range.first_row..=link.range.last_row).contains(&row)
+                        && (link.range.first_column..=link.range.last_column).contains(&column))
+                        .then_some(link.location.as_deref()).flatten()
+                });
+                if let Some(location) = location
+                    && let Some(reference) = crate::sheet_ui::parse_reference(location)
+                    && let Some(target) = self.resolve_reference_from(&reference, slide)
+                {
+                    return Some(target);
+                }
+            }
+            let (slide, column, row) = value?;
+            Some((slide, ibis_doc_model::CellRange {
+                first_column: column, last_column: column, first_row: row, last_row: row,
+            }))
+        })();
+        let Some((slide, range)) = target else { return false };
+        self.jump_to_cell_range(slide, range, window, cx);
+        true
     }
 
     /// Escape, after the window's dialogs: a cell jump in progress is cancelled.
@@ -279,4 +331,17 @@ impl SlideEditor {
         };
         Ok(crate::shell::format::PdfJob { bytes, slides, format: "pdf", args: None })
     }
+}
+
+fn chart_source_cell(range: ibis_doc_model::CellRange, index: usize) -> Option<(u32, u32)> {
+    let index = u32::try_from(index).ok()?;
+    if range.first_column == range.last_column {
+        let row = range.first_row.checked_add(index)?;
+        return (row <= range.last_row).then_some((range.first_column, row));
+    }
+    if range.first_row == range.last_row {
+        let column = range.first_column.checked_add(index)?;
+        return (column <= range.last_column).then_some((column, range.first_row));
+    }
+    None
 }

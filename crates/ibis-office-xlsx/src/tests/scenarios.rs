@@ -361,6 +361,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::chart_drag_table_bounds",chart_format::drag_stays_in_table),
         ("xlsx::chart_range_field_gui",range_field::range_picker),
         ("xlsx::chart_insertion_defaults_axes",chart_insert_defaults::insertion_and_axes),
+        ("xlsx::chart_drill_down",chart_insert_defaults::chart_drill_down),
         ("xlsx::chart_range_handles_and_cancel",range_field::range_picker_handles_and_cancel),
         ("xlsx::chart_format_live",chart_format::live),
         ("xlsx::chart_series_reorder",chart_format::reorder),
