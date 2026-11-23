@@ -4469,7 +4469,7 @@ impl SlideEditor {
         }
         d.when((mobile_viewer || narrow_phone) && !focus, |d| d.child(self.render_mobile_viewer_bar(narrow_phone, cx)))
             .when(!narrow_phone && !compact && !focus && show_title_row, |d| d.child(self.render_title_row(window, cx)))
-            .when(!mobile_viewer && !compact && !focus && show_menu_bar && !cfg!(target_os = "macos"), |d| d.child(self.render_menu_bar(window, cx)))
+            .when(!mobile_viewer && !compact && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
             .when(!mobile_viewer && !focus && show_toolbar, |d| d.child(self.render_toolbar(window, cx)))
             .child(
                 div()

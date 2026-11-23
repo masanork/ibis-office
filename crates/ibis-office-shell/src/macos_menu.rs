@@ -22,6 +22,7 @@ enum Item {
     Command {
         id: &'static str,
         label: SharedString,
+        icon: Option<&'static str>,
         checked: bool,
         enabled: bool,
         index: usize,
@@ -39,6 +40,7 @@ impl Item {
                 checked,
                 enabled,
                 index,
+                ..
             } => {
                 use crate::actions::{CloseFile, Open, Print, Save, SaveAs};
                 // Retain the existing AppKit equivalents for common File commands.
@@ -157,7 +159,24 @@ pub(crate) fn sync(editor: &SlideEditor, window: &Window, cx: &mut Context<Slide
     let entries: Vec<_> = editor
         .bar_items()
         .into_iter()
-        .map(|(id, entries)| (id, id.label(), projection.entries(entries)))
+        .map(|(id, entries)| {
+            let mut items = projection.entries(entries);
+            if id == BarMenu::Static(MenuId::View) {
+                let toggle = crate::chrome::MenuItem::tr("shell.menu.window-bar")
+                    .checked(editor.show_menu_bar)
+                    .on(|editor, _, cx| {
+                        editor.close_menu(cx);
+                        editor.show_menu_bar = !editor.show_menu_bar;
+                        if editor.show_menu_bar {
+                            editor.chrome_compact = false;
+                        }
+                        cx.notify();
+                    });
+                items.push(Item::Separator);
+                items.push(projection.command(toggle));
+            }
+            (id, id.label(), items)
+        })
         .collect();
 
     // Check presentation separately from handlers. Selection changes can replace a handler
@@ -195,6 +214,63 @@ pub(crate) fn sync(editor: &SlideEditor, window: &Window, cx: &mut Context<Slide
         generation,
     });
     cx.set_menus(menus);
+    if let Some(active) = &cx.global::<State>().active {
+        apply_menu_images(&active.entries);
+    }
+}
+
+// AppKit owns keyboard selection, enabled state and dispatch for these image-bearing rows.
+fn apply_menu_images(entries: &[(BarMenu, SharedString, Vec<Item>)]) {
+    use objc::{class, msg_send, runtime::Object, sel, sel_impl};
+    unsafe {
+        let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        let bar: *mut Object = msg_send![app, mainMenu];
+        for (index, (id, _, items)) in entries.iter().enumerate() {
+            if *id == BarMenu::Static(MenuId::Window) {
+                continue;
+            }
+            let item: *mut Object = msg_send![bar, itemAtIndex: (index + 1) as isize];
+            let menu: *mut Object = msg_send![item, submenu];
+            apply_item_images(menu, items);
+        }
+    }
+}
+
+fn apply_item_images(menu: *mut objc::runtime::Object, items: &[Item]) {
+    use objc::{class, msg_send, runtime::{BOOL, Object, YES}, sel, sel_impl};
+    if menu.is_null() {
+        return;
+    }
+    unsafe {
+        let count: isize = msg_send![menu, numberOfItems];
+        for (index, item) in items.iter().take(count.max(0) as usize).enumerate() {
+            let native: *mut Object = msg_send![menu, itemAtIndex: index as isize];
+            match item {
+                Item::Submenu(_, children) => {
+                    let submenu: *mut Object = msg_send![native, submenu];
+                    apply_item_images(submenu, children);
+                }
+                Item::Command { icon: Some(icon), .. } => {
+                    let Some(svg) = crate::icons::icon_svg_bytes(icon) else { continue };
+                    let data: *mut Object = msg_send![class!(NSData), dataWithBytes: svg.as_ptr() length: svg.len()];
+                    let image: *mut Object = msg_send![class!(NSImage), alloc];
+                    let image: *mut Object = msg_send![image, initWithData: data];
+                    if !image.is_null() {
+                        let _: () = msg_send![image, setTemplate: YES];
+                        let _: () = msg_send![native, setImage: image];
+                        let _: () = msg_send![image, release];
+                        let supports_visibility: BOOL =
+                            msg_send![native, respondsToSelector: sel!(setPreferredImageVisibility:)];
+                        if supports_visibility == YES {
+                            // NSMenuItemImageVisibilityVisible on macOS 27 and later.
+                            let _: () = msg_send![native, setPreferredImageVisibility: 1isize];
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 struct Projection<'a> {
@@ -212,6 +288,7 @@ impl Projection<'_> {
         Item::Command {
             id: item.id,
             label,
+            icon: item.icon.filter(|_| item.thumb.is_some()),
             checked: item.checked,
             enabled,
             index,

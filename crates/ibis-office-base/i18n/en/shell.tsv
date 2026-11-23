@@ -1705,3 +1705,4 @@ xlsx.cbom-compare	Compare with another CBOM…
 xlsx.cbom-select-new	Choose the newer CycloneDX JSON
 xlsx.cbom-compare-failed	Could not compare the CBOMs: {error}
 xlsx.cbom-source-changed	The original CBOM has changed. Reopen it before comparing.
+shell.menu.window-bar	Show Menu Bar in Window
