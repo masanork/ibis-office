@@ -663,6 +663,7 @@ pub fn apply_aratame(old: &LawDoc, aratame_text: &str) -> (LawDoc, usize, Vec<St
                                     num,
                                     title: it_title.to_string(),
                                     sentence: it_sent.to_string(),
+                                    xml_sentences: Vec::new(),
                                     subitems: Vec::new(),
                                 });
                                 applied += 1;

@@ -221,7 +221,16 @@ fn markdown_keeps_visible_text_and_discards_stale_sentence_metadata() {
     let edited = markdown.replacen(plain, "新基準を適用する。", 1);
     let xml = to_law_xml(&parse_markdown_law(&edited).unwrap());
     assert!(xml.contains("<ParagraphSentence><Sentence>新基準を適用する。</Sentence>"));
-    assert!(!xml.contains("Function=\"proviso\""));
+    assert!(!xml.contains("ただし、例外を認める。"));
+    assert!(xml.contains("Function=\"proviso\">ただし、除外例を設ける。"));
+    let edited_item = markdown.replacen(
+        "特例を定める。ただし、除外例を設ける。",
+        "号を編集する。",
+        1,
+    );
+    let item_xml = to_law_xml(&parse_markdown_law(&edited_item).unwrap());
+    assert!(item_xml.contains("<ItemSentence><Sentence>号を編集する。</Sentence>"));
+    assert!(!item_xml.contains("ただし、除外例を設ける。"));
     assert!(!xml.contains("ibis-law-sentences"));
     let ai = ibis_formats::lawtext::export_ai_law(source.as_bytes())
         .unwrap()

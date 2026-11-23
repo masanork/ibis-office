@@ -28,11 +28,22 @@
           <ParagraphSentence><Sentence>経過措置を定める。</Sentence></ParagraphSentence>
           <Item Num="1:3">
             <ItemTitle>一から三まで</ItemTitle>
-            <ItemSentence><Sentence>略</Sentence></ItemSentence>
+            <ItemSentence><Sentence Num="1" WritingMode="vertical">略</Sentence></ItemSentence>
           </Item>
           <Item Num="4">
             <ItemTitle>四</ItemTitle>
-            <ItemSentence><Sentence>特例を定める。</Sentence></ItemSentence>
+            <ItemSentence>
+              <Sentence Num="1" Function="main">特例を定める。</Sentence>
+              <Sentence Num="2" Function="proviso">ただし、除外例を設ける。</Sentence>
+            </ItemSentence>
+            <Subitem1 Num="1">
+              <Subitem1Title>イ</Subitem1Title>
+              <Subitem1Sentence><Sentence Num="1" WritingMode="horizontal">対象を定める。</Sentence></Subitem1Sentence>
+              <Subitem2 Num="1">
+                <Subitem2Title>（１）</Subitem2Title>
+                <Subitem2Sentence><Sentence Num="1" Indent="Subitem2">詳細を定める。</Sentence></Subitem2Sentence>
+              </Subitem2>
+            </Subitem1>
           </Item>
         </Paragraph>
       </Article>
