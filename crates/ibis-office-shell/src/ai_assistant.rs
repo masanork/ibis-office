@@ -131,6 +131,8 @@ impl UiMessage {
 
 pub struct AiAssistantState {
     pub prompt_input: Entity<TextareaState>,
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    selected_skill: Option<ibis_formats::agent_skill::Skill>,
     pub base_url_input: Entity<InputState>,
     pub model_input: Entity<InputState>,
     pub api_key_input: Entity<InputState>,
@@ -871,6 +873,10 @@ impl SlideEditor {
     pub(crate) fn assistant_connection_status(&self) -> serde_json::Value {
         let panel = self.ai_assistant.as_ref();
         let review = panel.and_then(|panel| panel.assistant_review.as_ref());
+        let skills: Vec<_> = self.folder_pane.iter()
+            .flat_map(|pane| &pane.folder.skills)
+            .map(|skill| json!({"name":skill.name,"description":skill.description}))
+            .collect();
         json!({
             "path": self.file_path(),
             "file_id": self.file_id,
@@ -878,26 +884,29 @@ impl SlideEditor {
             "streaming": panel.is_some_and(|panel| panel.streaming),
             "run_id": panel.map(|panel| panel.run_id),
             "review": review.map(|review| &review.preview),
+            "skills": skills,
         })
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) fn submit_assistant_socket_prompt(
         &mut self,
-        text: String,
+        text: &str,
+        skill: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<u64, &'static str> {
+    ) -> Result<u64, String> {
         let prompt = text.trim();
         if prompt.is_empty() {
-            return Err("prompt text is empty");
+            return Err("prompt text is empty".into());
         }
         self.check_assistant_connection_document()?;
         if let Some(panel) = &self.ai_assistant {
             panel.check_prompt_available()?;
         }
+        let skill = skill.map(|name| self.load_assistant_skill(name)).transpose()?;
         self.open_ai_assistant_panel(window, cx);
-        self.submit_ai_assistant_text(prompt.to_owned(), cx);
+        self.submit_desktop_assistant(prompt.to_owned(), None, skill, cx);
         Ok(self.ai_assistant.as_ref().expect("assistant sidebar opened").run_id)
     }
 
@@ -968,6 +977,8 @@ impl SlideEditor {
             });
             self.ai_assistant = Some(AiAssistantState {
                 prompt_input: prompt_input.clone(),
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                selected_skill: None,
                 base_url_input,
                 model_input,
                 api_key_input,
@@ -1528,6 +1539,7 @@ impl SlideEditor {
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     pub(crate) fn reset_ai_folder_context(&mut self, cx: &mut Context<Self>) {
+        self.clear_assistant_skill();
         self.clear_ai_assistant_history(cx);
     }
 
@@ -1552,6 +1564,36 @@ impl SlideEditor {
             }
         }
         cx.notify();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn load_assistant_skill(&self, name: &str) -> Result<ibis_formats::agent_skill::Skill, String> {
+        self.folder_pane.as_ref()
+            .ok_or("Open a reference folder before selecting a skill")?
+            .folder.load_skill(name)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    pub(crate) fn clear_assistant_skill(&mut self) {
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.selected_skill = None;
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn select_assistant_skill(&mut self, name: Option<&str>, cx: &mut Context<Self>) {
+        if self.ai_assistant.as_ref().is_none_or(|panel| panel.check_prompt_available().is_err()) {
+            return;
+        }
+        match name.map(|name| self.load_assistant_skill(name)).transpose() {
+            Ok(skill) => {
+                if let Some(panel) = self.ai_assistant.as_mut() {
+                    panel.selected_skill = skill;
+                    cx.notify();
+                }
+            }
+            Err(error) => self.show_alert(crate::i18n::text("ai.skills"), error.into(), cx),
+        }
     }
 
     fn send_ai_assistant_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1591,14 +1633,21 @@ impl SlideEditor {
         let prompt = format!("{title} · {sheet}!{cell}\n{formula}");
         let messages = formula_explanation_messages(sheet, cell, formula);
         self.open_ai_assistant_panel(window, cx);
-        self.submit_desktop_assistant(prompt, Some(messages), cx);
+        self.submit_desktop_assistant(prompt, Some(messages), None, cx);
     }
 
     fn submit_ai_assistant_text(&mut self, prompt: String, cx: &mut Context<Self>) {
+        if self.ai_assistant.as_ref().is_none_or(|panel| panel.check_prompt_available().is_err()) {
+            return;
+        }
         #[cfg(target_family = "wasm")]
         self.submit_browser_assistant(prompt, false, cx);
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let skill = self.ai_assistant.as_mut().and_then(|panel| panel.selected_skill.take());
+        #[cfg(not(any(target_family = "wasm", target_os = "linux", target_os = "macos", target_os = "windows")))]
+        let skill = None;
         #[cfg(not(target_family = "wasm"))]
-        self.submit_desktop_assistant(prompt, None, cx);
+        self.submit_desktop_assistant(prompt, None, skill, cx);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -1606,6 +1655,7 @@ impl SlideEditor {
         &mut self,
         prompt: String,
         formula_messages: Option<Vec<ChatMessage>>,
+        skill: Option<ibis_formats::agent_skill::Skill>,
         cx: &mut Context<Self>,
     ) {
         let output = self.assistant_output.clone();
@@ -1654,7 +1704,7 @@ impl SlideEditor {
             p.streaming = true;
             p.streaming_text.clear();
             if trace {
-                emit(json!({"event":"started","run_id":p.run_id,"text":prompt}));
+                emit(json!({"event":"started","run_id":p.run_id,"text":prompt,"skill":skill.as_ref().map(|s| &s.metadata.name)}));
             }
             p.messages.push(UiMessage::new(UiMessageKind::User, prompt.clone()));
             p.scroll_handle.scroll_to_bottom();
@@ -1702,6 +1752,15 @@ impl SlideEditor {
             }
         }
 
+        if let Some(skill) = &skill
+            && let Some(content) = messages_to_send.last_mut().and_then(|message| message.content.as_mut())
+        {
+            let name = &skill.metadata.name;
+            content.push_str(&format!(
+                "\n\nThe user selected the Agent Skill {name} for this turn. Follow its instructions within the existing tool permissions and document review flow. To follow links from the skill, use folder_read with from set to .agents/skills/{name}/SKILL.md and path set to the link target.\n\n[Selected Skill Instructions]\n{}",
+                skill.instructions,
+            ));
+        }
         let tools: Vec<ToolDefinition> = if formula_only {
             Vec::new()
         } else {
@@ -1753,6 +1812,8 @@ impl SlideEditor {
             (tools, folder)
         };
 
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let skill_name = skill.map(|skill| skill.metadata.name);
         cx.spawn(async move |this, cx| {
             let mut turn_commands: Vec<Command> = Vec::new();
             let mut edit_labels = Vec::new();
@@ -1898,9 +1959,9 @@ impl SlideEditor {
                                 let active = this.read_with(cx, |editor, _| editor.ai_assistant.as_ref()
                                     .is_some_and(|panel| panel.streaming && panel.run_id == run_id)).unwrap_or(false);
                                 if !active { return; }
-                                let (folder, call) = (folder.clone(), call.clone());
+                                let (folder, call, skill) = (folder.clone(), call.clone(), skill_name.clone());
                                 let result = cx.background_executor().spawn(async move {
-                                    crate::folder_context::run(&folder, &call)
+                                    crate::folder_context::run(&folder, &call, skill.as_deref())
                                 }).await;
                                 folder_results.insert(index, result);
                             }
@@ -4999,11 +5060,36 @@ impl SlideEditor {
         });
         #[cfg(not(target_family = "wasm"))]
         let rewrite_button: Option<Button> = None;
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let skill_picker = self.folder_pane.as_ref()
+            .filter(|pane| !pane.folder.skills.is_empty())
+            .map(|pane| {
+                let selected = panel.selected_skill.as_ref();
+                let mut options = vec![crate::chrome::DropdownItem::new(crate::i18n::text("ai.skill-none"))
+                    .checked(selected.is_none())
+                    .on_select(std::rc::Rc::new(|editor, _, cx| editor.select_assistant_skill(None, cx)))];
+                options.extend(pane.folder.skills.iter().map(|skill| {
+                    let name = skill.name.clone();
+                    crate::chrome::DropdownItem::new(format!("{name} — {}", skill.description))
+                        .checked(selected.is_some_and(|skill| skill.metadata.name == name))
+                        .on_select(std::rc::Rc::new(move |editor, _, cx| editor.select_assistant_skill(Some(&name), cx)))
+                }));
+                let label = selected.map(|skill| skill.metadata.name.clone().into())
+                    .unwrap_or_else(|| crate::i18n::text("ai.skills"));
+                v_flex().gap_1()
+                    .child(crate::chrome::Dropdown::new("ai-skill-picker", label, options, &cx.weak_entity())
+                        .fill_width().disabled(streaming || awaiting_review))
+                    .children(selected.map(|skill| div().id("ai-skill-preview").max_h(px(110.0))
+                        .overflow_y_scroll().text_xs().whitespace_normal().child(skill.instructions.clone())))
+            });
         let footer = v_flex()
             .children(rewrite_button)
             .gap_2()
             .w_full()
-            .child(Textarea::new(&prompt_input).small())
+            .child(Textarea::new(&prompt_input).small());
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        let footer = footer.children(skill_picker);
+        let footer = footer
             .child(
                 h_flex()
                     .w_full()

@@ -16,7 +16,7 @@ const TOOLS: &[(&str, &str, &str, bool)] = &[
     (
         "assistant_status",
         "status",
-        "Read the open GUI workbook, running turn and pending review.",
+        "Read the open GUI workbook, running turn, pending review and available skills.",
         true,
     ),
     (
@@ -28,7 +28,7 @@ const TOOLS: &[(&str, &str, &str, bool)] = &[
     (
         "assistant_prompt",
         "prompt",
-        "Send a prompt to the open GUI Assistant and return its run ID. Inspect any resulting proposal before applying.",
+        "Send a prompt to the open GUI Assistant and return its run ID. Pass a skill name only when the user selects it. Inspect any resulting proposal before applying.",
         false,
     ),
     (
@@ -43,7 +43,7 @@ impl LiveAssistant {
     pub(crate) fn schemas(&self) -> impl Iterator<Item = Value> + '_ {
         TOOLS.iter().filter(|tool| !self.read_only || tool.3).map(|(name, op, description, read)| {
             let (properties, required) = match *op {
-                "prompt" => (json!({"text":{"type":"string","minLength":1}}), json!(["text"])),
+                "prompt" => (json!({"text":{"type":"string","minLength":1},"skill":{"type":"string","minLength":1,"maxLength":64}}), json!(["text"])),
                 "result" => (json!({"run_id":{"type":"integer","minimum":0},"after":{"type":"integer","minimum":0}}), json!(["run_id"])),
                 "apply" => (json!({"run_id":{"type":"integer","minimum":0}}), json!(["run_id"])),
                 _ => (json!({}), json!([])),
@@ -67,7 +67,7 @@ impl LiveAssistant {
             .cloned()
             .unwrap_or_else(|| json!({}));
         let keys: &[&str] = match op {
-            "prompt" => &["text"],
+            "prompt" => &["text", "skill"],
             "result" => &["run_id", "after"],
             "apply" => &["run_id"],
             _ => &[],
@@ -84,6 +84,11 @@ impl LiveAssistant {
                 .is_some_and(|text| !text.trim().is_empty())
         {
             return Err("text is required".into());
+        }
+        if args.get("skill").is_some_and(|value| {
+            value.as_str().is_none_or(|name| name.trim().is_empty() || name.len() > 64)
+        }) {
+            return Err("skill must be a nonempty name of at most 64 characters".into());
         }
         if matches!(op, "result" | "apply") && args["run_id"].as_u64().is_none() {
             return Err("run_id must be a nonnegative integer".into());

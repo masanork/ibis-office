@@ -69,6 +69,7 @@ pub mod html_export;
 pub mod lawtext;
 pub mod markdown;
 pub mod okf;
+pub mod agent_skill;
 pub mod mermaid;
 pub(crate) mod drawing_table_style;
 pub mod geometry;

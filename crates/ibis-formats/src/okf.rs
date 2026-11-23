@@ -14,6 +14,18 @@ pub fn concept(path: &str, text: &str) -> Result<Option<Value>, crate::Error> {
     {
         return Ok(None);
     }
+    let Some((metadata, _)) = markdown_frontmatter(text)? else {
+        return Ok(None);
+    };
+    Ok(metadata
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        .then_some(Value::Object(metadata)))
+}
+
+/// Parse the YAML mapping and return the Markdown following it.
+pub(crate) fn markdown_frontmatter(text: &str) -> Result<Option<(Map<String, Value>, &str)>, crate::Error> {
     let Some(after_open) = text
         .strip_prefix("---\n")
         .or_else(|| text.strip_prefix("---\r\n"))
@@ -23,13 +35,9 @@ pub fn concept(path: &str, text: &str) -> Result<Option<Value>, crate::Error> {
     let mut end = 0;
     for line in after_open.split_inclusive('\n') {
         if line.trim_end_matches(['\r', '\n']) == "---" {
-            let metadata: Map<String, Value> = serde_saphyr::from_str(&after_open[..end])
+            let metadata = serde_saphyr::from_str(&after_open[..end])
                 .map_err(|error| crate::Error::new(error.to_string()))?;
-            return Ok(metadata
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|value| !value.trim().is_empty())
-                .then_some(Value::Object(metadata)));
+            return Ok(Some((metadata, &after_open[end + line.len()..])));
         }
         end += line.len();
     }

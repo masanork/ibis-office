@@ -99,7 +99,10 @@ impl SlideEditor {
                     return;
                 };
                 match result {
-                    Ok(folder) if folder.root == previous.root => pane.folder = Arc::new(folder),
+                    Ok(folder) if folder.root == previous.root => {
+                        pane.folder = Arc::new(folder);
+                        editor.clear_assistant_skill();
+                    }
                     Ok(_) => editor.show_alert(text("folder.error"), text("folder.moved"), cx),
                     Err(error) => editor.show_alert(text("folder.error"), error.into(), cx),
                 }

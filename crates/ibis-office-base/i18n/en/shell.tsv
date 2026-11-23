@@ -1726,3 +1726,5 @@ editor.jsonl.exported	The selected fields were imported into a new worksheet.
 editor.jsonl.preview-loading	Preparing the JSONL preview…
 editor.jsonl.preview-ready	The JSONL preview is ready. Open JSONL fields to choose columns to import.
 editor.jsonl.export-small	Create a table from the first 25 lines
+ai.skills	Skills
+ai.skill-none	No skill

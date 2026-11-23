@@ -20,6 +20,14 @@
 
 開いたフォルダーが Git 作業ツリー内にある場合は、`git_status` で未コミットの変更を、`git_log` でファイルまたはフォルダーの履歴を参照できる。履歴は最初の親を辿り、`git_diff` は指定した２つのコミット間でファイル１件を比較する。Office 文書は Markdown に抽出した内容を比較する。返すパスは開いたフォルダーからの相対パスで、履歴と差分にはコミット SHA を付ける。
 
+### フォルダーに同梱した Agent Skills
+
+開いたフォルダーの `.agents/skills/<名前>/SKILL.md` を探索する。フォルダー名と YAML の `name` を揃え、`description` を付ける。OKF バンドルでは、`type` のない `SKILL.md` をコンセプトと同じバンドルで管理できる。配置や更新はファイルまたは Git で行い、フォルダーの「更新」で一覧に反映する。
+
+Assistant のスキル一覧で名前と説明を確認できる。選択すると本文が表示され、次に送信するターンにだけ読み込まれる。本文からの相対リンクは、許可されたフォルダー内の資料と選択したスキルの `references/` に解決できる。スキルは既存の文書ツールを使い、編集は既存の確認フローを通る。`scripts/` の実行や `allowed-tools` による権限付与は扱わない。
+
+形式と配置の慣例は [Agent Skills 仕様](https://agentskills.io/specification) と [実装ガイド](https://agentskills.io/client-implementation/adding-skills-support) を参照。
+
 ## ローカルの coding agent から起動中の Assistant に接続する
 
 macOS と Linux では、利用者だけがアクセスできるディレクトリにソケットを作り、GUI を起動する。
@@ -33,8 +41,8 @@ agent の MCP サーバー設定に `ibisOffice --mcp --assistant-socket <絶対
 MCP クライアントは終了・再起動しても同じ GUI ウィンドウにつなぎ直せる。
 ソケットは起動時に明示したウィンドウに属し、ウィンドウを閉じるまで有効。
 
-- `assistant_status` は開いている文書、実行中のターン、確定待ちの変更案を返す。`document_ready: true` になってから指示を送る。
-- `assistant_prompt` に `{"text":"Data シートの A1 を確認して"}` を渡すと `run_id` が返る。
+- `assistant_status` は開いている文書、実行中のターン、確定待ちの変更案、利用可能なスキルの名前と説明を返す。`document_ready: true` になってから指示を送る。
+- `assistant_prompt` に `{"text":"Data シートの A1 を確認して"}` を渡すと `run_id` が返る。利用者がスキルを選んだときは、その名前を任意の `skill` 引数に渡す。
 - `assistant_result` に `{"run_id":0}` を渡すとターンの状態とイベントが返る。次の呼び出しでは、受け取った `cursor` を `after` に渡せば続きから読める。適用または破棄すると、状態に `applied` または `discarded` が記録される。
 - ユーザーが適用を明示した場合、`assistant_apply` に確定待ちの `run_id` を渡すと変更案を適用できる。対象は GUI の「元に戻す」で取り消せる文書内の編集。ソースの変更とファイルの保存は対象外。GUI からも変更案の適用・破棄ができる。
 

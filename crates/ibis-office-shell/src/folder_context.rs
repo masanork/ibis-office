@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::ai_client::{ToolCall, ToolDefinition, ToolFunctionDef};
 
+mod skills;
 mod ui;
 pub(crate) use ui::FolderPane;
 
@@ -36,6 +37,7 @@ pub(crate) struct Folder {
     root: PathBuf,
     files: Vec<String>,
     concept_types: BTreeMap<String, String>,
+    pub(crate) skills: Vec<ibis_formats::agent_skill::Metadata>,
     truncated: bool,
     skipped: usize,
 }
@@ -101,6 +103,7 @@ impl Folder {
             root,
             files,
             concept_types: BTreeMap::new(),
+            skills: Vec::new(),
             truncated: remaining == 0,
             skipped,
         };
@@ -109,27 +112,12 @@ impl Folder {
             .iter()
             .filter(|path| path.ends_with(".md"))
             .filter_map(|path| {
-                let file = std::fs::File::open(folder.resolve(path).ok()?).ok()?;
-                let mut reader = BufReader::new(file.take(64 * 1024));
-                let mut frontmatter = String::new();
-                if reader.read_line(&mut frontmatter).ok()? == 0
-                    || !matches!(frontmatter.as_str(), "---\n" | "---\r\n")
-                {
-                    return None;
-                }
-                loop {
-                    let start = frontmatter.len();
-                    if reader.read_line(&mut frontmatter).ok()? == 0 {
-                        return None;
-                    }
-                    if matches!(&frontmatter[start..], "---\n" | "---\r\n" | "---") {
-                        break;
-                    }
-                }
+                let frontmatter = read_frontmatter(&folder.resolve(path).ok()?)?;
                 let metadata = ibis_formats::okf::concept(path, &frontmatter).ok()??;
                 Some((path.clone(), metadata["type"].as_str()?.to_owned()))
             })
             .collect();
+        folder.skills = folder.scan_skills();
         Ok(folder)
     }
 
@@ -150,6 +138,10 @@ impl Folder {
         {
             return Err("Use a visible, folder-relative path with forward slashes.".into());
         }
+        self.resolve_file(relative)
+    }
+
+    fn resolve_file(&self, relative: &str) -> Result<PathBuf, String> {
         if self.root.canonicalize().ok().as_ref() != Some(&self.root) || !self.root.is_dir() {
             return Err("The reference folder moved. Open it again.".into());
         }
@@ -333,7 +325,7 @@ pub(crate) fn recognizes(name: &str) -> bool {
     matches!(name, "folder_list" | "folder_search" | "folder_read" | "git_status" | "git_log" | "git_diff" | "git_read")
 }
 
-pub(crate) fn run(folder: &Folder, call: &ToolCall) -> Result<FolderResult, String> {
+pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Result<FolderResult, String> {
     let args: Value =
         serde_json::from_str(&call.function.arguments).map_err(|err| err.to_string())?;
     let offset = number(&args["offset"], 0)?;
@@ -357,12 +349,25 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall) -> Result<FolderResult, Stri
             let target = required_string(&args, "path")?;
             let resolved;
             let relative = if let Some(from) = args["from"].as_str() {
-                resolved = folder.reference_path(from, target)?;
+                resolved = if skill.is_some_and(|name| skills::is_skill_file(name, from)) {
+                    folder.resolve_file(from)?;
+                    ibis_formats::okf::resolve(from, target).map(|(path, _)| path)
+                        .ok_or("Skill reference must resolve inside the open folder.")?
+                } else {
+                    folder.reference_path(from, target)?
+                };
                 &resolved
             } else {
                 target
             };
-            let path = folder.resolve(relative)?;
+            let skill_reference = skill.is_some_and(|name| {
+                skills::is_reference(name, relative)
+            });
+            let path = if skill_reference {
+                folder.resolve_file(relative)?
+            } else {
+                folder.resolve(relative)?
+            };
             let ext = extension(&path);
             let result = if TEXT.contains(&ext.as_str()) {
                 let limit = number(&args["limit"], 35)?.clamp(1, 50);
@@ -399,8 +404,12 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall) -> Result<FolderResult, Stri
                 .filter(|item| item["para_id"].is_u64())
                 .or_else(|| result["matches"].get(0))
                 .unwrap_or(&result);
-            let reference = FolderReference::new(relative, location);
-            (json!({"path":relative,"content":result}), vec![reference])
+            let references = if skill_reference {
+                Vec::new()
+            } else {
+                vec![FolderReference::new(relative, location)]
+            };
+            (json!({"path":relative,"content":result}), references)
         }
         name @ ("git_status" | "git_log" | "git_diff" | "git_read") => (
             crate::git_workspace::assistant::run(&folder.root, name, &args, offset)
@@ -436,6 +445,25 @@ fn excerpt(line: &str, limit: usize) -> String {
     match line.char_indices().nth(limit) {
         Some((end, _)) => format!("{}…", &line[..end]),
         None => line.into(),
+    }
+}
+
+fn read_frontmatter(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file.take(64 * 1024 + 1));
+    let mut frontmatter = String::new();
+    reader.read_line(&mut frontmatter).ok()?;
+    if !matches!(frontmatter.as_str(), "---\n" | "---\r\n") {
+        return None;
+    }
+    loop {
+        let start = frontmatter.len();
+        if reader.read_line(&mut frontmatter).ok()? == 0 || frontmatter.len() > 64 * 1024 {
+            return None;
+        }
+        if matches!(&frontmatter[start..], "---\n" | "---\r\n" | "---") {
+            return Some(frontmatter);
+        }
     }
 }
 
@@ -674,7 +702,41 @@ mod tests {
                     arguments: args.to_string(),
                 },
             },
+            None,
         )
+    }
+
+    #[test]
+    fn skills_are_discovered_separately_and_references_require_selection() {
+        let fixture = Fixture::new();
+        let root = ".agents/skills/report-check";
+        std::fs::create_dir_all(fixture.0.join(format!("{root}/references"))).unwrap();
+        fixture.write(&format!("{root}/SKILL.md"), "---\nname: report-check\ndescription: Check a report\n---\nRead the checklist.");
+        fixture.write(&format!("{root}/references/checklist.md"), "Check totals.");
+        fixture.write("metric.md", "---\ntype: Metric\n---\n# Totals");
+        let folder = Folder::scan(&fixture.0).unwrap();
+        assert_eq!(folder.skills.len(), 1);
+        assert_eq!(folder.load_skill("report-check").unwrap().instructions, "Read the checklist.");
+        assert!(folder.load_skill("../report-check").is_err());
+        assert!(folder.files.iter().all(|path| !path.starts_with('.')));
+
+        let read = |skill, path: &str| {
+            run(&folder, &ToolCall {
+                id: "call".into(),
+                kind: "function".into(),
+                function: ToolCallFunction {
+                    name: "folder_read".into(),
+                    arguments: json!({"from":format!("{root}/SKILL.md"), "path":path}).to_string(),
+                },
+            }, skill)
+        };
+        assert!(read(None, "references/checklist.md").is_err());
+        assert!(read(Some("other-skill"), "references/checklist.md").is_err());
+        assert!(read(Some("report-check"), "../../../../outside.md").is_err());
+        assert_eq!(read(Some("report-check"), "references/checklist.md")
+            .unwrap().value["content"]["lines"][0]["text"], "Check totals.");
+        assert_eq!(read(Some("report-check"), "../../../metric.md")
+            .unwrap().value["content"]["lines"][3]["text"], "# Totals");
     }
 
     #[test]

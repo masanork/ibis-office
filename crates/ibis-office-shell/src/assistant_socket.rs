@@ -114,8 +114,12 @@ impl BoundSocket {
                     if request["op"] == "prompt"
                         && let Some(text) = request["text"].as_str()
                     {
+                        if request.get("skill").is_some_and(|value| !value.is_string()) {
+                            return json!({"error":"skill must be a string"});
+                        }
                         return match editor.submit_assistant_socket_prompt(
-                            text.to_owned(),
+                            text,
+                            request["skill"].as_str(),
                             window,
                             cx,
                         ) {
