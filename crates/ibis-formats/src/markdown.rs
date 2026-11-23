@@ -35,6 +35,7 @@ mod marp;
 mod metafile_preview;
 mod myst;
 mod obsidian;
+mod okf_metadata;
 mod shape_text;
 pub(crate) mod roundtrip;
 pub use roundtrip::{SourceDiagnostic, SourceIssue};
@@ -1783,12 +1784,14 @@ fn populate_toc_blocks(doc: &mut FlowDocument) {
 // ============================================================================
 
 fn apply_frontmatter(fm: &str, doc: &mut FlowDocument, ctx: &mut ParseContext<'_>) {
+    let mut okf_source = false;
     if let Some(profile) = crate::lawtext::markdown_profile(fm) {
         roundtrip::store_profile(profile, &mut doc.properties);
     } else {
         let metadata = format!("---\n{fm}---\n");
         if crate::okf::concept("document.md", &metadata).ok().flatten().is_some() {
             roundtrip::store_okf_source(fm, &mut doc.properties);
+            okf_source = true;
         }
     }
     let mut map: BTreeMap<String, String> = BTreeMap::new();
@@ -1854,6 +1857,10 @@ fn apply_frontmatter(fm: &str, doc: &mut FlowDocument, ctx: &mut ParseContext<'_
     }
     if let Some(v) = map.get("company") {
         doc.properties.company = Some(v.clone());
+    }
+
+    if okf_source {
+        okf_metadata::import(fm, &mut doc.properties);
     }
 
     // Page size & orientation
@@ -5477,7 +5484,7 @@ fn export_markdown_with_positions<'a>(
     let mut out = String::new();
 
     // 1. YAML Frontmatter (written when metadata, non-default page setup, headers/footers, or watermark exist)
-    let fm = serialize_frontmatter(doc);
+    let fm = serialize_frontmatter(doc, source_diagnostics);
     if !fm.is_empty() {
         out.push_str("---\n");
         out.push_str(&fm);
@@ -6382,15 +6389,15 @@ fn document_has_form_fields(doc: &FlowDocument) -> bool {
         .any(|paragraph| paragraph.runs.iter().any(|run| form_field_id(run).is_some()))
 }
 
-fn serialize_frontmatter(doc: &FlowDocument) -> String {
+fn serialize_frontmatter(doc: &FlowDocument, diagnostics: &mut Vec<SourceDiagnostic>) -> String {
     let mut lines = Vec::new();
     if doc.even_and_odd {
         lines.push("even_and_odd_headers: true".to_owned());
     }
     let props: &DocProperties = &doc.properties;
     if let Some(profile) = roundtrip::saved_profile(props) {
-        if let Some(source) = roundtrip::decode_okf_source(profile) {
-            return source;
+        if let Some((source, editable)) = roundtrip::decode_okf_source(profile) {
+            return if editable { okf_metadata::update(source, props, diagnostics) } else { source };
         }
         if crate::lawtext::is_law_profile(profile) {
             lines.extend(profile.lines().map(str::to_owned));
@@ -8823,6 +8830,46 @@ Table {{seq:table}} {#tbl_results}
                 ("SEQ Table".into(), "1".into()),
             ],
         );
+    }
+
+    #[test]
+    fn okf_properties_update_only_selected_values_after_docx_edits() {
+        let input = b"---\ntype: Metric\n# Owner annotation\ntitle: \"Old # name\"  # keep title comment\ndescription: Before\ntags: [one, two] # keep tags comment\nx-nested:\n  title: leave unchanged\n---\n\nOriginal body.\n";
+        let data = import_markdown_to_docx_bytes(input).unwrap();
+        let mut opened = crate::open(data).unwrap();
+        let flow = Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+        assert_eq!(flow.properties.title.as_deref(), Some("Old # name"));
+        assert_eq!(flow.properties.keywords.as_deref(), Some("one, two"));
+        flow.properties.title = Some("New # name".into());
+        flow.properties.description = Some("After".into());
+        flow.properties.keywords = Some("three, four".into());
+        let Block::Paragraph(paragraph) = &mut flow.body[0] else { panic!("expected paragraph") };
+        paragraph.runs[0].kind = FlowRunKind::Text("Updated body.".into());
+        let saved = opened.source.save(&opened.presentation, SaveOptions::default()).unwrap();
+        let output = export_docx_to_markdown(&saved).unwrap();
+        let expected = std::str::from_utf8(input).unwrap()
+            .replace("Old # name", "New # name")
+            .replace("description: Before", "description: \"After\"")
+            .replace("[one, two]", "[\"three\",\"four\"]")
+            .replace("Original body.", "Updated body.");
+        assert_eq!(output.trim_end(), expected.trim_end());
+    }
+
+    #[test]
+    fn okf_unsafe_property_edits_leave_yaml_and_report_the_key() {
+        let input = b"---\ntype: Metric\ndescription: |\n  Two lines of description.\n  Original formatting.\ntags: [\"one,two\"]\n---\n\nBody.\n";
+        let mut opened = open_markdown(input.to_vec()).unwrap();
+        let flow = Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+        flow.properties.description = Some("New".into());
+        flow.properties.keywords = Some("three".into());
+        let result = export_document_markdown_with_diagnostics(&opened.presentation, DocumentMarkdownOptions::default()).unwrap();
+        assert_eq!(result.markdown.trim_end(), std::str::from_utf8(input).unwrap().trim_end());
+        let keys: Vec<_> = result.diagnostics.iter().map(|diagnostic| {
+            assert_eq!(diagnostic.extension, "okf");
+            assert_eq!(diagnostic.issue, SourceIssue::Incompatible);
+            diagnostic.location.as_str()
+        }).collect();
+        assert_eq!(keys, ["description", "tags"]);
     }
 
     #[test]

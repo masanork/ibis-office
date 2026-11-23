@@ -58,7 +58,8 @@ pub(super) fn saved_profile(properties: &ibis_doc_model::DocProperties) -> Optio
     }
 }
 
-const OKF_SOURCE_PREFIX: &str = "okf-base64:";
+const OKF_SOURCE_PREFIX: &str = "okf-editable-base64:";
+const LEGACY_OKF_SOURCE_PREFIX: &str = "okf-base64:";
 
 pub(super) fn store_okf_source(source: &str, properties: &mut ibis_doc_model::DocProperties) {
     use base64::Engine as _;
@@ -66,13 +67,20 @@ pub(super) fn store_okf_source(source: &str, properties: &mut ibis_doc_model::Do
     store_profile(format!("{OKF_SOURCE_PREFIX}{encoded}"), properties);
 }
 
-pub(super) fn decode_okf_source(profile: &str) -> Option<String> {
+pub(super) fn decode_okf_source(profile: &str) -> Option<(String, bool)> {
     use base64::Engine as _;
-    let encoded = profile.strip_prefix(OKF_SOURCE_PREFIX)?;
+    let (encoded, editable) = profile
+        .strip_prefix(OKF_SOURCE_PREFIX)
+        .map(|encoded| (encoded, true))
+        .or_else(|| {
+            profile
+                .strip_prefix(LEGACY_OKF_SOURCE_PREFIX)
+                .map(|encoded| (encoded, false))
+        })?;
     let data = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .ok()?;
-    String::from_utf8(data).ok()
+    Some((String::from_utf8(data).ok()?, editable))
 }
 
 #[derive(Debug, PartialEq, Eq)]
