@@ -348,6 +348,41 @@ fn appendix_style_metadata_keeps_multiple_forms_and_rejects_invalid_fragments() 
 }
 
 #[test]
+fn mixed_appendices_keep_their_order_even_when_a_table_cell_is_edited() {
+    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
+
+    let source = include_str!("lawtext/food-labeling-table.xml");
+    let (before, appendix) = source.split_once("<AppdxTable>").unwrap();
+    let (table, after) = appendix.split_once("</AppdxTable>").unwrap();
+    let form = include_str!("lawtext/food-inspection-form.xml");
+    let form = form.split_once("<AppdxStyle>").unwrap().1;
+    let form = form.split_once("</AppdxStyle>").unwrap().0;
+    let xml = format!(
+        "{before}<AppdxStyle>{form}</AppdxStyle><AppdxTable>{table}</AppdxTable>\n         <AppdxStyle>{form}</AppdxStyle><AppdxTable>{}</AppdxTable>\n         <AppdxStyle>{form}</AppdxStyle>{after}",
+        table.replace("別表第十八", "別表第十九"),
+    );
+    let source = parse_law_xml(&xml).unwrap();
+    let lawtext = to_lawtext(&source);
+    assert!(ibis_formats::lawtext::is_lawtext(lawtext.as_bytes()));
+    let markdown = to_markdown(&source).replacen("| 形質 |", "| 形質区分 |", 1);
+    for (roundtrip, expected_cell) in [
+        (parse_lawtext(&lawtext).unwrap(), "形質"),
+        (parse_markdown_law(&markdown).unwrap(), "形質区分"),
+    ] {
+        let output = to_law_xml(&roundtrip);
+        let xml = roxmltree::Document::parse(&output).unwrap();
+        let body = xml.root_element().children().find(|node| node.has_tag_name("LawBody")).unwrap();
+        let appendices: Vec<_> = body.children()
+            .filter(|node| node.has_tag_name("AppdxTable") || node.has_tag_name("AppdxStyle"))
+            .collect();
+        let tags: Vec<_> = appendices.iter().map(|node| node.tag_name().name()).collect();
+        assert_eq!(tags, ["AppdxStyle", "AppdxTable", "AppdxStyle", "AppdxTable", "AppdxStyle"]);
+        assert!(appendices[1].descendants().any(|node| node.is_text() && node.text() == Some(expected_cell)));
+        assert!(appendices[3].descendants().any(|node| node.text() == Some("別表第十九")));
+    }
+}
+
+#[test]
 fn audit_reports_reordered_siblings_without_counting_removals_as_reordering() {
     let fixture = include_str!("lawtext/supplementary-amendment.xml");
     let title_start = fixture.find("<LawTitle ").unwrap();

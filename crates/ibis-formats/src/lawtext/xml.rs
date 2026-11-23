@@ -70,18 +70,26 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
             nodes: parse_xml_nodes(suppl),
         });
     }
-    for appdx in body.children().filter(|n| n.is_element() && n.tag_name().name() == "AppdxTable") {
-        let table = parse_appdx_table(appdx);
-        if let Some(snapshot) = SavedAppdxTable::read(&xml[appdx.range()]) {
-            out.appdx_table_xml.push(snapshot);
+    for appendix in body.children().filter(roxmltree::Node::is_element) {
+        match appendix.tag_name().name() {
+            "AppdxTable" => {
+                out.appdx_tables.push(parse_appdx_table(appendix));
+                if let Some(snapshot) = SavedAppdxTable::read(&xml[appendix.range()]) {
+                    out.appdx_table_xml.push(snapshot);
+                }
+            }
+            "AppdxStyle" if appendix.tag_name().namespace().is_none() => {
+                if let Some(style) = read_xml_fragment(&xml[appendix.range()], "AppdxStyle") {
+                    out.appdx_style_positions.push(out.appdx_tables.len());
+                    out.appdx_style_xml.push(style);
+                }
+            }
+            _ => {}
         }
-        out.appdx_tables.push(table);
     }
-    out.appdx_style_xml = body
-        .children()
-        .filter(|node| node.has_tag_name("AppdxStyle"))
-        .filter_map(|node| read_xml_fragment(&xml[node.range()], "AppdxStyle"))
-        .collect();
+    if out.appdx_style_positions.first() == Some(&out.appdx_tables.len()) {
+        out.appdx_style_positions.clear();
+    }
     Ok(out)
 }
 
@@ -105,6 +113,15 @@ pub(super) fn read_encoded_appdx_styles(encoded: &str) -> Vec<String> {
         .iter()
         .filter_map(|fragment| read_xml_fragment(fragment, "AppdxStyle"))
         .collect()
+}
+
+pub(super) fn read_encoded_appdx_style_positions(encoded: &str, style_count: usize) -> Vec<usize> {
+    let positions: Vec<usize> = serde_json::from_str(encoded).unwrap_or_default();
+    if positions.len() == style_count && positions.is_sorted() {
+        positions
+    } else {
+        Vec::new()
+    }
 }
 
 fn parse_title_attributes(node: roxmltree::Node<'_, '_>) -> LawTitleAttributes {
@@ -438,44 +455,59 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
         }
         out.push_str("    </SupplProvision>\n");
     }
-    for appdx in &doc.appdx_tables {
-        let mut snapshots = doc.appdx_table_xml.iter().filter(|snapshot| snapshot.table == *appdx);
-        if let Some(snapshot) = snapshots.next() && snapshots.next().is_none() {
-            out.push_str("    ");
-            out.push_str(&snapshot.xml);
-            out.push('\n');
-            continue;
-        }
-        out.push_str("    <AppdxTable>\n      <AppdxTableTitle>");
-        push_xml_escaped(&mut out, &appdx.title);
-        out.push_str("</AppdxTableTitle>\n");
-        if let Some(rel) = appdx.related_article_num.as_deref() {
-            out.push_str("      <RelatedArticleNum>");
-            push_xml_escaped(&mut out, rel);
-            out.push_str("</RelatedArticleNum>\n");
-        }
-        if !appdx.rows.is_empty() {
-            out.push_str("      <TableStruct>\n        <Table>\n");
-            for row in &appdx.rows {
-                out.push_str("          <TableRow>\n");
-                for cell in row {
-                    out.push_str("            <TableColumn><Sentence>");
-                    push_xml_escaped(&mut out, cell);
-                    out.push_str("</Sentence></TableColumn>\n");
-                }
-                out.push_str("          </TableRow>\n");
+    let mut styles = doc.appdx_style_xml.iter();
+    let mut positions = doc.appdx_style_positions.iter().copied().peekable();
+    for (index, appdx) in doc.appdx_tables.iter().enumerate() {
+        while positions.next_if_eq(&index).is_some() {
+            if let Some(style) = styles.next() {
+                write_appdx_style(&mut out, style);
             }
-            out.push_str("        </Table>\n      </TableStruct>\n");
         }
-        out.push_str("    </AppdxTable>\n");
+        write_appdx_table(&mut out, doc, appdx);
     }
-    for style in &doc.appdx_style_xml {
-        out.push_str("    ");
-        out.push_str(style);
-        out.push('\n');
+    for style in styles {
+        write_appdx_style(&mut out, style);
     }
     out.push_str("  </LawBody>\n</Law>\n");
     out
+}
+
+fn write_appdx_style(out: &mut String, style: &str) {
+    out.push_str("    ");
+    out.push_str(style);
+    out.push('\n');
+}
+
+fn write_appdx_table(out: &mut String, doc: &LawDoc, appdx: &super::model::LawAppdxTable) {
+    let mut snapshots = doc.appdx_table_xml.iter().filter(|snapshot| snapshot.table == *appdx);
+    if let Some(snapshot) = snapshots.next() && snapshots.next().is_none() {
+        out.push_str("    ");
+        out.push_str(&snapshot.xml);
+        out.push('\n');
+        return;
+    }
+    out.push_str("    <AppdxTable>\n      <AppdxTableTitle>");
+    push_xml_escaped(out, &appdx.title);
+    out.push_str("</AppdxTableTitle>\n");
+    if let Some(rel) = appdx.related_article_num.as_deref() {
+        out.push_str("      <RelatedArticleNum>");
+        push_xml_escaped(out, rel);
+        out.push_str("</RelatedArticleNum>\n");
+    }
+    if !appdx.rows.is_empty() {
+        out.push_str("      <TableStruct>\n        <Table>\n");
+        for row in &appdx.rows {
+            out.push_str("          <TableRow>\n");
+            for cell in row {
+                out.push_str("            <TableColumn><Sentence>");
+                push_xml_escaped(out, cell);
+                out.push_str("</Sentence></TableColumn>\n");
+            }
+            out.push_str("          </TableRow>\n");
+        }
+        out.push_str("        </Table>\n      </TableStruct>\n");
+    }
+    out.push_str("    </AppdxTable>\n");
 }
 
 fn push_opt_attr(out: &mut String, name: &str, val: Option<&str>) {

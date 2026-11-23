@@ -15,7 +15,7 @@ use super::syntax::{
     split_leading_token, to_fullwidth_digits,
 };
 use super::xml::{
-    parse_title_attributes_fragment, read_encoded_appdx_styles, read_encoded_toc, write_paragraph_caption,
+    parse_title_attributes_fragment, read_encoded_appdx_style_positions, read_encoded_appdx_styles, read_encoded_toc, write_paragraph_caption,
     write_paragraph_number, write_title_attributes_fragment, write_xml_sentence_content,
 };
 use super::markup::{
@@ -59,6 +59,11 @@ fn to_markdown_with_articles(
         && let Ok(encoded) = serde_json::to_string(&doc.appdx_style_xml)
     {
         out.push_str(&format!("law_appdx_styles: {encoded}\n"));
+    }
+    if preserve_editing_metadata && !doc.appdx_style_positions.is_empty()
+        && let Ok(encoded) = serde_json::to_string(&doc.appdx_style_positions)
+    {
+        out.push_str(&format!("law_appdx_style_positions: {encoded}\n"));
     }
     if !doc.law_num.is_empty() {
         out.push_str(&format!("law_num: {}\n", doc.law_num));
@@ -295,6 +300,7 @@ fn write_markdown_subitem(out: &mut String, sub: &LawSubitem, preserve_sentences
 pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
     let mut doc = LawDoc::default();
     let mut table_xml = None;
+    let mut style_positions = None;
     let mut body = md.trim_start_matches('\u{feff}');
     if let Some(after_open) = body.strip_prefix("---\n").or_else(|| body.strip_prefix("---\r\n")) {
         if let Some(end_idx) = after_open.find("\n---") {
@@ -312,6 +318,7 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
                         }
                         "law_enact_statement" => doc.enact_statement = serde_json::from_str(&v).ok(),
                         "law_toc" => doc.toc_xml = read_encoded_toc(&v),
+                        "law_appdx_style_positions" => style_positions = Some(v),
                         "law_appdx_styles" => doc.appdx_style_xml = read_encoded_appdx_styles(&v),
                         "law_appdx_tables" => table_xml = Some(v),
                         "law_num" => doc.law_num = v,
@@ -412,6 +419,9 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
     }
     doc.main_provision = std::mem::take(&mut parsed.main_provision);
     doc.suppl_provisions = std::mem::take(&mut parsed.suppl_provisions);
+    if let Some(encoded) = style_positions {
+        doc.appdx_style_positions = read_encoded_appdx_style_positions(&encoded, doc.appdx_style_xml.len());
+    }
     doc.appdx_tables = std::mem::take(&mut parsed.appdx_tables);
     if let Some(encoded) = table_xml {
         restore_tables(&mut doc, &encoded, true);

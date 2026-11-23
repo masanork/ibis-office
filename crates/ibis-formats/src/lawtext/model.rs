@@ -250,6 +250,8 @@ pub struct LawDoc {
     pub lang: Option<String>,
     pub enact_statement: Option<String>,
     pub(super) toc_xml: Option<String>,
+    // Number of preceding tables for each style, when the appendices are interleaved.
+    pub(super) appdx_style_positions: Vec<usize>,
     pub(super) appdx_style_xml: Vec<String>,
     pub preamble: Option<String>,
     pub main_provision: Vec<LawNode>,
@@ -273,6 +275,7 @@ impl Default for LawDoc {
             lang: Some("ja".to_string()),
             enact_statement: None,
             toc_xml: None,
+            appdx_style_positions: Vec::new(),
             appdx_style_xml: Vec::new(),
             preamble: None,
             main_provision: Vec::new(),
