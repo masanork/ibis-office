@@ -359,6 +359,7 @@ fn checked_ipc_message(
 pub(super) fn visit_arrow_ipc(
     path: &Path,
     selected: &[String],
+    schema_only: bool,
     mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
 ) -> Result<(), String> {
     use arrow_ipc::{convert::try_fb_to_schema, reader::RecordBatchDecoder};
@@ -448,6 +449,9 @@ pub(super) fn visit_arrow_ipc(
         }
         let schema = try_fb_to_schema(schema).map_err(|error| error.to_string())?;
         let mut batch = read_batch(Arc::new(schema))?;
+        if schema_only {
+            return Ok(());
+        }
         let mut previous_end = 8;
         for block in footer
             .recordBatches()
@@ -482,6 +486,9 @@ pub(super) fn visit_arrow_ipc(
         }
         let schema = try_fb_to_schema(schema).map_err(|error| error.to_string())?;
         let mut batch = read_batch(Arc::new(schema))?;
+        if schema_only {
+            return Ok(());
+        }
         while let Some(data) = next_ipc_message(&mut file, size, &mut offset)? {
             batch(data, None)?;
         }

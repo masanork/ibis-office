@@ -930,7 +930,7 @@ impl SlideEditor {
             if let Some(paths) = &source {
                 let has_sqlite = paths.iter().any(|path| ibis_doc_service::is_sqlite(path));
                 tools.extend(crate::ai_tools::sqlite_tool_definitions().filter(|tool| {
-                    has_sqlite || matches!(tool.function.name, "sqlite_query" | "sqlite_query_to_table" | "sqlite_refresh_query_table" | "sqlite_refresh_query_reports")
+                    has_sqlite || matches!(tool.function.name, "sqlite_describe_datasets" | "sqlite_query" | "sqlite_query_to_table" | "sqlite_refresh_query_table" | "sqlite_refresh_query_reports")
                 }));
                 if let Some(last) = messages_to_send.last_mut()
                     && let Some(content) = &mut last.content
@@ -939,7 +939,7 @@ impl SlideEditor {
                         "source": (index + 1).to_string(),
                         "filename": path.file_name().unwrap_or_default().to_string_lossy(),
                     })).collect();
-                    content.push_str(&format!("\n\nSelected analysis files (data): {}. Without datasets, SQLite tools use the first selected SQLite file.", json!(files)));
+                    content.push_str(&format!("\n\nSelected analysis files (data): {}. Use sqlite_describe_datasets with the same datasets array to inspect unfamiliar sources before writing SQL. Standalone SQLite tools use the first selected SQLite file.", json!(files)));
                 }
             }
             (tools, source)

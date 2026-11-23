@@ -45,7 +45,7 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 | アプリ（全形式） | `app_get_version`、`app_list_documents`、`app_open_document`、`app_get_document_info`、`app_save_document`、`app_close_document`、`app_export_document`（PDF またはページごとの PNG）、`app_undo_document`、`app_redo_document` |
 | Word（.docx） | 読む：`docx_get_outline`、`docx_get_text`（Markdown またはプレーンテキスト）、`docx_list_paragraphs`、`docx_get_paragraph`、`docx_list_tables`、`docx_find_text`。編集：`docx_insert_text`、`docx_delete_text`、`docx_replace_text`、`docx_set_paragraph_text`、`docx_set_paragraph_format`、`docx_set_run_format`、`docx_insert_table` |
 | Excel（.xlsx） | 読む：`xlsx_list_sheets`、`xlsx_get_used_range`、`xlsx_get_cells`、`xlsx_find_text`、`xlsx_check_machine_readability`、`xlsx_trace_formula`、`xlsx_list_sheet_rules`、`xlsx_list_pivots`、`xlsx_list_query_reports`。編集：`xlsx_set_cells`（`=` に続けて数式を指定）、`xlsx_clear_cells`、`xlsx_set_format`、`xlsx_add_sheet`、`xlsx_delete_sheet`、`xlsx_rename_sheet`、`xlsx_calculate_workbook`、`xlsx_create_chart`、`xlsx_set_validation`、`xlsx_clear_validation`、`xlsx_create_pivot`、`xlsx_refresh_pivot`、`xlsx_set_query_report_checks` |
-| SQLite（.sqlite、.sqlite3、.db） | 読む：`sqlite_list_tables`、`sqlite_describe_table`、`sqlite_count_rows`、`sqlite_query`。ブック編集：`sqlite_query_to_table`、`sqlite_refresh_query_table`、`sqlite_refresh_query_reports` |
+| SQLite（.sqlite、.sqlite3、.db） | 読む：`sqlite_list_tables`、`sqlite_describe_table`、`sqlite_describe_datasets`、`sqlite_count_rows`、`sqlite_query`。ブック編集：`sqlite_query_to_table`、`sqlite_refresh_query_table`、`sqlite_refresh_query_reports` |
 | PowerPoint（.pptx） | 読む：`pptx_list_slides`、`pptx_get_slide`、`pptx_get_shape_text`、`pptx_get_notes`、`pptx_list_layouts`。編集：`pptx_set_shape_text`、`pptx_replace_text`、`pptx_set_run_format`、`pptx_set_notes`、`pptx_add_slide`、`pptx_delete_slide`、`pptx_move_slide`、`pptx_set_frame`、`pptx_delete_shape` |
 
 `xlsx_create_chart` は、元データの `sheet` と、配置先の `destination_sheet`・`anchor`（例 `F2`）を指定します。見出しを含む `range` または明示的な `series` を渡せます。作成したグラフは元のセルを参照します。
@@ -64,7 +64,9 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 
 `sqlite_query` は単一の `SELECT` または `WITH … SELECT` と、任意の位置パラメータ `params` を受け付けます。SQL、パラメータ、列名、行、打ち切りフラグ `truncated` を返します。プレビューは既定50行、最大1,000行で、応答サイズにも上限があります。クエリ実行の上限は3秒です。
 
-CSV・Parquet・Arrow IPC・JSON Lines・Avro・SQLite のテーブルを一緒に調べるには、`sqlite_query` または `sqlite_query_to_table` に `datasets` を渡します。各要素にファイルの `source` とSQLで使うテーブル名 `alias` を指定し、SQLiteの場合は元の `table` 名も渡します。この形式では `path` を省略します。例えばSQLiteの表を `facts`、CSVを `labels` として登録し、`SELECT * FROM facts JOIN labels USING (code)` と書けます。列名は `SELECT * FROM labels LIMIT 0` でも確認できます。内蔵アシスタントでは複数ファイルをまとめて選び、`source` に選択順のファイル番号を使います。
+CSV・Parquet・Arrow IPC・JSON Lines・Avro・SQLite のテーブルを一緒に調べるには、`sqlite_query` または `sqlite_query_to_table` に `datasets` を渡します。各要素にファイルの `source` とSQLで使うテーブル名 `alias` を指定し、SQLiteの場合は元の `table` 名も渡します。この形式では `path` を省略します。例えばSQLiteの表を `facts`、CSVを `labels` として登録し、`SELECT * FROM facts JOIN labels USING (code)` と書けます。内蔵アシスタントでは複数ファイルをまとめて選び、`source` に選択順のファイル番号を使います。
+
+SQLを書く前に、同じ `datasets` を `sqlite_describe_datasets` に渡すと、別名・形式・SQLから見える列名と格納型を確認できます。列順は読み込み時の列選択と一致します。CSV列は `TEXT`、SQLite列は行ごとに格納型が変わり得るため `DYNAMIC` と返します。SQLiteの宣言型とキーは `sqlite_describe_table` で確認できます。JSON Linesは最大32 MiBを走査して型を推定します。データ行は返しません。
 
 Parquet では `columns` に読み込む列の正確な名前を順番に指定できます（例 `["code", "amount"]`）。選ばなかった列は、入れ子列も含め、入力セル数の上限を適用する前に読み飛ばします。省略すると全列を読み込みます。列の選択はクエリ帳票に保存し、更新時にも使います。
 
@@ -93,6 +95,8 @@ CSVはカンマ区切り、先頭行が見出しで、値を文字列として�
 更新は表のデータをその場で入れ替え、テーブル名を参照するピボットと連動グラフを更新します。すべてまとめて取り消せます。正常に0件になった場合は、見出しを残して前回の明細を消去します。見出しが変わった場合や更新範囲に別のデータがある場合は中止します。内蔵アシスタントでは下書きで確認できます。
 
 `sqlite_refresh_query_reports` は、複数のレポートを一括で確認・更新します。`bindings` で保存時のファイル名に今回のファイルを割り当てます。例えばMCPでは `{"monthly.csv":"/data/next.csv"}`、内蔵アシスタントではパスの代わりに選択したファイル番号を指定します。同じ保存名を参照するレポートは割り当てを共有します。`tables` を省略すると全件が対象になり、1回に更新できるのは12件までです。`preview: true` でブックを変更せずに更新前後の行数と配置の衝突を確認できます。適用時にクエリを再実行し、すべてを一度に取り消せる形で反映します。途中で失敗した場合は対象の表名を返し、ブックへの反映を中止します。
+
+帳票にはSQLが使った入力の列名と型を保存します。個別更新と一括更新の結果に `schema_changes`（代表20件まで）と `schema_change_count`（全件数）が出る場合があります。列の追加・削除・型変更は警告として扱い、既存のSQLと検証チェックが通れば更新できます。比較基準は適用が成功したときだけ更新され、既存帳票では最初に適用できた入力が基準になります。スタンドアロンSQLiteでは通常テーブルの宣言型、登録式のデータセットではSQLへ渡す列と型を比較します。帳票定義の保存上限に収まらない場合は、更新時に `input_schema_status: "unavailable"` を返します。
 
 一括更新では、参照元と列指定が同じ帳票が DB を共有します。Arrow IPC・JSON Lines・Avro のファイル合計が 8 MiB を超える場合やメモリ取り込みの上限に達した場合は、一時ディスク DB へ順次転写します。同じグループの他形式も、従来の入力上限内で結合できます。小さい入力はメモリ DB を共有します。`arrow_disk: true` で同一の Arrow 入力を明示的にディスクへ転写することもできます。準備後に一時 DB は削除します。プレビューした内容を元ファイルの再読み込みなしで適用するには、同じ接続で `snapshot_id` と `document_id` だけを指定します。ID は一度だけ使えます。ブックの変更や新たな一括更新の要求があれば、プレビューをやり直します。
 

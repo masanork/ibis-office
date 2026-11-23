@@ -53,26 +53,34 @@ impl<R: Read> Read for CountedInput<'_, R> {
 fn read_records(bytes: &[u8]) -> Result<QTable, String> {
     let mut table = QTable::default();
     let mut text_budget = MAX_TEXT_BYTES;
-    visit_records(bytes, bytes.len(), &[], MAX_COLUMNS, |columns, row| {
-        if let Some(row) = row {
-            let count = table.rows.len() + 1;
-            if count > MAX_ROWS || columns.len().saturating_mul(count) > MAX_CELLS {
-                return Err("Avro source exceeds the query editor's table size limit".into());
+    visit_records(
+        bytes,
+        bytes.len(),
+        &[],
+        MAX_COLUMNS,
+        false,
+        |columns, row| {
+            if let Some(row) = row {
+                let count = table.rows.len() + 1;
+                if count > MAX_ROWS || columns.len().saturating_mul(count) > MAX_CELLS {
+                    return Err("Avro source exceeds the query editor's table size limit".into());
+                }
+                super::sqlite_source::charge_dataset_text(&row, &mut text_budget)
+                    .map_err(|_| "Avro text exceeds the 128 MiB limit")?;
+                table.rows.push(row);
+            } else {
+                table.columns = columns.to_vec();
             }
-            super::sqlite_source::charge_dataset_text(&row, &mut text_budget)
-                .map_err(|_| "Avro text exceeds the 128 MiB limit")?;
-            table.rows.push(row);
-        } else {
-            table.columns = columns.to_vec();
-        }
-        Ok(())
-    })?;
+            Ok(())
+        },
+    )?;
     Ok(table)
 }
 
 pub(super) fn visit_avro(
     path: &Path,
     selected: &[String],
+    schema_only: bool,
     visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
 ) -> Result<(), String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
@@ -83,6 +91,7 @@ pub(super) fn visit_avro(
         size,
         selected,
         256,
+        schema_only,
         visit,
     )
 }
@@ -92,6 +101,7 @@ fn visit_records(
     bytes: usize,
     selected: &[String],
     max_columns: usize,
+    schema_only: bool,
     mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
 ) -> Result<(), String> {
     // This model is the only consumer of apache-avro in the workspace.
@@ -141,6 +151,9 @@ fn visit_records(
         })
         .collect::<Result<Vec<_>, String>>()?;
     visit(&columns, None)?;
+    if schema_only {
+        return Ok(());
+    }
     for row in 1.. {
         let before = position.get();
         let Some(record) = reader.next() else {

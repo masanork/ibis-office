@@ -5,9 +5,9 @@
 use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
-    DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, read_arrow_ipc_dataset, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
-    sqlite_count, sqlite_tables, validate_sqlite_select,
+    DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
+    SqliteRows, SqliteScalar, dataset_sql_type, read_arrow_ipc_dataset, parquet_dataset_columns, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
+    sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
 
@@ -19,6 +19,7 @@ pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "fea
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
 const PATH: &str = "path";
 const MAX_FILTERS: usize = 16;
+const REPORT_DEFINITION_BYTES: usize = 32 * 1024;
 
 const TOOLS: &[Tool] = &[
     Tool {
@@ -36,6 +37,14 @@ const TOOLS: &[Tool] = &[
         returns_content: true,
         schema: || object(&[source_path(), table_name()], &[PATH, "table"]),
         run: describe_table,
+    },
+    Tool {
+        name: "sqlite_describe_datasets",
+        description: "Inspect SQL column names and storage types before writing a query. Use the same datasets array as sqlite_query. Returns schema without rows.",
+        access: Access::Read,
+        returns_content: true,
+        schema: || object(&[datasets_property()], &["datasets"]),
+        run: describe_datasets,
     },
     Tool {
         name: "sqlite_query",
@@ -73,7 +82,7 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "sqlite_refresh_query_table",
-        description: "Re-run the saved query after binding its source files in order, replace the table, and refresh its linked pivots and charts in one edit.",
+        description: "Re-run the saved query after binding its source files in order, replace the table, and refresh its linked pivots and charts in one edit. Returns input schema changes as warnings.",
         access: Access::Edit,
         returns_content: false,
         schema: || {
@@ -93,7 +102,7 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "sqlite_refresh_query_reports",
-        description: "Preview or atomically refresh workbook query reports from shared file bindings. Preview reports row counts and checks for overlap without editing.",
+        description: "Preview or atomically refresh workbook query reports from shared file bindings. Preview reports row counts and input schema changes and checks for overlap without editing.",
         access: Access::Edit,
         returns_content: true,
         schema: || {
@@ -384,39 +393,43 @@ fn query_properties() -> Vec<(&'static str, Value)> {
             "sql",
             string("One SQLite SELECT or WITH query. Use positional ? parameters."),
         ),
-        (
-            "datasets",
-            json!({
-                "type":"array","minItems":1,"maxItems":8,
-                "description":"Use an in-memory database containing only these CSV, Parquet, Arrow IPC, JSON Lines, Avro and/or SQLite tables.",
-                "items":object(&[
-                    ("source", string("Path to a CSV, Parquet, Arrow IPC, JSON Lines, Avro or SQLite file in an allowed folder.")),
-                    ("alias", string("SQL table name to register for this dataset.")),
-                    ("table", string("Source table name, required for SQLite files.")),
-                    ("where", json!({
-                        "type":"object","minProperties":1,"maxProperties":MAX_FILTERS,
-                        "additionalProperties":{"anyOf":[
-                            {"type":["string","number","boolean","null"]},
-                            {"type":"object","minProperties":1,"additionalProperties":false,"properties":{
-                                "lt":{"type":["string","number"]},"lte":{"type":["string","number"]},
-                                "gt":{"type":["string","number"]},"gte":{"type":["string","number"]}
-                            }}
-                        ]},
-                        "description":"Parquet only: equality or range conditions, combined with AND. Scalar null matches missing values."
-                    })),
-                    ("columns", json!({
-                        "type":"array","minItems":1,"maxItems":256,"uniqueItems":true,
-                        "items":{"type":"string","minLength":1},
-                        "description":"Parquet, Arrow IPC, JSON Lines and Avro: exact column names to load, in order. Omit to load all columns."
-                    })),
-                ], &["source","alias"]),
-            }),
-        ),
+        datasets_property(),
         (
             "params",
             json!({"type":"array","maxItems":100,"items":{"type":["string","number","null"]}}),
         ),
     ]
+}
+
+fn datasets_property() -> (&'static str, Value) {
+    (
+        "datasets",
+        json!({
+            "type":"array","minItems":1,"maxItems":8,
+            "description":"Register these CSV, Parquet, Arrow IPC, JSON Lines, Avro and/or SQLite tables.",
+            "items":object(&[
+                ("source", string("Path to a CSV, Parquet, Arrow IPC, JSON Lines, Avro or SQLite file in an allowed folder.")),
+                ("alias", string("SQL table name to register for this dataset.")),
+                ("table", string("Source table name, required for SQLite files.")),
+                ("where", json!({
+                    "type":"object","minProperties":1,"maxProperties":MAX_FILTERS,
+                    "additionalProperties":{"anyOf":[
+                        {"type":["string","number","boolean","null"]},
+                        {"type":"object","minProperties":1,"additionalProperties":false,"properties":{
+                            "lt":{"type":["string","number"]},"lte":{"type":["string","number"]},
+                            "gt":{"type":["string","number"]},"gte":{"type":["string","number"]}
+                        }}
+                    ]},
+                    "description":"Parquet only: equality or range conditions, combined with AND. Scalar null matches missing values."
+                })),
+                ("columns", json!({
+                    "type":"array","minItems":1,"maxItems":256,"uniqueItems":true,
+                    "items":{"type":"string","minLength":1},
+                    "description":"Parquet, Arrow IPC, JSON Lines and Avro: exact column names to load, in order. Omit to load all columns."
+                })),
+            ], &["source","alias"]),
+        }),
+    )
 }
 
 fn sql_params(args: &Value) -> Result<Vec<Option<SqliteScalar<'_>>>, ToolError> {
@@ -492,8 +505,14 @@ fn query(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
-fn complete_query(service: &Service, args: &Value) -> Result<SqliteRows, ToolError> {
-    require_complete(run_query(service, args, 10_000, 4 * 1024 * 1024)?)
+fn prepare_export(service: &Service, args: &Value) -> Result<(SqliteRows, Value), ToolError> {
+    let session = query_session(service, args)?;
+    let rows = require_complete(run_session_query(&session, args, 10_000, 4 * 1024 * 1024)?)?;
+    let mut definition = saved_definition(args)?;
+    if let Some(schema) = report_input_schema(&session)? {
+        set_input_schema(&mut definition, &schema);
+    }
+    Ok((rows, definition))
 }
 
 fn require_complete(rows: SqliteRows) -> Result<SqliteRows, ToolError> {
@@ -507,8 +526,7 @@ fn require_complete(rows: SqliteRows) -> Result<SqliteRows, ToolError> {
 }
 
 fn query_to_table(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let rows = complete_query(service, args)?;
-    let definition = saved_definition(args)?;
+    let (rows, definition) = prepare_export(service, args)?;
     crate::tools_pivot::write_table(service, args, rows, definition)
 }
 
@@ -517,8 +535,7 @@ pub struct SqliteTableExport {
     arguments: Value,
     rows: SqliteRows,
     definition: Value,
-    refresh: bool,
-    checks: Vec<Value>,
+    refresh: Option<RefreshReview>,
 }
 
 impl SqliteTableExport {
@@ -533,8 +550,8 @@ impl SqliteTableExport {
             context,
             self.arguments,
             |service, args| {
-                if self.refresh {
-                    apply_single_refresh(service, args, self.rows, &self.definition, &self.checks)
+                if let Some(review) = self.refresh {
+                    apply_single_refresh(service, args, self.rows, &self.definition, &review)
                 } else {
                     crate::tools_pivot::write_table(service, args, self.rows, self.definition)
                 }
@@ -555,14 +572,12 @@ pub fn prepare_selected_datasets_export(
     mut args: Value,
 ) -> Result<SqliteTableExport, ToolError> {
     let service = selected_sources(paths, &mut args)?;
-    let rows = complete_query(&service, &args)?;
-    let definition = saved_definition(&args)?;
+    let (rows, definition) = prepare_export(&service, &args)?;
     Ok(SqliteTableExport {
         arguments: args,
         rows,
         definition,
-        refresh: false,
-        checks: Vec::new(),
+        refresh: None,
     })
 }
 
@@ -653,7 +668,43 @@ fn dataset_columns(spec: &Value, kind: &str) -> Result<Vec<String>, ToolError> {
     }
 }
 
+fn describe_datasets(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &["datasets"])?;
+    let mut result = Vec::new();
+    let envelope_bytes = r#"{"datasets":[]}"#.len();
+    let mut remaining = service.limits.page_bytes.saturating_sub(envelope_bytes);
+    visit_datasets(service, &args["datasets"], true, |alias, kind, source_table, table| {
+        let columns: Vec<_> = table.columns.into_iter().map(|column| {
+            json!({"name": column.name, "sql_type": dataset_sql_type(column.ty)})
+        }).collect();
+        let mut entry = json!({"alias": alias, "format": kind, "columns": columns});
+        if let Some(name) = source_table {
+            entry["table"] = json!(name);
+        }
+        let bytes = entry.to_string().len() + usize::from(!result.is_empty());
+        remaining = remaining.checked_sub(bytes)
+            .ok_or_else(|| ToolError::new("result_too_large", "Dataset schema exceeds the response limit"))?;
+        result.push(entry);
+        Ok(())
+    })?;
+    Ok(json!({"datasets": result}))
+}
+
 fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable)>, ToolError> {
+    let mut datasets = Vec::new();
+    visit_datasets(service, specs, false, |alias, _, _, table| {
+        datasets.push((alias.to_owned(), table));
+        Ok(())
+    })?;
+    Ok(datasets)
+}
+
+fn visit_datasets(
+    service: &Service,
+    specs: &Value,
+    schema_only: bool,
+    mut visit: impl FnMut(&str, &str, Option<&str>, QTable) -> Result<(), ToolError>,
+) -> Result<(), ToolError> {
     use ibis_doc_model::CellValue;
     let specs = specs
         .as_array()
@@ -662,16 +713,21 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
     let mut aliases = std::collections::HashSet::new();
     let mut cells = 100_000usize;
     let mut text = 8 * 1024 * 1024usize;
-    specs.iter().map(|spec| {
+    for spec in specs {
         crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where"])?;
         let alias = dataset_alias(spec, &mut aliases)?;
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
-        if !metadata.is_file() || metadata.len() > service.limits.max_file_size.min(32 * 1024 * 1024) {
+        let kind = source_kind(&path);
+        let limit = if schema_only && kind != "json_lines" {
+            service.limits.max_file_size
+        } else {
+            service.limits.max_file_size.min(32 * 1024 * 1024)
+        };
+        if !metadata.is_file() || metadata.len() > limit {
             return Err(ToolError::invalid("dataset must be a regular file within the input size limit"));
         }
         let table_name = spec.opt_str("table")?;
-        let kind = source_kind(&path);
         let columns = dataset_columns(spec, kind)?;
         let filters = match spec.get("where") {
             None => Vec::new(),
@@ -684,20 +740,40 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
                 .iter().map(|(name, value)| Ok((name.as_str(), parquet_predicate(value)?)))
                 .collect::<Result<Vec<_>, ToolError>>()?,
         };
-        let table = if is_sqlite(&path) {
-            let name = table_name.ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?;
-            read_sqlite_table_bounded(&path, name, cells, text).map_err(sqlite_error)?
+        if kind != "sqlite" && table_name.is_some() {
+            return Err(ToolError::invalid("table is only used for SQLite datasets"));
+        }
+        let schema = |columns| QTable { columns, rows: Vec::new() };
+        let table = if kind == "csv" {
+            read_csv_dataset(&path, cells, text, schema_only)?
         } else {
-            if table_name.is_some() {
-                return Err(ToolError::invalid("table is only used for SQLite datasets"));
-            }
-            match kind {
-                "parquet" => read_parquet_filtered(&path, &columns, &filters, cells, text).map_err(sqlite_error)?,
-                "arrow_ipc" => read_arrow_ipc_dataset(&path, &columns, cells, text).map_err(sqlite_error)?,
-                "json_lines" => DiskDataset::JsonLines(path, columns).collect_bounded(cells, text).map_err(sqlite_error)?,
-                "avro" => DiskDataset::Avro(path, columns).collect_bounded(cells, text).map_err(sqlite_error)?,
-                _ => read_csv_dataset(&path, cells, text)?,
-            }
+            match (kind, schema_only) {
+                ("sqlite", _) => {
+                    let name = table_name.ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?;
+                    if schema_only {
+                        sqlite_dataset_columns(&path, name).map(schema)
+                    } else {
+                        read_sqlite_table_bounded(&path, name, cells, text)
+                    }
+                }
+                ("parquet", true) => parquet_dataset_columns(&path, &columns, &filters).map(schema),
+                ("parquet", false) => read_parquet_filtered(&path, &columns, &filters, cells, text),
+                ("arrow_ipc", true) => DiskDataset::ArrowIpc(path, columns).columns().map(schema),
+                ("arrow_ipc", false) => read_arrow_ipc_dataset(&path, &columns, cells, text),
+                ("json_lines" | "avro", _) => {
+                    let source = if kind == "json_lines" {
+                        DiskDataset::JsonLines(path, columns)
+                    } else {
+                        DiskDataset::Avro(path, columns)
+                    };
+                    if schema_only {
+                        source.columns().map(schema)
+                    } else {
+                        source.collect_bounded(cells, text)
+                    }
+                }
+                _ => return Err(ToolError::invalid("unsupported dataset format")),
+            }.map_err(sqlite_error)?
         };
         if table.columns.is_empty() || table.columns.len() > 256 {
             return Err(ToolError::invalid("datasets require 1 to 256 columns"));
@@ -709,11 +785,12 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
                 text = text.checked_sub(value.len()).ok_or_else(|| ToolError::invalid("datasets exceed the text size limit"))?;
             }
         }
-        Ok((alias.to_owned(), table))
-    }).collect()
+        visit(alias, kind, table_name, table)?;
+    }
+    Ok(())
 }
 
-fn read_csv_dataset(path: &Path, max_cells: usize, max_text: usize) -> Result<QTable, ToolError> {
+fn read_csv_dataset(path: &Path, max_cells: usize, max_text: usize, schema_only: bool) -> Result<QTable, ToolError> {
     use ibis_doc_model::CellValue;
     use std::io::Read;
     let mut bytes = Vec::new();
@@ -734,23 +811,25 @@ fn read_csv_dataset(path: &Path, max_cells: usize, max_text: usize) -> Result<QT
     if headers.len() > 256 || headers.iter().any(|header| header.trim().is_empty()) {
         return Err(ToolError::invalid("CSV needs 1 to 256 nonblank headers"));
     }
-    let width = headers.len();
-    let mut rows = Vec::new();
-    for record in records {
-        if record.len() != width || (rows.len() + 1) * width > max_cells {
-            return Err(ToolError::invalid(
-                "CSV rows must match their header width and fit the cell limit",
-            ));
-        }
-        rows.push(record.into_iter().map(CellValue::Text).collect());
-    }
-    let columns = headers
+    let columns: Vec<_> = headers
         .into_iter()
         .map(|name| QColumn {
             name,
             ty: QType::Text,
         })
         .collect();
+    let mut rows = Vec::new();
+    if !schema_only {
+        let width = columns.len();
+        for record in records {
+            if record.len() != width || (rows.len() + 1) * width > max_cells {
+                return Err(ToolError::invalid(
+                    "CSV rows must match their header width and fit the cell limit",
+                ));
+            }
+            rows.push(record.into_iter().map(CellValue::Text).collect());
+        }
+    }
     Ok(QTable { columns, rows })
 }
 
@@ -866,7 +945,7 @@ fn saved_definition(args: &Value) -> Result<Value, ToolError> {
         "sql":args["sql"], "params":args.get("params").cloned().unwrap_or_else(|| json!([])),
         "sources":sources,
     });
-    if definition.to_string().len() > 32 * 1024 {
+    if definition.to_string().len() > REPORT_DEFINITION_BYTES {
         return Err(ToolError::invalid(
             "The saved report definition exceeds 32 KiB",
         ));
@@ -941,12 +1020,97 @@ fn bound_query(definition: &Value, args: &Value) -> Result<Value, ToolError> {
     Ok(query)
 }
 
+fn report_input_schema(session: &SqliteQuerySession) -> Result<Option<SqliteInputSchema>, ToolError> {
+    session.input_schema(REPORT_DEFINITION_BYTES).map_err(sqlite_error)
+}
+
+fn set_input_schema(definition: &mut Value, schema: &SqliteInputSchema) -> bool {
+    let previous = definition["input_schema"].clone();
+    definition["input_schema"] = json!(schema);
+    if definition.to_string().len() <= REPORT_DEFINITION_BYTES {
+        return true;
+    }
+    if previous.is_null() {
+        definition.as_object_mut().unwrap().remove("input_schema");
+    } else {
+        definition["input_schema"] = previous;
+    }
+    false
+}
+
+struct RefreshReview {
+    checks: Vec<Value>,
+    input_schema: Option<SqliteInputSchema>,
+}
+
+impl RefreshReview {
+    fn summarize(
+        &self,
+        definition: &Value,
+        summary: &mut Value,
+        commands: &mut Vec<ibis_doc_model::Command>,
+    ) {
+        use ibis_doc_model::{Command, SheetCommand};
+
+        if !self.checks.is_empty() {
+            summary["checks"] = json!(self.checks);
+        }
+        let Some(current) = &self.input_schema else {
+            summary["input_schema_status"] = json!("unavailable");
+            return;
+        };
+        let previous = definition.get("input_schema")
+            .and_then(|schema| serde_json::from_value::<SqliteInputSchema>(schema.clone()).ok());
+        if previous.as_ref() == Some(current) {
+            return;
+        }
+        let mut next = definition.clone();
+        if set_input_schema(&mut next, current) {
+            commands.push(Command::Sheet(SheetCommand::SetQueryReport {
+                table: summary["table"].as_str().expect("refresh summary has a table name").to_owned(),
+                definition: next,
+            }));
+        } else {
+            summary["input_schema_status"] = json!("unavailable");
+        }
+        if let Some(previous) = previous {
+            let mut changes = Vec::new();
+            let mut count = 0;
+            let mut record = |source: &str, column: &str, from: Option<&str>, to: Option<&str>| {
+                count += 1;
+                if changes.len() < 20 {
+                    changes.push(json!({"source":source,"column":column,"previous":from,"current":to}));
+                }
+            };
+            for (source, columns) in &previous {
+                for (column, from) in columns {
+                    let to = current.get(source).and_then(|columns| columns.get(column));
+                    if to != Some(from) {
+                        record(source, column, Some(from), to.map(String::as_str));
+                    }
+                }
+            }
+            for (source, columns) in current {
+                for (column, to) in columns {
+                    if !previous.get(source).is_some_and(|columns| columns.contains_key(column)) {
+                        record(source, column, None, Some(to));
+                    }
+                }
+            }
+            if count != 0 {
+                summary["schema_changes"] = json!(changes);
+                summary["schema_change_count"] = json!(count);
+            }
+        }
+    }
+}
+
 fn refresh_query_table(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let open = crate::tools_xlsx::workbook_document(service, args.str_arg("document_id")?)?;
     let definition = query_report_definition(open.document.presentation(), args)?;
-    let (rows, checks) =
+    let (rows, review) =
         refresh_query_result(service, &bound_query(&definition, args)?, &definition)?;
-    apply_single_refresh(service, args, rows, &definition, &checks)
+    apply_single_refresh(service, args, rows, &definition, &review)
 }
 
 fn apply_single_refresh(
@@ -954,21 +1118,19 @@ fn apply_single_refresh(
     args: &Value,
     rows: SqliteRows,
     definition: &Value,
-    checks: &[Value],
+    review: &RefreshReview,
 ) -> Result<Value, ToolError> {
-    enforce_checks(checks)?;
+    enforce_checks(&review.checks)?;
     let id = args.str_arg("document_id")?;
     let open = crate::tools_xlsx::workbook_document(service, id)?;
-    let (mut summary, commands) = crate::tools_pivot::plan_query_table_refresh(
+    let (mut summary, mut commands) = crate::tools_pivot::plan_query_table_refresh(
         open.document.presentation(),
         args,
         rows,
         definition,
         &[],
     )?;
-    if !checks.is_empty() {
-        summary["checks"] = json!(checks);
-    }
+    review.summarize(definition, &mut summary, &mut commands);
     crate::edit::execute(open, commands)?;
     Ok(crate::edit::edited(id, open, summary, Vec::new()))
 }
@@ -985,14 +1147,13 @@ pub fn prepare_selected_query_refresh(
         *entry = json!(selected_file(paths, entry)?);
     }
     let service = selected_file_service(paths);
-    let (rows, checks) =
+    let (rows, review) =
         refresh_query_result(&service, &bound_query(&definition, &args)?, &definition)?;
     Ok(SqliteTableExport {
         arguments: args,
         rows,
         definition,
-        refresh: true,
-        checks,
+        refresh: Some(review),
     })
 }
 
@@ -1064,7 +1225,7 @@ struct QueryReportResult {
     name: String,
     definition: Value,
     rows: SqliteRows,
-    checks: Vec<Value>,
+    review: RefreshReview,
 }
 
 fn batch_bindings(args: &Value) -> Result<&serde_json::Map<String, Value>, ToolError> {
@@ -1202,10 +1363,12 @@ fn batch_query_results(
         let (_, name, _, query) = &reports[0];
         let session = batch_session(service, query, arrow_disk)
             .map_err(|error| report_error(name, error))?;
+        let input = report_input_schema(&session).map_err(|error| report_error(name, error))?;
         for (index, name, definition, query) in reports {
             let (rows, checks) = refresh_query_in_session(&session, &query, &definition)
                 .map_err(|error| report_error(&name, error))?;
-            results.push((index, QueryReportResult { name, definition, rows, checks }));
+            let review = RefreshReview { checks, input_schema: input.clone() };
+            results.push((index, QueryReportResult { name, definition, rows, review }));
         }
     }
     results.sort_unstable_by_key(|(index, _)| *index);
@@ -1275,12 +1438,12 @@ fn plan_batch_refresh(
     let mut commands = Vec::new();
     let mut blocked = false;
     for result in results {
-        let check_result = enforce_checks(&result.checks);
+        let check_result = enforce_checks(&result.review.checks);
         blocked |= check_result.is_err();
         if !preview {
             check_result.map_err(|error| report_error(&result.name, error))?;
         }
-        let (mut summary, update) = crate::tools_pivot::plan_query_table_refresh(
+        let (mut summary, mut update) = crate::tools_pivot::plan_query_table_refresh(
             scratch.presentation(),
             &json!({"table":result.name}),
             result.rows,
@@ -1288,12 +1451,10 @@ fn plan_batch_refresh(
             metrics.get(&result.name).map_or(&[], Vec::as_slice),
         )
         .map_err(|error| report_error(&result.name, error))?;
+        result.review.summarize(&result.definition, &mut summary, &mut update);
         scratch.execute(update.clone()).map_err(|error| {
             ToolError::new("edit_rejected", format!("{}: {error:?}", result.name))
         })?;
-        if !result.checks.is_empty() {
-            summary["checks"] = json!(result.checks);
-        }
         reports.push(summary);
         commands.extend(update);
     }
@@ -1518,7 +1679,7 @@ fn set_query_report_checks(service: &mut Service, args: &Value) -> Result<Value,
     if !checks.is_empty() {
         definition["checks"] = json!(checks);
     }
-    if definition.to_string().len() > 32 * 1024 {
+    if definition.to_string().len() > REPORT_DEFINITION_BYTES {
         return Err(ToolError::invalid(
             "The saved report definition exceeds 32 KiB",
         ));
@@ -1539,8 +1700,11 @@ fn refresh_query_result(
     service: &Service,
     args: &Value,
     definition: &Value,
-) -> Result<(SqliteRows, Vec<Value>), ToolError> {
-    refresh_query_in_session(&query_session(service, args)?, args, definition)
+) -> Result<(SqliteRows, RefreshReview), ToolError> {
+    let session = query_session(service, args)?;
+    let (rows, checks) = refresh_query_in_session(&session, args, definition)?;
+    let input_schema = report_input_schema(&session)?;
+    Ok((rows, RefreshReview { checks, input_schema }))
 }
 
 fn refresh_query_in_session(

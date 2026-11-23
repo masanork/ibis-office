@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
+mod crypto;
 mod ledger;
 pub use ledger::{can_refresh, open_action_queue, refresh_xlsx};
 
@@ -316,32 +317,49 @@ const COMPONENT_COLUMNS: &[&str] = &[
     "BOM reference",
 ];
 
-fn components(doc: &Value) -> Result<Vec<Row>, String> {
-    fn add(value: &Value, parent: &str, rows: &mut Vec<Row>) -> Result<(), String> {
-        let mut row = vec![parent.to_owned()];
-        row.extend(
-            ["type", "group", "name", "version", "purl", "bom-ref"]
-                .map(|key| value[key].as_str().unwrap_or_default().to_owned()),
-        );
+fn component_tree(doc: &Value) -> Result<Vec<(&Value, &str)>, String> {
+    fn add<'a>(
+        value: &'a Value,
+        parent: &'a str,
+        items: &mut Vec<(&'a Value, &'a str)>,
+    ) -> Result<(), String> {
+        items.push((value, parent));
         let next_parent = value["bom-ref"]
             .as_str()
             .or_else(|| value["name"].as_str())
             .unwrap_or_default();
-        rows.push(row);
         for child in array(value, "components", true)? {
-            add(child, next_parent, rows)?;
+            add(child, next_parent, items)?;
         }
         Ok(())
     }
 
-    let mut rows = Vec::new();
+    let mut items = Vec::new();
     if let Some(subject) = doc["metadata"].get("component") {
-        add(subject, "", &mut rows)?;
+        add(subject, "", &mut items)?;
     }
     for value in array(doc, "components", true)? {
-        add(value, "", &mut rows)?;
+        add(value, "", &mut items)?;
     }
-    Ok(rows)
+    Ok(items)
+}
+
+fn component_rows(items: &[(&Value, &str)]) -> Vec<Row> {
+    items
+        .iter()
+        .map(|(value, parent)| {
+            let mut row = vec![(*parent).to_owned()];
+            row.extend(
+                ["type", "group", "name", "version", "purl", "bom-ref"]
+                    .map(|key| value[key].as_str().unwrap_or_default().to_owned()),
+            );
+            row
+        })
+        .collect()
+}
+
+fn components(doc: &Value) -> Result<Vec<Row>, String> {
+    Ok(component_rows(&component_tree(doc)?))
 }
 
 /// Export the review, component inventories, and input evidence as an XLSX workbook.
@@ -454,13 +472,18 @@ pub fn open_table(input: (&str, &[u8])) -> Result<Option<crate::Opened>, String>
 }
 
 fn table_xlsx_from(doc: &Value, input: (&str, &[u8])) -> Result<Vec<u8>, String> {
-    let table: Table = if doc.get("bomFormat").is_some() {
+    if doc.get("bomFormat").is_some() {
         inventory(doc)?;
-        ("Components", COMPONENT_COLUMNS, components(doc)?)
-    } else {
-        ("Findings", ledger::HEADERS, ledger::rows(scan(doc)?))
-    };
-    workbook([table, input_artifact(input)])
+        let items = component_tree(doc)?;
+        let mut tables = crypto::tables(doc, &items)?;
+        tables.push(("Components", COMPONENT_COLUMNS, component_rows(&items)));
+        tables.push(input_artifact(input));
+        return write_workbook(tables);
+    }
+    workbook([
+        ("Findings", ledger::HEADERS, ledger::rows(scan(doc)?)),
+        input_artifact(input),
+    ])
 }
 
 fn input_artifact((name, bytes): (&str, &[u8])) -> Table {
@@ -472,6 +495,10 @@ fn input_artifact((name, bytes): (&str, &[u8])) -> Table {
 }
 
 fn workbook<const N: usize>(tables: [Table; N]) -> Result<Vec<u8>, String> {
+    write_workbook(tables)
+}
+
+fn write_workbook(tables: impl IntoIterator<Item = Table>) -> Result<Vec<u8>, String> {
     use ibis_doc_model::sheet_ops::{StructureEdit, apply_structure};
     use ibis_doc_model::{
         AutoFilter, CellRange, CellStyle, CellValue, ShapeKind,

@@ -133,6 +133,8 @@ pub struct LawSentence {
     pub function: Option<String>,
     pub indent: Option<String>,
     pub writing_mode: Option<String>,
+    // Escaped XML containing text and validated Ruby/Rt elements only.
+    ruby_markup: Option<String>,
 }
 
 /// Column as used in an XML item or sub-item sentence container.
@@ -178,15 +180,25 @@ impl LawSentenceContent {
             Self::Sentences(sentences) => sentences.len() > 1 || sentences.iter().any(|sentence| {
                 sentence.num.is_some() || sentence.function.is_some()
                     || sentence.indent.is_some() || sentence.writing_mode.is_some()
+                    || sentence.ruby_markup.is_some()
             }),
         }
     }
+}
+
+/// Display labels carried by a paragraph independently of its identifier.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LawParagraphLabels {
+    pub caption: Option<String>,
+    pub common_caption: Option<String>,
+    pub number: Option<String>,
 }
 
 /// A paragraph (`Paragraph`: 項) inside a [`LawArticle`] or [`SupplProvision`].
 #[derive(Debug, Clone)]
 pub struct LawParagraph {
     pub num: String,
+    pub labels: LawParagraphLabels,
     pub sentence: String,
     /// Original XML sentence boundaries and attributes, used when the text still matches.
     pub xml_sentence_content: LawSentenceContent,
@@ -242,10 +254,22 @@ pub struct LawAppdxTable {
     pub rows: Vec<Vec<String>>,
 }
 
+/// Reading and abbreviation attributes from the XML law title.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LawTitleAttributes {
+    pub kana: Option<String>,
+    pub abbrev: Option<String>,
+    pub abbrev_kana: Option<String>,
+}
+
+const LAWTEXT_TITLE_ATTRIBUTES: &str = ":law-title-attrs: ";
+const LAWTEXT_TOC: &str = ":law-toc: ";
+
 /// Top-level AST for an e-Gov 法令標準XML / Lawtext document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LawDoc {
     pub law_title: String,
+    pub law_title_attributes: LawTitleAttributes,
     pub law_num: String,
     pub era: Option<String>,
     pub year: Option<String>,
@@ -255,6 +279,7 @@ pub struct LawDoc {
     pub law_type: Option<String>,
     pub lang: Option<String>,
     pub enact_statement: Option<String>,
+    toc_xml: Option<String>,
     pub preamble: Option<String>,
     pub main_provision: Vec<LawNode>,
     pub suppl_provisions: Vec<SupplProvision>,
@@ -265,6 +290,7 @@ impl Default for LawDoc {
     fn default() -> Self {
         Self {
             law_title: String::new(),
+            law_title_attributes: LawTitleAttributes::default(),
             law_num: String::new(),
             era: None,
             year: None,
@@ -274,6 +300,7 @@ impl Default for LawDoc {
             law_type: None,
             lang: Some("ja".to_string()),
             enact_statement: None,
+            toc_xml: None,
             preamble: None,
             main_provision: Vec::new(),
             suppl_provisions: Vec::new(),
@@ -345,7 +372,12 @@ pub fn is_lawtext(data: &[u8]) -> bool {
     }
     let mut lines = trimmed.lines()
         .filter(|line| !line.trim().is_empty())
-        .skip_while(|line| lawtext_attributes(line.trim()).is_some());
+        .skip_while(|line| {
+            let line = line.trim();
+            lawtext_attributes(line).is_some() || line.strip_prefix(LAWTEXT_TITLE_ATTRIBUTES)
+                .and_then(parse_title_attributes_fragment).is_some()
+                || line.starts_with(LAWTEXT_TOC)
+        });
     let Some(first) = lines.next() else {
         return false;
     };
@@ -429,6 +461,7 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
         .ok_or_else(|| Error::new("<LawBody> 要素が見つかりません"))?;
     if let Some(title) = child_elem(body, "LawTitle") {
         out.law_title = collect_text(title);
+        out.law_title_attributes = parse_title_attributes(title);
     }
     if let Some(enact) = child_elem(body, "EnactStatement") {
         let s = collect_text(enact);
@@ -436,6 +469,7 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
             out.enact_statement = Some(s);
         }
     }
+    out.toc_xml = child_elem(body, "TOC").and_then(|toc| read_toc_fragment(&xml[toc.range()]));
     if let Some(pre) = child_elem(body, "Preamble") {
         let s = collect_text(pre);
         if !s.is_empty() {
@@ -487,6 +521,64 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
         });
     }
     Ok(out)
+}
+
+fn read_toc_fragment(xml: &str) -> Option<String> {
+    let doc = roxmltree::Document::parse(xml).ok()?;
+    let node = doc.root_element();
+    if !node.has_tag_name("TOC") || node.tag_name().namespace().is_some() {
+        return None;
+    }
+    Some(xml[node.range()].to_string())
+}
+
+fn read_encoded_toc(encoded: &str) -> Option<String> {
+    let toc = serde_json::from_str::<String>(encoded).ok()?;
+    read_toc_fragment(&toc)
+}
+
+fn parse_title_attributes(node: roxmltree::Node<'_, '_>) -> LawTitleAttributes {
+    LawTitleAttributes {
+        kana: node.attribute("Kana").map(str::to_string),
+        abbrev: node.attribute("Abbrev").map(str::to_string),
+        abbrev_kana: node.attribute("AbbrevKana").map(str::to_string),
+    }
+}
+
+fn parse_title_attributes_fragment(fragment: &str) -> Option<LawTitleAttributes> {
+    let doc = roxmltree::Document::parse(fragment).ok()?;
+    let root = doc.root_element();
+    if !root.has_tag_name("LawTitle") || root.has_children() {
+        return None;
+    }
+    Some(parse_title_attributes(root))
+}
+
+fn write_title_attributes(out: &mut String, attributes: &LawTitleAttributes) {
+    for (name, value) in [
+        ("Kana", attributes.kana.as_deref()),
+        ("Abbrev", attributes.abbrev.as_deref()),
+        ("AbbrevKana", attributes.abbrev_kana.as_deref()),
+    ] {
+        if let Some(value) = value {
+            out.push_str(&format!(" {name}=\""));
+            for ch in value.chars() {
+                match ch {
+                    '\t' => out.push_str("&#9;"),
+                    '\n' => out.push_str("&#10;"),
+                    '\r' => out.push_str("&#13;"),
+                    ch => push_xml_escaped(out, ch.encode_utf8(&mut [0; 4])),
+                }
+            }
+            out.push('"');
+        }
+    }
+}
+
+fn write_title_attributes_fragment(out: &mut String, attributes: &LawTitleAttributes) {
+    out.push_str("<LawTitle");
+    write_title_attributes(out, attributes);
+    out.push_str("/>");
 }
 
 fn child_elem<'a, 'input>(
@@ -573,9 +665,43 @@ fn parse_xml_article(node: roxmltree::Node<'_, '_>) -> LawArticle {
     }
 }
 
+fn is_sentence_inline(node: roxmltree::Node<'_, '_>) -> bool {
+    node.is_text() || (node.has_tag_name("Ruby")
+        && node.attributes().len() == 0
+        && node.children().all(|child| child.is_text() || (child.has_tag_name("Rt")
+            && child.attributes().len() == 0
+            && child.children().all(|text| text.is_text()))))
+}
+
+fn write_ruby_inline(out: &mut String, node: roxmltree::Node<'_, '_>) {
+    if node.is_text() {
+        push_xml_escaped(out, node.text().unwrap_or_default());
+        return;
+    }
+    let tag = node.tag_name().name();
+    out.push('<');
+    out.push_str(tag);
+    out.push('>');
+    for child in node.children() {
+        write_ruby_inline(out, child);
+    }
+    out.push_str("</");
+    out.push_str(tag);
+    out.push('>');
+}
+
 fn parse_xml_sentence(node: roxmltree::Node<'_, '_>) -> LawSentence {
+    let ruby_markup = (node.children().any(|child| child.has_tag_name("Ruby"))
+        && node.children().all(is_sentence_inline)).then(|| {
+            let mut xml = String::new();
+            for child in node.children() {
+                write_ruby_inline(&mut xml, child);
+            }
+            xml
+        });
     LawSentence {
         text: collect_text(node),
+        ruby_markup,
         num: node.attribute("Num").map(str::to_string),
         function: node.attribute("Function").map(str::to_string),
         indent: node.attribute("Indent").map(str::to_string),
@@ -609,6 +735,19 @@ fn parse_xml_sentence_container(
     (sentence, content)
 }
 
+fn parse_paragraph_labels(node: roxmltree::Node<'_, '_>) -> LawParagraphLabels {
+    let caption = child_elem(node, "ParagraphCaption");
+    LawParagraphLabels {
+        caption: caption.map(collect_text),
+        common_caption: caption.and_then(|node| node.attribute("CommonCaption")).map(str::to_string),
+        number: child_elem(node, "ParagraphNum").map(collect_text),
+    }
+}
+
+fn default_paragraph_number(num: &str) -> String {
+    if num == "1" { String::new() } else { to_fullwidth_digits(num) }
+}
+
 fn parse_xml_paragraph(node: roxmltree::Node<'_, '_>) -> LawParagraph {
     let num = node.attribute("Num").unwrap_or("1").to_string();
     let (sentence, xml_sentence_content) = parse_xml_sentence_container(child_elem(node, "ParagraphSentence"), false);
@@ -617,8 +756,13 @@ fn parse_xml_paragraph(node: roxmltree::Node<'_, '_>) -> LawParagraph {
         .filter(|n| n.is_element() && n.tag_name().name() == "Item")
         .map(parse_xml_item)
         .collect();
+    let mut labels = parse_paragraph_labels(node);
+    if labels.number.as_deref() == Some(&default_paragraph_number(&num)) {
+        labels.number = None;
+    }
     LawParagraph {
         num,
+        labels,
         sentence,
         xml_sentence_content,
         items,
@@ -682,8 +826,10 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
         out.push_str("</LawNum>\n");
     }
     out.push_str("  <LawBody>\n");
-    if !doc.law_title.is_empty() {
-        out.push_str("    <LawTitle>");
+    if !doc.law_title.is_empty() || doc.law_title_attributes != LawTitleAttributes::default() {
+        out.push_str("    <LawTitle");
+        write_title_attributes(&mut out, &doc.law_title_attributes);
+        out.push('>');
         push_xml_escaped(&mut out, &doc.law_title);
         out.push_str("</LawTitle>\n");
     }
@@ -691,6 +837,11 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
         out.push_str("    <EnactStatement>");
         push_xml_escaped(&mut out, enact);
         out.push_str("</EnactStatement>\n");
+    }
+    if let Some(toc) = &doc.toc_xml {
+        out.push_str("    ");
+        out.push_str(toc);
+        out.push('\n');
     }
     if let Some(pre) = doc.preamble.as_deref().filter(|s| !s.is_empty()) {
         out.push_str("    <Preamble><Paragraph Num=\"1\"><ParagraphNum/><ParagraphSentence><Sentence>");
@@ -839,7 +990,11 @@ fn write_xml_sentence(out: &mut String, sentence: &LawSentence) {
     push_opt_attr(out, "Indent", sentence.indent.as_deref());
     push_opt_attr(out, "WritingMode", sentence.writing_mode.as_deref());
     out.push('>');
-    push_xml_escaped(out, &sentence.text);
+    if let Some(xml) = &sentence.ruby_markup {
+        out.push_str(xml);
+    } else {
+        push_xml_escaped(out, &sentence.text);
+    }
     out.push_str("</Sentence>");
 }
 
@@ -876,17 +1031,36 @@ fn write_xml_sentence_elements(out: &mut String, content: &LawSentenceContent) {
     }
 }
 
+fn write_paragraph_caption(out: &mut String, labels: &LawParagraphLabels) {
+    if let Some(caption) = &labels.caption {
+        out.push_str("<ParagraphCaption");
+        push_opt_attr(out, "CommonCaption", labels.common_caption.as_deref());
+        out.push('>');
+        push_xml_escaped(out, caption);
+        out.push_str("</ParagraphCaption>");
+    }
+}
+
+fn write_paragraph_number(out: &mut String, label: &str) {
+    out.push_str("<ParagraphNum>");
+    push_xml_escaped(out, label);
+    out.push_str("</ParagraphNum>");
+}
+
 fn write_xml_paragraph(out: &mut String, para: &LawParagraph, depth: usize) {
     push_indent(out, depth);
     out.push_str("<Paragraph");
     push_opt_attr(out, "Num", Some(&para.num));
     out.push_str(">\n");
-    push_indent(out, depth + 1);
-    out.push_str("<ParagraphNum>");
-    if para.num != "1" {
-        push_xml_escaped(out, &to_fullwidth_digits(&para.num));
+    if para.labels.caption.is_some() {
+        push_indent(out, depth + 1);
+        write_paragraph_caption(out, &para.labels);
+        out.push('\n');
     }
-    out.push_str("</ParagraphNum>\n");
+    push_indent(out, depth + 1);
+    let default_number = default_paragraph_number(&para.num);
+    write_paragraph_number(out, para.labels.number.as_deref().unwrap_or(&default_number));
+    out.push('\n');
     push_indent(out, depth + 1);
     out.push_str("<ParagraphSentence>");
     write_xml_sentence_content(out, &para.sentence, &para.xml_sentence_content);
@@ -965,6 +1139,15 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
             out.push_str(&format!("[{name}={quoted}]\n"));
         }
     }
+    if doc.law_title_attributes != LawTitleAttributes::default() {
+        out.push_str(LAWTEXT_TITLE_ATTRIBUTES);
+        write_title_attributes_fragment(&mut out, &doc.law_title_attributes);
+        out.push('\n');
+    }
+    if let Some(toc) = &doc.toc_xml {
+        let encoded = serde_json::Value::String(toc.clone());
+        out.push_str(&format!("{LAWTEXT_TOC}{encoded}\n"));
+    }
     if !out.is_empty() {
         out.push('\n');
     }
@@ -1030,7 +1213,7 @@ fn write_lawtext_node(out: &mut String, node: &LawNode, structured_sentences: bo
                 out.push('\n');
             }
             for (idx, para) in art.paragraphs.iter().enumerate() {
-                let sentence = lawtext_sentence_text(&para.sentence, &para.xml_sentence_content, structured_sentences);
+                let sentence = lawtext_paragraph_text(para, structured_sentences);
                 let inline = idx == 0 && para.num == "1" && !sentence.is_empty();
                 if idx == 0 {
                     out.push_str(&art.title);
@@ -1055,12 +1238,48 @@ fn write_lawtext_node(out: &mut String, node: &LawNode, structured_sentences: bo
                 out.push_str(&to_fullwidth_digits(&para.num));
                 out.push(' ');
             }
-            out.push_str(&lawtext_sentence_text(&para.sentence, &para.xml_sentence_content, structured_sentences));
+            out.push_str(&lawtext_paragraph_text(para, structured_sentences));
             out.push('\n');
             write_lawtext_items(out, &para.items, structured_sentences);
             out.push('\n');
         }
     }
+}
+
+fn lawtext_paragraph_text(para: &LawParagraph, structured: bool) -> std::borrow::Cow<'_, str> {
+    if structured && para.labels != LawParagraphLabels::default() {
+        let mut xml = String::new();
+        write_paragraph_caption(&mut xml, &para.labels);
+        if let Some(label) = &para.labels.number {
+            write_paragraph_number(&mut xml, label);
+        }
+        write_xml_sentence_content(&mut xml, &para.sentence, &para.xml_sentence_content);
+        return xml.replace('\r', "&#13;").replace('\n', "&#10;").into();
+    }
+    lawtext_sentence_text(&para.sentence, &para.xml_sentence_content, structured)
+}
+
+fn parse_lawtext_paragraph_labels(text: &str) -> Option<(LawParagraphLabels, &str)> {
+    if !text.starts_with("<ParagraphCaption") && !text.starts_with("<ParagraphNum") {
+        return None;
+    }
+    const OPEN: &str = "<Paragraph>";
+    let xml = format!("{OPEN}{text}</Paragraph>");
+    let doc = roxmltree::Document::parse(&xml).ok()?;
+    let root = doc.root_element();
+    let mut elements = root.children().filter(roxmltree::Node::is_element).peekable();
+    if elements.peek()?.has_tag_name("ParagraphCaption") {
+        elements.next();
+    }
+    if elements.peek()?.has_tag_name("ParagraphNum") {
+        elements.next();
+    }
+    let start = elements.peek()?.range().start - OPEN.len();
+    let rest = &text[start..];
+    if !rest.starts_with("<Sentence") {
+        return None;
+    }
+    Some((parse_paragraph_labels(root), rest))
 }
 
 fn lawtext_sentence_text<'a>(text: &'a str, content: &LawSentenceContent, structured: bool) -> std::borrow::Cow<'a, str> {
@@ -1073,8 +1292,9 @@ fn lawtext_sentence_text<'a>(text: &'a str, content: &LawSentenceContent, struct
 }
 
 fn parse_lawtext_paragraph(num: String, text: &str) -> LawParagraph {
+    let (labels, text) = parse_lawtext_paragraph_labels(text).unwrap_or_else(|| (LawParagraphLabels::default(), text));
     let (sentence, xml_sentence_content) = parse_lawtext_sentence_text(text, false);
-    LawParagraph { num, sentence, xml_sentence_content, items: Vec::new() }
+    LawParagraph { num, labels, sentence, xml_sentence_content, items: Vec::new() }
 }
 
 fn parse_lawtext_sentence_text(text: &str, allow_columns: bool) -> (String, LawSentenceContent) {
@@ -1092,7 +1312,7 @@ fn parse_lawtext_sentence_elements(text: &str, allow_columns: bool) -> Option<(S
     let is_spacing = |node: roxmltree::Node<'_, '_>| node.text().is_some_and(|text| node.is_text() && text.trim().is_empty());
     let is_sentence = |node: roxmltree::Node<'_, '_>| {
         node.has_tag_name("Sentence")
-            && node.children().all(|child| child.is_text())
+            && node.children().all(is_sentence_inline)
             && node.attributes().all(|attr| attr.namespace().is_none()
                 && matches!(attr.name(), "Num" | "Function" | "Indent" | "WritingMode"))
     };
@@ -1179,6 +1399,20 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
                 _ => {}
             }
         }
+        lines.next();
+    }
+    if let Some(attributes) = lines.peek()
+        .and_then(|line| line.trim().strip_prefix(LAWTEXT_TITLE_ATTRIBUTES))
+        .and_then(parse_title_attributes_fragment)
+    {
+        doc.law_title_attributes = attributes;
+        lines.next();
+    }
+    if let Some(toc) = lines.peek()
+        .and_then(|line| line.trim().strip_prefix(LAWTEXT_TOC))
+        .and_then(read_encoded_toc)
+    {
+        doc.toc_xml = Some(toc);
         lines.next();
     }
     let mut header = lines.clone();
@@ -1403,12 +1637,21 @@ pub fn to_markdown(doc: &LawDoc) -> String {
 
 fn to_markdown_with_articles(
     doc: &LawDoc,
-    preserve_sentences: bool,
+    preserve_editing_metadata: bool,
     mut record: impl FnMut(Option<usize>, &LawArticle, usize, usize),
 ) -> String {
     let mut out = String::from("---\ntype: lawtext\n");
     if !doc.law_title.is_empty() {
         out.push_str(&format!("law_title: {}\n", doc.law_title));
+    }
+    if preserve_editing_metadata && doc.law_title_attributes != LawTitleAttributes::default() {
+        out.push_str("law_title_attributes: ");
+        write_title_attributes_fragment(&mut out, &doc.law_title_attributes);
+        out.push('\n');
+    }
+    if preserve_editing_metadata && let Some(toc) = &doc.toc_xml {
+        let encoded = serde_json::Value::String(toc.clone());
+        out.push_str(&format!("law_toc: {encoded}\n"));
     }
     if !doc.law_num.is_empty() {
         out.push_str(&format!("law_num: {}\n", doc.law_num));
@@ -1447,7 +1690,7 @@ fn to_markdown_with_articles(
         out.push_str("\n\n");
     }
     for node in &doc.main_provision {
-        write_markdown_node(&mut out, node, 2, preserve_sentences, &mut |article, start, end| record(None, article, start, end));
+        write_markdown_node(&mut out, node, 2, preserve_editing_metadata, &mut |article, start, end| record(None, article, start, end));
     }
     for (index, suppl) in doc.suppl_provisions.iter().enumerate() {
         out.push_str("## ");
@@ -1460,7 +1703,7 @@ fn to_markdown_with_articles(
         }
         out.push_str("\n\n");
         for node in &suppl.nodes {
-            write_markdown_node(&mut out, node, 3, preserve_sentences, &mut |article, start, end| record(Some(index), article, start, end));
+            write_markdown_node(&mut out, node, 3, preserve_editing_metadata, &mut |article, start, end| record(Some(index), article, start, end));
         }
     }
     for appdx in &doc.appdx_tables {
@@ -1556,7 +1799,7 @@ fn write_markdown_node(
                 if idx != 0 || para.num != "1" || para.sentence.is_empty() {
                     out.push_str(&format!("{}. ", para.num));
                 }
-                write_markdown_sentence_text(out, &para.sentence, &para.xml_sentence_content, preserve_sentences);
+                write_markdown_sentence_comment(out, &para.sentence, lawtext_paragraph_text(para, preserve_sentences));
                 out.push_str("\n\n");
                 for item in &para.items {
                     out.push_str(&format!("- {} ", item.title));
@@ -1576,7 +1819,7 @@ fn write_markdown_node(
             if para.num != "1" || para.sentence.is_empty() {
                 out.push_str(&format!("{}. ", para.num));
             }
-            write_markdown_sentence_text(out, &para.sentence, &para.xml_sentence_content, preserve_sentences);
+            write_markdown_sentence_comment(out, &para.sentence, lawtext_paragraph_text(para, preserve_sentences));
             out.push_str("\n\n");
         }
     }
@@ -1585,11 +1828,12 @@ fn write_markdown_node(
 pub(crate) const MARKDOWN_SENTENCE_COMMENT: &str = "<!-- ibis-law-sentences ";
 
 fn write_markdown_sentence_text(out: &mut String, text: &str, content: &LawSentenceContent, preserve_sentences: bool) {
+    write_markdown_sentence_comment(out, text, lawtext_sentence_text(text, content, preserve_sentences));
+}
+
+fn write_markdown_sentence_comment(out: &mut String, text: &str, encoded: std::borrow::Cow<'_, str>) {
     out.push_str(text);
-    if preserve_sentences
-        && !text.contains(['\r', '\n'])
-        && let std::borrow::Cow::Owned(xml) = lawtext_sentence_text(text, content, true)
-    {
+    if !text.contains(['\r', '\n']) && let std::borrow::Cow::Owned(xml) = encoded {
         if !text.is_empty() {
             out.push(' ');
         }
@@ -1600,20 +1844,31 @@ fn write_markdown_sentence_text(out: &mut String, text: &str, content: &LawSente
     }
 }
 
-fn restore_markdown_sentence_text(text: &str, allow_columns: bool) -> &str {
+fn restore_markdown_sentence_text(text: &str, allow_columns: bool) -> std::borrow::Cow<'_, str> {
     let Some((plain, xml)) = text.rsplit_once(MARKDOWN_SENTENCE_COMMENT) else {
-        return text;
+        return text.into();
     };
     let Some(xml) = xml.strip_suffix(" -->") else {
-        return text;
+        return text.into();
     };
     let plain = plain.trim_end();
-    if parse_lawtext_sentence_elements(xml, allow_columns)
-        .is_some_and(|(text, _)| text == plain)
-    {
-        xml
+    let (labels, sentence_xml) = if allow_columns {
+        (LawParagraphLabels::default(), xml)
     } else {
-        plain
+        parse_lawtext_paragraph_labels(xml).unwrap_or_else(|| (LawParagraphLabels::default(), xml))
+    };
+    if parse_lawtext_sentence_elements(sentence_xml, allow_columns).is_some_and(|(text, _)| text == plain) {
+        xml.into()
+    } else if labels != LawParagraphLabels::default() {
+        let mut updated = String::new();
+        write_paragraph_caption(&mut updated, &labels);
+        if let Some(number) = labels.number {
+            write_paragraph_number(&mut updated, &number);
+        }
+        write_xml_sentence_content(&mut updated, plain, &LawSentenceContent::default());
+        updated.into()
+    } else {
+        plain.into()
     }
 }
 
@@ -1642,6 +1897,12 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
                     let v = v.trim().to_string();
                     match k.trim() {
                         "law_title" => doc.law_title = v,
+                        "law_title_attributes" => {
+                            if let Some(attributes) = parse_title_attributes_fragment(&v) {
+                                doc.law_title_attributes = attributes;
+                            }
+                        }
+                        "law_toc" => doc.toc_xml = read_encoded_toc(&v),
                         "law_num" => doc.law_num = v,
                         "era" => doc.era = Some(v),
                         "year" => doc.year = Some(v),
@@ -1708,7 +1969,7 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
             if let Some((title, text)) = split_leading_token(rest) {
                 line.push_str(title);
                 line.push(' ');
-                line.push_str(restore_markdown_sentence_text(text, true));
+                line.push_str(&restore_markdown_sentence_text(text, true));
             } else {
                 line.push_str(rest);
             }
@@ -1724,11 +1985,11 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
         if let Some(last) = lawtext_lines.last_mut() {
             if parse_article_header(last.trim()).is_some_and(|(_, _, r)| r.is_empty()) {
                 last.push(' ');
-                last.push_str(trimmed);
+                last.push_str(&trimmed);
                 continue;
             }
         }
-        lawtext_lines.push(trimmed.to_string());
+        lawtext_lines.push(trimmed.into_owned());
     }
 
     let mut parsed = parse_lawtext(&lawtext_lines.join("\n"))?;
@@ -1745,13 +2006,20 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
 }
 
 fn split_title_and_parens(s: &str) -> Option<(String, String)> {
-    let open = s.rfind('（')?;
-    let close = s.rfind('）')?;
-    if close > open && close == s.len() - '）'.len_utf8() {
-        Some((s[..open].trim().to_string(), s[open + '（'.len_utf8()..close].trim().to_string()))
-    } else {
-        None
+    let inner = s.strip_suffix('）')?;
+    let mut nested = 0;
+    for (index, ch) in inner.char_indices().rev() {
+        match ch {
+            '）' => nested += 1,
+            '（' if nested == 0 => {
+                return Some((inner[..index].trim().to_string(),
+                    inner[index + '（'.len_utf8()..].trim().to_string()));
+            }
+            '（' => nested -= 1,
+            _ => {}
+        }
     }
+    None
 }
 
 fn is_caption_line(s: &str) -> bool {
@@ -2123,6 +2391,7 @@ mod tests {
                 caption: Some("（定義）".to_string()),
                 title: "第二条".to_string(),
                 paragraphs: vec![LawParagraph {
+                    labels: LawParagraphLabels::default(),
                     num: "1".to_string(),
                     sentence: "この法律において用語の意義を定める。".to_string(),
                     xml_sentence_content: LawSentenceContent::default(),

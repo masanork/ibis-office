@@ -1,0 +1,182 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<Law Era="Heisei" Lang="ja" LawType="MinisterialOrdinance" Num="010" PromulgateDay="20" PromulgateMonth="3" Year="27">
+  <LawNum>平成二十七年内閣府令第十号</LawNum>
+  <LawBody>
+    <LawTitle Abbrev="" AbbrevKana="" Kana="しょくひんひょうじきじゅん">食品表示基準</LawTitle>
+    <MainProvision>
+      <Article Num="1">
+        <ArticleCaption>（適用範囲）</ArticleCaption>
+        <ArticleTitle>第一条</ArticleTitle>
+        <Paragraph Num="1">
+          <ParagraphNum />
+          <ParagraphSentence>
+            <Sentence Function="main" Num="1" WritingMode="vertical">この府令は、食品関連事業者等が、加工食品、生鮮食品又は添加物を販売する場合について適用する。</Sentence>
+            <Sentence Function="proviso" Num="2" WritingMode="vertical">ただし、加工食品又は生鮮食品を設備を設けて飲食させる場合には、第四十条の規定を除き、適用しない。</Sentence>
+          </ParagraphSentence>
+        </Paragraph>
+      </Article>
+    </MainProvision>
+    <AppdxTable>
+      <AppdxTableTitle WritingMode="vertical">別表第二十五</AppdxTableTitle>
+      <RelatedArticleNum>（第二十七条関係）</RelatedArticleNum>
+      <Item Num="1">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">名称（農産物（放射線を照射した食品、保健機能食品及びシアン化合物を含有する豆類を除く。）、鶏の殻付き卵（保健機能食品を除く。）及び水産物（保健機能食品及び切り身又はむき身にした魚介類を除く。）を除く。）</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="2">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">放射線照射に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="3">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">乳児用規格適用食品である旨</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="4">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">シアン化合物を含有する豆類に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="5">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">アボカド、あんず、おうとう、かんきつ類、キウィー、ざくろ、すもも、西洋なし、ネクタリン、パイナップル、バナナ、パパイヤ、ばれいしょ、びわ、マルメロ、マンゴー、もも及びりんごに関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="6">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">食肉（鳥獣の生肉（骨及び臓器を含む。）に限る。）に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="7">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">生乳、生山羊乳、生めん羊乳及び生水牛乳に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="8">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">鶏の殻付き卵に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="9">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">切り身又はむき身にした魚介類（生かき及びふぐを除く。）であって、生食用のもの（凍結させたものを除く。）に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="10">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">ふぐの内臓を除去し、皮をはいだもの並びに切り身にしたふぐ、ふぐの精巣及びふぐの皮であって、生食用でないものに関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="11">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">切り身にしたふぐ、ふぐの精巣及びふぐの皮であって、生食用のものに関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="12">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">冷凍食品のうち、切り身又はむき身にした魚介類（生かきを除く。）を凍結させたものに関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="13">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">生かきに関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+    </AppdxTable>
+    <AppdxTable>
+      <AppdxTableTitle WritingMode="vertical">別表第二十六</AppdxTableTitle>
+      <RelatedArticleNum>（第二条関係）</RelatedArticleNum>
+      <TableStruct>
+        <Table WritingMode="vertical">
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">届出事項</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">届出の方法</Sentence>
+            </TableColumn>
+          </TableRow>
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">五　健康被害の情報収集体制</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">次に掲げる事項を記載した資料を内閣総理大臣が告示で定めるところにより提出する。</Sentence>
+              <Sentence Num="2" WritingMode="vertical">イ　健康被害に関する情報について消費者、医療従事者等からの連絡に対応する窓口となる部署の連絡先</Sentence>
+              <Sentence Num="3" WritingMode="vertical">ロ　イの対応が可能な日時</Sentence>
+              <Sentence Num="4" WritingMode="vertical">ハ　届出者の組織の体制を示した図</Sentence>
+              <Sentence Num="5" WritingMode="vertical">ニ　健康被害に関する情報の収集、評価、行政機関への提供等に関するフローチャート</Sentence>
+            </TableColumn>
+          </TableRow>
+        </Table>
+      </TableStruct>
+    </AppdxTable>
+    <AppdxTable>
+      <AppdxTableTitle WritingMode="vertical">別表第二十七</AppdxTableTitle>
+      <RelatedArticleNum>（第二条関係）</RelatedArticleNum>
+      <TableStruct>
+        <Table WritingMode="vertical">
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">遵守事項</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">遵守内容</Sentence>
+            </TableColumn>
+          </TableRow>
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">一　安全性及び機能性の根拠に関する事項</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">届出に係る機能性関与成分の安全性及び機能性についての新たな知見が得られたときは、その旨及び当該知見の内容を遅滞なく消費者庁長官に報告すること。</Sentence>
+            </TableColumn>
+          </TableRow>
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">二　生産・製造及び品質の管理に関する事項</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">一　届出に係る食品の製造施設及び従業員の衛生管理が別表第二十六の四の項イにより届出された体制により（同表の六の項ロ（１）により、天然抽出物等を原材料とする錠剤、カプセル剤等食品として届出をした届出者にあっては、内閣総理大臣が告示で定める基準に即して）製造又は加工されていること。</Sentence>
+              <Sentence Num="2" WritingMode="vertical">二　届出に係る食品の機能性関与成分を含有する原材料の規格書等（機能性関与成分を含有する原材料について、当該機能性関与成分の由来を確認することが品質管理上重要である場合においては当該由来を確認する方法及び確認頻度に関する資料を含む。）について届出者において適切に保管していること。</Sentence>
+              <Sentence Num="3" WritingMode="vertical">三　届出に係る食品の規格について次に掲げる事項を確認していること。</Sentence>
+              <Sentence Num="4" WritingMode="vertical">イ　食品衛生法第十三条第一項及び第三項の規定に基づき定められた食品の基準及び規格に適合していること。</Sentence>
+              <Sentence Num="5" WritingMode="vertical">ロ　機能性関与成分の成分量の規格の下限値（ただし、安全性を確保する上で必要な場合にあっては、下限値及び上限値）が適切に定められていること。</Sentence>
+              <Sentence Num="6" WritingMode="vertical">ハ　機能性関与成分以外の成分のうち、安全性を確保する必要がある成分については、当該成分に係る規格が適切に定められていること。</Sentence>
+              <Sentence Num="7" WritingMode="vertical">ニ　その他食品を特徴付ける規格が適切に定められていること。</Sentence>
+              <Sentence Num="8" WritingMode="vertical">四　規格に適合しない製品の出荷を防止するための体制、運送及び保管中の事故等を防止するための体制その他の規格に適合した食品を消費者に提供するための体制を整備していること。</Sentence>
+              <Sentence Num="9" WritingMode="vertical">五　別表第二十六の四の項ロにより届け出た食品中の機能性関与成分の試験検査に関する事項について、届出後も定期的に試験検査を実施していること。</Sentence>
+              <Sentence Num="10" WritingMode="vertical">六　健康被害が発生した場合に備え、届出に係る食品と健康被害との因果関係を確認するため、必要な数のサンプルを適切に保管していること。</Sentence>
+              <Sentence Num="11" WritingMode="vertical">七　製造等に関する文書及び記録を適切に保存していること。</Sentence>
+            </TableColumn>
+          </TableRow>
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">三　健康被害の情報の収集及び提供に関する事項</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">一　届出に係る食品について、医師の診断を受け、当該症状が当該食品に起因する又はその疑いがあると診断された健康被害に関する情報を収集するとともに、その発生及び拡大のおそれがある旨の情報を得た場合には、当該情報を食品衛生法施行規則別表第十七第九号ハの規定により都道府県知事、地域保健法第五条第一項の政令で定める市の市長又は特別区の区長に速やかに提供すること。</Sentence>
+              <Sentence Num="2" WritingMode="vertical">二　前号に掲げるところにより提供した情報について消費者庁長官に提供すること。</Sentence>
+              <Sentence Num="3" WritingMode="vertical">三　消費者、医療従事者その他の情報提供者から健康被害に関する情報を得た場合であって、情報提供者が医師以外であり、医師による診察が行われていない場合にあっては、届出者の責任において、情報提供者へ医師への診察を勧める等適切な対応を行うこと。</Sentence>
+            </TableColumn>
+          </TableRow>
+        </Table>
+      </TableStruct>
+    </AppdxTable>
+  </LawBody>
+</Law>

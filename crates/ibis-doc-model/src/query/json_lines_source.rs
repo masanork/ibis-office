@@ -82,6 +82,7 @@ fn merge_type(previous: Option<QType>, next: QType) -> QType {
 pub(super) fn visit_json_lines(
     path: &Path,
     selected: &[String],
+    schema_only: bool,
     mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut input = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
@@ -118,25 +119,27 @@ pub(super) fn visit_json_lines(
         column.ty = ty.unwrap_or(QType::Any);
     }
     visit(&columns, None)?;
-    input.rewind().map_err(|error| error.to_string())?;
-    visit_lines(&mut input, max_bytes, |mut fields, location| {
-        let values = columns
-            .iter()
-            .map(|column| {
-                fields
-                    .remove(&column.name)
-                    .map_or(Ok(CellValue::Empty), |raw| {
-                        cell(raw)
-                            .map(|(value, _)| value)
-                            .map_err(|error| format!("{location}, {}: {error}", column.name))
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if selected.is_empty() && !fields.is_empty() {
-            return Err("JSON Lines schema changed during import".into());
-        }
-        visit(&columns, Some(values))
-    })?;
+    if !schema_only {
+        input.rewind().map_err(|error| error.to_string())?;
+        visit_lines(&mut input, max_bytes, |mut fields, location| {
+            let values = columns
+                .iter()
+                .map(|column| {
+                    fields
+                        .remove(&column.name)
+                        .map_or(Ok(CellValue::Empty), |raw| {
+                            cell(raw)
+                                .map(|(value, _)| value)
+                                .map_err(|error| format!("{location}, {}: {error}", column.name))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if selected.is_empty() && !fields.is_empty() {
+                return Err("JSON Lines schema changed during import".into());
+            }
+            visit(&columns, Some(values))
+        })?;
+    }
     let after = input
         .get_ref()
         .metadata()

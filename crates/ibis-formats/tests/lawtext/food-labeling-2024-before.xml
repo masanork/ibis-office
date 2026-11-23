@@ -1,0 +1,102 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<Law Era="Heisei" Lang="ja" LawType="MinisterialOrdinance" Num="010" PromulgateDay="20" PromulgateMonth="3" Year="27">
+  <LawNum>平成二十七年内閣府令第十号</LawNum>
+  <LawBody>
+    <LawTitle Abbrev="" AbbrevKana="" Kana="しょくひんひょうじきじゅん">食品表示基準</LawTitle>
+    <MainProvision>
+      <Article Num="1">
+        <ArticleCaption>（適用範囲）</ArticleCaption>
+        <ArticleTitle>第一条</ArticleTitle>
+        <Paragraph Num="1">
+          <ParagraphNum />
+          <ParagraphSentence>
+            <Sentence Function="main" Num="1" WritingMode="vertical">この府令は、食品関連事業者等が、加工食品、生鮮食品又は添加物を販売する場合について適用する。</Sentence>
+            <Sentence Function="proviso" Num="2" WritingMode="vertical">ただし、加工食品又は生鮮食品を設備を設けて飲食させる場合には、第四十条の規定を除き、適用しない。</Sentence>
+          </ParagraphSentence>
+        </Paragraph>
+      </Article>
+    </MainProvision>
+    <AppdxTable>
+      <AppdxTableTitle WritingMode="vertical">別表第二十五</AppdxTableTitle>
+      <RelatedArticleNum>（第二十七条関係）</RelatedArticleNum>
+      <Item Num="1">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">名称（農産物（放射線を照射した食品、保健機能食品及びシアン化合物を含有する豆類を除く。）、鶏の殻付き卵（保健機能食品を除く。）及び水産物（保健機能食品及び切り身又はむき身にした魚介類を除く。）を除く。）</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="2">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">放射線照射に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="3">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">乳児用規格適用食品である旨</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="4">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">シアン化合物を含有する豆類に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="5">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">アボカド、あんず、おうとう、かんきつ類、キウィー、ざくろ、すもも、西洋なし、ネクタリン、パイナップル、バナナ、パパイヤ、ばれいしょ、びわ、マルメロ、マンゴー、もも及びりんごに関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="6">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">食肉（鳥獣の生肉（骨及び臓器を含む。）に限る。）に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="7">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">生乳、生山羊乳、生めん羊乳及び生水牛乳に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="8">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">鶏の殻付き卵に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="9">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">切り身又はむき身にした魚介類（生かき及びふぐを除く。）であって、生食用のもの（凍結させたものを除く。）に関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="10">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">ふぐの内臓を除去し、皮をはいだもの並びに切り身にしたふぐ、ふぐの精巣及びふぐの皮であって、生食用でないものに関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="11">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">切り身にしたふぐ、ふぐの精巣及びふぐの皮であって、生食用のものに関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="12">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">冷凍食品のうち、切り身又はむき身にした魚介類（生かきを除く。）を凍結させたものに関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+      <Item Num="13">
+        <ItemTitle />
+        <ItemSentence>
+          <Sentence Num="1" WritingMode="vertical">生かきに関する事項</Sentence>
+        </ItemSentence>
+      </Item>
+    </AppdxTable>
+  </LawBody>
+</Law>

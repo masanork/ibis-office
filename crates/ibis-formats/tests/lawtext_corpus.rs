@@ -55,6 +55,10 @@ fn verifies_amendment_after_xml_and_lawtext_round_trips() {
     );
     for (name, xml) in [("old", OLD_XML), ("new", new_xml.as_str())] {
         let original = parse_law_xml(xml).unwrap();
+        let exported_xml = to_law_xml(&original);
+        assert!(exported_xml.contains("<Ruby>例<Rt>れい</Rt></Ruby>外"));
+        assert!(exported_xml.contains("<TOCArticle Num=\"1\">"));
+        assert!(exported_xml.contains("<TOCSupplProvision>"));
         let lawtext = to_lawtext(&original);
         let roundtrip = parse_law_xml(&to_law_xml(&parse_lawtext(&lawtext).unwrap())).unwrap();
         assert_eq!(roundtrip, original, "{name} round trip");
@@ -144,12 +148,10 @@ fn audit_reports_xml_model_changes_and_preserves_required_lawtext_attributes() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("test.xml");
     let xml = include_str!("lawtext/supplementary-amendment.xml").replace(
-        "<MainProvision>",
-        concat!(
-            "<EnactStatement>試験法を公布する。</EnactStatement>",
-            "<TOC><TOCLabel>目次</TOCLabel></TOC><MainProvision>",
-        ),
+        "<TOC>",
+        "<EnactStatement>試験法を公布する。</EnactStatement><TOC>",
     );
+    let xml = xml.replace("<LawBody>", "<LawBody Subject=\"試験法の件名\">");
     std::fs::write(&path, xml).unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_ibis-lawtext-audit"))
         .arg(path)
@@ -164,7 +166,7 @@ fn audit_reports_xml_model_changes_and_preserves_required_lawtext_attributes() {
     let model = report["xml_model_changes"].as_array().unwrap();
     let lawtext = report["lawtext_roundtrip_changes"].as_array().unwrap();
     assert!(model.iter().any(|change| {
-        change["kind"] == "element_removed" && change["path"] == "/Law/LawBody[1]/TOC[1]"
+        change["kind"] == "attribute_removed" && change["path"] == "/Law/LawBody[1]/@Subject"
     }));
     for path in ["/Law/@PromulgateMonth", "/Law/@PromulgateDay"] {
         assert!(model.iter().all(|change| change["path"] != path));
@@ -220,6 +222,10 @@ fn markdown_keeps_visible_text_and_discards_stale_sentence_metadata() {
     assert!(!rendered.contains("ibis-law-sentences"));
     let edited = markdown.replacen(plain, "新基準を適用する。", 1);
     let xml = to_law_xml(&parse_markdown_law(&edited).unwrap());
+    assert!(
+        xml.contains("<ParagraphCaption CommonCaption=\"true\">（適用基準）</ParagraphCaption>")
+    );
+    assert!(xml.contains("<ParagraphNum>１</ParagraphNum>"));
     assert!(xml.contains("<ParagraphSentence><Sentence>新基準を適用する。</Sentence>"));
     assert!(!xml.contains("ただし、例外を認める。"));
     assert!(xml.contains("Function=\"proviso\">ただし、除外例を設ける。"));
@@ -247,4 +253,162 @@ fn markdown_keeps_visible_text_and_discards_stale_sentence_metadata() {
             .unwrap()
             .contains("ibis-law-sentences")
     );
+}
+
+#[test]
+fn lawtext_title_metadata_keeps_empty_attributes_and_plain_title() {
+    let source = concat!(
+        ":law-title-attrs: <LawTitle Kana=\"しけんほう\" Abbrev=\"\" AbbrevKana=\"よみ&#10;かた\"/>\n",
+        "試験法（令和七年法律第一号）\n\n第一条 規定を定める。",
+    );
+    let law = ibis_formats::lawtext::parse_law_input(source).unwrap();
+    assert!(ibis_formats::lawtext::is_lawtext(source.as_bytes()));
+    assert_eq!(law.law_title, "試験法");
+    assert_eq!(law.law_title_attributes.abbrev.as_deref(), Some(""));
+    assert_eq!(
+        law.law_title_attributes.abbrev_kana.as_deref(),
+        Some("よみ\nかた")
+    );
+    assert_eq!(law, parse_lawtext(&to_lawtext(&law)).unwrap());
+    let markdown = input_to_markdown(source.as_bytes()).unwrap().unwrap();
+    assert!(markdown.contains("# 試験法\n"));
+    assert_eq!(
+        law,
+        ibis_formats::lawtext::parse_markdown_law(&markdown).unwrap()
+    );
+}
+
+#[test]
+fn public_food_labeling_samples_expose_table_and_form_limits() {
+    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
+
+    let table = include_str!("lawtext/food-labeling-table.xml");
+    let form = include_str!("lawtext/food-inspection-form.xml");
+    assert!(table.contains("rowspan=\"2\""));
+    assert!(form.contains("<AppdxStyle>") && form.contains("<Fig src="));
+
+    for (xml, title) in [
+        (table, "食品表示基準"),
+        (
+            form,
+            "食品表示法第六条第三項の内閣府令・財務省令で定める表示事項及び遵守事項等を定める命令",
+        ),
+    ] {
+        let original = parse_law_xml(xml).unwrap();
+        let lawtext = parse_lawtext(&to_lawtext(&original)).unwrap();
+        let markdown = parse_markdown_law(&to_markdown(&original)).unwrap();
+        assert_eq!(lawtext.appdx_tables, original.appdx_tables);
+        for edited in [lawtext, markdown] {
+            assert_eq!(edited.law_title, title);
+            assert_eq!(edited.law_num, original.law_num);
+            assert_eq!(edited.main_provision, original.main_provision);
+            assert_eq!(edited.appdx_tables.len(), original.appdx_tables.len());
+            for (actual, expected) in edited.appdx_tables.iter().zip(&original.appdx_tables) {
+                assert_eq!(actual.title, expected.title);
+                assert_eq!(actual.related_article_num, expected.related_article_num);
+                assert_eq!(actual.rows.len(), expected.rows.len());
+                for (actual_row, expected_row) in actual.rows.iter().zip(&expected.rows) {
+                    assert!(actual_row.starts_with(expected_row));
+                    assert!(
+                        actual_row[expected_row.len()..]
+                            .iter()
+                            .all(String::is_empty)
+                    );
+                }
+            }
+            assert_eq!(
+                parse_law_xml(&to_law_xml(&edited)).unwrap().law_title,
+                title
+            );
+        }
+    }
+
+    let table_output = to_law_xml(&parse_law_xml(table).unwrap());
+    assert!(table_output.contains("別表第十八"));
+    assert!(!table_output.contains("rowspan="));
+    let form_output = to_law_xml(&parse_law_xml(form).unwrap());
+    assert!(!form_output.contains("<AppdxStyle>"));
+}
+
+#[test]
+fn audit_reports_reordered_siblings_without_counting_removals_as_reordering() {
+    let fixture = include_str!("lawtext/supplementary-amendment.xml");
+    let title_start = fixture.find("<LawTitle ").unwrap();
+    let toc_start = fixture.find("<TOC>").unwrap();
+    let after_toc = fixture.find("</TOC>").unwrap() + "</TOC>".len();
+    let xml = format!(
+        "{}{}\n{}{}",
+        &fixture[..title_start],
+        &fixture[toc_start..after_toc],
+        &fixture[title_start..toc_start],
+        &fixture[after_toc..]
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("order.xml");
+    std::fs::write(&path, xml).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ibis-lawtext-audit"))
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let changes = report["xml_model_changes"].as_array().unwrap();
+    let [change] = changes.as_slice() else {
+        panic!("expected one difference, got {changes:?}")
+    };
+    assert_eq!(change["kind"], "child_order_changed");
+    assert_eq!(change["path"], "/Law/LawBody[1]");
+    assert_eq!(change["before"][0], "TOC[1]");
+    assert_eq!(change["after"][0], "LawTitle[1]");
+    assert_eq!(report["lawtext_roundtrip_changes"], serde_json::json!([]));
+}
+
+#[test]
+fn generates_and_reapplies_the_two_food_labeling_tables_added_in_2024() {
+    use ibis_doc_model::flow::Block;
+    use ibis_formats::lawtext::{ShinkyuOptions, build_5set_package};
+
+    let old = parse_law_xml(include_str!("lawtext/food-labeling-2024-before.xml")).unwrap();
+    let new = parse_law_xml(include_str!("lawtext/food-labeling-2024-after.xml")).unwrap();
+    let package = build_5set_package(&old, &new, "", &ShinkyuOptions::default());
+    let clauses = &package.aratame_draft.clauses;
+    assert_eq!(clauses.len(), 2);
+    for (clause, anchor, title) in [
+        (&clauses[0], "別表第二十五", "別表第二十六"),
+        (&clauses[1], "別表第二十六", "別表第二十七"),
+    ] {
+        assert_eq!(clause.target, title);
+        assert!(clause.text.starts_with(&format!(
+            "{anchor}の次に次の別表を加える。\n{title}\n（第二条関係）"
+        )));
+        assert!(clause.text.contains("| --- | --- |"));
+    }
+    let verification = &package.aratame_verification;
+    assert!(
+        verification.is_exact_match,
+        "{:?}",
+        verification.diagnostics
+    );
+    assert_eq!(verification.applied_ops, 2);
+    assert_eq!(verification.simulated_new.appdx_tables, new.appdx_tables);
+
+    let docx = ibis_formats::open(package.to_print_docx().unwrap()).unwrap();
+    let flow = docx.presentation.flow.unwrap();
+    let rows: Vec<_> = flow
+        .body
+        .iter()
+        .filter_map(|block| {
+            if let Block::Table(table) = block {
+                Some(table.rows.len())
+            } else {
+                None
+            }
+        })
+        .take(2)
+        .collect();
+    assert_eq!(rows, [2, 4]);
 }

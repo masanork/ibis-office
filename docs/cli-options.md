@@ -115,6 +115,8 @@ Use **File → Refresh vulnerability review…** to select a new OSV-Scanner JSO
 
 **File → Show findings requiring action…** opens a dated workbook with missing owners, overdue responses, expired exceptions, and scan changes that require review. Enter the due date as a spreadsheet date or as `YYYY-MM-DD`. For decisions marked `Deferred` or `Risk accepted`, the due date is the exception review deadline. The deadline day is inclusive. Record decisions in the original workbook.
 
+If a CycloneDX JSON file declares cryptographic assets, the workbook shows their inventory and relationships on separate sheets. The related cryptographic material value is excluded. [Synthetic CBOM example](../test/fixtures/cbom/README.md)
+
 ---
 
 ## Print & Export Options

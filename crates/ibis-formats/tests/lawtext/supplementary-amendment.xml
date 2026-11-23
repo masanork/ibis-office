@@ -2,15 +2,21 @@
 <Law Era="Reiwa" Year="7" Num="1" PromulgateMonth="06" PromulgateDay="09" LawType="Act" Lang="ja">
   <LawNum>令和七年法律第一号</LawNum>
   <LawBody>
-    <LawTitle>試験法</LawTitle>
+    <LawTitle Kana="しけんほう" Abbrev="" AbbrevKana="試験&amp;通称&quot;（例）">試験法</LawTitle>
+    <TOC>
+      <TOCLabel>目次</TOCLabel>
+      <TOCArticle Num="1"><ArticleTitle>第一条</ArticleTitle><ArticleCaption>（基準）</ArticleCaption></TOCArticle>
+      <TOCSupplProvision><SupplProvisionLabel>附　則</SupplProvisionLabel></TOCSupplProvision>
+    </TOC>
     <MainProvision>
       <Article Num="1">
         <ArticleTitle>第一条</ArticleTitle>
         <Paragraph Num="1">
-          <ParagraphNum/>
+          <ParagraphCaption CommonCaption="true">（適用基準）</ParagraphCaption>
+          <ParagraphNum>１</ParagraphNum>
           <ParagraphSentence>
             <Sentence Num="1" Function="main">旧基準を適用する。</Sentence>
-            <Sentence Num="2" Function="proviso" WritingMode="horizontal">ただし、例外を認める。</Sentence>
+            <Sentence Num="2" Function="proviso" WritingMode="horizontal">ただし、<Ruby>例<Rt>れい</Rt></Ruby>外を認める。</Sentence>
           </ParagraphSentence>
         </Paragraph>
       </Article>

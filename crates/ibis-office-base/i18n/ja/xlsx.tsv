@@ -3156,6 +3156,11 @@ query.report-blocked	検証の上限を超えたため、更新できません�
 query.report-changed	ブックが変更されました。もう一度プレビューしてください。
 query.report-applied	{count} 件のレポートを更新しました。
 query.report-rows	{table} · {previous} → {current} 行
+query.report-schema-type	入力 {source}.{column} の型が {previous} から {current} に変わりました
+query.report-schema-added	入力 {source}.{column} が追加されました（{current}）
+query.report-schema-removed	入力 {source}.{column} が削除されました（{previous}）
+query.report-schema-more	ほかに入力スキーマの変更が {count} 件あります
+query.report-schema-unavailable	入力スキーマが保存上限を超えています。比較基準は更新されません。
 query.report-metric	{column} · {previous} → {current}（差 {delta}）
 query.report-metric-rate	{column} · {previous} → {current}（差 {delta}、{rate}%）
 query.report-check	{name} · {count} 件

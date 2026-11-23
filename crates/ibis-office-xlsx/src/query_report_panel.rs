@@ -467,6 +467,56 @@ impl SlideEditor {
                         ("current", &report["rows"]),
                     ],
                 )));
+                for change in report["schema_changes"].as_array().into_iter().flatten() {
+                    let source = change["source"].as_str().unwrap_or_default();
+                    let column = change["column"].as_str().unwrap_or_default();
+                    let previous = change["previous"].as_str();
+                    let current = change["current"].as_str();
+                    let line = match (previous, current) {
+                        (Some(previous), Some(current)) => format(
+                            "query.report-schema-type",
+                            &[
+                                ("source", &source),
+                                ("column", &column),
+                                ("previous", &previous),
+                                ("current", &current),
+                            ],
+                        ),
+                        (None, Some(current)) => format(
+                            "query.report-schema-added",
+                            &[
+                                ("source", &source),
+                                ("column", &column),
+                                ("current", &current),
+                            ],
+                        ),
+                        (Some(previous), None) => format(
+                            "query.report-schema-removed",
+                            &[
+                                ("source", &source),
+                                ("column", &column),
+                                ("previous", &previous),
+                            ],
+                        ),
+                        (None, None) => continue,
+                    };
+                    body = body.child(div().text_sm().child(line));
+                }
+                let change_count = report["schema_change_count"].as_u64().unwrap_or(0);
+                let shown = report["schema_changes"].as_array().map_or(0, Vec::len) as u64;
+                if change_count > shown {
+                    body = body.child(div().text_sm().child(format(
+                        "query.report-schema-more",
+                        &[("count", &(change_count - shown))],
+                    )));
+                }
+                if report["input_schema_status"] == "unavailable" {
+                    body = body.child(
+                        div()
+                            .text_sm()
+                            .child(text("query.report-schema-unavailable")),
+                    );
+                }
                 for metric in report["metrics"].as_array().into_iter().flatten() {
                     let name = metric["column"].as_str().unwrap_or_default();
                     let fields: [(&str, &dyn std::fmt::Display); 3] = [
@@ -661,7 +711,7 @@ pub(crate) fn refresh_report_scenario() {
     });
     assert_eq!(amount(&mut scene), Some(CellValue::Number(24.0)));
 
-    std::fs::write(&next, "code,amount\n001,12\n").unwrap();
+    std::fs::write(&next, "code,amount,region\n001,12,north\n").unwrap();
     button_probe::click(&mut scene, "query-reports-preview");
     wait_for_review(&mut scene);
     scene.with(|editor, _| {
@@ -677,6 +727,10 @@ pub(crate) fn refresh_report_scenario() {
         let review = panel.review.as_ref().unwrap();
         assert_eq!(review.result["blocked"], false);
         assert_eq!(review.result["reports"][0]["metrics"][0]["delta"], -12.0);
+        assert_eq!(
+            review.result["reports"][0]["schema_changes"],
+            json!([{"source":"monthly","column":"region","previous":null,"current":"TEXT"}]),
+        );
     });
     // Apply what appeared in the review even if the source is replaced meanwhile.
     std::fs::write(&next, "code,amount\n001,6\n").unwrap();
