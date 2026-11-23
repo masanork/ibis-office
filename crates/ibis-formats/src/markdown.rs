@@ -342,7 +342,7 @@ pub fn export_blocks_to_markdown(
         if prev_was_list && !is_list && !out.ends_with("\n\n") {
             out.push('\n');
         }
-        serialize_block(block, doc, media, &comments_by_id, &mut out);
+        serialize_block(block, doc, media, &comments_by_id, &mut out, &mut Vec::new());
         prev_was_list = is_list;
     }
     out.trim_end().to_string()
@@ -1006,8 +1006,23 @@ pub struct DocumentMarkdownOptions {
 
 /// Export a word-processing document with the appendices `options` ask for.
 pub fn export_document_markdown_with(presentation: &Presentation, options: DocumentMarkdownOptions) -> Result<String, Error> {
+    export_document_markdown_with_diagnostics(presentation, options).map(|export| export.markdown)
+}
+
+/// Markdown text and source diagnostics produced by the same export.
+pub struct DocumentMarkdownExport {
+    pub markdown: String,
+    pub diagnostics: Vec<SourceDiagnostic>,
+}
+
+/// Export a document and report the authored sources that required a fallback.
+pub fn export_document_markdown_with_diagnostics(
+    presentation: &Presentation,
+    options: DocumentMarkdownOptions,
+) -> Result<DocumentMarkdownExport, Error> {
     let flow = presentation.flow.as_ref().ok_or_else(|| Error::new("These Markdown options require a word-processing document"))?;
-    let mut markdown = export_markdown(flow, &presentation.media);
+    let mut diagnostics = Vec::new();
+    let mut markdown = export_markdown_with_positions(flow, &presentation.media, &mut diagnostics, |_, _, _| {});
     // The shape text before the previews: each import strip takes the appendix at the end, the previews first.
     if options.shape_text {
         shape_text::append(&mut markdown, flow);
@@ -1015,7 +1030,7 @@ pub fn export_document_markdown_with(presentation: &Presentation, options: Docum
     if options.metafile_previews {
         metafile_preview::append(&mut markdown);
     }
-    Ok(markdown)
+    Ok(DocumentMarkdownExport { markdown, diagnostics })
 }
 
 /// Export visible worksheets in a workbook [`Presentation`] as GFM Markdown tables.
@@ -1712,7 +1727,9 @@ fn populate_toc_blocks(doc: &mut FlowDocument) {
 // ============================================================================
 
 fn apply_frontmatter(fm: &str, doc: &mut FlowDocument, ctx: &mut ParseContext<'_>) {
-    roundtrip::preserve_profile(fm, &mut doc.properties);
+    if let Some(profile) = crate::lawtext::markdown_profile(fm) {
+        roundtrip::store_profile(profile, &mut doc.properties);
+    }
     let mut map: BTreeMap<String, String> = BTreeMap::new();
     let mut current_section: Option<String> = None;
 
@@ -5296,7 +5313,7 @@ fn encode_base64(data: &[u8]) -> String {
 
 /// Export a [`FlowDocument`] and its media to deterministic Rich Markdown.
 pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
-    export_markdown_with_positions(doc, media, |_, _, _| {})
+    export_markdown_with_positions(doc, media, &mut Vec::new(), |_, _, _| {})
 }
 
 enum MarkdownSource<'a> {
@@ -5308,6 +5325,7 @@ enum MarkdownSource<'a> {
 fn export_markdown_with_positions<'a>(
     doc: &'a FlowDocument,
     media: &[Media],
+    source_diagnostics: &mut Vec<SourceDiagnostic>,
     mut record: impl FnMut(MarkdownSource<'a>, usize, usize),
 ) -> String {
     let mut out = String::new();
@@ -5386,7 +5404,7 @@ fn export_markdown_with_positions<'a>(
             Block::Table(table) => serialize_table(table, media, &comments_by_id, &mut out, &mut |row, column, cell, start, end| {
                 record(MarkdownSource::TableCell { index: i, table, row, column, cell }, start, end);
             }),
-            Block::Paragraph(p) => serialize_paragraph(p, doc, media, &comments_by_id, &mut out, form_layout),
+            Block::Paragraph(p) => serialize_paragraph(p, doc, media, &comments_by_id, &mut out, form_layout, source_diagnostics),
         }
         record(MarkdownSource::Body(i, block), start, out.len());
         prev_was_list = is_list;
@@ -5446,7 +5464,7 @@ fn export_markdown_with_positions<'a>(
             out.push_str(&format!("[^{label}]:\n"));
             let mut body = String::new();
             for block in &blocks {
-                serialize_block(block, doc, media, &comments_by_id, &mut body);
+                serialize_block(block, doc, media, &comments_by_id, &mut body, source_diagnostics);
             }
             for line in body.trim_end().lines() {
                 if !line.is_empty() {
@@ -5887,7 +5905,7 @@ fn prepare_ai_edit(
                 return serialize_table_paragraph(paragraph, media, &comments);
             }
             let mut out = String::new();
-            serialize_paragraph(paragraph, doc, media, &comments, &mut out, false);
+            serialize_paragraph(paragraph, doc, media, &comments, &mut out, false, &mut Vec::new());
             out
         };
         let original = render(paragraph);
@@ -6136,7 +6154,7 @@ pub fn export_ai_document(presentation: &Presentation) -> Result<serde_json::Val
     let mut blocks = Vec::new();
     let mut diagnostics = Vec::new();
     let mut table_cells = Vec::new();
-    let markdown = export_markdown_with_positions(doc, &presentation.media, |source, start, end| {
+    let markdown = export_markdown_with_positions(doc, &presentation.media, &mut Vec::new(), |source, start, end| {
         if let MarkdownSource::TableCell { index, table, row, column, cell } = source {
             table_cells.push(json!({
                 "source": {
@@ -6224,7 +6242,7 @@ fn serialize_frontmatter(doc: &FlowDocument) -> String {
         lines.push("even_and_odd_headers: true".to_owned());
     }
     let props: &DocProperties = &doc.properties;
-    if let Some(profile) = roundtrip::saved_profile(props) {
+    if let Some(profile) = roundtrip::saved_profile(props).filter(|profile| crate::lawtext::is_law_profile(profile)) {
         lines.extend(profile.lines().map(str::to_owned));
     }
     if let Some(title) = props.title.as_deref().filter(|s| !s.is_empty()) {
@@ -6432,9 +6450,10 @@ fn serialize_block(
     media: &[Media],
     comments: &HashMap<u32, &Comment>,
     out: &mut String,
+    source_diagnostics: &mut Vec<SourceDiagnostic>,
 ) {
     match block {
-        Block::Paragraph(p) => serialize_paragraph(p, doc, media, comments, out, false),
+        Block::Paragraph(p) => serialize_paragraph(p, doc, media, comments, out, false, source_diagnostics),
         Block::Table(t) => serialize_table(t, media, comments, out, &mut |_, _, _, _, _| {}),
     }
 }
@@ -6446,6 +6465,7 @@ fn serialize_paragraph(
     comments: &HashMap<u32, &Comment>,
     out: &mut String,
     form_layout: bool,
+    source_diagnostics: &mut Vec<SourceDiagnostic>,
 ) {
     // 1. Standalone PageBreak / ColumnBreak
     if p.runs.len() == 1 {
@@ -6470,7 +6490,16 @@ fn serialize_paragraph(
             }
             FlowRunKind::Shape(shape) => {
                 if let ShapeKind::Chart(chart) = &shape.kind {
-                    serialize_chart(chart, None, out);
+                    if let Some(issue) = serialize_chart(chart, None, out) {
+                        source_diagnostics.push(SourceDiagnostic {
+                            extension: "mermaid",
+                            location: chart.title.as_ref().map_or_else(
+                                || format!("#{:?}", shape.id),
+                                |title| title.text.clone(),
+                            ),
+                            issue,
+                        });
+                    }
                     return;
                 }
             }
@@ -6895,31 +6924,18 @@ fn mermaid_chart_source<'a>(chart: &'a Chart, alternate: Option<&'a str>) -> Res
 
 /// Report Mermaid chart sources that no longer describe the exported document charts.
 pub fn document_markdown_source_diagnostics(presentation: &Presentation) -> Vec<SourceDiagnostic> {
-    let Some(flow) = &presentation.flow else { return Vec::new(); };
-    ibis_doc_model::flow_command::all_paragraphs_everywhere(flow).into_iter()
-        .filter_map(|paragraph| {
-            let [run] = paragraph.runs.as_slice() else { return None; };
-            let FlowRunKind::Shape(shape) = &run.kind else { return None; };
-            let ShapeKind::Chart(chart) = &shape.kind else { return None; };
-            let issue = mermaid_chart_source(chart, None).err()?;
-            (issue != SourceIssue::Missing).then(|| SourceDiagnostic {
-                extension: "mermaid",
-                location: chart.title.as_ref().map_or_else(
-                    || format!("#{:?}", shape.id),
-                    |title| title.text.clone(),
-                ),
-                issue,
-            })
-        })
-        .collect()
+    export_document_markdown_with_diagnostics(presentation, DocumentMarkdownOptions::default())
+        .map_or_else(|_| Vec::new(), |export| export.diagnostics)
 }
 
-fn serialize_chart(chart: &Chart, alternate_source: Option<&str>, out: &mut String) {
-    let source = mermaid_chart_source(chart, alternate_source);
-    if let Ok(source) = source {
-        write_mermaid_fence(source, out);
-        return;
-    }
+fn serialize_chart(chart: &Chart, alternate_source: Option<&str>, out: &mut String) -> Option<SourceIssue> {
+    let issue = match mermaid_chart_source(chart, alternate_source) {
+        Ok(source) => {
+            write_mermaid_fence(source, out);
+            return None;
+        }
+        Err(issue) => issue,
+    };
     out.push_str("```chart\n");
     let kind_name = match chart.groups.first().map(|g| (&g.kind, g.grouping)) {
         Some((ChartType::Bar { horizontal: false, .. }, Grouping::Standard)) => "column",
@@ -6983,6 +6999,7 @@ fn serialize_chart(chart: &Chart, alternate_source: Option<&str>, out: &mut Stri
         }
     }
     out.push_str("```\n\n");
+    (issue != SourceIssue::Missing).then_some(issue)
 }
 
 fn markdown_note_label(id: u32, endnote: bool) -> String {
@@ -7845,7 +7862,7 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                         .get(&shape.id)
                         .filter(|alt| alt.title == "__mermaid__")
                         .map(|alt| alt.description.as_str());
-                    serialize_chart(chart, from_alt, &mut out);
+                    let _ = serialize_chart(chart, from_alt, &mut out);
                 }
                 _ => out.truncate(position),
             }
@@ -9270,12 +9287,22 @@ xychart-beta
             }
         }
         assert!(changed, "pie chart value should be editable");
-        let diagnostics = document_markdown_source_diagnostics(&edited);
+        // Header payloads have their own serialization and must not add body fallback diagnostics.
+        let header_chart = flow.body.iter().find(|block| matches!(
+            block,
+            Block::Paragraph(paragraph) if paragraph.runs.iter().any(|run| matches!(
+                &run.kind, FlowRunKind::Shape(shape) if matches!(shape.kind, ShapeKind::Chart(_))
+            ))
+        )).unwrap().clone();
+        flow.header.push(header_chart);
+        let export = export_document_markdown_with_diagnostics(&edited, Default::default()).unwrap();
+        let diagnostics = export.diagnostics;
         assert_eq!(diagnostics.len(), 2);
         assert!(diagnostics.iter().all(|item| {
             item.extension == "mermaid" && item.issue == SourceIssue::Incompatible
         }));
-        let edited_md = export_markdown(edited.flow.as_ref().unwrap(), &edited.media);
+        let edited_md = export.markdown;
+        assert_eq!(edited_md, export_markdown(edited.flow.as_ref().unwrap(), &edited.media));
         assert!(edited_md.contains("```chart\ntype: pie"), "edited pie should leave Mermaid:\n{edited_md}");
         assert!(edited_md.contains("```chart\ntype: line"), "edited line should leave Mermaid:\n{edited_md}");
         assert!(!edited_md.contains("```mermaid\npie"));

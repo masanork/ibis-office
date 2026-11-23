@@ -879,10 +879,11 @@ impl FormatEditor for Document {
                 return Some(Ok(FileBytes { bytes: raw_md.as_bytes().to_vec(), protect: false, note: None }));
             }
             return Some(
-                ibis_formats::docx_convert::export_docx_format(editor.presentation(), ibis_formats::docx_convert::DocxConvertFormat::Markdown)
-                    .map(|bytes| {
-                        let diagnostics = ibis_formats::markdown::document_markdown_source_diagnostics(editor.presentation());
-                        FileBytes { bytes, protect: false, note: source_export_note(&diagnostics) }
+                ibis_formats::markdown::export_document_markdown_with_diagnostics(editor.presentation(), Default::default())
+                    .map(|export| FileBytes {
+                        bytes: export.markdown.into_bytes(),
+                        protect: false,
+                        note: source_export_note(&export.diagnostics),
                     })
                     .map_err(|e| e.to_string()),
             );

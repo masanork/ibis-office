@@ -26,6 +26,24 @@ use super::text::{LAWTEXT_SUPPL_APPENDICES, encode_suppl_appendices, is_lawtext,
 
 const TABLE_SOURCE_ANCHOR: &str = " {#ibis_law_table_";
 
+pub(crate) fn is_law_profile(metadata: &str) -> bool {
+    crate::markdown::roundtrip::document_type_is(metadata, "lawtext")
+}
+
+pub(crate) fn markdown_profile(metadata: &str) -> Option<String> {
+    if !is_law_profile(metadata) {
+        return None;
+    }
+    Some(metadata.lines().filter(|line| {
+        !line.starts_with(char::is_whitespace) && line.split_once(':').is_some_and(|(key, _)| {
+            let key = key.trim_end();
+            key.starts_with("law_") || matches!(
+                key, "type" | "era" | "year" | "promulgate_month" | "promulgate_day" | "num" | "lang"
+            )
+        })
+    }).collect::<Vec<_>>().join("\n"))
+}
+
 /// Export a [`LawDoc`] to Markdown with YAML frontmatter so it can be edited
 /// in ibisOffice (DOCX / PPTX) and converted back to Lawtext or e-Gov 法令標準XML.
 pub fn to_markdown(doc: &LawDoc) -> String {
