@@ -650,7 +650,7 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "old_lawtext": { "type": "string", "description": "Current (現行) statute in Lawtext or e-Gov XML format. Optional if already loaded via the file picker." },
+                        "old_lawtext": { "type": "string", "description": "Current (現行) statute in Lawtext or e-Gov XML format. Optional if already loaded as the baseline by fetch_egov_law." },
                         "new_lawtext": { "type": "string", "description": "Optional amended (改正後) statute in Lawtext or e-Gov XML. Defaults to the active document." },
                         "policy_memo": { "type": "string", "description": "Optional policy background memo for drafting 要綱 and 理由." },
                         "reference_laws": { "type": "array", "items": { "type": "string" }, "description": "Optional external law snapshots in Lawtext or e-Gov XML for 参照条文." },
@@ -664,11 +664,11 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
             kind: "function",
             function: ToolFunctionDef {
                 name: "verify_lawtext_aratame",
-                description: "Verify a 改め文 (amendment text) by applying it to old_lawtext (or the loaded baseline file) and comparing the simulated result against expected_new_lawtext (defaults to the active document).",
+                description: "Verify a 改め文 (amendment text) by applying it to old_lawtext (or the loaded baseline) and comparing the simulated result against expected_new_lawtext (defaults to the active document).",
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "old_lawtext": { "type": "string", "description": "Current (現行) statute in Lawtext or e-Gov XML. Optional if already loaded via the file picker." },
+                        "old_lawtext": { "type": "string", "description": "Current (現行) statute in Lawtext or e-Gov XML. Optional if already loaded as the baseline by fetch_egov_law." },
                         "aratame_text": { "type": "string", "description": "Amendment text (改め文) to verify." },
                         "expected_new_lawtext": { "type": "string", "description": "Optional expected amended statute in Lawtext or e-Gov XML. Defaults to the active document." }
                     },
@@ -695,14 +695,33 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             kind: "function",
             function: ToolFunctionDef {
+                name: "search_egov_law",
+                description: "Search public Japanese statutes by keyword at an explicit reference date. Read-only. Returns a page of match excerpts, source URLs, and revision IDs. Search hits are candidates, not an exhaustive list of affected provisions.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "keyword": { "type": "string", "description": "Public legal terms or an e-Gov keyword expression. Do not include private draft text." },
+                        "as_of": { "type": "string", "description": "Reference date (YYYY-MM-DD)." },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 20 },
+                        "offset": { "type": "integer", "minimum": 0, "maximum": 2147483647, "description": "Use the next_offset from the preceding page." }
+                    },
+                    "required": ["keyword", "as_of"],
+                    "additionalProperties": false
+                }),
+            },
+        },
+        ToolDefinition {
+            kind: "function",
+            function: ToolFunctionDef {
                 name: "fetch_egov_law",
-                description: "Fetch an official Japanese statute XML from e-Gov 法令 API v2 by law_title, law_num, or law_id, convert it to Lawtext, and optionally set it as the baseline (現行法令) for 5-set generation.",
+                description: "Fetch an official Japanese statute XML from e-Gov 法令 API v2 by title, law number, law ID, or exact revision ID, convert it to Lawtext, and optionally set it as the baseline (現行法令) for 5-set generation.",
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "law_title": { "type": "string", "description": "Statute title (e.g. '行政手続法')." },
                         "law_num": { "type": "string", "description": "Optional statute number (e.g. '平成五年法律第八十八号')." },
                         "law_id": { "type": "string", "description": "Optional e-Gov law_id." },
+                        "law_revision_id": { "type": "string", "description": "Exact e-Gov revision ID, for example from search_egov_law. Takes precedence over other selectors." },
                         "set_as_baseline": { "type": "boolean", "description": "Store as the baseline (現行法令) for subsequent generate_lawtext_5set / lint_lawtext calls (default true)." }
                     },
                     "additionalProperties": false
@@ -740,10 +759,20 @@ pub struct LintLawtextArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchEgovLawArgs {
+    pub keyword: String,
+    pub as_of: String,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+#[derive(Deserialize)]
 pub struct FetchEgovLawArgs {
     pub law_title: Option<String>,
     pub law_num: Option<String>,
     pub law_id: Option<String>,
+    pub law_revision_id: Option<String>,
     pub set_as_baseline: Option<bool>,
 }
 
@@ -1188,6 +1217,7 @@ A --> C
             "generate_lawtext_5set",
             "verify_lawtext_aratame",
             "lint_lawtext",
+            "search_egov_law",
             "fetch_egov_law",
             "open_markdown_document",
         ] {

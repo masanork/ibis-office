@@ -1088,94 +1088,306 @@ fn percent_encode_component(s: &str) -> String {
     out
 }
 
-/// Fetch a Japanese statute XML from e-Gov 法令 API v2 (`laws.e-gov.go.jp/api/2`).
-/// Returns `(law_id, law_title, law_xml)`.
-pub fn fetch_egov_law_xml(
+#[cfg(not(target_family = "wasm"))]
+const EGOV_API: &str = "https://laws.e-gov.go.jp/api/2";
+
+#[cfg(not(target_family = "wasm"))]
+fn egov_revision_url(revision: &str) -> String {
+    format!(
+        "{EGOV_API}/law_data/{}?response_format=xml",
+        percent_encode_component(revision)
+    )
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn search_egov_law(args: crate::ai_tools::SearchEgovLawArgs) -> Result<Value, String> {
+    let keyword = args.keyword.trim();
+    let date = args.as_of.trim();
+    let limit = args.limit.unwrap_or(8);
+    let offset = args.offset.unwrap_or(0);
+    if keyword.is_empty() || keyword.chars().count() > 200 {
+        return Err("検索語は1文字以上200文字以下で指定してください。".into());
+    }
+    if !valid_egov_date(date) {
+        return Err("基準日を実在する日付で YYYY-MM-DD 形式で指定してください。".into());
+    }
+    if !(1..=20).contains(&limit) || offset > i32::MAX as u32 {
+        return Err("limit は1から20、offset は0から2147483647で指定してください。".into());
+    }
+    let url = format!(
+        "{EGOV_API}/keyword?keyword={}&asof={date}&limit={limit}&offset={offset}&response_format=json",
+        percent_encode_component(keyword)
+    );
+    let output = std::process::Command::new("curl")
+        .args([
+            "--disable",
+            "--proto",
+            "=https",
+            "--fail",
+            "--silent",
+            "--max-time",
+            "15",
+            "--max-filesize",
+            "1048576",
+            "--url",
+            &url,
+        ])
+        .output()
+        .map_err(|error| format!("e-Gov 法令検索を起動できませんでした: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "e-Gov 法令検索に失敗しました ({})。",
+            output.status
+        ));
+    }
+    parse_egov_search(&output.stdout, date, keyword)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn valid_egov_date(date: &str) -> bool {
+    let [year, month, day]: [&str; 3] = match date.split('-').collect::<Vec<_>>().try_into() {
+        Ok(parts) => parts,
+        Err(_) => return false,
+    };
+    if year.len() != 4
+        || month.len() != 2
+        || day.len() != 2
+        || ![year, month, day]
+            .iter()
+            .all(|part| part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return false;
+    }
+    year.parse()
+        .ok()
+        .zip(
+            month
+                .parse::<u8>()
+                .ok()
+                .and_then(|m| time::Month::try_from(m).ok()),
+        )
+        .zip(day.parse().ok())
+        .is_some_and(|((y, m), d)| y > 0 && time::Date::from_calendar_date(y, m, d).is_ok())
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn parse_egov_search(raw: &[u8], date: &str, keyword: &str) -> Result<Value, String> {
+    use serde_json::json;
+
+    #[derive(Deserialize)]
+    struct Page {
+        total_count: u64,
+        next_offset: Option<u32>,
+        items: Vec<Item>,
+    }
+    #[derive(Deserialize)]
+    struct Item {
+        law_info: Law,
+        revision_info: Revision,
+        sentences: Vec<Sentence>,
+    }
+    #[derive(Deserialize)]
+    struct Law {
+        law_id: String,
+        law_num: String,
+    }
+    #[derive(Deserialize)]
+    struct Revision {
+        law_revision_id: String,
+        law_title: String,
+        amendment_enforcement_date: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Sentence {
+        position: String,
+        text: String,
+    }
+
+    let page: Page = serde_json::from_slice(raw)
+        .map_err(|e| format!("e-Gov 法令検索の応答を読み取れませんでした: {e}"))?;
+    let results: Vec<_> = page
+        .items
+        .into_iter()
+        .map(|item| {
+            let excerpts: Vec<_> = item
+                .sentences
+                .into_iter()
+                .map(|sentence| {
+                    json!({
+                        "position": sentence.position,
+                        "excerpt": sentence.text.replace("<span>", "").replace("</span>", ""),
+                    })
+                })
+                .collect();
+            json!({
+                "law_id": item.law_info.law_id,
+                "law_num": item.law_info.law_num,
+                "law_title": item.revision_info.law_title,
+                "law_revision_id": item.revision_info.law_revision_id,
+                "enforcement_date": item.revision_info.amendment_enforcement_date,
+                "source_url": egov_revision_url(&item.revision_info.law_revision_id),
+                "excerpts": excerpts,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "keyword": keyword,
+        "as_of": date,
+        "total_count": page.total_count,
+        "next_offset": page.next_offset,
+        "results": results,
+    }))
+}
+
+/// A versioned statute and its decoded e-Gov XML body.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) struct EgovLaw {
+    pub law_id: String,
+    pub title: String,
+    pub revision: String,
+    pub source_url: String,
+    pub xml: String,
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn fetch_egov_law_xml(
     law_title: Option<&str>,
     law_num: Option<&str>,
     law_id: Option<&str>,
-) -> Result<(String, String, String), String> {
-    #[cfg(target_family = "wasm")]
-    {
-        let _ = (law_title, law_num, law_id);
-        return Err("e-Gov 法令 API からの取得はデスクトップ版でのみ利用可能です。".to_string());
-    }
-    #[cfg(not(target_family = "wasm"))]
-    {
-        let mut resolved_id = law_id.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-        let mut resolved_title = law_title.unwrap_or("").to_string();
+) -> Result<EgovLaw, String> {
+    use base64::Engine as _;
+    let mut resolved_id = law_id.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
 
-        if resolved_id.is_none() {
-            let mut params = Vec::new();
-            if let Some(t) = law_title.map(str::trim).filter(|s| !s.is_empty()) {
-                params.push(format!("law_title={}", percent_encode_component(t)));
-            }
-            if let Some(n) = law_num.map(str::trim).filter(|s| !s.is_empty()) {
-                params.push(format!("law_num={}", percent_encode_component(n)));
-            }
-            if params.is_empty() {
-                return Err("law_title, law_num, または law_id のいずれかを指定してください。".to_string());
-            }
-            params.push("limit=5".to_string());
-            let search_url = format!("https://laws.e-gov.go.jp/api/2/laws?{}", params.join("&"));
-            let out = std::process::Command::new("curl")
-                .args(["-sSL", "--fail", "--max-time", "15", &search_url])
-                .output()
-                .map_err(|e| format!("e-Gov API 呼び出しに失敗しました: {e}"))?;
-            if !out.status.success() {
-                return Err(format!("e-Gov 法令検索に失敗しました (status={})", out.status));
-            }
-            let body: Value = serde_json::from_slice(&out.stdout)
-                .map_err(|e| format!("e-Gov API 応答の JSON 解析に失敗しました: {e}"))?;
-            let first = body
-                .get("laws")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .ok_or_else(|| "該当する法令が見つかりませんでした。".to_string())?;
-            let id = first
-                .pointer("/law_info/law_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "law_id が取得できませんでした。".to_string())?;
-            resolved_id = Some(id.to_string());
-            if let Some(t) = first
-                .pointer("/current_revision_info/law_title")
-                .and_then(|v| v.as_str())
-            {
-                resolved_title = t.to_string();
-            }
+    if resolved_id.is_none() {
+        let mut params = Vec::new();
+        if let Some(t) = law_title.map(str::trim).filter(|s| !s.is_empty()) {
+            params.push(format!("law_title={}", percent_encode_component(t)));
         }
-
-        let id = resolved_id.unwrap();
-        let data_url = format!(
-            "https://laws.e-gov.go.jp/api/2/law_data/{}?response_format=xml",
-            percent_encode_component(&id)
-        );
+        if let Some(n) = law_num.map(str::trim).filter(|s| !s.is_empty()) {
+            params.push(format!("law_num={}", percent_encode_component(n)));
+        }
+        if params.is_empty() {
+            return Err("law_title, law_num, または law_id のいずれかを指定してください。".to_string());
+        }
+        params.push("limit=5".to_string());
+        let search_url = format!("https://laws.e-gov.go.jp/api/2/laws?{}", params.join("&"));
         let out = std::process::Command::new("curl")
-            .args(["-sSL", "--fail", "--max-time", "20", &data_url])
+            .args(["-sSL", "--fail", "--max-time", "15", &search_url])
             .output()
-            .map_err(|e| format!("e-Gov 法令データ取得に失敗しました: {e}"))?;
+            .map_err(|e| format!("e-Gov API 呼び出しに失敗しました: {e}"))?;
         if !out.status.success() {
-            return Err(format!("e-Gov 法令データ取得に失敗しました (status={})", out.status));
+            return Err(format!("e-Gov 法令検索に失敗しました (status={})", out.status));
         }
-        let raw = String::from_utf8(out.stdout)
-            .map_err(|_| "e-Gov API 応答が有効な UTF-8 ではありません".to_string())?;
-        let xml = if raw.trim_start().starts_with('{') {
-            let v: Value = serde_json::from_str(&raw)
-                .map_err(|e| format!("e-Gov 法令データ JSON 解析に失敗しました: {e}"))?;
-            v.get("law_full_text")
-                .and_then(|x| x.as_str())
-                .map(str::to_string)
-                .ok_or_else(|| "law_full_text が応答に含まれていません。".to_string())?
-        } else {
-            raw
-        };
-        Ok((id, resolved_title, xml))
+        let body: Value = serde_json::from_slice(&out.stdout)
+            .map_err(|e| format!("e-Gov API 応答の JSON 解析に失敗しました: {e}"))?;
+        let first = body
+            .get("laws")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .ok_or_else(|| "該当する法令が見つかりませんでした。".to_string())?;
+        let id = first
+            .pointer("/law_info/law_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "law_id が取得できませんでした。".to_string())?;
+        resolved_id = Some(id.to_string());
     }
+
+    let id = resolved_id.unwrap();
+    let data_url = format!(
+        "{EGOV_API}/law_data/{}?response_format=json&law_full_text_format=xml",
+        percent_encode_component(&id)
+    );
+    let out = std::process::Command::new("curl")
+        .args(["-sSL", "--fail", "--max-time", "20", &data_url])
+        .output()
+        .map_err(|e| format!("e-Gov 法令データ取得に失敗しました: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("e-Gov 法令データ取得に失敗しました (status={})", out.status));
+    }
+    let body: Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("e-Gov API 応答の JSON 解析に失敗しました: {e}"))?;
+    let field = |path: &str| {
+        body.pointer(path).and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("e-Gov API 応答に {path} がありません。"))
+    };
+    let law_id = field("/law_info/law_id")?.to_string();
+    let revision = field("/revision_info/law_revision_id")?.to_string();
+    if id.contains('_') && revision != id {
+        return Err("取得した法令履歴IDが要求した版と一致しません。".into());
+    }
+    let title = field("/revision_info/law_title")?.to_string();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(field("/law_full_text")?)
+        .map_err(|_| "e-Gov API の法令本文を Base64 から復号できませんでした。".to_string())?;
+    let xml = String::from_utf8(bytes)
+        .map_err(|_| "e-Gov API の法令本文が有効な UTF-8 ではありません。".to_string())?;
+    let source_url = egov_revision_url(&revision);
+    Ok(EgovLaw { law_id, title, revision, source_url, xml })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn egov_search_uses_revision_metadata_and_keeps_coarse_positions() {
+        let raw = r#"{
+            "total_count": 1764,
+            "next_offset": 3,
+            "items": [{
+                "law_info": {"law_id": "138AC0000000054", "law_num": "明治三十八年法律第五十四号"},
+                "revision_info": {
+                    "law_title": "工場抵当法",
+                    "law_revision_id": "138AC0000000054_20220617_504AC0000000068",
+                    "amendment_enforcement_date": "2022-06-17"
+                },
+                "sentences": [{"position": "mainprovision", "text": "原簿ニシテ<span>磁気ディスク</span>ヲ以"}]
+            }]
+        }"#;
+        let page = parse_egov_search(raw.as_bytes(), "2023-03-06", "磁気ディスク").unwrap();
+        assert_eq!(page["as_of"], "2023-03-06");
+        assert_eq!(page["next_offset"], 3);
+        let item = &page["results"][0];
+        assert_eq!(item["law_title"], "工場抵当法");
+        assert_eq!(
+            item["source_url"],
+            egov_revision_url("138AC0000000054_20220617_504AC0000000068")
+        );
+        assert_eq!(item["excerpts"][0]["position"], "mainprovision");
+        assert_eq!(item["excerpts"][0]["excerpt"], "原簿ニシテ磁気ディスクヲ以");
+        assert!(valid_egov_date("2024-02-29"));
+        assert!(!valid_egov_date("2023-02-29"));
+        assert!(!valid_egov_date("2023-3-06"));
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    #[ignore = "queries the public e-Gov API"]
+    fn egov_live_historical_search_and_revision_fetch() {
+        let args = crate::ai_tools::SearchEgovLawArgs {
+            keyword: "磁気ディスク".into(),
+            as_of: "2023-03-06".into(),
+            limit: Some(3),
+            offset: None,
+        };
+        let page = search_egov_law(args).unwrap();
+        let item = &page["results"][0];
+        let revision = item["law_revision_id"].as_str().unwrap();
+        assert!(!item["law_title"].as_str().unwrap().is_empty());
+        assert!(
+            item["excerpts"][0]["excerpt"]
+                .as_str()
+                .unwrap()
+                .contains("磁気ディスク")
+        );
+        let law = fetch_egov_law_xml(None, None, Some(revision)).unwrap();
+        assert_eq!(law.revision, revision);
+        assert_eq!(law.source_url, item["source_url"]);
+        let doc = ibis_formats::lawtext::parse_law_xml(&law.xml).unwrap();
+        assert_eq!(doc.law_title, law.title);
+    }
 
     #[cfg(not(target_family = "wasm"))]
     #[test]

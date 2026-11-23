@@ -875,6 +875,7 @@ impl SlideEditor {
                     AiDocKind::Docx => {
                         "You are an AI document assistant inside ibisOffice. \
                          Use the provided tools to inspect paragraphs and edit or format document text. Edits are proposed for user review. For Markdown source or a selected Mermaid image, use read_editable_source then replace_source_text. \
+                         For Japanese legislative research, use search_egov_law with the user's reference date and public legal terms. Present direct amendments, potential ripple amendments, and references separately with reasons. Cite the returned source URLs and revision IDs. If the search gives only a coarse position, fetch the exact revision using fetch_egov_law with set_as_baseline=false before identifying an article. Do not infer unverified article numbers or imply coverage of all affected laws. Keep research read-only unless the user asks for a draft or edit. \
                          For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, verify_lawtext_aratame, and lint_lawtext to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame and checking reference/conjunction issues with lint_lawtext, use the documents fields as the five initial drafts, leave unsupplied policy and commencement details open for review, and use open_markdown_document when the user wants to open any generated document in a new ibisOffice window. \
                          Respond concisely in the user's language."
                     }
@@ -1055,6 +1056,27 @@ impl SlideEditor {
                                 }
                             }
                         }
+                        let mut law_search_results = std::collections::HashMap::new();
+                        if kind == AiDocKind::Docx {
+                            for (index, call) in out.tool_calls.iter().enumerate() {
+                                if call.function.name != "search_egov_law" {
+                                    continue;
+                                }
+                                let active = this.read_with(cx, |editor, _| editor.ai_assistant.as_ref()
+                                    .is_some_and(|panel| panel.streaming && panel.run_id == run_id)).unwrap_or(false);
+                                if !active {
+                                    return;
+                                }
+                                let args = serde_json::from_str::<crate::ai_tools::SearchEgovLawArgs>(&call.function.arguments);
+                                let result = match args {
+                                    Ok(args) => cx.background_executor().spawn(async move {
+                                        crate::ai_client::search_egov_law(args)
+                                    }).await,
+                                    Err(error) => Err(format!("invalid arguments: {error}")),
+                                };
+                                law_search_results.insert(index, result);
+                            }
+                        }
                         let mut should_continue = false;
                         let _ = this.update(cx, |editor, cx| {
                             let Some(p) = editor.ai_assistant.as_mut() else {
@@ -1152,9 +1174,14 @@ impl SlideEditor {
                                 });
                                 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
                                 let sqlite_result = { let _ = index; None };
-                                let (result_json, commands, log_text) = sqlite_result.unwrap_or_else(|| {
-                                    editor.stage_assistant_tool(kind, call, turn, &turn_commands, cx)
+                                let law_result = law_search_results.remove(&index).map(|result| match result {
+                                    Ok(value) => (value.to_string(), Vec::new(), "✓ 法令を検索".to_string()),
+                                    Err(error) => (json!({ "error": error }).to_string(), Vec::new(), format!("✗ 法令検索: {error}")),
                                 });
+                                let (result_json, commands, log_text) =
+                                    sqlite_result.or(law_result).unwrap_or_else(|| {
+                                        editor.stage_assistant_tool(kind, call, turn, &turn_commands, cx)
+                                    });
                                 if !commands.is_empty() {
                                     edit_labels.push(log_text.clone());
                                     turn_commands.extend(commands);
@@ -3185,9 +3212,9 @@ impl SlideEditor {
                     Ok(a) => match crate::ai_client::fetch_egov_law_xml(
                         a.law_title.as_deref(),
                         a.law_num.as_deref(),
-                        a.law_id.as_deref(),
+                        a.law_revision_id.as_deref().or(a.law_id.as_deref()),
                     ) {
-                        Ok((id, title, xml)) => match ibis_formats::lawtext::parse_law_xml(&xml) {
+                        Ok(law) => match ibis_formats::lawtext::parse_law_xml(&law.xml) {
                             Ok(doc) => {
                                 let lt = ibis_formats::lawtext::to_lawtext(&doc);
                                 let set_baseline = a.set_as_baseline.unwrap_or(true);
@@ -3195,21 +3222,23 @@ impl SlideEditor {
                                     if let Some(p) = self.ai_assistant.as_mut() {
                                         p.pending_old_lawtext = Some((
                                             format!("{}.xml", doc.law_title),
-                                            xml,
+                                            law.xml,
                                         ));
                                     }
                                 }
                                 (
                                     json!({
-                                        "law_id": id,
-                                        "law_title": if doc.law_title.is_empty() { title } else { doc.law_title },
+                                        "law_id": law.law_id,
+                                        "law_revision_id": law.revision,
+                                        "source_url": law.source_url,
+                                        "law_title": if doc.law_title.is_empty() { law.title } else { doc.law_title },
                                         "law_num": doc.law_num,
                                         "set_as_baseline": set_baseline,
                                         "lawtext": lt,
                                     })
                                     .to_string(),
                                     None,
-                                    format!("✓ fetch_egov_law ({id})"),
+                                    format!("✓ fetch_egov_law ({})", law.revision),
                                 )
                             }
                             Err(e) => (
