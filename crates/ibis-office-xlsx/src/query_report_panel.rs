@@ -202,6 +202,8 @@ impl SlideEditor {
             "csv" => &["csv"],
             "parquet" => &["parquet"],
             "arrow_ipc" => &["arrow", "ipc", "feather"],
+            "json_lines" => &["jsonl", "ndjson"],
+            "avro" => &["avro"],
             "sqlite" => &["sqlite", "sqlite3", "db"],
             _ => ibis_doc_service::DATASET_EXTENSIONS,
         };

@@ -5,7 +5,7 @@ use apache_avro::{Reader, Schema, types::Value};
 use std::{
     cell::Cell,
     fs::File,
-    io::{self, Read},
+    io::{self, BufReader, Read},
     path::Path,
 };
 
@@ -37,12 +37,12 @@ pub fn read_avro(path: &Path) -> Result<QTable, String> {
 
 // Avro's reader treats EOF within a block-count varint as ordinary EOF. Track
 // bytes consumed so an incomplete block header cannot yield partial success.
-struct CountedInput<'a> {
-    remaining: &'a [u8],
+struct CountedInput<'a, R> {
+    remaining: R,
     position: &'a Cell<usize>,
 }
 
-impl Read for CountedInput<'_> {
+impl<R: Read> Read for CountedInput<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let count = self.remaining.read(buffer)?;
         self.position.set(self.position.get() + count);
@@ -51,12 +51,54 @@ impl Read for CountedInput<'_> {
 }
 
 fn read_records(bytes: &[u8]) -> Result<QTable, String> {
-    // This model is the only consumer of apache-avro in the workspace. Bound
-    // the library's individual allocations, including expanded codec blocks.
+    let mut table = QTable::default();
+    let mut text_budget = MAX_TEXT_BYTES;
+    visit_records(bytes, bytes.len(), &[], MAX_COLUMNS, |columns, row| {
+        if let Some(row) = row {
+            let count = table.rows.len() + 1;
+            if count > MAX_ROWS || columns.len().saturating_mul(count) > MAX_CELLS {
+                return Err("Avro source exceeds the query editor's table size limit".into());
+            }
+            super::sqlite_source::charge_dataset_text(&row, &mut text_budget)
+                .map_err(|_| "Avro text exceeds the 128 MiB limit")?;
+            table.rows.push(row);
+        } else {
+            table.columns = columns.to_vec();
+        }
+        Ok(())
+    })?;
+    Ok(table)
+}
+
+pub(super) fn visit_avro(
+    path: &Path,
+    selected: &[String],
+    visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
+) -> Result<(), String> {
+    let file = File::open(path).map_err(|error| error.to_string())?;
+    let length = file.metadata().map_err(|error| error.to_string())?.len();
+    let size = usize::try_from(length).map_err(|_| "Avro file is too large")?;
+    visit_records(
+        BufReader::new(file.take(length)),
+        size,
+        selected,
+        256,
+        visit,
+    )
+}
+
+fn visit_records(
+    input: impl Read,
+    bytes: usize,
+    selected: &[String],
+    max_columns: usize,
+    mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
+) -> Result<(), String> {
+    // This model is the only consumer of apache-avro in the workspace.
     apache_avro::util::max_allocation_bytes(MAX_BYTES);
     let position = Cell::new(0);
     let input = CountedInput {
-        remaining: bytes,
+        remaining: input,
         position: &position,
     };
     let mut reader = Reader::new(input).map_err(|error| error.to_string())?;
@@ -64,53 +106,74 @@ fn read_records(bytes: &[u8]) -> Result<QTable, String> {
         return Err("Avro source requires a top-level record schema".into());
     };
     let width = schema.fields.len();
-    if width == 0 || width > MAX_COLUMNS {
+    let indices = if selected.is_empty() {
+        (0..width).collect::<Vec<_>>()
+    } else {
+        let mut seen = std::collections::HashSet::new();
+        selected
+            .iter()
+            .map(|name| {
+                let index = *schema
+                    .lookup
+                    .get(name)
+                    .ok_or_else(|| format!("Missing Avro column: {name}"))?;
+                if !seen.insert(index) {
+                    return Err(format!("Duplicate Avro column: {name}"));
+                }
+                Ok(index)
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    };
+    if indices.is_empty() || indices.len() > max_columns {
         return Err("Avro source has an unsupported number of columns".into());
     }
-    let mut table = QTable::default();
-    for field in &schema.fields {
-        check_text(&field.name)?;
-        let ty = column_type(&field.schema)
-            .ok_or_else(|| format!("Unsupported Avro type in column {}", field.name))?;
-        table.columns.push(QColumn {
-            name: field.name.clone(),
-            ty,
-        });
-    }
-    let mut text_budget = MAX_TEXT_BYTES;
-    loop {
+    let columns = indices
+        .iter()
+        .map(|&index| {
+            let field = &schema.fields[index];
+            check_text(&field.name)?;
+            let ty = column_type(&field.schema)
+                .ok_or_else(|| format!("Unsupported Avro type in column {}", field.name))?;
+            Ok(QColumn {
+                name: field.name.clone(),
+                ty,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    visit(&columns, None)?;
+    for row in 1.. {
         let before = position.get();
         let Some(record) = reader.next() else {
-            if position.get() != before || before != bytes.len() {
+            if position.get() != before || before != bytes {
                 return Err("Incomplete Avro block header".into());
             }
             break;
         };
-        let row = table.rows.len() + 1;
-        if row > MAX_ROWS || width.saturating_mul(row) > MAX_CELLS {
-            return Err("Avro source exceeds the query editor's table size limit".into());
-        }
-        let Value::Record(fields) = record.map_err(|error| format!("Row {row}: {error}"))? else {
+        let Value::Record(mut fields) = record.map_err(|error| format!("Row {row}: {error}"))?
+        else {
             return Err(format!("Row {row}: expected an Avro record"));
         };
         if fields.len() != width {
             return Err(format!("Row {row}: Avro record does not match its schema"));
         }
-        let values = fields
-            .into_iter()
-            .zip(&table.columns)
-            .map(|((name, value), column)| {
-                if name != column.name {
+        let mut text_budget = MAX_TEXT_BYTES;
+        let values = indices
+            .iter()
+            .zip(&columns)
+            .map(|(&index, column)| {
+                let (name, value) = &mut fields[index];
+                if name != &column.name {
                     return Err(format!(
                         "Row {row}: Avro field order does not match its schema"
                     ));
                 }
-                cell(value, &mut text_budget).map_err(|error| format!("Row {row}, {name}: {error}"))
+                cell(std::mem::replace(value, Value::Null), &mut text_budget)
+                    .map_err(|error| format!("Row {row}, {name}: {error}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        table.rows.push(values);
+        visit(&columns, Some(values))?;
     }
-    Ok(table)
+    Ok(())
 }
 
 fn column_type(schema: &Schema) -> Option<QType> {
