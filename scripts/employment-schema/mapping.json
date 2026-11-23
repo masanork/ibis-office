@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "template": "こども家庭庁 就労証明書 Excel 2026-08-05掲載版",
+  "sheet": "標準的な様式",
+  "excluded": {
+    "B51:AK56": "No.19 保護者記載欄"
+  },
+  "common": {
+    "employer_name": {
+      "text": "Z4"
+    },
+    "employee_name": {
+      "text": "I19"
+    },
+    "certification_date": {
+      "date": [
+        "AA3",
+        "AF3",
+        "AI3"
+      ]
+    },
+    "employment_type": {
+      "choice": {
+        "employee": "I23",
+        "part_time": "L23"
+      },
+      "unsupported": [
+        "Q23",
+        "T23",
+        "W23",
+        "AB23",
+        "AG23",
+        "I24",
+        "L24",
+        "Q24",
+        "U24",
+        "W24",
+        "AA24"
+      ]
+    }
+  },
+  "schedules": {
+    "fixed": {
+      "total": {
+        "unit": {
+          "constant": "month"
+        },
+        "hours": {
+          "integer": "W25"
+        },
+        "minutes": {
+          "integer": "AA25",
+          "maximum": 59
+        },
+        "break_minutes": {
+          "integer": "AG25"
+        }
+      },
+      "days_per_month": {
+        "integer": "Q27"
+      },
+      "days_per_week": {
+        "integer": "AC27",
+        "maximum": 7
+      }
+    },
+    "variable": {
+      "total": {
+        "unit": {
+          "choice": {
+            "month": "M31",
+            "week": "P31"
+          }
+        },
+        "hours": {
+          "integer": "S31"
+        },
+        "minutes": {
+          "integer": "W31",
+          "maximum": 59
+        },
+        "break_minutes": {
+          "integer": "AC31"
+        }
+      },
+      "days": {
+        "unit": {
+          "choice": {
+            "month": "M32",
+            "week": "P32"
+          }
+        },
+        "count": {
+          "integer": "S32"
+        }
+      }
+    }
+  }
+}

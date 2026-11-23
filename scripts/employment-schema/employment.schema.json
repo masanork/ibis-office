@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "就労証明書の就労データ試作 v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "employer_name": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "employee_name": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "certification_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "employment_type": {
+          "enum": [
+            "employee",
+            "part_time"
+          ]
+        },
+        "work_schedule": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "fixed"
+            },
+            "total": {
+              "type": "object",
+              "properties": {
+                "unit": {
+                  "const": "month"
+                },
+                "hours": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "minutes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 59
+                },
+                "break_minutes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "unit",
+                "hours",
+                "minutes",
+                "break_minutes"
+              ],
+              "additionalProperties": false
+            },
+            "days_per_month": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "days_per_week": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 7
+            }
+          },
+          "required": [
+            "kind",
+            "total",
+            "days_per_month",
+            "days_per_week"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "employer_name",
+        "employee_name",
+        "certification_date",
+        "employment_type",
+        "work_schedule"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "employer_name": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "employee_name": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "certification_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "employment_type": {
+          "enum": [
+            "employee",
+            "part_time"
+          ]
+        },
+        "work_schedule": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "variable"
+            },
+            "total": {
+              "type": "object",
+              "properties": {
+                "unit": {
+                  "enum": [
+                    "month",
+                    "week"
+                  ]
+                },
+                "hours": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "minutes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 59
+                },
+                "break_minutes": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "unit",
+                "hours",
+                "minutes",
+                "break_minutes"
+              ],
+              "additionalProperties": false
+            },
+            "days": {
+              "type": "object",
+              "properties": {
+                "unit": {
+                  "enum": [
+                    "month",
+                    "week"
+                  ]
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "unit",
+                "count"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "kind",
+            "total",
+            "days"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "employer_name",
+        "employee_name",
+        "certification_date",
+        "employment_type",
+        "work_schedule"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
