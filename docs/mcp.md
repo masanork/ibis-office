@@ -7,12 +7,13 @@ ibisOffice can run as an MCP (Model Context Protocol) server. An AI assistant su
 This page, in order:
 
 1. [Starting the server](#starting-the-server)
-2. [Allowing access to your folders](#allowing-access-to-your-folders)
-3. [Tools](#tools)
-4. [Connecting Claude Desktop](#connecting-claude-desktop)
-5. [Connecting Claude Code](#connecting-claude-code)
-6. [Connecting ChatGPT](#connecting-chatgpt)
-7. [Safety](#safety)
+2. [Sharing a workflow across coding agents](#sharing-a-workflow-across-coding-agents)
+3. [Allowing access to your folders](#allowing-access-to-your-folders)
+4. [Tools](#tools)
+5. [Connecting Claude Desktop](#connecting-claude-desktop)
+6. [Connecting Claude Code](#connecting-claude-code)
+7. [Connecting ChatGPT](#connecting-chatgpt)
+8. [Safety](#safety)
 
 ## Starting the server
 
@@ -31,6 +32,14 @@ The server speaks the Model Context Protocol on standard input and output, one J
 | `--max-file-size MB` | The largest file that is opened, in MB (default 200 MB). A zip may expand to 20 times its size. |
 
 There are no environment variables to set.
+
+## Sharing a workflow across coding agents
+
+The repository's [ibis-office skill](../.agents/skills/ibis-office/SKILL.md) covers both files on disk and the Assistant in an open GUI window. Copy the whole `.agents/skills/ibis-office/` directory to a client skill location to keep its references and sample input together. [Connection examples for Codex, OpenCode and Claude Code](../.agents/skills/ibis-office/references/mcp-setup.md)
+
+Keep shared project instructions in `AGENTS.md` and reusable workflows in `SKILL.md`. Keep supporting documents in `references/` and deliverable templates or sample data in `assets/`. An OKF bundle can also hold domain knowledge such as metric definitions. Each client keeps its MCP connection in its own configuration format.
+
+The [monthly report example](../.agents/skills/ibis-office/references/monthly-report.md) checks the bundled synthetic CSV with the existing read-only MCP tools. If support for MCP Prompts and Resources is added, those features can refer to the same workflows and assets.
 
 ## Allowing access to your folders
 

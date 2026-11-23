@@ -7,12 +7,13 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 このページの順序：
 
 1. [サーバーを起動する](#サーバーを起動する)
-2. [アクセスするフォルダーを許可する](#アクセスするフォルダーを許可する)
-3. [ツール](#ツール)
-4. [Claude Desktop と接続する](#claude-desktop-と接続する)
-5. [Claude Code と接続する](#claude-code-と接続する)
-6. [ChatGPT と接続する](#chatgpt-と接続する)
-7. [安全のために](#安全のために)
+2. [Coding agent と設定を共有する](#coding-agent-と設定を共有する)
+3. [アクセスするフォルダーを許可する](#アクセスするフォルダーを許可する)
+4. [ツール](#ツール)
+5. [Claude Desktop と接続する](#claude-desktop-と接続する)
+6. [Claude Code と接続する](#claude-code-と接続する)
+7. [ChatGPT と接続する](#chatgpt-と接続する)
+8. [安全のために](#安全のために)
 
 ## サーバーを起動する
 
@@ -31,6 +32,14 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 | `--max-file-size MB` | 開くファイルの最大の大きさ（単位は MB、既定は 200MB）。zip は大きさの 20 倍まで展開されることがあります。 |
 
 設定する環境変数はありません。
+
+## Coding agent と設定を共有する
+
+リポジトリの [ibis-office スキル](../.agents/skills/ibis-office/SKILL.md) は、ディスク上の文書と起動中の GUI を操作する手順をまとめています。`.agents/skills/ibis-office/` をフォルダーごとクライアントのスキル探索先に置くと、接続例とサンプルも一緒に使えます。 [Codex・OpenCode・Claude Code の接続例](../.agents/skills/ibis-office/references/mcp-setup.md)
+
+プロジェクトで共通の指示は `AGENTS.md`、繰り返す手順は `SKILL.md`、判定基準などの資料は `references/`、配布するひな形や入力データは `assets/` に置けます。OKF を使う場合、指標定義などのコンセプトは通常の Markdown として共有できます。クライアント設定は使うクライアントの形式で管理します。
+
+[月次帳票の点検例](../.agents/skills/ibis-office/references/monthly-report.md) では、同梱の合成 CSV を既存の読み取り専用 MCP ツールで検査します。定型依頼を MCP Prompts、テンプレートや資料を MCP Resources として公開する機能は、今後追加する際も同じ手順・ファイルを参照できる構成です。
 
 ## アクセスするフォルダーを許可する
 
