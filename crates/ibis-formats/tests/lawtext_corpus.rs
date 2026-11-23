@@ -295,14 +295,27 @@ fn public_food_labeling_samples_expose_table_and_form_limits() {
         ),
     ] {
         let original = parse_law_xml(xml).unwrap();
-        for edited in [
-            parse_lawtext(&to_lawtext(&original)).unwrap(),
-            parse_markdown_law(&to_markdown(&original)).unwrap(),
-        ] {
+        let lawtext = parse_lawtext(&to_lawtext(&original)).unwrap();
+        let markdown = parse_markdown_law(&to_markdown(&original)).unwrap();
+        assert_eq!(lawtext.appdx_tables, original.appdx_tables);
+        for edited in [lawtext, markdown] {
             assert_eq!(edited.law_title, title);
             assert_eq!(edited.law_num, original.law_num);
             assert_eq!(edited.main_provision, original.main_provision);
-            assert_eq!(edited.appdx_tables, original.appdx_tables);
+            assert_eq!(edited.appdx_tables.len(), original.appdx_tables.len());
+            for (actual, expected) in edited.appdx_tables.iter().zip(&original.appdx_tables) {
+                assert_eq!(actual.title, expected.title);
+                assert_eq!(actual.related_article_num, expected.related_article_num);
+                assert_eq!(actual.rows.len(), expected.rows.len());
+                for (actual_row, expected_row) in actual.rows.iter().zip(&expected.rows) {
+                    assert!(actual_row.starts_with(expected_row));
+                    assert!(
+                        actual_row[expected_row.len()..]
+                            .iter()
+                            .all(String::is_empty)
+                    );
+                }
+            }
             assert_eq!(
                 parse_law_xml(&to_law_xml(&edited)).unwrap().law_title,
                 title
@@ -315,4 +328,41 @@ fn public_food_labeling_samples_expose_table_and_form_limits() {
     assert!(!table_output.contains("rowspan="));
     let form_output = to_law_xml(&parse_law_xml(form).unwrap());
     assert!(!form_output.contains("<AppdxStyle>"));
+}
+
+#[test]
+fn audit_reports_reordered_siblings_without_counting_removals_as_reordering() {
+    let fixture = include_str!("lawtext/supplementary-amendment.xml");
+    let title_start = fixture.find("<LawTitle ").unwrap();
+    let toc_start = fixture.find("<TOC>").unwrap();
+    let after_toc = fixture.find("</TOC>").unwrap() + "</TOC>".len();
+    let xml = format!(
+        "{}{}\n{}{}",
+        &fixture[..title_start],
+        &fixture[toc_start..after_toc],
+        &fixture[title_start..toc_start],
+        &fixture[after_toc..]
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("order.xml");
+    std::fs::write(&path, xml).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ibis-lawtext-audit"))
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let changes = report["xml_model_changes"].as_array().unwrap();
+    let [change] = changes.as_slice() else {
+        panic!("expected one difference, got {changes:?}")
+    };
+    assert_eq!(change["kind"], "child_order_changed");
+    assert_eq!(change["path"], "/Law/LawBody[1]");
+    assert_eq!(change["before"][0], "TOC[1]");
+    assert_eq!(change["after"][0], "LawTitle[1]");
+    assert_eq!(report["lawtext_roundtrip_changes"], serde_json::json!([]));
 }

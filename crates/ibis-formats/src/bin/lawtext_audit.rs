@@ -19,7 +19,8 @@ fn node_key(node: Node<'_, '_>) -> String {
             .attribute("AmendLawNum")
             .map(|value| ("AmendLawNum", value)),
         "Part" | "Chapter" | "Section" | "Subsection" | "Division" | "Article" | "Paragraph"
-        | "Item" => node.attribute("Num").map(|value| ("Num", value)),
+        | "Item" | "Column" | "TOCPart" | "TOCChapter" | "TOCSection" | "TOCSubsection"
+        | "TOCDivision" | "TOCArticle" => node.attribute("Num").map(|value| ("Num", value)),
         tag if tag.starts_with("Subitem") => node.attribute("Num").map(|value| ("Num", value)),
         _ => None,
     };
@@ -29,15 +30,18 @@ fn node_key(node: Node<'_, '_>) -> String {
     }
 }
 
-fn children_by_location<'a, 'input>(node: Node<'a, 'input>) -> BTreeMap<String, Node<'a, 'input>> {
+fn children_by_location<'a, 'input>(
+    node: Node<'a, 'input>,
+) -> BTreeMap<String, (usize, Node<'a, 'input>)> {
     let mut occurrences = HashMap::new();
     node.children()
         .filter(Node::is_element)
-        .map(|child| {
+        .enumerate()
+        .map(|(index, child)| {
             let key = node_key(child);
             let occurrence = occurrences.entry(key.clone()).or_insert(0);
             *occurrence += 1;
-            (format!("{key}[{occurrence}]"), child)
+            (format!("{key}[{occurrence}]"), (index, child))
         })
         .collect()
 }
@@ -83,9 +87,30 @@ fn compare(old: Node<'_, '_>, new: Node<'_, '_>, path: &str, changes: &mut Vec<V
 
     let old_children = children_by_location(old);
     let mut new_children = children_by_location(new);
-    for (key, old_child) in old_children {
+    // Compare the relative order of paired elements. Insertions and deletions
+    // are reported independently and do not shift the order of other elements.
+    let mut paired: Vec<_> = old_children
+        .iter()
+        .filter_map(|(key, (old_index, _))| {
+            let (new_index, _) = new_children.get(key)?;
+            Some((key.as_str(), *old_index, *new_index))
+        })
+        .collect();
+    paired.sort_unstable_by_key(|&(_, old_index, _)| old_index);
+    if !paired.windows(2).all(|pair| pair[0].2 < pair[1].2) {
+        let before: Vec<_> = paired.iter().map(|&(key, _, _)| key).collect();
+        paired.sort_unstable_by_key(|&(_, _, new_index)| new_index);
+        let after: Vec<_> = paired.iter().map(|&(key, _, _)| key).collect();
+        changes.push(json!({
+            "kind": "child_order_changed",
+            "path": path,
+            "before": before,
+            "after": after,
+        }));
+    }
+    for (key, (_, old_child)) in old_children {
         let path = format!("{path}/{key}");
-        if let Some(new_child) = new_children.remove(&key) {
+        if let Some((_, new_child)) = new_children.remove(&key) {
             compare(old_child, new_child, &path, changes);
         } else {
             changes.push(json!({"kind": "element_removed", "path": path}));
