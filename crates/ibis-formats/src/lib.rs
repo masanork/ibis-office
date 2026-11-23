@@ -53,6 +53,7 @@ pub mod dicom;
 pub mod production_image;
 pub mod structured_preview;
 pub mod sbom_review;
+mod workbook_assembly;
 pub mod student_record;
 pub mod form_template;
 pub mod dpc;

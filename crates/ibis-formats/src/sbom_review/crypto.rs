@@ -387,6 +387,23 @@ mod tests {
             workbook.sheets[workbook.active_tab].name,
             "System impact summary"
         );
+        assert_eq!(
+            workbook
+                .sheets
+                .iter()
+                .map(|tab| tab.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "System impact summary",
+                "Asset changes",
+                "Dependency impact",
+                "Asset providers",
+                "Changed asset fields",
+                "Relationship changes",
+                "Input artifacts",
+                "Comparison notes",
+            ]
+        );
         let sheet = |name: &str| {
             let tab = workbook.sheets.iter().find(|tab| tab.name == name).unwrap();
             sheet_of_slide(book.slide(tab.slide.unwrap()).unwrap()).unwrap()

@@ -5,12 +5,8 @@
 //! workbook builder, and Harunobu medical data quality audit profile.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-use ibis_doc_model::{
-    CellKind, CellStyle, CellValue, EmuRect, Presentation, Shape, ShapeKind, Sheet, SheetCell,
-    SheetState, Slide, WorkbookSheet,
-};
+use ibis_doc_model::{CellKind, CellStyle, CellValue, Presentation, ShapeKind, Sheet, SheetCell};
 
 use crate::{Error, Opened};
 
@@ -117,73 +113,21 @@ pub fn parse_dpc_ef(data: &[u8]) -> Result<DpcEfDocument, Error> {
 /// Open DPC E/F bytes as a two-sheet [`Opened`] workbook (`DPC明細` / `DPCサマリー`).
 pub fn open_dpc_ef(data: &[u8]) -> Result<Opened, Error> {
     let doc = parse_dpc_ef(data)?;
-    let blank = crate::blank::blank_file(crate::Kind::Workbook)?;
-    let mut opened = crate::save::open(blank)?;
+    crate::workbook_assembly::assemble(|template| {
+        let mut detail = template.clone();
+        ensure_bold_style(&mut detail);
+        detail.cells = build_detail_cells(&doc).into();
 
-    let detail_cells = build_detail_cells(&doc);
-    let summary_cells = build_summary_cells(&doc);
-
-    if let Some(wb_arc) = opened.presentation.workbook.as_mut()
-        && let Some(first_meta) = Arc::make_mut(wb_arc).sheets.first_mut()
-    {
-        first_meta.name = crate::words::text("medical.dpc.sheet-detail");
-    }
-    if let Some(slide) = opened.presentation.slides.first_mut() {
-        for sh in &mut slide.shapes {
-            if let ShapeKind::Sheet(sheet_arc) = &mut sh.kind {
-                let mut sheet = (**sheet_arc).clone();
-                ensure_bold_style(&mut sheet);
-                sheet.cells = detail_cells.into();
-                *sheet_arc = Arc::new(sheet);
-                break;
-            }
-        }
-    }
-
-    let summary_slide_id = opened.presentation.new_slide_id();
-    let template_styles = opened
-        .presentation
-        .slides
-        .first()
-        .and_then(|s| {
-            s.shapes.iter().find_map(|sh| match &sh.kind {
-                ShapeKind::Sheet(sheet) => Some(sheet.styles.clone()),
-                _ => None,
-            })
-        })
-        .unwrap_or_default();
-    let mut summary_sheet = Sheet {
-        cells: summary_cells.into(),
-        styles: template_styles,
-        ..Default::default()
-    };
-    ensure_bold_style(&mut summary_sheet);
-
-    let frame = opened
-        .presentation
-        .slides
-        .first()
-        .and_then(|s| s.shapes.first())
-        .map(|sh| sh.frame)
-        .unwrap_or_else(|| EmuRect::new(0, 0, 0, 0));
-    let mut summary_slide = Slide::new(summary_slide_id);
-    summary_slide.shapes.push(Shape::new(
-        opened.presentation.new_shape_id(),
-        frame,
-        ShapeKind::Sheet(Arc::new(summary_sheet)),
-    ));
-    opened.presentation.slides.push(summary_slide);
-    if let Some(wb_arc) = opened.presentation.workbook.as_mut() {
-        Arc::make_mut(wb_arc).sheets.push(WorkbookSheet {
-            name: crate::words::text("medical.dpc.sheet-summary"),
-            state: SheetState::Visible,
-            slide: Some(summary_slide_id),
-            hidden: None,
-            other: false,
-        });
-    }
-
-    Ok(opened)
+        let summary = Sheet {
+            cells: build_summary_cells(&doc).into(),
+            styles: detail.styles.clone(),
+            ..Default::default()
+        };
+        Ok(vec![
+            (crate::words::text("medical.dpc.sheet-detail"), detail),
+            (crate::words::text("medical.dpc.sheet-summary"), summary),
+        ])
+    })
 }
 
 /// Result of running the Harunobu medical data quality profile over a workbook.
@@ -365,6 +309,37 @@ mod tests {
         assert_eq!(pid_cell.text, "0000123456");
         let pts_cell = summary.cells.iter().find(|c| c.row == 1 && c.column == 3).unwrap();
         assert_eq!(pts_cell.text, "390"); // 291*1 + 33*3
+
+        let bytes = opened
+            .source
+            .save(&opened.presentation, crate::SaveOptions::default())
+            .expect("save generated workbook");
+        let reopened = crate::open(bytes).expect("reopen generated workbook");
+        let workbook = reopened.presentation.workbook.as_ref().unwrap();
+        let names: Vec<_> = workbook
+            .sheets
+            .iter()
+            .map(|sheet| sheet.name.as_str())
+            .collect();
+        assert_eq!(names, ["DPC明細", "DPCサマリー"]);
+        for (sheet_index, column, expected) in [
+            (0, 0, CellValue::Text("0123456".into())),
+            (0, 1, CellValue::Text("0000123456".into())),
+            (1, 0, CellValue::Text("0000123456".into())),
+            (1, 2, CellValue::Number(2.0)),
+            (1, 3, CellValue::Number(390.0)),
+        ] {
+            let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(
+                &reopened.presentation.slides[sheet_index],
+            )
+            .unwrap();
+            let cell = sheet
+                .cells
+                .iter()
+                .find(|cell| cell.row == 1 && cell.column == column)
+                .unwrap();
+            assert_eq!(cell.value, expected);
+        }
 
         let audit = audit_medical_workbook(&opened.presentation);
         assert_eq!(audit.mixed_era_dates, 0);

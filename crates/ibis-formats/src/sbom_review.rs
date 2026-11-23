@@ -501,116 +501,89 @@ fn workbook<const N: usize>(tables: [Table; N]) -> Result<Vec<u8>, String> {
 }
 
 fn write_workbook(tables: impl IntoIterator<Item = Table>) -> Result<Vec<u8>, String> {
-    use ibis_doc_model::sheet_ops::{StructureEdit, apply_structure};
     use ibis_doc_model::{
-        AutoFilter, CellRange, CellStyle, CellValue, ShapeKind,
+        AutoFilter, CellRange, CellStyle, CellValue,
         sheet::{CellKind, SheetCell},
     };
-    use std::sync::Arc;
 
-    let blank = crate::blank_file(crate::Kind::Workbook).map_err(|e| e.to_string())?;
-    let mut opened = crate::open(blank).map_err(|e| e.to_string())?;
-    let book = &mut opened.presentation;
-    let template = ibis_doc_model::sheet_calc::sheet_of_slide(&book.slides[0])
-        .ok_or("Missing blank worksheet")?
-        .clone();
-
-    for (index, (name, headers, rows)) in tables.into_iter().enumerate() {
-        let last_row = rows.len();
-        if last_row >= 1_048_576 {
-            return Err(format!("{name} exceeds the XLSX worksheet row limit"));
-        }
-        let mut sheet = (*template).clone();
-        let header_style = sheet.styles.len() as u32;
-        sheet.styles.push(CellStyle {
-            bold: true,
-            ..sheet.styles.first().cloned().unwrap_or_default()
-        });
-        let header = headers.iter().map(|header| (*header).into()).collect();
-        let mut widths = vec![12; headers.len()];
-        let mut cells = Vec::new();
-        for (row, fields) in std::iter::once(header).chain(rows).enumerate() {
-            for (column, text) in fields.into_iter().enumerate() {
-                if text.is_empty() {
-                    continue;
+    let opened = crate::workbook_assembly::assemble(|template| {
+        let mut sheets = Vec::new();
+        for (name, headers, rows) in tables {
+            let last_row = rows.len();
+            if last_row >= 1_048_576 {
+                return Err(crate::Error::new(format!(
+                    "{name} exceeds the XLSX worksheet row limit"
+                )));
+            }
+            let mut sheet = template.clone();
+            let header_style = sheet.styles.len() as u32;
+            sheet.styles.push(CellStyle {
+                bold: true,
+                ..sheet.styles.first().cloned().unwrap_or_default()
+            });
+            let header = headers.iter().map(|header| (*header).into()).collect();
+            let mut widths = vec![12; headers.len()];
+            let mut cells = Vec::new();
+            for (row, fields) in std::iter::once(header).chain(rows).enumerate() {
+                for (column, text) in fields.into_iter().enumerate() {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if text.encode_utf16().count() > 32_767 {
+                        return Err(crate::Error::new(format!(
+                            "{name}: cell in row {} exceeds the XLSX text limit",
+                            row + 1
+                        )));
+                    }
+                    let text: String = text
+                        .chars()
+                        .map(|ch| match ch {
+                            '\t' | '\n' | '\r' => ch,
+                            '\u{0}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}' => '\u{fffd}',
+                            _ => ch,
+                        })
+                        .collect();
+                    widths[column] = widths[column].max((text.chars().count() + 3).min(70));
+                    let value = CellValue::Text(text.clone());
+                    cells.push(SheetCell {
+                        row: row as u32,
+                        column: column as u32,
+                        kind: CellKind::of(&value),
+                        value,
+                        text,
+                        style: if row == 0 { header_style } else { 0 },
+                        formula: None,
+                        phonetic: None,
+                        runs: None,
+                    });
                 }
-                if text.encode_utf16().count() > 32_767 {
-                    return Err(format!(
-                        "{name}: cell in row {} exceeds the XLSX text limit",
-                        row + 1
-                    ));
-                }
-                let text: String = text
-                    .chars()
-                    .map(|ch| match ch {
-                        '\t' | '\n' | '\r' => ch,
-                        '\u{0}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}' => '\u{fffd}',
-                        _ => ch,
-                    })
-                    .collect();
-                widths[column] = widths[column].max((text.chars().count() + 3).min(70));
-                let value = CellValue::Text(text.clone());
-                cells.push(SheetCell {
-                    row: row as u32,
-                    column: column as u32,
-                    kind: CellKind::of(&value),
-                    value,
-                    text,
-                    style: if row == 0 { header_style } else { 0 },
-                    formula: None,
-                    phonetic: None,
-                    runs: None,
+            }
+            sheet.cells = cells.into();
+            sheet.columns = widths
+                .into_iter()
+                .map(|width| width as i64 * 76_200)
+                .collect();
+            sheet.custom_columns = (0..headers.len() as u32).collect();
+            sheet.frozen = Some((0, 1));
+            if last_row > 0 && headers.len() > 1 {
+                sheet.auto_filter = Some(AutoFilter {
+                    range: CellRange {
+                        first_row: 0,
+                        first_column: 0,
+                        last_row: last_row as u32,
+                        last_column: headers.len() as u32 - 1,
+                    },
+                    columns: Vec::new(),
                 });
             }
+            sheets.push((name.into(), sheet));
         }
-        sheet.cells = cells.into();
-        sheet.columns = widths
-            .into_iter()
-            .map(|width| width as i64 * 76_200)
-            .collect();
-        sheet.custom_columns = (0..headers.len() as u32).collect();
-        sheet.frozen = Some((0, 1));
-        if last_row > 0 && headers.len() > 1 {
-            sheet.auto_filter = Some(AutoFilter {
-                range: CellRange {
-                    first_row: 0,
-                    first_column: 0,
-                    last_row: last_row as u32,
-                    last_column: headers.len() as u32 - 1,
-                },
-                columns: Vec::new(),
-            });
-        }
-
-        let content = Arc::new(sheet);
-        let edit = if index == 0 {
-            let shape = book.slides[0]
-                .shapes
-                .iter_mut()
-                .find(|shape| matches!(shape.kind, ShapeKind::Sheet(_)))
-                .ok_or("Missing blank worksheet")?;
-            shape.kind = ShapeKind::Sheet(content);
-            StructureEdit::RenameSheet {
-                sheet: 0,
-                name: name.into(),
-            }
-        } else {
-            StructureEdit::AddSheet {
-                sheet: index,
-                name: name.into(),
-                slide: book.new_slide_id(),
-                shape: book.new_shape_id(),
-                content,
-            }
-        };
-        apply_structure(book, &edit);
-        Arc::make_mut(book.workbook.as_mut().ok_or("Missing workbook")?)
-            .structure
-            .push(edit);
-    }
+        Ok(sheets)
+    })
+    .map_err(|e| e.to_string())?;
     opened
         .source
-        .save(book, crate::SaveOptions::default())
+        .save(&opened.presentation, crate::SaveOptions::default())
         .map_err(|e| e.to_string())
 }
 
