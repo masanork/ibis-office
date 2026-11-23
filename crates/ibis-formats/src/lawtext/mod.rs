@@ -183,10 +183,19 @@ impl LawSentenceContent {
     }
 }
 
+/// Display labels carried by a paragraph independently of its identifier.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LawParagraphLabels {
+    pub caption: Option<String>,
+    pub common_caption: Option<String>,
+    pub number: Option<String>,
+}
+
 /// A paragraph (`Paragraph`: 項) inside a [`LawArticle`] or [`SupplProvision`].
 #[derive(Debug, Clone)]
 pub struct LawParagraph {
     pub num: String,
+    pub labels: LawParagraphLabels,
     pub sentence: String,
     /// Original XML sentence boundaries and attributes, used when the text still matches.
     pub xml_sentence_content: LawSentenceContent,
@@ -609,6 +618,19 @@ fn parse_xml_sentence_container(
     (sentence, content)
 }
 
+fn parse_paragraph_labels(node: roxmltree::Node<'_, '_>) -> LawParagraphLabels {
+    let caption = child_elem(node, "ParagraphCaption");
+    LawParagraphLabels {
+        caption: caption.map(collect_text),
+        common_caption: caption.and_then(|node| node.attribute("CommonCaption")).map(str::to_string),
+        number: child_elem(node, "ParagraphNum").map(collect_text),
+    }
+}
+
+fn default_paragraph_number(num: &str) -> String {
+    if num == "1" { String::new() } else { to_fullwidth_digits(num) }
+}
+
 fn parse_xml_paragraph(node: roxmltree::Node<'_, '_>) -> LawParagraph {
     let num = node.attribute("Num").unwrap_or("1").to_string();
     let (sentence, xml_sentence_content) = parse_xml_sentence_container(child_elem(node, "ParagraphSentence"), false);
@@ -617,8 +639,13 @@ fn parse_xml_paragraph(node: roxmltree::Node<'_, '_>) -> LawParagraph {
         .filter(|n| n.is_element() && n.tag_name().name() == "Item")
         .map(parse_xml_item)
         .collect();
+    let mut labels = parse_paragraph_labels(node);
+    if labels.number.as_deref() == Some(&default_paragraph_number(&num)) {
+        labels.number = None;
+    }
     LawParagraph {
         num,
+        labels,
         sentence,
         xml_sentence_content,
         items,
@@ -876,17 +903,36 @@ fn write_xml_sentence_elements(out: &mut String, content: &LawSentenceContent) {
     }
 }
 
+fn write_paragraph_caption(out: &mut String, labels: &LawParagraphLabels) {
+    if let Some(caption) = &labels.caption {
+        out.push_str("<ParagraphCaption");
+        push_opt_attr(out, "CommonCaption", labels.common_caption.as_deref());
+        out.push('>');
+        push_xml_escaped(out, caption);
+        out.push_str("</ParagraphCaption>");
+    }
+}
+
+fn write_paragraph_number(out: &mut String, label: &str) {
+    out.push_str("<ParagraphNum>");
+    push_xml_escaped(out, label);
+    out.push_str("</ParagraphNum>");
+}
+
 fn write_xml_paragraph(out: &mut String, para: &LawParagraph, depth: usize) {
     push_indent(out, depth);
     out.push_str("<Paragraph");
     push_opt_attr(out, "Num", Some(&para.num));
     out.push_str(">\n");
-    push_indent(out, depth + 1);
-    out.push_str("<ParagraphNum>");
-    if para.num != "1" {
-        push_xml_escaped(out, &to_fullwidth_digits(&para.num));
+    if para.labels.caption.is_some() {
+        push_indent(out, depth + 1);
+        write_paragraph_caption(out, &para.labels);
+        out.push('\n');
     }
-    out.push_str("</ParagraphNum>\n");
+    push_indent(out, depth + 1);
+    let default_number = default_paragraph_number(&para.num);
+    write_paragraph_number(out, para.labels.number.as_deref().unwrap_or(&default_number));
+    out.push('\n');
     push_indent(out, depth + 1);
     out.push_str("<ParagraphSentence>");
     write_xml_sentence_content(out, &para.sentence, &para.xml_sentence_content);
@@ -1030,7 +1076,7 @@ fn write_lawtext_node(out: &mut String, node: &LawNode, structured_sentences: bo
                 out.push('\n');
             }
             for (idx, para) in art.paragraphs.iter().enumerate() {
-                let sentence = lawtext_sentence_text(&para.sentence, &para.xml_sentence_content, structured_sentences);
+                let sentence = lawtext_paragraph_text(para, structured_sentences);
                 let inline = idx == 0 && para.num == "1" && !sentence.is_empty();
                 if idx == 0 {
                     out.push_str(&art.title);
@@ -1055,12 +1101,48 @@ fn write_lawtext_node(out: &mut String, node: &LawNode, structured_sentences: bo
                 out.push_str(&to_fullwidth_digits(&para.num));
                 out.push(' ');
             }
-            out.push_str(&lawtext_sentence_text(&para.sentence, &para.xml_sentence_content, structured_sentences));
+            out.push_str(&lawtext_paragraph_text(para, structured_sentences));
             out.push('\n');
             write_lawtext_items(out, &para.items, structured_sentences);
             out.push('\n');
         }
     }
+}
+
+fn lawtext_paragraph_text(para: &LawParagraph, structured: bool) -> std::borrow::Cow<'_, str> {
+    if structured && para.labels != LawParagraphLabels::default() {
+        let mut xml = String::new();
+        write_paragraph_caption(&mut xml, &para.labels);
+        if let Some(label) = &para.labels.number {
+            write_paragraph_number(&mut xml, label);
+        }
+        write_xml_sentence_content(&mut xml, &para.sentence, &para.xml_sentence_content);
+        return xml.replace('\r', "&#13;").replace('\n', "&#10;").into();
+    }
+    lawtext_sentence_text(&para.sentence, &para.xml_sentence_content, structured)
+}
+
+fn parse_lawtext_paragraph_labels(text: &str) -> Option<(LawParagraphLabels, &str)> {
+    if !text.starts_with("<ParagraphCaption") && !text.starts_with("<ParagraphNum") {
+        return None;
+    }
+    const OPEN: &str = "<Paragraph>";
+    let xml = format!("{OPEN}{text}</Paragraph>");
+    let doc = roxmltree::Document::parse(&xml).ok()?;
+    let root = doc.root_element();
+    let mut elements = root.children().filter(roxmltree::Node::is_element).peekable();
+    if elements.peek()?.has_tag_name("ParagraphCaption") {
+        elements.next();
+    }
+    if elements.peek()?.has_tag_name("ParagraphNum") {
+        elements.next();
+    }
+    let start = elements.peek()?.range().start - OPEN.len();
+    let rest = &text[start..];
+    if !rest.starts_with("<Sentence") {
+        return None;
+    }
+    Some((parse_paragraph_labels(root), rest))
 }
 
 fn lawtext_sentence_text<'a>(text: &'a str, content: &LawSentenceContent, structured: bool) -> std::borrow::Cow<'a, str> {
@@ -1073,8 +1155,9 @@ fn lawtext_sentence_text<'a>(text: &'a str, content: &LawSentenceContent, struct
 }
 
 fn parse_lawtext_paragraph(num: String, text: &str) -> LawParagraph {
+    let (labels, text) = parse_lawtext_paragraph_labels(text).unwrap_or_else(|| (LawParagraphLabels::default(), text));
     let (sentence, xml_sentence_content) = parse_lawtext_sentence_text(text, false);
-    LawParagraph { num, sentence, xml_sentence_content, items: Vec::new() }
+    LawParagraph { num, labels, sentence, xml_sentence_content, items: Vec::new() }
 }
 
 fn parse_lawtext_sentence_text(text: &str, allow_columns: bool) -> (String, LawSentenceContent) {
@@ -1556,7 +1639,7 @@ fn write_markdown_node(
                 if idx != 0 || para.num != "1" || para.sentence.is_empty() {
                     out.push_str(&format!("{}. ", para.num));
                 }
-                write_markdown_sentence_text(out, &para.sentence, &para.xml_sentence_content, preserve_sentences);
+                write_markdown_sentence_comment(out, &para.sentence, lawtext_paragraph_text(para, preserve_sentences));
                 out.push_str("\n\n");
                 for item in &para.items {
                     out.push_str(&format!("- {} ", item.title));
@@ -1576,7 +1659,7 @@ fn write_markdown_node(
             if para.num != "1" || para.sentence.is_empty() {
                 out.push_str(&format!("{}. ", para.num));
             }
-            write_markdown_sentence_text(out, &para.sentence, &para.xml_sentence_content, preserve_sentences);
+            write_markdown_sentence_comment(out, &para.sentence, lawtext_paragraph_text(para, preserve_sentences));
             out.push_str("\n\n");
         }
     }
@@ -1585,11 +1668,12 @@ fn write_markdown_node(
 pub(crate) const MARKDOWN_SENTENCE_COMMENT: &str = "<!-- ibis-law-sentences ";
 
 fn write_markdown_sentence_text(out: &mut String, text: &str, content: &LawSentenceContent, preserve_sentences: bool) {
+    write_markdown_sentence_comment(out, text, lawtext_sentence_text(text, content, preserve_sentences));
+}
+
+fn write_markdown_sentence_comment(out: &mut String, text: &str, encoded: std::borrow::Cow<'_, str>) {
     out.push_str(text);
-    if preserve_sentences
-        && !text.contains(['\r', '\n'])
-        && let std::borrow::Cow::Owned(xml) = lawtext_sentence_text(text, content, true)
-    {
+    if !text.contains(['\r', '\n']) && let std::borrow::Cow::Owned(xml) = encoded {
         if !text.is_empty() {
             out.push(' ');
         }
@@ -1600,20 +1684,31 @@ fn write_markdown_sentence_text(out: &mut String, text: &str, content: &LawSente
     }
 }
 
-fn restore_markdown_sentence_text(text: &str, allow_columns: bool) -> &str {
+fn restore_markdown_sentence_text(text: &str, allow_columns: bool) -> std::borrow::Cow<'_, str> {
     let Some((plain, xml)) = text.rsplit_once(MARKDOWN_SENTENCE_COMMENT) else {
-        return text;
+        return text.into();
     };
     let Some(xml) = xml.strip_suffix(" -->") else {
-        return text;
+        return text.into();
     };
     let plain = plain.trim_end();
-    if parse_lawtext_sentence_elements(xml, allow_columns)
-        .is_some_and(|(text, _)| text == plain)
-    {
-        xml
+    let (labels, sentence_xml) = if allow_columns {
+        (LawParagraphLabels::default(), xml)
     } else {
-        plain
+        parse_lawtext_paragraph_labels(xml).unwrap_or_else(|| (LawParagraphLabels::default(), xml))
+    };
+    if parse_lawtext_sentence_elements(sentence_xml, allow_columns).is_some_and(|(text, _)| text == plain) {
+        xml.into()
+    } else if labels != LawParagraphLabels::default() {
+        let mut updated = String::new();
+        write_paragraph_caption(&mut updated, &labels);
+        if let Some(number) = labels.number {
+            write_paragraph_number(&mut updated, &number);
+        }
+        write_xml_sentence_content(&mut updated, plain, &LawSentenceContent::default());
+        updated.into()
+    } else {
+        plain.into()
     }
 }
 
@@ -1708,7 +1803,7 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
             if let Some((title, text)) = split_leading_token(rest) {
                 line.push_str(title);
                 line.push(' ');
-                line.push_str(restore_markdown_sentence_text(text, true));
+                line.push_str(&restore_markdown_sentence_text(text, true));
             } else {
                 line.push_str(rest);
             }
@@ -1724,11 +1819,11 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
         if let Some(last) = lawtext_lines.last_mut() {
             if parse_article_header(last.trim()).is_some_and(|(_, _, r)| r.is_empty()) {
                 last.push(' ');
-                last.push_str(trimmed);
+                last.push_str(&trimmed);
                 continue;
             }
         }
-        lawtext_lines.push(trimmed.to_string());
+        lawtext_lines.push(trimmed.into_owned());
     }
 
     let mut parsed = parse_lawtext(&lawtext_lines.join("\n"))?;
@@ -2123,6 +2218,7 @@ mod tests {
                 caption: Some("（定義）".to_string()),
                 title: "第二条".to_string(),
                 paragraphs: vec![LawParagraph {
+                    labels: LawParagraphLabels::default(),
                     num: "1".to_string(),
                     sentence: "この法律において用語の意義を定める。".to_string(),
                     xml_sentence_content: LawSentenceContent::default(),

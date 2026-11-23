@@ -884,6 +884,7 @@ fn parse_inserted_article_block(lines: &[&str]) -> Option<LawArticle> {
     let mut paragraphs = Vec::new();
     if !rest.is_empty() {
         paragraphs.push(LawParagraph {
+            labels: Default::default(),
             num: "1".to_string(),
             sentence: rest.to_string(),
             xml_sentence_content: Default::default(),
@@ -893,6 +894,7 @@ fn parse_inserted_article_block(lines: &[&str]) -> Option<LawArticle> {
     for l in &lines[idx + 1..] {
         if let Some((p_num, p_rest)) = parse_numbered_paragraph(l) {
             paragraphs.push(LawParagraph {
+                labels: Default::default(),
                 num: p_num,
                 sentence: p_rest.to_string(),
                 xml_sentence_content: Default::default(),
@@ -912,6 +914,7 @@ fn parse_inserted_paragraph_block(lines: &[&str]) -> Option<LawParagraph> {
     let first = lines.first()?;
     let (p_num, rest) = parse_numbered_paragraph(first).unwrap_or(("2".to_string(), *first));
     Some(LawParagraph {
+        labels: Default::default(),
         num: p_num,
         sentence: rest.to_string(),
         xml_sentence_content: Default::default(),

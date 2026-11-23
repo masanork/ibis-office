@@ -220,6 +220,10 @@ fn markdown_keeps_visible_text_and_discards_stale_sentence_metadata() {
     assert!(!rendered.contains("ibis-law-sentences"));
     let edited = markdown.replacen(plain, "新基準を適用する。", 1);
     let xml = to_law_xml(&parse_markdown_law(&edited).unwrap());
+    assert!(
+        xml.contains("<ParagraphCaption CommonCaption=\"true\">（適用基準）</ParagraphCaption>")
+    );
+    assert!(xml.contains("<ParagraphNum>１</ParagraphNum>"));
     assert!(xml.contains("<ParagraphSentence><Sentence>新基準を適用する。</Sentence>"));
     assert!(!xml.contains("ただし、例外を認める。"));
     assert!(xml.contains("Function=\"proviso\">ただし、除外例を設ける。"));
