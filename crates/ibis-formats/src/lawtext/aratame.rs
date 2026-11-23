@@ -663,7 +663,7 @@ pub fn apply_aratame(old: &LawDoc, aratame_text: &str) -> (LawDoc, usize, Vec<St
                                     num,
                                     title: it_title.to_string(),
                                     sentence: it_sent.to_string(),
-                                    xml_sentences: Vec::new(),
+                                    xml_sentence_content: Default::default(),
                                     subitems: Vec::new(),
                                 });
                                 applied += 1;
@@ -886,7 +886,7 @@ fn parse_inserted_article_block(lines: &[&str]) -> Option<LawArticle> {
         paragraphs.push(LawParagraph {
             num: "1".to_string(),
             sentence: rest.to_string(),
-            xml_sentences: Vec::new(),
+            xml_sentence_content: Default::default(),
             items: Vec::new(),
         });
     }
@@ -895,7 +895,7 @@ fn parse_inserted_article_block(lines: &[&str]) -> Option<LawArticle> {
             paragraphs.push(LawParagraph {
                 num: p_num,
                 sentence: p_rest.to_string(),
-                xml_sentences: Vec::new(),
+                xml_sentence_content: Default::default(),
                 items: Vec::new(),
             });
         }
@@ -914,7 +914,7 @@ fn parse_inserted_paragraph_block(lines: &[&str]) -> Option<LawParagraph> {
     Some(LawParagraph {
         num: p_num,
         sentence: rest.to_string(),
-        xml_sentences: Vec::new(),
+        xml_sentence_content: Default::default(),
         items: Vec::new(),
     })
 }

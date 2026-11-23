@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
-    ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqlitePredicate, SqliteQuerySession,
+    DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqlitePredicate, SqliteQuerySession,
     SqliteRows, SqliteScalar, read_arrow_ipc_dataset, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_tables, validate_sqlite_select,
 };
@@ -15,7 +15,7 @@ use crate::catalog::{Access, Tool, boolean, document_id, integer, object, string
 use crate::service::{Args, Limits, Service};
 use crate::{ToolError, paths};
 
-pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "sqlite", "sqlite3", "db"];
+pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "jsonl", "ndjson", "avro", "sqlite", "sqlite3", "db"];
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
 const PATH: &str = "path";
 const MAX_FILTERS: usize = 16;
@@ -388,9 +388,9 @@ fn query_properties() -> Vec<(&'static str, Value)> {
             "datasets",
             json!({
                 "type":"array","minItems":1,"maxItems":8,
-                "description":"Use an in-memory database containing only these CSV, Parquet, Arrow IPC and/or SQLite tables.",
+                "description":"Use an in-memory database containing only these CSV, Parquet, Arrow IPC, JSON Lines, Avro and/or SQLite tables.",
                 "items":object(&[
-                    ("source", string("Path to a CSV, Parquet, Arrow IPC or SQLite file in an allowed folder.")),
+                    ("source", string("Path to a CSV, Parquet, Arrow IPC, JSON Lines, Avro or SQLite file in an allowed folder.")),
                     ("alias", string("SQL table name to register for this dataset.")),
                     ("table", string("Source table name, required for SQLite files.")),
                     ("where", json!({
@@ -407,7 +407,7 @@ fn query_properties() -> Vec<(&'static str, Value)> {
                     ("columns", json!({
                         "type":"array","minItems":1,"maxItems":256,"uniqueItems":true,
                         "items":{"type":"string","minLength":1},
-                        "description":"Parquet and Arrow IPC: exact column names to load, in order. Omit to load all columns."
+                        "description":"Parquet, Arrow IPC, JSON Lines and Avro: exact column names to load, in order. Omit to load all columns."
                     })),
                 ], &["source","alias"]),
             }),
@@ -439,6 +439,13 @@ fn sql_params(args: &Value) -> Result<Vec<Option<SqliteScalar<'_>>>, ToolError> 
 }
 
 fn query_session(service: &Service, args: &Value) -> Result<SqliteQuerySession, ToolError> {
+    if args.get("datasets").is_some() && args.opt_str(PATH)?.is_some() {
+        return Err(ToolError::invalid("use path for a SQLite database or datasets for registered tables"));
+    }
+    batch_session(service, args, false)
+}
+
+fn memory_query_session(service: &Service, args: &Value) -> Result<SqliteQuerySession, ToolError> {
     if let Some(specs) = args.get("datasets") {
         if args.opt_str(PATH)?.is_some() {
             return Err(ToolError::invalid(
@@ -610,6 +617,42 @@ fn parquet_predicate(value: &Value) -> Result<ParquetPredicate, ToolError> {
         .map(ParquetPredicate::Range)
 }
 
+fn dataset_alias<'a>(
+    spec: &'a Value,
+    aliases: &mut std::collections::HashSet<String>,
+) -> Result<&'a str, ToolError> {
+    let alias = spec.str_arg("alias")?;
+    if alias.is_empty()
+        || alias.len() > 128
+        || !alias.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        || alias.as_bytes()[0].is_ascii_digit()
+        || !aliases.insert(alias.to_ascii_lowercase())
+    {
+        return Err(ToolError::invalid(
+            "dataset aliases must be distinct SQL identifiers using letters, digits or underscores",
+        ));
+    }
+    Ok(alias)
+}
+
+fn dataset_columns(spec: &Value, kind: &str) -> Result<Vec<String>, ToolError> {
+    match spec.get("columns") {
+        None => Ok(Vec::new()),
+        Some(_) if kind != "parquet" && !streamable_kind(kind) => Err(ToolError::invalid(
+            "columns is only used for Parquet, Arrow IPC, JSON Lines and Avro datasets",
+        )),
+        Some(value) => value
+            .as_array()
+            .filter(|items| (1..=256).contains(&items.len()))
+            .and_then(|items| {
+                items.iter().map(|item| {
+                    item.as_str().filter(|name| !name.is_empty()).map(str::to_owned)
+                }).collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| ToolError::invalid("columns must contain 1 to 256 non-empty column names")),
+    }
+}
+
 fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable)>, ToolError> {
     use ibis_doc_model::CellValue;
     let specs = specs
@@ -621,11 +664,7 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
     let mut text = 8 * 1024 * 1024usize;
     specs.iter().map(|spec| {
         crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where"])?;
-        let alias = spec.str_arg("alias")?;
-        if alias.is_empty() || alias.len() > 128 || !alias.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            || alias.as_bytes()[0].is_ascii_digit() || !aliases.insert(alias.to_ascii_lowercase()) {
-            return Err(ToolError::invalid("dataset aliases must be distinct SQL identifiers using letters, digits or underscores"));
-        }
+        let alias = dataset_alias(spec, &mut aliases)?;
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
         if !metadata.is_file() || metadata.len() > service.limits.max_file_size.min(32 * 1024 * 1024) {
@@ -633,18 +672,7 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
         }
         let table_name = spec.opt_str("table")?;
         let kind = source_kind(&path);
-        let columns = match spec.get("columns") {
-            None => Vec::new(),
-            Some(_) if !matches!(kind, "parquet" | "arrow_ipc") => {
-                return Err(ToolError::invalid("columns is only used for Parquet and Arrow IPC datasets"));
-            }
-            Some(value) => value.as_array()
-                .filter(|items| (1..=256).contains(&items.len()))
-                .and_then(|items| items.iter().map(|item| {
-                    item.as_str().filter(|name| !name.is_empty()).map(str::to_owned)
-                }).collect::<Option<Vec<_>>>())
-                .ok_or_else(|| ToolError::invalid("columns must contain 1 to 256 non-empty column names"))?,
-        };
+        let columns = dataset_columns(spec, kind)?;
         let filters = match spec.get("where") {
             None => Vec::new(),
             Some(_) if kind != "parquet" => {
@@ -666,6 +694,8 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
             match kind {
                 "parquet" => read_parquet_filtered(&path, &columns, &filters, cells, text).map_err(sqlite_error)?,
                 "arrow_ipc" => read_arrow_ipc_dataset(&path, &columns, cells, text).map_err(sqlite_error)?,
+                "json_lines" => DiskDataset::JsonLines(path, columns).collect_bounded(cells, text).map_err(sqlite_error)?,
+                "avro" => DiskDataset::Avro(path, columns).collect_bounded(cells, text).map_err(sqlite_error)?,
                 _ => read_csv_dataset(&path, cells, text)?,
             }
         };
@@ -784,6 +814,12 @@ fn list_query_reports(service: &mut Service, args: &Value) -> Result<Value, Tool
 fn source_kind(path: &Path) -> &'static str {
     if is_sqlite(path) {
         "sqlite"
+    } else if path.extension().is_some_and(|ext| {
+        ["jsonl", "ndjson"].iter().any(|name| ext.eq_ignore_ascii_case(name))
+    }) {
+        "json_lines"
+    } else if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("avro")) {
+        "avro"
     } else if path.extension().is_some_and(|ext| {
         ["arrow", "ipc", "feather"].iter().any(|name| ext.eq_ignore_ascii_case(name))
     }) {
@@ -1044,60 +1080,86 @@ fn report_error(name: &str, error: ToolError) -> ToolError {
     ToolError::new(error.code, format!("{name}: {}", error.message))
 }
 
-fn disk_arrow_session(service: &Service, specs: &Value) -> Result<SqliteQuerySession, ToolError> {
-    let specs = specs.as_array().filter(|items| (1..=8).contains(&items.len()))
-        .ok_or_else(|| ToolError::invalid("Disk staging requires saved Arrow IPC datasets"))?;
-    let sources = specs.iter().map(|spec| {
-        if spec.get("where").is_some() || !spec["table"].is_null() {
-            return Err(ToolError::invalid("Disk staging does not accept source filters or table names"));
-        }
-        let alias = spec.str_arg("alias")?.to_owned();
-        let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, &["arrow", "ipc", "feather"], true)?;
-        let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
-        if !metadata.is_file() || metadata.len() > service.limits.max_file_size {
-            return Err(ToolError::invalid("Arrow IPC dataset exceeds the file size limit"));
-        }
-        let columns: Vec<String> = spec.get("columns").map(|value| serde_json::from_value(value.clone()))
-            .transpose().map_err(|_| ToolError::invalid("Invalid saved Arrow IPC columns"))?
-            .unwrap_or_default();
-        Ok((alias, path, columns))
-    }).collect::<Result<Vec<_>, ToolError>>()?;
-    SqliteQuerySession::from_arrow_disk(&sources).map_err(sqlite_error)
+fn streamable_kind(kind: &str) -> bool {
+    matches!(kind, "arrow_ipc" | "json_lines" | "avro")
 }
 
-fn batch_session(
-    service: &Service,
-    query: &Value,
-    arrow_disk: bool,
-) -> Result<SqliteQuerySession, ToolError> {
-    const ARROW_MEMORY_FILE_BYTES: u64 = 8 * 1024 * 1024;
-    let datasets = &query["datasets"];
+fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) -> Result<SqliteQuerySession, ToolError> {
+    if !(1..=8).contains(&specs.len()) {
+        return Err(ToolError::invalid("datasets must have 1 to 8 entries"));
+    }
+    let mut aliases = std::collections::HashSet::new();
+    let mut sources = Vec::new();
+    let mut bounded = Vec::new();
+    for spec in specs {
+        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where"])?;
+        let alias = dataset_alias(spec, &mut aliases)?.to_owned();
+        let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
+        let kind = source_kind(&path);
+        if arrow_only && kind != "arrow_ipc" {
+            return Err(ToolError::invalid("Explicit Arrow disk staging requires Arrow IPC sources"));
+        }
+        if !streamable_kind(kind) {
+            bounded.push(spec.clone());
+            continue;
+        }
+        if spec.get("where").is_some() || !spec["table"].is_null() {
+            return Err(ToolError::invalid("Arrow IPC, JSON Lines and Avro do not accept source filters or table names"));
+        }
+        let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+        if !metadata.is_file() || metadata.len() > service.limits.max_file_size {
+            return Err(ToolError::invalid("Dataset exceeds the file size limit"));
+        }
+        let columns = dataset_columns(spec, kind)?;
+        let source = match kind {
+            "arrow_ipc" => DiskDataset::ArrowIpc(path, columns),
+            "json_lines" => DiskDataset::JsonLines(path, columns),
+            _ => DiskDataset::Avro(path, columns),
+        };
+        sources.push((alias, source));
+    }
+    if !bounded.is_empty() {
+        sources.extend(load_datasets(service, &json!(bounded))?.into_iter().map(|(alias, table)| {
+            (alias, DiskDataset::Table(table))
+        }));
+    }
+    SqliteQuerySession::from_disk_datasets(&sources).map_err(sqlite_error)
+}
+
+fn batch_session(service: &Service, query: &Value, arrow_disk: bool) -> Result<SqliteQuerySession, ToolError> {
+    const MEMORY_FILE_BYTES: u64 = 8 * 1024 * 1024;
+    let Some(specs) = query["datasets"].as_array() else {
+        if arrow_disk {
+            return Err(ToolError::invalid("Explicit Arrow disk staging requires saved Arrow IPC datasets"));
+        }
+        return memory_query_session(service, query);
+    };
+    if !(1..=8).contains(&specs.len()) {
+        return Err(ToolError::invalid("datasets must have 1 to 8 entries"));
+    }
     if arrow_disk {
-        return disk_arrow_session(service, datasets);
+        return disk_dataset_session(service, specs, true);
     }
-    let arrow_only = datasets.as_array().is_some_and(|specs| {
-        !specs.is_empty() && specs.iter().all(|spec| {
-            spec["source"].as_str().is_some_and(|path| source_kind(Path::new(path)) == "arrow_ipc")
-        })
-    });
-    if !arrow_only {
-        return query_session(service, query);
+    let streaming = specs.iter().filter(|spec| spec["source"].as_str()
+        .is_some_and(|path| streamable_kind(source_kind(Path::new(path)))));
+    let mut bytes = 0u64;
+    let mut has_streaming = false;
+    for spec in streaming {
+        has_streaming = true;
+        let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
+        bytes = bytes.saturating_add(std::fs::metadata(path).map_err(sqlite_error)?.len());
     }
-    let bytes = datasets.as_array().unwrap().iter().try_fold(0u64, |total, spec| {
-        let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, &["arrow", "ipc", "feather"], true)?;
-        let size = std::fs::metadata(path).map_err(sqlite_error)?.len();
-        Ok::<_, ToolError>(total.saturating_add(size))
-    })?;
-    if bytes > ARROW_MEMORY_FILE_BYTES {
-        return disk_arrow_session(service, datasets);
+    if bytes > MEMORY_FILE_BYTES {
+        return disk_dataset_session(service, specs, false);
     }
-    match query_session(service, query) {
-        Err(error) if [
+    match memory_query_session(service, query) {
+        Err(error) if has_streaming && [
+            DATASET_MEMORY_LIMIT,
             "Arrow IPC source exceeds the query editor's table size limit",
             "Arrow IPC decoded buffers exceed the 128 MiB limit",
             "Arrow IPC text exceeds the 128 MiB limit",
             "Arrow IPC list exceeds the text budget",
-        ].iter().any(|limit| error.message.ends_with(limit)) => disk_arrow_session(service, datasets),
+        ].iter().any(|limit| error.message.ends_with(limit)) => disk_dataset_session(service, specs, false),
         result => result,
     }
 }

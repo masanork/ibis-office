@@ -202,6 +202,8 @@ impl SlideEditor {
             "csv" => &["csv"],
             "parquet" => &["parquet"],
             "arrow_ipc" => &["arrow", "ipc", "feather"],
+            "json_lines" => &["jsonl", "ndjson"],
+            "avro" => &["avro"],
             "sqlite" => &["sqlite", "sqlite3", "db"],
             _ => ibis_doc_service::DATASET_EXTENSIONS,
         };
@@ -770,4 +772,140 @@ pub(crate) fn arrow_report_snapshot_scenario() {
             assert_eq!(sheet.cell(1, column).map(|cell| &cell.value), Some(&CellValue::Number(50_001.0)));
         }
     });
+}
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn json_avro_report_snapshot_scenario() {
+    use crate::shell::scenario::{Scenario, button_probe};
+    use ibis_doc_model::{Document, query::{DATASET_MEMORY_LIMIT, DiskDataset}};
+
+    let dir = tempfile::tempdir().unwrap();
+    let original = [
+        dir.path().join("labels.jsonl"),
+        dir.path().join("observations.avro"),
+    ];
+    let bindings = [
+        dir.path().join("selected-labels.ndjson"),
+        dir.path().join("selected-observations.avro"),
+    ];
+    let small_json = b"{\"code\":\"001\",\"labels\":[\"a\",null]}\n{\"code\":\"002\",\"labels\":[]}\n";
+    let small_avro = include_bytes!("../../ibis-doc-service/tests/fixtures/query-observations.avro");
+    let large_avro =
+        include_bytes!("../../ibis-doc-service/tests/fixtures/query-large-observations.avro");
+    for (file, contents) in original.iter().zip([&small_json[..], &small_avro[..]]) {
+        std::fs::write(file, contents).unwrap();
+    }
+    std::fs::write(&bindings[0], small_json).unwrap();
+    std::fs::write(&bindings[1], small_avro).unwrap();
+
+    let mut scene = Scenario::new_document(ibis_formats::Kind::Workbook);
+    scene.update(|editor, _, cx| {
+        for (anchor, sql) in [
+            ("A1", "SELECT count(*) AS n FROM labels"),
+            ("D1", "SELECT sum(amount) AS n FROM facts"),
+        ] {
+            let mut draft = Document::new(editor.presentation().clone());
+            let export = ibis_doc_service::prepare_selected_datasets_export(
+                &original,
+                json!({"sql":sql,"anchor":anchor,"datasets":[
+                    {"source":"1","alias":"labels","columns":["code","labels"]},
+                    {"source":"2","alias":"facts","columns":["code","amount"]},
+                ]}),
+            ).unwrap();
+            let (_, commands) = export.stage(&mut draft, ibis_doc_service::DraftToolContext {
+                workbook: ibis_doc_service::WorkbookToolContext {
+                    active_sheet: Some(editor.current_slide), ..Default::default()
+                },
+                ..Default::default()
+            }).unwrap();
+            editor.document.execute(commands).unwrap();
+        }
+        editor.open_queries_panel(cx);
+    });
+
+    let _probe = button_probe::Probe::new();
+    scene.update(|_, _, cx| cx.notify());
+    button_probe::click(&mut scene, "queries-report-refresh");
+    for (index, (extensions, file)) in [
+        (&["jsonl", "ndjson"][..], &bindings[0]),
+        (&["avro"][..], &bindings[1]),
+    ].into_iter().enumerate() {
+        button_probe::click(&mut scene, &format!("query-report-source-{index}"));
+        scene.answer_path_prompt(|options| {
+            assert!(options.files && !options.directories && !options.multiple);
+            assert!(options.extensions.iter().map(String::as_str).eq(extensions.iter().copied()));
+            Some(vec![file.clone()])
+        });
+    }
+    scene.update(|editor, _, cx| {
+        let panel = editor.query_reports_mut().unwrap();
+        assert_eq!(panel.files.get("labels.jsonl"), Some(&bindings[0]));
+        assert_eq!(panel.files.get("observations.avro"), Some(&bindings[1]));
+        for report in &mut panel.reports {
+            report.metrics.insert("n".into());
+        }
+        cx.notify();
+    });
+
+    let preview = |scene: &mut Scenario, expected: [f64; 2]| {
+        button_probe::click(scene, "query-reports-preview");
+        for _ in 0..500 {
+            let (result, busy, message) = scene.with(|editor, _| {
+                let panel = editor.wb().panels.queries.as_ref().unwrap().reports.as_ref().unwrap();
+                (panel.review.as_ref().map(|review| review.result.clone()), panel.busy, panel.message.clone())
+            });
+            if let Some(result) = result {
+                assert_eq!(result["blocked"], false);
+                let reports = result["reports"].as_array().unwrap();
+                assert_eq!(reports.len(), expected.len());
+                for (report, expected) in reports.iter().zip(expected) {
+                    assert_eq!(report["metrics"][0]["current"].as_f64(), Some(expected));
+                }
+                return;
+            }
+            assert!(busy, "report preview failed: {message}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            scene.wait(20);
+        }
+        panic!("JSON Lines and Avro report preview did not complete");
+    };
+    let values = |scene: &mut Scenario| {
+        scene.with(|editor, _| {
+            let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(
+                editor.presentation().slide(editor.current_slide).unwrap(),
+            ).unwrap();
+            [0, 3].map(|column| sheet.cell(1, column).unwrap().value.clone())
+        })
+    };
+
+    preview(&mut scene, [2., 5.]);
+    // Each source has 50,001 rows times two selected columns. Either source
+    // independently exceeds the 100,000-cell in-memory input budget.
+    let large_json = b"{\"code\":\"001\",\"labels\":[]}\n".repeat(50_001);
+    std::fs::write(&bindings[0], &large_json).unwrap();
+    let json_memory = DiskDataset::JsonLines(bindings[0].clone(), vec!["code".into(), "labels".into()]);
+    assert_eq!(json_memory.collect_bounded(100_000, 8 * 1024 * 1024).unwrap_err(), DATASET_MEMORY_LIMIT);
+    preview(&mut scene, [50_001., 5.]);
+    std::fs::write(&bindings[0], small_json).unwrap();
+    std::fs::write(&bindings[1], large_avro).unwrap();
+    let avro_memory = DiskDataset::Avro(bindings[1].clone(), vec!["code".into(), "amount".into()]);
+    assert_eq!(avro_memory.collect_bounded(100_000, 8 * 1024 * 1024).unwrap_err(), DATASET_MEMORY_LIMIT);
+    preview(&mut scene, [2., 250_005.]);
+    std::fs::write(&bindings[0], &large_json).unwrap();
+    preview(&mut scene, [50_001., 250_005.]);
+    assert_eq!(values(&mut scene), [CellValue::Number(2.), CellValue::Number(5.)]);
+    scene.screenshot("json-avro-preview");
+
+    std::fs::write(&bindings[0], small_json).unwrap();
+    std::fs::write(&bindings[1], small_avro).unwrap();
+    button_probe::click(&mut scene, "query-reports-apply");
+    assert_eq!(values(&mut scene), [CellValue::Number(50_001.), CellValue::Number(250_005.)]);
+    scene.screenshot("json-avro-applied");
+    button_probe::click(&mut scene, "query-reports-back");
+    button_probe::click(&mut scene, "queries-close");
+    let cell = scene.with(|editor, _| editor.cell_center(3, 0).unwrap());
+    scene.click((f32::from(cell.x), f32::from(cell.y)));
+    scene.key(&format!("{}-z", crate::shell::app::secondary_modifier()));
+    assert_eq!(values(&mut scene), [CellValue::Number(2.), CellValue::Number(5.)]);
+    scene.screenshot("json-avro-undone");
 }

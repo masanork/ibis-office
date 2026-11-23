@@ -17,7 +17,11 @@ pub(super) fn due_text(sheet: &Sheet, row: u32, column: u32, date1904: bool) -> 
         return None;
     };
     let code = &sheet.styles.get(cell.style as usize)?.number_format;
-    if !ibis_calc::numfmt::is_date_format(code) || !(0.0..2_958_466.0).contains(&serial) {
+    // Pasting an ISO date can leave its serial in a General-formatted deadline cell.
+    let pasted_date = code.eq_ignore_ascii_case("General") && serial.fract() == 0.0;
+    if !(ibis_calc::numfmt::is_date_format(code) || pasted_date)
+        || !(0.0..2_958_466.0).contains(&serial)
+    {
         return None;
     }
     let (year, month, day) =
@@ -158,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn date_cells_use_the_workbook_epoch_and_require_a_date_format() {
+    fn dates_and_pasted_serials_use_the_workbook_epoch() {
         use ibis_doc_model::{
             CellStyle,
             sheet::{CellKind, SheetCell},
@@ -189,6 +193,11 @@ mod tests {
                 Some("2026-11-22")
             );
             sheet.styles[0].number_format = "General".into();
+            assert_eq!(
+                due_text(&sheet, 1, 0, date1904).as_deref(),
+                Some("2026-11-22")
+            );
+            sheet.cells[0].value = CellValue::Number(7.5);
             assert!(due_text(&sheet, 1, 0, date1904).is_none());
         }
     }

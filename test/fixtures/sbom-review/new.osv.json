@@ -1,0 +1,78 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "bom.json",
+        "type": "sbom"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "persistent",
+            "version": "1.1.0",
+            "ecosystem": "npm"
+          },
+          "vulnerabilities": [
+            {
+              "id": "EXAMPLE-PERSISTENT",
+              "affected": [
+                {
+                  "package": {
+                    "name": "persistent",
+                    "ecosystem": "npm"
+                  },
+                  "ranges": [
+                    {
+                      "type": "SEMVER",
+                      "events": [
+                        {
+                          "introduced": "0"
+                        },
+                        {
+                          "fixed": "2.0.0"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "package": {
+            "name": "new",
+            "version": "1.0.0",
+            "ecosystem": "npm"
+          },
+          "vulnerabilities": [
+            {
+              "id": "EXAMPLE-NEW",
+              "affected": [
+                {
+                  "package": {
+                    "name": "new",
+                    "ecosystem": "npm"
+                  },
+                  "ranges": [
+                    {
+                      "type": "SEMVER",
+                      "events": [
+                        {
+                          "introduced": "0"
+                        },
+                        {
+                          "fixed": "2.0.0"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

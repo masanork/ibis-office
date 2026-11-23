@@ -91,7 +91,7 @@ pub struct LawSubitem {
     pub num: String,
     pub title: String,
     pub sentence: String,
-    pub xml_sentences: Vec<LawSentence>,
+    pub xml_sentence_content: LawSentenceContent,
     pub children: Vec<LawSubitem>,
 }
 
@@ -111,7 +111,7 @@ pub struct LawItem {
     pub num: String,
     pub title: String,
     pub sentence: String,
-    pub xml_sentences: Vec<LawSentence>,
+    pub xml_sentence_content: LawSentenceContent,
     pub subitems: Vec<LawSubitem>,
 }
 
@@ -135,13 +135,61 @@ pub struct LawSentence {
     pub writing_mode: Option<String>,
 }
 
+/// Column as used in an XML item or sub-item sentence container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LawSentenceColumn {
+    pub num: Option<String>,
+    pub line_break: Option<String>,
+    pub align: Option<String>,
+    pub sentences: Vec<LawSentence>,
+}
+
+/// The XML structure behind the flat text used for amendments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LawSentenceContent {
+    Sentences(Vec<LawSentence>),
+    Columns(Vec<LawSentenceColumn>),
+}
+
+impl Default for LawSentenceContent {
+    fn default() -> Self {
+        Self::Sentences(Vec::new())
+    }
+}
+
+impl LawSentenceContent {
+    fn plain_text(&self) -> Option<String> {
+        let sentence_text = |sentences: &[LawSentence]| -> String {
+            sentences.iter().map(|sentence| sentence.text.as_str()).collect()
+        };
+        match self {
+            Self::Sentences(sentences) if !sentences.is_empty() => Some(sentence_text(sentences)),
+            Self::Columns(columns) if !columns.is_empty() => Some(columns.iter()
+                .map(|column| sentence_text(&column.sentences))
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>().join(" ")),
+            _ => None,
+        }
+    }
+
+    fn has_structure(&self) -> bool {
+        match self {
+            Self::Columns(_) => true,
+            Self::Sentences(sentences) => sentences.len() > 1 || sentences.iter().any(|sentence| {
+                sentence.num.is_some() || sentence.function.is_some()
+                    || sentence.indent.is_some() || sentence.writing_mode.is_some()
+            }),
+        }
+    }
+}
+
 /// A paragraph (`Paragraph`: 項) inside a [`LawArticle`] or [`SupplProvision`].
 #[derive(Debug, Clone)]
 pub struct LawParagraph {
     pub num: String,
     pub sentence: String,
     /// Original XML sentence boundaries and attributes, used when the text still matches.
-    pub xml_sentences: Vec<LawSentence>,
+    pub xml_sentence_content: LawSentenceContent,
     pub items: Vec<LawItem>,
 }
 
@@ -535,23 +583,35 @@ fn parse_xml_sentence(node: roxmltree::Node<'_, '_>) -> LawSentence {
     }
 }
 
-fn parse_xml_sentence_container(container: Option<roxmltree::Node<'_, '_>>) -> (String, Vec<LawSentence>) {
-    let xml_sentences: Vec<_> = container
-        .into_iter()
-        .flat_map(|node| node.children())
-        .filter(|node| node.is_element() && node.tag_name().name() == "Sentence")
-        .map(parse_xml_sentence)
-        .collect();
-    let mut sentence: String = xml_sentences.iter().map(|sentence| sentence.text.as_str()).collect();
-    if sentence.is_empty() {
-        sentence = container.map(collect_text).unwrap_or_default();
+fn parse_xml_sentence_container(
+    container: Option<roxmltree::Node<'_, '_>>,
+    allow_columns: bool,
+) -> (String, LawSentenceContent) {
+    let Some(container) = container else {
+        return (String::new(), LawSentenceContent::default());
+    };
+    let children: Vec<_> = container.children().filter(roxmltree::Node::is_element).collect();
+    if allow_columns && !children.is_empty() && children.iter().all(|node| node.has_tag_name("Column")) {
+        let columns = children.into_iter().map(|node| LawSentenceColumn {
+            num: node.attribute("Num").map(str::to_string),
+            line_break: node.attribute("LineBreak").map(str::to_string),
+            align: node.attribute("Align").map(str::to_string),
+            sentences: node.children().filter(|child| child.has_tag_name("Sentence"))
+                .map(parse_xml_sentence).collect(),
+        }).collect();
+        let content = LawSentenceContent::Columns(columns);
+        return (content.plain_text().unwrap_or_default(), content);
     }
-    (sentence, xml_sentences)
+    let content = LawSentenceContent::Sentences(children.into_iter()
+        .filter(|node| node.has_tag_name("Sentence")).map(parse_xml_sentence).collect());
+    let sentence = content.plain_text().filter(|text| !text.is_empty())
+        .unwrap_or_else(|| collect_text(container));
+    (sentence, content)
 }
 
 fn parse_xml_paragraph(node: roxmltree::Node<'_, '_>) -> LawParagraph {
     let num = node.attribute("Num").unwrap_or("1").to_string();
-    let (sentence, xml_sentences) = parse_xml_sentence_container(child_elem(node, "ParagraphSentence"));
+    let (sentence, xml_sentence_content) = parse_xml_sentence_container(child_elem(node, "ParagraphSentence"), false);
     let items = node
         .children()
         .filter(|n| n.is_element() && n.tag_name().name() == "Item")
@@ -560,7 +620,7 @@ fn parse_xml_paragraph(node: roxmltree::Node<'_, '_>) -> LawParagraph {
     LawParagraph {
         num,
         sentence,
-        xml_sentences,
+        xml_sentence_content,
         items,
     }
 }
@@ -570,13 +630,13 @@ fn parse_xml_item(node: roxmltree::Node<'_, '_>) -> LawItem {
     let title = child_elem(node, "ItemTitle")
         .map(collect_text)
         .unwrap_or_default();
-    let (sentence, xml_sentences) = parse_xml_sentence_container(child_elem(node, "ItemSentence"));
+    let (sentence, xml_sentence_content) = parse_xml_sentence_container(child_elem(node, "ItemSentence"), true);
     let subitems = parse_xml_subitems(node, 1);
     LawItem {
         num,
         title,
         sentence,
-        xml_sentences,
+        xml_sentence_content,
         subitems,
     }
 }
@@ -592,13 +652,13 @@ fn parse_xml_subitems(parent: roxmltree::Node<'_, '_>, depth: u8) -> Vec<LawSubi
         .children()
         .filter(|n| n.is_element() && n.tag_name().name() == tag)
         .map(|sub| {
-            let (sentence, xml_sentences) = parse_xml_sentence_container(child_elem(sub, &sent_tag));
+            let (sentence, xml_sentence_content) = parse_xml_sentence_container(child_elem(sub, &sent_tag), true);
             LawSubitem {
                 depth,
                 num: sub.attribute("Num").unwrap_or("1").to_string(),
                 title: child_elem(sub, &title_tag).map(collect_text).unwrap_or_default(),
                 sentence,
-                xml_sentences,
+                xml_sentence_content,
                 children: parse_xml_subitems(sub, depth + 1),
             }
         })
@@ -772,13 +832,6 @@ fn write_xml_node(out: &mut String, node: &LawNode, depth: usize) {
     }
 }
 
-fn sentences_match_text(sentences: &[LawSentence], text: &str) -> bool {
-    !sentences.is_empty()
-        && sentences.iter().try_fold(text, |remaining, sentence| {
-            remaining.strip_prefix(sentence.text.as_str())
-        }) == Some("")
-}
-
 fn write_xml_sentence(out: &mut String, sentence: &LawSentence) {
     out.push_str("<Sentence");
     push_opt_attr(out, "Num", sentence.num.as_deref());
@@ -790,15 +843,36 @@ fn write_xml_sentence(out: &mut String, sentence: &LawSentence) {
     out.push_str("</Sentence>");
 }
 
-fn write_xml_sentences(out: &mut String, text: &str, sentences: &[LawSentence]) {
-    if sentences_match_text(sentences, text) {
-        for sentence in sentences {
-            write_xml_sentence(out, sentence);
-        }
+fn write_xml_sentence_content(out: &mut String, text: &str, content: &LawSentenceContent) {
+    if content.plain_text().as_deref() == Some(text) {
+        write_xml_sentence_elements(out, content);
     } else {
         out.push_str("<Sentence>");
         push_xml_escaped(out, text);
         out.push_str("</Sentence>");
+    }
+}
+
+fn write_xml_sentence_elements(out: &mut String, content: &LawSentenceContent) {
+    match content {
+        LawSentenceContent::Sentences(sentences) => {
+            for sentence in sentences {
+                write_xml_sentence(out, sentence);
+            }
+        }
+        LawSentenceContent::Columns(columns) => {
+            for column in columns {
+                out.push_str("<Column");
+                push_opt_attr(out, "Num", column.num.as_deref());
+                push_opt_attr(out, "LineBreak", column.line_break.as_deref());
+                push_opt_attr(out, "Align", column.align.as_deref());
+                out.push('>');
+                for sentence in &column.sentences {
+                    write_xml_sentence(out, sentence);
+                }
+                out.push_str("</Column>");
+            }
+        }
     }
 }
 
@@ -815,7 +889,7 @@ fn write_xml_paragraph(out: &mut String, para: &LawParagraph, depth: usize) {
     out.push_str("</ParagraphNum>\n");
     push_indent(out, depth + 1);
     out.push_str("<ParagraphSentence>");
-    write_xml_sentences(out, &para.sentence, &para.xml_sentences);
+    write_xml_sentence_content(out, &para.sentence, &para.xml_sentence_content);
     out.push_str("</ParagraphSentence>\n");
     for item in &para.items {
         push_indent(out, depth + 1);
@@ -828,7 +902,7 @@ fn write_xml_paragraph(out: &mut String, para: &LawParagraph, depth: usize) {
         out.push_str("</ItemTitle>\n");
         push_indent(out, depth + 2);
         out.push_str("<ItemSentence>");
-        write_xml_sentences(out, &item.sentence, &item.xml_sentences);
+        write_xml_sentence_content(out, &item.sentence, &item.xml_sentence_content);
         out.push_str("</ItemSentence>\n");
         for sub in &item.subitems {
             write_xml_subitem(out, sub, depth + 2);
@@ -861,7 +935,7 @@ fn write_xml_subitem(out: &mut String, sub: &LawSubitem, depth: usize) {
     out.push('<');
     out.push_str(&sent_tag);
     out.push('>');
-    write_xml_sentences(out, &sub.sentence, &sub.xml_sentences);
+    write_xml_sentence_content(out, &sub.sentence, &sub.xml_sentence_content);
     out.push_str("</");
     out.push_str(&sent_tag);
     out.push_str(">\n");
@@ -956,7 +1030,7 @@ fn write_lawtext_node(out: &mut String, node: &LawNode, structured_sentences: bo
                 out.push('\n');
             }
             for (idx, para) in art.paragraphs.iter().enumerate() {
-                let sentence = lawtext_sentence_text(&para.sentence, &para.xml_sentences, structured_sentences);
+                let sentence = lawtext_sentence_text(&para.sentence, &para.xml_sentence_content, structured_sentences);
                 let inline = idx == 0 && para.num == "1" && !sentence.is_empty();
                 if idx == 0 {
                     out.push_str(&art.title);
@@ -981,7 +1055,7 @@ fn write_lawtext_node(out: &mut String, node: &LawNode, structured_sentences: bo
                 out.push_str(&to_fullwidth_digits(&para.num));
                 out.push(' ');
             }
-            out.push_str(&lawtext_sentence_text(&para.sentence, &para.xml_sentences, structured_sentences));
+            out.push_str(&lawtext_sentence_text(&para.sentence, &para.xml_sentence_content, structured_sentences));
             out.push('\n');
             write_lawtext_items(out, &para.items, structured_sentences);
             out.push('\n');
@@ -989,63 +1063,61 @@ fn write_lawtext_node(out: &mut String, node: &LawNode, structured_sentences: bo
     }
 }
 
-fn lawtext_sentence_text<'a>(text: &'a str, sentences: &[LawSentence], structured: bool) -> std::borrow::Cow<'a, str> {
-    if structured
-        && sentences_match_text(sentences, text)
-        && (sentences.len() > 1 || sentences.iter().any(|sentence| {
-            sentence.num.is_some()
-                || sentence.function.is_some()
-                || sentence.indent.is_some()
-                || sentence.writing_mode.is_some()
-        }))
-    {
+fn lawtext_sentence_text<'a>(text: &'a str, content: &LawSentenceContent, structured: bool) -> std::borrow::Cow<'a, str> {
+    if structured && content.has_structure() && content.plain_text().as_deref() == Some(text) {
         let mut xml = String::new();
-        for sentence in sentences {
-            write_xml_sentence(&mut xml, sentence);
-        }
+        write_xml_sentence_elements(&mut xml, content);
         return xml.replace('\r', "&#13;").replace('\n', "&#10;").into();
     }
     text.into()
 }
 
 fn parse_lawtext_paragraph(num: String, text: &str) -> LawParagraph {
-    let (sentence, xml_sentences) = parse_lawtext_sentence_text(text);
-    LawParagraph { num, sentence, xml_sentences, items: Vec::new() }
+    let (sentence, xml_sentence_content) = parse_lawtext_sentence_text(text, false);
+    LawParagraph { num, sentence, xml_sentence_content, items: Vec::new() }
 }
 
-fn parse_lawtext_sentence_text(text: &str) -> (String, Vec<LawSentence>) {
-    let xml_sentences = parse_lawtext_sentence_elements(text).unwrap_or_default();
-    let sentence = if xml_sentences.is_empty() {
-        text.to_string()
-    } else {
-        xml_sentences.iter().map(|sentence| sentence.text.as_str()).collect()
-    };
-    (sentence, xml_sentences)
+fn parse_lawtext_sentence_text(text: &str, allow_columns: bool) -> (String, LawSentenceContent) {
+    parse_lawtext_sentence_elements(text, allow_columns)
+        .unwrap_or_else(|| (text.to_string(), LawSentenceContent::default()))
 }
 
-fn parse_lawtext_sentence_elements(text: &str) -> Option<Vec<LawSentence>> {
-    if !text.starts_with("<Sentence") {
+fn parse_lawtext_sentence_elements(text: &str, allow_columns: bool) -> Option<(String, LawSentenceContent)> {
+    if !text.starts_with("<Sentence") && !(allow_columns && text.starts_with("<Column")) {
         return None;
     }
     let xml = format!("<ParagraphSentence>{text}</ParagraphSentence>");
     let doc = roxmltree::Document::parse(&xml).ok()?;
-    doc.root_element().children()
-        .filter(|node| !node.is_text() || node.text().is_some_and(|text| !text.trim().is_empty()))
-        .map(|node| {
-            (node.has_tag_name("Sentence")
-                && node.children().all(|child| child.is_text())
-                && node.attributes().all(|attr| attr.namespace().is_none()
-                    && matches!(attr.name(), "Num" | "Function" | "Indent" | "WritingMode")))
-                .then(|| parse_xml_sentence(node))
-        })
-        .collect()
+    let root = doc.root_element();
+    let is_spacing = |node: roxmltree::Node<'_, '_>| node.text().is_some_and(|text| node.is_text() && text.trim().is_empty());
+    let is_sentence = |node: roxmltree::Node<'_, '_>| {
+        node.has_tag_name("Sentence")
+            && node.children().all(|child| child.is_text())
+            && node.attributes().all(|attr| attr.namespace().is_none()
+                && matches!(attr.name(), "Num" | "Function" | "Indent" | "WritingMode"))
+    };
+    let mut children = root.children().filter(|&node| !is_spacing(node)).peekable();
+    let columns = children.peek()?.has_tag_name("Column");
+    if columns {
+        if !allow_columns || !children.all(|node| node.has_tag_name("Column")
+            && node.attributes().all(|attr| attr.namespace().is_none()
+                && matches!(attr.name(), "Num" | "LineBreak" | "Align"))
+            && node.children().any(is_sentence)
+            && node.children().all(|child| is_spacing(child) || is_sentence(child)))
+        {
+            return None;
+        }
+    } else if !children.all(is_sentence) {
+        return None;
+    }
+    Some(parse_xml_sentence_container(Some(root), columns))
 }
 
 fn write_lawtext_items(out: &mut String, items: &[LawItem], structured: bool) {
     for item in items {
         out.push_str("  ");
         out.push_str(&item.title);
-        let sentence = lawtext_sentence_text(&item.sentence, &item.xml_sentences, structured);
+        let sentence = lawtext_sentence_text(&item.sentence, &item.xml_sentence_content, structured);
         if !sentence.is_empty() {
             out.push(' ');
             out.push_str(&sentence);
@@ -1062,7 +1134,7 @@ fn write_lawtext_subitem(out: &mut String, sub: &LawSubitem, structured: bool) {
         out.push_str("  ");
     }
     out.push_str(&sub.title);
-    let sentence = lawtext_sentence_text(&sub.sentence, &sub.xml_sentences, structured);
+    let sentence = lawtext_sentence_text(&sub.sentence, &sub.xml_sentence_content, structured);
     if !sentence.is_empty() {
         out.push(' ');
         out.push_str(&sentence);
@@ -1236,7 +1308,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
                 }
                 if indent >= 2 {
                     if let Some((it_title, it_sent)) = split_leading_token(trimmed) {
-                        let (sentence, xml_sentences) = parse_lawtext_sentence_text(it_sent);
+                        let (sentence, xml_sentence_content) = parse_lawtext_sentence_text(it_sent, true);
                         let num = if in_suppl {
                             supplementary_item_number(it_title, &sentence)
                         } else {
@@ -1247,7 +1319,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
                             num,
                             title: it_title.to_string(),
                             sentence,
-                            xml_sentences,
+                            xml_sentence_content,
                             subitems: Vec::new(),
                         });
                         continue;
@@ -1289,13 +1361,13 @@ fn append_lawtext_subitem(
         append_lawtext_subitem(&mut parent.children, depth, level + 1, title, text);
         return;
     }
-    let (sentence, xml_sentences) = parse_lawtext_sentence_text(text);
+    let (sentence, xml_sentence_content) = parse_lawtext_sentence_text(text, true);
     siblings.push(LawSubitem {
         depth: level,
         num: (siblings.len() + 1).to_string(),
         title: title.to_string(),
         sentence,
-        xml_sentences,
+        xml_sentence_content,
         children: Vec::new(),
     });
 }
@@ -1484,11 +1556,11 @@ fn write_markdown_node(
                 if idx != 0 || para.num != "1" || para.sentence.is_empty() {
                     out.push_str(&format!("{}. ", para.num));
                 }
-                write_markdown_sentence_text(out, &para.sentence, &para.xml_sentences, preserve_sentences);
+                write_markdown_sentence_text(out, &para.sentence, &para.xml_sentence_content, preserve_sentences);
                 out.push_str("\n\n");
                 for item in &para.items {
                     out.push_str(&format!("- {} ", item.title));
-                    write_markdown_sentence_text(out, &item.sentence, &item.xml_sentences, preserve_sentences);
+                    write_markdown_sentence_text(out, &item.sentence, &item.xml_sentence_content, preserve_sentences);
                     out.push('\n');
                     for sub in &item.subitems {
                         write_markdown_subitem(out, sub, preserve_sentences);
@@ -1504,7 +1576,7 @@ fn write_markdown_node(
             if para.num != "1" || para.sentence.is_empty() {
                 out.push_str(&format!("{}. ", para.num));
             }
-            write_markdown_sentence_text(out, &para.sentence, &para.xml_sentences, preserve_sentences);
+            write_markdown_sentence_text(out, &para.sentence, &para.xml_sentence_content, preserve_sentences);
             out.push_str("\n\n");
         }
     }
@@ -1512,11 +1584,11 @@ fn write_markdown_node(
 
 pub(crate) const MARKDOWN_SENTENCE_COMMENT: &str = "<!-- ibis-law-sentences ";
 
-fn write_markdown_sentence_text(out: &mut String, text: &str, sentences: &[LawSentence], preserve_sentences: bool) {
+fn write_markdown_sentence_text(out: &mut String, text: &str, content: &LawSentenceContent, preserve_sentences: bool) {
     out.push_str(text);
     if preserve_sentences
         && !text.contains(['\r', '\n'])
-        && let std::borrow::Cow::Owned(xml) = lawtext_sentence_text(text, sentences, true)
+        && let std::borrow::Cow::Owned(xml) = lawtext_sentence_text(text, content, true)
     {
         if !text.is_empty() {
             out.push(' ');
@@ -1528,7 +1600,7 @@ fn write_markdown_sentence_text(out: &mut String, text: &str, sentences: &[LawSe
     }
 }
 
-fn restore_markdown_sentence_text(text: &str) -> &str {
+fn restore_markdown_sentence_text(text: &str, allow_columns: bool) -> &str {
     let Some((plain, xml)) = text.rsplit_once(MARKDOWN_SENTENCE_COMMENT) else {
         return text;
     };
@@ -1536,8 +1608,8 @@ fn restore_markdown_sentence_text(text: &str) -> &str {
         return text;
     };
     let plain = plain.trim_end();
-    if parse_lawtext_sentence_elements(xml)
-        .is_some_and(|sentences| sentences_match_text(&sentences, plain))
+    if parse_lawtext_sentence_elements(xml, allow_columns)
+        .is_some_and(|(text, _)| text == plain)
     {
         xml
     } else {
@@ -1550,7 +1622,7 @@ fn write_markdown_subitem(out: &mut String, sub: &LawSubitem, preserve_sentences
         out.push_str("  ");
     }
     out.push_str(&format!("- {} ", sub.title));
-    write_markdown_sentence_text(out, &sub.sentence, &sub.xml_sentences, preserve_sentences);
+    write_markdown_sentence_text(out, &sub.sentence, &sub.xml_sentence_content, preserve_sentences);
     out.push('\n');
     for child in &sub.children {
         write_markdown_subitem(out, child, preserve_sentences);
@@ -1636,7 +1708,7 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
             if let Some((title, text)) = split_leading_token(rest) {
                 line.push_str(title);
                 line.push(' ');
-                line.push_str(restore_markdown_sentence_text(text));
+                line.push_str(restore_markdown_sentence_text(text, true));
             } else {
                 line.push_str(rest);
             }
@@ -1644,10 +1716,10 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
             continue;
         }
         if let Some((p_num, rest)) = parse_md_ordered_paragraph(trimmed) {
-            lawtext_lines.push(format!("{} {}", to_fullwidth_digits(&p_num), restore_markdown_sentence_text(rest)));
+            lawtext_lines.push(format!("{} {}", to_fullwidth_digits(&p_num), restore_markdown_sentence_text(rest, false)));
             continue;
         }
-        let trimmed = restore_markdown_sentence_text(trimmed);
+        let trimmed = restore_markdown_sentence_text(trimmed, false);
         // Attach first body paragraph onto the pending `第N条` line if it has no sentence yet.
         if let Some(last) = lawtext_lines.last_mut() {
             if parse_article_header(last.trim()).is_some_and(|(_, _, r)| r.is_empty()) {
@@ -2053,7 +2125,7 @@ mod tests {
                 paragraphs: vec![LawParagraph {
                     num: "1".to_string(),
                     sentence: "この法律において用語の意義を定める。".to_string(),
-                    xml_sentences: Vec::new(),
+                    xml_sentence_content: LawSentenceContent::default(),
                     items: Vec::new(),
                 }],
             }));

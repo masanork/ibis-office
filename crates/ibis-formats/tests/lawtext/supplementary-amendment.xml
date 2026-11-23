@@ -45,6 +45,13 @@
               </Subitem2>
             </Subitem1>
           </Item>
+          <Item Num="5">
+            <ItemTitle>五</ItemTitle>
+            <ItemSentence>
+              <Column Num="1" Align="left"><Sentence Num="1">給付の種類</Sentence></Column>
+              <Column Num="2" LineBreak="true"><Sentence Num="1">特例給付</Sentence><Sentence Num="2">及び通常給付</Sentence></Column>
+            </ItemSentence>
+          </Item>
         </Paragraph>
       </Article>
     </SupplProvision>

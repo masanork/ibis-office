@@ -532,13 +532,85 @@ fn dataset_value(value: &CellValue, ty: QType) -> Result<Value, String> {
     })
 }
 
+pub enum DiskDataset {
+    ArrowIpc(std::path::PathBuf, Vec<String>),
+    JsonLines(std::path::PathBuf, Vec<String>),
+    Avro(std::path::PathBuf, Vec<String>),
+    Table(QTable),
+}
+
+pub const DATASET_MEMORY_LIMIT: &str = "Dataset exceeds the in-memory input budget";
+
+pub(super) fn charge_dataset_text(row: &[CellValue], budget: &mut usize) -> Result<(), String> {
+    for value in row {
+        if let CellValue::Text(text) = value {
+            *budget = budget.checked_sub(text.len()).ok_or(DATASET_MEMORY_LIMIT)?;
+        }
+    }
+    Ok(())
+}
+
+impl DiskDataset {
+    fn visit(
+        &self,
+        mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        match self {
+            Self::ArrowIpc(path, selected) => {
+                super::arrow_ipc_source::visit_arrow_ipc(path, selected, visit)
+            }
+            Self::JsonLines(path, selected) => {
+                super::json_lines_source::visit_json_lines(path, selected, visit)
+            }
+            Self::Avro(path, selected) => super::avro_source::visit_avro(path, selected, visit),
+            Self::Table(table) => {
+                visit(&table.columns, None)?;
+                for row in &table.rows {
+                    visit(&table.columns, Some(row.clone()))?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn collect_bounded(&self, max_cells: usize, mut max_text: usize) -> Result<QTable, String> {
+        let mut table = QTable::default();
+        self.visit(|columns, row| {
+            if let Some(row) = row {
+                if columns.len().saturating_mul(table.rows.len() + 1) > max_cells {
+                    return Err(DATASET_MEMORY_LIMIT.into());
+                }
+                charge_dataset_text(&row, &mut max_text)?;
+                table.rows.push(row);
+            } else {
+                table.columns = columns.to_vec();
+            }
+            Ok(())
+        })?;
+        Ok(table)
+    }
+}
+
 impl SqliteQuerySession {
     /// Stage Arrow sources in a private temporary database for reuse by several SELECTs.
     pub fn from_arrow_disk(
         sources: &[(String, std::path::PathBuf, Vec<String>)],
     ) -> Result<Self, String> {
+        let datasets = sources
+            .iter()
+            .map(|(alias, path, selected)| {
+                (
+                    alias.clone(),
+                    DiskDataset::ArrowIpc(path.clone(), selected.clone()),
+                )
+            })
+            .collect::<Vec<_>>();
+        Self::from_disk_datasets(&datasets)
+    }
+
+    pub fn from_disk_datasets(sources: &[(String, DiskDataset)]) -> Result<Self, String> {
         let temp = tempfile::Builder::new()
-            .prefix("ibis-arrow-")
+            .prefix("ibis-datasets-")
             .tempdir()
             .map_err(|error| error.to_string())?;
         let path = temp.path().join("datasets.sqlite");
@@ -557,15 +629,15 @@ impl SqliteQuerySession {
                 .map_err(|error| error.to_string())
         };
         execute("PRAGMA temp_store = FILE")?;
-        for (alias, source, selected) in sources {
+        for (alias, source) in sources {
             let alias = sql_identifier(alias);
             let mut insert = None;
             let mut rows = 0usize;
             execute("BEGIN")?;
-            super::arrow_ipc_source::visit_arrow_ipc(source, selected, |columns, row| {
+            source.visit(|columns, row| {
                 if let Some(row) = row {
                     let stmt: &mut turso_core::Statement =
-                        insert.as_mut().ok_or("Missing Arrow schema")?;
+                        insert.as_mut().ok_or("Missing dataset schema")?;
                     for (index, (value, column)) in row.iter().zip(columns).enumerate() {
                         stmt.bind_at(
                             NonZeroUsize::new(index + 1).unwrap(),
