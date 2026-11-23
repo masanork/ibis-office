@@ -10,7 +10,7 @@ use super::model::{
     LawTitleAttributes, SupplProvision,
 };
 use super::syntax::to_fullwidth_digits;
-use super::table_markup::{SavedAppdxTable, parse_appdx_table, document_snapshot};
+use super::table_markup::{SavedAppdxTable, TableSource, parse_appdx_table, document_snapshot};
 
 /// Parse an e-Gov 法令標準XML string into a [`LawDoc`].
 pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
@@ -79,8 +79,10 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
             "SupplProvision" => out.suppl_positions.push(out.appdx_tables.len() + out.appdx_fragment_xml.len()),
             "AppdxTable" => {
                 if let Some(snapshot) = SavedAppdxTable::read(&xml[appendix.range()]) {
-                    out.appdx_table_anchors.insert(out.appdx_tables.len(), out.appdx_table_xml.len());
-                    out.appdx_table_xml.push(snapshot);
+                    out.appdx_table_sources.insert(out.appdx_tables.len(), TableSource::Restored {
+                        snapshot,
+                        markdown_id: None,
+                    });
                 }
                 out.appdx_tables.push(parse_appdx_table(appendix));
             }

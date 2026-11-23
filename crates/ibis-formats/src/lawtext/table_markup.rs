@@ -5,6 +5,7 @@
 //! Validated XML snapshots behind editable appendix-table rows.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use crate::markdown::roundtrip::{SourceDiagnostic, SourceIssue, reconcile_source};
 
@@ -15,6 +16,24 @@ use super::xml::{child_elem, collect_text, push_xml_escaped};
 pub(super) struct SavedAppdxTable {
     pub(super) table: LawAppdxTable,
     pub(super) xml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TableSource {
+    Restored {
+        snapshot: SavedAppdxTable,
+        markdown_id: Option<usize>,
+    },
+    Unresolved,
+}
+
+impl TableSource {
+    fn restored(&self) -> Option<(&SavedAppdxTable, Option<usize>)> {
+        match self {
+            Self::Restored { snapshot, markdown_id } => Some((snapshot, *markdown_id)),
+            Self::Unresolved => None,
+        }
+    }
 }
 
 impl SavedAppdxTable {
@@ -118,37 +137,44 @@ fn update_cells(
         .then_some(updated)
 }
 
-pub(super) fn snapshot_for<'a>(
-    snapshots: &'a [SavedAppdxTable],
+fn select_snapshot<'a, K: Copy>(
+    candidates: impl Iterator<Item = (K, &'a SavedAppdxTable)> + Clone,
     table: &LawAppdxTable,
     padded: bool,
-) -> Option<Cow<'a, SavedAppdxTable>> {
-    let same_text = |snapshot: &&SavedAppdxTable| {
-        same_shape(&snapshot.table, table, padded)
-            && snapshot.table.rows.iter().zip(&table.rows)
+) -> Result<(K, Cow<'a, SavedAppdxTable>), SourceIssue> {
+    let compatible = |(_, snapshot): &(K, &SavedAppdxTable)| same_shape(&snapshot.table, table, padded);
+    let exact = |candidate: &(K, &SavedAppdxTable)| {
+        compatible(candidate)
+            && candidate.1.table.rows.iter().zip(&table.rows)
                 .all(|(stored, visible)| visible.starts_with(stored))
     };
-    match reconcile_source(snapshots.iter().filter(same_text), |snapshot| Some(Cow::Borrowed(snapshot))) {
-        Err(SourceIssue::Missing) => reconcile_source(
-            snapshots.iter().filter(|snapshot| same_shape(&snapshot.table, table, padded)),
-            |snapshot| update_cells(snapshot, table).map(Cow::Owned),
-        ).ok(),
-        result => result.ok(),
+    match reconcile_source(candidates.clone().filter(exact), |(key, snapshot)| {
+        Some((key, Cow::Borrowed(snapshot)))
+    }) {
+        Err(SourceIssue::Missing) => reconcile_source(candidates.filter(compatible), |(key, snapshot)| {
+            update_cells(snapshot, table).map(|updated| (key, Cow::Owned(updated)))
+        }),
+        result => result,
     }
 }
 
-pub(super) fn document_snapshot(doc: &LawDoc, index: usize) -> Option<Cow<'_, SavedAppdxTable>> {
-    if doc.unresolved_appdx_tables.contains(&index) {
-        return None;
-    }
+fn document_source(doc: &LawDoc, index: usize) -> Option<(Option<usize>, Cow<'_, SavedAppdxTable>)> {
     let table = &doc.appdx_tables[index];
-    if let Some(saved) = doc.appdx_table_anchors.get(&index)
-        .and_then(|&slot| doc.appdx_table_xml.get(slot))
-        .filter(|saved| saved.table == *table)
-    {
-        return Some(Cow::Borrowed(saved));
+    match doc.appdx_table_sources.get(&index) {
+        Some(TableSource::Unresolved) => return None,
+        Some(TableSource::Restored { snapshot, markdown_id }) if snapshot.table == *table => {
+            return Some((*markdown_id, Cow::Borrowed(snapshot)));
+        }
+        _ => {}
     }
-    snapshot_for(&doc.appdx_table_xml, table, false)
+    let candidates = doc.appdx_table_sources.values()
+        .filter_map(TableSource::restored)
+        .map(|(snapshot, id)| (id, snapshot));
+    select_snapshot(candidates, table, false).ok()
+}
+
+pub(super) fn document_snapshot(doc: &LawDoc, index: usize) -> Option<Cow<'_, SavedAppdxTable>> {
+    document_source(doc, index).map(|(_, snapshot)| snapshot)
 }
 
 pub(super) fn encode_tables(doc: &LawDoc) -> Option<String> {
@@ -160,17 +186,19 @@ pub(super) fn encode_tables(doc: &LawDoc) -> Option<String> {
 }
 
 pub(super) fn markdown_tables(doc: &LawDoc) -> (Vec<Option<usize>>, Vec<String>) {
-    let mut slots = vec![String::new(); doc.appdx_table_markdown_ids.values().max().map_or(0, |id| id + 1)];
+    let next_id = doc.appdx_table_sources.values().filter_map(TableSource::restored)
+        .filter_map(|(_, id)| id).max().map_or(0, |id| id + 1);
+    let mut slots = vec![String::new(); next_id];
     let ids = (0..doc.appdx_tables.len()).map(|index| {
-        let snapshot = document_snapshot(doc, index)?;
-        let id = if let Some(&id) = doc.appdx_table_markdown_ids.get(&index) {
+        let (id, snapshot) = document_source(doc, index)?;
+        if let Some(id) = id
+            && slots[id].is_empty()
+        {
             slots[id] = snapshot.xml.clone();
-            id
-        } else {
-            let id = slots.len();
-            slots.push(snapshot.xml.clone());
-            id
-        };
+            return Some(id);
+        }
+        let id = slots.len();
+        slots.push(snapshot.xml.clone());
         Some(id)
     }).collect();
     (ids, slots)
@@ -205,8 +233,7 @@ pub(super) fn restore_tables_with_anchors(
     };
     // Empty entries intentionally reserve IDs after table deletion.
     let slots: Vec<_> = fragments.iter().map(|xml| SavedAppdxTable::read(xml)).collect();
-    let legacy: Vec<_> = slots.iter().flatten().cloned().collect();
-    let mut claims = std::collections::BTreeMap::<usize, usize>::new();
+    let mut claims = BTreeMap::<usize, usize>::new();
     for id in anchors.iter().filter_map(|anchor| anchor.as_ref()?.as_ref().ok()) {
         *claims.entry(*id).or_default() += 1;
     }
@@ -223,6 +250,24 @@ pub(super) fn restore_tables_with_anchors(
             Some(_) => {}
         }
     }
+    let mut legacy_claims = BTreeMap::<usize, usize>::new();
+    let legacy: Vec<_> = if anchored {
+        Vec::new()
+    } else {
+        let candidates = slots.iter().enumerate()
+            .filter_map(|(id, snapshot)| snapshot.as_ref().map(|snapshot| (id, snapshot)));
+        doc.appdx_tables.iter().map(|table| {
+            if !candidates.clone().any(|(_, saved)| saved.table.title == table.title) {
+                return None;
+            }
+            let result = select_snapshot(candidates.clone(), table, padded);
+            if let Ok((id, _)) = &result {
+                *legacy_claims.entry(*id).or_default() += 1;
+            }
+            Some(result)
+        }).collect()
+    };
+    let mut legacy = legacy.into_iter();
     for (index, table) in doc.appdx_tables.iter_mut().enumerate() {
         let anchor = anchors.get(index).and_then(Option::as_ref);
         let mut id = None;
@@ -234,34 +279,33 @@ pub(super) fn restore_tables_with_anchors(
                 match slots.get(*source_id) {
                     Some(Some(source)) => {
                         normalize_rich_header(table);
-                        snapshot_for(std::slice::from_ref(source), table, padded)
-                            .map(Cow::into_owned)
-                            .ok_or(SourceIssue::Incompatible)
+                        select_snapshot(std::iter::once(((), source)), table, padded)
+                            .map(|(_, snapshot)| snapshot.into_owned())
+                            .map_err(|_| SourceIssue::Incompatible)
                     }
                     Some(None) if !fragments[*source_id].is_empty() => Err(SourceIssue::Invalid),
                     _ => Err(SourceIssue::Missing),
                 }
             }
             None if anchored => continue,
-            None => {
-                if !legacy.iter().any(|saved| saved.table.title == table.title) {
-                    continue;
-                }
-                snapshot_for(&legacy, table, padded).map(Cow::into_owned)
-                    .ok_or(SourceIssue::Incompatible)
-            }
+            None => match legacy.next().flatten() {
+                Some(Ok((slot, _))) if legacy_claims[&slot] > 1 => Err(SourceIssue::Ambiguous),
+                Some(Ok((_, snapshot))) => Ok(snapshot.into_owned()),
+                Some(Err(SourceIssue::Missing)) => Err(SourceIssue::Incompatible),
+                Some(Err(issue)) => Err(issue),
+                None => continue,
+            },
         };
         match result {
             Ok(snapshot) => {
                 table.rows.clone_from(&snapshot.table.rows);
-                if let Some(id) = id {
-                    doc.appdx_table_markdown_ids.insert(index, id);
-                }
-                doc.appdx_table_anchors.insert(index, doc.appdx_table_xml.len());
-                doc.appdx_table_xml.push(snapshot);
+                doc.appdx_table_sources.insert(index, TableSource::Restored {
+                    snapshot,
+                    markdown_id: id,
+                });
             }
             Err(issue) => {
-                doc.unresolved_appdx_tables.insert(index);
+                doc.appdx_table_sources.insert(index, TableSource::Unresolved);
                 diagnostics.push(table_diagnostic(&table.title, issue));
             }
         }

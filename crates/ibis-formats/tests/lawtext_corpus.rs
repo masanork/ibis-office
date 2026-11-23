@@ -419,6 +419,32 @@ fn table_anchors_follow_reordered_markdown_and_report_duplicate_references() {
 }
 
 #[test]
+fn legacy_markdown_does_not_reuse_one_snapshot_for_two_tables() {
+    use ibis_formats::lawtext::{parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
+    use ibis_formats::markdown::SourceIssue;
+
+    let source = include_str!("lawtext/food-labeling-table.xml");
+    let markdown = to_markdown(&parse_law_xml(source).unwrap())
+        .replace("law_appdx_source_ids: true\n", "")
+        .replace(" {#ibis_law_table_0}", "");
+    let table = &markdown[markdown.find("## 別表").unwrap()..];
+    let duplicate = table.replace("| 形質 |", "| 形質区分 |");
+    for input in [
+        format!("{markdown}\n{duplicate}"),
+        format!("{}{}\n{table}", &markdown[..markdown.len() - table.len()], duplicate),
+    ] {
+        let (law, diagnostics) = parse_markdown_law_with_diagnostics(&input).unwrap();
+        assert_eq!(diagnostics.len(), 2);
+        assert!(diagnostics.iter().all(|diagnostic| diagnostic.issue == SourceIssue::Ambiguous));
+        let xml = to_law_xml(&law);
+        assert_eq!(xml.matches("<AppdxTable>").count(), 2);
+        assert!(xml.contains(">形質区分</Sentence>"));
+        assert!(xml.contains(">形質</Sentence>"));
+        assert!(!xml.contains("rowspan="));
+    }
+}
+
+#[test]
 fn broken_markdown_table_sources_are_reported_without_overwriting_edits() {
     use ibis_formats::lawtext::{parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
     use ibis_formats::markdown::SourceIssue;
