@@ -439,7 +439,7 @@ impl SlideEditor {
                     .gap_1()
                     .child(div().text_sm().child(file.clone()))
                     .child(
-                        action_button(("query-report-source", index))
+                        action_button(SharedString::from(format!("query-report-source-{index}")))
                             .small()
                             .label(label)
                             .disabled(busy)
@@ -580,11 +580,30 @@ pub(crate) fn refresh_report_scenario() {
     scene.update(|_, _, cx| cx.notify());
     button_probe::click(&mut scene, "queries-report-refresh");
 
-    // The headless platform cancels file pickers. Install the path returned by
-    // the picker before using the actual preview and apply buttons.
+    button_probe::click(&mut scene, "query-report-source-0");
+    scene.answer_path_prompt(|options| {
+        assert!(options.files && !options.directories && !options.multiple);
+        assert_eq!(options.extensions, ["csv"]);
+        None
+    });
+    scene.with(|editor, _| {
+        let panel = editor
+            .wb()
+            .panels
+            .queries
+            .as_ref()
+            .unwrap()
+            .reports
+            .as_ref()
+            .unwrap();
+        assert!(!panel.busy);
+        assert!(panel.files.is_empty());
+    });
+    button_probe::click(&mut scene, "query-report-source-0");
+    scene.answer_path_prompt(|_| Some(vec![next.clone()]));
     scene.update(|editor, _, cx| {
         let panel = editor.query_reports_mut().unwrap();
-        panel.files.insert("monthly.csv".into(), next.clone());
+        assert_eq!(panel.files.get("monthly.csv"), Some(&next));
         panel.reports[0].metrics.insert("amount".into());
         cx.notify();
     });
@@ -663,9 +682,9 @@ pub(crate) fn refresh_report_scenario() {
     assert_eq!(amount(&mut scene), Some(CellValue::Number(12.0)));
     button_probe::click(&mut scene, "query-reports-back");
     button_probe::click(&mut scene, "queries-close");
-    scene.update(|editor, window, cx| {
-        editor.undo(&crate::shell::actions::Undo, window, cx);
-    });
+    let cell = scene.with(|editor, _| editor.cell_center(3, 0).unwrap());
+    scene.click((f32::from(cell.x), f32::from(cell.y)));
+    scene.key(&format!("{}-z", crate::shell::app::secondary_modifier()));
     assert_eq!(amount(&mut scene), Some(CellValue::Number(24.0)));
 }
 

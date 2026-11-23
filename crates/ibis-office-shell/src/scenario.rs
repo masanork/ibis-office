@@ -356,6 +356,15 @@ impl Drop for Scenario {
 }
 
 impl Scenario {
+    /// Answers a file picker opened by the editor and processes the response.
+    pub fn answer_path_prompt(
+        &mut self,
+        select_paths: impl FnOnce(&PathPromptOptions) -> Option<Vec<std::path::PathBuf>>,
+    ) {
+        self.cx.simulate_path_prompt_response(select_paths);
+        self.settle();
+    }
+
     /// A window (1200 × 720, the UI mock's size) with the file at `path`
     /// (from the repository's root) opened as 開く… opens it, with what
     /// saving needs. The file is copied to `target/scenario/<test name>/`
