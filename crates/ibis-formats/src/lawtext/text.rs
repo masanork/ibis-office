@@ -14,7 +14,7 @@ use super::syntax::{
     to_fullwidth_digits,
 };
 use super::xml::{
-    parse_title_attributes_fragment, read_encoded_toc, write_title_attributes_fragment,
+    parse_title_attributes_fragment, read_encoded_appdx_styles, read_encoded_toc, write_title_attributes_fragment,
 };
 use super::markup::{
     lawtext_paragraph_text, lawtext_sentence_text, parse_lawtext_paragraph,
@@ -24,6 +24,7 @@ use super::markup::{
 use super::table_markup::{encode_tables, restore_tables};
 
 const LAWTEXT_TITLE_ATTRIBUTES: &str = ":law-title-attrs: ";
+const LAWTEXT_STYLES: &str = ":law-appdx-styles: ";
 const LAWTEXT_TABLES: &str = ":law-appdx-tables: ";
 const LAWTEXT_ENACT_STATEMENT: &str = ":law-enact-statement: ";
 const LAWTEXT_TOC: &str = ":law-toc: ";
@@ -71,7 +72,7 @@ pub fn is_lawtext(data: &[u8]) -> bool {
             lawtext_attributes(line).is_some() || line.strip_prefix(LAWTEXT_TITLE_ATTRIBUTES)
                 .and_then(parse_title_attributes_fragment).is_some()
                 || line.starts_with(LAWTEXT_TOC) || line.starts_with(LAWTEXT_TABLES)
-                || line.starts_with(LAWTEXT_ENACT_STATEMENT)
+                || line.starts_with(LAWTEXT_ENACT_STATEMENT) || line.starts_with(LAWTEXT_STYLES)
         });
     let Some(first) = lines.next() else {
         return false;
@@ -114,6 +115,9 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
     }
     if let Some(encoded) = encode_tables(doc) {
         out.push_str(&format!("{LAWTEXT_TABLES}{encoded}\n"));
+    }
+    if !doc.appdx_style_xml.is_empty() && let Ok(encoded) = serde_json::to_string(&doc.appdx_style_xml) {
+        out.push_str(&format!("{LAWTEXT_STYLES}{encoded}\n"));
     }
     if !out.is_empty() {
         out.push('\n');
@@ -304,6 +308,10 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
     }
     let table_xml = lines.peek().and_then(|line| line.trim().strip_prefix(LAWTEXT_TABLES));
     if table_xml.is_some() {
+        lines.next();
+    }
+    if let Some(encoded) = lines.peek().and_then(|line| line.trim().strip_prefix(LAWTEXT_STYLES)) {
+        doc.appdx_style_xml = read_encoded_appdx_styles(encoded);
         lines.next();
     }
     let mut header = lines.clone();

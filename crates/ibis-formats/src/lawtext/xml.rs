@@ -48,7 +48,7 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
             out.enact_statement = Some(s);
         }
     }
-    out.toc_xml = child_elem(body, "TOC").and_then(|toc| read_toc_fragment(&xml[toc.range()]));
+    out.toc_xml = child_elem(body, "TOC").and_then(|toc| read_xml_fragment(&xml[toc.range()], "TOC"));
     if let Some(pre) = child_elem(body, "Preamble") {
         let s = collect_text(pre);
         if !s.is_empty() {
@@ -77,13 +77,18 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
         }
         out.appdx_tables.push(table);
     }
+    out.appdx_style_xml = body
+        .children()
+        .filter(|node| node.has_tag_name("AppdxStyle"))
+        .filter_map(|node| read_xml_fragment(&xml[node.range()], "AppdxStyle"))
+        .collect();
     Ok(out)
 }
 
-fn read_toc_fragment(xml: &str) -> Option<String> {
+fn read_xml_fragment(xml: &str, name: &str) -> Option<String> {
     let doc = roxmltree::Document::parse(xml).ok()?;
     let node = doc.root_element();
-    if !node.has_tag_name("TOC") || node.tag_name().namespace().is_some() {
+    if !node.has_tag_name(name) || node.tag_name().namespace().is_some() {
         return None;
     }
     Some(xml[node.range()].to_string())
@@ -91,7 +96,15 @@ fn read_toc_fragment(xml: &str) -> Option<String> {
 
 pub(super) fn read_encoded_toc(encoded: &str) -> Option<String> {
     let toc = serde_json::from_str::<String>(encoded).ok()?;
-    read_toc_fragment(&toc)
+    read_xml_fragment(&toc, "TOC")
+}
+
+pub(super) fn read_encoded_appdx_styles(encoded: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(encoded)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|fragment| read_xml_fragment(fragment, "AppdxStyle"))
+        .collect()
 }
 
 fn parse_title_attributes(node: roxmltree::Node<'_, '_>) -> LawTitleAttributes {
@@ -455,6 +468,11 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
             out.push_str("        </Table>\n      </TableStruct>\n");
         }
         out.push_str("    </AppdxTable>\n");
+    }
+    for style in &doc.appdx_style_xml {
+        out.push_str("    ");
+        out.push_str(style);
+        out.push('\n');
     }
     out.push_str("  </LawBody>\n</Law>\n");
     out

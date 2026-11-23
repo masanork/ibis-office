@@ -273,7 +273,7 @@ fn lawtext_title_metadata_keeps_empty_attributes_and_plain_title() {
 }
 
 #[test]
-fn public_food_labeling_samples_expose_table_and_form_limits() {
+fn public_food_labeling_samples_preserve_table_and_form_markup() {
     use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
 
     let table = include_str!("lawtext/food-labeling-table.xml");
@@ -306,7 +306,13 @@ fn public_food_labeling_samples_expose_table_and_form_limits() {
                     to_law_xml(&original).split_once("<AppdxTable>").unwrap().1
                 );
             }
-            let restored = parse_law_xml(&to_law_xml(&edited)).unwrap();
+            let output = to_law_xml(&edited);
+            if let Some((_, fragment)) = xml.split_once("<AppdxStyle>") {
+                let expected = fragment.split_once("</AppdxStyle>").unwrap().0;
+                let actual = output.split_once("<AppdxStyle>").unwrap().1;
+                assert_eq!(actual.split_once("</AppdxStyle>").unwrap().0, expected);
+            }
+            let restored = parse_law_xml(&output).unwrap();
             assert_eq!(restored.law_title, title);
             assert_eq!(restored.enact_statement, original.enact_statement);
         }
@@ -321,8 +327,24 @@ fn public_food_labeling_samples_expose_table_and_form_limits() {
     let edited = to_law_xml(&parse_markdown_law(&edited_markdown).unwrap());
     assert!(edited.contains("形質区分"));
     assert!(!edited.contains("rowspan="));
-    let form_output = to_law_xml(&parse_law_xml(form).unwrap());
-    assert!(!form_output.contains("<AppdxStyle>"));
+}
+
+#[test]
+fn appendix_style_metadata_keeps_multiple_forms_and_rejects_invalid_fragments() {
+    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml};
+
+    let first = "<AppdxStyle><AppdxStyleTitle>様式一</AppdxStyleTitle><FigStruct><Fig src=\"./pict/a.pdf\"/></FigStruct></AppdxStyle>";
+    let second = "<AppdxStyle><AppdxStyleTitle>様式二</AppdxStyleTitle><FigStruct><Fig src=\"./pict/b.pdf\"/></FigStruct></AppdxStyle>";
+    let metadata = serde_json::to_string(&[first, "<AppdxStyle>", "<MainProvision/>", second]).unwrap();
+    let lawtext = format!(":law-appdx-styles: {metadata}\n\n試験法（令和七年法律第一号）\n\n第一条 規定する。");
+    let markdown = format!("---\ntype: lawtext\nlaw_appdx_styles: {metadata}\n---\n\n# 試験法\n\n## 第一条 規定する。");
+    for doc in [parse_lawtext(&lawtext).unwrap(), parse_markdown_law(&markdown).unwrap()] {
+        let xml = to_law_xml(&doc);
+        assert_eq!(xml.matches("<AppdxStyle>").count(), 2);
+        assert!(xml.find(first).unwrap() < xml.find(second).unwrap());
+        assert!(!xml.contains("<MainProvision/>"));
+        assert!(parse_law_xml(&xml).is_ok());
+    }
 }
 
 #[test]
