@@ -220,6 +220,100 @@ struct AssistantReview {
     preview: String,
     history_start: usize,
     check_sql_open: bool,
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    check_trial: Option<ReportCheckTrial>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+struct ReportCheckTrial {
+    id: u64,
+    table: String,
+    files: String,
+    outcome: Option<Result<Vec<serde_json::Value>, String>>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn report_trial_paths(
+    definition: &serde_json::Value,
+    selected: &[std::path::PathBuf],
+) -> Result<Vec<std::path::PathBuf>, String> {
+    let sources = definition["sources"]
+        .as_array()
+        .filter(|sources| !sources.is_empty())
+        .ok_or("この帳票の元ファイルが定義されていません。")?;
+    if sources.len() == 1 && selected.len() == 1 {
+        return Ok(selected.to_vec());
+    }
+    sources
+        .iter()
+        .map(|source| {
+            let name = source["file"]
+                .as_str()
+                .ok_or("帳票の元ファイル名を確認できません。")?;
+            let mut matches = selected
+                .iter()
+                .filter(|path| path.file_name().is_some_and(|file| file == name));
+            match (matches.next(), matches.next()) {
+                (Some(path), None) => Ok(path.clone()),
+                (_, Some(_)) => Err(format!(
+                    "「{name}」と同名のファイルが複数あります。1つだけ選択してください。"
+                )),
+                _ => Err(format!("分析ファイルに「{name}」を選択してください。")),
+            }
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+impl ReportCheckTrial {
+    fn text(&self) -> String {
+        let mut lines = vec![format!("試行結果 · {}", self.table)];
+        if !self.files.is_empty() {
+            lines.push(self.files.clone());
+        }
+        match &self.outcome {
+            None => lines.push("チェックを実行中…".into()),
+            Some(Err(error)) => lines.push(format!("チェックを試せませんでした。{error}")),
+            Some(Ok(checks)) if checks.is_empty() => {
+                lines.push("変更案にチェックはありません。".into())
+            }
+            Some(Ok(checks)) => {
+                for check in checks {
+                    let name = check["name"].as_str().unwrap_or_default();
+                    let count = &check["count"];
+                    let status = match check["passed"].as_bool() {
+                        Some(true) => format!("上限 {} 件以内", check["max"]),
+                        Some(false) => format!("上限 {} 件を超過", check["max"]),
+                        None => "件数表示のみ".into(),
+                    };
+                    lines.push(format!("{name} · {count} 件 · {status}"));
+                    let diagnostic = &check["diagnostic"];
+                    if let Some(error) = diagnostic["error"]["message"].as_str() {
+                        lines.push(format!("診断に失敗しました。{error}"));
+                    }
+                    if let Some(rows) = diagnostic["rows"].as_array() {
+                        if rows.is_empty() {
+                            lines.push("診断結果は0行です。".into());
+                        } else {
+                            let columns = diagnostic["columns"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|column| column.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" · ");
+                            lines.push(columns);
+                            lines.extend(rows.iter().map(serde_json::Value::to_string));
+                        }
+                        if diagnostic["truncated"] == true {
+                            lines.push("診断結果の一部を省略しました。".into());
+                        }
+                    }
+                }
+            }
+        }
+        lines.join("\n")
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -898,10 +992,101 @@ impl SlideEditor {
                     && panel.prompt_input.entity_id() == panel_id && !panel.streaming
                 {
                     panel.analysis_sources = Some((file_id, paths));
+                    if let Some(review) = panel.assistant_review.as_mut() {
+                        review.check_trial = None;
+                    }
                     cx.notify();
                 }
             });
         }).detach();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn trial_report_checks(&mut self, table: String, cx: &mut Context<Self>) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_TRIAL: AtomicU64 = AtomicU64::new(1);
+
+        let Some(panel) = self.ai_assistant.as_mut() else {
+            return;
+        };
+        let Some(review) = panel.assistant_review.as_mut() else {
+            return;
+        };
+        let file_id = self.file_id;
+        if review.turn.file_id != file_id
+            || review
+                .check_trial
+                .as_ref()
+                .is_some_and(|trial| trial.outcome.is_none())
+        {
+            return;
+        }
+        let Some((_, selected)) = panel
+            .analysis_sources
+            .as_ref()
+            .filter(|(id, _)| *id == file_id)
+        else {
+            return;
+        };
+        let Some(definition) = review
+            .turn
+            .draft
+            .presentation()
+            .workbook
+            .as_ref()
+            .and_then(|book| book.query_reports.get(&table))
+        else {
+            return;
+        };
+        let id = NEXT_TRIAL.fetch_add(1, Ordering::Relaxed);
+        let paths = match report_trial_paths(definition, selected) {
+            Ok(paths) => paths,
+            Err(error) => {
+                review.check_trial = Some(ReportCheckTrial {
+                    id,
+                    table,
+                    files: String::new(),
+                    outcome: Some(Err(error)),
+                });
+                cx.notify();
+                return;
+            }
+        };
+        let files = paths
+            .iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| name.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("、");
+        review.check_trial = Some(ReportCheckTrial {
+            id,
+            table,
+            files,
+            outcome: None,
+        });
+        let definition = definition.clone();
+        let task = cx.background_executor().spawn(async move {
+            ibis_doc_service::trial_selected_report_checks(&paths, &definition)
+                .map_err(|error| error.message)
+        });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            let _ = this.update(cx, |editor, cx| {
+                if editor.file_id == file_id
+                    && let Some(trial) = editor
+                        .ai_assistant
+                        .as_mut()
+                        .and_then(|panel| panel.assistant_review.as_mut())
+                        .and_then(|review| review.check_trial.as_mut())
+                        .filter(|trial| trial.id == id)
+                {
+                    trial.outcome = Some(outcome);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn save_ai_assistant_settings(&mut self, cx: &mut Context<Self>) {
@@ -1383,6 +1568,8 @@ impl SlideEditor {
                                     p.assistant_review = Some(AssistantReview {
                                         turn, commands: std::mem::take(&mut turn_commands),
                                         preview, history_start, check_sql_open: false,
+                                        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                                        check_trial: None,
                                     });
                                 } else {
                                     editor.finish_assistant_navigation(&turn, cx);
@@ -2133,6 +2320,8 @@ impl SlideEditor {
         let panel = self.ai_assistant.as_mut().unwrap();
         panel.assistant_review = Some(AssistantReview {
             turn, commands, preview, history_start: panel.history.len(), check_sql_open: false,
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            check_trial: None,
         });
         cx.notify();
     }
@@ -3684,11 +3873,13 @@ impl SlideEditor {
                 .filter(|(file_id, _)| *file_id == self.file_id)
                 .map(|(_, files)| files.iter().filter_map(|path| path.file_name())
                     .map(|name| name.to_string_lossy()).collect::<Vec<_>>().join("、"));
-            h_flex().gap_2().items_center()
-                .child(Button::new("ai-sqlite-select").outline().xsmall()
-                    .label("分析ファイルを選択")
-                    .disabled(streaming)
-                    .on_click(cx.listener(|this, _, window, cx| this.pick_analysis_sources(window, cx))))
+            let select = Button::new("ai-sqlite-select").outline().xsmall()
+                .label("分析ファイルを選択")
+                .disabled(streaming)
+                .on_click(cx.listener(|this, _, window, cx| this.pick_analysis_sources(window, cx)));
+            #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+            let select = crate::scenario::button_probe::observe(select, "ai-sqlite-select".into());
+            h_flex().gap_2().items_center().child(select)
                 .when_some(selected, |row, name| row
                     .child(div().text_xs().truncate().child(name))
                     .child(Button::new("ai-sqlite-clear").ghost().xsmall().label("解除")
@@ -3696,6 +3887,9 @@ impl SlideEditor {
                         .on_click(cx.listener(|this, _, _, cx| {
                             if let Some(panel) = this.ai_assistant.as_mut() {
                                 panel.analysis_sources = None;
+                                if let Some(review) = panel.assistant_review.as_mut() {
+                                    review.check_trial = None;
+                                }
                             }
                             cx.notify();
                         }))))
@@ -3938,6 +4132,37 @@ impl SlideEditor {
                                 .when(review.check_sql_open, |row| row.child(report_check_review_text(change.sql_details())))
                         }))))
             });
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            let check_trial = (!changes.is_empty()).then(|| {
+                use gpui_kit::component::Disableable as _;
+                let selected = panel.analysis_sources.as_ref().is_some_and(|(id, paths)| {
+                    *id == self.file_id && !paths.is_empty()
+                });
+                let busy = review.check_trial.as_ref().is_some_and(|trial| trial.outcome.is_none());
+                let tables: std::collections::BTreeSet<_> = changes.iter().map(|change| change.table)
+                    .filter(|table| review.turn.draft.presentation().workbook.as_ref()
+                        .is_some_and(|book| book.query_reports.contains_key(*table)))
+                    .collect();
+                let buttons = tables.into_iter().enumerate().map(|(index, table)| {
+                    let table = table.to_owned();
+                    let id = SharedString::from(format!("assistant-check-trial-{index}"));
+                    let button = Button::new(id.clone()).small().label(format!("{table} のチェックを試す"))
+                        .disabled(!selected || busy)
+                        .on_click(cx.listener(move |this, _, _, cx| this.trial_report_checks(table.clone(), cx)));
+                    #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+                    let button = crate::scenario::button_probe::observe(button, id.into());
+                    button
+                });
+                v_flex().gap_1().children(buttons)
+                    .when(!selected, |column| column.child(div().text_xs().child("試すには分析ファイルを選択してください。複数の元ファイルがある帳票では、保存時と同じ名前を使います。")))
+                    .children(review.check_trial.as_ref().map(|trial| {
+                        div().id("assistant-check-trial-result").max_h(px(140.0)).overflow_y_scroll()
+                            .child(report_check_review_text(trial.text()))
+                    }))
+                    .into_any_element()
+            });
+            #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+            let check_trial: Option<AnyElement> = None;
             v_flex()
                 .gap_2()
                 .p_2()
@@ -3949,6 +4174,7 @@ impl SlideEditor {
                     .text_xs().child(review.preview.clone()))
                 .children(check_review)
                 .child(h_flex().gap_2().child(apply).child(discard))
+                .children(check_trial)
                 .into_any_element()
         });
         #[cfg(not(target_family = "wasm"))]

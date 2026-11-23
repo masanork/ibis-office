@@ -801,6 +801,29 @@ pub(crate) fn refresh_report_scenario() {
     assert_eq!(saved_checks(&mut scene), informational);
     assert!(review_text("行数　削除"));
     assert!(review_text("重複コード　変更　許容上限 1 件・診断なし → 許容上限 0 件・診断あり"));
+    std::fs::write(&next, "code,amount\n001,12\n001,12\n").unwrap();
+    button_probe::click(&mut scene, "ai-sqlite-select");
+    scene.answer_path_prompt(|options| {
+        assert!(options.multiple);
+        Some(vec![next.clone()])
+    });
+    let check_trial = |scene: &mut Scenario| {
+        button_probe::clear();
+        scene.update(|_, _, cx| cx.notify());
+        button_probe::click(scene, "assistant-check-trial-0");
+        for _ in 0..100 {
+            if review_text("重複コード · 1 件 · 上限 0 件を超過") {
+                assert!(review_text(r#"["001",2]"#));
+                assert!(review_text("next.csv"));
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            scene.wait(20);
+        }
+        panic!("check trial result missing: {:?}", button_probe::all());
+    };
+    check_trial(&mut scene);
+    assert_eq!(saved_checks(&mut scene), informational);
     let before_sql = "変更前\n件数チェックのSQL\nSELECT 0";
     assert!(!review_text(before_sql));
     button_probe::click(&mut scene, "assistant-report-check-sql");
@@ -812,6 +835,7 @@ pub(crate) fn refresh_report_scenario() {
     assert_eq!(saved_checks(&mut scene), informational);
 
     stage(&mut scene, &blocking);
+    check_trial(&mut scene);
     button_probe::click(&mut scene, "ai-workbook-apply");
     assert_eq!(saved_checks(&mut scene), blocking);
     button_probe::clear();

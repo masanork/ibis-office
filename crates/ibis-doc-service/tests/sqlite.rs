@@ -1385,6 +1385,15 @@ LIMIT 20";
                 "rows":[expected_key],"truncated":false,
             }},
         ]));
+        let mut trial_definition = ibis_doc_service::query_report_definition(
+            draft.presentation(), &json!({"table":table}),
+        ).unwrap();
+        // A check trial does not execute the report SELECT or plan a workbook edit.
+        trial_definition["sql"] = json!("SELECT * FROM missing_report_table");
+        assert_eq!(
+            json!(ibis_doc_service::trial_selected_report_checks(&selected, &trial_definition).unwrap()),
+            preview["reports"][0]["checks"],
+        );
         let diagnostics = call(&mut service, "sqlite_query", json!({
             "sql":diagnostics_sql,"limit":20,
             "datasets":[{"source":facts,"alias":"facts"},{"source":labels,"alias":"labels"}],

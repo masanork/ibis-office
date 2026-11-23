@@ -1735,12 +1735,36 @@ fn refresh_query_in_session(
     definition: &Value,
     preview: bool,
 ) -> Result<(SqliteRows, Vec<Value>), ToolError> {
+    let checks = evaluate_report_checks(session, definition, preview)?;
+    let rows = require_complete(run_session_query(session, args, 10_000, 4 * 1024 * 1024)?)?;
+    Ok((rows, checks))
+}
+
+/// Evaluate only the draft report's checks using the supplied files in saved source order.
+pub fn trial_selected_report_checks(
+    paths: &[PathBuf],
+    definition: &Value,
+) -> Result<Vec<Value>, ToolError> {
+    let sources = paths.iter().map(|path| path.to_str()
+        .ok_or_else(|| ToolError::invalid("path is not valid UTF-8")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let query = bound_query(definition, &json!({"sources":sources}))?;
+    let service = selected_file_service(paths);
+    let session = query_session(&service, &query)?;
+    evaluate_report_checks(&session, definition, true)
+}
+
+fn evaluate_report_checks(
+    session: &SqliteQuerySession,
+    definition: &Value,
+    preview: bool,
+) -> Result<Vec<Value>, ToolError> {
     let checks = definition
         .get("checks")
         .map(validate_report_checks)
         .transpose()?
         .unwrap_or_default();
-    let checks = checks
+    checks
         .iter()
         .map(|check| {
             let name = check.str_arg("name")?;
@@ -1773,9 +1797,7 @@ fn refresh_query_in_session(
             }
             Ok(summary)
         })
-        .collect::<Result<Vec<_>, ToolError>>()?;
-    let rows = require_complete(run_session_query(session, args, 10_000, 4 * 1024 * 1024)?)?;
-    Ok((rows, checks))
+        .collect()
 }
 
 fn enforce_checks(checks: &[Value]) -> Result<(), ToolError> {
