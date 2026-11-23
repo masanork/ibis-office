@@ -1,0 +1,24 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "components": [
+    {
+      "type": "library",
+      "name": "fixed",
+      "version": "1.0.0",
+      "purl": "pkg:npm/fixed@1.0.0"
+    },
+    {
+      "type": "library",
+      "name": "hidden",
+      "version": "1.0.0",
+      "purl": "pkg:npm/hidden@1.0.0"
+    },
+    {
+      "type": "library",
+      "name": "persistent",
+      "version": "1.0.0",
+      "purl": "pkg:npm/persistent@1.0.0"
+    }
+  ]
+}
