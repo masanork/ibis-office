@@ -27,6 +27,23 @@ pub(super) fn size(metadata: &str) -> Option<EmuSize> {
     Some(EmuSize::new(width * 9525, 720 * 9525))
 }
 
+pub(super) fn comment_size(body: &str) -> Option<EmuSize> {
+    let mut lines = body.lines();
+    let mut fence = None;
+    let mut selected = None;
+    while let Some(line) = lines.next() {
+        if !super::is_fenced_line(line.trim(), &mut fence)
+            && let Some(comment) = block_comment(line, lines.clone())
+        {
+            if !comment.text.trim_start().starts_with("notes:") {
+                selected = size(&comment.text).or(selected);
+            }
+            lines.by_ref().take(comment.following_lines).for_each(drop);
+        }
+    }
+    selected
+}
+
 pub(super) fn size_preset(size: EmuSize) -> Option<&'static str> {
     let (width, height) = (i128::from(size.width), i128::from(size.height));
     if width * 9 == height * 16 {
@@ -79,6 +96,7 @@ fn is_directive(text: &str) -> bool {
                 | "theme"
                 | "size"
                 | "headingDivider"
+                | "math"
                 | "paginate"
                 | "header"
                 | "footer"

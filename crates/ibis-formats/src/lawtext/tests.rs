@@ -149,7 +149,7 @@ use super::syntax::parse_suppl_header;
     fn roundtrips_law_xml_via_markdown() {
         let parsed = parse_law_xml(SAMPLE_LAW_XML).expect("parse_law_xml");
         let md = to_markdown(&parsed);
-        assert!(md.contains("type: lawtext"));
+        assert!(md.contains("x-ibis-format: lawtext"));
         assert!(md.contains("# 行政手続法"));
         assert!(md.contains("### 第一条 （目的等）"));
 

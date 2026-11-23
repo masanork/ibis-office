@@ -38,7 +38,7 @@ pub(crate) fn markdown_profile(metadata: &str) -> Option<String> {
         !line.starts_with(char::is_whitespace) && line.split_once(':').is_some_and(|(key, _)| {
             let key = key.trim_end();
             key.starts_with("law_") || matches!(
-                key, "type" | "era" | "year" | "promulgate_month" | "promulgate_day" | "num" | "lang"
+                key, "type" | "x-ibis-format" | "era" | "year" | "promulgate_month" | "promulgate_day" | "num" | "lang"
             )
         })
     }).collect::<Vec<_>>().join("\n"))
@@ -55,7 +55,7 @@ fn to_markdown_with_articles(
     preserve_editing_metadata: bool,
     mut record: impl FnMut(Option<usize>, &LawArticle, usize, usize),
 ) -> String {
-    let mut out = String::from("---\ntype: lawtext\n");
+    let mut out = String::from("---\nx-ibis-format: lawtext\n");
     if !doc.law_title.is_empty() {
         out.push_str(&format!("law_title: {}\n", doc.law_title));
     }

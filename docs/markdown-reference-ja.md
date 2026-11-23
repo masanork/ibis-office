@@ -212,7 +212,7 @@ ibisOffice --export xlsx --out-dir rebuilt markdown/workbook.md
 
 ### Marp 原稿と PPTX
 
-`marp: true` の原稿は横罫線でスライドを区切り、見出しが複数あっても同じスライドに置きます。フロントマターの `size: 16:9` と `size: 4:3` に対応し、`pptx_size` がある場合はそちらを優先します。
+`marp: true` の原稿は横罫線でスライドを区切り、見出しが複数あっても同じスライドに置きます。フロントマターと単独行から始まるコメントの `size: 16:9` と `size: 4:3` に対応し、`pptx_size` がある場合はそちらを優先します。
 
 単独行から始まる HTML コメントは、対応する Marp ディレクティブを含むものや ibisOffice の位置注記を除き、複数行でも PPTX の発表者ノートに入ります。従来の `<!-- notes: … -->` も読み書きできます。コードフェンス内のコメントはコードとして扱います。
 
@@ -398,8 +398,8 @@ PPTX の表でも横結合・縦結合の印を使えます。横と縦を組み
 
 同じ Markdown 原稿に、通常の記法と以下の構文を混在させられます。
 
-- MyST では、見出しの直前の `(results)=` を Word のブックマークにします。参照には既存の `[結果](#results)` を使えます。単一行の本文を持つ `{note}`、`{tip}`、`{important}`、`{warning}`、`{caution}` のコードフェンスは、既存のアラート書式で取り込みます。ラベルは ASCII 英字で始まる英数字・アンダースコア 40 文字以内です。
-- Obsidian では、同じ 5 種の大文字・小文字の違いを許容した基本 callout と、`[[#Results]]`、`[[#Results|結果]]` を取り込めます。リンク先の見出しには、対応するブックマークを `## Results {#Results}` のように指定します。別ノートを指す `[[toc]]` や `[[bibliography]]` は原稿上の文字列として保持します。
+- MyST では、見出しの直前の `(results)=` を Word のブックマークにします。参照には既存の `[結果](#results)` を使えます。単一段落の本文を持つ `{note}`、`{tip}`、`{important}`、`{warning}`、`{caution}` のコードフェンスとコロンフェンス（`:::{note}` … `:::`）は、既存のアラート書式で取り込みます。ラベルは ASCII 英字で始まる英数字・アンダースコア 40 文字以内です。
+- Obsidian では、同じ 5 種の大文字・小文字の違いを許容した基本 callout（`hint` は `tip`、`attention` は `warning` として取り込み）と、`[[#Results]]`、`[[#Results|結果]]` を取り込めます。リンク先の見出しには、対応するブックマークを `## Results {#Results}` のように指定します。別ノートを指す `[[toc]]` や `[[bibliography]]` は原稿上の文字列として保持します。
 
 旧 OOMarkdown 原稿で目次・参考文献一覧を指定していた行は、`[[toc]]` を `::: toc`、`[[bibliography]]` を `::: bibliography`、`[[bibliography:1041]]` を `::: bibliography 1041` に置き換えてください。DOCX に保存済みのフィールドは、Markdown に書き出すと新しい記法になります。
 
@@ -602,7 +602,7 @@ ibisOffice --export md --out-dir /tmp/docs-reference/law crates/ibis-formats/tes
 
 法令標準 XML の取り込みでは、`Law` / `LawNum` / `LawBody` / `LawTitle`、`EnactStatement` / `Preamble`、`MainProvision`、編・章・節・款・目、`Article` / `ArticleCaption` / `ArticleTitle`、`Paragraph` / `Item` / `Subitem1` 以降、`SupplProvision`、`AppdxTable` と表の行・列を読み取ります。XML 内のすべての属性や要素が、Lawtext や Markdown への変換を往復して保持されるわけではありません。
 
-変換した Markdown の先頭には `type: lawtext` と法令情報（`law_title`、`law_num`、`era`、`year`、`num`、`law_type`）が入ります。法令形式で書き出すときは、条見出しや項・号の構造を編集後も保ってください。
+変換した Markdown の先頭には `x-ibis-format: lawtext` と法令情報（`law_title`、`law_num`、`era`、`year`、`num`、`law_type`）が入ります。法令形式で書き出すときは、条見出しや項・号の構造を編集後も保ってください。
 
 ## XLSX のシート名と順序
 

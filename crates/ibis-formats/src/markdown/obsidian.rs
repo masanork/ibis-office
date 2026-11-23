@@ -8,9 +8,9 @@ pub(super) fn callout(line: &str) -> Option<&'static str> {
     let kind = line.strip_prefix("[!")?.strip_suffix(']')?;
     match kind.to_ascii_lowercase().as_str() {
         "note" => Some("[!NOTE]"),
-        "tip" => Some("[!TIP]"),
+        "tip" | "hint" => Some("[!TIP]"),
         "important" => Some("[!IMPORTANT]"),
-        "warning" => Some("[!WARNING]"),
+        "warning" | "attention" => Some("[!WARNING]"),
         "caution" => Some("[!CAUTION]"),
         _ => None,
     }

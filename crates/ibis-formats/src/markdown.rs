@@ -201,6 +201,9 @@ pub fn is_presentation_markdown(data: &[u8]) -> bool {
     let Some((fm, _)) = roundtrip::frontmatter(trimmed) else {
         return false;
     };
+    if let Some(format) = roundtrip::metadata_value(fm, "x-ibis-format") {
+        return matches!(format, "presentation" | "slides" | "pptx");
+    }
     marp::enabled(fm) || fm.lines().any(|line| {
         let Some((key, value)) = line.split_once(':') else {
             return false;
@@ -1730,6 +1733,11 @@ fn populate_toc_blocks(doc: &mut FlowDocument) {
 fn apply_frontmatter(fm: &str, doc: &mut FlowDocument, ctx: &mut ParseContext<'_>) {
     if let Some(profile) = crate::lawtext::markdown_profile(fm) {
         roundtrip::store_profile(profile, &mut doc.properties);
+    } else {
+        let metadata = format!("---\n{fm}---\n");
+        if crate::okf::concept("document.md", &metadata).ok().flatten().is_some() {
+            roundtrip::store_okf_source(fm, &mut doc.properties);
+        }
     }
     let mut map: BTreeMap<String, String> = BTreeMap::new();
     let mut current_section: Option<String> = None;
@@ -2503,6 +2511,13 @@ fn parse_blocks(
             continue;
         }
 
+        if let Some((alert, body, consumed)) = myst::colon_admonition(&lines[i..]) {
+            let quote: Vec<_> = std::iter::once(alert).chain(body.iter().copied()).collect();
+            blocks.extend(build_blockquote_blocks(&quote, ctx));
+            i += consumed;
+            continue;
+        }
+
         // Fenced code / math / chart block: ```lang ... ```
         if let Some((fence_marker, fence_info)) = opening_fence(trimmed) {
             let lang = fence_info.trim().to_ascii_lowercase();
@@ -2517,7 +2532,8 @@ fn parse_blocks(
             if closed
                 && let Some(alert) = myst::admonition(fence_info.trim(), content_lines)
             {
-                blocks.extend(build_blockquote_blocks(&[alert, content_lines[0]], ctx));
+                let quote: Vec<_> = std::iter::once(alert).chain(content_lines.iter().copied()).collect();
+                blocks.extend(build_blockquote_blocks(&quote, ctx));
                 continue;
             }
             let content = content_lines.join("\n");
@@ -2699,6 +2715,7 @@ fn parse_blocks(
                 || l_trim == "\\columnbreak"
                 || document_block_field(l_trim).is_some()
                 || myst_heading_target(&lines, i).is_some()
+                || myst::colon_admonition(&lines[i..]).is_some()
                 || is_horizontal_rule(l_trim)
                 || parse_atx_heading(l_trim).is_some()
                 || parse_list_marker(l_raw).is_some()
@@ -6280,8 +6297,13 @@ fn serialize_frontmatter(doc: &FlowDocument) -> String {
         lines.push("even_and_odd_headers: true".to_owned());
     }
     let props: &DocProperties = &doc.properties;
-    if let Some(profile) = roundtrip::saved_profile(props).filter(|profile| crate::lawtext::is_law_profile(profile)) {
-        lines.extend(profile.lines().map(str::to_owned));
+    if let Some(profile) = roundtrip::saved_profile(props) {
+        if let Some(source) = roundtrip::decode_okf_source(profile) {
+            return source;
+        }
+        if crate::lawtext::is_law_profile(profile) {
+            lines.extend(profile.lines().map(str::to_owned));
+        }
     }
     if let Some(title) = props.title.as_deref().filter(|s| !s.is_empty()) {
         lines.push(format!("title: {}", quote_yaml_if_needed(title)));
@@ -7475,7 +7497,8 @@ pub fn open_markdown_presentation_with_base_dir(
     let raw_text = String::from_utf8(data)
         .map_err(|_| Error::new("Markdown ファイルが有効な UTF-8 ではありません"))?;
     let raw_text = raw_text.trim_start_matches('\u{feff}');
-    let frontmatter = roundtrip::frontmatter(raw_text.trim_start()).map(|(fm, _)| fm);
+    let (frontmatter, body) = roundtrip::frontmatter(raw_text.trim_start())
+        .map_or((None, raw_text), |(metadata, body)| (Some(metadata), body));
     let is_marp = frontmatter.is_some_and(marp::enabled);
     let slide_chunks = split_markdown_slides(raw_text, is_marp);
     let blank = crate::blank::blank_file(crate::Kind::Presentation)?;
@@ -7487,7 +7510,9 @@ pub fn open_markdown_presentation_with_base_dir(
             return Err(Error::new("pptx_size の指定が不正です"));
         }
         opened.presentation.slide_size = EmuSize::new(width, height);
-    } else if let Some(size) = frontmatter.filter(|_| is_marp).and_then(marp::size) {
+    } else if is_marp
+        && let Some(size) = marp::comment_size(body).or_else(|| frontmatter.and_then(marp::size))
+    {
         opened.presentation.slide_size = size;
     }
 
@@ -7840,7 +7865,7 @@ pub fn open_markdown_presentation_with_base_dir(
 
 /// Export a PowerPoint `Presentation` to Markdown (`---`-separated slides).
 pub fn export_presentation_markdown(p: &Presentation) -> String {
-    let mut out = String::from("---\nmarp: true\n");
+    let mut out = String::from("---\nmarp: true\nx-ibis-format: presentation\n");
     if let Some(preset) = marp::size_preset(p.slide_size) {
         out.push_str(&format!("size: {preset}\n"));
     }
@@ -8700,6 +8725,22 @@ Table {{seq:table}} {#tbl_results}
     }
 
     #[test]
+    fn typed_markdown_preserves_unknown_yaml_through_docx() {
+        let metadata = "type: presentation\nx-ibis-format: document\ntitle: Metric\nx-sample:\n  detail: [one, two]\n";
+        let source = format!("---\n{metadata}---\n\nOriginal text.\n");
+        assert!(!is_presentation_markdown(source.as_bytes()));
+        let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+        let mut opened = crate::open(docx).unwrap();
+        let flow = Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+        let Block::Paragraph(paragraph) = &mut flow.body[0] else { panic!("expected paragraph") };
+        paragraph.runs[0].kind = FlowRunKind::Text("Edited text.".into());
+        let updated = opened.source.save(&opened.presentation, SaveOptions::default()).unwrap();
+        let exported = export_docx_to_markdown(&updated).unwrap();
+        assert!(exported.starts_with(&format!("---\n{metadata}---\n")), "{exported}");
+        assert!(exported.contains("Edited text."), "{exported}");
+    }
+
+    #[test]
     fn myst_reuses_word_bookmarks_links_and_alerts() {
         let source = b"See [Results](#results).
 
@@ -8710,12 +8751,22 @@ Introduction.
 ```{note}
 A **check**.
 ```
+
+Ordinary paragraph.
+:::{warning}
+First line
+second line.
+:::
+
+::: bibliography
 ";
         let docx = import_markdown_to_docx_bytes(source).unwrap();
         let markdown = export_docx_to_markdown(&docx).unwrap();
         assert!(markdown.contains("[Results](#results)"), "{markdown}");
         assert!(markdown.contains("## Results {#results}"), "{markdown}");
         assert!(markdown.contains("> [!NOTE]\n> A **check**."), "{markdown}");
+        assert!(markdown.contains("> [!WARNING]\n> First line second line."), "{markdown}");
+        assert!(markdown.contains("::: bibliography"), "{markdown}");
     }
 
     #[test]
@@ -8726,7 +8777,7 @@ A **check**.
 
 See [[#Results|the results]] and `[[#Results]]`.
 
-> [!tip]
+> [!hint]
 > Check again.
 
 [[toc]]
@@ -9552,8 +9603,10 @@ Front caption
     fn marp_size_and_multiline_notes_survive_pptx_edits() {
         let input = br"---
 marp: true
-size: '4:3'
+size: '16:9'
 ---
+
+<!-- size: 4:3 -->
 
 # First
 ## Details

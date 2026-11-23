@@ -69,7 +69,7 @@ fn explicit_law_markdown_uses_the_document_type_in_frontmatter() {
 
     let law = parse_law_xml(include_str!("lawtext/supplementary-amendment.xml")).unwrap();
     let markdown = to_markdown(&law)
-        .replace("type: lawtext", "type: \"lawtext\"")
+        .replace("x-ibis-format: lawtext", "x-ibis-format: \"lawtext\"")
         .replacen("\n---\n", "\n...\n", 1);
     let parsed = parse_law_input(&markdown).unwrap();
     assert_eq!(parsed.main_provision, law.main_provision);

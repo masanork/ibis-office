@@ -151,7 +151,7 @@ impl SlideEditor {
         }
         std::str::from_utf8(&data).is_ok_and(|head| {
             let head = head.trim_start_matches('\u{feff}').trim_start();
-            head.starts_with("---") && head.contains("type: lawtext")
+            head.starts_with("---") && (head.contains("x-ibis-format: lawtext") || head.contains("type: lawtext"))
         })
     }
 
