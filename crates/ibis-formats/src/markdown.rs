@@ -4382,6 +4382,13 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             continue;
         }
 
+        if let Some(comment) = rest.strip_prefix(crate::lawtext::MARKDOWN_SENTENCE_COMMENT)
+            && let Some((payload, _)) = comment.split_once(" -->")
+        {
+            i += crate::lawtext::MARKDOWN_SENTENCE_COMMENT.len() + payload.len() + " -->".len();
+            continue;
+        }
+
         // Escape sequence `\*`, `\[`, etc.
         if bytes[i] == b'\\' && i + 1 < text.len() {
             let next_ch = text[i + 1..].chars().next().unwrap();

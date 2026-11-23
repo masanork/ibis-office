@@ -151,4 +151,4 @@ cargo run --locked -p ibis-formats --bin ibis-lawtext-audit -- \
 差分の位置には条・項・号の `Num`、附則の `AmendLawNum` と、同じ位置キーの出現順を用います。診断は要素・属性・テキストの差を示します。属性順、整形用の空白、要素の並び順は比較対象外です。要素を失った場合は、その配下をまとめて親要素の位置に表示します。
 
 
-XMLから直接読み込んだ項は、本文が同じ間、複数の `Sentence` の境界と `Num`、`Function`、`Indent`、`WritingMode` をXML書き出し時に保持します。改め文の生成・検算には従来どおり連結した本文を用います。ibisOfficeのLawtextは項の本文に `<Sentence Function="main">…</Sentence><Sentence Function="proviso">…</Sentence>` と、文ごとのXML要素を記録できます。この記法はibisOfficeの拡張です。編集用Markdownや、文構造を持たない平文からは、項ごとに一つのXMLの文を作ります。
+XMLから直接読み込んだ項は、本文が同じ間、複数の `Sentence` の境界と `Num`、`Function`、`Indent`、`WritingMode` をXML書き出し時に保持します。改め文の生成・検算には従来どおり連結した本文を用います。ibisOfficeのLawtextは項の本文に `<Sentence Function="main">…</Sentence><Sentence Function="proviso">…</Sentence>` と、文ごとのXML要素を記録できます。この記法はibisOfficeの拡張です。編集用Markdownは各項の平文末尾にHTMLコメントで文構造を記録します。コメント中の文をつないだ内容が表示用の平文と一致する場合に復元し、本文が編集された場合やコメントを取り除いた場合は、項を一つのXMLの文として書き出します。この保持は、コメントが残る一行の項に適用されます。

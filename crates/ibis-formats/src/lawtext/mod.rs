@@ -762,12 +762,15 @@ fn write_xml_node(out: &mut String, node: &LawNode, depth: usize) {
     }
 }
 
+fn sentences_match_text(sentences: &[LawSentence], text: &str) -> bool {
+    !sentences.is_empty()
+        && sentences.iter().try_fold(text, |remaining, sentence| {
+            remaining.strip_prefix(sentence.text.as_str())
+        }) == Some("")
+}
+
 fn current_xml_sentences(para: &LawParagraph) -> Option<&[LawSentence]> {
-    let remaining = para.xml_sentences.iter().try_fold(
-        para.sentence.as_str(),
-        |text, sentence| text.strip_prefix(sentence.text.as_str()),
-    );
-    (!para.xml_sentences.is_empty() && remaining == Some(""))
+    sentences_match_text(&para.xml_sentences, &para.sentence)
         .then_some(para.xml_sentences.as_slice())
 }
 
@@ -1289,11 +1292,12 @@ fn flush_all_divisions(div_stack: &mut Vec<LawNode>, doc: &mut LawDoc, in_suppl:
 /// Export a [`LawDoc`] to Markdown with YAML frontmatter so it can be edited
 /// in ibisOffice (DOCX / PPTX) and converted back to Lawtext or e-Gov 法令標準XML.
 pub fn to_markdown(doc: &LawDoc) -> String {
-    to_markdown_with_articles(doc, |_, _, _, _| {})
+    to_markdown_with_articles(doc, true, |_, _, _, _| {})
 }
 
 fn to_markdown_with_articles(
     doc: &LawDoc,
+    preserve_sentences: bool,
     mut record: impl FnMut(Option<usize>, &LawArticle, usize, usize),
 ) -> String {
     let mut out = String::from("---\ntype: lawtext\n");
@@ -1337,16 +1341,20 @@ fn to_markdown_with_articles(
         out.push_str("\n\n");
     }
     for node in &doc.main_provision {
-        write_markdown_node(&mut out, node, 2, &mut |article, start, end| record(None, article, start, end));
+        write_markdown_node(&mut out, node, 2, preserve_sentences, &mut |article, start, end| record(None, article, start, end));
     }
     for (index, suppl) in doc.suppl_provisions.iter().enumerate() {
+        out.push_str("## ");
+        out.push_str(&suppl.label);
         if let Some(amend) = suppl.amend_law_num.as_deref().filter(|s| !s.is_empty()) {
-            out.push_str(&format!("## {}（{}）\n\n", suppl.label, amend));
-        } else {
-            out.push_str(&format!("## {}\n\n", suppl.label));
+            out.push_str(&format!("（{amend}）"));
         }
+        if suppl.extract {
+            out.push_str("（抄）");
+        }
+        out.push_str("\n\n");
         for node in &suppl.nodes {
-            write_markdown_node(&mut out, node, 3, &mut |article, start, end| record(Some(index), article, start, end));
+            write_markdown_node(&mut out, node, 3, preserve_sentences, &mut |article, start, end| record(Some(index), article, start, end));
         }
     }
     for appdx in &doc.appdx_tables {
@@ -1385,7 +1393,7 @@ pub fn export_ai_law(data: &[u8]) -> Result<Option<serde_json::Value>, Error> {
     let input = std::str::from_utf8(data).map_err(|_| Error::new("Law source is not UTF-8"))?;
     let doc = parser(input)?;
     let mut articles = Vec::new();
-    let markdown = to_markdown_with_articles(&doc, |supplement, article, start, end| {
+    let markdown = to_markdown_with_articles(&doc, false, |supplement, article, start, end| {
         articles.push((json!({
             "lawNum": doc.law_num,
             "supplementIndex": supplement,
@@ -1408,6 +1416,7 @@ pub fn export_ai_law(data: &[u8]) -> Result<Option<serde_json::Value>, Error> {
 
 fn write_markdown_node(
     out: &mut String, node: &LawNode, heading_level: usize,
+    preserve_sentences: bool,
     record: &mut impl FnMut(&LawArticle, usize, usize),
 ) {
     match node {
@@ -1423,7 +1432,7 @@ fn write_markdown_node(
             out.push_str(title);
             out.push_str("\n\n");
             for child in children {
-                write_markdown_node(out, child, (lvl + 1).min(6), record);
+                write_markdown_node(out, child, (lvl + 1).min(6), preserve_sentences, record);
             }
         }
         LawNode::Article(art) => {
@@ -1438,15 +1447,11 @@ fn write_markdown_node(
             }
             out.push_str("\n\n");
             for (idx, para) in art.paragraphs.iter().enumerate() {
-                if idx == 0 {
-                    out.push_str(&para.sentence);
-                    out.push_str("\n\n");
-                } else {
-                    out.push_str(&format!(
-                        "{}. {}\n\n",
-                        para.num, para.sentence
-                    ));
+                if idx != 0 || para.num != "1" || para.sentence.is_empty() {
+                    out.push_str(&format!("{}. ", para.num));
                 }
+                write_markdown_paragraph_text(out, para, preserve_sentences);
+                out.push_str("\n\n");
                 for item in &para.items {
                     out.push_str(&format!("- {} {}\n", item.title, item.sentence));
                     for sub in &item.subitems {
@@ -1460,13 +1465,47 @@ fn write_markdown_node(
             record(art, start, out.len());
         }
         LawNode::Paragraph(para) => {
-            if para.num == "1" {
-                out.push_str(&para.sentence);
-            } else {
-                out.push_str(&format!("{}. {}", para.num, para.sentence));
+            if para.num != "1" || para.sentence.is_empty() {
+                out.push_str(&format!("{}. ", para.num));
             }
+            write_markdown_paragraph_text(out, para, preserve_sentences);
             out.push_str("\n\n");
         }
+    }
+}
+
+pub(crate) const MARKDOWN_SENTENCE_COMMENT: &str = "<!-- ibis-law-sentences ";
+
+fn write_markdown_paragraph_text(out: &mut String, para: &LawParagraph, preserve_sentences: bool) {
+    out.push_str(&para.sentence);
+    if preserve_sentences
+        && !para.sentence.contains(['\r', '\n'])
+        && let std::borrow::Cow::Owned(xml) = lawtext_paragraph_text(para, true)
+    {
+        if !para.sentence.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(MARKDOWN_SENTENCE_COMMENT);
+        // Keep the payload from ending the HTML comment.
+        out.push_str(&xml.replace("--", "&#45;&#45;"));
+        out.push_str(" -->");
+    }
+}
+
+fn restore_markdown_paragraph_text(text: &str) -> &str {
+    let Some((plain, xml)) = text.rsplit_once(MARKDOWN_SENTENCE_COMMENT) else {
+        return text;
+    };
+    let Some(xml) = xml.strip_suffix(" -->") else {
+        return text;
+    };
+    let plain = plain.trim_end();
+    if parse_lawtext_sentence_elements(xml)
+        .is_some_and(|sentences| sentences_match_text(&sentences, plain))
+    {
+        xml
+    } else {
+        plain
     }
 }
 
@@ -1563,9 +1602,10 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
             continue;
         }
         if let Some((p_num, rest)) = parse_md_ordered_paragraph(trimmed) {
-            lawtext_lines.push(format!("{} {}", to_fullwidth_digits(&p_num), rest));
+            lawtext_lines.push(format!("{} {}", to_fullwidth_digits(&p_num), restore_markdown_paragraph_text(rest)));
             continue;
         }
+        let trimmed = restore_markdown_paragraph_text(trimmed);
         // Attach first body paragraph onto the pending `第N条` line if it has no sentence yet.
         if let Some(last) = lawtext_lines.last_mut() {
             if parse_article_header(last.trim()).is_some_and(|(_, _, r)| r.is_empty()) {
@@ -1711,7 +1751,7 @@ fn parse_numbered_paragraph(s: &str) -> Option<(String, &str)> {
 }
 
 fn parse_md_ordered_paragraph(s: &str) -> Option<(String, &str)> {
-    let (num, rest) = s.split_once(". ")?;
+    let (num, rest) = s.split_once(". ").or_else(|| s.strip_suffix('.').map(|num| (num, "")))?;
     if !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) {
         Some((num.to_string(), rest.trim_start()))
     } else {

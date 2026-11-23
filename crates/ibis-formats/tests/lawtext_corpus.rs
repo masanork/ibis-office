@@ -28,7 +28,7 @@ fn upstream_lawtext_sample_keeps_the_split_title_and_both_paragraphs() {
 fn verifies_amendment_after_xml_and_lawtext_round_trips() {
     use std::{fs, process::Command};
 
-    use ibis_formats::lawtext::to_law_xml;
+    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
     use serde_json::Value;
 
     const OLD_XML: &str = include_str!("lawtext/supplementary-amendment.xml");
@@ -63,6 +63,14 @@ fn verifies_amendment_after_xml_and_lawtext_round_trips() {
             to_law_xml(&original),
             "{name} XML structure"
         );
+        let markdown = to_markdown(&original);
+        let markdown_roundtrip = parse_markdown_law(&markdown).unwrap();
+        assert_eq!(
+            to_law_xml(&markdown_roundtrip),
+            to_law_xml(&original),
+            "{name} Markdown structure"
+        );
+        fs::write(fixture.path().join(format!("{name}.md")), markdown).unwrap();
         fs::write(fixture.path().join(format!("{name}.lawtext")), lawtext).unwrap();
         fs::write(fixture.path().join(format!("{name}.xml")), xml).unwrap();
     }
@@ -88,6 +96,7 @@ fn verifies_amendment_after_xml_and_lawtext_round_trips() {
 
     let xml = run("xml", Some(AMENDMENT));
     assert_eq!(xml, run("lawtext", Some(AMENDMENT)));
+    assert_eq!(xml, run("md", Some(AMENDMENT)));
     let changes = xml["amendment_ir"]["suppl_changes"].as_array().unwrap();
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0]["amend_law_num"], AMENDMENT);
@@ -194,5 +203,33 @@ fn reads_combined_lawtext_root_attributes_before_a_split_title() {
     assert_eq!(
         doc,
         ibis_formats::lawtext::parse_markdown_law(&markdown).unwrap()
+    );
+}
+
+#[test]
+fn markdown_keeps_visible_text_and_discards_stale_sentence_metadata() {
+    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
+
+    let source = include_str!("lawtext/supplementary-amendment.xml");
+    let markdown = to_markdown(&parse_law_xml(source).unwrap());
+    let plain = "旧基準を適用する。ただし、例外を認める。";
+    assert!(markdown.contains(&format!("{plain} <!-- ibis-law-sentences ")));
+    let presentation = ibis_formats::markdown::read_markdown(markdown.as_bytes()).unwrap();
+    let rendered = ibis_formats::markdown::export_presentation_to_markdown(&presentation).unwrap();
+    assert!(rendered.contains(plain));
+    assert!(!rendered.contains("ibis-law-sentences"));
+    let edited = markdown.replacen(plain, "新基準を適用する。", 1);
+    let xml = to_law_xml(&parse_markdown_law(&edited).unwrap());
+    assert!(xml.contains("<ParagraphSentence><Sentence>新基準を適用する。</Sentence>"));
+    assert!(!xml.contains("Function=\"proviso\""));
+    assert!(!xml.contains("ibis-law-sentences"));
+    let ai = ibis_formats::lawtext::export_ai_law(source.as_bytes())
+        .unwrap()
+        .unwrap();
+    assert!(
+        !ai["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("ibis-law-sentences")
     );
 }
