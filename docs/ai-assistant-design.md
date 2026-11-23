@@ -64,6 +64,8 @@ Bedrock は [Bedrock Runtime の Anthropic Messages API](https://docs.aws.amazon
 
 Claude API と Bedrock のモデル指定は `ANTHROPIC_MODEL`、`IBIS_AI_MODEL`、`IBIS_BEDROCK_MODEL_ID`（Bedrock のみ）、`ANTHROPIC_DEFAULT_MODEL` の順で参照する。Bedrock では利用するモデル ID、推論プロファイル ID、または ARN を指定する。
 
+OpenAI 公式エンドポイントで GPT-6.2 系を使う場合、Assistant はツール呼び出しに対応する Responses API を選択する。\`/responses\` まで含めたURLも設定できる。会話の継続に必要な出力項目はアプリ側で再送し、Responses API へのリクエストには \`store: false\` を指定する。
+
 #### Bedrock に AWS IAM Identity Center (SSO) で接続
 
 AWS CLI v2 でプロファイルを作成し、ログインしてから同じシェルでアプリを起動する。

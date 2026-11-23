@@ -1135,14 +1135,7 @@ impl SlideEditor {
                                 return;
                             }
 
-                            let assistant_msg = ChatMessage::assistant(
-                                if out.content.is_empty() {
-                                    None
-                                } else {
-                                    Some(out.content.clone())
-                                },
-                                out.tool_calls.clone(),
-                            );
+                            let assistant_msg = out.assistant_message();
                             p.history.push(assistant_msg.clone());
                             messages_to_send.push(assistant_msg);
 
