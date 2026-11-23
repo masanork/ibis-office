@@ -40,10 +40,16 @@ pub(crate) fn visible(name: &str) -> bool {
 }
 
 #[derive(Clone)]
+struct ConceptFilter {
+    kind: String,
+    tags: Vec<String>,
+}
+
+#[derive(Clone)]
 pub(crate) struct Folder {
     root: PathBuf,
     files: Vec<String>,
-    concept_types: BTreeMap<String, String>,
+    concepts: BTreeMap<String, ConceptFilter>,
     markdown_index: markdown_index::MarkdownIndex,
     pub(crate) skills: Vec<ibis_formats::agent_skill::Metadata>,
     truncated: bool,
@@ -110,20 +116,26 @@ impl Folder {
         let mut folder = Self {
             root,
             files,
-            concept_types: BTreeMap::new(),
+            concepts: BTreeMap::new(),
             markdown_index: markdown_index::MarkdownIndex::default(),
             skills: Vec::new(),
             truncated: remaining == 0,
             skipped,
         };
-        folder.concept_types = folder
+        folder.concepts = folder
             .files
             .iter()
             .filter(|path| path.ends_with(".md"))
             .filter_map(|path| {
                 let frontmatter = read_frontmatter(&folder.resolve(path).ok()?)?;
                 let metadata = ibis_formats::okf::concept(path, &frontmatter).ok()??;
-                Some((path.clone(), metadata["type"].as_str()?.to_owned()))
+                let kind = metadata["type"].as_str()?.to_lowercase();
+                let tags = ibis_formats::okf::tags(metadata.get("tags"))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(str::to_lowercase)
+                    .collect();
+                Some((path.clone(), ConceptFilter { kind, tags }))
             })
             .collect();
         folder.markdown_index = markdown_index::MarkdownIndex::build(&folder);
@@ -219,9 +231,13 @@ impl Folder {
 
     fn matches(&self, path: &str, query: &str) -> bool {
         if let Some(kind) = query.strip_prefix("type:") {
-            self.concept_types
+            self.concepts
                 .get(path)
-                .is_some_and(|actual| actual.to_lowercase().contains(kind.trim()))
+                .is_some_and(|concept| concept.kind.contains(kind.trim()))
+        } else if let Some(tag) = query.strip_prefix("tag:") {
+            self.concepts
+                .get(path)
+                .is_some_and(|concept| concept.tags.iter().any(|actual| actual == tag.trim()))
         } else {
             path.to_lowercase().contains(query)
         }
@@ -262,7 +278,7 @@ pub(crate) fn tools() -> [ToolDefinition; 7] {
     [
         tool(
             "folder_list",
-            "List reference files in the open folder, optionally filtering paths by text or knowledge type (type:Metric). Paths are relative to the folder.",
+            "List reference files in the open folder, optionally filtering by path text, knowledge type (type:Metric), or tag (tag:finance). Paths are relative to the folder.",
             json!({"query":{"type":"string"},"offset":{"type":"integer","minimum":0}}),
             json!([]),
         ),
@@ -796,12 +812,21 @@ mod tests {
     #[test]
     fn okf_type_filter_and_relative_read_share_the_open_folder() {
         let fixture = Fixture::new();
-        fixture.write("資料/metric.md", "---\ntype: Metric\n---\n# Metric\n");
-        fixture.write("index.md", "---\ntype: Metric\n---\n# Index\n");
+        fixture.write("資料/metric.md", "---\ntype: Metric\ntags: 'finance, ops'\n---\n# Metric\n");
+        fixture.write("index.md", "---\ntype: Metric\ntags: [finance, ops]\n---\n# Index\n");
         fixture.write("README.md", "# Read me\n");
+        fixture.write("ledger.md", "---\ntype: Source\ntags: [finance, ops]\n---\n# Ledger\n");
         let folder = Folder::scan(&fixture.0).unwrap();
         let list = call(&folder, "folder_list", json!({"query":"type:metric"})).unwrap();
         assert_eq!(list.value["files"], json!(["資料/metric.md"]));
+        for (query, paths) in [
+            ("tag:finance, ops", json!(["資料/metric.md"])),
+            ("tag:FINANCE", json!(["ledger.md"])),
+            ("tag:fin", json!([])),
+        ] {
+            let list = call(&folder, "folder_list", json!({"query": query})).unwrap();
+            assert_eq!(list.value["files"], paths, "{query}");
+        }
         let read = call(
             &folder,
             "folder_read",

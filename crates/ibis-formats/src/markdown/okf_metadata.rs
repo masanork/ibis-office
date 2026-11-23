@@ -6,6 +6,7 @@ use ibis_doc_model::DocProperties;
 use serde_json::{Map, Value};
 
 use super::{SourceDiagnostic, SourceIssue};
+use crate::okf::tags;
 
 fn mapping(source: &str) -> Option<Map<String, Value>> {
     serde_saphyr::from_str(source).ok()
@@ -16,16 +17,6 @@ fn text(value: Option<&Value>) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
-}
-
-fn tags(value: Option<&Value>) -> Option<Vec<&str>> {
-    match value {
-        None | Some(Value::Null) => Some(Vec::new()),
-        Some(Value::String(tag)) if tag.is_empty() => Some(Vec::new()),
-        Some(Value::String(tag)) => Some(vec![tag]),
-        Some(Value::Array(items)) => items.iter().map(Value::as_str).collect(),
-        _ => None,
-    }
 }
 
 fn properties(metadata: &Map<String, Value>) -> DocProperties {

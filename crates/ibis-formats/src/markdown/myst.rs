@@ -9,22 +9,34 @@ pub(super) fn target(line: &str) -> Option<&str> {
     super::is_word_bookmark(label).then_some(label)
 }
 
-/// A colon-fenced alert that the existing paragraph model can represent.
-pub(super) fn colon_admonition<'a>(
-    lines: &'a [&'a str],
-) -> Option<(&'static str, &'a [&'a str], usize)> {
+pub(super) enum Directive<'a> {
+    Alert(&'static str, &'a [&'a str]),
+    Figure(Figure<'a>),
+}
+
+pub(super) fn colon_directive<'a>(lines: &'a [&'a str]) -> Option<(Directive<'a>, usize)> {
     let first = lines.first()?.trim();
     let length = first.bytes().take_while(|byte| *byte == b':').count();
     if length < 3 {
         return None;
     }
-    let alert = alert_kind(first[length..].trim())?;
+    let info = first[length..].trim();
+    let alert = alert_kind(info);
+    if alert.is_none() && !info.starts_with("{figure} ") {
+        return None;
+    }
     for (index, raw) in lines.iter().enumerate().skip(1) {
         let line = raw.trim();
         if line.len() >= length && line.bytes().all(|byte| byte == b':') {
-            return (index > 1).then_some((alert, &lines[1..index], index + 1));
+            let body = &lines[1..index];
+            let directive = match alert {
+                Some(alert) if !body.is_empty() => Directive::Alert(alert, body),
+                Some(_) => return None,
+                None => Directive::Figure(figure(info, body)?),
+            };
+            return Some((directive, index + 1));
         }
-        if !simple_body_line(raw) {
+        if (alert.is_some() && !simple_body_line(raw)) || line.starts_with(":::") {
             break;
         }
     }

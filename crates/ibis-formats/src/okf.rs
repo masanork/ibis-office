@@ -24,6 +24,17 @@ pub fn concept(path: &str, text: &str) -> Result<Option<Value>, crate::Error> {
         .then_some(Value::Object(metadata)))
 }
 
+/// Accept the OKF list and singleton forms without splitting scalar tags.
+pub fn tags(value: Option<&Value>) -> Option<Vec<&str>> {
+    match value {
+        None | Some(Value::Null) => Some(Vec::new()),
+        Some(Value::String(tag)) if tag.is_empty() => Some(Vec::new()),
+        Some(Value::String(tag)) => Some(vec![tag]),
+        Some(Value::Array(items)) => items.iter().map(Value::as_str).collect(),
+        _ => None,
+    }
+}
+
 /// Parse the YAML mapping and return the Markdown following it.
 pub(crate) fn markdown_frontmatter(text: &str) -> Result<Option<(Map<String, Value>, &str)>, crate::Error> {
     let Some(after_open) = text

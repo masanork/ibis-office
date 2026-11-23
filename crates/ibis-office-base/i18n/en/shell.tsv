@@ -1691,7 +1691,7 @@ xlsx.sbom-refresh-failed	Could not refresh vulnerability review: {error}
 xlsx.sbom-actions	Show findings requiring action…
 xlsx.sbom-actions-failed	Could not open the vulnerability action queue: {error}
 file.open-folder	Open Folder…
-folder.filter	File name, path, or type:Metric
+folder.filter	File name, path, type:Metric, or tag:finance
 folder.more	Show more
 folder.refresh	Refresh
 folder.close	Close Folder

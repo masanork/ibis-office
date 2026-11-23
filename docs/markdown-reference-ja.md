@@ -4,6 +4,8 @@ title: "Docs Markdown Reference Manual"
 
 # Docs Markdown Reference Manual
 
+形式判定、YAML、変換経路ごとの保持範囲は [Markdown・YAML 入出力仕様](markdown-yaml-spec-ja.md) を参照してください。
+
 ## ibisOffice と Docs
 
 [参照仕様・互換性の範囲・検証方法](markdown-compatibility-ja.md) に、外部仕様と実装の対応をまとめています。
@@ -212,7 +214,7 @@ ibisOffice --export xlsx --out-dir rebuilt markdown/workbook.md
 
 ### Marp 原稿と PPTX
 
-`marp: true` の原稿は横罫線でスライドを区切ります。`headingDivider: 2` でATX見出しのレベル1・2を、`headingDivider: [1, 3]` でレベル1・3を区切りにできます。指定がなければ見出しが複数あっても同じスライドに置きます。 [Marpの見出し区切り](https://marp.app/docs/guide/heading-divider)
+`marp: true` の原稿は横罫線でスライドを区切ります。`headingDivider: 2` でATX見出しのレベル1・2を、`headingDivider: [1, 3]` でレベル1・3を区切りにできます。フロントマターでは、レベルを YAML のブロック配列でも指定できます。指定がなければ見出しが複数あっても同じスライドに置きます。 [Marpの見出し区切り](https://marp.app/docs/guide/heading-divider)
 
 フロントマターと単独行から始まるコメントの `size: 16:9` と `size: 4:3` に対応し、`pptx_size` がある場合はそちらを優先します。
 
@@ -405,9 +407,9 @@ PPTX の表でも横結合・縦結合の印を使えます。横と縦を組み
 
 旧 OOMarkdown 原稿で目次・参考文献一覧を指定していた行は、`[[toc]]` を `::: toc`、`[[bibliography]]` を `::: bibliography`、`[[bibliography:1041]]` を `::: bibliography 1041` に置き換えてください。DOCX に保存済みのフィールドは、Markdown に書き出すと新しい記法になります。
 
-DOCX からは ibisOffice の Markdown 記法（`{#results}`、`[結果](#results)`、`> [!NOTE]` など）で書き出します。元の記法で編集を続ける場合は Markdown 原稿を保管してください。MyST の自動参照番号・引用や、Obsidian の Vault 内リンク解決・埋め込み・折りたたみ付き callout は試験対応の対象外です。
+DOCX からは ibisOffice の Markdown 記法（`{#results}`、`[結果](#results)`、`> [!NOTE]` など）で書き出します。元の記法で編集を続ける場合は Markdown 原稿を保管してください。MyST の自動参照番号・引用や、Obsidian の埋め込み・折りたたみ付き callout は試験対応の対象外です。
 
-MyST のバッククォート囲みの `{figure} 画像パス` は、インライン画像とキャプション段落に変換します。`:alt:` を画像の代替テキスト、Word互換の `:label:` または `:name:` をキャプションのブックマークに使います。固定寸法の `width`・`height` と、左右・中央の `align` に対応します。DOCXからは標準Markdownの画像・段落・アンカーで書き出します。
+MyST のコードフェンスまたはコロンフェンスで囲んだ `{figure} 画像パス` は、インライン画像とキャプション段落に変換します。`:alt:` を画像の代替テキスト、Word互換の `:label:` または `:name:` をキャプションのブックマークに使います。固定寸法の `width`・`height` と、左右・中央の `align` に対応します。DOCXからは標準Markdownの画像・段落・アンカーで書き出します。
 
 #### 別ノートへのリンク解決の設計案
 

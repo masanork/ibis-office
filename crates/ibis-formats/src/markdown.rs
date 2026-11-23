@@ -2395,6 +2395,41 @@ fn document_block_field(line: &str) -> Option<String> {
     }
 }
 
+fn append_myst_figure(
+    figure: myst::Figure<'_>,
+    blocks: &mut Vec<Block>,
+    ctx: &mut ParseContext<'_>,
+) -> bool {
+    let runs = parse_inlines(&figure.image, ctx, &RunFormat::default());
+    if !matches!(runs.as_slice(), [run] if matches!(run.kind, FlowRunKind::Picture { .. })) {
+        return false;
+    }
+    let mut picture = FlowParagraph {
+        id: ctx.fresh_id(),
+        style: ctx.styles.default_paragraph.clone(),
+        runs,
+        direct: ParaFormat { align: figure.align, ..ParaFormat::default() },
+        ..FlowParagraph::default()
+    };
+    let mut caption = (!figure.caption.is_empty()).then(|| FlowParagraph {
+        id: ctx.fresh_id(),
+        style: ctx.styles.default_paragraph.clone(),
+        runs: parse_inlines(&figure.caption, ctx, &RunFormat::default()),
+        direct: ParaFormat { align: figure.align, ..ParaFormat::default() },
+        ..FlowParagraph::default()
+    });
+    if let Some(label) = figure.label {
+        caption.as_mut().unwrap_or(&mut picture).bookmarks.push(label.into());
+    }
+    picture.resolve(&ctx.styles);
+    blocks.push(Block::Paragraph(picture));
+    if let Some(mut caption) = caption {
+        caption.resolve(&ctx.styles);
+        blocks.push(Block::Paragraph(caption));
+    }
+    true
+}
+
 fn parse_blocks(
     body_text: &str,
     ctx: &mut ParseContext<'_>,
@@ -2570,9 +2605,18 @@ fn parse_blocks(
             continue;
         }
 
-        if let Some((alert, body, consumed)) = myst::colon_admonition(&lines[i..]) {
-            let quote: Vec<_> = std::iter::once(alert).chain(body.iter().copied()).collect();
-            blocks.extend(build_blockquote_blocks(&quote, ctx));
+        if let Some((directive, consumed)) = myst::colon_directive(&lines[i..]) {
+            match directive {
+                myst::Directive::Alert(alert, body) => {
+                    let quote: Vec<_> = std::iter::once(alert).chain(body.iter().copied()).collect();
+                    blocks.extend(build_blockquote_blocks(&quote, ctx));
+                }
+                myst::Directive::Figure(figure) => {
+                    if !append_myst_figure(figure, &mut blocks, ctx) {
+                        blocks.push(build_code_block(&lines[i..i + consumed].join("\n"), ctx));
+                    }
+                }
+            }
             i += consumed;
             continue;
         }
@@ -2595,34 +2639,11 @@ fn parse_blocks(
                 blocks.extend(build_blockquote_blocks(&quote, ctx));
                 continue;
             }
-            if closed && let Some(figure) = myst::figure(fence_info.trim(), content_lines) {
-                let runs = parse_inlines(&figure.image, ctx, &RunFormat::default());
-                if matches!(runs.as_slice(), [run] if matches!(run.kind, FlowRunKind::Picture { .. })) {
-                    let mut picture = FlowParagraph {
-                        id: ctx.fresh_id(),
-                        style: ctx.styles.default_paragraph.clone(),
-                        runs,
-                        direct: ParaFormat { align: figure.align, ..ParaFormat::default() },
-                        ..FlowParagraph::default()
-                    };
-                    let mut caption = (!figure.caption.is_empty()).then(|| FlowParagraph {
-                        id: ctx.fresh_id(),
-                        style: ctx.styles.default_paragraph.clone(),
-                        runs: parse_inlines(&figure.caption, ctx, &RunFormat::default()),
-                        direct: ParaFormat { align: figure.align, ..ParaFormat::default() },
-                        ..FlowParagraph::default()
-                    });
-                    if let Some(label) = figure.label {
-                        caption.as_mut().unwrap_or(&mut picture).bookmarks.push(label.into());
-                    }
-                    picture.resolve(&ctx.styles);
-                    blocks.push(Block::Paragraph(picture));
-                    if let Some(mut caption) = caption {
-                        caption.resolve(&ctx.styles);
-                        blocks.push(Block::Paragraph(caption));
-                    }
-                    continue;
-                }
+            if closed
+                && let Some(figure) = myst::figure(fence_info.trim(), content_lines)
+                && append_myst_figure(figure, &mut blocks, ctx)
+            {
+                continue;
             }
             let content = content_lines.join("\n");
             match lang.split_whitespace().next().unwrap_or("") {
@@ -2803,7 +2824,7 @@ fn parse_blocks(
                 || l_trim == "\\columnbreak"
                 || document_block_field(l_trim).is_some()
                 || myst_heading_target(&lines, i).is_some()
-                || myst::colon_admonition(&lines[i..]).is_some()
+                || myst::colon_directive(&lines[i..]).is_some()
                 || is_horizontal_rule(l_trim)
                 || parse_atx_heading(l_trim).is_some()
                 || parse_list_marker(l_raw).is_some()
@@ -9795,18 +9816,28 @@ Front caption
     #[test]
     fn myst_figure_preserves_native_picture_alt_text_and_caption_bookmark() {
         let input = b"See [figure](#fig_sample).\n\n```{figure} data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a5sAAAAASUVORK5CYII=\n:label: fig_sample\n:alt: Sample image\n:width: 80px\n:align: center\n\nA **caption**.\n```\n";
-        let saved = import_markdown_to_docx_bytes(input).unwrap();
-        let markdown = export_docx_to_markdown(&saved).unwrap();
-        assert!(markdown.contains("![Sample image](data:image/png"), "{markdown}");
-        assert!(markdown.contains("A **caption**. {#fig_sample align=center}"), "{markdown}");
-        assert!(markdown.contains("[figure](#fig_sample)"), "{markdown}");
+        let input = std::str::from_utf8(input).unwrap();
+        let colon_fence = input.replace("```", ":::");
+        for source in [input, colon_fence.as_str()] {
+            let saved = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            let markdown = export_docx_to_markdown(&saved).unwrap();
+            assert!(markdown.contains("![Sample image](data:image/png"), "{markdown}");
+            assert!(markdown.contains("A **caption**. {#fig_sample align=center}"), "{markdown}");
+            assert!(markdown.contains("[figure](#fig_sample)"), "{markdown}");
+        }
     }
 
     #[test]
     fn marp_heading_divider_uses_only_selected_levels_and_skips_code() {
-        let source = b"---\nmarp: true\nheadingDivider: 1\n---\n<!-- headingDivider: [1, 3] -->\n# First\n## Details\n```txt\n### Code\n```\n### Second\n\n---\n\n### Third\n";
-        let deck = import_markdown_to_pptx_bytes(source).unwrap();
-        assert_eq!(crate::read(&deck).unwrap().slides.len(), 3);
+        let body = "# First\n## Details\n```txt\n### Code\n```\n### Second\n\n---\n\n### Third\n";
+        for metadata in [
+            "---\nmarp: true\nheadingDivider: 1\n---\n<!-- headingDivider: [1, 3] -->\n",
+            "---\nmarp: true\nheadingDivider:\n  - 1\n  - 3\n---\n",
+        ] {
+            let source = format!("{metadata}{body}");
+            let deck = import_markdown_to_pptx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(crate::read(&deck).unwrap().slides.len(), 3);
+        }
     }
 
     #[test]

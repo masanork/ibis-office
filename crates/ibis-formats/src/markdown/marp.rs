@@ -51,7 +51,14 @@ pub(super) fn heading_dividers(metadata: &str, body: &str) -> Vec<u8> {
             .filter_map(|(key, value)| (key == "headingDivider").then_some(value))
             .last()
     }
-    let mut selected = value(metadata).map(str::to_owned);
+    let settings = serde_saphyr::from_str::<serde_json::Map<String, serde_json::Value>>(metadata);
+    let mut selected = settings.ok()
+        .and_then(|settings| settings.get("headingDivider").cloned())
+        .map(|value| match value {
+            serde_json::Value::String(value) => value,
+            _ => value.to_string(),
+        })
+        .or_else(|| value(metadata).map(str::to_owned));
     let mut lines = body.lines();
     let mut fence = None;
     while let Some(line) = lines.next() {
