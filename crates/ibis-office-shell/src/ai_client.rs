@@ -44,7 +44,7 @@ impl AiConfig {
     pub fn active_connection() -> Result<(&'static str, String), String> {
         let (provider, config) = Provider::resolve(&Self::load_saved(), process_env)?;
         let name = match provider {
-            Provider::OpenAi => "OpenAI 互換 API",
+            Provider::OpenAi | Provider::OpenAiResponses => "OpenAI 互換 API",
             Provider::Anthropic => "Claude API",
             Provider::Bedrock => "Amazon Bedrock（API キー）",
             Provider::BedrockProfile { .. } => "Amazon Bedrock（AWS プロファイル）",
@@ -122,6 +122,8 @@ pub struct ChatMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(skip)]
+    responses_output: Vec<Value>,
 }
 
 impl ChatMessage {
@@ -131,6 +133,7 @@ impl ChatMessage {
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
+            responses_output: Vec::new(),
         }
     }
 
@@ -140,6 +143,7 @@ impl ChatMessage {
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
+            responses_output: Vec::new(),
         }
     }
 
@@ -153,6 +157,7 @@ impl ChatMessage {
                 Some(tool_calls)
             },
             tool_call_id: None,
+            responses_output: Vec::new(),
         }
     }
 
@@ -162,6 +167,7 @@ impl ChatMessage {
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            responses_output: Vec::new(),
         }
     }
 }
@@ -186,6 +192,17 @@ pub struct CompletionOutcome {
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: Option<String>,
     pub received_done: bool,
+    responses_output: Vec<Value>,
+}
+
+impl CompletionOutcome {
+    #[cfg(not(target_family = "wasm"))]
+    pub fn assistant_message(&self) -> ChatMessage {
+        let content = (!self.content.is_empty()).then(|| self.content.clone());
+        let mut message = ChatMessage::assistant(content, self.tool_calls.clone());
+        message.responses_output = self.responses_output.clone();
+        message
+    }
 }
 
 #[derive(Default)]
@@ -336,6 +353,7 @@ impl SseStreamParser {
             tool_calls,
             finish_reason: self.finish_reason,
             received_done: self.received_done,
+            responses_output: Vec::new(),
         }
     }
 }
@@ -367,6 +385,7 @@ fn default_reasoning_effort(model: &str, has_tools: bool) -> Option<&'static str
 #[derive(PartialEq, Eq)]
 enum Provider {
     OpenAi,
+    OpenAiResponses,
     Anthropic,
     Bedrock,
     BedrockProfile { region: Option<String> },
@@ -468,7 +487,7 @@ impl Provider {
                 let api_key = api_key.unwrap_or_default();
                 (base_url, model, api_key)
             }
-            Self::BedrockProfile { .. } => unreachable!(),
+            Self::BedrockProfile { .. } | Self::OpenAiResponses => unreachable!(),
         };
         Ok((
             provider,
@@ -616,10 +635,141 @@ fn process_env(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+#[cfg(not(target_family = "wasm"))]
+fn openai_responses_url(config: &AiConfig) -> Option<String> {
+    let base = config.base_url.trim_end_matches('/');
+    if base.ends_with("/responses") {
+        return Some(base.to_string());
+    }
+    let base = base.strip_suffix("/chat/completions").unwrap_or(base);
+    let model = config.model.to_ascii_lowercase();
+    let gpt_62 = model == "gpt-6.2" || model.starts_with("gpt-6.2-");
+    (base == DEFAULT_BASE_URL && gpt_62).then(|| format!("{base}/responses"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn responses_required(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.starts_with("http 400:")
+        && error.contains("reasoning_effort")
+        && error.contains("function tools")
+        && error.contains("/responses")
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn responses_request(model: &str, messages: &[ChatMessage], tools: Vec<ToolDefinition>) -> Value {
+    use serde_json::json;
+    let mut input = Vec::new();
+    for message in messages {
+        if !message.responses_output.is_empty() {
+            input.extend(message.responses_output.iter().cloned());
+            continue;
+        }
+        if message.role == "tool" {
+            input.push(json!({
+                "type": "function_call_output", "call_id": message.tool_call_id,
+                "output": message.content.as_deref().unwrap_or(""),
+            }));
+            continue;
+        }
+        if let Some(content) = &message.content {
+            let role = if message.role == "system" {
+                "developer"
+            } else {
+                &message.role
+            };
+            input.push(json!({"role": role, "content": content}));
+        }
+        for call in message.tool_calls.iter().flatten() {
+            input.push(json!({
+                "type": "function_call", "call_id": call.id,
+                "name": call.function.name, "arguments": call.function.arguments,
+            }));
+        }
+    }
+    let tools: Vec<_> = tools.into_iter().map(|tool| json!({
+        "type": "function", "name": tool.function.name, "description": tool.function.description,
+        "parameters": tool.function.parameters, "strict": false,
+    })).collect();
+    json!({"model": model, "input": input, "tools": tools, "store": false, "stream": true})
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn accept_responses_line(
+    outcome: &mut CompletionOutcome,
+    line: &str,
+    on_delta: &mut impl FnMut(&str),
+) -> Result<(), String> {
+    let Some(data) = line.trim().strip_prefix("data:") else {
+        return Ok(());
+    };
+    let data = data.trim();
+    if data == "[DONE]" {
+        return Ok(());
+    }
+    let event: Value = serde_json::from_str(data)
+        .map_err(|error| format!("Responses API のストリームを読み取れませんでした: {error}"))?;
+    match event["type"].as_str() {
+        Some("response.output_text.delta" | "response.refusal.delta") => {
+            if let Some(delta) = event["delta"].as_str() {
+                outcome.content.push_str(delta);
+                on_delta(delta);
+            }
+        }
+        Some("response.completed") => {
+            let items = event["response"]["output"]
+                .as_array()
+                .ok_or_else(|| "Responses API の完了イベントに出力がありません。".to_string())?;
+            for item in items {
+                if item["type"] == "function_call" {
+                    let (Some(id), Some(name), Some(arguments)) = (
+                        item["call_id"].as_str(),
+                        item["name"].as_str(),
+                        item["arguments"].as_str(),
+                    ) else {
+                        return Err("Responses API から不完全なツール呼び出しが返りました。".into());
+                    };
+                    outcome.tool_calls.push(ToolCall {
+                        id: id.into(),
+                        kind: "function".into(),
+                        function: ToolCallFunction {
+                            name: name.into(),
+                            arguments: arguments.into(),
+                        },
+                    });
+                }
+            }
+            outcome.responses_output = items.clone();
+            outcome.finish_reason = Some(
+                if outcome.tool_calls.is_empty() {
+                    "stop"
+                } else {
+                    "tool_calls"
+                }
+                .into(),
+            );
+            outcome.received_done = true;
+        }
+        Some("response.incomplete") => {
+            return Err("Responses API の応答が途中で終了しました。".into());
+        }
+        Some("error" | "response.failed") => {
+            return Err(event
+                .pointer("/response/error/message")
+                .or_else(|| event.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("Responses API の処理に失敗しました。")
+                .into());
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Send a streaming assistant request and invoke `on_delta` for each text chunk.
 ///
-/// Automatically retries once if the endpoint returns HTTP 400 complaining about
-/// `reasoning_effort` (switching between `Some("none")` and `None`).
+/// Retry once on a Chat Completions reasoning-effort mismatch, using Responses
+/// when the server explicitly suggests it.
 #[cfg(not(target_family = "wasm"))]
 pub async fn stream_chat_completion(
     config: &AiConfig,
@@ -627,7 +777,21 @@ pub async fn stream_chat_completion(
     tools: Vec<ToolDefinition>,
     mut on_delta: impl FnMut(&str),
 ) -> Result<CompletionOutcome, String> {
-    let (provider, config) = Provider::resolve(config, process_env)?;
+    let (provider, mut config) = Provider::resolve(config, process_env)?;
+    if provider == Provider::OpenAi
+        && let Some(url) = openai_responses_url(&config)
+    {
+        config.base_url = url;
+        return stream_chat_completion_once(
+            &config,
+            Provider::OpenAiResponses,
+            messages,
+            tools,
+            None,
+            &mut on_delta,
+        )
+        .await;
+    }
     if provider != Provider::OpenAi {
         let outcome =
             stream_chat_completion_once(&config, provider, messages, tools, None, &mut on_delta)
@@ -650,6 +814,21 @@ pub async fn stream_chat_completion(
     .await
     {
         Ok(outcome) => Ok(outcome),
+        Err(err) if responses_required(&err) => {
+            let mut config = config.clone();
+            let base = config.base_url.trim_end_matches('/');
+            let base = base.strip_suffix("/chat/completions").unwrap_or(base);
+            config.base_url = format!("{base}/responses");
+            stream_chat_completion_once(
+                &config,
+                Provider::OpenAiResponses,
+                messages,
+                tools,
+                None,
+                &mut on_delta,
+            )
+            .await
+        }
         Err(err)
             if err.starts_with("HTTP 400:")
                 && err.to_ascii_lowercase().contains("reasoning_effort") =>
@@ -686,7 +865,14 @@ async fn stream_chat_completion_once(
     use std::io::{BufRead as _, BufReader as StdBufReader, Write as _};
     use std::process::{Command, Stdio};
 
-    let (url, payload) = if provider == Provider::OpenAi {
+    let responses = provider == Provider::OpenAiResponses;
+    let (url, payload) = if responses {
+        (
+            config.base_url.clone(),
+            serde_json::to_vec(&responses_request(&config.model, messages, tools))
+                .map_err(|error| format!("failed to serialize request: {error}"))?,
+        )
+    } else if provider == Provider::OpenAi {
         let payload = serde_json::to_vec(&ChatCompletionRequest {
             model: &config.model,
             messages,
@@ -706,7 +892,7 @@ async fn stream_chat_completion_once(
     let api_key = config.api_key.clone();
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<Result<Option<String>, String>>();
 
-    let openai = provider == Provider::OpenAi;
+    let openai = responses || provider == Provider::OpenAi;
     std::thread::spawn(move || {
         let (url, api_key) = if let Provider::BedrockProfile { region } = &provider {
             match bedrock::profile_connection(region.clone()) {
@@ -831,6 +1017,17 @@ async fn stream_chat_completion_once(
         }
         let _ = tx.unbounded_send(Ok(None));
     });
+
+    if responses {
+        let mut outcome = CompletionOutcome::default();
+        while let Some(Some(line)) = rx.next().await.transpose()? {
+            accept_responses_line(&mut outcome, &line, on_delta)?;
+            if outcome.received_done {
+                return Ok(outcome);
+            }
+        }
+        return Err("Responses API の応答が途中で終了しました。".into());
+    }
 
     let mut parser = SseStreamParser::default();
     while let Some(item) = rx.next().await {
@@ -1329,6 +1526,106 @@ pub(crate) fn fetch_egov_law_xml(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn gpt_62_uses_responses_on_openai_and_keeps_compatible_endpoints() {
+        let mut config = AiConfig {
+            base_url: "https://api.openai.com/v1/chat/completions".into(),
+            model: "gpt-6.2-sol".into(),
+            api_key: String::new(),
+        };
+        assert_eq!(
+            openai_responses_url(&config).as_deref(),
+            Some("https://api.openai.com/v1/responses")
+        );
+        config.base_url = "http://localhost:11434/v1".into();
+        assert!(openai_responses_url(&config).is_none());
+        assert!(responses_required(
+            "HTTP 400: Function tools with reasoning_effort are not supported. Use /v1/responses."
+        ));
+        assert!(!responses_required(
+            "HTTP 400: Unrecognized reasoning_effort"
+        ));
+        config.base_url.push_str("/responses");
+        assert_eq!(
+            openai_responses_url(&config).as_deref(),
+            Some(config.base_url.as_str())
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn responses_replays_reasoning_and_tool_outputs_without_server_storage() {
+        use serde_json::json;
+
+        let mut outcome = CompletionOutcome::default();
+        let mut visible = String::new();
+        let completed = json!({
+            "type": "response.completed",
+            "response": {"output": [
+                {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "encrypted"},
+                {"type": "function_call", "id": "fc_1", "call_id": "call_1",
+                    "name": "search_egov_law", "arguments": "{\"keyword\":\"磁気ディスク\"}", "status": "completed"}
+            ]}
+        });
+        accept_responses_line(
+            &mut outcome,
+            &format!("data: {completed}"),
+            &mut |_| panic!(),
+        )
+        .unwrap();
+        assert!(outcome.received_done);
+        assert_eq!(outcome.tool_calls[0].function.name, "search_egov_law");
+
+        let request = responses_request(
+            "gpt-6.2-sol",
+            &[
+                ChatMessage::system("instructions"),
+                ChatMessage::user("search"),
+                outcome.assistant_message(),
+                ChatMessage::tool_result("call_1", "e-Gov result"),
+            ],
+            vec![ToolDefinition {
+                kind: "function",
+                function: ToolFunctionDef {
+                    name: "search_egov_law",
+                    description: "Search",
+                    parameters: json!({"type":"object"}),
+                },
+            }],
+        );
+        assert_eq!(request["store"], false);
+        assert!(request.get("reasoning_effort").is_none());
+        assert_eq!(request["tools"][0]["name"], "search_egov_law");
+        assert_eq!(request["input"][0]["role"], "developer");
+        assert_eq!(request["input"][2]["encrypted_content"], "encrypted");
+        assert_eq!(request["input"][3]["type"], "function_call");
+        assert_eq!(
+            request["input"][4],
+            json!({
+                "type": "function_call_output", "call_id": "call_1", "output": "e-Gov result"
+            })
+        );
+
+        let mut final_outcome = CompletionOutcome::default();
+        accept_responses_line(
+            &mut final_outcome,
+            r#"data: {"type":"response.output_text.delta","delta":"見つかりました。"}"#,
+            &mut |delta| visible.push_str(delta),
+        )
+        .unwrap();
+        assert_eq!(visible, "見つかりました。");
+        assert!(
+            accept_responses_line(
+                &mut final_outcome,
+                r#"data: {"type":"response.incomplete"}"#,
+                &mut |_| {},
+            )
+            .is_err()
+        );
+        assert!(!final_outcome.received_done);
+    }
 
     #[cfg(not(target_family = "wasm"))]
     #[test]

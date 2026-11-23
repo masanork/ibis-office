@@ -98,12 +98,17 @@ pub struct Service {
     pub(crate) version: String,
     counter: u64,
     draft: Option<Draft>,
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) report_refresh: Option<crate::tools_sqlite::ReviewedReportRefresh>,
 }
 
 impl Service {
     /// A service that may touch the files under `allow_dirs` (none: no file at all).
     pub fn new(allow_dirs: &[PathBuf], read_only: bool, limits: Limits) -> Self {
-        Self { allow_dirs: paths::canonical_dirs(allow_dirs), read_only, limits, documents: BTreeMap::new(), exporter: None, version: env!("CARGO_PKG_VERSION").to_string(), counter: 0, draft: None }
+        Self { allow_dirs: paths::canonical_dirs(allow_dirs), read_only, limits, documents: BTreeMap::new(), exporter: None, version: env!("CARGO_PKG_VERSION").to_string(), counter: 0, draft: None,
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            report_refresh: None,
+        }
     }
 
     /// The version `app_get_version` tells (the app's; the crate's own version when not set).

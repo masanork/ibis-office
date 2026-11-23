@@ -1071,5 +1071,96 @@ fn disk_staged_arrow_reports_share_a_batch_after_reopening() {
     }));
     assert_eq!(applied["reports"].as_array().unwrap().len(), 2);
     assert_eq!(applied["dirty"], true);
+    std::fs::write(&stream, include_bytes!("fixtures/query-large-lookup.ipc")).unwrap();
+    let preview = call("sqlite_refresh_query_reports", json!({
+        "document_id":id,"bindings":{"input.feather":stream},"preview":true,
+        "metrics":[{"table":"QueryResult1","column":"n"}],
+    }));
+    assert_eq!(preview["reports"][0]["metrics"][0]["current"].as_f64(), Some(50_001.0));
+    std::fs::remove_file(&stream).unwrap();
+    let applied = call("sqlite_refresh_query_reports", json!({
+        "document_id":id,"snapshot_id":preview["snapshot_id"],
+    }));
+    assert_eq!(applied["preview"], false);
+    assert_eq!(applied["reports"], preview["reports"]);
+    let sheet = call("xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"].clone();
+    assert_eq!(call("xlsx_get_cells", json!({
+        "document_id":id,"sheet":sheet,"range":"A2",
+    }))["rows"][0][0].as_f64(), Some(50_001.0));
+    let stale = call("sqlite_refresh_query_reports", json!({
+        "document_id":id,"bindings":{"input.feather":file},"preview":true,
+    }));
+    call("xlsx_set_cells", json!({"document_id":id,"sheet":sheet,"range":"B20","values":"changed"}));
+    let error = service.call("sqlite_refresh_query_reports", &json!({
+        "document_id":id,"snapshot_id":stale["snapshot_id"],
+    })).unwrap_err();
+    assert!(error.message.contains("Workbook changed"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn json_lines_and_avro_stream_into_shared_report_snapshots() {
+    use std::io::Write;
+
+    let dir = std::env::temp_dir().join(format!("ibis-json-avro-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let lines = dir.join("lookup.ndjson");
+    let avro = dir.join("observations.avro");
+    std::fs::write(&lines, "{\"code\":\"001\",\"labels\":[\"a\",null]}\n{\"code\":\"002\",\"late\":true}\n").unwrap();
+    std::fs::write(&avro, include_bytes!("fixtures/query-observations.avro")).unwrap();
+    let blank = dir.join("blank.xlsx");
+    std::fs::write(&blank, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut service = Service::new(&[dir.clone()], false, Limits::default());
+    let mut call = |tool, args| service.call(tool, &args).unwrap();
+    let sources = json!([
+        {"source":lines,"alias":"labels","columns":["code","labels","late"]},
+        {"source":avro,"alias":"facts","columns":["amount","code"]},
+    ]);
+    let preview = call("sqlite_query", json!({
+        "datasets":sources,
+        "sql":"SELECT f.code, f.amount, j.key, j.value, l.late FROM facts f JOIN labels l USING(code) LEFT JOIN json_each(l.labels) j ON true ORDER BY f.code, j.key",
+    }));
+    assert_eq!(preview["rows"], json!([["001",5,0,"a",null],["001",5,1,null,null],["002",null,null,null,1]]));
+    let sparse = call("sqlite_query", json!({
+        "datasets":[{"source":lines,"alias":"labels"}],
+        "sql":"SELECT code, late, labels FROM labels ORDER BY code",
+    }));
+    assert_eq!(sparse["rows"], json!([["001",null,"[\"a\",null]"],["002",1,null]]));
+    let id = call("app_open_document", json!({"path":blank}))["document_id"].clone();
+    let sheet = call("xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"].clone();
+    for (anchor, sql) in [("A1","SELECT count(*) AS n FROM labels"), ("D1","SELECT sum(amount) AS n FROM facts")] {
+        call("sqlite_query_to_table", json!({
+            "document_id":id,"destination_sheet":sheet,"anchor":anchor,"sql":sql,"datasets":sources,
+        }));
+    }
+    let saved = dir.join("saved.xlsx");
+    call("app_save_document", json!({"document_id":id,"path":saved}));
+    call("app_close_document", json!({"document_id":id}));
+    let id = call("app_open_document", json!({"path":saved}))["document_id"].clone();
+
+    std::fs::write(&avro, include_bytes!("fixtures/query-large-observations.avro")).unwrap();
+    assert_eq!(call("sqlite_query", json!({
+        "datasets":[sources[1].clone()],"sql":"SELECT count(*), sum(amount) FROM facts",
+    }))["rows"], json!([[50_001,250_005]]));
+    let mut writer = std::io::BufWriter::new(std::fs::File::create(&lines).unwrap());
+    for _ in 0..50_001 {
+        writer.write_all(b"{\"code\":\"001\",\"labels\":[]}\n").unwrap();
+    }
+    writer.flush().unwrap();
+    drop(writer);
+    let preview = call("sqlite_refresh_query_reports", json!({
+        "document_id":id,"preview":true,"bindings":{"lookup.ndjson":lines,"observations.avro":avro},
+        "metrics":[{"table":"QueryResult1","column":"n"},{"table":"QueryResult2","column":"n"}],
+    }));
+    assert_eq!(preview["reports"][0]["metrics"][0]["current"].as_f64(), Some(50_001.0));
+    assert_eq!(preview["reports"][1]["metrics"][0]["current"].as_f64(), Some(250_005.0));
+    std::fs::remove_file(lines).unwrap();
+    std::fs::remove_file(avro).unwrap();
+    let applied = call("sqlite_refresh_query_reports", json!({"document_id":id,"snapshot_id":preview["snapshot_id"]}));
+    assert_eq!(applied["reports"], preview["reports"]);
+    for (range, number) in [("A2",50_001.0),("D2",250_005.0)] {
+        let cell = call("xlsx_get_cells", json!({"document_id":id,"sheet":sheet,"range":range}));
+        assert_eq!(cell["rows"][0][0].as_f64(), Some(number));
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }

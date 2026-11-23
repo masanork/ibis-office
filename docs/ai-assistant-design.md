@@ -12,6 +12,12 @@
 
 ウィンドウや選択状態に関わる操作はシェルで扱う。法制執務やスライド複製などの内蔵固有ツールを今後 MCP に公開する場合は、対象を明示できる引数にしてカタログへ加える。リンク付きグラフ作成は `xlsx_create_chart` として共通化済みで、元データと配置先を個別に指定できる。
 
+## フォルダーを参照する
+
+デスクトップ版の「フォルダーを開く」で、左側に配下の資料が表示される。資料を開いて編集すると、そのファイルに保存する。「更新」で一覧に新規作成や削除を反映できる。ルートに `index.md` があれば一覧の先頭に出し、アシスタントにも参照の入口として知らせる。
+
+内蔵アシスタントは、同じ一覧に対して `folder_list`、`folder_search`、`folder_read` を使う。Office 文書は読み取り専用の文書サービスを介して参照し、アクティブ文書の編集中の内容は既存の文書ツールで参照する。検索はローカルで行い、ツールの返したパス・抜粋は設定されたモデルに送信する。参照したファイルは会話内から開ける。取得できた位置情報があれば、段落・シート範囲・スライドも表示する。
+
 以下は導入時の設計メモ。
 
 ## 目的
@@ -57,6 +63,8 @@ UI Automation や画面操作ではなく、既存の `ibis-doc-model` のコマ
 Bedrock は [Bedrock Runtime の Anthropic Messages API](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.html) に API キーまたは AWS CLI プロファイルで接続する。GUI の保存項目は OpenAI 互換 API 用。ブラウザー版の接続は同一オリジンの Worker が担当する。
 
 Claude API と Bedrock のモデル指定は `ANTHROPIC_MODEL`、`IBIS_AI_MODEL`、`IBIS_BEDROCK_MODEL_ID`（Bedrock のみ）、`ANTHROPIC_DEFAULT_MODEL` の順で参照する。Bedrock では利用するモデル ID、推論プロファイル ID、または ARN を指定する。
+
+OpenAI 公式エンドポイントで GPT-6.2 系を使う場合、Assistant はツール呼び出しに対応する Responses API を選択する。\`/responses\` まで含めたURLも設定できる。会話の継続に必要な出力項目はアプリ側で再送し、Responses API へのリクエストには \`store: false\` を指定する。
 
 #### Bedrock に AWS IAM Identity Center (SSO) で接続
 

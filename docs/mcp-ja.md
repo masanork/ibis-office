@@ -64,11 +64,13 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 
 `sqlite_query` は単一の `SELECT` または `WITH … SELECT` と、任意の位置パラメータ `params` を受け付けます。SQL、パラメータ、列名、行、打ち切りフラグ `truncated` を返します。プレビューは既定50行、最大1,000行で、応答サイズにも上限があります。クエリ実行の上限は3秒です。
 
-CSV・Parquet・Arrow IPC・SQLite のテーブルを一緒に調べるには、`sqlite_query` または `sqlite_query_to_table` に `datasets` を渡します。各要素にファイルの `source` とSQLで使うテーブル名 `alias` を指定し、SQLiteの場合は元の `table` 名も渡します。この形式では `path` を省略します。例えばSQLiteの表を `facts`、CSVを `labels` として登録し、`SELECT * FROM facts JOIN labels USING (code)` と書けます。列名は `SELECT * FROM labels LIMIT 0` でも確認できます。内蔵アシスタントでは複数ファイルをまとめて選び、`source` に選択順のファイル番号を使います。
+CSV・Parquet・Arrow IPC・JSON Lines・Avro・SQLite のテーブルを一緒に調べるには、`sqlite_query` または `sqlite_query_to_table` に `datasets` を渡します。各要素にファイルの `source` とSQLで使うテーブル名 `alias` を指定し、SQLiteの場合は元の `table` 名も渡します。この形式では `path` を省略します。例えばSQLiteの表を `facts`、CSVを `labels` として登録し、`SELECT * FROM facts JOIN labels USING (code)` と書けます。列名は `SELECT * FROM labels LIMIT 0` でも確認できます。内蔵アシスタントでは複数ファイルをまとめて選び、`source` に選択順のファイル番号を使います。
 
 Parquet では `columns` に読み込む列の正確な名前を順番に指定できます（例 `["code", "amount"]`）。選ばなかった列は、入れ子列も含め、入力セル数の上限を適用する前に読み飛ばします。省略すると全列を読み込みます。列の選択はクエリ帳票に保存し、更新時にも使います。
 
 Arrow IPC のファイル・ストリーム（`.arrow`、`.ipc`、`.feather`）も `columns` による列選択と帳票への保存に対応します。SQL データセットでは UTF-8 文字列配列を JSON テキストとして取り込み、空配列や配列内の null を保持します。`json_each` で展開できます。辞書エンコードは未対応です。デコード量と選択結果のセル数・テキスト量には上限があり、Turso は結果をメモリ上に読み込みます。
+
+JSON Lines（`.jsonl`、`.ndjson`）は先にフィールドと型を調べ、その後に行を順次読み込みます。欠損は NULL、配列・オブジェクトは JSON テキストです。Avro（`.avro`）はオブジェクトコンテナのレコードをブロック単位で読み込み、表計算の取り込みと同じスカラー型と NULL 許容型に対応します。どちらも `columns` で列を選べ、帳票に保存します。
 
 SQL のデータセットでは、Parquet の標準形式で記録された UTF-8 文字列の配列を JSON テキストとして扱います。SQL の NULL、空配列、配列内の null、重複、要素順を保持します。`json_each` で配列を展開できます。元の行単位で金額を集計する場合は、`EXISTS (SELECT 1 FROM json_each(f.tags) j WHERE j.value = ?)` で元の行を絞り込みます。配列を条件に使う場合は SQL 側で指定します。JSON テキストはデータセットのテキスト量の上限に数えます。
 
@@ -92,7 +94,7 @@ CSVはカンマ区切り、先頭行が見出しで、値を文字列として�
 
 `sqlite_refresh_query_reports` は、複数のレポートを一括で確認・更新します。`bindings` で保存時のファイル名に今回のファイルを割り当てます。例えばMCPでは `{"monthly.csv":"/data/next.csv"}`、内蔵アシスタントではパスの代わりに選択したファイル番号を指定します。同じ保存名を参照するレポートは割り当てを共有します。`tables` を省略すると全件が対象になり、1回に更新できるのは12件までです。`preview: true` でブックを変更せずに更新前後の行数と配置の衝突を確認できます。適用時にクエリを再実行し、すべてを一度に取り消せる形で反映します。途中で失敗した場合は対象の表名を返し、ブックへの反映を中止します。
 
-`sqlite_refresh_query_reports` に試験機能の `arrow_disk: true` を指定すると、Arrow IPC を専用の一時 Turso DB にバッチ単位で転写します。対象の帳票はすべて Arrow IPC のみを参照し、ファイルの割り当て、別名、列指定が一致している必要があります。ファイルとストリームの両方に対応します。同じ呼び出し内の帳票とデータ品質チェックで DB を共有し、終了時に削除します。プレビューと適用は別の呼び出しなので、それぞれ転写を実行します。入力ファイル、バッチ、SQL の出力上限は引き続き適用されます。
+一括更新では、参照元と列指定が同じ帳票が DB を共有します。Arrow IPC・JSON Lines・Avro のファイル合計が 8 MiB を超える場合やメモリ取り込みの上限に達した場合は、一時ディスク DB へ順次転写します。同じグループの他形式も、従来の入力上限内で結合できます。小さい入力はメモリ DB を共有します。`arrow_disk: true` で同一の Arrow 入力を明示的にディスクへ転写することもできます。準備後に一時 DB は削除します。プレビューした内容を元ファイルの再読み込みなしで適用するには、同じ接続で `snapshot_id` と `document_id` だけを指定します。ID は一度だけ使えます。ブックの変更や新たな一括更新の要求があれば、プレビューをやり直します。
 
 `metrics` に `{"table":"QueryResult1","column":"件数"}` のように比較する表と数値列を指定すると、合計の前回値 `previous`、今回値 `current`、差 `delta`、増減率 `percent_change` が返ります。空セルやNULLは合計に加えず、文字列などの非数値がある列はエラーになります。増減率の分母は前回値の絶対値で、前回値が0の場合はNULLになります。
 

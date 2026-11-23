@@ -5,7 +5,7 @@ use serde_json::{Value, value::RawValue};
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Seek},
     path::Path,
 };
 
@@ -30,10 +30,21 @@ pub fn read_json_lines(path: &Path) -> Result<QTable, String> {
     })
 }
 
-fn read_records(mut reader: impl BufRead) -> Result<QTable, String> {
+fn read_records(reader: impl BufRead) -> Result<QTable, String> {
     let mut output = Records::default();
+    visit_lines(reader, MAX_SOURCE_BYTES, |fields, location| {
+        output.push(fields, location)
+    })?;
+    output.finish()
+}
+
+fn visit_lines(
+    mut reader: impl BufRead,
+    max_bytes: usize,
+    mut visit: impl FnMut(BTreeMap<String, &RawValue>, &str) -> Result<(), String>,
+) -> Result<(), String> {
     let mut line = Vec::new();
-    let mut bytes = 0;
+    let mut bytes = 0usize;
     for line_number in 1.. {
         line.clear();
         let read = reader
@@ -44,17 +55,117 @@ fn read_records(mut reader: impl BufRead) -> Result<QTable, String> {
         if read == 0 {
             break;
         }
-        bytes += read;
-        if read > MAX_LINE_BYTES || bytes > MAX_SOURCE_BYTES {
+        bytes = bytes.saturating_add(read);
+        if read > MAX_LINE_BYTES || bytes > max_bytes {
             return Err(format!(
                 "Line {line_number}: JSON Lines source exceeds the byte limit"
             ));
         }
         let fields = serde_json::from_slice::<BTreeMap<String, &RawValue>>(&line)
             .map_err(|error| format!("Line {line_number}: expected one JSON object ({error})"))?;
-        output.push(fields, &format!("Line {line_number}"))?;
+        visit(fields, &format!("Line {line_number}"))?;
     }
-    output.finish()
+    Ok(())
+}
+
+fn merge_type(previous: Option<QType>, next: QType) -> QType {
+    match (previous, next) {
+        (None, next) => next,
+        (Some(previous), next) if previous == next => previous,
+        (Some(QType::Whole), QType::Decimal) | (Some(QType::Decimal), QType::Whole) => {
+            QType::Decimal
+        }
+        _ => QType::Any,
+    }
+}
+
+pub(super) fn visit_json_lines(
+    path: &Path,
+    selected: &[String],
+    mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut input = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
+    let metadata = input
+        .get_ref()
+        .metadata()
+        .map_err(|error| error.to_string())?;
+    let max_bytes = usize::try_from(metadata.len()).map_err(|_| "JSON Lines file is too large")?;
+    let mut indices = HashMap::new();
+    let mut columns = Vec::new();
+    let mut types = Vec::new();
+    for name in selected {
+        add_sql_column(name, &mut indices, &mut columns, &mut types)?;
+    }
+    // The first pass retains only the schema, including fields first seen late.
+    visit_lines(&mut input, max_bytes, |fields, location| {
+        for (name, raw) in fields {
+            let index = match indices.get(&name) {
+                Some(&index) => index,
+                None if !selected.is_empty() => continue,
+                None => add_sql_column(&name, &mut indices, &mut columns, &mut types)?,
+            };
+            let (_, ty) = cell(raw).map_err(|error| format!("{location}, {name}: {error}"))?;
+            if let Some(ty) = ty {
+                types[index] = Some(merge_type(types[index], ty));
+            }
+        }
+        Ok(())
+    })?;
+    if columns.is_empty() {
+        return Err("JSON source contains no fields".into());
+    }
+    for (column, ty) in columns.iter_mut().zip(types) {
+        column.ty = ty.unwrap_or(QType::Any);
+    }
+    visit(&columns, None)?;
+    input.rewind().map_err(|error| error.to_string())?;
+    visit_lines(&mut input, max_bytes, |mut fields, location| {
+        let values = columns
+            .iter()
+            .map(|column| {
+                fields
+                    .remove(&column.name)
+                    .map_or(Ok(CellValue::Empty), |raw| {
+                        cell(raw)
+                            .map(|(value, _)| value)
+                            .map_err(|error| format!("{location}, {}: {error}", column.name))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if selected.is_empty() && !fields.is_empty() {
+            return Err("JSON Lines schema changed during import".into());
+        }
+        visit(&columns, Some(values))
+    })?;
+    let after = input
+        .get_ref()
+        .metadata()
+        .map_err(|error| error.to_string())?;
+    if metadata.len() != after.len() || metadata.modified().ok() != after.modified().ok() {
+        return Err("JSON Lines file changed during import".into());
+    }
+    Ok(())
+}
+
+fn add_sql_column(
+    name: &str,
+    indices: &mut HashMap<String, usize>,
+    columns: &mut Vec<QColumn>,
+    types: &mut Vec<Option<QType>>,
+) -> Result<usize, String> {
+    let index = columns.len();
+    if index >= 256 || name.is_empty() || exceeds_text_limit(name) || indices.contains_key(name) {
+        return Err(format!(
+            "Invalid, duplicate or excess JSON Lines column: {name}"
+        ));
+    }
+    indices.insert(name.into(), index);
+    columns.push(QColumn {
+        name: name.into(),
+        ty: QType::Any,
+    });
+    types.push(None);
+    Ok(index)
 }
 
 #[derive(Default)]
@@ -96,14 +207,7 @@ impl Records {
             });
             let (cell, ty) = cell(value).map_err(|error| format!("{location}, {name}: {error}"))?;
             if let Some(ty) = ty {
-                self.types[index] = Some(match (self.types[index], ty) {
-                    (None, ty) => ty,
-                    (Some(previous), ty) if previous == ty => previous,
-                    (Some(QType::Whole), QType::Decimal) | (Some(QType::Decimal), QType::Whole) => {
-                        QType::Decimal
-                    }
-                    _ => QType::Any,
-                });
+                self.types[index] = Some(merge_type(self.types[index], ty));
             }
             row[index] = cell;
         }

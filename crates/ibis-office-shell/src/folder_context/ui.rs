@@ -1,0 +1,357 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) ibis inc.
+// Additional terms under AGPL-3.0 section 7(b): see NOTICE.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::{ActiveTheme as _, Root, Sizable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use ibis_doc_model::ai_sheet::{parse_cell_range, resolve_sheet_slide};
+
+use super::{Folder, FolderReference, ReferencePosition, extension, read_text};
+use crate::editor::SlideEditor;
+use crate::i18n::text;
+use crate::with_format;
+
+pub(crate) struct FolderPane {
+    pub(crate) folder: Arc<Folder>,
+    filter: Entity<InputState>,
+    _subscription: Subscription,
+    limit: usize,
+}
+
+impl SlideEditor {
+    fn set_folder_pane(
+        &mut self,
+        folder: Arc<Folder>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder(text("folder.filter")));
+        let subscription = cx.subscribe(&filter, |editor, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                if let Some(pane) = editor.folder_pane.as_mut() {
+                    pane.limit = 100;
+                }
+                cx.notify();
+            }
+        });
+        self.folder_pane = Some(FolderPane {
+            folder,
+            filter,
+            _subscription: subscription,
+            limit: 100,
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn pick_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            extensions: Vec::new(),
+            prompt: Some(text("file.open-folder")),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let result = cx
+                .background_executor()
+                .spawn(async move { Folder::scan(&path) })
+                .await;
+            let _ = this.update_in(cx, |editor, window, cx| match result {
+                Ok(folder) => {
+                    editor.reset_ai_folder_context(cx);
+                    editor.set_folder_pane(Arc::new(folder), window, cx);
+                }
+                Err(error) => editor.show_alert(text("folder.error"), error.into(), cx),
+            });
+        })
+        .detach();
+    }
+
+    fn refresh_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = &self.folder_pane else {
+            return;
+        };
+        let previous = pane.folder.clone();
+        let root = previous.root.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { Folder::scan(&root) })
+                .await;
+            let _ = this.update(cx, |editor, cx| {
+                let Some(pane) = editor
+                    .folder_pane
+                    .as_mut()
+                    .filter(|pane| Arc::ptr_eq(&pane.folder, &previous))
+                else {
+                    return;
+                };
+                match result {
+                    Ok(folder) if folder.root == previous.root => pane.folder = Arc::new(folder),
+                    Ok(_) => editor.show_alert(text("folder.error"), text("folder.moved"), cx),
+                    Err(error) => editor.show_alert(text("folder.error"), error.into(), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn open_folder_file(
+        &mut self,
+        relative: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_folder_reference(
+            &FolderReference {
+                path: relative.to_owned(),
+                position: None,
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn open_folder_reference(
+        &mut self,
+        reference: &FolderReference,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pane) = &self.folder_pane else {
+            return;
+        };
+        let folder = pane.folder.clone();
+        let path = match folder.resolve(&reference.path) {
+            Ok(path) => path,
+            Err(error) => {
+                self.show_alert(text("folder.error"), error.into(), cx);
+                return;
+            }
+        };
+        if self.shows_path(&path) {
+            self.reveal_folder_position(reference.position.as_ref(), cx);
+            return;
+        }
+        if let Some(handle) = crate::open_guard::find_open_window(&path, Some(cx.entity_id()), cx) {
+            crate::open_guard::raise(handle, cx);
+            if let Some(root) = handle.downcast::<Root>() {
+                let _ = root.update(cx, |root, _, cx| {
+                    if let Ok(editor) = root.view().clone().downcast::<SlideEditor>() {
+                        editor.update(cx, |editor, cx| {
+                            editor.reveal_folder_position(reference.position.as_ref(), cx)
+                        });
+                    }
+                });
+            }
+            return;
+        }
+        let position = reference.position.clone();
+        let ext = extension(&path);
+        if matches!(ext.as_str(), "txt" | "yaml" | "yml" | "json") {
+            self.open_folder_text(path, window, cx);
+            return;
+        }
+        let open =
+            move |editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>| {
+                let read_path = path.clone();
+                editor.open_read_then(
+                    path,
+                    move || crate::read_file::read_file(&read_path),
+                    None,
+                    window,
+                    cx,
+                    move |editor, cx| editor.reveal_folder_position(position.as_ref(), cx),
+                );
+            };
+        if self.replaceable_by_open() {
+            open(self, window, cx);
+        } else {
+            crate::app::open_window_with(cx, move |editor, window, cx| {
+                editor.set_folder_pane(folder, window, cx);
+                open(editor, window, cx);
+            });
+        }
+    }
+
+    fn open_folder_text(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let (content, partial) = read_text(&path)?;
+                    let mut markdown = String::new();
+                    if partial {
+                        markdown.push_str(&format!("{}\n\n", text("folder.preview-partial")));
+                    }
+                    for line in content.lines() {
+                        markdown.push_str("    ");
+                        markdown.push_str(line);
+                        markdown.push('\n');
+                    }
+                    ibis_formats::markdown::open_markdown(markdown.into_bytes())
+                        .map_err(|err| err.to_string())
+                })
+                .await;
+            let _ = this.update(cx, |editor, cx| match result {
+                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                    editor.load(opened.presentation, name.into(), window, cx);
+                    editor.standard_read_only = true;
+                    editor.document.set_read_only(true);
+                    editor.set_loaded_source(Arc::new(opened.source));
+                }),
+                Err(error) => editor.show_alert(text("folder.error"), error.into(), cx),
+            });
+        })
+        .detach();
+    }
+
+    fn reveal_folder_position(
+        &mut self,
+        position: Option<&ReferencePosition>,
+        cx: &mut Context<Self>,
+    ) {
+        match position {
+            Some(ReferencePosition::Cells { sheet, range }) => {
+                if let Some(workbook) = self.presentation().workbook.as_ref()
+                    && let Ok(slide) =
+                        resolve_sheet_slide(workbook, Some(sheet), self.current_slide)
+                    && let Some(range) = parse_cell_range(range)
+                {
+                    with_format!(self, set_ai_sheet_selection(self, slide, range));
+                }
+            }
+            Some(ReferencePosition::Slide(number)) if self.pages_are_slides() => {
+                if let Some(slide) = number
+                    .checked_sub(1)
+                    .and_then(|index| self.presentation().slides.get(index))
+                {
+                    self.set_current_slide(slide.id);
+                }
+            }
+            Some(ReferencePosition::Paragraph(id)) => {
+                with_format!(self, reveal_ai_paragraph(self, *id, cx))
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn render_folder_pane(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let pane = self.folder_pane.as_ref()?;
+        let query = pane.filter.read(cx).value().trim().to_lowercase();
+        let mut rows = div()
+            .id("folder-files")
+            .min_h_0()
+            .flex_1()
+            .overflow_y_scroll();
+        let mut matches = pane.folder.files.iter().filter(|path| {
+            if query.is_empty() {
+                *path != "index.md"
+            } else {
+                path.to_lowercase().contains(&query)
+            }
+        });
+        if let Some(index) = pane
+            .folder
+            .files
+            .iter()
+            .find(|path| *path == "index.md")
+            .filter(|_| query.is_empty())
+        {
+            rows = rows.child(folder_row(index, cx));
+        }
+        for path in matches.by_ref().take(pane.limit) {
+            rows = rows.child(folder_row(path, cx));
+        }
+        if matches.next().is_some() {
+            rows = rows.child(
+                Button::new("folder-more")
+                    .ghost()
+                    .small()
+                    .label(text("folder.more"))
+                    .on_click(cx.listener(|editor, _, _, cx| {
+                        if let Some(pane) = editor.folder_pane.as_mut() {
+                            pane.limit += 100;
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        let name = pane.folder.name();
+        Some(
+            v_flex()
+                .w(px(240.))
+                .flex_shrink_0()
+                .min_h_0()
+                .border_r_1()
+                .border_color(cx.theme().border)
+                .p_2()
+                .gap_2()
+                .child(div().truncate().text_sm().child(name))
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("folder-refresh")
+                                .ghost()
+                                .xsmall()
+                                .label(text("folder.refresh"))
+                                .on_click(cx.listener(|editor, _, window, cx| {
+                                    editor.refresh_folder(window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("folder-close")
+                                .ghost()
+                                .xsmall()
+                                .label(text("folder.close"))
+                                .on_click(cx.listener(|editor, _, _, cx| {
+                                    editor.reset_ai_folder_context(cx);
+                                    editor.folder_pane = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(Input::new(&pane.filter).small())
+                .when(pane.folder.truncated || pane.folder.skipped > 0, |pane| {
+                    pane.child(div().text_xs().child(text("folder.partial")))
+                })
+                .child(rows)
+                .into_any_element(),
+        )
+    }
+}
+
+fn folder_row(path: &str, cx: &mut Context<SlideEditor>) -> impl IntoElement {
+    let path = path.to_owned();
+    div()
+        .id(SharedString::from(path.clone()))
+        .cursor_pointer()
+        .px_1()
+        .py_1()
+        .text_sm()
+        .hover(|row| row.bg(cx.theme().accent))
+        .child(div().truncate().child(path.clone()))
+        .on_click(
+            cx.listener(move |editor, _, window, cx| editor.open_folder_file(&path, window, cx)),
+        )
+}

@@ -49,6 +49,8 @@ impl SlideEditor {
             .collect();
         file.push(item("file.open", "folder_open").shortcut("⌘O").on(|this, window, cx| this.open_file(&crate::actions::Open, window, cx)).into());
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+        file.push(item("file.open-folder", "folder_open").on(|this, window, cx| this.pick_folder(window, cx)).into());
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         file.push(item("file.open-repository", "folder_open").on(|this, window, cx| this.pick_git_repository(window, cx)).into());
         file.push(crate::chrome_defaults::sub("file.recent", "schedule", recent_entries(self)));
         file.push(SEP);

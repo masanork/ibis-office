@@ -1689,3 +1689,15 @@ xlsx.sbom-refresh	Refresh vulnerability review…
 xlsx.sbom-refresh-failed	Could not refresh vulnerability review: {error}
 xlsx.sbom-actions	Show findings requiring action…
 xlsx.sbom-actions-failed	Could not open the vulnerability action queue: {error}
+file.open-folder	Open Folder…
+folder.filter	Filter by file name or path
+folder.more	Show more
+folder.refresh	Refresh
+folder.close	Close Folder
+folder.error	Could not open folder or file
+folder.moved	The folder location changed. Open it again.
+folder.partial	Some entries could not be listed or the scan limit was reached.
+folder.reference	Reference folder
+folder.model-disclosure	Files and excerpts read by the assistant will be sent to the configured model.
+folder.tool-reference	Folder reference
+folder.preview-partial	Preview shows the first part of the file.

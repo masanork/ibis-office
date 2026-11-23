@@ -158,3 +158,6 @@ cargo run --locked -p ibis-formats --bin ibis-lawtext-audit -- \
 
 
 XMLから直接読み込んだ項・号・号の細分は、本文が同じ間、複数の `Sentence` の境界と `Num`、`Function`、`Indent`、`WritingMode` をXML書き出し時に保持します。改め文の生成・検算には従来どおり連結した本文を用います。ibisOfficeのLawtextは項・号・号の細分の本文に `<Sentence Function="main">…</Sentence><Sentence Function="proviso">…</Sentence>` と、文ごとのXML要素を記録できます。この記法はibisOfficeの拡張です。編集用Markdownは各項・号・号の細分の平文末尾にHTMLコメントで文構造を記録します。コメント中の文をつないだ内容が表示用の平文と一致する場合に復元し、本文が編集された場合やコメントを取り除いた場合は、本文を一つのXMLの文として書き出します。この保持は、コメントが残る一行の本文に適用されます。
+
+
+号や号の細分の本文が複数の `Column` で構成される場合は、列の順序・番号・改行・配置と、列に含まれる文を保持します。Lawtextでは文要素と同じ位置に `Column` 要素を記録し、編集用Markdownでは列の本文を空白でつないで表示します。列構造はHTMLコメントが残り、表示用の本文が一致する場合に復元します。
