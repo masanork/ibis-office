@@ -78,7 +78,7 @@ function hex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** The manifest, or null when there is none (a 404, or no way to ask for it at all). A manifest that is not understood is an error. */
+/** The optional manifest, or null when the host does not return JSON. A parsed manifest must still validate. */
 export async function readManifest(env: ChunkedEnv): Promise<Manifest | null> {
   const url = new URL(MANIFEST_NAME, env.base);
   let response: Response;
@@ -103,7 +103,9 @@ export async function readManifest(env: ChunkedEnv): Promise<Manifest | null> {
   try {
     manifest = (await response.json()) as Manifest;
   } catch {
-    throw new Error(`${MANIFEST_NAME} is not JSON`);
+    // SPA hosts can serve their HTML entry point with status 200 for missing files.
+    env.warn(`${MANIFEST_NAME}: response is not JSON; the wasm is fetched as one file`);
+    return null;
   }
   if (manifest?.schema !== 1 || !Array.isArray(manifest.files)) {
     throw new Error(`${MANIFEST_NAME}: not a manifest this loader understands (schema ${String(manifest?.schema)})`);

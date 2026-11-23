@@ -95,6 +95,20 @@ test('without a manifest the wasm is the one file (null), quietly', async () => 
   assert.deepEqual(warnings, []);
 });
 
+test('an HTML 200 fallback or unreadable JSON is treated as an absent manifest', async () => {
+  for (const [body, contentType] of [
+    ['<!doctype html><title>Host page</title>', 'text/html; charset=utf-8'],
+    ['{"schema":', 'application/json'],
+  ]) {
+    const warnings: string[] = [];
+    const envWithFallback = env(server(new Map()), {
+      fetch: async () => new Response(body, { headers: { 'Content-Type': contentType } }),
+    }, warnings);
+    assert.equal(await loadChunkedWasm(envWithFallback), null);
+    assert.ok(warnings[0]?.includes("response is not JSON"));
+  }
+});
+
 test('with a manifest the parts are joined in order, expanded (gzip or not), and give the file', async () => {
   for (const encoding of ['gzip', 'none'] as const) {
     const built = await build(100_000, 7000, encoding);
