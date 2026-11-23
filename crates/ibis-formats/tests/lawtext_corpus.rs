@@ -412,3 +412,23 @@ fn generates_and_reapplies_the_two_food_labeling_tables_added_in_2024() {
         .collect();
     assert_eq!(rows, [2, 4]);
 }
+
+#[test]
+fn reapplies_nested_quotation_in_the_2024_food_labeling_table_change() {
+    use ibis_formats::lawtext::{generate_aratame_draft, verify_aratame};
+
+    let old = parse_law_xml(include_str!("lawtext/table-twenty-before.xml")).unwrap();
+    let new = parse_law_xml(include_str!("lawtext/table-twenty-after.xml")).unwrap();
+    let draft = generate_aratame_draft(&old, &new);
+    assert_eq!(draft.clauses.len(), 1);
+    assert_eq!(draft.clauses[0].target, "別表第二十");
+    assert!(
+        draft
+            .full_text
+            .contains("「機能性表示食品」の文字を枠で囲んで表示する")
+    );
+    let verified = verify_aratame(&old, &draft.full_text, &new);
+    assert!(verified.is_exact_match, "{:?}", verified.diagnostics);
+    assert_eq!(verified.applied_ops, 1);
+    assert_eq!(verified.simulated_new.appdx_tables, new.appdx_tables);
+}

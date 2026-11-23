@@ -564,9 +564,12 @@ pub fn apply_aratame(old: &LawDoc, aratame_text: &str) -> (LawDoc, usize, Vec<St
 
         // 1. 題名改正: 題名中「X」を「Y」に改める。
         if let Some(rest) = line.strip_prefix("題名中") {
-            let pairs = parse_quote_replacements(rest);
+            let Some(pairs) = parse_quote_replacements(rest) else {
+                diagnostics.push("題名の置換語句を解析できません。".into());
+                continue;
+            };
             for (o, n) in pairs {
-                if apply_replace_in_string(&mut doc.law_title, &o, &n, "題名", &mut diagnostics) {
+                if apply_replace_in_string(&mut doc.law_title, o, n, "題名", &mut diagnostics) {
                     applied += 1;
                 }
             }
@@ -726,28 +729,25 @@ pub fn apply_aratame(old: &LawDoc, aratame_text: &str) -> (LawDoc, usize, Vec<St
         }
 
         // 7. 字句置換: <target>中「X」を「Y」に改め(る)。
-        if let Some((target, rest)) = line.split_once("中「") {
-            let pairs = parse_quote_replacements(&format!("「{rest}"));
-            if !pairs.is_empty() {
+        if let Some(index) = line.find("中「") {
+            let (target, suffix) = line.split_at(index);
+            let rest = &suffix['中'.len_utf8()..];
+            if let Some(pairs) = parse_quote_replacements(rest) {
                 if target.starts_with("別表") {
                     if let Some(tbl) = doc.appdx_tables.iter_mut().find(|t| t.title == target) {
                         for (o, n) in pairs {
-                            let mut replaced = false;
-                            for row in &mut tbl.rows {
-                                for cell in row.iter_mut() {
-                                    if cell.contains(&o) {
-                                        *cell = cell.replacen(&o, &n, 1);
-                                        applied += 1;
-                                        replaced = true;
-                                        break;
-                                    }
-                                }
-                                if replaced {
-                                    break;
-                                }
+                            let count: usize = tbl.rows.iter().flatten()
+                                .map(|cell| count_occurrences(cell, o)).sum();
+                            if count != 1 {
+                                diagnostics.push(format!(
+                                    "{target} に語句「{o}」が {count} 箇所あり一意に特定できません"
+                                ));
+                                continue;
                             }
-                            if !replaced {
-                                diagnostics.push(format!("{target} に語句「{o}」が見つかりません"));
+                            if let Some(cell) = tbl.rows.iter_mut().flatten().find(|cell| cell.contains(o))
+                                && apply_replace_in_string(cell, o, n, target, &mut diagnostics)
+                            {
+                                applied += 1;
                             }
                         }
                     } else {
@@ -779,8 +779,8 @@ pub fn apply_aratame(old: &LawDoc, aratame_text: &str) -> (LawDoc, usize, Vec<St
                                 for (o, n) in pairs {
                                     if apply_replace_in_string(
                                         s,
-                                        &o,
-                                        &n,
+                                        o,
+                                        n,
                                         target,
                                         &mut diagnostics,
                                     ) {
@@ -797,6 +797,8 @@ pub fn apply_aratame(old: &LawDoc, aratame_text: &str) -> (LawDoc, usize, Vec<St
                         diagnostics.push(format!("対象の条文が見つかりません: {target}"));
                     }
                 }
+            } else {
+                diagnostics.push(format!("{target}の置換語句を解析できません。"));
             }
         }
     }
@@ -882,28 +884,36 @@ fn apply_replace_in_string(
     }
 }
 
-fn parse_quote_replacements(s: &str) -> Vec<(String, String)> {
-    let mut pairs = Vec::new();
-    let mut rest = s;
-    while let Some(o_start) = rest.find('「') {
-        let after_o = &rest[o_start + '「'.len_utf8()..];
-        let Some(o_end) = after_o.find('」') else {
-            break;
-        };
-        let old_p = &after_o[..o_end];
-        let after_mid = &after_o[o_end + '」'.len_utf8()..];
-        let Some(n_start) = after_mid.find('「') else {
-            break;
-        };
-        let after_n = &after_mid[n_start + '「'.len_utf8()..];
-        let Some(n_end) = after_n.find('」') else {
-            break;
-        };
-        let new_p = &after_n[..n_end];
-        pairs.push((old_p.to_string(), new_p.to_string()));
-        rest = &after_n[n_end + '」'.len_utf8()..];
+fn take_quoted(text: &str) -> Option<(&str, &str)> {
+    let inner = text.trim_start().strip_prefix('「')?;
+    let mut depth = 1;
+    for (index, ch) in inner.char_indices() {
+        match ch {
+            '「' => depth += 1,
+            '」' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&inner[..index], &inner[index + ch.len_utf8()..]));
+                }
+            }
+            _ => {}
+        }
     }
-    pairs
+    None
+}
+
+fn parse_quote_replacements(mut text: &str) -> Option<Vec<(&str, &str)>> {
+    let mut pairs = Vec::new();
+    loop {
+        let (old, after_old) = take_quoted(text)?;
+        let (new, after_new) = take_quoted(after_old.trim_start().strip_prefix('を')?)?;
+        pairs.push((old, new));
+        let tail = after_new.trim_start();
+        if tail == "に改める。" {
+            return Some(pairs);
+        }
+        text = tail.strip_prefix("に改め、")?;
+    }
 }
 
 fn parse_article_renumber(line: &str) -> Option<(String, String)> {
@@ -1243,6 +1253,23 @@ mod tests {
         assert!(unchanged.appdx_tables.is_empty());
         assert_eq!(applied, 0);
         assert!(!diagnostics.is_empty());
+    }
+
+    #[test]
+    fn parses_nested_replacements_and_rejects_incomplete_clauses() {
+        assert_eq!(
+            parse_quote_replacements("「旧「語」」を「新「語」」に改め、「別」を「ほか」に改める。"),
+            Some(vec![("旧「語」", "新「語」"), ("別", "ほか")]),
+        );
+        let old = parse_lawtext("試験法（令和七年法律第一号）\n第一条 規定。\n別表\n| 旧「語」 | 旧「語」 |").unwrap();
+        let (after, applied, diagnostics) = apply_aratame(&old, "別表中「旧「語」」を「新「語」」に改める。");
+        assert_eq!(after.appdx_tables, old.appdx_tables);
+        assert_eq!(applied, 0);
+        assert!(diagnostics.iter().any(|message| message.contains("一意に特定できません")));
+        let (after, applied, diagnostics) = apply_aratame(&old, "別表中「旧「語」」を「新「語」」に改め、「別」を「不足」に改める");
+        assert_eq!(after.appdx_tables, old.appdx_tables);
+        assert_eq!(applied, 0);
+        assert!(diagnostics.iter().any(|message| message.contains("置換語句を解析できません")));
     }
 
     #[test]
