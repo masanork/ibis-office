@@ -1444,3 +1444,35 @@ LIMIT 20";
     drop(service);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn selected_large_sources_export_counts_beyond_the_sheet_limit() {
+    use ibis_doc_service::{DraftToolContext, WorkbookToolContext, prepare_selected_datasets_export};
+
+    let dir = tempfile::tempdir().unwrap();
+    for (name, header, row) in [
+        ("over-sheet.csv", "code\n", "001\n"),
+        ("over-sheet.jsonl", "", "{\"code\":\"001\"}\n"),
+        ("over-sheet.syslog", "", "<34>Oct 11 auth: accepted\n"),
+    ] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, format!("{header}{}", row.repeat(1_048_577))).unwrap();
+        let opened = ibis_formats::open(ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+        let mut draft = ibis_doc_model::Document::new(opened.presentation);
+        let sheet = &draft.presentation().workbook.as_ref().unwrap().sheets[0];
+        let prepared = prepare_selected_datasets_export(&[path], json!({
+            "destination_sheet":sheet.name, "anchor":"A1",
+            "sql":"SELECT count(*) AS records FROM input",
+            "datasets":[{"source":"1","alias":"input"}],
+        })).unwrap_or_else(|error| panic!("{name}: {}", error.message));
+        let (_, commands) = prepared.stage(&mut draft, DraftToolContext {
+            source: Some(std::sync::Arc::new(opened.source)),
+            workbook: WorkbookToolContext::default(),
+        }).unwrap();
+        assert!(!commands.is_empty(), "{name}");
+        let sheet = draft.presentation().slides.iter().flat_map(|slide| &slide.shapes).find_map(|shape| {
+            if let ibis_doc_model::ShapeKind::Sheet(sheet) = &shape.kind { Some(sheet) } else { None }
+        }).unwrap();
+        assert!(sheet.cells.iter().any(|cell| cell.value == ibis_doc_model::CellValue::Number(1_048_577.0)), "{name}");
+    }
+}

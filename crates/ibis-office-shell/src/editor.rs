@@ -1533,15 +1533,21 @@ impl SlideEditor {
         self.open_file_local(window, cx);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    const ANALYSIS_LOG_EXTENSIONS: &'static [&'static str] = &["jsonl", "ndjson", "log", "syslog"];
+
     /// The OS's (the browser's) file picker, and the file opened as this window's document: the way 開く works without a host, and the
     /// host's file window's ローカルストレージから開く.
     pub(crate) fn open_file_local(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(not(target_family = "wasm"))]
         {
+            let extensions = ibis_formats::Kind::OPENABLE_EXTENSIONS.iter().copied();
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            let extensions = extensions.chain(Self::ANALYSIS_LOG_EXTENSIONS.iter().copied());
             let picked = cx.prompt_for_paths(PathPromptOptions {
                 files: true,
                 directories: false,
-                extensions: ibis_formats::Kind::OPENABLE_EXTENSIONS.iter().map(|e| e.to_string()).collect(),
+                extensions: extensions.map(str::to_owned).collect(),
                 multiple: false,
                 prompt: Some(crate::i18n::text("_shell.open").into()),
             });
@@ -1734,6 +1740,12 @@ impl SlideEditor {
     /// loads (`begin_loading`).
     #[cfg(not(target_family = "wasm"))]
     pub fn open_path(&mut self, path: std::path::PathBuf, slide: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if path.extension().is_some_and(|ext| Self::ANALYSIS_LOG_EXTENSIONS.iter()
+            .any(|candidate| ext.eq_ignore_ascii_case(candidate))) {
+            self.open_selected_analysis_source(path, window, cx);
+            return;
+        }
         let read_path = path.clone();
         self.open_read(path, move || crate::read_file::read_file(&read_path), slide, window, cx);
     }
@@ -1936,6 +1948,8 @@ impl SlideEditor {
                             }
                             out
                         };
+                        let csv_path = path.clone();
+                        let file_id = this.file_id;
                         cx.spawn_in(window, async move |this, cx| {
                             loop {
                                 let rx_clone = rx.clone();
@@ -1943,9 +1957,55 @@ impl SlideEditor {
                                     rx_clone.lock().unwrap().recv()
                                 }).await;
                                 let Ok(chunk) = chunk_res else { break; };
+                                if chunk.exceeds_sheet_rows {
+                                    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                                    {
+                                        let prompt = this.update_in(cx, |this, window, cx| {
+                                            if this.file_id != file_id { return None; }
+                                            this.is_csv_streaming = false;
+                                            this.structured_preview = true;
+                                            this.document.set_read_only(true);
+                                            this.set_status(crate::i18n::text("editor.csv.exceeds-sheet").to_string(), cx);
+                                            let can_analyze = this.current_csv_format.is_some_and(|format| format.delimiter == ',')
+                                                && csv_path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
+                                                && std::fs::metadata(&csv_path).is_ok_and(|m| m.len() <= ibis_doc_service::Limits::default().max_file_size)
+                                                && this.presentation().slide(this.current_slide).is_some_and(|slide| {
+                                                    slide.shapes.iter().any(|shape| matches!(&shape.kind, ibis_doc_model::ShapeKind::Sheet(sheet) if sheet.columns.len() <= 256))
+                                                });
+                                            if !can_analyze {
+                                                this.set_status(crate::i18n::text("editor.csv.open-sql-unavailable").to_string(), cx);
+                                                return None;
+                                            }
+                                            let buttons = [
+                                                PromptButton::ok(crate::i18n::text("editor.csv.open-sql")),
+                                                PromptButton::cancel(crate::i18n::text("_shell.cancel")),
+                                            ];
+                                            Some(window.prompt(PromptLevel::Info,
+                                                &crate::i18n::text("editor.csv.exceeds-sheet"),
+                                                Some(&crate::i18n::text("editor.csv.open-sql-detail")), &buttons, cx))
+                                        }).ok().flatten();
+                                        if let Some(prompt) = prompt && prompt.await.ok() == Some(0) {
+                                            let _ = this.update_in(cx, |this, window, cx| {
+                                                if this.file_id == file_id {
+                                                    this.open_selected_analysis_source(csv_path.clone(), window, cx);
+                                                }
+                                            });
+                                        }
+                                    }
+                                    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+                                    let _ = this.update(cx, |this, cx| {
+                                        if this.file_id != file_id { return; }
+                                        this.is_csv_streaming = false;
+                                        this.structured_preview = true;
+                                        this.document.set_read_only(true);
+                                        this.set_status(crate::i18n::text("editor.csv.exceeds-sheet").to_string(), cx);
+                                    });
+                                    break;
+                                }
                                 let is_last = chunk.is_last;
                                 let current_rows = chunk.current_rows;
                                 let updated = this.update_in(cx, |this, window, cx| {
+                                    if this.file_id != file_id { return false; }
                                     let slide_id = this.current_slide;
                                     if let Some(slide) = this.document.presentation_mut().slide_mut(slide_id) {
                                         if let Some(shape) = slide.shapes.iter_mut().find(|sh| matches!(sh.kind, ibis_doc_model::ShapeKind::Sheet(_))) {
@@ -1976,8 +2036,9 @@ impl SlideEditor {
                                     this.clamp_workspace_scroll();
                                     cx.notify();
                                     window.refresh();
+                                    true
                                 });
-                                if updated.is_err() || is_last {
+                                if !matches!(updated, Ok(true)) || is_last {
                                     break;
                                 }
                             }

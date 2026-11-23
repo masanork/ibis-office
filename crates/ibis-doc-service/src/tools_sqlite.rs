@@ -15,7 +15,7 @@ use crate::catalog::{Access, Tool, boolean, document_id, integer, object, string
 use crate::service::{Args, Limits, Service};
 use crate::{ToolError, paths};
 
-pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "jsonl", "ndjson", "avro", "sqlite", "sqlite3", "db"];
+pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "jsonl", "ndjson", "avro", "sqlite", "sqlite3", "db", "log", "syslog"];
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
 const PATH: &str = "path";
 const MAX_FILTERS: usize = 16;
@@ -406,9 +406,9 @@ fn datasets_property() -> (&'static str, Value) {
         "datasets",
         json!({
             "type":"array","minItems":1,"maxItems":8,
-            "description":"Register these CSV, Parquet, Arrow IPC, JSON Lines, Avro and/or SQLite tables.",
+            "description":"Register CSV, Parquet, Arrow IPC, JSON Lines, Avro, SQLite and UTF-8 log files. Logs expose line_number and message.",
             "items":object(&[
-                ("source", string("Path to a CSV, Parquet, Arrow IPC, JSON Lines, Avro or SQLite file in an allowed folder.")),
+                ("source", string("Path to a supported dataset file in an allowed folder.")),
                 ("alias", string("SQL table name to register for this dataset.")),
                 ("table", string("Source table name, required for SQLite files.")),
                 ("where", json!({
@@ -772,6 +772,10 @@ fn visit_datasets(
                 ("parquet", false) => read_parquet_filtered(&path, &columns, &filters, cells, text),
                 ("arrow_ipc", true) => DiskDataset::ArrowIpc(path, columns).columns().map(schema),
                 ("arrow_ipc", false) => read_arrow_ipc_dataset(&path, &columns, cells, text),
+                ("log", _) => {
+                    let source = DiskDataset::Log(path);
+                    if schema_only { source.columns().map(schema) } else { source.collect_bounded(cells, text) }
+                }
                 ("json_lines" | "avro", _) => {
                     let source = if kind == "json_lines" {
                         DiskDataset::JsonLines(path, columns)
@@ -914,6 +918,8 @@ fn source_kind(path: &Path) -> &'static str {
         ["jsonl", "ndjson"].iter().any(|name| ext.eq_ignore_ascii_case(name))
     }) {
         "json_lines"
+    } else if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("log") || ext.eq_ignore_ascii_case("syslog")) {
+        "log"
     } else if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("avro")) {
         "avro"
     } else if path.extension().is_some_and(|ext| {
@@ -1259,7 +1265,7 @@ fn report_error(name: &str, error: ToolError) -> ToolError {
 }
 
 fn streamable_kind(kind: &str) -> bool {
-    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite" | "csv")
+    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite" | "csv" | "log")
 }
 
 fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) -> Result<SqliteQuerySession, ToolError> {
@@ -1297,6 +1303,7 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
             "sqlite" => DiskDataset::Sqlite(path, spec.opt_str("table")?
                 .ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?.to_owned()),
             "csv" => DiskDataset::Csv(path),
+            "log" => DiskDataset::Log(path),
             _ => DiskDataset::Avro(path, columns),
         };
         sources.push((alias, source));

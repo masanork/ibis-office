@@ -1036,6 +1036,66 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) fn open_selected_analysis_source(
+        &mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>,
+    ) {
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() && metadata.len() <= ibis_doc_service::Limits::default().max_file_size => {}
+            _ => {
+                self.set_status(crate::i18n::text("editor.analysis.input-unavailable").to_string(), cx);
+                return;
+            }
+        }
+        let kind = ibis_formats::Kind::Workbook;
+        let opened = match ibis_formats::blank_file(kind).and_then(ibis_formats::open) {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.set_status(error.to_string(), cx);
+                return;
+            }
+        };
+        self.show_new(opened, crate::file_actions::next_new_file_name(kind), window, cx);
+        self.set_file_path(None);
+        self.open_ai_assistant_panel(window, cx);
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.analysis_sources = Some((self.file_id, vec![path.clone()]));
+        }
+        let file_id = self.file_id;
+        let baseline = self.document.presentation().clone();
+        let Some(sheet) = baseline.workbook.as_ref().and_then(|book| book.sheets.first()) else { return };
+        let args = serde_json::json!({
+            "destination_sheet": sheet.name,
+            "anchor": "A1",
+            "sql": "SELECT count(*) AS records FROM input",
+            "datasets": [{"source":"1","alias":"input"}],
+        });
+        self.set_status(crate::i18n::text("editor.analysis.loading").to_string(), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let prepared = cx.background_executor().spawn(async move {
+                ibis_doc_service::prepare_selected_datasets_export(&[path], args)
+            }).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.file_id != file_id || this.document.presentation() != &baseline {
+                    return;
+                }
+                let context = this.assistant_turn().tool_context();
+                let result = prepared.and_then(|prepared| {
+                    let mut draft = ibis_doc_model::Document::new(baseline);
+                    prepared.stage(&mut draft, context)
+                });
+                match result {
+                    Ok((_, commands)) => {
+                        this.execute(commands, cx);
+                        this.set_status(crate::i18n::text("editor.analysis.ready").to_string(), cx);
+                    }
+                    Err(error) => this.set_status(error.message, cx),
+                }
+            });
+        }).detach();
+        cx.notify();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn pick_analysis_sources(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(panel) = self.ai_assistant.as_ref() else { return };
         let panel_id = panel.prompt_input.entity_id();
@@ -1045,7 +1105,7 @@ impl SlideEditor {
             directories: false,
             extensions: ibis_doc_service::DATASET_EXTENSIONS.iter().map(|ext| ext.to_string()).collect(),
             multiple: true,
-            prompt: Some("分析する CSV・Parquet・Arrow IPC・JSON Lines・Avro・SQLite ファイルを選択".into()),
+            prompt: Some("分析する CSV・Parquet・Arrow IPC・JSON Lines・Avro・SQLite・ログファイルを選択".into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = picked.await else { return };

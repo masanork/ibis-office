@@ -671,6 +671,7 @@ pub enum DiskDataset {
     Avro(std::path::PathBuf, Vec<String>),
     Sqlite(std::path::PathBuf, String),
     Csv(std::path::PathBuf),
+    Log(std::path::PathBuf),
     Parquet(std::path::PathBuf, Vec<String>, Vec<(String, super::ParquetPredicate)>),
     Table(QTable),
 }
@@ -714,6 +715,7 @@ impl DiskDataset {
                 super::parquet_source::visit_parquet(path, selected, &filters, schema_only, visit)
             }
             Self::Sqlite(path, table) => visit_sqlite_table(path, table, schema_only, visit),
+            Self::Log(path) => super::log_source::visit_log(path, schema_only, visit),
             Self::Csv(path) => super::csv_source::visit_csv(path, schema_only, visit),
             Self::Table(table) => {
                 visit(&table.columns, None)?;
@@ -909,7 +911,7 @@ impl SqliteQuerySession {
                     width = names.len();
                     let batch = matches!(
                         source,
-                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Csv(..)
+                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Csv(..) | DiskDataset::Log(..)
                     );
                     #[cfg(feature = "report-profiling")]
                     let batch = batch && !super::report_profile::single_row_inserts_forced();

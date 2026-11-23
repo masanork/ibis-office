@@ -1704,3 +1704,10 @@ xlsx.cbom-select-new	新版のCycloneDX JSONを選択
 xlsx.cbom-compare-failed	CBOMを比較できませんでした（{error}）
 xlsx.cbom-source-changed	元のCBOMが更新されています。開き直してから比較してください。
 shell.menu.window-bar	ウィンドウ内のメニューバーを表示
+editor.csv.exceeds-sheet	CSVがシートの行上限を超えました。先頭の行だけを読み取り専用で表示しています。
+editor.csv.open-sql	SQLで分析
+editor.csv.open-sql-detail	新しいブックで元のCSVを分析対象に設定します。元ファイルはそのままで、指示を送信するまでモデルへの送信はありません。
+editor.csv.open-sql-unavailable	先頭の行だけを表示しています。SQL分析は200 MiB以下・256列以下のCSVに対応しています。
+editor.analysis.input-unavailable	分析には、読み取り可能な200 MiB以下のファイルが必要です。
+editor.analysis.loading	ローカルで入力の件数を集計しています…
+editor.analysis.ready	件数の集計が完了しました。アシスタントで元ファイルを分析できます。

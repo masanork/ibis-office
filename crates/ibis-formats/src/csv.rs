@@ -2058,3 +2058,20 @@ q\"
         assert_eq!(imported.rows, [vec!["A001", "Apple", "3"], vec!["B020", "Mandarin", "12"]]);
     }
 }
+
+#[cfg(all(test, not(target_family = "wasm")))]
+#[test]
+fn progressive_csv_signals_only_after_the_sheet_row_limit() {
+    for extra in [0, 1] {
+        let data = format!("code,note\n{}", ",\n".repeat(1_048_575 + extra));
+        let (_, stream) = crate::open_progressive(data.into_bytes(), 100_000).unwrap();
+        let final_chunk = stream.unwrap().into_iter().find(|chunk| chunk.is_last).unwrap();
+        assert_eq!(final_chunk.exceeds_sheet_rows, extra == 1);
+        if extra == 0 {
+            assert_eq!(final_chunk.current_rows, 1_048_576);
+        } else {
+            assert!(final_chunk.cells.is_empty());
+            assert!(final_chunk.heights.is_empty());
+        }
+    }
+}

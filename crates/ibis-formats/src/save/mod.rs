@@ -141,6 +141,7 @@ pub struct CsvProgressiveChunk {
     pub heights: Vec<ibis_doc_model::Emu>,
     pub current_rows: usize,
     pub is_last: bool,
+    pub exceeds_sheet_rows: bool,
 }
 
 /// Read a `.pptx`, `.xlsx`, `.docx`, or `.csv` for editing and saving.
@@ -270,7 +271,9 @@ pub fn open_progressive_with_options(
             let rest_bytes = (text.len() - remaining_offset.min(text.len())) as f64;
             let per_row = remaining_offset as f64 / first.len() as f64;
             let cells_per_row = first_cells_hint as f64 / first.len() as f64;
-            (rest_bytes / per_row.max(1.0) * cells_per_row * 1.03) as usize
+            let remaining_rows = (rest_bytes / per_row.max(1.0))
+                .min(1_048_576usize.saturating_sub(first.len()) as f64);
+            (remaining_rows * cells_per_row * 1.03) as usize
         };
         if remaining_offset < text.len() {
             #[cfg(not(target_family = "wasm"))]
@@ -296,6 +299,14 @@ pub fn open_progressive_with_options(
                     let mut all_heights = Vec::new();
 
                     while let Some(rec) = iter.next() {
+                        if first_chunk_rows <= 1_048_576 && processed + batch.len() >= 1_048_576 {
+                            // The source remains intact. Offer SQL analysis without attaching a partial sheet.
+                            let _ = tx.send(CsvProgressiveChunk {
+                                cells: Vec::new(), heights: Vec::new(), current_rows: processed,
+                                is_last: true, exceeds_sheet_rows: true,
+                            });
+                            return;
+                        }
                         batch.push(rec);
                         if batch.len() >= BATCH_SIZE {
                             let (cells, heights) = crate::xlsx::process_csv_chunk(
@@ -315,6 +326,7 @@ pub fn open_progressive_with_options(
                                 heights: Vec::new(),
                                 current_rows: processed,
                                 is_last: false,
+                                exceeds_sheet_rows: false,
                             }).is_err() {
                                 return;
                             }
@@ -336,6 +348,7 @@ pub fn open_progressive_with_options(
                         heights: all_heights,
                         current_rows: processed,
                         is_last: true,
+                        exceeds_sheet_rows: false,
                     });
                 });
             }

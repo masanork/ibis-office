@@ -191,3 +191,21 @@ fn csv_stages_only_above_the_budget_and_matches_legacy_decoding() {
         assert_eq!(json!(output.rows), json!([[row_count, "001"]]));
     }
 }
+
+#[test]
+fn long_syslog_skips_worksheet_import_and_stages_every_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = Service::new(&[dir.path().into()], false, crate::Limits::default());
+    let path = dir.path().join("events.syslog");
+    let mut input = "<34> Oct 11 auth: accepted\r\n".repeat(50_000);
+    input.push_str("<13> 最後の行");
+    std::fs::write(&path, input).unwrap();
+    let spec = json!({"source":path,"alias":"events"});
+    let session = batch_session(&service, &json!({"datasets":[spec]}), false).unwrap();
+    assert!(session.staged_disk_bytes().unwrap() > 0);
+    let output = session.query(
+        "SELECT count(*), max(line_number), sum(CASE WHEN message = '<13> 最後の行' THEN 1 ELSE 0 END) FROM events",
+        &[], 10, 1024,
+    ).unwrap();
+    assert_eq!(json!(output.rows), json!([[50_001, 50_001, 1]]));
+}
