@@ -40,6 +40,7 @@ mod text;
 mod markup;
 mod markdown;
 mod syntax;
+mod table_markup;
 pub use model::{
     DivisionKind, LawAppdxTable, LawArticle, LawDoc, LawItem, LawNode, LawParagraph,
     LawParagraphLabels, LawSentence, LawSentenceColumn, LawSentenceContent, LawSubitem,

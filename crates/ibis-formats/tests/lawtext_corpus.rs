@@ -302,19 +302,12 @@ fn public_food_labeling_samples_expose_table_and_form_limits() {
             assert_eq!(edited.law_title, title);
             assert_eq!(edited.law_num, original.law_num);
             assert_eq!(edited.main_provision, original.main_provision);
-            assert_eq!(edited.appdx_tables.len(), original.appdx_tables.len());
-            for (actual, expected) in edited.appdx_tables.iter().zip(&original.appdx_tables) {
-                assert_eq!(actual.title, expected.title);
-                assert_eq!(actual.related_article_num, expected.related_article_num);
-                assert_eq!(actual.rows.len(), expected.rows.len());
-                for (actual_row, expected_row) in actual.rows.iter().zip(&expected.rows) {
-                    assert!(actual_row.starts_with(expected_row));
-                    assert!(
-                        actual_row[expected_row.len()..]
-                            .iter()
-                            .all(String::is_empty)
-                    );
-                }
+            assert_eq!(edited.appdx_tables, original.appdx_tables);
+            if !original.appdx_tables.is_empty() {
+                assert_eq!(
+                    to_law_xml(&edited).split_once("<AppdxTable>").unwrap().1,
+                    to_law_xml(&original).split_once("<AppdxTable>").unwrap().1
+                );
             }
             assert_eq!(
                 parse_law_xml(&to_law_xml(&edited)).unwrap().law_title,
@@ -325,7 +318,13 @@ fn public_food_labeling_samples_expose_table_and_form_limits() {
 
     let table_output = to_law_xml(&parse_law_xml(table).unwrap());
     assert!(table_output.contains("別表第十八"));
-    assert!(!table_output.contains("rowspan="));
+    assert!(table_output.contains("rowspan=\"2\""));
+    assert!(table_output.contains("BorderBottom=\"solid\""));
+    let source = parse_law_xml(table).unwrap();
+    let edited_markdown = to_markdown(&source).replace("| 形質 |", "| 形質区分 |");
+    let edited = to_law_xml(&parse_markdown_law(&edited_markdown).unwrap());
+    assert!(edited.contains("形質区分"));
+    assert!(!edited.contains("rowspan="));
     let form_output = to_law_xml(&parse_law_xml(form).unwrap());
     assert!(!form_output.contains("<AppdxStyle>"));
 }

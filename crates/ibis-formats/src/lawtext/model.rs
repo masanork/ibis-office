@@ -254,6 +254,7 @@ pub struct LawDoc {
     pub main_provision: Vec<LawNode>,
     pub suppl_provisions: Vec<SupplProvision>,
     pub appdx_tables: Vec<LawAppdxTable>,
+    pub(super) appdx_table_xml: Vec<super::table_markup::SavedAppdxTable>,
 }
 
 impl Default for LawDoc {
@@ -275,6 +276,7 @@ impl Default for LawDoc {
             main_provision: Vec::new(),
             suppl_provisions: Vec::new(),
             appdx_tables: Vec::new(),
+            appdx_table_xml: Vec::new(),
         }
     }
 }

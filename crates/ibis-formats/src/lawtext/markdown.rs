@@ -4,6 +4,7 @@
 //! Editable law Markdown and article locators.
 
 use crate::Error;
+use super::table_markup::{encode_tables, restore_tables};
 use super::{is_law_xml, parse_law_xml};
 use super::model::{
     LawArticle, LawDoc, LawNode, LawParagraphLabels, LawSentenceContent, LawSubitem,
@@ -46,6 +47,9 @@ fn to_markdown_with_articles(
     if preserve_editing_metadata && let Some(toc) = &doc.toc_xml {
         let encoded = serde_json::Value::String(toc.clone());
         out.push_str(&format!("law_toc: {encoded}\n"));
+    }
+    if preserve_editing_metadata && let Some(encoded) = encode_tables(doc) {
+        out.push_str(&format!("law_appdx_tables: {encoded}\n"));
     }
     if !doc.law_num.is_empty() {
         out.push_str(&format!("law_num: {}\n", doc.law_num));
@@ -281,6 +285,7 @@ fn write_markdown_subitem(out: &mut String, sub: &LawSubitem, preserve_sentences
 /// Parse a Lawtext-flavoured Markdown document back into a [`LawDoc`].
 pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
     let mut doc = LawDoc::default();
+    let mut table_xml = None;
     let mut body = md.trim_start_matches('\u{feff}');
     if let Some(after_open) = body.strip_prefix("---\n").or_else(|| body.strip_prefix("---\r\n")) {
         if let Some(end_idx) = after_open.find("\n---") {
@@ -297,6 +302,7 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
                             }
                         }
                         "law_toc" => doc.toc_xml = read_encoded_toc(&v),
+                        "law_appdx_tables" => table_xml = Some(v),
                         "law_num" => doc.law_num = v,
                         "era" => doc.era = Some(v),
                         "year" => doc.year = Some(v),
@@ -396,5 +402,8 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
     doc.main_provision = std::mem::take(&mut parsed.main_provision);
     doc.suppl_provisions = std::mem::take(&mut parsed.suppl_provisions);
     doc.appdx_tables = std::mem::take(&mut parsed.appdx_tables);
+    if let Some(encoded) = table_xml {
+        restore_tables(&mut doc, &encoded, true);
+    }
     Ok(doc)
 }

@@ -21,7 +21,10 @@ use super::markup::{
     parse_lawtext_sentence_text,
 };
 
+use super::table_markup::{encode_tables, restore_tables};
+
 const LAWTEXT_TITLE_ATTRIBUTES: &str = ":law-title-attrs: ";
+const LAWTEXT_TABLES: &str = ":law-appdx-tables: ";
 const LAWTEXT_TOC: &str = ":law-toc: ";
 
 /// The upstream Lawtext examples put the law number on its own line.
@@ -66,7 +69,7 @@ pub fn is_lawtext(data: &[u8]) -> bool {
             let line = line.trim();
             lawtext_attributes(line).is_some() || line.strip_prefix(LAWTEXT_TITLE_ATTRIBUTES)
                 .and_then(parse_title_attributes_fragment).is_some()
-                || line.starts_with(LAWTEXT_TOC)
+                || line.starts_with(LAWTEXT_TOC) || line.starts_with(LAWTEXT_TABLES)
         });
     let Some(first) = lines.next() else {
         return false;
@@ -102,6 +105,9 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
     if let Some(toc) = &doc.toc_xml {
         let encoded = serde_json::Value::String(toc.clone());
         out.push_str(&format!("{LAWTEXT_TOC}{encoded}\n"));
+    }
+    if let Some(encoded) = encode_tables(doc) {
+        out.push_str(&format!("{LAWTEXT_TABLES}{encoded}\n"));
     }
     if !out.is_empty() {
         out.push('\n');
@@ -141,7 +147,8 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
         out.push_str("\n\n");
         for row in &appdx.rows {
             out.push_str("| ");
-            out.push_str(&row.join(" | "));
+            let cells: Vec<_> = row.iter().map(|cell| cell.replace('|', "\\|")).collect();
+            out.push_str(&cells.join(" | "));
             out.push_str(" |\n");
         }
         if !appdx.rows.is_empty() {
@@ -283,6 +290,10 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
         doc.toc_xml = Some(toc);
         lines.next();
     }
+    let table_xml = lines.peek().and_then(|line| line.trim().strip_prefix(LAWTEXT_TABLES));
+    if table_xml.is_some() {
+        lines.next();
+    }
     let mut header = lines.clone();
     if let (Some(title), Some(number)) = (
         header.next().map(str::trim).filter(|title| !title.contains('（') && !title.starts_with('第')),
@@ -319,11 +330,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
             continue;
         }
         if in_appdx && trimmed.starts_with('|') && trimmed.ends_with('|') {
-            let cells: Vec<String> = trimmed
-                .trim_matches('|')
-                .split('|')
-                .map(|c| c.trim().replace("\\|", "|"))
-                .collect();
+            let cells = crate::markdown::split_table_row(trimmed);
             let is_sep = !cells.is_empty()
                 && cells
                     .iter()
@@ -449,6 +456,9 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
 
     flush_article(&mut cur_article, &mut div_stack, &mut doc, in_suppl);
     flush_all_divisions(&mut div_stack, &mut doc, in_suppl);
+    if let Some(encoded) = table_xml {
+        restore_tables(&mut doc, encoded, false);
+    }
     Ok(doc)
 }
 

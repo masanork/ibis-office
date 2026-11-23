@@ -5,11 +5,12 @@
 
 use crate::Error;
 use super::model::{
-    DivisionKind, LawAppdxTable, LawArticle, LawDoc, LawItem, LawNode, LawParagraph,
+    DivisionKind, LawArticle, LawDoc, LawItem, LawNode, LawParagraph,
     LawParagraphLabels, LawSentence, LawSentenceColumn, LawSentenceContent, LawSubitem,
     LawTitleAttributes, SupplProvision,
 };
 use super::syntax::to_fullwidth_digits;
+use super::table_markup::{SavedAppdxTable, parse_appdx_table};
 
 /// Parse an e-Gov 法令標準XML string into a [`LawDoc`].
 pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
@@ -70,33 +71,11 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
         });
     }
     for appdx in body.children().filter(|n| n.is_element() && n.tag_name().name() == "AppdxTable") {
-        let title = child_elem(appdx, "AppdxTableTitle")
-            .map(collect_text)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "別表".to_string());
-        let related_article_num = child_elem(appdx, "RelatedArticleNum")
-            .map(collect_text)
-            .filter(|s| !s.is_empty());
-        let mut rows = Vec::new();
-        if let Some(ts) = child_elem(appdx, "TableStruct") {
-            if let Some(tbl) = child_elem(ts, "Table") {
-                for tr in tbl.children().filter(|n| n.is_element() && n.tag_name().name() == "TableRow") {
-                    let row: Vec<String> = tr
-                        .children()
-                        .filter(|n| n.is_element() && n.tag_name().name() == "TableColumn")
-                        .map(collect_text)
-                        .collect();
-                    if !row.is_empty() {
-                        rows.push(row);
-                    }
-                }
-            }
+        let table = parse_appdx_table(appdx);
+        if let Some(snapshot) = SavedAppdxTable::read(&xml[appdx.range()]) {
+            out.appdx_table_xml.push(snapshot);
         }
-        out.appdx_tables.push(LawAppdxTable {
-            title,
-            related_article_num,
-            rows,
-        });
+        out.appdx_tables.push(table);
     }
     Ok(out)
 }
@@ -159,7 +138,7 @@ pub(super) fn write_title_attributes_fragment(out: &mut String, attributes: &Law
     out.push_str("/>");
 }
 
-fn child_elem<'a, 'input>(
+pub(super) fn child_elem<'a, 'input>(
     parent: roxmltree::Node<'a, 'input>,
     name: &str,
 ) -> Option<roxmltree::Node<'a, 'input>> {
@@ -168,7 +147,7 @@ fn child_elem<'a, 'input>(
         .find(|n| n.is_element() && n.tag_name().name() == name)
 }
 
-fn collect_text(node: roxmltree::Node<'_, '_>) -> String {
+pub(super) fn collect_text(node: roxmltree::Node<'_, '_>) -> String {
     let mut out = String::new();
     collect_text_into(node, &mut out);
     out.trim().to_string()
@@ -447,6 +426,13 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
         out.push_str("    </SupplProvision>\n");
     }
     for appdx in &doc.appdx_tables {
+        let mut snapshots = doc.appdx_table_xml.iter().filter(|snapshot| snapshot.table == *appdx);
+        if let Some(snapshot) = snapshots.next() && snapshots.next().is_none() {
+            out.push_str("    ");
+            out.push_str(&snapshot.xml);
+            out.push('\n');
+            continue;
+        }
         out.push_str("    <AppdxTable>\n      <AppdxTableTitle>");
         push_xml_escaped(&mut out, &appdx.title);
         out.push_str("</AppdxTableTitle>\n");
