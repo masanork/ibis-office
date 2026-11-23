@@ -1317,3 +1317,98 @@ fn query_report_warns_about_changed_input_schema_and_applies_the_reviewed_baseli
     drop(service);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn query_report_check_blocks_unmatched_keys_in_service_and_assistant() {
+    use ibis_doc_service::{DraftToolContext, batch_query_report_definitions, prepare_selected_report_batch};
+
+    let dir = std::env::temp_dir().join(format!("ibis-report-unmatched-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let facts = dir.join("facts.jsonl");
+    let labels = dir.join("labels.csv");
+    let workbook = dir.join("source.xlsx");
+    let saved = dir.join("report.xlsx");
+    std::fs::write(&facts, "{\"code\":\"001\"}\n").unwrap();
+    std::fs::write(&labels, "code,label\n001,North\n").unwrap();
+    std::fs::write(&workbook, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut service = Service::new(&[dir.clone()], false, Limits::default());
+    let call = |service: &mut Service, tool, args| service.call(tool, &args).unwrap();
+    let id = call(&mut service, "app_open_document", json!({"path":workbook}))["document_id"].clone();
+    let sheet = call(&mut service, "xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"].clone();
+    let table = call(&mut service, "sqlite_query_to_table", json!({
+        "document_id":id, "destination_sheet":sheet, "anchor":"A1",
+        "sql":"SELECT count(*) AS matches FROM facts JOIN labels USING (code)",
+        "datasets":[{"source":facts,"alias":"facts"},{"source":labels,"alias":"labels"}],
+    }))["table"].clone();
+    call(&mut service, "xlsx_set_query_report_checks", json!({
+        "document_id":id, "table":table, "checks":[{
+            "name":"マスタ未登録",
+            "sql":"SELECT count(*) FROM facts f WHERE NOT EXISTS (SELECT 1 FROM labels l WHERE l.code = f.code)",
+            "max":0,
+        }],
+    }));
+    call(&mut service, "app_save_document", json!({"document_id":id,"path":saved}));
+
+    let mut draft = ibis_doc_model::Document::new(
+        ibis_formats::read(&std::fs::read(&saved).unwrap()).unwrap(),
+    );
+    let unchanged = draft.presentation().clone();
+    let selected = [facts.clone(), labels.clone()];
+    let path_bindings = json!({"facts.jsonl":facts,"labels.csv":labels});
+    let assistant_batch = |draft: &ibis_doc_model::Document, preview| {
+        let request = json!({"bindings":{"facts.jsonl":"1","labels.csv":"2"},"preview":preview});
+        let definitions = batch_query_report_definitions(draft.presentation(), &request).unwrap();
+        prepare_selected_report_batch(&selected, request, definitions).unwrap()
+    };
+
+    for (facts_json, labels_csv, schema_changed) in [
+        ("{\"code\":1}\n", "code,label\n001,North\n", true),
+        ("{\"code\":\"001\"}\n", "code,label\n002,South\n", false),
+    ] {
+        std::fs::write(&facts, facts_json).unwrap();
+        std::fs::write(&labels, labels_csv).unwrap();
+        let preview = call(&mut service, "sqlite_refresh_query_reports", json!({
+            "document_id":id,"bindings":path_bindings,"preview":true,
+        }));
+        assert_eq!(preview["blocked"], true);
+        assert!(preview["snapshot_id"].is_null());
+        assert_eq!(preview["reports"][0]["schema_changes"].is_array(), schema_changed);
+        assert_eq!(preview["reports"][0]["checks"], json!([
+            {"name":"マスタ未登録","count":1,"max":0,"passed":false},
+        ]));
+        let (assistant_preview, commands) = assistant_batch(&draft, true)
+            .stage(&mut draft, DraftToolContext::default()).unwrap();
+        assert_eq!(assistant_preview["reports"], preview["reports"]);
+        assert!(commands.is_empty());
+        assert_eq!(service.call("sqlite_refresh_query_reports", &json!({
+            "document_id":id,"bindings":path_bindings,
+        })).unwrap_err().code, "query_check_failed");
+        assert_eq!(assistant_batch(&draft, false)
+            .stage(&mut draft, DraftToolContext::default()).err().unwrap().code, "query_check_failed");
+        assert_eq!(draft.presentation(), &unchanged);
+        assert_eq!(call(&mut service, "xlsx_get_cells", json!({
+            "document_id":id,"sheet":sheet,"range":"A2",
+        }))["rows"][0][0].as_f64(), Some(1.0));
+    }
+
+    // The repaired inputs join successfully and contain two matches.
+    std::fs::write(&facts, "{\"code\":\"001\"}\n{\"code\":\"002\"}\n").unwrap();
+    std::fs::write(&labels, "code,label\n001,North\n002,South\n").unwrap();
+    let preview = call(&mut service, "sqlite_refresh_query_reports", json!({
+        "document_id":id,"bindings":path_bindings,"preview":true,
+    }));
+    assert_eq!(preview["blocked"], false);
+    assert_eq!(preview["reports"][0]["checks"][0]["count"], 0);
+    let (assistant, commands) = assistant_batch(&draft, false)
+        .stage(&mut draft, DraftToolContext::default()).unwrap();
+    assert!(!commands.is_empty());
+    let applied = call(&mut service, "sqlite_refresh_query_reports", json!({
+        "document_id":id,"snapshot_id":preview["snapshot_id"],
+    }));
+    assert_eq!(assistant["reports"], applied["reports"]);
+    assert_eq!(call(&mut service, "xlsx_get_cells", json!({
+        "document_id":id,"sheet":sheet,"range":"A2",
+    }))["rows"][0][0].as_f64(), Some(2.0));
+    drop(service);
+    std::fs::remove_dir_all(dir).unwrap();
+}
