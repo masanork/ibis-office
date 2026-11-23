@@ -5597,6 +5597,7 @@ dependencies = [
  "ibis-m-lang",
  "parquet",
  "regex",
+ "rustix",
  "ruzstd",
  "serde",
  "serde_json",
@@ -5605,6 +5606,7 @@ dependencies = [
  "turso_parser",
  "unicode-normalization",
  "unicode-segmentation",
+ "windows-sys 0.61.2",
  "zstd",
 ]
 

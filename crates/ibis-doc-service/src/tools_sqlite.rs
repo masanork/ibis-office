@@ -15,6 +15,8 @@ use crate::catalog::{Access, Tool, boolean, document_id, integer, object, string
 use crate::service::{Args, Limits, Service};
 use crate::{ToolError, paths};
 
+pub const DESKTOP_TEXT_DATASET_LIMIT: u64 = 512 * 1024 * 1024;
+
 pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "jsonl", "ndjson", "avro", "sqlite", "sqlite3", "db", "log", "syslog"];
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
 const PATH: &str = "path";
@@ -256,7 +258,10 @@ fn selected_file_service(paths: &[PathBuf]) -> Service {
         .iter()
         .filter_map(|path| path.parent().map(Path::to_path_buf))
         .collect::<Vec<_>>();
-    Service::new(&folders, true, Limits::default())
+    Service::new(&folders, true, Limits {
+        max_text_dataset_file_size: Some(DESKTOP_TEXT_DATASET_LIMIT),
+        ..Limits::default()
+    })
 }
 
 pub fn is_sqlite(path: &Path) -> bool {
@@ -762,10 +767,15 @@ fn visit_datasets(
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
         let kind = source_kind(&path);
-        let limit = if schema_only && (kind != "json_lines" || spec["recover"] == true || spec.get("paths").is_some()) {
-            service.limits.max_file_size
+        let limit = dataset_file_limit(&service.limits, kind);
+        let full_schema_scan = kind != "json_lines"
+            || spec["recover"] == true
+            || spec.get("paths").is_some()
+            || service.limits.max_text_dataset_file_size.is_some();
+        let limit = if !schema_only || !full_schema_scan {
+            limit.min(32 * 1024 * 1024)
         } else {
-            service.limits.max_file_size.min(32 * 1024 * 1024)
+            limit
         };
         if !metadata.is_file() || metadata.len() > limit {
             return Err(ToolError::invalid("dataset must be a regular file within the input size limit"));
@@ -1293,6 +1303,18 @@ fn report_error(name: &str, error: ToolError) -> ToolError {
     ToolError::new(error.code, format!("{name}: {}", error.message))
 }
 
+fn is_text_dataset(kind: &str) -> bool {
+    matches!(kind, "csv" | "json_lines" | "log")
+}
+
+fn dataset_file_limit(limits: &Limits, kind: &str) -> u64 {
+    if is_text_dataset(kind) {
+        limits.max_text_dataset_file_size.unwrap_or(limits.max_file_size)
+    } else {
+        limits.max_file_size
+    }
+}
+
 fn streamable_kind(kind: &str) -> bool {
     matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite" | "csv" | "log")
 }
@@ -1303,6 +1325,7 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
     }
     let mut aliases = std::collections::HashSet::new();
     let mut sources = Vec::new();
+    let mut estimated_bytes = 0u64;
     let mut bounded = Vec::new();
     for spec in specs {
         crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where", "recover", "paths"])?;
@@ -1321,12 +1344,17 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
             return Err(ToolError::invalid("table is only used for SQLite datasets"));
         }
         let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
-        if !metadata.is_file() || metadata.len() > service.limits.max_file_size {
-            return Err(ToolError::invalid("Dataset exceeds the file size limit"));
+        let limit = dataset_file_limit(&service.limits, kind);
+        if !metadata.is_file() || metadata.len() > limit {
+            return Err(ToolError::invalid(format!(
+                "Dataset must be a regular file within the {} MiB input limit", limit / (1024 * 1024),
+            )));
         }
         if kind != "json_lines" && (spec.get("recover").is_some() || spec.get("paths").is_some()) {
             return Err(ToolError::invalid("recover and paths are only used for JSON Lines datasets"));
         }
+        let estimated = metadata.len().saturating_mul(if is_text_dataset(kind) { 3 } else { 1 });
+        estimated_bytes = estimated_bytes.saturating_add(estimated);
         let columns = dataset_columns(spec, kind)?;
         let source = match kind {
             "arrow_ipc" => DiskDataset::ArrowIpc(path, columns),
@@ -1345,7 +1373,7 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
             (alias, DiskDataset::Table(table))
         }));
     }
-    SqliteQuerySession::from_disk_datasets(&sources).map_err(sqlite_error)
+    SqliteQuerySession::from_disk_datasets_with_disk_estimate(&sources, estimated_bytes).map_err(sqlite_error)
 }
 
 fn batch_session(service: &Service, query: &Value, arrow_disk: bool) -> Result<SqliteQuerySession, ToolError> {

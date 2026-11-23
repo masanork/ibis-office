@@ -1968,7 +1968,7 @@ impl SlideEditor {
                                             this.set_status(crate::i18n::text("editor.csv.exceeds-sheet").to_string(), cx);
                                             let can_analyze = this.current_csv_format.is_some_and(|format| format.delimiter == ',')
                                                 && csv_path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
-                                                && std::fs::metadata(&csv_path).is_ok_and(|m| m.len() <= ibis_doc_service::Limits::default().max_file_size)
+                                                && std::fs::metadata(&csv_path).is_ok_and(|m| m.len() <= ibis_doc_service::DESKTOP_TEXT_DATASET_LIMIT)
                                                 && this.presentation().slide(this.current_slide).is_some_and(|slide| {
                                                     slide.shapes.iter().any(|shape| matches!(&shape.kind, ibis_doc_model::ShapeKind::Sheet(sheet) if sheet.columns.len() <= 256))
                                                 });

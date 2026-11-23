@@ -1710,8 +1710,8 @@ shell.menu.window-bar	Show Menu Bar in Window
 editor.csv.exceeds-sheet	This CSV exceeds the sheet row limit. Only the initial rows are shown in this read-only preview.
 editor.csv.open-sql	Analyze with SQL
 editor.csv.open-sql-detail	Open a new workbook with the original CSV selected for analysis. The file stays intact, and nothing is sent to a model until you submit a request.
-editor.csv.open-sql-unavailable	Only the initial rows are shown. SQL analysis requires a CSV file up to 200 MiB and up to 256 columns.
-editor.analysis.input-unavailable	Analysis requires a readable file up to 200 MiB.
+editor.csv.open-sql-unavailable	Only the initial rows are shown. SQL analysis requires a CSV file up to 512 MiB and up to 256 columns.
+editor.analysis.input-unavailable	Analysis requires a readable file up to 512 MiB.
 editor.analysis.loading	Counting input records locally…
 editor.analysis.ready	The local record count is ready. You can now query the original file from the Assistant.
 editor.jsonl.fields	JSONL fields

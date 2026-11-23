@@ -24,6 +24,8 @@ pub struct Limits {
     pub max_documents: usize,
     /// The size of a file that is opened, in bytes (200 MB).
     pub max_file_size: u64,
+    /// Optional input limit for CSV, JSON Lines and UTF-8 log SQL datasets.
+    pub max_text_dataset_file_size: Option<u64>,
     /// The size a zip may expand to, as a multiple of the file's size (a zip bomb stops here).
     pub max_expansion: u64,
     /// The bytes of a tool's result before it is paged.
@@ -32,7 +34,7 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_documents: 8, max_file_size: 200 * 1024 * 1024, max_expansion: 20, page_bytes: 256 * 1024 }
+        Self { max_documents: 8, max_file_size: 200 * 1024 * 1024, max_text_dataset_file_size: None, max_expansion: 20, page_bytes: 256 * 1024 }
     }
 }
 

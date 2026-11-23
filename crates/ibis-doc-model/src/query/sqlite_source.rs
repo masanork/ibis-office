@@ -842,6 +842,56 @@ impl StagedInsert {
     }
 }
 
+const STAGING_DISK_RESERVE: u64 = 512 * 1024 * 1024;
+const STAGING_CHECK_TEXT_BYTES: usize = 8 * 1024 * 1024;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn available_disk_bytes(path: &Path) -> std::io::Result<u64> {
+    let volume = rustix::fs::statvfs(path)?;
+    Ok(volume.f_bavail.saturating_mul(volume.f_frsize))
+}
+
+#[cfg(target_os = "windows")]
+fn available_disk_bytes(path: &Path) -> std::io::Result<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let path = path.as_os_str().encode_wide().chain([0]).collect::<Vec<_>>();
+    let mut available = 0;
+    // The path is NUL-terminated and the output pointer is valid until the call returns.
+    if unsafe { GetDiskFreeSpaceExW(path.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut()) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(available)
+}
+
+fn staged_file_bytes(path: &Path) -> std::io::Result<u64> {
+    fs::read_dir(path)?.try_fold(0u64, |sum, entry| {
+        Ok(sum.saturating_add(entry?.metadata()?.len()))
+    })
+}
+
+fn staging_disk_budget(path: &Path, estimated_bytes: u64) -> Result<u64, String> {
+    let available = available_disk_bytes(path).map_err(|e| format!("Cannot check temporary disk space: {e}"))?;
+    let budget = available.saturating_sub(STAGING_DISK_RESERVE);
+    if available <= STAGING_DISK_RESERVE || estimated_bytes > budget {
+        return Err(format!(
+            "Not enough space for a temporary SQL database (available: {} MiB, estimated staging: {} MiB, reserve: 512 MiB)",
+            available / (1024 * 1024), estimated_bytes.div_ceil(1024 * 1024)
+        ));
+    }
+    Ok(budget)
+}
+
+fn check_staged_disk(path: &Path, budget: u64) -> Result<(), String> {
+    let available = available_disk_bytes(path).map_err(|e| format!("Cannot check temporary disk space: {e}"))?;
+    let used = staged_file_bytes(path).map_err(|e| e.to_string())?;
+    if available <= STAGING_DISK_RESERVE || used > budget {
+        return Err("Temporary SQL database reached its disk budget".into());
+    }
+    Ok(())
+}
+
 impl SqliteQuerySession {
     /// Stage Arrow sources in a private temporary database for reuse by several SELECTs.
     pub fn from_arrow_disk(
@@ -860,6 +910,13 @@ impl SqliteQuerySession {
     }
 
     pub fn from_disk_datasets(sources: &[(String, DiskDataset)]) -> Result<Self, String> {
+        Self::from_disk_datasets_with_disk_estimate(sources, 0)
+    }
+
+    pub fn from_disk_datasets_with_disk_estimate(
+        sources: &[(String, DiskDataset)],
+        estimated_bytes: u64,
+    ) -> Result<Self, String> {
         #[cfg(feature = "report-profiling")]
         use super::report_profile::{Phase, Timer};
         #[cfg(feature = "report-profiling")]
@@ -868,6 +925,7 @@ impl SqliteQuerySession {
             .prefix("ibis-datasets-")
             .tempdir()
             .map_err(|error| error.to_string())?;
+        let disk_budget = staging_disk_budget(temp.path(), estimated_bytes)?;
         let path = temp.path().join("datasets.sqlite");
         let io = Arc::new(PlatformIO::new().map_err(|error| error.to_string())?);
         let database = Database::open_file(
@@ -892,6 +950,7 @@ impl SqliteQuerySession {
             let mut insert: Option<StagedInsert> = None;
             let mut width = 0;
             let mut rows = 0usize;
+            let mut text_bytes = 0usize;
             {
                 #[cfg(feature = "report-profiling")]
                 let _timer = Timer::start(Phase::Write);
@@ -902,12 +961,19 @@ impl SqliteQuerySession {
                 let _timer = Timer::start(Phase::Write);
                 if let Some(row) = row {
                     let insert = insert.as_mut().ok_or("Missing dataset schema")?;
+                    text_bytes += row.iter().map(|value| match value {
+                        CellValue::Text(text) => text.len(),
+                        _ => 0,
+                    }).sum::<usize>();
                     insert.push(columns, row)?;
                     rows += 1;
-                    if rows.is_multiple_of(4096) {
+                    if rows == 4096 || text_bytes >= STAGING_CHECK_TEXT_BYTES {
                         insert.flush(width)?;
                         execute("COMMIT")?;
+                        check_staged_disk(temp.path(), disk_budget)?;
                         execute("BEGIN")?;
+                        rows = 0;
+                        text_bytes = 0;
                     }
                 } else {
                     let names = columns
@@ -933,6 +999,7 @@ impl SqliteQuerySession {
                 insert.flush(width)?;
             }
             execute("COMMIT")?;
+            check_staged_disk(temp.path(), disk_budget)?;
         }
         connection.set_query_only(true);
         Ok(Self {
@@ -946,11 +1013,7 @@ impl SqliteQuerySession {
 
     /// Size of the staged database and its visible sidecar files while the session is open.
     pub fn staged_disk_bytes(&self) -> std::io::Result<u64> {
-        self.temp.as_ref().map_or(Ok(0), |temp| {
-            fs::read_dir(temp.path())?.try_fold(0u64, |sum, entry| {
-                Ok(sum.saturating_add(entry?.metadata()?.len()))
-            })
-        })
+        self.temp.as_ref().map_or(Ok(0), |temp| staged_file_bytes(temp.path()))
     }
 }
 
@@ -1058,6 +1121,14 @@ fn execute_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staging_rejects_unavailable_capacity_before_and_during_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(staging_disk_budget(dir.path(), u64::MAX).unwrap_err().contains("Not enough space"));
+        fs::write(dir.path().join("datasets.sqlite-wal"), b"1234").unwrap();
+        assert!(check_staged_disk(dir.path(), 3).unwrap_err().contains("disk budget"));
+    }
 
     #[test]
     fn stages_sqlite_above_cell_budget_preserving_type_and_source() {

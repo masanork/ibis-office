@@ -1053,7 +1053,7 @@ impl SlideEditor {
         &mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>,
     ) {
         match std::fs::metadata(&path) {
-            Ok(metadata) if metadata.is_file() && metadata.len() <= ibis_doc_service::Limits::default().max_file_size => {}
+            Ok(metadata) if metadata.is_file() && metadata.len() <= ibis_doc_service::DESKTOP_TEXT_DATASET_LIMIT => {}
             _ => {
                 self.set_status(crate::i18n::text("editor.analysis.input-unavailable").to_string(), cx);
                 return;

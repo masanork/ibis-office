@@ -209,3 +209,18 @@ fn long_syslog_skips_worksheet_import_and_stages_every_line() {
     ).unwrap();
     assert_eq!(json!(output.rows), json!([[50_001, 50_001, 1]]));
 }
+
+#[test]
+fn selected_text_datasets_have_a_separate_file_limit() {
+    let default = crate::Limits::default();
+    let desktop = selected_file_service(&[]);
+    assert_eq!(default.max_file_size, 200 * 1024 * 1024);
+    assert_eq!(desktop.limits.max_file_size, default.max_file_size);
+    for kind in ["csv", "json_lines", "log"] {
+        assert_eq!(dataset_file_limit(&default, kind), default.max_file_size);
+        assert_eq!(dataset_file_limit(&desktop.limits, kind), DESKTOP_TEXT_DATASET_LIMIT);
+    }
+    for kind in ["sqlite", "parquet", "arrow_ipc", "avro"] {
+        assert_eq!(dataset_file_limit(&desktop.limits, kind), default.max_file_size);
+    }
+}
