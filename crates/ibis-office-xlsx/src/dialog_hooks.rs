@@ -124,12 +124,6 @@ impl SlideEditor {
             self.cancel_cell_edit(cx);
             self.status = None;
             self.set_cell(column, row);
-            if self.current_sheet().is_some_and(|(_, s)|s.cell(row,column).is_some_and(|c|c.formula.is_some() || !c.value.is_empty())) {
-                self.run_sheet(vec![ibis_doc_model::Command::Sheet(ibis_doc_model::SheetCommand::SetCells {
-                    sheet: self.current_slide,
-                    edits: vec![ibis_doc_model::CellEdit {row,column,input:ibis_doc_model::CellInput::Clear}],
-                })],cx);
-            }
         }
     }
 
