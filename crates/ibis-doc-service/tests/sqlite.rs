@@ -951,3 +951,28 @@ fn parquet_query_report_preserves_projection_and_filter_after_reopen() {
     assert_eq!(refreshed["rows"], 1);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn parquet_text_lists_can_be_expanded_in_turso_without_duplicating_amounts() {
+    let dir = std::env::temp_dir().join(format!("ibis-parquet-text-lists-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let source = dir.join("source.parquet");
+    std::fs::write(&source, include_bytes!("fixtures/query-text-lists.parquet")).unwrap();
+    let mut service = Service::new(&[dir.clone()], true, Limits::default());
+    let mut query = |sql| service.call("sqlite_query", &json!({
+        "sql":sql,
+        "datasets":[{"source":source,"alias":"facts","columns":["tags","code","amount"]}]
+    })).unwrap()["rows"].clone();
+    assert_eq!(query("SELECT code, tags FROM facts ORDER BY code"), json!([
+        ["001", "[\"line\\\"1\",null,\"業務\",\"業務\"]"], ["002","[]"], ["003",null], ["004","[\"業務\"]"]
+    ]));
+    assert_eq!(
+        query("SELECT f.code, j.key, j.value FROM facts f CROSS JOIN json_each(f.tags) j ORDER BY f.code, j.key"),
+        json!([["001",0,"line\"1"],["001",1,null],["001",2,"業務"],["001",3,"業務"],["004",0,"業務"]])
+    );
+    assert_eq!(
+        query("SELECT SUM(amount) FROM facts f WHERE EXISTS (SELECT 1 FROM json_each(f.tags) j WHERE j.value = '業務')"),
+        json!([[500]])
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

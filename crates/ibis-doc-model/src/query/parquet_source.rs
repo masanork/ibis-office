@@ -51,6 +51,67 @@ fn cell(field: Field) -> Result<(CellValue, QType), String> {
     }
 }
 
+// Recognize the standard three-level LIST encoding for UTF-8 text.
+fn is_text_list(field: &Type) -> bool {
+    if field.is_primitive()
+        || field.get_basic_info().converted_type() != ConvertedType::LIST
+        || field.get_basic_info().repetition() == Repetition::REPEATED
+    {
+        return false;
+    }
+    let [entries] = field.get_fields() else { return false };
+    if entries.is_primitive()
+        || entries.name() != "list"
+        || entries.get_basic_info().repetition() != Repetition::REPEATED
+    {
+        return false;
+    }
+    let [element] = entries.get_fields() else { return false };
+    element.is_primitive()
+        && element.get_physical_type() == PhysicalType::BYTE_ARRAY
+        && element.get_basic_info().converted_type() == ConvertedType::UTF8
+        && element.get_basic_info().repetition() != Repetition::REPEATED
+}
+
+fn text_list_cell(field: Field, max_text: usize) -> Result<CellValue, String> {
+    use std::io::{self, Write};
+
+    struct BoundedJson {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+    impl Write for BoundedJson {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            if data.len() > self.limit - self.bytes.len() {
+                return Err(io::Error::other("Parquet text exceeds the import limit"));
+            }
+            self.bytes.extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let list = match field {
+        Field::Null => return Ok(CellValue::Empty),
+        Field::ListInternal(list) => list,
+        _ => return Err("Expected a Parquet text list".into()),
+    };
+    if list.elements().len() > max_text {
+        return Err("Parquet text exceeds the import limit".into());
+    }
+    let values = list.elements().iter().map(|item| match item {
+        Field::Str(value) => Ok(Some(value.as_str())),
+        Field::Null => Ok(None),
+        _ => Err("Unsupported Parquet text list element"),
+    }).collect::<Result<Vec<_>, _>>()?;
+    let mut output = BoundedJson { bytes: Vec::new(), limit: max_text };
+    serde_json::to_writer(&mut output, &values).map_err(|error| error.to_string())?;
+    let json = String::from_utf8(output.bytes).map_err(|error| error.to_string())?;
+    Ok(CellValue::Text(json.into()))
+}
+
 /// A top-level field and its spreadsheet type, if the reader can import it.
 pub struct ParquetColumn {
     pub name: String,
@@ -306,7 +367,7 @@ fn read_columns(
     rows_loaded: usize,
     expected: Option<&[QColumn]>,
 ) -> Result<QTable, String> {
-    read_columns_bounded(path, selected, rows_loaded, expected, &[], 5_000_000, usize::MAX)
+    read_columns_bounded(path, selected, rows_loaded, expected, None, 5_000_000, usize::MAX)
 }
 
 pub fn read_parquet_bounded(
@@ -432,7 +493,7 @@ pub fn read_parquet_filtered(
     max_cells: usize,
     max_text: usize,
 ) -> Result<QTable, String> {
-    read_columns_bounded(path, selected, 0, None, filters, max_cells, max_text)
+    read_columns_bounded(path, selected, 0, None, Some(filters), max_cells, max_text)
 }
 
 fn read_columns_bounded(
@@ -440,7 +501,7 @@ fn read_columns_bounded(
     selected: &[String],
     rows_loaded: usize,
     expected: Option<&[QColumn]>,
-    filters: &[(&str, ParquetPredicate)],
+    sql_filters: Option<&[(&str, ParquetPredicate)]>,
     max_cells: usize,
     mut max_text: usize,
 ) -> Result<QTable, String> {
@@ -466,18 +527,22 @@ fn read_columns_bounded(
     if unique.len() != width {
         return Err("Duplicate Parquet column in projection".into());
     }
+    let text_lists: Vec<_> = projected.iter().map(|field| sql_filters.is_some() && is_text_list(field)).collect();
     let columns = projected
         .iter()
-        .map(|field| {
+        .zip(&text_lists)
+        .map(|(field, &text_list)| {
             let name = field.name().to_string();
-            let ty =
-                column_type(field).ok_or_else(|| format!("Unsupported Parquet column: {name}"))?;
+            let ty = column_type(field)
+                .or_else(|| text_list.then_some(QType::Text))
+                .ok_or_else(|| format!("Unsupported Parquet column: {name}"))?;
             Ok(QColumn { name, ty })
         })
         .collect::<Result<Vec<_>, String>>()?;
     if expected.is_some_and(|expected| expected != columns) {
         return Err("Selected columns differ from the first Parquet file".into());
     }
+    let filters = sql_filters.unwrap_or_default();
     let mut pruning_filters = Vec::new();
     let filter_indices = filters.iter().map(|(name, value)| {
         let field = match by_name.get(name) {
@@ -538,8 +603,12 @@ fn read_columns_bounded(
                 return Err("Parquet source exceeds the query editor's size limit".into());
             }
             let mut values = Vec::with_capacity(width);
-            for (name, field) in fields.into_iter().take(width) {
-                let (value, _) = cell(field).map_err(|e| format!("{name}: {e}"))?;
+            for ((name, field), text_list) in fields.into_iter().zip(text_lists.iter().copied()) {
+                let value = if text_list {
+                    text_list_cell(field, max_text)
+                } else {
+                    cell(field).map(|(value, _)| value)
+                }.map_err(|e| format!("{name}: {e}"))?;
                 if let CellValue::Text(text) = &value {
                     max_text = max_text
                         .checked_sub(text.len())

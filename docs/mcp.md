@@ -68,6 +68,8 @@ To query CSV, Parquet or selected SQLite tables together, pass `datasets` to `sq
 
 For a Parquet entry, set `columns` to the exact names of the columns to load in the requested order, for example `["code", "amount"]`. Unselected columns are skipped before applying the input-cell limit, including unselected nested columns. Omit `columns` to load all columns. The selection is saved with query reports and reused on refresh.
 
+In SQL datasets, standard Parquet lists of UTF-8 strings are exposed as JSON text. SQL NULL, empty lists, null elements, duplicates and element order are preserved. Use `json_each` to expand a list. To sum amounts at the original row grain, filter the original rows with `EXISTS (SELECT 1 FROM json_each(f.tags) j WHERE j.value = ?)`. List conditions belong in SQL. The JSON text counts toward the dataset text budget.
+
 A Parquet entry can also specify `where`, an object of conditions on up to 16 columns, combined with AND. A scalar value is an exact match. For example, `{"year": "2026", "submitted": true}` selects only matching rows. A JSON null matches a missing value. Conditions use the column type without text-to-number conversion. Filter columns can be omitted from `columns`. The reader scans the selected and filter columns, then counts only matching output cells and their text toward the input budget. Saved reports reuse these conditions on refresh.
 
 Use `{"amount": {"gte": 100, "lt": 200}}` for a range. The operators are `gt`, `gte`, `lt`, and `lte`. Multiple bounds are combined with AND. Ranges compare numbers or strings in the column’s type, with strings compared lexicographically. Missing values are excluded from ranges.
