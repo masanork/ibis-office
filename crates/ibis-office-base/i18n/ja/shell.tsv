@@ -1729,3 +1729,5 @@ ai.skill-none	スキルなし
 ai.workspace-instructions	フォルダーの指示を使う（AGENTS.md）
 ai.workspace-memory	フォルダーのメモリを使う（MEMORY.md）
 ai.tool-round-limit	ツール呼び出しの上限に達したため、変更案を破棄しました。
+ai.history-budget-exceeded	モデルの入力予算を超えました。会話は保持されています。指示を短くするか、モデルのコンテキスト上限の設定を確認してください。
+ai.history-compacted	モデルに送る過去のやり取りを要約しました。元の会話は保持されています。

@@ -1731,3 +1731,5 @@ ai.skill-none	No skill
 ai.workspace-instructions	Use folder instructions (AGENTS.md)
 ai.workspace-memory	Use folder memory (MEMORY.md)
 ai.tool-round-limit	The Assistant reached its tool-call limit and discarded the draft.
+ai.history-budget-exceeded	The conversation exceeds the model input budget. The conversation is preserved. Try a smaller request or adjust the model context limit.
+ai.history-compacted	Earlier turns were summarized for the next model request. The original conversation is kept.

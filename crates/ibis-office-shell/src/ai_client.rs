@@ -456,6 +456,17 @@ pub(crate) struct NativeConnection {
 
 #[cfg(not(target_family = "wasm"))]
 impl NativeConnection {
+    /// Approximate input budget, with room for the response and estimation error.
+    pub(crate) fn input_budget_bytes(&self) -> usize {
+        let model_key = format!("ai.context_tokens.{}", self.config.model);
+        let tokens = std::env::var("IBIS_AI_CONTEXT_TOKENS").ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .or_else(|| crate::settings::get(&model_key)?.parse().ok())
+            .unwrap_or(65_536)
+            .clamp(4_096, 2_000_000);
+        (tokens - tokens / 4) * 3
+    }
+
     pub(crate) fn caption(&self) -> (&'static str, String) {
         let choice = match self.provider {
             Provider::OpenAi if self.config.base_url == GEMINI_BASE_URL => ConnectionChoice::Gemini,

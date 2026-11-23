@@ -22,6 +22,8 @@ pub const VERSION: &str = env!("IBIS_VERSION");
 pub use ibis_office_base::app_data;
 pub mod actions;
 pub mod ai_assistant;
+#[cfg(not(target_family = "wasm"))]
+mod ai_history;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod assistant_socket;
 pub mod ai_client;
