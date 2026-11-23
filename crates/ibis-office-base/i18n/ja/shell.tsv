@@ -1726,3 +1726,6 @@ editor.jsonl.preview-ready	JSONLのプレビューを表示しました。フィ
 editor.jsonl.export-small	先頭25行を表にする
 ai.skills	スキル
 ai.skill-none	スキルなし
+ai.workspace-instructions	フォルダーの指示を使う（AGENTS.md）
+ai.workspace-memory	フォルダーのメモリを使う（MEMORY.md）
+ai.tool-round-limit	ツール呼び出しの上限に達したため、変更案を破棄しました。

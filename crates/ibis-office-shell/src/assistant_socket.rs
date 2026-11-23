@@ -102,6 +102,12 @@ impl BoundSocket {
                     if request["op"] == "status" {
                         return editor.assistant_connection_status();
                     }
+                    if request["op"] == "reset" {
+                        return match editor.reset_assistant_socket_history(cx) {
+                            Ok(()) => json!({"state":"reset"}),
+                            Err(message) => json!({"error":message}),
+                        };
+                    }
                     if request["op"] == "apply" {
                         let Some(run_id) = request["run_id"].as_u64() else {
                             return json!({"error":"run_id is required"});

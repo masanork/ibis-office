@@ -16,7 +16,7 @@ const TOOLS: &[(&str, &str, &str, bool)] = &[
     (
         "assistant_status",
         "status",
-        "Read the open GUI workbook, running turn, pending review and available skills.",
+        "Read the open GUI workbook, running turn, pending review, available skills and workspace context settings.",
         true,
     ),
     (
@@ -35,6 +35,12 @@ const TOOLS: &[(&str, &str, &str, bool)] = &[
         "assistant_apply",
         "apply",
         "Apply the pending undoable document edit for this run ID. Call only when the user explicitly asks to apply the changes. This does not save the document or apply source edits.",
+        false,
+    ),
+    (
+        "assistant_reset",
+        "reset",
+        "Start a fresh GUI Assistant conversation after the user requests it. Requires an idle Assistant with no pending review. Workspace settings and recent run results are retained.",
         false,
     ),
 ];
@@ -134,6 +140,7 @@ mod tests {
             read_only: true,
         };
         assert_eq!(assistant.schemas().count(), 2);
+        assert!(assistant.call("assistant_reset", None).is_none());
         assert!(
             assistant
                 .call("assistant_prompt", Some(&json!({"text":"modify"})))

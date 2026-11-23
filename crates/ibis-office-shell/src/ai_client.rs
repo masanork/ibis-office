@@ -118,6 +118,12 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn context_bytes(&self) -> usize {
+        let message = serde_json::to_vec(self).map_or(0, |value| value.len());
+        message.saturating_add(self.responses_output.iter().map(|value| value.to_string().len()).sum())
+    }
+
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: "system".to_string(),

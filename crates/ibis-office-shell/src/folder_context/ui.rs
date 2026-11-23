@@ -19,6 +19,8 @@ use crate::with_format;
 
 pub(crate) struct FolderPane {
     pub(crate) folder: Arc<Folder>,
+    pub(crate) use_agent_instructions: bool,
+    pub(crate) use_agent_memory: bool,
     filter: Entity<InputState>,
     _subscription: Subscription,
     limit: usize,
@@ -42,6 +44,8 @@ impl SlideEditor {
         });
         self.folder_pane = Some(FolderPane {
             folder,
+            use_agent_instructions: false,
+            use_agent_memory: false,
             filter,
             _subscription: subscription,
             limit: 100,

@@ -1728,3 +1728,6 @@ editor.jsonl.preview-ready	The JSONL preview is ready. Open JSONL fields to choo
 editor.jsonl.export-small	Create a table from the first 25 lines
 ai.skills	Skills
 ai.skill-none	No skill
+ai.workspace-instructions	Use folder instructions (AGENTS.md)
+ai.workspace-memory	Use folder memory (MEMORY.md)
+ai.tool-round-limit	The Assistant reached its tool-call limit and discarded the draft.

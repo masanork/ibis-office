@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::ai_client::{ToolCall, ToolDefinition, ToolFunctionDef};
 
+mod instructions;
 mod skills;
 mod ui;
 pub(crate) use ui::FolderPane;
@@ -716,6 +717,28 @@ mod tests {
             },
             None,
         )
+    }
+
+    #[test]
+    fn agent_context_follows_only_the_open_folder_and_document_ancestors() {
+        let fixture = Fixture::new();
+        std::fs::create_dir_all(fixture.0.join("資料/monthly")).unwrap();
+        std::fs::create_dir_all(fixture.0.join("unrelated")).unwrap();
+        fixture.write("AGENTS.md", "General report rules.");
+        fixture.write("資料/AGENTS.md", "Use local definitions.");
+        fixture.write("資料/monthly/AGENTS.md", "Use this month's cutoff.");
+        fixture.write("unrelated/AGENTS.md", "Do not include this.");
+        fixture.write("MEMORY.md", "Reconciliation is due on Friday.");
+        let folder = Folder::scan(&fixture.0).unwrap();
+        fixture.write("資料/monthly/report.xlsx", "fixture");
+        let doc = fixture.0.join("資料/monthly/report.xlsx");
+        let paths: Vec<_> = folder.agent_instructions(Some(&doc))
+            .into_iter().map(|entry| entry["path"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(paths, ["AGENTS.md", "資料/AGENTS.md", "資料/monthly/AGENTS.md"]);
+        assert_eq!(folder.agent_instructions(Some(Path::new("/elsewhere/report.xlsx"))).len(), 1);
+        assert_eq!(folder.agent_memory().as_deref(), Some("Reconciliation is due on Friday."));
+        fixture.write("MEMORY.md", "x".repeat(16 * 1024 + 1));
+        assert!(folder.agent_memory().is_none());
     }
 
     #[test]
