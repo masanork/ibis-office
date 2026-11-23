@@ -1680,8 +1680,22 @@ fn plan_batch_refresh(
         reports.push(summary);
         commands.extend(update);
     }
+    let charts: Vec<_> = if preview && !blocked {
+        workbook.slides.iter().flat_map(|slide| {
+            let updated = scratch.presentation().slide(slide.id);
+            slide.shapes.iter().filter_map(move |shape| {
+                let ibis_doc_model::ShapeKind::Chart(before) = &shape.kind else { return None };
+                let ibis_doc_model::ShapeKind::Chart(after) = &updated?.shape(shape.id)?.kind else { return None };
+                Some(json!({"sheet":slide.name,"shape_id":shape.id.0,
+                    "title":before.title.as_ref().map(|title| &title.text),
+                    "changed":before != after}))
+            })
+        }).collect()
+    } else {
+        Vec::new()
+    };
     Ok((
-        json!({"preview":preview,"blocked":blocked,"reports":reports}),
+        json!({"preview":preview,"blocked":blocked,"reports":reports,"charts":charts}),
         commands,
     ))
 }

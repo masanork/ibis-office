@@ -31,6 +31,15 @@ pub fn start(
                     if request["op"] == "status" {
                         return editor.assistant_connection_status();
                     }
+                    if request["op"] == "analysis_context" {
+                        return crate::format::with_format!(editor, live_analysis(editor, None, cx));
+                    }
+                    if request["op"] == "preview_analysis" {
+                        let Some(values) = request.get("parameter_values") else {
+                            return json!({"error":"parameter_values is required"});
+                        };
+                        return crate::format::with_format!(editor, live_analysis(editor, Some(values), cx));
+                    }
                     if request["op"] == "reset" {
                         return match editor.reset_assistant_socket_history(cx) {
                             Ok(()) => json!({"state":"reset"}),

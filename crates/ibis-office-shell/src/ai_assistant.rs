@@ -892,7 +892,7 @@ impl SlideEditor {
             .collect();
         json!({
             "kind": "gui",
-            "operations": ["assistant_status", "assistant_prompt", "assistant_result", "assistant_apply", "assistant_reset"],
+            "operations": ["assistant_status", "assistant_prompt", "assistant_result", "assistant_apply", "assistant_reset", "assistant_analysis_context", "assistant_preview_analysis"],
             "path": self.file_path(),
             "file_id": self.file_id,
             "document_ready": self.check_assistant_connection_document().is_ok(),

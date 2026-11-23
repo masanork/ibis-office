@@ -157,6 +157,107 @@ impl QueryReportPanel {
 
 #[ibis_office_macros::editor_ext(QueryReportPanelExt)]
 impl SlideEditor {
+    pub(crate) fn live_report_analysis(&mut self, request: Option<&Value>, cx: &mut Context<Self>) -> Value {
+        let Some(book) = self.presentation().workbook.as_ref() else {
+            return json!({"error":"No workbook is open"});
+        };
+        let applied: BTreeMap<_, BTreeMap<_, _>> = book.query_reports.iter().map(|(table, definition)| {
+            let values = report_parameter_controls(definition).unwrap_or_default().into_iter()
+                .map(|control| (control.name, definition["params"][control.slot - 1].clone()))
+                .collect();
+            (table.clone(), values)
+        }).collect();
+
+        if let Some(request) = request {
+            let Some(values) = request.as_object().filter(|v| (1..=12).contains(&v.len())) else {
+                return json!({"error":"Supply 1 to 12 named parameter values"});
+            };
+            let Some(panel) = self.wb().panels.queries.as_ref().and_then(|p| p.reports.as_ref()) else {
+                return json!({"error":"Open SQL Report Refresh in the workbook and assign the source files"});
+            };
+            if panel.busy || panel.review.is_some() {
+                return json!({"error":"Finish or close the current report preview first"});
+            }
+            if panel.sources().keys().any(|name| !panel.files.contains_key(name)) {
+                return json!({"error":"Assign all selected source files in SQL Report Refresh"});
+            }
+            let Some(controls) = panel.controls() else {
+                return json!({"error":"The selected reports have incompatible parameters"});
+            };
+            for (name, value) in values {
+                if !controls.get(name.as_str()).is_some_and(|(control, _)| {
+                    control.kind.accepts(value)
+                        && parameter_choices(self.presentation(), control).iter().any(|(candidate, _)| {
+                            candidate == value || (control.kind == ReportParameterKind::Number && candidate.as_f64() == value.as_f64())
+                        })
+                }) {
+                    return json!({"error":format!("Unknown parameter or invalid choice: {name}")});
+                }
+            }
+
+            let panel = self.query_reports_mut().expect("report panel is open");
+            for report in &mut panel.reports {
+                if let Some(controls) = &mut report.controls {
+                    for (control, saved) in controls {
+                        if let Some(value) = applied.get(&report.name).and_then(|p| p.get(&control.name)) {
+                            *saved = value.clone();
+                        }
+                    }
+                }
+            }
+            let old = std::mem::replace(&mut panel.parameter_values, values.clone().into_iter().collect());
+            if panel.request().is_none() {
+                panel.parameter_values = old;
+                return json!({"error":"Select compatible reports with an unambiguous applied value for every other parameter"});
+            }
+            self.preview_query_reports(cx);
+            return json!({"state":"previewing"});
+        }
+
+        let selected_bar = (|| {
+            let (file, slide, shape, series, point) = self.selected_chart_bar?;
+            if file != self.file_id || slide != self.current_slide || self.selection != Some(shape) {
+                return None;
+            }
+            let ibis_doc_model::ShapeKind::Chart(chart) = &self.slide().shape(shape)?.kind else { return None };
+            let data = chart.groups.iter().flat_map(|g| &g.series).nth(series)?;
+            let refs = chart.cell_refs.get(series)?;
+            let cell = |reference: &str| {
+                let reference = crate::sheet_ui::parse_reference(reference)?;
+                let (slide, range) = self.resolve_reference(&reference)?;
+                let (column, row) = crate::event_hooks::chart_source_cell(range, point)?;
+                Some(json!({"sheet":self.presentation().slide(slide)?.name,"cell":ibis_doc_model::cell_name(column,row)}))
+            };
+            Some(json!({
+                "shape_id":shape.0,"series_index":series,"point_index":point,
+                "title":chart.title.as_ref().map(|title| &title.text),
+                "series":data.name,"category":data.categories.get(point),
+                "category_cell":refs.categories.as_deref().and_then(cell),
+                "value_cell":refs.values.as_deref().and_then(cell),
+            }))
+        })();
+        let preview = self.wb().panels.queries.as_ref().and_then(|p| p.reports.as_ref()).map(|panel| {
+            if panel.busy {
+                json!({"state":"previewing"})
+            } else if let Some(review) = &panel.review {
+                if self.presentation() != &review.base {
+                    json!({"state":"stale"})
+                } else {
+                    json!({
+                        "state":if review.result["blocked"] == true {"blocked"} else {"review"},
+                        "charts":review.result["charts"],
+                        "reports":review.result["reports"].as_array().into_iter().flatten().map(|r| {
+                            json!({"table":r["table"],"sheet":r["sheet"],"previous_rows":r["previous_rows"],"rows":r["rows"]})
+                        }).collect::<Vec<_>>(),
+                    })
+                }
+            } else {
+                json!({"state":"idle","message":panel.message})
+            }
+        });
+        json!({"sheet":self.slide().name,"selected_bar":selected_bar,"applied_parameters":applied,"report_preview":preview})
+    }
+
     pub(crate) fn open_query_report_panel(&mut self, cx: &mut Context<Self>) {
         let workbook = self.presentation();
         let Some(book) = workbook.workbook.as_ref() else {
@@ -674,6 +775,12 @@ impl SlideEditor {
                     .font_weight(FontWeight::BOLD)
                     .child(text("query.report-preview")),
             );
+            for chart in review.result["charts"].as_array().into_iter().flatten() {
+                let label = if chart["changed"] == true { "query.report-chart-changed" } else { "query.report-chart-unchanged" };
+                body = body.child(div().text_sm().child(format(label, &[
+                    ("chart", &chart["title"].as_str().unwrap_or_default()),
+                ])));
+            }
             for report in review.result["reports"].as_array().into_iter().flatten() {
                 let name = report["table"].as_str().unwrap_or_default();
                 body = body.child(div().text_sm().child(format(

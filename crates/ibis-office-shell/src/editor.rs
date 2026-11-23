@@ -373,6 +373,7 @@ pub struct SlideEditor {
     pub document_memory: super::document_memory::DocumentMemoryStore,
     pub current_slide: SlideId,
     pub selection: Option<ShapeId>,
+    pub selected_chart_bar: Option<(u64, ibis_doc_model::SlideId, ShapeId, usize, usize)>,
     pub tool: Tool,
     /// The state of editing shapes and their text, the same for every format (`shell/shape_state.rs`).
     pub shape_edit: crate::shape_state::ShapeEditState,
@@ -840,6 +841,7 @@ impl SlideEditor {
             document_memory: Default::default(),
             current_slide,
             selection: None,
+            selected_chart_bar: None,
             shape_edit: Default::default(),
             tool: Tool::Select,
             drag: None,

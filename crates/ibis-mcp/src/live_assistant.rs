@@ -20,6 +20,8 @@ pub(crate) struct LiveAssistant {
 }
 
 const TOOLS: &[(&str, &str, &str, bool)] = &[
+    ("assistant_analysis_context", "analysis_context", "Read the live workbook's selected chart bar, applied parameters, and current report preview status.", true),
+    ("assistant_preview_analysis", "preview_analysis", "Preview report parameter changes in the live workbook using its open SQL Report Refresh panel and files assigned by the user. Does not apply; the user reviews and applies in the GUI.", false),
     (
         "assistant_status",
         "status",
@@ -69,6 +71,7 @@ impl LiveAssistant {
         }));
         discovery.into_iter().chain(TOOLS.iter().filter(move |tool| (!self.read_only || tool.3) && (workspace || tool.1 != "inspect_workbook")).map(move |(name, op, description, read)| {
             let (mut properties, mut required) = match *op {
+                "preview_analysis" => (json!({"parameter_values":{"type":"object","minProperties":1,"maxProperties":12,"additionalProperties":{"type":["string","number"]}}}), json!(["parameter_values"])),
                 "prompt" => (json!({"text":{"type":"string","minLength":1},"skill":{"type":"string","minLength":1,"maxLength":64}}), json!(["text"])),
                 "result" => (json!({"run_id":{"type":"integer","minimum":0},"after":{"type":"integer","minimum":0}}), json!(["run_id"])),
                 "inspect_workbook" => (json!({"path":{"type":"string","minLength":1}}), json!(["path"])),
@@ -120,6 +123,7 @@ impl LiveAssistant {
             }
         };
         let keys: &[&str] = match op {
+            "preview_analysis" => &["parameter_values"],
             "prompt" => &["text", "skill"],
             "result" => &["run_id", "after"],
             "apply" => &["run_id"],

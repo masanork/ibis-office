@@ -695,6 +695,16 @@ fn outer_contexts(state: &crate::shell::menu_context::ContextState) -> Vec<crate
 }
 
 impl FormatEditor for Workbook {
+    fn live_analysis(editor: &mut SlideEditor, values: Option<&serde_json::Value>, cx: &mut Context<SlideEditor>) -> serde_json::Value {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        return crate::query_report_panel::QueryReportPanelExtCrate::live_report_analysis(editor, values, cx);
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = (editor, values, cx);
+            serde_json::json!({"error":"Live analysis is only available on desktop"})
+        }
+    }
+
     fn preview_assistant_report_refresh(
         editor: &mut SlideEditor, table: &str,
         files: std::collections::BTreeMap<String, std::path::PathBuf>,

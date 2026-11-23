@@ -149,8 +149,11 @@ impl SlideEditor {
 
     /// A press on a form control, timeline, slicer or chart data point.
     pub(crate) fn xlsx_shape_press(&mut self, shape: ibis_doc_model::ShapeId, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.selected_chart_bar = self.chart_bar(shape, event.position)
+            .map(|(series, index)| (self.file_id, self.current_slide, shape, series, index));
         if event.modifiers.platform && !event.modifiers.shift && !event.modifiers.alt && !event.modifiers.control
-            && self.chart_drill_down(shape, event.position, window, cx)
+            && self.selected_chart_bar.is_some()
+            && self.chart_drill_down(shape, window, cx)
         {
             return true;
         }
@@ -180,20 +183,25 @@ impl SlideEditor {
         false
     }
 
-    fn chart_drill_down(&mut self, id: ibis_doc_model::ShapeId, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn chart_bar(&self, id: ibis_doc_model::ShapeId, position: Point<Pixels>) -> Option<(usize, usize)> {
+        let shape = self.slide().shape(id)?;
+        let ShapeKind::Chart(chart) = &shape.kind else { return None };
+        if shape.rotation != 0 || shape.flip_h || shape.flip_v || chart.cell_refs.is_empty() || self.page_layout_shown() {
+            return None;
+        }
+        let layout = self.slide_layout()?;
+        let frame = self.display_frame(shape);
+        let origin = layout.origin + self.main_pane_lead()
+            + point(px(frame.x as f32 * layout.scale), px(frame.y as f32 * layout.scale));
+        crate::render::chart_view::chart_bar_at(
+            chart, ibis_doc_model::EmuRect { x: 0, y: 0, ..frame }, layout.scale, &self.resources, position - origin,
+        )
+    }
+
+    fn chart_drill_down(&mut self, id: ibis_doc_model::ShapeId, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let target = (|| {
-            let shape = self.slide().shape(id)?;
-            let ShapeKind::Chart(chart) = &shape.kind else { return None };
-            if shape.rotation != 0 || shape.flip_h || shape.flip_v || chart.cell_refs.is_empty() || self.page_layout_shown() {
-                return None;
-            }
-            let layout = self.slide_layout()?;
-            let frame = self.display_frame(shape);
-            let origin = layout.origin + self.main_pane_lead()
-                + point(px(frame.x as f32 * layout.scale), px(frame.y as f32 * layout.scale));
-            let (series, index) = crate::render::chart_view::chart_bar_at(
-                chart, ibis_doc_model::EmuRect { x: 0, y: 0, ..frame }, layout.scale, &self.resources, position - origin,
-            )?;
+            let (_, _, _, series, index) = self.selected_chart_bar?;
+            let ShapeKind::Chart(chart) = &self.slide().shape(id)?.kind else { return None };
             let refs = chart.cell_refs.get(series)?;
             let source = |formula: &str| {
                 let reference = crate::sheet_ui::parse_reference(formula)?;
@@ -333,7 +341,7 @@ impl SlideEditor {
     }
 }
 
-fn chart_source_cell(range: ibis_doc_model::CellRange, index: usize) -> Option<(u32, u32)> {
+pub(crate) fn chart_source_cell(range: ibis_doc_model::CellRange, index: usize) -> Option<(u32, u32)> {
     let index = u32::try_from(index).ok()?;
     if range.first_column == range.last_column {
         let row = range.first_row.checked_add(index)?;
