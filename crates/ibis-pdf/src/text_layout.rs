@@ -287,17 +287,25 @@ fn vertical_text(segments: &[Segment], layout: TextLayout) -> String {
         members.sort_by(|&a, &b| {
             segments[b].center_x.total_cmp(&segments[a].center_x).then(segments[a].top.total_cmp(&segments[b].top))
         });
-        for &i in members.iter() {
-            let s = &segments[i];
+        // The stretches of one column in a tier are one line, the gap between them kept as the gap inside a stretch
+        // (characters the page draws as figures leave a long one).
+        let mut k = 0;
+        while k < members.len() {
+            let first = &segments[members[k]];
+            let mut end = k + 1;
+            while end < members.len() && segments[members[end]].center_x == first.center_x {
+                end += 1;
+            }
+            let width = members[k..end].iter().map(|&i| segments[i].width).fold(1.0f32, f32::max);
             // Physical: the column starts as far down the tier as it stands (a paragraph's first column one character
             // down, a column whose first characters the page draws as figures by that much).
             if layout == TextLayout::Physical {
-                for _ in 0..((s.top - *tier_top) / s.width.max(1.0)).round().max(0.0) as usize {
+                for _ in 0..((first.top - *tier_top) / width).round().max(0.0) as usize {
                     out.push('\u{3000}');
                 }
             }
             let mut prev: Option<&Glyph> = None;
-            for g in &s.glyphs {
+            for g in members[k..end].iter().flat_map(|&i| segments[i].glyphs.iter()) {
                 if let Some(p) = prev {
                     if same_glyph(p, g) {
                         continue;
@@ -307,7 +315,7 @@ fn vertical_text(segments: &[Segment], layout: TextLayout) -> String {
                     match layout {
                         TextLayout::Reading if gap > 0.5 * h => out.push(' '),
                         TextLayout::Physical if gap > 0.5 * h => {
-                            for _ in 0..((gap / h).round() as usize).max(1) {
+                            for _ in 0..((gap / width).round() as usize).max(1) {
                                 out.push('\u{3000}');
                             }
                         }
@@ -317,6 +325,7 @@ fn vertical_text(segments: &[Segment], layout: TextLayout) -> String {
                 out.push(g.ch);
                 prev = Some(g);
             }
+            k = end;
             out.push('\n');
         }
     }
@@ -585,6 +594,20 @@ mod tests {
         column(&mut chars, "連携", 200.0, 35.0, 10.0);
         let physical = page_text(&PageTextIndex { chars }, TextLayout::Physical);
         assert_eq!(physical, "地方公共団体\n\u{3000}\u{3000}API連携\n");
+    }
+
+    #[test]
+    fn a_long_gap_in_a_column_keeps_the_column_one_line() {
+        // 規定に基 … 庁内 … 連携: the characters between drawn as figures leave gaps of four and three characters.
+        let mut chars = Vec::new();
+        column(&mut chars, "規定に基", 200.0, 0.0, 10.0);
+        column(&mut chars, "庁内", 200.0, 80.0, 10.0);
+        column(&mut chars, "連携", 200.0, 130.0, 10.0);
+        // The next column runs the length of the page: one tier.
+        column(&mut chars, "次の列は頁の下まで続く長い列です", 185.0, 0.0, 10.0);
+        let physical = page_text(&PageTextIndex { chars: chars.clone() }, TextLayout::Physical);
+        assert_eq!(physical, "規定に基\u{3000}\u{3000}\u{3000}\u{3000}庁内\u{3000}\u{3000}\u{3000}連携\n次の列は頁の下まで続く長い列です\n");
+        assert_eq!(page_text(&PageTextIndex { chars }, TextLayout::Reading), "規定に基 庁内 連携\n次の列は頁の下まで続く長い列です\n");
     }
 
     #[test]
