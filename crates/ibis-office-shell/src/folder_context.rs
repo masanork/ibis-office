@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use crate::ai_client::{ToolCall, ToolDefinition, ToolFunctionDef};
 
 mod instructions;
+mod markdown_index;
 mod skills;
 mod ui;
 pub(crate) use ui::FolderPane;
@@ -43,6 +44,7 @@ pub(crate) struct Folder {
     root: PathBuf,
     files: Vec<String>,
     concept_types: BTreeMap<String, String>,
+    markdown_index: markdown_index::MarkdownIndex,
     pub(crate) skills: Vec<ibis_formats::agent_skill::Metadata>,
     truncated: bool,
     skipped: usize,
@@ -109,6 +111,7 @@ impl Folder {
             root,
             files,
             concept_types: BTreeMap::new(),
+            markdown_index: markdown_index::MarkdownIndex::default(),
             skills: Vec::new(),
             truncated: remaining == 0,
             skipped,
@@ -123,6 +126,7 @@ impl Folder {
                 Some((path.clone(), metadata["type"].as_str()?.to_owned()))
             })
             .collect();
+        folder.markdown_index = markdown_index::MarkdownIndex::build(&folder);
         folder.skills = folder.scan_skills();
         Ok(folder)
     }
@@ -629,7 +633,10 @@ fn search(
         };
         let result = folder.resolve(relative).and_then(|path| {
             let ext = extension(&path);
-            if TEXT.contains(&ext.as_str()) {
+            if let Some((matches, partial)) = folder.markdown_index.search(relative, &path, &query) {
+                skipped += usize::from(partial);
+                Ok(matches)
+            } else if TEXT.contains(&ext.as_str()) {
                 let (content, partial) = read_text(&path)?;
                 skipped += usize::from(partial);
                 let matches = content
@@ -825,6 +832,24 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn markdown_search_index_rebuilds_and_does_not_return_stale_lines() {
+        let fixture = Fixture::new();
+        fixture.write("資料/notes.md", "# Heading\nFirst version.\n");
+        let folder = Folder::scan(&fixture.0).unwrap();
+        let path = folder.resolve("資料/notes.md").unwrap();
+        let (hits, partial) = folder.markdown_index.search("資料/notes.md", &path, "first").unwrap();
+        assert!(!partial);
+        assert_eq!(hits, [json!({"line":2,"text":"First version."})]);
+        fixture.write("資料/notes.md", "# Heading\nA completely new version.\n");
+        assert!(folder.markdown_index.search("資料/notes.md", &path, "first").is_none());
+        let result = search(&folder, &json!({"query":"completely new"}), 0).unwrap();
+        assert_eq!(result.0["hits"][0]["matches"][0]["text"], "A completely new version.");
+        let refreshed = Folder::scan(&fixture.0).unwrap();
+        let (hits, _) = refreshed.markdown_index.search("資料/notes.md", &path, "completely new").unwrap();
+        assert_eq!(hits[0]["line"], 2);
     }
 
     #[test]
