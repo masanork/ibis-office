@@ -432,3 +432,22 @@ fn reapplies_nested_quotation_in_the_2024_food_labeling_table_change() {
     assert_eq!(verified.applied_ops, 1);
     assert_eq!(verified.simulated_new.appdx_tables, new.appdx_tables);
 }
+
+#[test]
+fn reapplies_new_subitems_in_the_2024_food_labeling_amendment() {
+    use ibis_formats::lawtext::{generate_aratame_draft, verify_aratame};
+
+    let old = parse_law_xml(include_str!("lawtext/food-subitems-2024-before.xml")).unwrap();
+    let new = parse_law_xml(include_str!("lawtext/food-subitems-2024-after.xml")).unwrap();
+    let draft = generate_aratame_draft(&old, &new);
+    assert!(draft.full_text.contains("第二条第十号に次のように加える。"));
+    assert!(draft.full_text.contains("    （５）"));
+    assert!(
+        draft
+            .full_text
+            .contains("第二十二条第四号に次のように加える。")
+    );
+    let verified = verify_aratame(&old, &draft.full_text, &new);
+    assert!(verified.is_exact_match, "{:?}", verified.diagnostics);
+    assert_eq!(verified.simulated_new.main_provision, new.main_provision);
+}

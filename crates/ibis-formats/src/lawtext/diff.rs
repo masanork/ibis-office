@@ -1066,7 +1066,7 @@ fn diff_subitem_lists(old_subs: &[LawSubitem], new_subs: &[LawSubitem]) -> Vec<S
                 old_sentence: None,
                 new_sentence: Some(ns.sentence.clone()),
                 sentence_diff: vec![DiffOp::Insert(ns.sentence.clone())],
-                children: Vec::new(),
+                children: diff_subitem_lists(&[], &ns.children),
             });
         }
     }

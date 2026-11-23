@@ -1,0 +1,112 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<Law Era="Heisei" Lang="ja" LawType="MinisterialOrdinance" Num="010" PromulgateDay="20" PromulgateMonth="3" Year="27">
+  <LawNum>平成二十七年内閣府令第十号</LawNum>
+  <LawBody>
+    <LawTitle Abbrev="" AbbrevKana="" Kana="しょくひんひょうじきじゅん">食品表示基準</LawTitle>
+    <MainProvision>
+      <Article Num="2">
+        <ArticleCaption>（定義）</ArticleCaption>
+        <ArticleTitle>第二条</ArticleTitle>
+        <Paragraph Num="1">
+          <ParagraphNum />
+          <ParagraphSentence>
+            <Sentence Num="1" WritingMode="vertical">この府令において、次の各号に掲げる用語の意義は、当該各号に定めるところによる。</Sentence>
+          </ParagraphSentence>
+          <Item Num="10">
+            <ItemTitle>十</ItemTitle>
+            <ItemSentence>
+              <Column Num="1">
+                <Sentence Num="1" WritingMode="vertical">機能性表示食品</Sentence>
+              </Column>
+              <Column Num="2">
+                <Sentence Num="1" WritingMode="vertical">疾病に罹患していない者（未成年者、妊産婦（妊娠を計画している者を含む。）及び授乳婦を除く。）を対象として、機能性関与成分によって健康の維持及び増進に資する特定の保健の目的（疾病リスクの低減に係るものを除く。）が期待できる旨を科学的根拠に基づいて容器包装に表示をする食品であって、次に掲げる要件を全て満たすものをいう。</Sentence>
+              </Column>
+            </ItemSentence>
+            <Subitem1 Num="1">
+              <Subitem1Title>イ</Subitem1Title>
+              <Subitem1Sentence>
+                <Sentence Num="1" WritingMode="vertical">別表第二十六の上欄に掲げる事項について、それぞれ同表下欄に掲げる方法により当該食品の販売を開始する日の六十日（行政機関の休日に関する法律（昭和六十三年法律第九十一号）第一条第一項各号に掲げる日の日数は、算入しない。）前までに（このイの規定による届出（以下単に「届出」という。）がされたことがない機能性関与成分に関して届け出られた表示の内容がこの府令その他関係法令の規定に違反するおそれがない旨の確証がないこと等により同表下欄に掲げる方法により提出される資料の確認に特に時間を要すると消費者庁長官が認める場合にあっては百二十日（同項各号に掲げる日の日数は、算入しない。）前までに）消費者庁長官に届け出たものであること。</Sentence>
+              </Subitem1Sentence>
+            </Subitem1>
+            <Subitem1 Num="2">
+              <Subitem1Title>ロ</Subitem1Title>
+              <Subitem1Sentence>
+                <Sentence Num="1" WritingMode="vertical">当該食品に係る届出を行い表示内容に責任を有する食品関連事業者（以下「届出者」という。）が、当該届出の日以後において、別表第二十七の上欄に掲げる事項について、それぞれ同表下欄に掲げる内容を遵守しているものであること。</Sentence>
+              </Subitem1Sentence>
+            </Subitem1>
+            <Subitem1 Num="3">
+              <Subitem1Title>ハ</Subitem1Title>
+              <Subitem1Sentence>
+                <Sentence Num="1" WritingMode="vertical">次に掲げる食品でないこと。</Sentence>
+              </Subitem1Sentence>
+              <Subitem2 Num="1">
+                <Subitem2Title>（１）</Subitem2Title>
+                <Subitem2Sentence>
+                  <Sentence Num="1" WritingMode="vertical">健康増進法（平成十四年法律第百三号）第四十三条第一項の規定に基づく許可又は同法第六十三条第一項の規定に基づく承認を受け、特別の用途に適する旨の表示をする食品（以下「特別用途食品」という。）</Sentence>
+                </Subitem2Sentence>
+              </Subitem2>
+              <Subitem2 Num="2">
+                <Subitem2Title>（２）</Subitem2Title>
+                <Subitem2Sentence>
+                  <Sentence Num="1" WritingMode="vertical">栄養機能食品</Sentence>
+                </Subitem2Sentence>
+              </Subitem2>
+              <Subitem2 Num="3">
+                <Subitem2Title>（３）</Subitem2Title>
+                <Subitem2Sentence>
+                  <Sentence Num="1" WritingMode="vertical">アルコールを含有する食品（アルコールを人体に摂取するためのものに限る。）</Sentence>
+                </Subitem2Sentence>
+              </Subitem2>
+              <Subitem2 Num="4">
+                <Subitem2Title>（４）</Subitem2Title>
+                <Subitem2Sentence>
+                  <Sentence Num="1" WritingMode="vertical">国民の栄養摂取の状況からみてその過剰な摂取が国民の健康の保持増進に影響を与えているものとして健康増進法施行規則（平成十五年厚生労働省令第八十六号）第十一条第二項で定める栄養素の過剰な摂取につながる食品</Sentence>
+                </Subitem2Sentence>
+              </Subitem2>
+              <Subitem2 Num="5">
+                <Subitem2Title>（５）</Subitem2Title>
+                <Subitem2Sentence>
+                  <Sentence Num="1" WritingMode="vertical">当該食品に係る届出の日以降における科学的知見の充実により機能性関与成分によって健康の維持及び増進に資する特定の保健の目的が期待できる旨の表示をすることが適切でないと消費者庁長官が認める食品</Sentence>
+                </Subitem2Sentence>
+              </Subitem2>
+            </Subitem1>
+          </Item>
+        </Paragraph>
+      </Article>
+      <Article Num="22">
+        <ArticleCaption>（表示の方式等）</ArticleCaption>
+        <ArticleTitle>第二十二条</ArticleTitle>
+        <Paragraph Num="1">
+          <ParagraphNum />
+          <ParagraphSentence>
+            <Sentence Num="1" WritingMode="vertical">第十八条、第十九条及び前条に掲げる事項の表示は、次の各号に定めるところによりされなければならない。</Sentence>
+          </ParagraphSentence>
+          <Item Num="4">
+            <ItemTitle>四</ItemTitle>
+            <ItemSentence>
+              <Sentence Num="1" WritingMode="vertical">機能性表示食品にあっては、次に定めるとおり表示する。</Sentence>
+            </ItemSentence>
+            <Subitem1 Num="1">
+              <Subitem1Title>イ</Subitem1Title>
+              <Subitem1Sentence>
+                <Sentence Num="1" WritingMode="vertical">機能性表示食品である旨は、容器包装の主要面の上部に「機能性表示食品」の文字を枠で囲んで表示する。</Sentence>
+              </Subitem1Sentence>
+            </Subitem1>
+            <Subitem1 Num="2">
+              <Subitem1Title>ロ</Subitem1Title>
+              <Subitem1Sentence>
+                <Sentence Num="1" WritingMode="vertical">機能性関与成分及び当該成分又は当該成分を含有する食品が有する機能性並びに機能性及び安全性について国による評価を受けたものではない旨は、容器包装の同一面に表示する。</Sentence>
+              </Subitem1Sentence>
+            </Subitem1>
+            <Subitem1 Num="3">
+              <Subitem1Title>ハ</Subitem1Title>
+              <Subitem1Sentence>
+                <Sentence Num="1" WritingMode="vertical">届出番号は、機能性表示食品である旨の表示に近接した箇所に表示する。</Sentence>
+              </Subitem1Sentence>
+            </Subitem1>
+          </Item>
+        </Paragraph>
+      </Article>
+    </MainProvision>
+  </LawBody>
+</Law>

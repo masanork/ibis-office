@@ -22,3 +22,5 @@ The corpus test checks supported text and records two current conversion losses,
 
 
 `table-twenty-before.xml` and `table-twenty-after.xml` retain the first article plus the amended row of 別表第二十 from the same dated e-Gov revisions. The after excerpt includes an inner Japanese quotation in the cell text. The test verifies the resulting replacement as a whole cell change.
+
+`food-subitems-2024-before.xml` and `food-subitems-2024-after.xml` isolate Article 2(1)(10) and Article 22(1)(4) from the same two e-Gov revisions. The later Article 2 has three new subdivisions, the last of which contains five nested entries. Article 22 adds its third subdivision.

@@ -7,10 +7,10 @@
 use serde_json::{Value, json};
 
 use super::diff::{
-    AmendmentIr, ArticleChange, ArticleChangeKind, DiffOp, ItemChange, NodeChangeKind, diff_laws,
+    AmendmentIr, ArticleChange, ArticleChangeKind, DiffOp, ItemChange, NodeChangeKind, SubitemChange, diff_laws,
 };
 use super::{
-    LawAppdxTable, LawArticle, LawDoc, LawItem, LawNode, LawParagraph, parse_article_header,
+    LawAppdxTable, LawArticle, LawDoc, LawItem, LawNode, LawParagraph, LawSubitem, parse_article_header,
     parse_numbered_paragraph, to_fullwidth_digits, write_lawtext_node,
 };
 use crate::Error;
@@ -366,9 +366,9 @@ fn render_item_op(para_loc: &str, ic: &ItemChange, ops: &mut Vec<String>) {
             for sc in &ic.subitem_changes {
                 match sc.kind {
                     NodeChangeKind::Added => {
-                        let st = sc.new_title.as_deref().unwrap_or("");
-                        let ss = sc.new_sentence.as_deref().unwrap_or("");
-                        ops.push(format!("{item_loc}に次のように加える。\n{st} {ss}"));
+                        let mut operation = format!("{item_loc}に次のように加える。");
+                        write_added_subitem(&mut operation, sc, 0);
+                        ops.push(operation);
                     }
                     NodeChangeKind::Deleted => {
                         let st = sc.old_title.as_deref().unwrap_or("");
@@ -391,6 +391,19 @@ fn render_item_op(para_loc: &str, ic: &ItemChange, ops: &mut Vec<String>) {
                 }
             }
         }
+    }
+}
+
+fn write_added_subitem(out: &mut String, change: &SubitemChange, relative_depth: usize) {
+    use std::fmt::Write;
+
+    out.push('\n');
+    out.push_str(&"  ".repeat(relative_depth));
+    let title = change.new_title.as_deref().unwrap_or_default();
+    let sentence = change.new_sentence.as_deref().unwrap_or_default();
+    let _ = write!(out, "{title} {sentence}");
+    for child in &change.children {
+        write_added_subitem(out, child, relative_depth + 1);
     }
 }
 
@@ -728,6 +741,39 @@ pub fn apply_aratame(old: &LawDoc, aratame_text: &str) -> (LawDoc, usize, Vec<St
             continue;
         }
 
+        // Add one subdivision of an item, including nested subdivisions.
+        if let Some(target) = line.strip_suffix("に次のように加える。")
+            && let Some((article, paragraph, Some(item), None)) = parse_full_target(target)
+        {
+            let start = idx;
+            if let Some(first) = lines.get(idx)
+                && !first.trim().is_empty()
+                && super::split_leading_token(first.trim()).is_some()
+            {
+                let indent = line_indent(first);
+                idx += 1;
+                while lines.get(idx).is_some_and(|line| !line.trim().is_empty() && line_indent(line) > indent) {
+                    idx += 1;
+                }
+            }
+            let Some(item) = find_article_mut_by_title(&mut doc.main_provision, &article)
+                .and_then(|article| find_para_mut(article, paragraph.as_deref()))
+                .and_then(|paragraph| paragraph.items.iter_mut().find(|candidate| candidate.title == item))
+            else {
+                diagnostics.push(format!("追加先の号「{target}」が見つかりません。"));
+                continue;
+            };
+            if let Some(added) = parse_added_subitem(&lines[start..idx], item.subitems.len() + 1)
+                && !item.subitems.iter().any(|existing| existing.title == added.title)
+            {
+                item.subitems.push(added);
+                applied += 1;
+            } else {
+                diagnostics.push(format!("「{target}」に加える号の細分を解析・追加できません。"));
+            }
+            continue;
+        }
+
         // 7. 字句置換: <target>中「X」を「Y」に改め(る)。
         if let Some(index) = line.find("中「") {
             let (target, suffix) = line.split_at(index);
@@ -860,6 +906,46 @@ fn parse_added_table(block: &[&str]) -> Option<LawAppdxTable> {
         rows.push(read_row(line)?);
     }
     Some(LawAppdxTable { title: title.to_string(), related_article_num, rows })
+}
+
+fn line_indent(line: &str) -> usize {
+    line.bytes().take_while(|&byte| byte == b' ').count()
+}
+
+fn parse_added_subitem(block: &[&str], number: usize) -> Option<LawSubitem> {
+    let mut lines = block.iter().copied().peekable();
+    let indent = line_indent(lines.peek()?);
+    let node = read_added_subitem(&mut lines, indent, 1, number)?;
+    lines.next().is_none().then_some(node)
+}
+
+fn read_added_subitem<'a>(
+    lines: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
+    indent: usize,
+    depth: u8,
+    number: usize,
+) -> Option<LawSubitem> {
+    let line = lines.next()?;
+    if line_indent(line) != indent || depth > 10 {
+        return None;
+    }
+    let (title, sentence) = super::split_leading_token(line.trim())?;
+    let mut children: Vec<LawSubitem> = Vec::new();
+    while lines.peek().is_some_and(|line| line_indent(line) > indent) {
+        let child = read_added_subitem(lines, indent + 2, depth + 1, children.len() + 1)?;
+        if children.iter().any(|node| node.title == child.title) {
+            return None;
+        }
+        children.push(child);
+    }
+    Some(LawSubitem {
+        depth,
+        num: number.to_string(),
+        title: title.to_string(),
+        sentence: sentence.to_string(),
+        xml_sentence_content: Default::default(),
+        children,
+    })
 }
 
 fn apply_replace_in_string(

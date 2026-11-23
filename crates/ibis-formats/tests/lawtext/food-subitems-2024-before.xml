@@ -1,0 +1,58 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<Law Era="Heisei" Lang="ja" LawType="MinisterialOrdinance" Num="010" PromulgateDay="20" PromulgateMonth="3" Year="27">
+  <LawNum>平成二十七年内閣府令第十号</LawNum>
+  <LawBody>
+    <LawTitle Abbrev="" AbbrevKana="" Kana="しょくひんひょうじきじゅん">食品表示基準</LawTitle>
+    <MainProvision>
+      <Article Num="2">
+        <ArticleCaption>（定義）</ArticleCaption>
+        <ArticleTitle>第二条</ArticleTitle>
+        <Paragraph Num="1">
+          <ParagraphNum />
+          <ParagraphSentence>
+            <Sentence Num="1" WritingMode="vertical">この府令において、次の各号に掲げる用語の意義は、当該各号に定めるところによる。</Sentence>
+          </ParagraphSentence>
+          <Item Num="10">
+            <ItemTitle>十</ItemTitle>
+            <ItemSentence>
+              <Column Num="1">
+                <Sentence Num="1" WritingMode="vertical">機能性表示食品</Sentence>
+              </Column>
+              <Column Num="2">
+                <Sentence Num="1" WritingMode="vertical">疾病に罹患していない者（未成年者、妊産婦（妊娠を計画している者を含む。）及び授乳婦を除く。）に対し、機能性関与成分によって健康の維持及び増進に資する特定の保健の目的（疾病リスクの低減に係るものを除く。）が期待できる旨を科学的根拠に基づいて容器包装に表示をする食品（健康増進法（平成十四年法律第百三号）第四十三条第一項の規定に基づく許可又は同法第六十三条第一項の規定に基づく承認を受け、特別の用途に適する旨の表示をする食品（以下「特別用途食品」という。）、栄養機能食品、アルコールを含有する飲料及び国民の栄養摂取の状況からみてその過剰な摂取が国民の健康の保持増進に影響を与えているものとして健康増進法施行規則（平成十五年厚生労働省令第八十六号）第十一条第二項で定める栄養素の過剰な摂取につながる食品を除く。）であって、当該食品に関する表示の内容、食品関連事業者名及び連絡先等の食品関連事業者に関する基本情報、安全性及び機能性の根拠に関する情報、生産・製造及び品質の管理に関する情報、健康被害の情報収集体制その他必要な事項を販売日の六十日前までに消費者庁長官に届け出たものをいう。</Sentence>
+              </Column>
+            </ItemSentence>
+          </Item>
+        </Paragraph>
+      </Article>
+      <Article Num="22">
+        <ArticleCaption>（表示の方式等）</ArticleCaption>
+        <ArticleTitle>第二十二条</ArticleTitle>
+        <Paragraph Num="1">
+          <ParagraphNum />
+          <ParagraphSentence>
+            <Sentence Num="1" WritingMode="vertical">第十八条、第十九条及び前条に掲げる事項の表示は、次の各号に定めるところによりされなければならない。</Sentence>
+          </ParagraphSentence>
+          <Item Num="4">
+            <ItemTitle>四</ItemTitle>
+            <ItemSentence>
+              <Sentence Num="1" WritingMode="vertical">機能性表示食品にあっては、次に定めるとおり表示する。</Sentence>
+            </ItemSentence>
+            <Subitem1 Num="1">
+              <Subitem1Title>イ</Subitem1Title>
+              <Subitem1Sentence>
+                <Sentence Num="1" WritingMode="vertical">機能性表示食品である旨は、容器包装の主要面に表示する。</Sentence>
+              </Subitem1Sentence>
+            </Subitem1>
+            <Subitem1 Num="2">
+              <Subitem1Title>ロ</Subitem1Title>
+              <Subitem1Sentence>
+                <Sentence Num="1" WritingMode="vertical">機能性関与成分及び当該成分又は当該成分を含有する食品が有する機能性並びに機能性及び安全性について国による評価を受けたものではない旨は、容器包装の同一面に表示する。</Sentence>
+              </Subitem1Sentence>
+            </Subitem1>
+          </Item>
+        </Paragraph>
+      </Article>
+    </MainProvision>
+  </LawBody>
+</Law>
