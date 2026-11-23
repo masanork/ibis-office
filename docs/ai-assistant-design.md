@@ -20,6 +20,37 @@
 
 開いたフォルダーが Git 作業ツリー内にある場合は、`git_status` で未コミットの変更を、`git_log` でファイルまたはフォルダーの履歴を参照できる。履歴は最初の親を辿り、`git_diff` は指定した２つのコミット間でファイル１件を比較する。Office 文書は Markdown に抽出した内容を比較する。返すパスは開いたフォルダーからの相対パスで、履歴と差分にはコミット SHA を付ける。
 
+## ローカルの coding agent から GUI をデバッグする
+
+macOS と Linux では、実行ファイルを子プロセスとして直接起動する。macOS のインストール済みアプリなら実行ファイルは
+`/Applications/Docs.app/Contents/MacOS/ibisOffice`。標準入力と標準出力をパイプでつなぎ、標準エラーはログとして扱う。
+
+```sh
+ibisOffice --assistant-stdio sample.xlsx
+```
+
+専用の GUI ウィンドウで Assistant が動く。標準出力の `ready`（`version: 1`）で接続完了。
+`loading: true` の場合、最初のファイルが開くまで `document_opened` を待つ。読み取りエラーは `document_error` で通知する。
+`document_blocked`（`reason: "password"`）が届いたら、GUI でパスワードを入力する。
+ファイルを省略して起動した場合は、対象ウィンドウで文書を開いてから送信する。
+
+標準入力は1行1 JSON。各要求に `id` を付ける。1行は改行込みで最大256 KiB。上限を超えると `protocol_error` を返して入力を終了する。以下の `run_id` は `prompt` の成功応答、または GUI 送信時の
+`started` イベントで取得した値に置き換える。
+
+```jsonl
+{"id":1,"op":"prompt","text":"Data シートの A1 に確認済みと入力して"}
+{"id":2,"op":"stop","run_id":0}
+{"id":3,"op":"apply","run_id":0}
+{"id":4,"op":"discard","run_id":0}
+```
+
+- 要求への応答には同じ `id` と `ok` が入る。成功時は `run_id`、失敗時は `error` を返す。同期イベントが応答より先に届くこともある。
+- `started`、`delta`、`message`、`tool_call`、`tool`、`review` で、送信内容、応答断片、確定した応答テキスト、ツールの実行前の引数、実行結果、GUI と同じ編集プレビューを参照できる。各イベントに `run_id` が入る。
+- `completed`、`stopped`、`error` でターンの終了を通知する。`completed` の `review: true` は適用または破棄を待っている状態。GUI と標準入力のどちらから操作しても `review_resolved` の `outcome` に `applied`、`discarded`、`error` のいずれかが入る。
+- Assistant の履歴を消すと `reset` が届く。接続はそのウィンドウに属する。標準入力を閉じても、GUI から操作を続けられる。
+
+`apply` は編集中の文書に反映する。保存は通常の GUI 操作で行う。実モデルとローカルのモック API のどちらにも、下記の環境変数で接続できる。標準出力にはプロンプトやツールが読んだ文書内容が含まれるため、agent 側でログを保存する際は取り扱いに注意する。
+
 以下は導入時の設計メモ。
 
 ## 目的

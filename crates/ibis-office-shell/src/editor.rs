@@ -402,6 +402,8 @@ pub struct SlideEditor {
     pub bar_keys: crate::bar_keys::BarKeys,
     pub(crate) draw_button_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     pub zoom_trigger_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) assistant_output: Option<std::sync::mpsc::Sender<serde_json::Value>>,
     pub ai_assistant: Option<crate::ai_assistant::AiAssistantState>,
     _zoom_subscription: Subscription,
     /// The status bar's list of zooms is open.
@@ -849,6 +851,8 @@ impl SlideEditor {
             logo_bounds: Default::default(),
             draw_button_bounds: Default::default(),
             bar_keys: Default::default(),
+            #[cfg(not(target_family = "wasm"))]
+            assistant_output: None,
             ai_assistant: None,
             _zoom_subscription: zoom_subscription,
             zoom_menu_open: false,
@@ -1986,6 +1990,9 @@ impl SlideEditor {
                     if let Some(view) = restore {
                         this.restore_view_state(&view, window, cx);
                     }
+                    if this.assistant_output.is_some() {
+                        this.emit_assistant_event(serde_json::json!({"event":"document_opened","path":path}));
+                    }
                     opened(this, cx);
                     this.recent_files = crate::recent_files::add(&path);
                     crate::app::set_app_menus(cx);
@@ -2005,10 +2012,16 @@ impl SlideEditor {
                 }
                 // A protected file: its password is asked for.
                 Err(err) if err == crate::read_file::NEEDS_PASSWORD || err == crate::read_file::WRONG_PASSWORD => {
+                    if this.assistant_output.is_some() {
+                        this.emit_assistant_event(serde_json::json!({"event":"document_blocked","path":path,"reason":"password"}));
+                    }
                     this.fail_loading(String::new(), cx);
                     this.ask_password_to_open(path.clone(), slide, err == crate::read_file::WRONG_PASSWORD, window, cx);
                 }
                 Err(err) => {
+                    if this.assistant_output.is_some() {
+                        this.emit_assistant_event(serde_json::json!({"event":"document_error","path":path,"message":err}));
+                    }
                     let message = crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]);
                     // A file that cannot be opened (gone, no permission, broken) is told in a message box, not only in the status.
                     this.show_alert(crate::i18n::text("shell.open-failed.title"), message.clone().into(), cx);

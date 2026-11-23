@@ -418,6 +418,7 @@ pub fn init(cx: &mut App) {
 #[derive(Default)]
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
 struct Args {
+    assistant_stdio: bool,
     path: Option<std::path::PathBuf>,
     slide: Option<usize>,
     export: Option<String>,
@@ -491,6 +492,7 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
     while let Some(arg) = iter.next() {
         let mut value = || iter.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
+            "--assistant-stdio" => args.assistant_stdio = true,
             "--read-only" => args.read_only = true,
             "--slide" => args.slide = Some(value()?.parse().map_err(|_| "--slide needs a slide number".to_string())?),
             "--export" => args.export = Some(value()?),
@@ -561,6 +563,14 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
                 input_count += 1;
                 args.path = Some(arg.into());
             }
+        }
+    }
+    if args.assistant_stdio {
+        if !cfg!(any(target_os = "macos", target_os = "linux")) {
+            return Err("--assistant-stdio is available on macOS and Linux".into());
+        }
+        if args.export.is_some() || args.timing || args.quit_after_first_frame {
+            return Err("--assistant-stdio requires a regular GUI session".into());
         }
     }
     if args.export.as_deref() == Some("pdfa-validate") {
@@ -1107,6 +1117,7 @@ pub fn run_native() {
     let single = !args.quit_after_first_frame
         && !args.timing
         && !args.read_only
+        && !args.assistant_stdio
         && args.slide.is_none()
         && args.ai_query.is_none()
         && std::env::var_os("IBIS_NO_SINGLE_INSTANCE").is_none();
@@ -1213,9 +1224,15 @@ pub fn run_native() {
             };
             let opens_file = first.is_some();
             let read_only = args.read_only;
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            let assistant_stdio = args.assistant_stdio;
             match first {
                 Some((path, receiver)) => open_window_with(cx, move |editor, window, cx| {
                     editor.read_only = read_only;
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    if assistant_stdio {
+                        shell::assistant_stdio::start(editor, window, true, cx);
+                    }
                     let (position, destination) = std::sync::mpsc::channel();
                     let read = move || {
                         let (loaded, paragraph) = receiver.recv()
@@ -1229,7 +1246,13 @@ pub fn run_native() {
                         }
                     });
                 }),
-                None => open_window_with(cx, move |editor, _, _| editor.read_only = read_only),
+                None => open_window_with(cx, move |editor, _window, _cx| {
+                    editor.read_only = read_only;
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    if assistant_stdio {
+                        shell::assistant_stdio::start(editor, _window, false, _cx);
+                    }
+                }),
             }
             rest.into_iter().for_each(|p| open_path_in_app(p, cx));
             timing::mark("window");

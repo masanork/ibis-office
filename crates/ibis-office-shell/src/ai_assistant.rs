@@ -587,6 +587,66 @@ impl SlideEditor {
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn emit_assistant_event(&self, event: serde_json::Value) {
+        if let Some(output) = &self.assistant_output {
+            let _ = output.send(event);
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn submit_assistant_stdio_prompt(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<u64, &'static str> {
+        let prompt = text.trim();
+        if prompt.is_empty() {
+            return Err("prompt text is empty");
+        }
+        if !self.has_document || self.watch.opening_path.is_some() {
+            return Err("open a document before sending a prompt");
+        }
+        if self.kind() == ibis_formats::Kind::Pdf {
+            return Err("the Assistant is unavailable in the PDF viewer");
+        }
+        if let Some(panel) = &self.ai_assistant {
+            if panel.streaming {
+                return Err("an assistant turn is already running");
+            }
+            if panel.assistant_review.is_some() {
+                return Err("apply or discard the pending review before sending a prompt");
+            }
+        }
+        self.open_ai_assistant_panel(window, cx);
+        self.submit_ai_assistant_text(prompt.to_owned(), cx);
+        Ok(self.ai_assistant.as_ref().expect("assistant sidebar opened").run_id)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn stop_assistant_stdio(&mut self, run_id: u64, cx: &mut Context<Self>) -> Result<(), &'static str> {
+        if !self.ai_assistant.as_ref().is_some_and(|p| p.run_id == run_id && p.streaming) {
+            return Err("no active assistant turn for this run");
+        }
+        self.stop_ai_assistant(cx);
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn review_assistant_stdio(
+        &mut self,
+        run_id: u64,
+        apply: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if !self.ai_assistant.as_ref().is_some_and(|p| p.run_id == run_id && p.assistant_review.is_some()) {
+            return Err("no pending assistant review for this run");
+        }
+        self.finish_assistant_review(apply, cx);
+        Ok(())
+    }
+
     /// Open or focus the Assistant sidebar.
     pub fn open_ai_assistant_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.ai_assistant.is_none() {
@@ -628,6 +688,9 @@ impl SlideEditor {
                 model_input,
                 api_key_input,
                 show_settings: false,
+                #[cfg(not(target_family = "wasm"))]
+                show_tool_logs: self.assistant_output.is_some(),
+                #[cfg(target_family = "wasm")]
                 show_tool_logs: false,
                 messages: Vec::new(),
                 history: Vec::new(),
@@ -663,6 +726,10 @@ impl SlideEditor {
         if let Some(p) = self.ai_assistant.as_mut() {
             p.streaming = false;
             p.run_id = p.run_id.wrapping_add(1);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if self.ai_assistant.is_some() && self.assistant_output.is_some() {
+            self.emit_assistant_event(json!({"event":"reset"}));
         }
         self.ai_assistant = None;
         self.sidebar_open = false;
@@ -729,6 +796,12 @@ impl SlideEditor {
     fn stop_ai_assistant(&mut self, cx: &mut Context<Self>) {
         #[cfg(target_family = "wasm")]
         abort_browser_stream();
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(p) = &self.ai_assistant
+            && p.streaming && self.assistant_output.is_some()
+        {
+            self.emit_assistant_event(json!({"event":"stopped","run_id":p.run_id}));
+        }
         if let Some(p) = self.ai_assistant.as_mut() {
             p.streaming = false;
             p.run_id = p.run_id.wrapping_add(1);
@@ -752,6 +825,10 @@ impl SlideEditor {
     fn clear_ai_assistant_history(&mut self, cx: &mut Context<Self>) {
         #[cfg(target_family = "wasm")]
         abort_browser_stream();
+        #[cfg(not(target_family = "wasm"))]
+        if self.ai_assistant.is_some() && self.assistant_output.is_some() {
+            self.emit_assistant_event(json!({"event":"reset"}));
+        }
         if let Some(p) = self.ai_assistant.as_mut() {
             p.streaming = false;
             p.run_id = p.run_id.wrapping_add(1);
@@ -829,6 +906,13 @@ impl SlideEditor {
         formula_messages: Option<Vec<ChatMessage>>,
         cx: &mut Context<Self>,
     ) {
+        let output = self.assistant_output.clone();
+        let emit = move |event| {
+            if let Some(output) = &output {
+                let _ = output.send(event);
+            }
+        };
+        let trace = self.assistant_output.is_some();
         let kind = self.ai_doc_kind();
         let formula_only = formula_messages.is_some();
         let mut draft = (!formula_only).then(|| {
@@ -861,6 +945,9 @@ impl SlideEditor {
             p.run_id = NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             p.streaming = true;
             p.streaming_text.clear();
+            if trace {
+                emit(json!({"event":"started","run_id":p.run_id,"text":prompt}));
+            }
             p.messages.push(UiMessage::new(UiMessageKind::User, prompt.clone()));
             p.scroll_handle.scroll_to_bottom();
             if !formula_only && p.history.is_empty() {
@@ -987,6 +1074,9 @@ impl SlideEditor {
                                 && p.run_id == run_id
                             {
                                 p.streaming_text.push_str(&delta_owned);
+                                if trace {
+                                    emit(json!({"event":"delta","run_id":run_id,"text":delta_owned}));
+                                }
                                 p.scroll_handle.scroll_to_bottom();
                                 cx.notify();
                             }
@@ -1023,6 +1113,9 @@ impl SlideEditor {
                                     p.history.truncate(start);
                                 }
                                 p.streaming_text.clear();
+                                if trace {
+                                    emit(json!({"event":"error","run_id":run_id,"message":err}));
+                                }
                                 p.messages.push(UiMessage::new(UiMessageKind::Error, err));
                                 p.scroll_handle.scroll_to_bottom();
                                 cx.notify();
@@ -1031,6 +1124,16 @@ impl SlideEditor {
                         return;
                     }
                     Ok(out) => {
+                        if trace && !out.tool_calls.is_empty() {
+                            let active = this.read_with(cx, |editor, _| editor.ai_assistant.as_ref()
+                                .is_some_and(|panel| panel.streaming && panel.run_id == run_id)).unwrap_or(false);
+                            if !active {
+                                return;
+                            }
+                            for call in &out.tool_calls {
+                                emit(json!({"event":"tool_call","run_id":run_id,"call":call}));
+                            }
+                        }
                         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                         let mut sqlite_results = std::collections::HashMap::new();
                         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -1125,7 +1228,13 @@ impl SlideEditor {
                                 return;
                             }
                             p.streaming_text.clear();
+                            if trace && !out.content.is_empty() {
+                                emit(json!({"event":"message","run_id":run_id,"text":out.content}));
+                            }
                             if formula_only {
+                                if trace {
+                                    emit(json!({"event":"completed","run_id":run_id,"review":false}));
+                                }
                                 p.streaming = false;
                                 p.messages.push(UiMessage::new(UiMessageKind::Assistant, out.content));
                                 p.scroll_handle.scroll_to_bottom();
@@ -1148,7 +1257,9 @@ impl SlideEditor {
                                 let turn = draft.take().expect("editing turns have a draft");
                                 p.streaming = false;
                                 p.assistant_history_start = None;
-                                if turn.source_edit.is_some() || (!turn_commands.is_empty() && turn.draft.presentation() != &turn.base) {
+                                let pending_review = turn.source_edit.is_some()
+                                    || (!turn_commands.is_empty() && turn.draft.presentation() != &turn.base);
+                                if pending_review {
                                     let preview = if let Some(source) = &turn.source_edit {
                                         source_edit_preview(&source.before, &source.replacement)
                                     } else if kind == AiDocKind::Xlsx {
@@ -1156,12 +1267,18 @@ impl SlideEditor {
                                     } else {
                                         document_edit_preview(&turn, &edit_labels)
                                     };
+                                    if trace {
+                                        emit(json!({"event":"review","run_id":run_id,"preview":preview}));
+                                    }
                                     p.assistant_review = Some(AssistantReview {
                                         turn, commands: std::mem::take(&mut turn_commands),
                                         preview, history_start,
                                     });
                                 } else {
                                     editor.finish_assistant_navigation(&turn, cx);
+                                }
+                                if trace {
+                                    emit(json!({"event":"completed","run_id":run_id,"review":pending_review}));
                                 }
                                 cx.notify();
                                 return;
@@ -1227,6 +1344,14 @@ impl SlideEditor {
                                     edit_labels.push(log_text.clone());
                                     turn_commands.extend(commands);
                                 }
+                                if trace {
+                                    emit(json!({
+                                        "event":"tool","run_id":run_id,"call":call,
+                                        "result":serde_json::from_str::<serde_json::Value>(&result_json)
+                                            .unwrap_or_else(|_| json!(result_json)),
+                                        "summary":log_text,
+                                    }));
+                                }
                                 let tool_msg = ChatMessage::tool_result(&call.id, result_json);
                                 messages_to_send.push(tool_msg.clone());
                                 if let Some(p) = editor.ai_assistant.as_mut() {
@@ -1270,6 +1395,7 @@ impl SlideEditor {
     fn finish_assistant_review(&mut self, apply: bool, cx: &mut Context<Self>) {
         let Some(panel) = self.ai_assistant.as_mut() else { return };
         let Some(review) = panel.assistant_review.take() else { return };
+        let run_id = panel.run_id;
         let AssistantReview { turn, commands, history_start, .. } = review;
         let (kind, message) = if !apply {
             (UiMessageKind::Assistant, "変更案を破棄しました。".into())
@@ -1294,6 +1420,12 @@ impl SlideEditor {
                 (UiMessageKind::Error, "変更を適用できませんでした。".into())
             }
         };
+        if self.assistant_output.is_some() {
+            self.emit_assistant_event(json!({
+                "event":"review_resolved","run_id":run_id,"message":message,
+                "outcome":if kind == UiMessageKind::Error { "error" } else if apply { "applied" } else { "discarded" },
+            }));
+        }
         if let Some(panel) = self.ai_assistant.as_mut() {
             if kind == UiMessageKind::Error || !apply {
                 panel.history.truncate(history_start);
