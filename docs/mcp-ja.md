@@ -64,9 +64,11 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 
 `sqlite_query` は単一の `SELECT` または `WITH … SELECT` と、任意の位置パラメータ `params` を受け付けます。SQL、パラメータ、列名、行、打ち切りフラグ `truncated` を返します。プレビューは既定50行、最大1,000行で、応答サイズにも上限があります。クエリ実行の上限は3秒です。
 
-CSV・Parquet・SQLiteのテーブルを一緒に調べるには、`sqlite_query` または `sqlite_query_to_table` に `datasets` を渡します。各要素にファイルの `source` とSQLで使うテーブル名 `alias` を指定し、SQLiteの場合は元の `table` 名も渡します。この形式では `path` を省略します。例えばSQLiteの表を `facts`、CSVを `labels` として登録し、`SELECT * FROM facts JOIN labels USING (code)` と書けます。列名は `SELECT * FROM labels LIMIT 0` でも確認できます。内蔵アシスタントでは複数ファイルをまとめて選び、`source` に選択順のファイル番号を使います。
+CSV・Parquet・Arrow IPC・SQLite のテーブルを一緒に調べるには、`sqlite_query` または `sqlite_query_to_table` に `datasets` を渡します。各要素にファイルの `source` とSQLで使うテーブル名 `alias` を指定し、SQLiteの場合は元の `table` 名も渡します。この形式では `path` を省略します。例えばSQLiteの表を `facts`、CSVを `labels` として登録し、`SELECT * FROM facts JOIN labels USING (code)` と書けます。列名は `SELECT * FROM labels LIMIT 0` でも確認できます。内蔵アシスタントでは複数ファイルをまとめて選び、`source` に選択順のファイル番号を使います。
 
 Parquet では `columns` に読み込む列の正確な名前を順番に指定できます（例 `["code", "amount"]`）。選ばなかった列は、入れ子列も含め、入力セル数の上限を適用する前に読み飛ばします。省略すると全列を読み込みます。列の選択はクエリ帳票に保存し、更新時にも使います。
+
+Arrow IPC のファイル・ストリーム（`.arrow`、`.ipc`、`.feather`）も `columns` による列選択と帳票への保存に対応します。SQL データセットでは UTF-8 文字列配列を JSON テキストとして取り込み、空配列や配列内の null を保持します。`json_each` で展開できます。辞書エンコードは未対応です。デコード量と選択結果のセル数・テキスト量には上限があり、Turso は結果をメモリ上に読み込みます。
 
 SQL のデータセットでは、Parquet の標準形式で記録された UTF-8 文字列の配列を JSON テキストとして扱います。SQL の NULL、空配列、配列内の null、重複、要素順を保持します。`json_each` で配列を展開できます。元の行単位で金額を集計する場合は、`EXISTS (SELECT 1 FROM json_each(f.tags) j WHERE j.value = ?)` で元の行を絞り込みます。配列を条件に使う場合は SQL 側で指定します。JSON テキストはデータセットのテキスト量の上限に数えます。
 

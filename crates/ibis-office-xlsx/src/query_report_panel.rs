@@ -201,6 +201,7 @@ impl SlideEditor {
         let extensions: &[&str] = match kind {
             "csv" => &["csv"],
             "parquet" => &["parquet"],
+            "arrow_ipc" => &["arrow", "ipc", "feather"],
             "sqlite" => &["sqlite", "sqlite3", "db"],
             _ => ibis_doc_service::DATASET_EXTENSIONS,
         };

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
+    SqliteRows, SqliteScalar, read_arrow_ipc_dataset, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -15,7 +15,7 @@ use crate::catalog::{Access, Tool, boolean, document_id, integer, object, string
 use crate::service::{Args, Limits, Service};
 use crate::{ToolError, paths};
 
-pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "sqlite", "sqlite3", "db"];
+pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "sqlite", "sqlite3", "db"];
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
 const PATH: &str = "path";
 const MAX_FILTERS: usize = 16;
@@ -383,9 +383,9 @@ fn query_properties() -> Vec<(&'static str, Value)> {
             "datasets",
             json!({
                 "type":"array","minItems":1,"maxItems":8,
-                "description":"Use an in-memory database containing only these CSV, Parquet and/or SQLite tables.",
+                "description":"Use an in-memory database containing only these CSV, Parquet, Arrow IPC and/or SQLite tables.",
                 "items":object(&[
-                    ("source", string("Path to a CSV, Parquet or SQLite file in an allowed folder.")),
+                    ("source", string("Path to a CSV, Parquet, Arrow IPC or SQLite file in an allowed folder.")),
                     ("alias", string("SQL table name to register for this dataset.")),
                     ("table", string("Source table name, required for SQLite files.")),
                     ("where", json!({
@@ -402,7 +402,7 @@ fn query_properties() -> Vec<(&'static str, Value)> {
                     ("columns", json!({
                         "type":"array","minItems":1,"maxItems":256,"uniqueItems":true,
                         "items":{"type":"string","minLength":1},
-                        "description":"Parquet only: exact column names to load, in order. Omit to load all columns."
+                        "description":"Parquet and Arrow IPC: exact column names to load, in order. Omit to load all columns."
                     })),
                 ], &["source","alias"]),
             }),
@@ -630,15 +630,15 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
         let kind = source_kind(&path);
         let columns = match spec.get("columns") {
             None => Vec::new(),
-            Some(_) if kind != "parquet" => {
-                return Err(ToolError::invalid("columns is only used for Parquet datasets"));
+            Some(_) if !matches!(kind, "parquet" | "arrow_ipc") => {
+                return Err(ToolError::invalid("columns is only used for Parquet and Arrow IPC datasets"));
             }
             Some(value) => value.as_array()
                 .filter(|items| (1..=256).contains(&items.len()))
                 .and_then(|items| items.iter().map(|item| {
                     item.as_str().filter(|name| !name.is_empty()).map(str::to_owned)
                 }).collect::<Option<Vec<_>>>())
-                .ok_or_else(|| ToolError::invalid("columns must contain 1 to 256 non-empty Parquet column names"))?,
+                .ok_or_else(|| ToolError::invalid("columns must contain 1 to 256 non-empty column names"))?,
         };
         let filters = match spec.get("where") {
             None => Vec::new(),
@@ -658,10 +658,10 @@ fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable
             if table_name.is_some() {
                 return Err(ToolError::invalid("table is only used for SQLite datasets"));
             }
-            if kind == "parquet" {
-                read_parquet_filtered(&path, &columns, &filters, cells, text).map_err(sqlite_error)?
-            } else {
-                read_csv_dataset(&path, cells, text)?
+            match kind {
+                "parquet" => read_parquet_filtered(&path, &columns, &filters, cells, text).map_err(sqlite_error)?,
+                "arrow_ipc" => read_arrow_ipc_dataset(&path, &columns, cells, text).map_err(sqlite_error)?,
+                _ => read_csv_dataset(&path, cells, text)?,
             }
         };
         if table.columns.is_empty() || table.columns.len() > 256 {
@@ -779,6 +779,10 @@ fn list_query_reports(service: &mut Service, args: &Value) -> Result<Value, Tool
 fn source_kind(path: &Path) -> &'static str {
     if is_sqlite(path) {
         "sqlite"
+    } else if path.extension().is_some_and(|ext| {
+        ["arrow", "ipc", "feather"].iter().any(|name| ext.eq_ignore_ascii_case(name))
+    }) {
+        "arrow_ipc"
     } else if path
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("parquet"))

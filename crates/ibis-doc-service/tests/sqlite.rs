@@ -976,3 +976,53 @@ fn parquet_text_lists_can_be_expanded_in_turso_without_duplicating_amounts() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn arrow_ipc_and_parquet_join_and_refresh_from_a_saved_report() {
+    let dir = std::env::temp_dir().join(format!("ibis-arrow-sql-datasets-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let facts = dir.join("facts.parquet");
+    let lookup = dir.join("lookup.feather");
+    let stream = dir.join("lookup.ipc");
+    std::fs::write(&facts, include_bytes!("fixtures/query-text-lists.parquet")).unwrap();
+    std::fs::write(&lookup, include_bytes!("fixtures/query-lookup.feather")).unwrap();
+    std::fs::write(&stream, include_bytes!("fixtures/query-lookup.ipc")).unwrap();
+    let workbook = dir.join("blank.xlsx");
+    std::fs::write(&workbook, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut service = Service::new(&[dir.clone()], false, Limits::default());
+    let mut call = |tool, args| service.call(tool, &args).unwrap();
+    let mut args = json!({
+        "sql": "SELECT f.code, f.amount, l.labels, typeof(f.amount) AS amount_type FROM facts f JOIN labels l USING (code) ORDER BY f.code",
+        "datasets": [
+            {"source":facts,"alias":"facts","columns":["code","amount"]},
+            {"source":lookup,"alias":"labels","columns":["labels","code"]},
+        ],
+    });
+    assert_eq!(call("sqlite_query", args.clone())["rows"], json!([
+        ["001",100,"[\"甲\",null,\"甲\"]","integer"],
+        ["002",200,"[]","integer"],
+        ["003",300,null,"integer"],
+    ]));
+    let mut nested = args.clone();
+    nested["sql"] = json!("SELECT j.key, j.value FROM labels l CROSS JOIN json_each(l.labels) j WHERE l.code = '001' ORDER BY j.key");
+    assert_eq!(call("sqlite_query", nested)["rows"], json!([[0,"甲"],[1,null],[2,"甲"]]));
+
+    let id = call("app_open_document", json!({"path":workbook}))["document_id"].clone();
+    let sheet = call("xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"].clone();
+    args["document_id"] = id.clone();
+    args["destination_sheet"] = sheet;
+    args["anchor"] = json!("A1");
+    call("sqlite_query_to_table", args);
+    let saved = dir.join("saved.xlsx");
+    call("app_save_document", json!({"document_id":id,"path":saved}));
+    call("app_close_document", json!({"document_id":id}));
+    let id = call("app_open_document", json!({"path":saved}))["document_id"].clone();
+    let reports = call("xlsx_list_query_reports", json!({"document_id":id}));
+    assert_eq!(reports["reports"][0]["sources"][1]["kind"], "arrow_ipc");
+    assert_eq!(reports["reports"][0]["sources"][1]["columns"], json!(["labels","code"]));
+    let refreshed = call("sqlite_refresh_query_reports", json!({
+        "document_id":id,"bindings":{"facts.parquet":facts,"lookup.feather":stream},
+    }));
+    assert_eq!(refreshed["reports"][0]["rows"], 3);
+    std::fs::remove_dir_all(dir).unwrap();
+}

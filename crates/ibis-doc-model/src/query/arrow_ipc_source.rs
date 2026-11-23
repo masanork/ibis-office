@@ -16,9 +16,72 @@ const MAX_DECODED_BYTES: usize = 128 * 1024 * 1024;
 const MAX_ROWS: usize = 1_048_575;
 const MAX_COLUMNS: usize = 16_384;
 const MAX_CELLS: usize = 5_000_000;
+const MAX_TEXT_UNITS: usize = 32_767;
 
 /// Import a local Arrow IPC file or stream into a bounded spreadsheet table.
 pub fn read_arrow_ipc(path: &Path) -> Result<QTable, String> {
+    read_ipc(path, &ReadOptions::spreadsheet())
+}
+
+pub fn read_arrow_ipc_dataset(
+    path: &Path,
+    columns: &[String],
+    max_cells: usize,
+    max_text: usize,
+) -> Result<QTable, String> {
+    read_ipc(
+        path,
+        &ReadOptions {
+            columns,
+            max_cells,
+            max_text,
+            sql: true,
+        },
+    )
+}
+
+struct ReadOptions<'a> {
+    columns: &'a [String],
+    max_cells: usize,
+    max_text: usize,
+    sql: bool,
+}
+
+impl ReadOptions<'_> {
+    fn spreadsheet() -> Self {
+        Self {
+            columns: &[],
+            max_cells: MAX_CELLS,
+            max_text: MAX_DECODED_BYTES,
+            sql: false,
+        }
+    }
+
+    fn projection(&self, schema: &Schema) -> Result<Option<Vec<usize>>, String> {
+        if self.columns.is_empty() {
+            return Ok(None);
+        }
+        let mut projection = Vec::with_capacity(self.columns.len());
+        let mut seen = HashSet::new();
+        for name in self.columns {
+            let mut matches = schema
+                .fields()
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.name() == name);
+            let (index, _) = matches
+                .next()
+                .ok_or_else(|| format!("Missing Arrow IPC column: {name}"))?;
+            if matches.next().is_some() || !seen.insert(index) {
+                return Err(format!("Ambiguous or duplicate Arrow IPC column: {name}"));
+            }
+            projection.push(index);
+        }
+        Ok(Some(projection))
+    }
+}
+
+fn read_ipc(path: &Path, options: &ReadOptions<'_>) -> Result<QTable, String> {
     if !path.is_file() {
         return Err("Select a local Arrow IPC file".into());
     }
@@ -30,7 +93,7 @@ pub fn read_arrow_ipc(path: &Path) -> Result<QTable, String> {
     if bytes.len() > MAX_BYTES {
         return Err("Arrow IPC source exceeds the 64 MiB limit".into());
     }
-    read_bytes(&bytes).map_err(|error| {
+    read_bytes_with_options(&bytes, options).map_err(|error| {
         format!(
             "{}: {error}",
             path.file_name().unwrap_or_default().to_string_lossy()
@@ -38,7 +101,12 @@ pub fn read_arrow_ipc(path: &Path) -> Result<QTable, String> {
     })
 }
 
+#[cfg(test)]
 fn read_bytes(bytes: &[u8]) -> Result<QTable, String> {
+    read_bytes_with_options(bytes, &ReadOptions::spreadsheet())
+}
+
+fn read_bytes_with_options(bytes: &[u8], options: &ReadOptions<'_>) -> Result<QTable, String> {
     let mut budget = MAX_DECODED_BYTES;
     if bytes.starts_with(b"ARROW1") {
         let (data, trailer) = bytes
@@ -87,7 +155,12 @@ fn read_bytes(bytes: &[u8]) -> Result<QTable, String> {
         }
         let reader =
             FileReader::try_new(Cursor::new(bytes), None).map_err(|error| error.to_string())?;
-        collect_batches(&reader.schema(), reader)
+        let reader = match options.projection(&reader.schema())? {
+            Some(projection) => FileReader::try_new(Cursor::new(bytes), Some(projection))
+                .map_err(|error| error.to_string())?,
+            None => reader,
+        };
+        collect_batches(&reader.schema(), reader, options)
     } else {
         let (schema, mut rest) = inspect_message(bytes, &mut budget)?;
         if schema.header_as_schema().is_none() {
@@ -103,7 +176,13 @@ fn read_bytes(bytes: &[u8]) -> Result<QTable, String> {
             rest = remaining;
         }
         let reader = StreamReader::try_new(bytes, None).map_err(|error| error.to_string())?;
-        collect_batches(&reader.schema(), reader)
+        let reader = match options.projection(&reader.schema())? {
+            Some(projection) => {
+                StreamReader::try_new(bytes, Some(projection)).map_err(|error| error.to_string())?
+            }
+            None => reader,
+        };
+        collect_batches(&reader.schema(), reader, options)
     }
 }
 
@@ -168,8 +247,10 @@ fn inspect_message<'a>(
 fn collect_batches(
     schema: &Schema,
     batches: impl Iterator<Item = Result<RecordBatch, arrow_schema::ArrowError>>,
+    options: &ReadOptions<'_>,
 ) -> Result<QTable, String> {
-    if schema.fields().is_empty() || schema.fields().len() > MAX_COLUMNS {
+    let max_columns = if options.sql { 256 } else { MAX_COLUMNS };
+    if schema.fields().is_empty() || schema.fields().len() > max_columns {
         return Err("Arrow IPC source has an unsupported number of columns".into());
     }
     let mut seen = HashSet::new();
@@ -193,6 +274,15 @@ fn collect_batches(
             DataType::Float32 | DataType::Float64 => QType::Decimal,
             DataType::Date32 | DataType::Date64 => QType::Date,
             DataType::Timestamp(_, _) => QType::DateTime,
+            DataType::List(element) | DataType::LargeList(element)
+                if options.sql
+                    && matches!(
+                        element.data_type(),
+                        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+                    ) =>
+            {
+                QType::Text
+            }
             other => {
                 return Err(format!(
                     "Unsupported Arrow IPC column {}: {other}",
@@ -211,11 +301,11 @@ fn collect_batches(
         rows: Vec::new(),
     };
     let width = table.columns.len();
-    let mut text_budget = MAX_DECODED_BYTES;
+    let mut text_budget = options.max_text;
     for batch in batches {
         let batch = batch.map_err(|error| error.to_string())?;
         let height = table.rows.len().saturating_add(batch.num_rows());
-        if height > MAX_ROWS || width.saturating_mul(height) > MAX_CELLS {
+        if height > MAX_ROWS || width.saturating_mul(height) > options.max_cells {
             return Err("Arrow IPC source exceeds the query editor's table size limit".into());
         }
         for row in 0..batch.num_rows() {
@@ -235,7 +325,7 @@ fn collect_batches(
 }
 
 fn check_text(text: &str) -> Result<(), String> {
-    if text.encode_utf16().take(32_768).count() > 32_767 {
+    if text.encode_utf16().take(MAX_TEXT_UNITS + 1).count() > MAX_TEXT_UNITS {
         return Err("Text exceeds the spreadsheet cell limit".into());
     }
     Ok(())
@@ -273,6 +363,16 @@ fn cell(
                 .ok_or("Arrow IPC text exceeds the 128 MiB limit")?;
             return Ok(CellValue::Text(text.into()));
         }
+        DataType::List(_) | DataType::LargeList(_) => {
+            let items = match array.data_type() {
+                DataType::List(_) => value!(ListArray),
+                _ => value!(LargeListArray),
+            };
+            let text = text_list_json(items.as_ref(), (*text_budget).min(MAX_TEXT_UNITS * 3))?;
+            check_text(&text)?;
+            *text_budget -= text.len();
+            return Ok(CellValue::Text(text.into()));
+        }
         DataType::Int8 => f64::from(value!(Int8Array)),
         DataType::Int16 => f64::from(value!(Int16Array)),
         DataType::Int32 => f64::from(value!(Int32Array)),
@@ -300,6 +400,48 @@ fn cell(
         return Err("Number exceeds spreadsheet precision".into());
     }
     Ok(CellValue::Number(number))
+}
+
+fn text_list_json(items: &dyn Array, limit: usize) -> Result<String, String> {
+    let text_at = |row| match items.data_type() {
+        DataType::Utf8 => items
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|a| a.value(row)),
+        DataType::LargeUtf8 => items
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .map(|a| a.value(row)),
+        DataType::Utf8View => items
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .map(|a| a.value(row)),
+        _ => None,
+    };
+    let too_large = "Arrow IPC list exceeds the text budget";
+    let mut json = String::from("[");
+    for index in 0..items.len() {
+        if index != 0 {
+            json.push(',');
+        }
+        if items.is_null(index) {
+            json.push_str("null");
+        } else {
+            let text = text_at(index).ok_or("Unsupported Arrow IPC list element")?;
+            if text.len() > limit.saturating_sub(json.len()) {
+                return Err(too_large.into());
+            }
+            json.push_str(&serde_json::to_string(text).map_err(|error| error.to_string())?);
+        }
+        if json.len() >= limit {
+            return Err(too_large.into());
+        }
+    }
+    json.push(']');
+    if json.len() > limit {
+        return Err(too_large.into());
+    }
+    Ok(json)
 }
 
 #[cfg(test)]

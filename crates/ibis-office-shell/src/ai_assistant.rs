@@ -691,7 +691,7 @@ impl SlideEditor {
             directories: false,
             extensions: ibis_doc_service::DATASET_EXTENSIONS.iter().map(|ext| ext.to_string()).collect(),
             multiple: true,
-            prompt: Some("分析する CSV・Parquet・SQLite ファイルを選択".into()),
+            prompt: Some("分析する CSV・Parquet・Arrow IPC・SQLite ファイルを選択".into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = picked.await else { return };
