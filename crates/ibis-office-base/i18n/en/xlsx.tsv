@@ -3159,6 +3159,11 @@ query.report-blocked	Refresh is blocked because a check exceeded its limit.
 query.report-changed	The workbook changed. Run the preview again.
 query.report-applied	Refreshed {count} report(s).
 query.report-rows	{table} · {previous} → {current} rows
+query.report-schema-type	Input {source}.{column} changed from {previous} to {current}
+query.report-schema-added	Input {source}.{column} added ({current})
+query.report-schema-removed	Input {source}.{column} removed (was {previous})
+query.report-schema-more	{count} more input schema changes
+query.report-schema-unavailable	The new input schema exceeds the storage limit. The saved schema will not be updated.
 query.report-metric	{column} · {previous} → {current} (change {delta})
 query.report-metric-rate	{column} · {previous} → {current} (change {delta}, {rate}%)
 query.report-check	{name} · {count}

@@ -5,8 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
-    DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, read_arrow_ipc_dataset, parquet_dataset_columns, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
+    DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
+    SqliteRows, SqliteScalar, dataset_sql_type, read_arrow_ipc_dataset, parquet_dataset_columns, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -19,6 +19,7 @@ pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "fea
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
 const PATH: &str = "path";
 const MAX_FILTERS: usize = 16;
+const REPORT_DEFINITION_BYTES: usize = 32 * 1024;
 
 const TOOLS: &[Tool] = &[
     Tool {
@@ -81,7 +82,7 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "sqlite_refresh_query_table",
-        description: "Re-run the saved query after binding its source files in order, replace the table, and refresh its linked pivots and charts in one edit.",
+        description: "Re-run the saved query after binding its source files in order, replace the table, and refresh its linked pivots and charts in one edit. Returns input schema changes as warnings.",
         access: Access::Edit,
         returns_content: false,
         schema: || {
@@ -101,7 +102,7 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "sqlite_refresh_query_reports",
-        description: "Preview or atomically refresh workbook query reports from shared file bindings. Preview reports row counts and checks for overlap without editing.",
+        description: "Preview or atomically refresh workbook query reports from shared file bindings. Preview reports row counts and input schema changes and checks for overlap without editing.",
         access: Access::Edit,
         returns_content: true,
         schema: || {
@@ -504,8 +505,14 @@ fn query(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
-fn complete_query(service: &Service, args: &Value) -> Result<SqliteRows, ToolError> {
-    require_complete(run_query(service, args, 10_000, 4 * 1024 * 1024)?)
+fn prepare_export(service: &Service, args: &Value) -> Result<(SqliteRows, Value), ToolError> {
+    let session = query_session(service, args)?;
+    let rows = require_complete(run_session_query(&session, args, 10_000, 4 * 1024 * 1024)?)?;
+    let mut definition = saved_definition(args)?;
+    if let Some(schema) = report_input_schema(&session)? {
+        set_input_schema(&mut definition, &schema);
+    }
+    Ok((rows, definition))
 }
 
 fn require_complete(rows: SqliteRows) -> Result<SqliteRows, ToolError> {
@@ -519,8 +526,7 @@ fn require_complete(rows: SqliteRows) -> Result<SqliteRows, ToolError> {
 }
 
 fn query_to_table(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let rows = complete_query(service, args)?;
-    let definition = saved_definition(args)?;
+    let (rows, definition) = prepare_export(service, args)?;
     crate::tools_pivot::write_table(service, args, rows, definition)
 }
 
@@ -529,8 +535,7 @@ pub struct SqliteTableExport {
     arguments: Value,
     rows: SqliteRows,
     definition: Value,
-    refresh: bool,
-    checks: Vec<Value>,
+    refresh: Option<RefreshReview>,
 }
 
 impl SqliteTableExport {
@@ -545,8 +550,8 @@ impl SqliteTableExport {
             context,
             self.arguments,
             |service, args| {
-                if self.refresh {
-                    apply_single_refresh(service, args, self.rows, &self.definition, &self.checks)
+                if let Some(review) = self.refresh {
+                    apply_single_refresh(service, args, self.rows, &self.definition, &review)
                 } else {
                     crate::tools_pivot::write_table(service, args, self.rows, self.definition)
                 }
@@ -567,14 +572,12 @@ pub fn prepare_selected_datasets_export(
     mut args: Value,
 ) -> Result<SqliteTableExport, ToolError> {
     let service = selected_sources(paths, &mut args)?;
-    let rows = complete_query(&service, &args)?;
-    let definition = saved_definition(&args)?;
+    let (rows, definition) = prepare_export(&service, &args)?;
     Ok(SqliteTableExport {
         arguments: args,
         rows,
         definition,
-        refresh: false,
-        checks: Vec::new(),
+        refresh: None,
     })
 }
 
@@ -672,13 +675,7 @@ fn describe_datasets(service: &mut Service, args: &Value) -> Result<Value, ToolE
     let mut remaining = service.limits.page_bytes.saturating_sub(envelope_bytes);
     visit_datasets(service, &args["datasets"], true, |alias, kind, source_table, table| {
         let columns: Vec<_> = table.columns.into_iter().map(|column| {
-            let sql_type = match column.ty {
-                QType::Any => "DYNAMIC",
-                QType::Text => "TEXT",
-                QType::Whole | QType::Int32 | QType::Logical => "INTEGER",
-                _ => "REAL",
-            };
-            json!({"name": column.name, "sql_type": sql_type})
+            json!({"name": column.name, "sql_type": dataset_sql_type(column.ty)})
         }).collect();
         let mut entry = json!({"alias": alias, "format": kind, "columns": columns});
         if let Some(name) = source_table {
@@ -948,7 +945,7 @@ fn saved_definition(args: &Value) -> Result<Value, ToolError> {
         "sql":args["sql"], "params":args.get("params").cloned().unwrap_or_else(|| json!([])),
         "sources":sources,
     });
-    if definition.to_string().len() > 32 * 1024 {
+    if definition.to_string().len() > REPORT_DEFINITION_BYTES {
         return Err(ToolError::invalid(
             "The saved report definition exceeds 32 KiB",
         ));
@@ -1023,12 +1020,97 @@ fn bound_query(definition: &Value, args: &Value) -> Result<Value, ToolError> {
     Ok(query)
 }
 
+fn report_input_schema(session: &SqliteQuerySession) -> Result<Option<SqliteInputSchema>, ToolError> {
+    session.input_schema(REPORT_DEFINITION_BYTES).map_err(sqlite_error)
+}
+
+fn set_input_schema(definition: &mut Value, schema: &SqliteInputSchema) -> bool {
+    let previous = definition["input_schema"].clone();
+    definition["input_schema"] = json!(schema);
+    if definition.to_string().len() <= REPORT_DEFINITION_BYTES {
+        return true;
+    }
+    if previous.is_null() {
+        definition.as_object_mut().unwrap().remove("input_schema");
+    } else {
+        definition["input_schema"] = previous;
+    }
+    false
+}
+
+struct RefreshReview {
+    checks: Vec<Value>,
+    input_schema: Option<SqliteInputSchema>,
+}
+
+impl RefreshReview {
+    fn summarize(
+        &self,
+        definition: &Value,
+        summary: &mut Value,
+        commands: &mut Vec<ibis_doc_model::Command>,
+    ) {
+        use ibis_doc_model::{Command, SheetCommand};
+
+        if !self.checks.is_empty() {
+            summary["checks"] = json!(self.checks);
+        }
+        let Some(current) = &self.input_schema else {
+            summary["input_schema_status"] = json!("unavailable");
+            return;
+        };
+        let previous = definition.get("input_schema")
+            .and_then(|schema| serde_json::from_value::<SqliteInputSchema>(schema.clone()).ok());
+        if previous.as_ref() == Some(current) {
+            return;
+        }
+        let mut next = definition.clone();
+        if set_input_schema(&mut next, current) {
+            commands.push(Command::Sheet(SheetCommand::SetQueryReport {
+                table: summary["table"].as_str().expect("refresh summary has a table name").to_owned(),
+                definition: next,
+            }));
+        } else {
+            summary["input_schema_status"] = json!("unavailable");
+        }
+        if let Some(previous) = previous {
+            let mut changes = Vec::new();
+            let mut count = 0;
+            let mut record = |source: &str, column: &str, from: Option<&str>, to: Option<&str>| {
+                count += 1;
+                if changes.len() < 20 {
+                    changes.push(json!({"source":source,"column":column,"previous":from,"current":to}));
+                }
+            };
+            for (source, columns) in &previous {
+                for (column, from) in columns {
+                    let to = current.get(source).and_then(|columns| columns.get(column));
+                    if to != Some(from) {
+                        record(source, column, Some(from), to.map(String::as_str));
+                    }
+                }
+            }
+            for (source, columns) in current {
+                for (column, to) in columns {
+                    if !previous.get(source).is_some_and(|columns| columns.contains_key(column)) {
+                        record(source, column, None, Some(to));
+                    }
+                }
+            }
+            if count != 0 {
+                summary["schema_changes"] = json!(changes);
+                summary["schema_change_count"] = json!(count);
+            }
+        }
+    }
+}
+
 fn refresh_query_table(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let open = crate::tools_xlsx::workbook_document(service, args.str_arg("document_id")?)?;
     let definition = query_report_definition(open.document.presentation(), args)?;
-    let (rows, checks) =
+    let (rows, review) =
         refresh_query_result(service, &bound_query(&definition, args)?, &definition)?;
-    apply_single_refresh(service, args, rows, &definition, &checks)
+    apply_single_refresh(service, args, rows, &definition, &review)
 }
 
 fn apply_single_refresh(
@@ -1036,21 +1118,19 @@ fn apply_single_refresh(
     args: &Value,
     rows: SqliteRows,
     definition: &Value,
-    checks: &[Value],
+    review: &RefreshReview,
 ) -> Result<Value, ToolError> {
-    enforce_checks(checks)?;
+    enforce_checks(&review.checks)?;
     let id = args.str_arg("document_id")?;
     let open = crate::tools_xlsx::workbook_document(service, id)?;
-    let (mut summary, commands) = crate::tools_pivot::plan_query_table_refresh(
+    let (mut summary, mut commands) = crate::tools_pivot::plan_query_table_refresh(
         open.document.presentation(),
         args,
         rows,
         definition,
         &[],
     )?;
-    if !checks.is_empty() {
-        summary["checks"] = json!(checks);
-    }
+    review.summarize(definition, &mut summary, &mut commands);
     crate::edit::execute(open, commands)?;
     Ok(crate::edit::edited(id, open, summary, Vec::new()))
 }
@@ -1067,14 +1147,13 @@ pub fn prepare_selected_query_refresh(
         *entry = json!(selected_file(paths, entry)?);
     }
     let service = selected_file_service(paths);
-    let (rows, checks) =
+    let (rows, review) =
         refresh_query_result(&service, &bound_query(&definition, &args)?, &definition)?;
     Ok(SqliteTableExport {
         arguments: args,
         rows,
         definition,
-        refresh: true,
-        checks,
+        refresh: Some(review),
     })
 }
 
@@ -1146,7 +1225,7 @@ struct QueryReportResult {
     name: String,
     definition: Value,
     rows: SqliteRows,
-    checks: Vec<Value>,
+    review: RefreshReview,
 }
 
 fn batch_bindings(args: &Value) -> Result<&serde_json::Map<String, Value>, ToolError> {
@@ -1284,10 +1363,12 @@ fn batch_query_results(
         let (_, name, _, query) = &reports[0];
         let session = batch_session(service, query, arrow_disk)
             .map_err(|error| report_error(name, error))?;
+        let input = report_input_schema(&session).map_err(|error| report_error(name, error))?;
         for (index, name, definition, query) in reports {
             let (rows, checks) = refresh_query_in_session(&session, &query, &definition)
                 .map_err(|error| report_error(&name, error))?;
-            results.push((index, QueryReportResult { name, definition, rows, checks }));
+            let review = RefreshReview { checks, input_schema: input.clone() };
+            results.push((index, QueryReportResult { name, definition, rows, review }));
         }
     }
     results.sort_unstable_by_key(|(index, _)| *index);
@@ -1357,12 +1438,12 @@ fn plan_batch_refresh(
     let mut commands = Vec::new();
     let mut blocked = false;
     for result in results {
-        let check_result = enforce_checks(&result.checks);
+        let check_result = enforce_checks(&result.review.checks);
         blocked |= check_result.is_err();
         if !preview {
             check_result.map_err(|error| report_error(&result.name, error))?;
         }
-        let (mut summary, update) = crate::tools_pivot::plan_query_table_refresh(
+        let (mut summary, mut update) = crate::tools_pivot::plan_query_table_refresh(
             scratch.presentation(),
             &json!({"table":result.name}),
             result.rows,
@@ -1370,12 +1451,10 @@ fn plan_batch_refresh(
             metrics.get(&result.name).map_or(&[], Vec::as_slice),
         )
         .map_err(|error| report_error(&result.name, error))?;
+        result.review.summarize(&result.definition, &mut summary, &mut update);
         scratch.execute(update.clone()).map_err(|error| {
             ToolError::new("edit_rejected", format!("{}: {error:?}", result.name))
         })?;
-        if !result.checks.is_empty() {
-            summary["checks"] = json!(result.checks);
-        }
         reports.push(summary);
         commands.extend(update);
     }
@@ -1600,7 +1679,7 @@ fn set_query_report_checks(service: &mut Service, args: &Value) -> Result<Value,
     if !checks.is_empty() {
         definition["checks"] = json!(checks);
     }
-    if definition.to_string().len() > 32 * 1024 {
+    if definition.to_string().len() > REPORT_DEFINITION_BYTES {
         return Err(ToolError::invalid(
             "The saved report definition exceeds 32 KiB",
         ));
@@ -1621,8 +1700,11 @@ fn refresh_query_result(
     service: &Service,
     args: &Value,
     definition: &Value,
-) -> Result<(SqliteRows, Vec<Value>), ToolError> {
-    refresh_query_in_session(&query_session(service, args)?, args, definition)
+) -> Result<(SqliteRows, RefreshReview), ToolError> {
+    let session = query_session(service, args)?;
+    let (rows, checks) = refresh_query_in_session(&session, args, definition)?;
+    let input_schema = report_input_schema(&session)?;
+    Ok((rows, RefreshReview { checks, input_schema }))
 }
 
 fn refresh_query_in_session(

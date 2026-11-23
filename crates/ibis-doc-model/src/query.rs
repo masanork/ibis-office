@@ -26,7 +26,7 @@ pub use avro_source::read_avro;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod sqlite_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use sqlite_source::{DATASET_MEMORY_LIMIT, DiskDataset, SqlitePredicate, SqliteQuerySession, SqliteRows, SqliteScalar, read_sqlite_table, read_sqlite_table_bounded, sqlite_columns, sqlite_count, sqlite_dataset_columns, sqlite_query, sqlite_query_datasets, sqlite_tables, validate_sqlite_select};
+pub use sqlite_source::{DATASET_MEMORY_LIMIT, DiskDataset, SqliteInputSchema, SqlitePredicate, SqliteQuerySession, SqliteRows, SqliteScalar, dataset_sql_type, read_sqlite_table, read_sqlite_table_bounded, sqlite_columns, sqlite_count, sqlite_dataset_columns, sqlite_query, sqlite_query_datasets, sqlite_tables, validate_sqlite_select};
 mod book;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod parquet_source;

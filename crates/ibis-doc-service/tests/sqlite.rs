@@ -226,6 +226,12 @@ fn sqlite_query_exports_complete_results_and_builds_a_pivot() {
     );
     assert_eq!(exported["range"], "A1:C4");
     assert_eq!(exported["rows"], 3);
+    let definition = call(
+        &mut service,
+        "xlsx_list_query_reports",
+        json!({"document_id":id,"table":exported["table"]}),
+    );
+    assert_eq!(definition["definition"]["input_schema"]["sales \"2026\""]["code"], "TEXT");
     assert!(service.call("sqlite_query_to_table", &json!({
         "path":database,"sql":sql,"params":params,"document_id":id,"destination_sheet":sheet,"anchor":"A1",
     })).is_err());
@@ -1212,5 +1218,102 @@ fn json_lines_and_avro_stream_into_shared_report_snapshots() {
         let cell = call("xlsx_get_cells", json!({"document_id":id,"sheet":sheet,"range":range}));
         assert_eq!(cell["rows"][0][0].as_f64(), Some(number));
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn query_report_warns_about_changed_input_schema_and_applies_the_reviewed_baseline() {
+    let dir = std::env::temp_dir().join(format!("ibis-report-schema-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let facts = dir.join("facts.jsonl");
+    let next = dir.join("next.jsonl");
+    let labels = dir.join("labels.csv");
+    let workbook = dir.join("report.xlsx");
+    std::fs::write(&facts, "{\"code\":\"001\",\"retired\":true}\n").unwrap();
+    std::fs::write(&next, "{\"code\":1,\"extra\":\"north\"}\n").unwrap();
+    std::fs::write(&labels, "code,label\n001,North\n").unwrap();
+    std::fs::write(&workbook, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+
+    let mut service = Service::new(&[dir.clone()], false, Limits::default());
+    let mut call = |name, args| service.call(name, &args).unwrap();
+    let id = call("app_open_document", json!({"path":workbook}))["document_id"].clone();
+    let sheet = call("xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"].clone();
+    let table = call("sqlite_query_to_table", json!({
+        "document_id":id,"destination_sheet":sheet,"anchor":"A1",
+        "sql":"SELECT count(*) AS matches FROM facts JOIN labels USING (code)",
+        "datasets":[{"source":facts,"alias":"facts"},{"source":labels,"alias":"labels"}],
+    }))["table"].clone();
+    call("app_save_document", json!({"document_id":id,"path":workbook,"overwrite":true}));
+    call("app_close_document", json!({"document_id":id}));
+    let id = call("app_open_document", json!({"path":workbook}))["document_id"].clone();
+    let report = json!({"document_id":id,"table":table});
+    let original = call("xlsx_list_query_reports", report.clone());
+    assert_eq!(original["definition"]["input_schema"]["facts"], json!({"code":"TEXT","retired":"INTEGER"}));
+
+    let preview_args = json!({
+        "document_id":id, "bindings":{"facts.jsonl":next,"labels.csv":labels}, "preview":true,
+        "metrics":[{"table":table,"column":"matches"}],
+    });
+    let preview = call("sqlite_refresh_query_reports", preview_args.clone());
+    assert_eq!(preview["blocked"], false);
+    let changes = json!([
+        {"source":"facts","column":"code","previous":"TEXT","current":"INTEGER"},
+        {"source":"facts","column":"retired","previous":"INTEGER","current":null},
+        {"source":"facts","column":"extra","previous":null,"current":"TEXT"},
+    ]);
+    assert_eq!(preview["reports"][0]["schema_change_count"], 3);
+    assert_eq!(preview["reports"][0]["schema_changes"], changes);
+    assert_eq!(preview["reports"][0]["metrics"][0]["previous"], 1.0);
+    assert_eq!(preview["reports"][0]["metrics"][0]["current"], 0.0);
+    assert_eq!(
+        call("xlsx_list_query_reports", report.clone())["definition"],
+        original["definition"],
+    );
+
+    // Both result rows and the new schema must come from the reviewed snapshot.
+    std::fs::write(&next, "{\"code\":\"001\"}\n").unwrap();
+    let applied = call("sqlite_refresh_query_reports", json!({
+        "document_id":id,"snapshot_id":preview["snapshot_id"],
+    }));
+    assert_eq!(applied["reports"][0]["schema_changes"], changes);
+    let updated = call("xlsx_list_query_reports", report.clone());
+    assert_eq!(updated["definition"]["input_schema"]["facts"], json!({"code":"INTEGER","extra":"TEXT"}));
+
+    std::fs::write(&next, "{\"code\":1,\"extra\":\"north\"}\n").unwrap();
+    let unchanged = call("sqlite_refresh_query_reports", preview_args);
+    assert!(unchanged["reports"][0]["schema_changes"].is_null());
+    assert_eq!(unchanged["reports"][0]["metrics"][0]["previous"], 0.0);
+    call("app_undo_document", json!({"document_id":id}));
+    assert_eq!(
+        call("xlsx_list_query_reports", report)["definition"],
+        original["definition"],
+    );
+    let mut legacy = ibis_doc_model::Document::new(
+        ibis_formats::read(&std::fs::read(&workbook).unwrap()).unwrap(),
+    );
+    let mut definition = original["definition"].clone();
+    definition.as_object_mut().unwrap().remove("input_schema");
+    let name = table.as_str().unwrap().to_owned();
+    legacy.execute(vec![ibis_doc_model::Command::Sheet(
+        ibis_doc_model::SheetCommand::SetQueryReport {
+            table: name.clone(),
+            definition: definition.clone(),
+        },
+    )]).unwrap();
+    let (review, commands) = ibis_doc_service::prepare_selected_report_batch(
+        &[next, labels],
+        json!({"bindings":{"facts.jsonl":"1","labels.csv":"2"}}),
+        vec![(name, definition)],
+    ).unwrap().review(legacy.presentation()).unwrap();
+    assert!(review["reports"][0]["schema_changes"].is_null());
+    assert!(ibis_doc_service::query_report_definition(legacy.presentation(), &json!({"table":table}))
+        .unwrap()["input_schema"].is_null());
+    legacy.execute(commands).unwrap();
+    assert_eq!(
+        ibis_doc_service::query_report_definition(legacy.presentation(), &json!({"table":table}))
+            .unwrap()["input_schema"]["facts"]["code"],
+        "INTEGER",
+    );
+    drop(service);
     std::fs::remove_dir_all(dir).unwrap();
 }

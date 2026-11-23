@@ -2,6 +2,7 @@
 use super::{QColumn, QTable, QType};
 use crate::CellValue;
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     io::Read,
     num::NonZeroUsize,
@@ -392,12 +393,29 @@ pub struct SqliteRows {
     pub truncated: bool,
 }
 
+/// SQL table name, column name, then the staged storage type or declared SQLite type.
+pub type SqliteInputSchema = BTreeMap<String, BTreeMap<String, String>>;
+
+pub fn dataset_sql_type(ty: QType) -> &'static str {
+    match ty {
+        QType::Any => "DYNAMIC",
+        QType::Text => "TEXT",
+        QType::Whole | QType::Int32 | QType::Logical => "INTEGER",
+        _ => "REAL",
+    }
+}
+
+fn staged_column_types(columns: &[QColumn]) -> BTreeMap<String, String> {
+    columns.iter().map(|column| (column.name.clone(), dataset_sql_type(column.ty).into())).collect()
+}
+
 /// A read-only SQL connection over one source snapshot.
 pub struct SqliteQuerySession {
     _database: Arc<Database>,
     connection: Arc<Connection>,
     path: Option<std::path::PathBuf>,
     temp: Option<tempfile::TempDir>,
+    staged_schema: SqliteInputSchema,
 }
 
 impl SqliteQuerySession {
@@ -412,7 +430,54 @@ impl SqliteQuerySession {
             connection,
             path: Some(path.to_owned()),
             temp: None,
+            staged_schema: SqliteInputSchema::new(),
         })
+    }
+
+    /// Inspect the same read transaction or staged tables used for the report SQL.
+    pub fn input_schema(&self, byte_limit: usize) -> Result<Option<SqliteInputSchema>, String> {
+        let Some(path) = &self.path else {
+            let bytes = serde_json::to_vec(&self.staged_schema).map_err(|error| error.to_string())?;
+            return Ok((bytes.len() <= byte_limit).then(|| self.staged_schema.clone()));
+        };
+        let mut statement = self.connection.prepare(format!(
+            "SELECT name FROM main.sqlite_schema WHERE {TABLE_FILTER} ORDER BY name LIMIT {}",
+            MAX_TABLES + 1
+        )).map_err(|error| error.to_string())?;
+        let mut result = SqliteInputSchema::new();
+        let mut remaining = byte_limit;
+        while let Some(row) = statement.run_one_step_blocking(|| Ok(()), || Ok(()))
+            .map_err(|error| error.to_string())?
+        {
+            let ValueRef::Text(name) = row.get_value(0).as_ref() else {
+                return Err("Invalid table name in SQLite schema".into());
+            };
+            let name = name.as_str();
+            let table = self.connection.prepare(format!("SELECT * FROM main.{}", sql_identifier(name)))
+                .map_err(|error| error.to_string())?;
+            let mut columns = BTreeMap::new();
+            for index in 0..table.num_columns() {
+                let column = table.get_column_name(index).into_owned();
+                let ty = table.get_column_decltype(index)
+                    .filter(|ty| !ty.is_empty()).map_or_else(|| "DYNAMIC".into(), |ty| ty.to_ascii_uppercase());
+                let Some(budget) = remaining.checked_sub(column.len() + ty.len() + 6) else {
+                    return Ok(None);
+                };
+                remaining = budget;
+                columns.insert(column, ty);
+            }
+            let Some(budget) = remaining.checked_sub(name.len() + 6) else {
+                return Ok(None);
+            };
+            remaining = budget;
+            if result.len() == MAX_TABLES {
+                return Ok(None);
+            }
+            result.insert(name.to_owned(), columns);
+        }
+        check_sidecars(path)?;
+        let bytes = serde_json::to_vec(&result).map_err(|error| error.to_string())?;
+        Ok((bytes.len() <= byte_limit).then_some(result))
     }
 
     pub fn query(
@@ -527,6 +592,7 @@ impl SqliteQuerySession {
             connection,
             path: None,
             temp: None,
+            staged_schema: tables.iter().map(|(alias, table)| (alias.clone(), staged_column_types(&table.columns))).collect(),
         })
     }
 }
@@ -659,8 +725,9 @@ impl SqliteQuerySession {
                 .map_err(|error| error.to_string())
         };
         execute("PRAGMA temp_store = FILE")?;
+        let mut staged_schema = SqliteInputSchema::new();
         for (alias, source) in sources {
-            let alias = sql_identifier(alias);
+            let identifier = sql_identifier(alias);
             let mut insert = None;
             let mut rows = 0usize;
             execute("BEGIN")?;
@@ -688,11 +755,12 @@ impl SqliteQuerySession {
                         .iter()
                         .map(|column| sql_identifier(&column.name))
                         .collect::<Vec<_>>();
-                    execute(&format!("CREATE TABLE {alias} ({})", names.join(", ")))?;
+                    execute(&format!("CREATE TABLE {identifier} ({})", names.join(", ")))?;
+                    staged_schema.insert(alias.clone(), staged_column_types(columns));
                     let parameters = vec!["?"; names.len()].join(", ");
                     insert = Some(
                         connection
-                            .prepare(format!("INSERT INTO {alias} VALUES ({parameters})"))
+                            .prepare(format!("INSERT INTO {identifier} VALUES ({parameters})"))
                             .map_err(|error| error.to_string())?,
                     );
                 }
@@ -706,6 +774,7 @@ impl SqliteQuerySession {
             connection,
             path: None,
             temp: Some(temp),
+            staged_schema,
         })
     }
 
