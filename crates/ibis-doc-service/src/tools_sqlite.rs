@@ -124,6 +124,10 @@ const TOOLS: &[Tool] = &[
                         }),
                     ),
                     (
+                        "arrow_disk",
+                        boolean("Experimental: stage identical Arrow IPC dataset bindings once in a private temporary database for this batch."),
+                    ),
+                    (
                         "preview",
                         boolean("Validate without editing and report row changes (default false)."),
                     ),
@@ -1039,12 +1043,35 @@ fn report_error(name: &str, error: ToolError) -> ToolError {
     ToolError::new(error.code, format!("{name}: {}", error.message))
 }
 
+fn disk_arrow_session(service: &Service, specs: &Value) -> Result<SqliteQuerySession, ToolError> {
+    let specs = specs.as_array().filter(|items| (1..=8).contains(&items.len()))
+        .ok_or_else(|| ToolError::invalid("Disk staging requires saved Arrow IPC datasets"))?;
+    let sources = specs.iter().map(|spec| {
+        if spec.get("where").is_some() || !spec["table"].is_null() {
+            return Err(ToolError::invalid("Disk staging does not accept source filters or table names"));
+        }
+        let alias = spec.str_arg("alias")?.to_owned();
+        let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, &["arrow", "ipc", "feather"], true)?;
+        let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+        if !metadata.is_file() || metadata.len() > service.limits.max_file_size {
+            return Err(ToolError::invalid("Arrow IPC dataset exceeds the file size limit"));
+        }
+        let columns: Vec<String> = spec.get("columns").map(|value| serde_json::from_value(value.clone()))
+            .transpose().map_err(|_| ToolError::invalid("Invalid saved Arrow IPC columns"))?
+            .unwrap_or_default();
+        Ok((alias, path, columns))
+    }).collect::<Result<Vec<_>, ToolError>>()?;
+    SqliteQuerySession::from_arrow_disk(&sources).map_err(sqlite_error)
+}
+
 fn batch_query_results(
     service: &Service,
     args: &Value,
     reports: Vec<(String, Value)>,
 ) -> Result<Vec<QueryReportResult>, ToolError> {
     let bindings = batch_bindings(args)?;
+    let arrow_disk = args.opt_bool("arrow_disk")?.unwrap_or(false);
+    let mut staged = None;
     reports
         .into_iter()
         .map(|(name, definition)| {
@@ -1065,11 +1092,19 @@ fn batch_query_results(
                             })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                refresh_query_result(
-                    service,
-                    &bound_query(&definition, &json!({"sources":sources}))?,
-                    &definition,
-                )
+                let query = bound_query(&definition, &json!({"sources":sources}))?;
+                if !arrow_disk {
+                    return refresh_query_result(service, &query, &definition);
+                }
+                let datasets = &query["datasets"];
+                if staged.is_none() {
+                    staged = Some((datasets.clone(), disk_arrow_session(service, datasets)?));
+                }
+                let (saved, session) = staged.as_ref().ok_or_else(|| ToolError::invalid("Missing staged Arrow session"))?;
+                if saved != datasets {
+                    return Err(ToolError::invalid("Disk staging requires identical Arrow IPC dataset bindings for all reports"));
+                }
+                refresh_query_in_session(session, &query, &definition)
             })()
             .map_err(|error| report_error(&name, error))?;
             Ok(QueryReportResult {
@@ -1366,17 +1401,24 @@ fn refresh_query_result(
     args: &Value,
     definition: &Value,
 ) -> Result<(SqliteRows, Vec<Value>), ToolError> {
+    refresh_query_in_session(&query_session(service, args)?, args, definition)
+}
+
+fn refresh_query_in_session(
+    session: &SqliteQuerySession,
+    args: &Value,
+    definition: &Value,
+) -> Result<(SqliteRows, Vec<Value>), ToolError> {
     let checks = definition
         .get("checks")
         .map(validate_report_checks)
         .transpose()?
         .unwrap_or_default();
-    let session = query_session(service, args)?;
     let checks = checks
         .iter()
         .map(|check| {
             let name = check.str_arg("name")?;
-            let result = run_session_query(&session, check, 1, 1024)
+            let result = run_session_query(session, check, 1, 1024)
                 .map_err(|error| report_error(name, error))?;
             let count = match result.rows.as_slice() {
                 [row] if !result.truncated && row.len() == 1 => {
@@ -1392,7 +1434,7 @@ fn refresh_query_result(
             Ok(json!({"name":name,"count":count,"max":max,"passed":passed}))
         })
         .collect::<Result<Vec<_>, ToolError>>()?;
-    let rows = require_complete(run_session_query(&session, args, 10_000, 4 * 1024 * 1024)?)?;
+    let rows = require_complete(run_session_query(session, args, 10_000, 4 * 1024 * 1024)?)?;
     Ok((rows, checks))
 }
 

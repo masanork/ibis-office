@@ -380,6 +380,7 @@ pub struct SqliteQuerySession {
     _database: Arc<Database>,
     connection: Arc<Connection>,
     path: Option<std::path::PathBuf>,
+    temp: Option<tempfile::TempDir>,
 }
 
 impl SqliteQuerySession {
@@ -393,6 +394,7 @@ impl SqliteQuerySession {
             _database: database,
             connection,
             path: Some(path.to_owned()),
+            temp: None,
         })
     }
 
@@ -492,23 +494,7 @@ impl SqliteQuerySession {
                 .map_err(|error| error.to_string())?;
             for row in &table.rows {
                 for (index, value) in row.iter().enumerate() {
-                    let value = match value {
-                        CellValue::Empty => Value::Null,
-                        CellValue::Text(text) => Value::from_text(text.clone()),
-                        CellValue::Number(value)
-                            if matches!(table.columns[index].ty, QType::Whole | QType::Int32)
-                                && value.is_finite()
-                                && value.fract() == 0.0
-                                && value.abs() < (1u64 << 53) as f64 =>
-                        {
-                            Value::Numeric(Numeric::Integer(*value as i64))
-                        }
-                        CellValue::Number(value) if value.is_finite() => Value::from_f64(*value),
-                        CellValue::Bool(value) => {
-                            Value::Numeric(Numeric::Integer(i64::from(*value)))
-                        }
-                        _ => return Err("Unsupported dataset value".into()),
-                    };
+                    let value = dataset_value(value, table.columns[index].ty)?;
                     stmt.bind_at(NonZeroUsize::new(index + 1).unwrap(), value)
                         .map_err(|error| error.to_string())?;
                 }
@@ -523,6 +509,110 @@ impl SqliteQuerySession {
             _database: database,
             connection,
             path: None,
+            temp: None,
+        })
+    }
+}
+
+fn dataset_value(value: &CellValue, ty: QType) -> Result<Value, String> {
+    Ok(match value {
+        CellValue::Empty => Value::Null,
+        CellValue::Text(text) => Value::from_text(text.clone()),
+        CellValue::Number(value)
+            if matches!(ty, QType::Whole | QType::Int32)
+                && value.is_finite()
+                && value.fract() == 0.0
+                && value.abs() < (1u64 << 53) as f64 =>
+        {
+            Value::Numeric(Numeric::Integer(*value as i64))
+        }
+        CellValue::Number(value) if value.is_finite() => Value::from_f64(*value),
+        CellValue::Bool(value) => Value::Numeric(Numeric::Integer(i64::from(*value))),
+        _ => return Err("Unsupported dataset value".into()),
+    })
+}
+
+impl SqliteQuerySession {
+    /// Stage Arrow sources in a private temporary database for reuse by several SELECTs.
+    pub fn from_arrow_disk(
+        sources: &[(String, std::path::PathBuf, Vec<String>)],
+    ) -> Result<Self, String> {
+        let temp = tempfile::Builder::new()
+            .prefix("ibis-arrow-")
+            .tempdir()
+            .map_err(|error| error.to_string())?;
+        let path = temp.path().join("datasets.sqlite");
+        let io = Arc::new(PlatformIO::new().map_err(|error| error.to_string())?);
+        let database = Database::open_file(
+            io,
+            path.to_str().ok_or("Invalid temporary database path")?,
+            Arc::new(SqliteDialect),
+        )
+        .map_err(|error| error.to_string())?;
+        let connection = database.connect().map_err(|error| error.to_string())?;
+        let execute = |sql: &str| {
+            connection
+                .prepare(sql)
+                .and_then(|mut stmt| stmt.run_ignore_rows())
+                .map_err(|error| error.to_string())
+        };
+        execute("PRAGMA temp_store = FILE")?;
+        for (alias, source, selected) in sources {
+            let alias = sql_identifier(alias);
+            let mut insert = None;
+            let mut rows = 0usize;
+            execute("BEGIN")?;
+            super::arrow_ipc_source::visit_arrow_ipc(source, selected, |columns, row| {
+                if let Some(row) = row {
+                    let stmt: &mut turso_core::Statement =
+                        insert.as_mut().ok_or("Missing Arrow schema")?;
+                    for (index, (value, column)) in row.iter().zip(columns).enumerate() {
+                        stmt.bind_at(
+                            NonZeroUsize::new(index + 1).unwrap(),
+                            dataset_value(value, column.ty)?,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    }
+                    stmt.run_ignore_rows()
+                        .and_then(|_| stmt.reset())
+                        .map_err(|error| error.to_string())?;
+                    rows += 1;
+                    if rows.is_multiple_of(4096) {
+                        execute("COMMIT")?;
+                        execute("BEGIN")?;
+                    }
+                } else {
+                    let names = columns
+                        .iter()
+                        .map(|column| sql_identifier(&column.name))
+                        .collect::<Vec<_>>();
+                    execute(&format!("CREATE TABLE {alias} ({})", names.join(", ")))?;
+                    let parameters = vec!["?"; names.len()].join(", ");
+                    insert = Some(
+                        connection
+                            .prepare(format!("INSERT INTO {alias} VALUES ({parameters})"))
+                            .map_err(|error| error.to_string())?,
+                    );
+                }
+                Ok(())
+            })?;
+            execute("COMMIT")?;
+        }
+        connection.set_query_only(true);
+        Ok(Self {
+            _database: database,
+            connection,
+            path: None,
+            temp: Some(temp),
+        })
+    }
+
+    /// Size of the staged database and its visible sidecar files while the session is open.
+    pub fn staged_disk_bytes(&self) -> std::io::Result<u64> {
+        self.temp.as_ref().map_or(Ok(0), |temp| {
+            fs::read_dir(temp.path())?.try_fold(0u64, |sum, entry| {
+                Ok(sum.saturating_add(entry?.metadata()?.len()))
+            })
         })
     }
 }

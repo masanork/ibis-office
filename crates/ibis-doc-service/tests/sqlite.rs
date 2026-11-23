@@ -1026,3 +1026,50 @@ fn arrow_ipc_and_parquet_join_and_refresh_from_a_saved_report() {
     assert_eq!(refreshed["reports"][0]["rows"], 3);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn disk_staged_arrow_reports_share_a_batch_after_reopening() {
+    let dir = std::env::temp_dir().join(format!("ibis-arrow-disk-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let file = dir.join("input.feather");
+    let stream = dir.join("input.ipc");
+    std::fs::write(&file, include_bytes!("fixtures/query-lookup.feather")).unwrap();
+    std::fs::write(&stream, include_bytes!("fixtures/query-lookup.ipc")).unwrap();
+    let original = dir.join("blank.xlsx");
+    std::fs::write(&original, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut service = Service::new(&[dir.clone()], false, Limits::default());
+    let mut call = |tool, args| service.call(tool, &args).unwrap();
+    let id = call("app_open_document", json!({"path":original}))["document_id"].clone();
+    let sheet = call("xlsx_list_sheets", json!({"document_id":id}))["sheets"][0]["name"].clone();
+    for (anchor, sql) in [
+        ("A1", "SELECT count(*) AS n FROM facts"),
+        ("D1", "SELECT count(*) AS n FROM facts f WHERE EXISTS (SELECT 1 FROM json_each(f.labels) j WHERE j.value = '甲')"),
+    ] {
+        call("sqlite_query_to_table", json!({
+            "document_id":id,"destination_sheet":sheet,"anchor":anchor,"sql":sql,
+            "datasets":[{"source":file,"alias":"facts","columns":["labels","code"]}],
+        }));
+    }
+    let saved = dir.join("report.xlsx");
+    call("app_save_document", json!({"document_id":id,"path":saved}));
+    call("app_close_document", json!({"document_id":id}));
+    let id = call("app_open_document", json!({"path":saved}))["document_id"].clone();
+    for path in [&file, &stream] {
+        let baseline = call("sqlite_refresh_query_reports", json!({
+            "document_id":id,"bindings":{"input.feather":path},"preview":true,
+            "metrics":[{"table":"QueryResult1","column":"n"},{"table":"QueryResult2","column":"n"}],
+        }));
+        let staged = call("sqlite_refresh_query_reports", json!({
+            "document_id":id,"bindings":{"input.feather":path},"preview":true,"arrow_disk":true,
+            "metrics":[{"table":"QueryResult1","column":"n"},{"table":"QueryResult2","column":"n"}],
+        }));
+        assert_eq!(baseline["reports"], staged["reports"]);
+        assert_eq!(staged["reports"].as_array().unwrap().len(), 2);
+    }
+    let applied = call("sqlite_refresh_query_reports", json!({
+        "document_id":id,"bindings":{"input.feather":stream},"arrow_disk":true,
+    }));
+    assert_eq!(applied["reports"].as_array().unwrap().len(), 2);
+    assert_eq!(applied["dirty"], true);
+    std::fs::remove_dir_all(dir).unwrap();
+}

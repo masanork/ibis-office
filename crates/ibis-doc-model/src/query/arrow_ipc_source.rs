@@ -7,7 +7,7 @@ use arrow_schema::{DataType, Schema, TimeUnit};
 use std::{
     collections::HashSet,
     fs::File,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -244,12 +244,8 @@ fn inspect_message<'a>(
     Ok((message, rest))
 }
 
-fn collect_batches(
-    schema: &Schema,
-    batches: impl Iterator<Item = Result<RecordBatch, arrow_schema::ArrowError>>,
-    options: &ReadOptions<'_>,
-) -> Result<QTable, String> {
-    let max_columns = if options.sql { 256 } else { MAX_COLUMNS };
+fn ipc_columns(schema: &Schema, sql: bool) -> Result<Vec<QColumn>, String> {
+    let max_columns = if sql { 256 } else { MAX_COLUMNS };
     if schema.fields().is_empty() || schema.fields().len() > max_columns {
         return Err("Arrow IPC source has an unsupported number of columns".into());
     }
@@ -275,7 +271,7 @@ fn collect_batches(
             DataType::Date32 | DataType::Date64 => QType::Date,
             DataType::Timestamp(_, _) => QType::DateTime,
             DataType::List(element) | DataType::LargeList(element)
-                if options.sql
+                if sql
                     && matches!(
                         element.data_type(),
                         DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
@@ -296,6 +292,15 @@ fn collect_batches(
             ty,
         });
     }
+    Ok(columns)
+}
+
+fn collect_batches(
+    schema: &Schema,
+    batches: impl Iterator<Item = Result<RecordBatch, arrow_schema::ArrowError>>,
+    options: &ReadOptions<'_>,
+) -> Result<QTable, String> {
+    let columns = ipc_columns(schema, options.sql)?;
     let mut table = QTable {
         columns,
         rows: Vec::new(),
@@ -322,6 +327,211 @@ fn collect_batches(
         }
     }
     Ok(table)
+}
+
+// The disk path validates and decodes the very same bytes, one message at a time.
+const MAX_IPC_MESSAGE: usize = 32 * 1024 * 1024;
+
+fn ipc_read_at(file: &mut File, offset: u64, length: usize) -> Result<Vec<u8>, String> {
+    if length > MAX_IPC_MESSAGE {
+        return Err("Arrow IPC message exceeds the 32 MiB limit".into());
+    }
+    let mut bytes = vec![0; length];
+    file.seek(SeekFrom::Start(offset))
+        .and_then(|_| file.read_exact(&mut bytes))
+        .map_err(|error| error.to_string())?;
+    Ok(bytes)
+}
+
+fn checked_ipc_message(
+    buffer: &arrow_buffer::Buffer,
+) -> Result<(arrow_ipc::Message<'_>, usize), String> {
+    let mut budget = MAX_DECODED_BYTES;
+    let (message, rest) = inspect_message(buffer.as_slice(), &mut budget)?;
+    if !rest.is_empty() {
+        return Err("Unexpected trailing bytes in Arrow IPC message".into());
+    }
+    let body =
+        usize::try_from(message.bodyLength()).map_err(|_| "Invalid Arrow IPC body length")?;
+    Ok((message, buffer.len() - body))
+}
+
+pub(super) fn visit_arrow_ipc(
+    path: &Path,
+    selected: &[String],
+    mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
+) -> Result<(), String> {
+    use arrow_ipc::{convert::try_fb_to_schema, reader::RecordBatchDecoder};
+    use std::{collections::HashMap, sync::Arc};
+
+    let mut file = File::open(path).map_err(|error| error.to_string())?;
+    let size = file.metadata().map_err(|error| error.to_string())?.len();
+    let head = ipc_read_at(&mut file, 0, 6)?;
+    let read_batch = |schema: Arc<Schema>| -> Result<_, String> {
+        let options = ReadOptions {
+            columns: selected,
+            max_cells: 0,
+            max_text: 0,
+            sql: true,
+        };
+        let projection = options.projection(&schema)?;
+        let projected = match &projection {
+            Some(indices) => schema.project(indices).map_err(|error| error.to_string())?,
+            None => schema.as_ref().clone(),
+        };
+        let columns = ipc_columns(&projected, true)?;
+        visit(&columns, None)?;
+        Ok(
+            move |buffer: arrow_buffer::Buffer,
+                  footer: Option<(arrow_ipc::MetadataVersion, usize)>|
+                  -> Result<(), String> {
+                let (message, body_start) = checked_ipc_message(&buffer)?;
+                if let Some((version, metadata_len)) = footer {
+                    if version != message.version() || metadata_len != body_start {
+                        return Err("Arrow IPC batch does not match its footer block".into());
+                    }
+                }
+                let batch = message
+                    .header_as_record_batch()
+                    .ok_or("Expected an Arrow IPC record batch without dictionary encoding")?;
+                let body = buffer.slice(body_start);
+                let data = RecordBatchDecoder::try_new(
+                    &body,
+                    batch,
+                    schema.clone(),
+                    &HashMap::new(),
+                    &message.version(),
+                )
+                .and_then(|decoder| {
+                    decoder
+                        .with_projection(projection.as_deref())
+                        .read_record_batch()
+                })
+                .map_err(|error| error.to_string())?;
+                let mut text_budget = MAX_DECODED_BYTES;
+                for index in 0..data.num_rows() {
+                    let row = data
+                        .columns()
+                        .iter()
+                        .zip(&columns)
+                        .map(|(array, column)| {
+                            cell(array.as_ref(), index, column.ty, &mut text_budget)
+                                .map_err(|error| format!("{}: {error}", column.name))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    visit(&columns, Some(row))?;
+                }
+                Ok(())
+            },
+        )
+    };
+
+    if head == b"ARROW1" {
+        let trailer_at = size.checked_sub(10).ok_or("Missing Arrow IPC footer")?;
+        let trailer = ipc_read_at(&mut file, trailer_at, 10)?;
+        let footer_len =
+            read_footer_length(trailer.try_into().unwrap()).map_err(|error| error.to_string())?;
+        let start = trailer_at
+            .checked_sub(footer_len as u64)
+            .ok_or("Invalid Arrow IPC footer length")?;
+        let bytes = ipc_read_at(&mut file, start, footer_len)?;
+        let footer = arrow_ipc::root_as_footer(&bytes).map_err(|error| error.to_string())?;
+        if footer
+            .dictionaries()
+            .is_some_and(|blocks| !blocks.is_empty())
+        {
+            return Err("Arrow IPC dictionary encoding is unsupported".into());
+        }
+        let schema = footer.schema().ok_or("Missing Arrow IPC schema")?;
+        if !schema.endianness().equals_to_target_endianness() {
+            return Err("Arrow IPC endianness differs from the host".into());
+        }
+        let schema = try_fb_to_schema(schema).map_err(|error| error.to_string())?;
+        let mut batch = read_batch(Arc::new(schema))?;
+        let mut previous_end = 8;
+        for block in footer
+            .recordBatches()
+            .ok_or("Missing Arrow IPC record batches")?
+        {
+            let offset =
+                u64::try_from(block.offset()).map_err(|_| "Invalid Arrow IPC block offset")?;
+            let metadata = usize::try_from(block.metaDataLength())
+                .map_err(|_| "Invalid Arrow IPC metadata length")?;
+            let body =
+                usize::try_from(block.bodyLength()).map_err(|_| "Invalid Arrow IPC body length")?;
+            let length = metadata
+                .checked_add(body)
+                .ok_or("Invalid Arrow IPC block length")?;
+            previous_end = offset
+                .checked_add(length as u64)
+                .filter(|end| offset >= previous_end && *end <= start)
+                .ok_or("Arrow IPC block exceeds the file bounds")?;
+            let data = arrow_buffer::Buffer::from(ipc_read_at(&mut file, offset, length)?);
+            batch(data, Some((footer.version(), metadata)))?;
+        }
+    } else {
+        let mut offset = 0;
+        let schema_buffer = next_ipc_message(&mut file, size, &mut offset)?
+            .ok_or("Missing Arrow IPC stream schema")?;
+        let (schema, _) = checked_ipc_message(&schema_buffer)?;
+        let schema = schema
+            .header_as_schema()
+            .ok_or("Missing Arrow IPC stream schema")?;
+        if !schema.endianness().equals_to_target_endianness() {
+            return Err("Arrow IPC endianness differs from the host".into());
+        }
+        let schema = try_fb_to_schema(schema).map_err(|error| error.to_string())?;
+        let mut batch = read_batch(Arc::new(schema))?;
+        while let Some(data) = next_ipc_message(&mut file, size, &mut offset)? {
+            batch(data, None)?;
+        }
+    }
+    Ok(())
+}
+
+fn next_ipc_message(
+    file: &mut File,
+    size: u64,
+    offset: &mut u64,
+) -> Result<Option<arrow_buffer::Buffer>, String> {
+    if *offset == size {
+        return Ok(None);
+    }
+    let first = ipc_read_at(file, *offset, 4)?;
+    let (prefix, length) = if first == [255; 4] {
+        (8, ipc_read_at(file, *offset + 4, 4)?)
+    } else {
+        (4, first)
+    };
+    let length = usize::try_from(i32::from_le_bytes(length.try_into().unwrap()))
+        .map_err(|_| "Invalid Arrow IPC message length")?;
+    let envelope = prefix + length;
+    let metadata = ipc_read_at(file, *offset, envelope)?;
+    if length == 0 {
+        if *offset + prefix as u64 != size {
+            return Err("Unexpected bytes after Arrow IPC stream end".into());
+        }
+        *offset = size;
+        return Ok(None);
+    }
+    let message =
+        arrow_ipc::root_as_message(&metadata[prefix..]).map_err(|error| error.to_string())?;
+    let body =
+        usize::try_from(message.bodyLength()).map_err(|_| "Invalid Arrow IPC body length")?;
+    let total = envelope
+        .checked_add(body)
+        .filter(|total| *total <= MAX_IPC_MESSAGE)
+        .ok_or("Arrow IPC message exceeds the 32 MiB limit")?;
+    let end = offset
+        .checked_add(total as u64)
+        .filter(|end| *end <= size)
+        .ok_or("Arrow IPC message exceeds the file bounds")?;
+    let mut bytes = metadata;
+    bytes.resize(total, 0);
+    file.read_exact(&mut bytes[envelope..])
+        .map_err(|error| error.to_string())?;
+    *offset = end;
+    Ok(Some(arrow_buffer::Buffer::from(bytes)))
 }
 
 fn check_text(text: &str) -> Result<(), String> {

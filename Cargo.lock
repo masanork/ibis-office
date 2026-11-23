@@ -5588,6 +5588,7 @@ version = "0.8.0"
 dependencies = [
  "apache-avro",
  "arrow-array",
+ "arrow-buffer",
  "arrow-ipc",
  "arrow-schema",
  "branches",
