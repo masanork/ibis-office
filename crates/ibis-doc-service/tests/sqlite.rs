@@ -1361,9 +1361,15 @@ fn query_report_check_blocks_unmatched_keys_in_service_and_assistant() {
         prepare_selected_report_batch(&selected, request, definitions).unwrap()
     };
 
-    for (facts_json, labels_csv, schema_changed) in [
-        ("{\"code\":1}\n", "code,label\n001,North\n", true),
-        ("{\"code\":\"001\"}\n", "code,label\n002,South\n", false),
+    let diagnostics_sql = "SELECT f.code AS unmatched_key, typeof(f.code) AS key_type, count(*) AS occurrences
+FROM facts AS f
+WHERE NOT EXISTS (SELECT 1 FROM labels AS l WHERE l.code = f.code)
+GROUP BY f.code, typeof(f.code)
+ORDER BY occurrences DESC, key_type, unmatched_key
+LIMIT 20";
+    for (facts_json, labels_csv, schema_changed, expected_key) in [
+        ("{\"code\":1}\n", "code,label\n001,North\n", true, json!([1,"integer",1])),
+        ("{\"code\":\"001\"}\n", "code,label\n002,South\n", false, json!(["001","text",1])),
     ] {
         std::fs::write(&facts, facts_json).unwrap();
         std::fs::write(&labels, labels_csv).unwrap();
@@ -1376,6 +1382,19 @@ fn query_report_check_blocks_unmatched_keys_in_service_and_assistant() {
         assert_eq!(preview["reports"][0]["checks"], json!([
             {"name":"マスタ未登録","count":1,"max":0,"passed":false},
         ]));
+        let diagnostics = call(&mut service, "sqlite_query", json!({
+            "sql":diagnostics_sql,"limit":20,
+            "datasets":[{"source":facts,"alias":"facts"},{"source":labels,"alias":"labels"}],
+        }));
+        assert_eq!(diagnostics["columns"], json!(["unmatched_key","key_type","occurrences"]));
+        assert_eq!(diagnostics["rows"], json!([expected_key]));
+        let assistant_diagnostics = ibis_doc_service::run_selected_datasets_tool(
+            &selected, "sqlite_query", json!({
+                "sql":diagnostics_sql,"limit":20,
+                "datasets":[{"source":"1","alias":"facts"},{"source":"2","alias":"labels"}],
+            }),
+        ).unwrap();
+        assert_eq!(assistant_diagnostics, diagnostics);
         let (assistant_preview, commands) = assistant_batch(&draft, true)
             .stage(&mut draft, DraftToolContext::default()).unwrap();
         assert_eq!(assistant_preview["reports"], preview["reports"]);

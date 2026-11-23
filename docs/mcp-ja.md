@@ -112,6 +112,19 @@ FROM facts AS f
 WHERE NOT EXISTS (SELECT 1 FROM labels AS l WHERE l.code = f.code)
 ```
 
+チェックで更新が止まったら、`sqlite_query` に次のSQLと `limit: 20` を渡します。`datasets` には更新時と同じファイルを指定し、別名・列指定・絞り込みは保存済み帳票にそろえます。未一致の明細をキーとSQLiteの格納型ごとに集計できます。
+
+```sql
+SELECT f.code AS unmatched_key, typeof(f.code) AS key_type, count(*) AS occurrences
+FROM facts AS f
+WHERE NOT EXISTS (SELECT 1 FROM labels AS l WHERE l.code = f.code)
+GROUP BY f.code, typeof(f.code)
+ORDER BY occurrences DESC, key_type, unmatched_key
+LIMIT 20
+```
+
+結果をマスタ側のキーと照合します。例えば未一致が整数の `1` で、マスタ側が文字列の `001` なら、型や表記の違いを確認できます。診断は元ファイルを読み直すため、失敗時の状態を再現するにはファイルを編集・差し替えする前に実行します。
+
 デスクトップ版の **データ → クエリと接続 → SQLレポートの更新** でも、更新するレポート、元ファイル、比較する数値列を指定できます。プレビューの結果と検証件数を確認してから更新すると、プレビューで確認した内容を反映します。
 
 ツールはメニューのコマンドと 1 対 1 で対応してはいません。読み取りと、よく使う編集をそろえたもので、形式が違っても同じツール名です。`--read-only` のときは、読み取りツールだけが利用できます。

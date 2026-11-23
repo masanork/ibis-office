@@ -112,6 +112,19 @@ FROM facts AS f
 WHERE NOT EXISTS (SELECT 1 FROM labels AS l WHERE l.code = f.code)
 ```
 
+If the check blocks a refresh, run this diagnostic with `sqlite_query` and `limit: 20`. In `datasets`, use the same current files as the refresh bindings and the saved aliases, projections and filters. The diagnostic groups unmatched rows by key and SQLite storage type.
+
+```sql
+SELECT f.code AS unmatched_key, typeof(f.code) AS key_type, count(*) AS occurrences
+FROM facts AS f
+WHERE NOT EXISTS (SELECT 1 FROM labels AS l WHERE l.code = f.code)
+GROUP BY f.code, typeof(f.code)
+ORDER BY occurrences DESC, key_type, unmatched_key
+LIMIT 20
+```
+
+Compare the results with the master keys. For example, an unmatched integer `1` and a master text key `001` point to a type or representation mismatch. The separate diagnostic reads the sources again. Run it before replacing or editing those files to reproduce the failed check.
+
 On desktop, use **Data → Queries & Connections → Refresh SQL reports** to select reports, bind files, optionally compare numeric columns and review checks. Applying uses exactly the results shown in the preview.
 
 The tools do not correspond one to one to the menu commands: they cover reading and the common edits, with the same tool names whatever the format. With `--read-only`, only the read tools are available.
