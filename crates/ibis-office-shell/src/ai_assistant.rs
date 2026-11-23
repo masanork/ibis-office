@@ -1063,12 +1063,19 @@ impl SlideEditor {
         let file_id = self.file_id;
         let baseline = self.document.presentation().clone();
         let Some(sheet) = baseline.workbook.as_ref().and_then(|book| book.sheets.first()) else { return };
-        let args = serde_json::json!({
+        let json_lines = path.extension().is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson")
+        });
+        let mut args = serde_json::json!({
             "destination_sheet": sheet.name,
             "anchor": "A1",
             "sql": "SELECT count(*) AS records FROM input",
             "datasets": [{"source":"1","alias":"input"}],
         });
+        if json_lines {
+            args["sql"] = serde_json::json!("SELECT * FROM input ORDER BY _jsonl_line LIMIT 25");
+            args["datasets"][0]["recover"] = serde_json::json!(true);
+        }
         self.set_status(crate::i18n::text("editor.analysis.loading").to_string(), cx);
         cx.spawn_in(window, async move |this, cx| {
             let prepared = cx.background_executor().spawn(async move {

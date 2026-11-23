@@ -668,6 +668,7 @@ fn dataset_value(value: CellValue, ty: QType) -> Result<Value, String> {
 pub enum DiskDataset {
     ArrowIpc(std::path::PathBuf, Vec<String>),
     JsonLines(std::path::PathBuf, Vec<String>),
+    RecoverableJsonLines(std::path::PathBuf, Vec<String>),
     Avro(std::path::PathBuf, Vec<String>),
     Sqlite(std::path::PathBuf, String),
     Csv(std::path::PathBuf),
@@ -708,6 +709,9 @@ impl DiskDataset {
             }
             Self::JsonLines(path, selected) => {
                 super::json_lines_source::visit_json_lines(path, selected, schema_only, visit)
+            }
+            Self::RecoverableJsonLines(path, selected) => {
+                super::json_lines_source::visit_recoverable_json_lines(path, selected, schema_only, visit)
             }
             Self::Avro(path, selected) => super::avro_source::visit_avro(path, selected, schema_only, visit),
             Self::Parquet(path, selected, filters) => {
@@ -911,7 +915,7 @@ impl SqliteQuerySession {
                     width = names.len();
                     let batch = matches!(
                         source,
-                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Csv(..) | DiskDataset::Log(..)
+                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::RecoverableJsonLines(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Csv(..) | DiskDataset::Log(..)
                     );
                     #[cfg(feature = "report-profiling")]
                     let batch = batch && !super::report_profile::single_row_inserts_forced();

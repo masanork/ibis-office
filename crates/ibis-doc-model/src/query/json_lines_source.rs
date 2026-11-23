@@ -8,7 +8,7 @@ use serde::{
 use serde_json::{Value, value::RawValue};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     fs::File,
     io::{BufRead, BufReader, Read, Seek},
@@ -21,6 +21,7 @@ const MAX_COLUMNS: usize = 16_384;
 const MAX_DATA_ROWS: usize = 1_048_575;
 const MAX_CELLS: usize = 5_000_000;
 const MAX_TEXT_UNITS: usize = 32_767;
+const PRECISION_ERROR: &str = "Number exceeds spreadsheet precision";
 
 /// Read one JSON object per line. Absent fields and nulls become empty cells.
 pub fn read_json_lines(path: &Path) -> Result<QTable, String> {
@@ -60,29 +61,48 @@ fn record_error(number: usize, error: serde_json::Error) -> String {
 }
 
 fn visit_raw_lines(
-    mut reader: impl BufRead,
+    reader: impl BufRead,
     max_bytes: usize,
     mut visit: impl FnMut(&[u8], usize) -> Result<(), String>,
 ) -> Result<(), String> {
+    scan_lines(reader, max_bytes, false, |line, number| {
+        visit(line.expect("strict scan rejects oversized lines"), number)
+    })
+}
+
+fn scan_lines(
+    reader: impl BufRead,
+    max_bytes: usize,
+    recover: bool,
+    mut visit: impl FnMut(Option<&[u8]>, usize) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut reader = reader.take((max_bytes as u64).saturating_add(1));
     let mut line = Vec::new();
     let mut bytes = 0usize;
-    for line_number in 1.. {
+    for number in 1.. {
         line.clear();
         let read = reader
             .by_ref()
             .take((MAX_LINE_BYTES + 1) as u64)
             .read_until(b'\n', &mut line)
-            .map_err(|error| format!("Line {line_number}: {error}"))?;
+            .map_err(|error| format!("Line {number}: {error}"))?;
         if read == 0 {
             break;
         }
         bytes = bytes.saturating_add(read);
-        if read > MAX_LINE_BYTES || bytes > max_bytes {
+        let oversized = read > MAX_LINE_BYTES;
+        if oversized && recover && line.last() != Some(&b'\n') {
+            let skipped = reader
+                .skip_until(b'\n')
+                .map_err(|error| format!("Line {number}: {error}"))?;
+            bytes = bytes.saturating_add(skipped);
+        }
+        if bytes > max_bytes || (oversized && !recover) {
             return Err(format!(
-                "Line {line_number}: JSON Lines source exceeds the byte limit"
+                "Line {number}: JSON Lines source exceeds the byte limit"
             ));
         }
-        visit(&line, line_number)?;
+        visit((!oversized).then_some(line.as_slice()), number)?;
     }
     Ok(())
 }
@@ -178,6 +198,109 @@ pub(super) fn visit_json_lines(
         .metadata()
         .map_err(|error| error.to_string())?;
     if metadata.len() != after.len() || metadata.modified().ok() != after.modified().ok() {
+        return Err("JSON Lines file changed during import".into());
+    }
+    Ok(())
+}
+
+/// Visit a recoverable dataset. Invalid records remain addressable by physical line.
+pub(super) fn visit_recoverable_json_lines(
+    path: &Path,
+    selected: &[String],
+    schema_only: bool,
+    mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
+) -> Result<(), String> {
+    const LINE: &str = "_jsonl_line";
+    const ERROR: &str = "_jsonl_error";
+    let mut input = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
+    let before = input
+        .get_ref()
+        .metadata()
+        .map_err(|error| error.to_string())?;
+    let max_bytes = usize::try_from(before.len()).map_err(|_| "JSON Lines file is too large")?;
+    let mut indices = HashMap::new();
+    let mut columns = Vec::new();
+    let mut types = Vec::new();
+    for name in [LINE, ERROR]
+        .into_iter()
+        .chain(selected.iter().map(String::as_str))
+    {
+        add_sql_column(name, &mut indices, &mut columns, &mut types)?;
+    }
+    let reserved = |name: &str| name.eq_ignore_ascii_case(LINE) || name.eq_ignore_ascii_case(ERROR);
+    if selected.iter().any(|name| reserved(name)) {
+        return Err("JSON Lines recovery reserves _jsonl_line and _jsonl_error".into());
+    }
+
+    let selected = selected.iter().map(String::as_str).collect::<HashSet<_>>();
+    let parse =
+        |line: Option<&[u8]>| -> Result<BTreeMap<String, (CellValue, Option<QType>)>, String> {
+            let line = line.ok_or("JSON Lines record exceeds 1 MiB")?;
+            let raw: BTreeMap<String, &RawValue> = serde_json::from_slice(line)
+                .map_err(|error| format!("Expected one JSON object ({error})"))?;
+            raw.into_iter()
+                .filter(|(name, _)| selected.is_empty() || selected.contains(name.as_str()))
+                .map(|(name, value)| {
+                    let converted = match cell(value) {
+                        Err(error) if error == PRECISION_ERROR => {
+                            check_text_limit(value.get())?;
+                            (CellValue::Text(value.get().into()), Some(QType::Text))
+                        }
+                        result => result?,
+                    };
+                    Ok((name, converted))
+                })
+                .collect()
+        };
+    scan_lines(&mut input, max_bytes, true, |line, _| {
+        if let Ok(fields) = parse(line) {
+            for (name, (_, ty)) in fields {
+                if reserved(&name) {
+                    return Err("JSON Lines recovery reserves _jsonl_line and _jsonl_error".into());
+                }
+                let index = match indices.get(&name) {
+                    Some(&index) => index,
+                    None => add_sql_column(&name, &mut indices, &mut columns, &mut types)?,
+                };
+                if let Some(ty) = ty {
+                    types[index] = Some(merge_type(types[index], ty));
+                }
+            }
+        }
+        Ok(())
+    })?;
+    types[0] = Some(QType::Whole);
+    types[1] = Some(QType::Text);
+    for (column, ty) in columns.iter_mut().zip(types) {
+        column.ty = ty.unwrap_or(QType::Any);
+    }
+    visit(&columns, None)?;
+    if !schema_only {
+        input.rewind().map_err(|error| error.to_string())?;
+        scan_lines(&mut input, max_bytes, true, |line, number| {
+            let mut row = vec![CellValue::Empty; columns.len()];
+            row[0] = CellValue::Number(number as f64);
+            match parse(line) {
+                Ok(fields) => {
+                    for (name, (value, _)) in fields {
+                        let index = indices
+                            .get(&name)
+                            .copied()
+                            .filter(|index| *index >= 2)
+                            .ok_or("JSON Lines schema changed during import")?;
+                        row[index] = value;
+                    }
+                }
+                Err(error) => row[1] = CellValue::Text(error),
+            }
+            visit(&columns, Some(row))
+        })?;
+    }
+    let after = input
+        .get_ref()
+        .metadata()
+        .map_err(|error| error.to_string())?;
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
         return Err("JSON Lines file changed during import".into());
     }
     Ok(())
@@ -449,11 +572,9 @@ fn cell(raw: &RawValue) -> Result<(CellValue, Option<QType>), String> {
         Value::Bool(value) => (CellValue::Bool(value), QType::Logical),
         Value::String(value) => (CellValue::Text(value), QType::Text),
         Value::Number(value) => {
-            let number = value
-                .as_f64()
-                .ok_or("Number exceeds spreadsheet precision")?;
+            let number = value.as_f64().ok_or(PRECISION_ERROR)?;
             if number.abs() >= (1u64 << 53) as f64 && number.fract() == 0. {
-                return Err("Number exceeds spreadsheet precision".into());
+                return Err(PRECISION_ERROR.into());
             }
             let ty = if value.is_i64() || value.is_u64() {
                 QType::Whole

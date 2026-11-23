@@ -411,6 +411,7 @@ fn datasets_property() -> (&'static str, Value) {
                 ("source", string("Path to a supported dataset file in an allowed folder.")),
                 ("alias", string("SQL table name to register for this dataset.")),
                 ("table", string("Source table name, required for SQLite files.")),
+                ("recover", json!({"type":"boolean","description":"JSON Lines only: retain invalid records with _jsonl_line and _jsonl_error. Defaults to false."})),
                 ("where", json!({
                     "type":"object","minProperties":1,"maxProperties":MAX_FILTERS,
                     "additionalProperties":{"anyOf":[
@@ -667,6 +668,17 @@ fn parquet_filters<'a>(spec: &'a Value, kind: &str) -> Result<Vec<(&'a str, Parq
         .collect()
 }
 
+fn json_lines_dataset(
+    spec: &Value,
+    path: PathBuf,
+    columns: Vec<String>,
+) -> Result<DiskDataset, ToolError> {
+    if spec.opt_bool("recover")?.unwrap_or(false) {
+        return Ok(DiskDataset::RecoverableJsonLines(path, columns));
+    }
+    Ok(DiskDataset::JsonLines(path, columns))
+}
+
 fn dataset_columns(spec: &Value, kind: &str) -> Result<Vec<String>, ToolError> {
     match spec.get("columns") {
         None => Ok(Vec::new()),
@@ -731,12 +743,12 @@ fn visit_datasets(
     let mut cells = 100_000usize;
     let mut text = 8 * 1024 * 1024usize;
     for spec in specs {
-        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where"])?;
+        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where", "recover"])?;
         let alias = dataset_alias(spec, &mut aliases)?;
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
         let kind = source_kind(&path);
-        let limit = if schema_only && kind != "json_lines" {
+        let limit = if schema_only && (kind != "json_lines" || spec["recover"] == true) {
             service.limits.max_file_size
         } else {
             service.limits.max_file_size.min(32 * 1024 * 1024)
@@ -745,6 +757,9 @@ fn visit_datasets(
             return Err(ToolError::invalid("dataset must be a regular file within the input size limit"));
         }
         let table_name = spec.opt_str("table")?;
+        if kind != "json_lines" && spec.get("recover").is_some() {
+            return Err(ToolError::invalid("recover is only used for JSON Lines datasets"));
+        }
         let columns = dataset_columns(spec, kind)?;
         let filters = parquet_filters(spec, kind)?;
         if kind != "sqlite" && table_name.is_some() {
@@ -778,7 +793,7 @@ fn visit_datasets(
                 }
                 ("json_lines" | "avro", _) => {
                     let source = if kind == "json_lines" {
-                        DiskDataset::JsonLines(path, columns)
+                        json_lines_dataset(spec, path, columns)?
                     } else {
                         DiskDataset::Avro(path, columns)
                     };
@@ -949,7 +964,7 @@ fn saved_definition(args: &Value) -> Result<Value, ToolError> {
             "kind": source_kind(path),
             "alias": spec["alias"], "table": spec["table"],
         });
-        for key in ["columns", "where"] {
+        for key in ["columns", "where", "recover"] {
             if let Some(value) = spec.get(key) {
                 source[key] = value.clone();
             }
@@ -1027,7 +1042,7 @@ fn bound_query(definition: &Value, args: &Value) -> Result<Value, ToolError> {
             }
             let mut dataset =
                 json!({"source":path,"alias":source["alias"],"table":source["table"]});
-            for key in ["columns", "where"] {
+            for key in ["columns", "where", "recover"] {
                 if let Some(value) = source.get(key) {
                     dataset[key] = value.clone();
                 }
@@ -1276,7 +1291,7 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
     let mut sources = Vec::new();
     let mut bounded = Vec::new();
     for spec in specs {
-        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where"])?;
+        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where", "recover"])?;
         let alias = dataset_alias(spec, &mut aliases)?.to_owned();
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         let kind = source_kind(&path);
@@ -1295,10 +1310,13 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
         if !metadata.is_file() || metadata.len() > service.limits.max_file_size {
             return Err(ToolError::invalid("Dataset exceeds the file size limit"));
         }
+        if kind != "json_lines" && spec.get("recover").is_some() {
+            return Err(ToolError::invalid("recover is only used for JSON Lines datasets"));
+        }
         let columns = dataset_columns(spec, kind)?;
         let source = match kind {
             "arrow_ipc" => DiskDataset::ArrowIpc(path, columns),
-            "json_lines" => DiskDataset::JsonLines(path, columns),
+            "json_lines" => json_lines_dataset(spec, path, columns)?,
             "parquet" => DiskDataset::Parquet(path, columns, filters.into_iter().map(|(name, value)| (name.to_owned(), value)).collect()),
             "sqlite" => DiskDataset::Sqlite(path, spec.opt_str("table")?
                 .ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?.to_owned()),
@@ -1341,7 +1359,7 @@ fn batch_session(service: &Service, query: &Value, arrow_disk: bool) -> Result<S
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         bytes = bytes.saturating_add(std::fs::metadata(path).map_err(sqlite_error)?.len());
     }
-    if bytes > MEMORY_FILE_BYTES {
+    if bytes > MEMORY_FILE_BYTES || specs.iter().any(|spec| spec["recover"] == true) {
         return disk_dataset_session(service, specs, false);
     }
     match memory_query_session(service, query) {

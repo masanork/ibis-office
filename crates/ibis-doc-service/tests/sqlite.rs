@@ -1476,3 +1476,59 @@ fn selected_large_sources_export_counts_beyond_the_sheet_limit() {
         assert!(sheet.cells.iter().any(|cell| cell.value == ibis_doc_model::CellValue::Number(1_048_577.0)), "{name}");
     }
 }
+
+#[test]
+fn selected_json_lines_recover_into_a_refreshable_preview() {
+    use ibis_doc_service::{
+        DraftToolContext, WorkbookToolContext, prepare_selected_datasets_export,
+        run_selected_datasets_tool,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.ndjson");
+    let mut bytes = b"{\"event\":\"start\",\"id\":9007199254740993}\n{broken\n".to_vec();
+    bytes.extend(std::iter::repeat_n(b'x', 9 * 1024 * 1024));
+    bytes.extend_from_slice(b"\n\xff\n{\"event\":\"done\",\"late_field\":true}\n");
+    std::fs::write(&path, &bytes).unwrap();
+
+    let args = json!({
+        "sql":"SELECT * FROM input ORDER BY _jsonl_line LIMIT 25",
+        "datasets":[{"source":"1","alias":"input","recover":true}],
+    });
+    let files = [path];
+    let result = run_selected_datasets_tool(&files, "sqlite_query", args.clone()).unwrap();
+    assert_eq!(result["columns"], json!(["_jsonl_line", "_jsonl_error", "event", "id", "late_field"]));
+    let rows = result["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[0], json!([1,null,"start","9007199254740993",null]));
+    assert_eq!(rows[1][0], 2);
+    assert!(rows[1][1].as_str().unwrap().starts_with("Expected one JSON object"));
+    assert_eq!(rows[2], json!([3,"JSON Lines record exceeds 1 MiB",null,null,null]));
+    assert!(rows[3][1].as_str().unwrap().starts_with("Expected one JSON object"));
+    assert_eq!(rows[4], json!([5,null,"done",null,1]));
+
+    let mut strict = args.clone();
+    strict["datasets"][0]["recover"] = json!(false);
+    assert!(run_selected_datasets_tool(&files, "sqlite_query", strict).is_err());
+
+    let opened = ibis_formats::open(ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut draft = ibis_doc_model::Document::new(opened.presentation);
+    let name = draft.presentation().workbook.as_ref().unwrap().sheets[0].name.clone();
+    let mut export = args;
+    export["anchor"] = json!("A1");
+    export["destination_sheet"] = json!(name);
+    let prepared = prepare_selected_datasets_export(&files, export).unwrap();
+    let (_, commands) = prepared.stage(&mut draft, DraftToolContext {
+        source: Some(std::sync::Arc::new(opened.source)),
+        workbook: WorkbookToolContext::default(),
+    }).unwrap();
+    assert!(!commands.is_empty());
+    let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&draft.presentation().slides[0]).unwrap();
+    assert_eq!(sheet.cell(5, 2).unwrap().text, "done");
+    let definition = ibis_doc_service::query_report_definition(
+        draft.presentation(),
+        &json!({"table":sheet.tables[0].name}),
+    ).unwrap();
+    assert_eq!(definition["sources"][0]["recover"], true);
+    assert_eq!(std::fs::read(&files[0]).unwrap(), bytes);
+}
