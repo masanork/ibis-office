@@ -65,8 +65,6 @@ use crate::editor::SlideEditor;
 
 use crate::ai_tools::{EditableSourceKind, ReadEditableSource, ReplaceSourceText, replace_unique_source};
 
-const MAX_TOOL_STEPS: usize = 8;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AiDocKind {
     Xlsx,
@@ -964,7 +962,7 @@ impl SlideEditor {
         cx.spawn(async move |this, cx| {
             let mut turn_commands: Vec<Command> = Vec::new();
             let mut edit_labels = Vec::new();
-            for _step in 0..MAX_TOOL_STEPS {
+            loop {
                 let is_active = this
                     .read_with(cx, |editor, _| {
                         editor
@@ -1250,26 +1248,6 @@ impl SlideEditor {
                     }
                 }
             }
-
-            let _ = this.update(cx, |editor, cx| {
-                if !editor.ai_assistant.as_ref().is_some_and(|p| p.streaming && p.run_id == run_id) {
-                    return;
-                }
-                if let Some(p) = editor.ai_assistant.as_mut()
-                    && p.run_id == run_id
-                {
-                    p.streaming = false;
-                    if let Some(start) = p.assistant_history_start.take() {
-                        p.history.truncate(start);
-                    }
-                    p.messages.push(UiMessage::new(
-                        UiMessageKind::Error,
-                        format!("ツール実行が上限 ({MAX_TOOL_STEPS} 回) に達しました。"),
-                    ));
-                    p.scroll_handle.scroll_to_bottom();
-                }
-                cx.notify();
-            });
         })
         .detach();
         cx.notify();

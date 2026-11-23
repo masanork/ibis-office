@@ -88,7 +88,7 @@ unset AWS_BEARER_TOKEN_BEDROCK
   * GPUI の `http_client` と `cx.spawn` を用いて非同期 POST・SSE チャンクの逐次パースを行う
   * `choices[0].delta.content` をチャット欄にリアルタイム反映
   * `choices[0].delta.tool_calls` を `index` ごとに結合し、`finish_reason == "tool_calls"` でツールを実行して `role: "tool"` として再送する
-  * 無限ループ防止のため 1 ターン最大 8 ステップで打ち切り、UI から中断（停止）できるようにする
+  * デスクトップ版はモデルがツールを要求する間、結果を返して応答を継続する。ユーザーは「停止」で中断でき、通信エラーや中断時は未適用の変更案を破棄する
 * 右サイドバー UI
   * ヘッダー: 接続中モデル名、設定ボタン
   * メッセージ履歴: ユーザー発言、AI ストリーミング応答、実行した Tool の要約表示
