@@ -325,6 +325,9 @@ fn component_tree(doc: &Value) -> Result<Vec<(&Value, &str)>, String> {
         parent: &'a str,
         items: &mut Vec<(&'a Value, &'a str)>,
     ) -> Result<(), String> {
+        if !value.is_object() {
+            return Err("expected a CycloneDX component object".into());
+        }
         items.push((value, parent));
         let next_parent = value["bom-ref"]
             .as_str()
@@ -437,9 +440,45 @@ pub fn review_xlsx(inputs: [(&str, &[u8]); 4]) -> Result<Vec<u8>, String> {
     write_workbook(tables)
 }
 
+#[derive(Clone, Copy)]
+enum ReportFormat {
+    CycloneDx,
+    OsvScanner,
+}
+
+impl ReportFormat {
+    fn detect(doc: &Value, name: &str) -> Option<Self> {
+        if doc["bomFormat"] == "CycloneDX" {
+            return Some(Self::CycloneDx);
+        }
+        let osv = doc["results"].as_array().is_some_and(|results| {
+            doc.get("experimental_config").is_some()
+                || (!results.is_empty()
+                    && results.iter().all(|result| {
+                        result.get("source").is_some() && result.get("packages").is_some()
+                    }))
+                || name.to_ascii_lowercase().ends_with(".osv.json")
+        });
+        osv.then(|| Self::for_explicit_export(doc))
+    }
+
+    fn for_explicit_export(doc: &Value) -> Self {
+        if doc.get("bomFormat").is_some() {
+            Self::CycloneDx
+        } else {
+            Self::OsvScanner
+        }
+    }
+}
+
 /// Export a single CycloneDX SBOM or OSV-Scanner report as an XLSX workbook.
 pub fn table_xlsx(input: (&str, &[u8])) -> Result<Vec<u8>, String> {
-    table_xlsx_from(&parse(input)?, input)
+    let doc = parse(input)?;
+    write_workbook(report_tables(
+        ReportFormat::for_explicit_export(&doc),
+        &doc,
+        input,
+    )?)
 }
 
 /// Recognize supported JSON exports without claiming unrelated JSON files.
@@ -447,35 +486,38 @@ pub fn open_table(input: (&str, &[u8])) -> Result<Option<crate::Opened>, String>
     let Ok(doc) = parse(input) else {
         return Ok(None);
     };
-    let osv = doc["results"].as_array().is_some_and(|results| {
-        doc.get("experimental_config").is_some()
-            || (!results.is_empty()
-                && results.iter().all(|result| {
-                    result.get("source").is_some() && result.get("packages").is_some()
-                }))
-            || input.0.to_ascii_lowercase().ends_with(".osv.json")
-    });
-    if doc["bomFormat"] != "CycloneDX" && !osv {
+    let Some(format) = ReportFormat::detect(&doc, input.0) else {
         return Ok(None);
-    }
-    crate::open(table_xlsx_from(&doc, input)?)
+    };
+    let tables = report_tables(format, &doc, input)?;
+    drop(doc);
+    crate::open(write_workbook(tables)?)
         .map(Some)
         .map_err(|e| e.to_string())
 }
 
-fn table_xlsx_from(doc: &Value, input: (&str, &[u8])) -> Result<Vec<u8>, String> {
-    if doc.get("bomFormat").is_some() {
-        inventory(doc)?;
-        let items = component_tree(doc)?;
-        let mut tables = crypto::tables(doc, &items)?;
-        tables.push(("Components", COMPONENT_COLUMNS, component_rows(&items)));
-        tables.push(input_artifact(input));
-        return write_workbook(tables);
+fn report_tables(
+    format: ReportFormat,
+    doc: &Value,
+    input: (&str, &[u8]),
+) -> Result<Vec<Table>, String> {
+    match format {
+        ReportFormat::CycloneDx => {
+            if doc["bomFormat"] != "CycloneDX" {
+                return Err("expected CycloneDX JSON".into());
+            }
+            required(doc, "specVersion")?;
+            let items = component_tree(doc)?;
+            let mut tables = crypto::tables(doc, &items)?;
+            tables.push(("Components", COMPONENT_COLUMNS, component_rows(&items)));
+            tables.push(input_artifact(input));
+            Ok(tables)
+        }
+        ReportFormat::OsvScanner => Ok(vec![
+            ("Findings", ledger::HEADERS, ledger::rows(scan(doc)?)),
+            input_artifact(input),
+        ]),
     }
-    write_workbook([
-        ("Findings", ledger::HEADERS, ledger::rows(scan(doc)?)),
-        input_artifact(input),
-    ])
 }
 
 fn input_artifact((name, bytes): (&str, &[u8])) -> Table {
@@ -503,12 +545,20 @@ fn comparison_input_artifacts<'a>(
 }
 
 fn write_workbook(tables: impl IntoIterator<Item = Table>) -> Result<Vec<u8>, String> {
+    let opened = assemble_workbook(tables)?;
+    opened
+        .source
+        .save(&opened.presentation, crate::SaveOptions::default())
+        .map_err(|e| e.to_string())
+}
+
+fn assemble_workbook(tables: impl IntoIterator<Item = Table>) -> Result<crate::Opened, String> {
     use ibis_doc_model::{
         AutoFilter, CellRange, CellStyle, CellValue,
         sheet::{CellKind, SheetCell},
     };
 
-    let opened = crate::workbook_assembly::assemble(|template| {
+    crate::workbook_assembly::assemble(|template| {
         let mut sheets = Vec::new();
         for (name, headers, rows) in tables {
             let last_row = rows.len();
@@ -582,11 +632,7 @@ fn write_workbook(tables: impl IntoIterator<Item = Table>) -> Result<Vec<u8>, St
         }
         Ok(sheets)
     })
-    .map_err(|e| e.to_string())?;
-    opened
-        .source
-        .save(&opened.presentation, crate::SaveOptions::default())
-        .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -637,6 +683,95 @@ mod tests {
                 }]}]
             }]
         }]})
+    }
+
+    #[test]
+    fn auto_open_and_explicit_export_keep_their_detection_rules() {
+        let empty_scan = br#"{"results":[]}"#;
+        assert!(open_table(("generic.json", empty_scan)).unwrap().is_none());
+        assert!(open_table(("scan.OSV.JSON", empty_scan)).unwrap().is_some());
+        assert!(table_xlsx(("generic.json", empty_scan)).is_ok());
+
+        let malformed_bom = br#"{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"components":[null]}]}"#;
+        let expected = "expected a CycloneDX component object";
+        assert_eq!(
+            open_table(("bom.json", malformed_bom)).err().as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            table_xlsx(("bom.json", malformed_bom)).err().as_deref(),
+            Some(expected)
+        );
+
+        assert!(open_table(("generic.json", b"{")).unwrap().is_none());
+        assert!(table_xlsx(("generic.json", b"{")).is_err());
+    }
+
+    #[test]
+    #[ignore = "manual SBOM open timing"]
+    fn large_sbom_open_timing() {
+        use std::time::Instant;
+
+        let counts =
+            std::env::var("IBIS_SBOM_BENCH_ROWS").unwrap_or_else(|_| "1000,10000,50000".into());
+        for count in counts
+            .split(',')
+            .map(|count| count.parse::<usize>().unwrap())
+        {
+            let components = (0..count)
+                .map(|index| {
+                    json!({
+                        "type": "library",
+                        "name": format!("demo-{index}"),
+                        "version": "1.0.0",
+                        "purl": format!("pkg:cargo/demo-{index}@1.0.0"),
+                        "bom-ref": format!("ref-{index}"),
+                    })
+                })
+                .collect::<Vec<_>>();
+            let bytes = serde_json::to_vec(&json!({
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "components": components,
+            }))
+            .unwrap();
+            let input = ("synthetic.cdx.json", bytes.as_slice());
+
+            let start = Instant::now();
+            let doc = parse(input).unwrap();
+            let format = ReportFormat::detect(&doc, input.0).unwrap();
+            let parsed = Instant::now();
+            let tables = report_tables(format, &doc, input).unwrap();
+            drop(doc);
+            let projected = Instant::now();
+            let opened = assemble_workbook(tables).unwrap();
+            let assembled = Instant::now();
+            let xlsx = opened
+                .source
+                .save(&opened.presentation, crate::SaveOptions::default())
+                .unwrap();
+            drop(opened);
+            let saved = Instant::now();
+            let reopened = crate::open(xlsx).unwrap();
+            let finished = Instant::now();
+
+            let slide = &reopened.presentation.slides[0];
+            let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(slide).unwrap();
+            assert_eq!(
+                sheet.cell(count as u32, 3).unwrap().text,
+                format!("demo-{}", count - 1)
+            );
+            eprintln!(
+                "{count} components / {} bytes: parse {:?}, project {:?}, assemble {:?}, save {:?}, reopen {:?}, total {:?}",
+                bytes.len(),
+                parsed - start,
+                projected - parsed,
+                assembled - projected,
+                saved - assembled,
+                finished - saved,
+                finished - start,
+            );
+        }
     }
 
     #[test]
