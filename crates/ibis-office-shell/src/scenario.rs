@@ -929,6 +929,30 @@ impl Scenario {
         path
     }
 
+    /// Open a folder through the desktop picker, supplying the selected path.
+    pub fn open_folder(&mut self, path: PathBuf) {
+        self.update(|editor, window, cx| editor.pick_folder(window, cx));
+        self.cx.simulate_path_prompt_response(move |_| Some(vec![path]));
+        for _ in 0..100 {
+            self.wait(20);
+            if self.with(|editor, _| editor.folder_pane.is_some()) {
+                return;
+            }
+        }
+        panic!("the folder pane did not open");
+    }
+
+    pub fn open_folder_document(&mut self, relative: &str) {
+        self.update(|editor, window, cx| editor.open_folder_file(relative, window, cx));
+        for _ in 0..100 {
+            self.wait(20);
+            if self.with(|editor, _| editor.path.as_ref().is_some_and(|path| path.ends_with(relative))) {
+                return;
+            }
+        }
+        panic!("the folder document did not open: {relative}");
+    }
+
     /// Replace the live editor document and source with its saved file.
     /// This also resets history through the ordinary file loading path.
     pub fn reload_saved(&mut self) {

@@ -11,6 +11,7 @@ use crate::shell::scenario::Scenario;
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
     vec![
+        ("shell::markdown_desktop_roundtrip", markdown_desktop_roundtrip),
         ("shell::open_and_save_without_an_edit_keeps_every_part", open_and_save_without_an_edit_keeps_every_part),
         ("shell::save_reports_markdown_source_loss", save_reports_markdown_source_loss),
         ("shell::save_image_preview_keeps_transparent_pixels", save_image_preview_keeps_transparent_pixels),
@@ -169,4 +170,97 @@ fn save_reports_markdown_source_loss() {
     if std::env::var_os("IBIS_SAVE_DIAGNOSTIC_SCREENSHOT").is_some() {
         scenario.screenshot("law-source-loss-status");
     }
+}
+
+fn markdown_desktop_roundtrip() {
+    use crate::docx::{ext::*, scenarios::DocSteps as _};
+    use ibis_doc_model::{Block, FlowPos, FlowRunKind, Link};
+
+    let input = crate::shell::scenario::repo_root().join("test/fixtures/markdown-desktop");
+    let workspace = tempfile::tempdir().unwrap();
+    let folder = workspace.path();
+    std::fs::create_dir(folder.join("images")).unwrap();
+    for name in ["index.md", "monthly-revenue.md", "briefing.md", "images/revenue.png"] {
+        std::fs::copy(input.join(name), folder.join(name)).unwrap();
+    }
+
+    let mut doc = Scenario::start_view();
+    doc.open_folder(folder.to_path_buf());
+    doc.open_folder_document("monthly-revenue.md");
+    if std::env::var_os("IBIS_MARKDOWN_DESKTOP_SCREENSHOTS").is_some() {
+        doc.screenshot("okf-folder-and-document");
+    }
+    let first = match &doc.document().body[0] {
+        Block::Paragraph(first) => first.clone(),
+        _ => panic!("expected editable introductory paragraph"),
+    };
+    doc.click_text(FlowPos::new(first.id, first.len()));
+    doc.type_text(" Revised.");
+    let saved = folder.join("monthly-revenue-edited.docx");
+    doc.update(|editor, window, _| editor.save_to(saved.clone(), window)).unwrap();
+    doc.reload_saved();
+
+    let document = doc.document();
+    let paragraphs = ibis_doc_model::flow_command::all_paragraphs(&document);
+    assert!(paragraphs[0].text().contains("Revised."));
+    for label in ["fig_revenue", "eq_revenue"] {
+        let target = paragraphs.iter()
+            .find(|paragraph| paragraph.bookmarks.iter().any(|name| name == label))
+            .expect("saved bookmark").id;
+        let anchor = Link::Anchor(label.into());
+        let source = paragraphs.iter().find_map(|paragraph| {
+            let mut offset = 0;
+            for run in &paragraph.runs {
+                if run.link.as_ref() == Some(&anchor) {
+                    return Some(FlowPos::new(paragraph.id, offset));
+                }
+                offset += run.len();
+            }
+            None
+        }).expect("saved reference");
+        assert!(doc.update(|editor, _, cx| editor.follow_link(source, cx)));
+        assert_eq!(doc.selection().unwrap().1, FlowPos::new(target, 0));
+    }
+    let pictures: Vec<_> = paragraphs.iter().flat_map(|paragraph| &paragraph.runs)
+        .filter_map(|run| match &run.kind {
+            FlowRunKind::Picture { size, .. } => Some(*size),
+            _ => None,
+        }).collect();
+    assert_eq!(pictures.len(), 2);
+    assert_eq!(pictures[1], ibis_doc_model::EmuSize::new(120 * 9_525, 60 * 9_525));
+
+    let markdown = folder.join("monthly-revenue-edited.md");
+    doc.update(|editor, window, _| editor.save_to(markdown.clone(), window)).unwrap();
+    doc.reload_saved();
+    let exported = std::fs::read_to_string(markdown).unwrap();
+    assert!(exported.contains("verified: {by: \"human:reviewer\", at: \"2020-01-02\"}"));
+    assert!(exported.contains("Revised."));
+    assert!(doc.document().body.iter().any(|block| matches!(block, Block::Paragraph(para)
+        if para.runs.iter().any(|run| run.link.as_ref() == Some(&Link::Anchor("eq_revenue".into()))))));
+
+    drop(doc);
+    let mut deck = Scenario::start_view();
+    deck.open_folder(folder.to_path_buf());
+    deck.open_folder_document("briefing.md");
+    deck.double_click_shape(0);
+    deck.type_text(" Revised");
+    let saved = folder.join("briefing-edited.pptx");
+    deck.update(|editor, window, _| editor.save_to(saved.clone(), window)).unwrap();
+    deck.reload_saved();
+    if std::env::var_os("IBIS_MARKDOWN_DESKTOP_SCREENSHOTS").is_some() {
+        deck.update(|editor, window, cx| editor.show_slide_number(2, window, cx));
+        deck.settle();
+        deck.screenshot("marp-saved-slide");
+    }
+    let presentation = deck.with(|editor, _| editor.presentation().clone());
+    let slide_text = |index: usize| {
+        presentation.slides[index].shapes.iter().filter_map(|shape| shape.text_body())
+            .flat_map(|body| &body.paragraphs).flat_map(|paragraph| &paragraph.runs)
+            .map(|run| run.text.as_str()).collect::<Vec<_>>()
+    };
+    assert!(slide_text(0).join("").contains("Revised"));
+    assert!(!slide_text(0).contains(&"1"));
+    assert!(slide_text(1).contains(&"1"));
+    assert!(slide_text(2).contains(&"1"));
+    assert!(presentation.slides[1].notes.contains("monthly totals"));
 }

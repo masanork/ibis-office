@@ -322,6 +322,7 @@ pub fn open_markdown_with_base_dir(data: Vec<u8>, base_dir: Option<&std::path::P
         }
     }
     opened.presentation.flow = Some(document);
+    opened.source.mark_generated_from_markdown();
     Ok(opened)
 }
 
@@ -8074,6 +8075,7 @@ pub fn open_markdown_presentation_with_base_dir(
         }
     }
 
+    opened.source.mark_generated_from_markdown();
     Ok(opened)
 }
 

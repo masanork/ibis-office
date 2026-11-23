@@ -109,6 +109,7 @@ pub struct Source {
     kind: Kind,
     original_csv_format: Option<crate::csv::OriginalCsvFormat>,
     original_csv_bytes: Option<Arc<[u8]>>,
+    generated_from_markdown: bool,
     package: Package,
     baseline: Presentation,
     map: SourceMap,
@@ -378,7 +379,7 @@ pub fn open_progressive_with_options(
         let (presentation, map) = crate::reader::read_with_sources(&data)?;
         (Kind::Presentation, presentation, SourceMap::Presentation(map))
     };
-    let source = Source { kind, original_csv_format, original_csv_bytes, package, baseline: csv_baseline.unwrap_or_else(|| presentation.clone()), map, new_slides: Default::default(), new_charts: Default::default(), chart_data: Default::default() };
+    let source = Source { kind, original_csv_format, original_csv_bytes, generated_from_markdown: false, package, baseline: csv_baseline.unwrap_or_else(|| presentation.clone()), map, new_slides: Default::default(), new_charts: Default::default(), chart_data: Default::default() };
     crate::progress::fraction(1.0);
     #[cfg(not(target_family = "wasm"))]
     std::thread::spawn(move || drop(csv_records));
@@ -438,8 +439,15 @@ impl Source {
     /// to save. A file opened and saved with no edit is then the original file
     /// byte for byte, whatever the window made of it (review 0.8.5, 開いた直後の書き換え).
     pub fn rebased(mut self: Arc<Self>, current: &Presentation) -> Arc<Self> {
-        Arc::make_mut(&mut self).baseline = current.clone();
+        // The generated model still has to be written against its template and source map.
+        if !self.generated_from_markdown {
+            Arc::make_mut(&mut self).baseline = current.clone();
+        }
         self
+    }
+
+    pub(crate) fn mark_generated_from_markdown(&mut self) {
+        self.generated_from_markdown = true;
     }
 
     /// The model as it was read.
