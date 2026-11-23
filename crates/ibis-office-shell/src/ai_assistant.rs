@@ -65,6 +65,15 @@ use crate::editor::SlideEditor;
 
 use crate::ai_tools::{EditableSourceKind, ReadEditableSource, ReplaceSourceText, replace_unique_source};
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+struct JsonLinesFieldPicker {
+    source: std::path::PathBuf,
+    catalog: ibis_doc_model::query::JsonLinesFieldCatalog,
+    selected: Vec<String>,
+    filter: Entity<InputState>,
+    _filter_subscription: Subscription,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AiDocKind {
     Xlsx,
@@ -137,6 +146,8 @@ pub struct AiAssistantState {
     pub _prompt_subscription: Subscription,
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     analysis_sources: Option<(u64, Vec<std::path::PathBuf>)>,
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    json_lines_fields: Option<JsonLinesFieldPicker>,
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     report_refresh_handoff: Option<ReportRefreshHandoff>,
     /// Allowlist from `GET /api/ai/models`. Desktop leaves this empty.
@@ -986,6 +997,8 @@ impl SlideEditor {
                 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                 analysis_sources: None,
                 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                json_lines_fields: None,
+                #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                 report_refresh_handoff: None,
                 browser_models: Vec::new(),
                 browser_status: String::new(),
@@ -1059,6 +1072,7 @@ impl SlideEditor {
         self.open_ai_assistant_panel(window, cx);
         if let Some(panel) = self.ai_assistant.as_mut() {
             panel.analysis_sources = Some((self.file_id, vec![path.clone()]));
+            panel.json_lines_fields = None;
         }
         let file_id = self.file_id;
         let baseline = self.document.presentation().clone();
@@ -1076,7 +1090,7 @@ impl SlideEditor {
             args["sql"] = serde_json::json!("SELECT * FROM input ORDER BY _jsonl_line LIMIT 25");
             args["datasets"][0]["recover"] = serde_json::json!(true);
         }
-        self.set_status(crate::i18n::text("editor.analysis.loading").to_string(), cx);
+        self.set_status(crate::i18n::text(if json_lines { "editor.jsonl.preview-loading" } else { "editor.analysis.loading" }).to_string(), cx);
         cx.spawn_in(window, async move |this, cx| {
             let prepared = cx.background_executor().spawn(async move {
                 ibis_doc_service::prepare_selected_datasets_export(&[path], args)
@@ -1093,13 +1107,178 @@ impl SlideEditor {
                 match result {
                     Ok((_, commands)) => {
                         this.execute(commands, cx);
-                        this.set_status(crate::i18n::text("editor.analysis.ready").to_string(), cx);
+                        this.set_status(crate::i18n::text(if json_lines { "editor.jsonl.preview-ready" } else { "editor.analysis.ready" }).to_string(), cx);
                     }
                     Err(error) => this.set_status(error.message, cx),
                 }
             });
         }).detach();
         cx.notify();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn selected_json_lines_source(&self) -> Option<&std::path::PathBuf> {
+        let (file_id, paths) = self.ai_assistant.as_ref()?.analysis_sources.as_ref()?;
+        let [path] = paths.as_slice() else { return None };
+        (*file_id == self.file_id && path.extension().is_some_and(|ext|
+            ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson")
+        )).then_some(path)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn load_json_lines_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.selected_json_lines_source().cloned() else { return };
+        let file_id = self.file_id;
+        if !std::fs::metadata(&path).is_ok_and(|metadata| {
+            metadata.is_file() && metadata.len() <= ibis_doc_service::Limits::default().max_file_size
+        }) {
+            self.set_status(crate::i18n::text("editor.analysis.input-unavailable").to_string(), cx);
+            return;
+        }
+        self.set_status(crate::i18n::text("editor.jsonl.scanning").to_string(), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let source = path.clone();
+            let result = cx.background_executor().spawn(async move {
+                ibis_doc_model::query::json_lines_fields(&source)
+            }).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.file_id != file_id || this.selected_json_lines_source() != Some(&path) {
+                    return;
+                }
+                match result {
+                    Ok(catalog) => {
+                        let filter = cx.new(|cx| InputState::new(window, cx)
+                            .placeholder(crate::i18n::text("editor.jsonl.filter").to_string()));
+                        let subscription = cx.observe(&filter, |_, _, cx| cx.notify());
+                        if let Some(panel) = this.ai_assistant.as_mut() {
+                            panel.json_lines_fields = Some(JsonLinesFieldPicker {
+                                source: path, catalog, selected: Vec::new(), filter,
+                                _filter_subscription: subscription,
+                            });
+                        }
+                        this.set_status(crate::i18n::text("editor.jsonl.fields").to_string(), cx);
+                    }
+                    Err(error) => this.set_status(error, cx),
+                }
+            });
+        }).detach();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn export_json_lines_fields(&mut self, limit: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.selected_json_lines_source().cloned() else { return };
+        let Some(picker) = self.ai_assistant.as_ref().and_then(|panel| panel.json_lines_fields.as_ref())
+            .filter(|picker| picker.source == path && !picker.selected.is_empty()) else { return };
+        let paths = picker.selected.clone();
+        let file_id = self.file_id;
+        self.commit_edit(window, cx);
+        let baseline = self.document.presentation().clone();
+        let Some(book) = baseline.workbook.as_ref() else { return };
+        let name = (1..).map(|n| format!("JSONL {n}")).find(|name|
+            ibis_doc_model::sheet_ops::valid_sheet_name(&baseline, name, None)).unwrap();
+        let slide = self.document.ids().new_slide_id();
+        let add = Command::Sheet(SheetCommand::AddSheet {
+            index: book.sheets.len(), name: name.clone(), sheet: slide,
+            shape: self.document.ids().new_shape_id(),
+        });
+        let args = json!({
+            "destination_sheet": name,
+            "anchor": "A1",
+            "sql": format!("SELECT * FROM input ORDER BY _jsonl_line LIMIT {limit}"),
+            "datasets": [{"source":"1","alias":"input","paths":paths}],
+        });
+        self.set_status(crate::i18n::text("editor.jsonl.extracting").to_string(), cx);
+        let source = path.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx.background_executor().spawn(async move {
+                ibis_doc_service::prepare_selected_datasets_export(&[source], args)
+            }).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.file_id != file_id || this.selected_json_lines_source() != Some(&path) {
+                    return;
+                }
+                if this.document.presentation() != &baseline {
+                    this.set_status(crate::i18n::text("editor.jsonl.retry").to_string(), cx);
+                    return;
+                }
+                let mut draft = Document::new(baseline);
+                if let Err(error) = draft.execute(vec![add.clone()]) {
+                    this.set_status(error.to_string(), cx);
+                    return;
+                }
+                match result.and_then(|prepared| prepared.stage(&mut draft, this.assistant_turn().tool_context())) {
+                    Ok((_, commands)) => {
+                        let mut transaction = vec![add];
+                        transaction.extend(commands);
+                        this.execute(transaction, cx);
+                        if this.presentation().slide(slide).is_some() {
+                            this.select_slide(slide, window, cx);
+                            this.set_status(crate::i18n::text("editor.jsonl.exported").to_string(), cx);
+                        }
+                    }
+                    Err(error) => this.set_status(error.message, cx),
+                }
+            });
+        }).detach();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn json_lines_field_controls(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use gpui_kit::component::Disableable as _;
+        let source = self.selected_json_lines_source()?;
+        let panel = self.ai_assistant.as_ref()?;
+        let text = crate::i18n::text;
+        let open = Button::new("jsonl-fields").outline().xsmall().label(text("editor.jsonl.fields"))
+            .disabled(panel.streaming)
+            .on_click(cx.listener(|this, _, window, cx| this.load_json_lines_fields(window, cx)));
+        let controls = v_flex().gap_1().child(open);
+        let Some(picker) = panel.json_lines_fields.as_ref().filter(|picker| &picker.source == source) else {
+            return Some(controls.into_any_element());
+        };
+        let filter = picker.filter.read(cx).value().to_lowercase();
+        let catalog = &picker.catalog;
+        let counts = crate::i18n::format("editor.jsonl.counts", &[
+            ("valid", &catalog.valid_records.to_string()),
+            ("invalid", &catalog.invalid_records.to_string()),
+        ]);
+        let items = catalog.fields.iter().enumerate().filter(|(_, field)| field.path.to_lowercase().contains(&filter))
+            .take(120).map(|(index, field)| {
+                let path = field.path.clone();
+                let chosen = picker.selected.contains(&path);
+                let label = if chosen { format!("✓ {path}") } else { path.clone() };
+                let caption = format!("{} · {} · {}", field.occurrences, field.types.join(" / "),
+                    field.example.as_deref().unwrap_or("—"));
+                v_flex().gap_1()
+                    .child(Button::new(SharedString::from(format!("jsonl-field-{index}"))).ghost().xsmall().label(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(picker) = this.ai_assistant.as_mut().and_then(|panel| panel.json_lines_fields.as_mut()) {
+                                if let Some(index) = picker.selected.iter().position(|selected| selected == &path) {
+                                    picker.selected.remove(index);
+                                } else if picker.selected.len() < 254 {
+                                    picker.selected.push(path.clone());
+                                }
+                            }
+                            cx.notify();
+                        })))
+                    .child(div().text_xs().truncate().child(caption))
+            });
+        Some(controls
+            .child(div().text_xs().child(counts))
+            .when(catalog.truncated, |body| body.child(div().text_xs().child(text("editor.jsonl.truncated"))))
+            .child(Input::new(&picker.filter).small())
+            .child(div().id("jsonl-field-list").max_h(px(200.0)).overflow_y_scroll().children(items))
+            .child(h_flex().gap_1().flex_wrap().children([
+                (25, "editor.jsonl.export-small"),
+                (1000, "editor.jsonl.export"),
+            ].map(|(limit, label)| {
+                Button::new(SharedString::from(format!("jsonl-field-export-{limit}"))).outline().xsmall()
+                    .label(text(label))
+                    .disabled(picker.selected.is_empty() || panel.streaming)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.export_json_lines_fields(limit, window, cx);
+                    }))
+            })))
+            .into_any_element())
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -1123,6 +1302,7 @@ impl SlideEditor {
                     && panel.prompt_input.entity_id() == panel_id && !panel.streaming
                 {
                     panel.analysis_sources = Some((file_id, paths));
+                    panel.json_lines_fields = None;
                     if let Some(review) = panel.assistant_review.as_mut() {
                         review.check_trial = None;
                     }
@@ -4090,6 +4270,7 @@ impl SlideEditor {
                         .on_click(cx.listener(|this, _, _, cx| {
                             if let Some(panel) = this.ai_assistant.as_mut() {
                                 panel.analysis_sources = None;
+                                panel.json_lines_fields = None;
                                 if let Some(review) = panel.assistant_review.as_mut() {
                                     review.check_trial = None;
                                 }
@@ -4100,6 +4281,11 @@ impl SlideEditor {
         });
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         let sqlite_controls: Option<AnyElement> = None;
+
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        let json_lines_controls = self.json_lines_field_controls(cx);
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        let json_lines_controls: Option<AnyElement> = None;
 
         let header = h_flex().w_full().items_center();
         #[cfg(not(target_family = "wasm"))]
@@ -4653,6 +4839,7 @@ impl SlideEditor {
         let content = content
             .child(header)
             .children(sqlite_controls)
+            .children(json_lines_controls)
             .children(browser_box)
             .children(settings_box)
             .children(pending_box)

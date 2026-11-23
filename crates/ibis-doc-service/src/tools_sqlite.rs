@@ -412,6 +412,11 @@ fn datasets_property() -> (&'static str, Value) {
                 ("alias", string("SQL table name to register for this dataset.")),
                 ("table", string("Source table name, required for SQLite files.")),
                 ("recover", json!({"type":"boolean","description":"JSON Lines only: retain invalid records with _jsonl_line and _jsonl_error. Defaults to false."})),
+                ("paths", json!({
+                    "type":"array","minItems":1,"maxItems":254,"uniqueItems":true,
+                    "items":{"type":"string","minLength":1},
+                    "description":"JSON Lines only: select nested fields by JSON Pointer, in order. Includes recovery diagnostics. Mutually exclusive with columns."
+                })),
                 ("where", json!({
                     "type":"object","minProperties":1,"maxProperties":MAX_FILTERS,
                     "additionalProperties":{"anyOf":[
@@ -673,10 +678,26 @@ fn json_lines_dataset(
     path: PathBuf,
     columns: Vec<String>,
 ) -> Result<DiskDataset, ToolError> {
+    if let Some(paths) = spec.get("paths") {
+        if spec.get("columns").is_some() {
+            return Err(ToolError::invalid("Use either paths or columns for JSON Lines"));
+        }
+        let paths = dataset_names(paths, 254)
+            .ok_or_else(|| ToolError::invalid("paths must contain 1 to 254 non-empty JSON Pointers"))?;
+        return Ok(DiskDataset::JsonLinesPaths(path, paths));
+    }
     if spec.opt_bool("recover")?.unwrap_or(false) {
         return Ok(DiskDataset::RecoverableJsonLines(path, columns));
     }
     Ok(DiskDataset::JsonLines(path, columns))
+}
+
+fn dataset_names(value: &Value, limit: usize) -> Option<Vec<String>> {
+    value.as_array()
+        .filter(|items| (1..=limit).contains(&items.len()))?
+        .iter()
+        .map(|item| item.as_str().filter(|name| !name.is_empty()).map(str::to_owned))
+        .collect()
 }
 
 fn dataset_columns(spec: &Value, kind: &str) -> Result<Vec<String>, ToolError> {
@@ -685,14 +706,7 @@ fn dataset_columns(spec: &Value, kind: &str) -> Result<Vec<String>, ToolError> {
         Some(_) if !matches!(kind, "parquet" | "arrow_ipc" | "json_lines" | "avro") => Err(ToolError::invalid(
             "columns is only used for Parquet, Arrow IPC, JSON Lines and Avro datasets",
         )),
-        Some(value) => value
-            .as_array()
-            .filter(|items| (1..=256).contains(&items.len()))
-            .and_then(|items| {
-                items.iter().map(|item| {
-                    item.as_str().filter(|name| !name.is_empty()).map(str::to_owned)
-                }).collect::<Option<Vec<_>>>()
-            })
+        Some(value) => dataset_names(value, 256)
             .ok_or_else(|| ToolError::invalid("columns must contain 1 to 256 non-empty column names")),
     }
 }
@@ -743,12 +757,12 @@ fn visit_datasets(
     let mut cells = 100_000usize;
     let mut text = 8 * 1024 * 1024usize;
     for spec in specs {
-        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where", "recover"])?;
+        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where", "recover", "paths"])?;
         let alias = dataset_alias(spec, &mut aliases)?;
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
         let kind = source_kind(&path);
-        let limit = if schema_only && (kind != "json_lines" || spec["recover"] == true) {
+        let limit = if schema_only && (kind != "json_lines" || spec["recover"] == true || spec.get("paths").is_some()) {
             service.limits.max_file_size
         } else {
             service.limits.max_file_size.min(32 * 1024 * 1024)
@@ -757,8 +771,8 @@ fn visit_datasets(
             return Err(ToolError::invalid("dataset must be a regular file within the input size limit"));
         }
         let table_name = spec.opt_str("table")?;
-        if kind != "json_lines" && spec.get("recover").is_some() {
-            return Err(ToolError::invalid("recover is only used for JSON Lines datasets"));
+        if kind != "json_lines" && (spec.get("recover").is_some() || spec.get("paths").is_some()) {
+            return Err(ToolError::invalid("recover and paths are only used for JSON Lines datasets"));
         }
         let columns = dataset_columns(spec, kind)?;
         let filters = parquet_filters(spec, kind)?;
@@ -964,7 +978,7 @@ fn saved_definition(args: &Value) -> Result<Value, ToolError> {
             "kind": source_kind(path),
             "alias": spec["alias"], "table": spec["table"],
         });
-        for key in ["columns", "where", "recover"] {
+        for key in ["columns", "where", "recover", "paths"] {
             if let Some(value) = spec.get(key) {
                 source[key] = value.clone();
             }
@@ -1042,7 +1056,7 @@ fn bound_query(definition: &Value, args: &Value) -> Result<Value, ToolError> {
             }
             let mut dataset =
                 json!({"source":path,"alias":source["alias"],"table":source["table"]});
-            for key in ["columns", "where", "recover"] {
+            for key in ["columns", "where", "recover", "paths"] {
                 if let Some(value) = source.get(key) {
                     dataset[key] = value.clone();
                 }
@@ -1291,7 +1305,7 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
     let mut sources = Vec::new();
     let mut bounded = Vec::new();
     for spec in specs {
-        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where", "recover"])?;
+        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where", "recover", "paths"])?;
         let alias = dataset_alias(spec, &mut aliases)?.to_owned();
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         let kind = source_kind(&path);
@@ -1310,8 +1324,8 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
         if !metadata.is_file() || metadata.len() > service.limits.max_file_size {
             return Err(ToolError::invalid("Dataset exceeds the file size limit"));
         }
-        if kind != "json_lines" && spec.get("recover").is_some() {
-            return Err(ToolError::invalid("recover is only used for JSON Lines datasets"));
+        if kind != "json_lines" && (spec.get("recover").is_some() || spec.get("paths").is_some()) {
+            return Err(ToolError::invalid("recover and paths are only used for JSON Lines datasets"));
         }
         let columns = dataset_columns(spec, kind)?;
         let source = match kind {
@@ -1359,7 +1373,7 @@ fn batch_session(service: &Service, query: &Value, arrow_disk: bool) -> Result<S
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         bytes = bytes.saturating_add(std::fs::metadata(path).map_err(sqlite_error)?.len());
     }
-    if bytes > MEMORY_FILE_BYTES || specs.iter().any(|spec| spec["recover"] == true) {
+    if bytes > MEMORY_FILE_BYTES || specs.iter().any(|spec| spec["recover"] == true || spec.get("paths").is_some()) {
         return disk_dataset_session(service, specs, false);
     }
     match memory_query_session(service, query) {

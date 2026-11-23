@@ -1714,3 +1714,15 @@ editor.csv.open-sql-unavailable	Only the initial rows are shown. SQL analysis re
 editor.analysis.input-unavailable	Analysis requires a readable file up to 200 MiB.
 editor.analysis.loading	Counting input records locally…
 editor.analysis.ready	The local record count is ready. You can now query the original file from the Assistant.
+editor.jsonl.fields	JSONL fields
+editor.jsonl.scanning	Scanning JSONL fields…
+editor.jsonl.filter	Filter paths (shows up to 120)
+editor.jsonl.counts	{valid} valid records and {invalid} unreadable lines
+editor.jsonl.truncated	Some fields exceeded the catalog limits and are omitted.
+editor.jsonl.export	Create a table from the first 1,000 lines
+editor.jsonl.extracting	Reading the selected fields…
+editor.jsonl.retry	The workbook changed during import. Try again.
+editor.jsonl.exported	The selected fields were imported into a new worksheet.
+editor.jsonl.preview-loading	Preparing the JSONL preview…
+editor.jsonl.preview-ready	The JSONL preview is ready. Open JSONL fields to choose columns to import.
+editor.jsonl.export-small	Create a table from the first 25 lines

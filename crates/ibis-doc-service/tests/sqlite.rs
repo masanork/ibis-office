@@ -1532,3 +1532,63 @@ fn selected_json_lines_recover_into_a_refreshable_preview() {
     assert_eq!(definition["sources"][0]["recover"], true);
     assert_eq!(std::fs::read(&files[0]).unwrap(), bytes);
 }
+
+#[test]
+fn json_lines_catalog_paths_build_a_reopenable_table() {
+    use ibis_doc_service::{DraftToolContext, WorkbookToolContext, prepare_selected_datasets_export};
+    use ibis_doc_model::{Command, Document, SheetCommand, sheet_calc::sheet_of_slide};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.jsonl");
+    std::fs::write(&path, concat!(
+        "{\"actor\":{\"id\":9007199254740993},\"a/b\":{\"~key\":\"001\"},\"items\":[1]}\n",
+        "{broken\n",
+        "{\"actor\":{\"id\":null},\"late\":true}\n",
+    )).unwrap();
+
+    let catalog = ibis_doc_model::query::json_lines_fields(&path).unwrap();
+    assert_eq!((catalog.valid_records, catalog.invalid_records), (2, 1));
+    let field = |name| catalog.fields.iter().find(|field| field.path == name).unwrap();
+    assert_eq!(field("/actor/id").occurrences, 2);
+    assert_eq!(field("/actor/id").types, ["number", "null"]);
+    assert_eq!(field("/actor/id").example.as_deref(), Some("9007199254740993"));
+    assert_eq!(field("/a~1b/~0key").example.as_deref(), Some("\"001\""));
+    assert_eq!(field("/items").types, ["array"]);
+    assert!(!catalog.fields.iter().any(|field| field.path.starts_with("/items/")));
+    assert_eq!(field("/late").occurrences, 1);
+
+    let opened = ibis_formats::open(ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut draft = Document::new(opened.presentation);
+    let slide = draft.ids().new_slide_id();
+    let shape = draft.ids().new_shape_id();
+    draft.execute(vec![Command::Sheet(SheetCommand::AddSheet {
+        index: 1, name: "JSONL 1".into(), sheet: slide, shape,
+    })]).unwrap();
+    let paths = json!(["/late", "/actor/id", "/a~1b/~0key", "/items"]);
+    let prepared = prepare_selected_datasets_export(&[path], json!({
+        "destination_sheet":"JSONL 1", "anchor":"A1",
+        "sql":"SELECT * FROM input ORDER BY _jsonl_line LIMIT 1000",
+        "datasets":[{"source":"1","alias":"input","paths":paths}],
+    })).unwrap();
+    let source = std::sync::Arc::new(opened.source);
+    prepared.stage(&mut draft, DraftToolContext {
+        source: Some(source.clone()), workbook: WorkbookToolContext::default(),
+    }).unwrap();
+
+    let bytes = source.save(draft.presentation(), ibis_formats::SaveOptions::default()).unwrap();
+    let reopened = ibis_formats::open(bytes).unwrap();
+    assert_eq!(reopened.presentation.workbook.as_ref().unwrap().sheets[1].name, "JSONL 1");
+    let sheet = sheet_of_slide(&reopened.presentation.slides[1]).unwrap();
+    for (column, path) in (2..).zip(["/late", "/actor/id", "/a~1b/~0key", "/items"]) {
+        assert_eq!(sheet.cell(0, column).unwrap().text, path);
+    }
+    assert_eq!(sheet.cell(1, 3).unwrap().text, "9007199254740993");
+    assert_eq!(sheet.cell(1, 4).unwrap().text, "001");
+    assert_eq!(sheet.cell(1, 5).unwrap().text, "[1]");
+    assert!(sheet.cell(2, 1).unwrap().text.starts_with("Expected one JSON object"));
+    assert!(sheet.cell(3, 2).is_some());
+    let definition = ibis_doc_service::query_report_definition(
+        &reopened.presentation, &json!({"table":sheet.tables[0].name}),
+    ).unwrap();
+    assert_eq!(definition["sources"][0]["paths"], paths);
+}

@@ -203,10 +203,125 @@ pub(super) fn visit_json_lines(
     Ok(())
 }
 
+/// A field observed in valid JSON Lines objects.
+#[derive(Debug)]
+pub struct JsonLinesField {
+    pub path: String,
+    pub occurrences: usize,
+    pub types: Vec<&'static str>,
+    pub example: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct JsonLinesFieldCatalog {
+    pub fields: Vec<JsonLinesField>,
+    pub valid_records: usize,
+    pub invalid_records: usize,
+    pub truncated: bool,
+}
+
+/// Discover object paths across the file. Arrays are kept as a field, without
+/// turning individual array positions into columns.
+pub fn json_lines_fields(path: &Path) -> Result<JsonLinesFieldCatalog, String> {
+    const FIELD_LIMIT: usize = 2048;
+    const PATH_LIMIT: usize = 255;
+    fn object(
+        values: &serde_json::Map<String, Value>,
+        parent: &mut String,
+        fields: &mut BTreeMap<String, JsonLinesField>,
+        truncated: &mut bool,
+    ) {
+        for (key, value) in values {
+            let length = parent.len();
+            parent.push('/');
+            parent.push_str(&key.replace('~', "~0").replace('/', "~1"));
+            if parent.encode_utf16().take(PATH_LIMIT + 1).count() > PATH_LIMIT
+                || parent.contains('\0')
+                || (!fields.contains_key(parent.as_str()) && fields.len() == FIELD_LIMIT)
+            {
+                *truncated = true;
+                parent.truncate(length);
+                continue;
+            }
+            let field = fields
+                .entry(parent.clone())
+                .or_insert_with(|| JsonLinesField {
+                    path: parent.clone(),
+                    occurrences: 0,
+                    types: Vec::new(),
+                    example: None,
+                });
+            field.occurrences += 1;
+            let kind = match value {
+                Value::Null => "null",
+                Value::Bool(_) => "boolean",
+                Value::Number(_) => "number",
+                Value::String(_) => "string",
+                Value::Array(_) => "array",
+                Value::Object(_) => "object",
+            };
+            if !field.types.contains(&kind) {
+                field.types.push(kind);
+            }
+            if field.example.is_none() && !value.is_null() {
+                let value = value.to_string();
+                let mut chars = value.chars();
+                let mut example: String = chars.by_ref().take(100).collect();
+                if chars.next().is_some() {
+                    example.push('…');
+                }
+                field.example = Some(example);
+            }
+            if let Value::Object(nested) = value {
+                object(nested, parent, fields, truncated);
+            }
+            parent.truncate(length);
+        }
+    }
+
+    let file = File::open(path).map_err(|error| error.to_string())?;
+    let before = file.metadata().map_err(|error| error.to_string())?;
+    let max_bytes = usize::try_from(before.len()).map_err(|_| "JSON Lines file is too large")?;
+    let mut catalog = JsonLinesFieldCatalog::default();
+    let mut fields = BTreeMap::new();
+    scan_lines(BufReader::new(&file), max_bytes, true, |line, _| {
+        match line.and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok()) {
+            Some(Value::Object(values)) => {
+                catalog.valid_records += 1;
+                object(
+                    &values,
+                    &mut String::new(),
+                    &mut fields,
+                    &mut catalog.truncated,
+                );
+            }
+            _ => catalog.invalid_records += 1,
+        }
+        Ok(())
+    })?;
+    let after = file.metadata().map_err(|error| error.to_string())?;
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return Err("JSON Lines file changed during import".into());
+    }
+    catalog.fields = fields.into_values().collect();
+    Ok(catalog)
+}
+
+fn recover_cell(raw: &RawValue) -> Result<(CellValue, Option<QType>), String> {
+    match cell(raw) {
+        Err(error) if error == PRECISION_ERROR => {
+            check_text_limit(raw.get())?;
+            Ok((CellValue::Text(raw.get().into()), Some(QType::Text)))
+        }
+        result => result,
+    }
+}
+
 /// Visit a recoverable dataset. Invalid records remain addressable by physical line.
 pub(super) fn visit_recoverable_json_lines(
     path: &Path,
     selected: &[String],
+    pointers: bool,
     schema_only: bool,
     mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -233,23 +348,43 @@ pub(super) fn visit_recoverable_json_lines(
     }
 
     let selected = selected.iter().map(String::as_str).collect::<HashSet<_>>();
+    if pointers
+        && (selected.is_empty()
+            || selected.iter().any(|path| {
+                !path.starts_with('/')
+                    || path.contains('\0')
+                    || path
+                        .split('~')
+                        .skip(1)
+                        .any(|part| !part.starts_with(['0', '1']))
+            }))
+    {
+        return Err("Select nonempty JSON Pointer paths starting with /".into());
+    }
     let parse =
         |line: Option<&[u8]>| -> Result<BTreeMap<String, (CellValue, Option<QType>)>, String> {
             let line = line.ok_or("JSON Lines record exceeds 1 MiB")?;
+            if pointers {
+                let root: Value = serde_json::from_slice(line)
+                    .map_err(|error| format!("Expected one JSON object ({error})"))?;
+                if !root.is_object() {
+                    return Err("Expected one JSON object".into());
+                }
+                return selected
+                    .iter()
+                    .filter_map(|&path| root.pointer(path).map(|value| (path, value)))
+                    .map(|(path, value)| {
+                        let raw = serde_json::value::to_raw_value(value)
+                            .map_err(|error| error.to_string())?;
+                        Ok((path.into(), recover_cell(&raw)?))
+                    })
+                    .collect();
+            }
             let raw: BTreeMap<String, &RawValue> = serde_json::from_slice(line)
                 .map_err(|error| format!("Expected one JSON object ({error})"))?;
             raw.into_iter()
                 .filter(|(name, _)| selected.is_empty() || selected.contains(name.as_str()))
-                .map(|(name, value)| {
-                    let converted = match cell(value) {
-                        Err(error) if error == PRECISION_ERROR => {
-                            check_text_limit(value.get())?;
-                            (CellValue::Text(value.get().into()), Some(QType::Text))
-                        }
-                        result => result?,
-                    };
-                    Ok((name, converted))
-                })
+                .map(|(name, value)| Ok((name, recover_cell(value)?)))
                 .collect()
         };
     scan_lines(&mut input, max_bytes, true, |line, _| {

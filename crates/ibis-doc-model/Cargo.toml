@@ -15,7 +15,7 @@ ibis-m-lang.workspace = true
 ruzstd = "0.8"
 unicode-segmentation = "1"
 regex = "1"
-serde_json = { version = "1", features = ["raw_value"] }
+serde_json = { version = "1", features = ["raw_value", "arbitrary_precision"] }
 unicode-normalization = "0.1.26"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
