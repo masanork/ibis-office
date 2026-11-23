@@ -8,7 +8,7 @@ ibisOfficeが受け付ける構文、通常の入出力での挙動、制限と�
 | --- | --- | --- |
 | [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/) | ATX見出し、段落、リスト、引用、強調、リンク、画像、コードなどの基本構文 | 上流テスト一式に対する適合は未検証。入れ子、HTML、参照リンクなどは個々の対応範囲を確認する。 |
 | [GFM 0.29](https://github.github.com/gfm/) と [GitHubの書式ガイド](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax) | パイプ表、タスクリスト、取り消し線、基本アラート | 表のセル結合やOfficeフィールドはibisOffice拡張。脚注とアラートはGFM形式仕様とは別にGitHubの書式ガイドを参照する。 |
-| [MyST Markdown](https://mystmd.org/guide/syntax-overview) | Word互換の見出しラベルと、コードフェンス・コロンフェンス内の単一段落の基本admonition | コードフェンスとコロンフェンスの図は画像・代替テキスト・単一段落のキャプション・Word互換ラベルを取り込む。自動参照番号、引用、プロジェクトの参照解決は未対応。 |
+| [MyST Markdown](https://mystmd.org/guide/syntax-overview) | Word互換の見出し・数式ラベル、表示名付き `{ref}` の同一文書内リンク、コードフェンス・コロンフェンス内の単一段落の基本admonition | コードフェンスとコロンフェンスの図は画像・代替テキスト・単一段落のキャプション・Word互換ラベルを取り込む。自動参照番号、引用、プロジェクトの参照解決は未対応。 |
 | [Obsidian内部リンク](https://obsidian.md/help/links) と [callouts](https://obsidian.md/help/callouts) | 文書内Wikiリンク、開いたフォルダー内の別ファイル・見出しへのWikiリンク、基本callout | Assistantのフォルダー参照は別ノートを名前またはルート基準のパスで引ける。埋め込み、折りたたみは未対応。 |
 | [Marpit](https://marpit.marp.app/markdown) と [Marp Core](https://github.com/marp-team/marp-core/blob/main/docs/markdown.md) | スライド分割（ATX見出しの `headingDivider` を含む）、標準サイズ、発表者ノートのPPTX変換 | CSSテーマ、背景、ページ番号、元原稿への編集差分反映は未対応。 |
 | [Mermaid](https://mermaid.js.org/) と [ZenUML](https://zenuml.com/docs/) | 図種別の描画、対応するグラフのOffice変換、対応する図ソースの再出力 | 図種と個別構文の対応は[構文リファレンス](markdown-reference-ja.md#mermaid)を参照。 |

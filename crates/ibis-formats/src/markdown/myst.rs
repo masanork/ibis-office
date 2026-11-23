@@ -12,6 +12,7 @@ pub(super) fn target(line: &str) -> Option<&str> {
 pub(super) enum Directive<'a> {
     Alert(&'static str, &'a [&'a str]),
     Figure(Figure<'a>),
+    Equation { label: &'a str, latex: String },
 }
 
 pub(super) fn colon_directive<'a>(lines: &'a [&'a str]) -> Option<(Directive<'a>, usize)> {
@@ -22,7 +23,7 @@ pub(super) fn colon_directive<'a>(lines: &'a [&'a str]) -> Option<(Directive<'a>
     }
     let info = first[length..].trim();
     let alert = alert_kind(info);
-    if alert.is_none() && !info.starts_with("{figure} ") {
+    if alert.is_none() && !info.starts_with("{figure} ") && info != "{math}" {
         return None;
     }
     for (index, raw) in lines.iter().enumerate().skip(1) {
@@ -32,6 +33,10 @@ pub(super) fn colon_directive<'a>(lines: &'a [&'a str]) -> Option<(Directive<'a>
             let directive = match alert {
                 Some(alert) if !body.is_empty() => Directive::Alert(alert, body),
                 Some(_) => return None,
+                None if info == "{math}" => {
+                    let (label, latex) = equation(info, body)?;
+                    Directive::Equation { label, latex }
+                }
                 None => Directive::Figure(figure(info, body)?),
             };
             return Some((directive, index + 1));
@@ -137,4 +142,36 @@ pub(super) fn figure<'a>(info: &str, lines: &[&'a str]) -> Option<Figure<'a>> {
         label,
         align,
     })
+}
+
+pub(super) fn equation<'a>(info: &str, lines: &[&'a str]) -> Option<(&'a str, String)> {
+    if info != "{math}" {
+        return None;
+    }
+    let (option, body) = lines.split_first()?;
+    let label = option.trim().strip_prefix(":label:")?.trim();
+    let latex = body.join("\n");
+    (super::is_word_bookmark(label) && !latex.trim().is_empty()).then_some((label, latex))
+}
+
+pub(super) fn reference(source: &str) -> Option<(usize, &str, &str)> {
+    let (payload, _) = source.strip_prefix("{ref}`")?.split_once('`')?;
+    let (title, label) = payload.strip_suffix('>')?.rsplit_once(" <")?;
+    (!title.trim().is_empty() && !title.contains(['<', '>', '\r', '\n'])
+        && super::is_word_bookmark(label))
+        .then_some(("{ref}`".len() + payload.len() + 1, title, label))
+}
+
+// Paragraph normalization can merge adjacent runs that await the same target.
+pub(super) fn reference_title(mut source: &str, target: &str) -> Option<String> {
+    let mut title = String::new();
+    while !source.is_empty() {
+        let (length, text, label) = reference(source)?;
+        if label != target {
+            return None;
+        }
+        title.push_str(text);
+        source = &source[length..];
+    }
+    Some(title)
 }

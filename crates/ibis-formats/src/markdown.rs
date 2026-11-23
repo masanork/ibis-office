@@ -124,6 +124,7 @@ pub fn is_markdown(data: &[u8]) -> bool {
             || l == "\\newpage"
             || l == "\\columnbreak"
             || l.trim_end() == "[TOC]"
+            || myst::reference(l).is_some()
             || obsidian::local_link(l).is_some()
             || obsidian::file_link(l).is_some()
             || l.starts_with("$$")
@@ -382,6 +383,7 @@ pub fn parse_markdown_fragment_blocks(
     let mut footnote_defs: HashMap<String, String> = HashMap::new();
     let mut blocks = parse_blocks(text, &mut ctx, &mut footnote_defs)?;
     doc.styles = Arc::new(ctx.styles);
+    resolve_myst_references(&mut blocks, &HashMap::new());
     resolve_all_blocks(&mut blocks, &doc.styles);
     Ok(blocks)
 }
@@ -1675,11 +1677,24 @@ fn parse_markdown_into(
 
     // Resolve all paragraphs against final styles.
     doc.styles = Arc::new(ctx.styles);
+    let mut targets = HashMap::new();
+    for paragraph in ibis_doc_model::flow_command::all_paragraphs(doc) {
+        for bookmark in &paragraph.bookmarks {
+            *targets.entry(bookmark.clone()).or_insert(0) += 1;
+        }
+    }
+    resolve_myst_references(&mut doc.body, &targets);
+    for blocks in doc.footnotes.iter_mut().chain(&mut doc.endnotes).map(|note| &mut note.blocks)
+        .chain(doc.comments.iter_mut().map(|comment| &mut comment.blocks))
+    {
+        resolve_myst_references(blocks, &targets);
+    }
     resolve_all_blocks(&mut doc.body, &doc.styles);
     for part in [
         &mut doc.header, &mut doc.footer, &mut doc.header_first, &mut doc.footer_first,
         &mut doc.header_even, &mut doc.footer_even,
     ] {
+        resolve_myst_references(part, &targets);
         resolve_all_blocks(part, &doc.styles);
     }
 
@@ -1691,6 +1706,39 @@ fn parse_markdown_into(
     }
 
     Ok(())
+}
+
+// Private anchor namespace used only while a MyST reference awaits a target.
+const PENDING_MYST_REFERENCE: &str = "\0myst-ref:";
+
+fn resolve_myst_references(blocks: &mut [Block], targets: &HashMap<String, usize>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                for run in &mut paragraph.runs {
+                    if let Some(Link::Anchor(anchor)) = &run.link
+                        && let Some(label) = anchor.strip_prefix(PENDING_MYST_REFERENCE)
+                        && let FlowRunKind::Text(source) = &run.kind
+                    {
+                        if targets.get(label) == Some(&1)
+                            && let Some(title) = myst::reference_title(source, label)
+                        {
+                            run.kind = FlowRunKind::Text(title);
+                            run.link = Some(Link::Anchor(label.to_owned()));
+                            run.format = link_format(&run.format);
+                        } else {
+                            run.link = None;
+                        }
+                    }
+                }
+            }
+            Block::Table(table) => {
+                for cell in table.rows.iter_mut().flat_map(|row| &mut row.cells) {
+                    resolve_myst_references(&mut cell.blocks, targets);
+                }
+            }
+        }
+    }
 }
 
 fn resolve_all_blocks(blocks: &mut [Block], styles: &FlowStyles) {
@@ -2611,6 +2659,9 @@ fn parse_blocks(
                     let quote: Vec<_> = std::iter::once(alert).chain(body.iter().copied()).collect();
                     blocks.extend(build_blockquote_blocks(&quote, ctx));
                 }
+                myst::Directive::Equation { label, latex } => {
+                    blocks.push(build_display_math_block(&latex, Some(label), ctx));
+                }
                 myst::Directive::Figure(figure) => {
                     if !append_myst_figure(figure, &mut blocks, ctx) {
                         blocks.push(build_code_block(&lines[i..i + consumed].join("\n"), ctx));
@@ -2643,6 +2694,12 @@ fn parse_blocks(
                 && let Some(figure) = myst::figure(fence_info.trim(), content_lines)
                 && append_myst_figure(figure, &mut blocks, ctx)
             {
+                continue;
+            }
+            if closed
+                && let Some((label, latex)) = myst::equation(fence_info.trim(), content_lines)
+            {
+                blocks.push(build_display_math_block(&latex, Some(label), ctx));
                 continue;
             }
             let content = content_lines.join("\n");
@@ -5063,6 +5120,16 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                 i += len;
                 continue;
             }
+        }
+
+        if let Some((len, _, label)) = myst::reference(rest) {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            let mut run = FlowRun::new(FlowRunKind::Text(rest[..len].into()), FlowRunStyle::default());
+            run.format = base_fmt.clone();
+            run.link = Some(Link::Anchor(format!("{PENDING_MYST_REFERENCE}{label}")));
+            out.push(run);
+            i += len;
+            continue;
         }
 
         // Inline code: `` `code` ``
@@ -9814,8 +9881,35 @@ Front caption
     }
 
     #[test]
+    fn myst_explicit_reference_resolves_forward_only_to_unique_bookmarks() {
+        let input = br#"See {ref}`Energy <eq_energy>`{ref}`Again <eq_energy>`, {ref}`Missing <missing>`, and {ref}`Duplicate <duplicate>`.
+
+:::{math}
+:label: eq_energy
+
+E=mc^2
+:::
+
+## First {#duplicate}
+
+## Second {#duplicate}
+"#;
+        let saved = import_markdown_to_docx_bytes(input).unwrap();
+        let presentation = crate::read(&saved).unwrap();
+        let paragraphs = ibis_doc_model::flow_command::all_paragraphs(presentation.flow.as_ref().unwrap());
+        assert!(paragraphs[1].bookmarks.iter().any(|label| label == "eq_energy"));
+        assert!(paragraphs[1].runs.iter().any(|run| matches!(run.kind, FlowRunKind::Math { display: true, .. })));
+        let links: Vec<_> = paragraphs[0].runs.iter().filter_map(|run| run.link.as_ref()).collect();
+        assert!(!links.is_empty() && links.iter().all(|link| **link == Link::Anchor("eq_energy".into())));
+        let markdown = export_docx_to_markdown(&saved).unwrap();
+        assert!(markdown.contains("Energy") && markdown.contains("Again") && markdown.contains("](#eq_energy)"), "{markdown}");
+        assert!(flow_paragraph_plain_text(paragraphs[0]).contains("{ref}`Missing <missing>`"));
+        assert!(flow_paragraph_plain_text(paragraphs[0]).contains("{ref}`Duplicate <duplicate>`"));
+    }
+
+    #[test]
     fn myst_figure_preserves_native_picture_alt_text_and_caption_bookmark() {
-        let input = b"See [figure](#fig_sample).\n\n```{figure} data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a5sAAAAASUVORK5CYII=\n:label: fig_sample\n:alt: Sample image\n:width: 80px\n:align: center\n\nA **caption**.\n```\n";
+        let input = b"See {ref}`figure <fig_sample>`.\n\n```{figure} data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a5sAAAAASUVORK5CYII=\n:label: fig_sample\n:alt: Sample image\n:width: 80px\n:align: center\n\nA **caption**.\n```\n";
         let input = std::str::from_utf8(input).unwrap();
         let colon_fence = input.replace("```", ":::");
         for source in [input, colon_fence.as_str()] {
