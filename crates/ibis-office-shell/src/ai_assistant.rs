@@ -3367,9 +3367,22 @@ impl SlideEditor {
         #[cfg(target_family = "wasm")]
         let browser_pending = panel.browser_pending.clone();
         #[cfg(not(target_family = "wasm"))]
-        let model_caption = AiConfig::active_model()
-            .map(|model| format!("モデル: {model}"))
-            .unwrap_or_else(|| "接続設定を確認してください".to_string());
+        let connection = v_flex().w_full().gap_1().text_xs().whitespace_normal();
+        #[cfg(not(target_family = "wasm"))]
+        let connection = match AiConfig::active_connection() {
+            Ok((provider, model)) => connection
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("接続先：{provider}")),
+                )
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("モデル：{model}")),
+                ),
+            Err(error) => connection.child(format!("接続設定：{error}")),
+        };
         #[cfg(target_family = "wasm")]
         let model_caption = {
             let label = browser_models
@@ -3407,16 +3420,17 @@ impl SlideEditor {
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         let sqlite_controls: Option<AnyElement> = None;
 
-        let header = h_flex()
-            .w_full()
-            .justify_between()
-            .items_center()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(model_caption),
-            )
+        let header = h_flex().w_full().items_center();
+        #[cfg(not(target_family = "wasm"))]
+        let header = header.justify_end();
+        #[cfg(target_family = "wasm")]
+        let header = header.justify_between().child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(model_caption),
+        );
+        let header = header
             .child(
                 h_flex()
                     .gap_1()
@@ -3468,7 +3482,7 @@ impl SlideEditor {
                     div()
                         .text_xs()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("OpenAI 互換 API 設定"),
+                        .child("OpenAI 互換 API の保存設定"),
                 )
                 .child(
                     div().text_xs().child("Claude API と Amazon Bedrock は起動時の環境変数で設定できます。"),
@@ -3858,7 +3872,10 @@ impl SlideEditor {
             .child(msg_list);
 
         let content = v_flex()
-            .gap_2()
+            .gap_2();
+        #[cfg(not(target_family = "wasm"))]
+        let content = content.child(connection);
+        let content = content
             .child(header)
             .children(sqlite_controls)
             .children(browser_box)

@@ -37,10 +37,14 @@ impl AiConfig {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    pub fn active_model() -> Option<String> {
-        Provider::resolve(&Self::load_saved(), process_env)
-            .ok()
-            .map(|(_, config)| config.model)
+    pub fn active_connection() -> Result<(&'static str, String), String> {
+        let (provider, config) = Provider::resolve(&Self::load_saved(), process_env)?;
+        let name = match provider {
+            Provider::OpenAi => "OpenAI 互換 API",
+            Provider::Anthropic => "Claude API",
+            Provider::Bedrock => "Amazon Bedrock",
+        };
+        Ok((name, config.model))
     }
 
     /// Load only saved values for editing. Environment credentials never enter the form.
