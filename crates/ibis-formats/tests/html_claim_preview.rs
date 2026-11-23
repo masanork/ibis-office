@@ -110,12 +110,28 @@ fn previews_printed_claims_with_original_types() {
     let error = preview_html_claims(layout, &definition, &record, &mapping).unwrap_err();
     assert!(error.to_string().contains("different form ID or version"));
     mapping["form"]["version"] = json!(1);
+    mapping["fieldLabels"] = json!({"serial": "管理番号"});
+    assert_eq!(
+        preview_html_claims(layout, &definition, &record, &mapping).unwrap(),
+        preview
+    );
+    mapping["fieldLabels"] = json!({"unknown": "管理番号"});
+    let error = preview_html_claims(layout, &definition, &record, &mapping).unwrap_err();
+    assert!(error.to_string().contains("Invalid field label: unknown"));
+    mapping.as_object_mut().unwrap().remove("fieldLabels");
     definition["fields"]["serial"] = json!({"type": "text", "maxChars": 3});
     let error = preview_html_claims(layout, &definition, &record, &mapping).unwrap_err();
-    assert!(error.to_string().contains("truncated"));
+    assert!(error.to_string().contains("serial (5 characters, limit 3)"));
+    mapping["fieldLabels"] = json!({"serial": "管理番号"});
+    let error = preview_html_claims(layout, &definition, &record, &mapping).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("管理番号 (serial) (5 characters, limit 3)")
+    );
     record["data"]["serial"] = json!("");
     let error = preview_html_claims(layout, &definition, &record, &mapping).unwrap_err();
-    assert!(error.to_string().contains("blank"));
+    assert!(error.to_string().contains("blank: 管理番号 (serial)"));
     record["data"].as_object_mut().unwrap().remove("serial");
     assert!(preview_html_claims(layout, &definition, &record, &mapping).is_err());
 }

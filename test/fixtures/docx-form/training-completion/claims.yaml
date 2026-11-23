@@ -5,3 +5,5 @@ claims:
   training: course.title
   completion_date: completed
   number: serial
+fieldLabels:
+  serial: 管理番号

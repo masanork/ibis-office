@@ -334,26 +334,56 @@ pub fn preview_html_claims(
         .as_object()
         .ok_or_else(|| Error::new("Missing record data"))?;
     collect_values(data, "", &mut values)?;
+    let labels = mapping
+        .get("fieldLabels")
+        .map(|labels| {
+            labels
+                .as_object()
+                .ok_or_else(|| Error::new("fieldLabels must map field IDs to labels"))
+        })
+        .transpose()?;
+    if let Some(labels) = labels {
+        for (field, label) in labels {
+            if !values.contains_key(field)
+                || !label.as_str().is_some_and(|text| {
+                    !text.trim().is_empty() && !text.chars().any(char::is_control)
+                })
+            {
+                return Err(Error::new(format!("Invalid field label: {field}")));
+            }
+        }
+    }
     let mut claims = serde_json::Map::new();
     for (claim, field) in bindings {
         let field = field
             .as_str()
             .filter(|_| !claim.trim().is_empty())
             .ok_or_else(|| Error::new(format!("Invalid mapping for claim: {claim}")))?;
+        let field_name = || {
+            labels
+                .and_then(|labels| labels.get(field))
+                .and_then(Value::as_str)
+                .map_or_else(|| field.to_owned(), |label| format!("{label} ({field})"))
+        };
         if !printed.contains(field) {
             return Err(Error::new(format!(
-                "Claim field is absent from the print layout: {field}"
+                "Claim field is absent from the print layout: {}",
+                field_name()
             )));
         }
-        if truncations.iter().any(|item| item.field_id == field) {
+        if let Some(item) = truncations.iter().find(|item| item.field_id == field) {
             return Err(Error::new(format!(
-                "Claim field is truncated in the print layout: {field}"
+                "Claim field is truncated in the print layout: {} ({} characters, limit {})",
+                field_name(),
+                item.actual_chars,
+                item.max_chars
             )));
         }
         let value = values[field];
         if value.as_str().is_some_and(|text| text.trim().is_empty()) {
             return Err(Error::new(format!(
-                "Required claim field is blank: {field}"
+                "Required claim field is blank: {}",
+                field_name()
             )));
         }
         claims.insert(claim.clone(), value.clone());
