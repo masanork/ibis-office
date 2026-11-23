@@ -14,7 +14,7 @@ use super::syntax::{
     to_fullwidth_digits,
 };
 use super::xml::{
-    parse_title_attributes_fragment, read_encoded_appdx_style_positions, read_encoded_appdx_styles, read_encoded_toc, write_title_attributes_fragment,
+    parse_title_attributes_fragment, read_encoded_appdx_fragment_positions, read_encoded_appdx_fragments, read_encoded_toc, write_title_attributes_fragment,
 };
 use super::markup::{
     lawtext_paragraph_text, lawtext_sentence_text, parse_lawtext_paragraph,
@@ -24,8 +24,10 @@ use super::markup::{
 use super::table_markup::{encode_tables, restore_tables};
 
 const LAWTEXT_TITLE_ATTRIBUTES: &str = ":law-title-attrs: ";
-const LAWTEXT_STYLE_POSITIONS: &str = ":law-appdx-style-positions: ";
-const LAWTEXT_STYLES: &str = ":law-appdx-styles: ";
+const LEGACY_LAWTEXT_STYLES: &str = ":law-appdx-styles: ";
+const LEGACY_LAWTEXT_STYLE_POSITIONS: &str = ":law-appdx-style-positions: ";
+const LAWTEXT_FRAGMENT_POSITIONS: &str = ":law-appdx-fragment-positions: ";
+const LAWTEXT_FRAGMENTS: &str = ":law-appdx-fragments: ";
 const LAWTEXT_TABLES: &str = ":law-appdx-tables: ";
 const LAWTEXT_ENACT_STATEMENT: &str = ":law-enact-statement: ";
 const LAWTEXT_TOC: &str = ":law-toc: ";
@@ -73,8 +75,10 @@ pub fn is_lawtext(data: &[u8]) -> bool {
             lawtext_attributes(line).is_some() || line.strip_prefix(LAWTEXT_TITLE_ATTRIBUTES)
                 .and_then(parse_title_attributes_fragment).is_some()
                 || line.starts_with(LAWTEXT_TOC) || line.starts_with(LAWTEXT_TABLES)
-                || line.starts_with(LAWTEXT_ENACT_STATEMENT) || line.starts_with(LAWTEXT_STYLES)
-                || line.starts_with(LAWTEXT_STYLE_POSITIONS)
+                || line.starts_with(LAWTEXT_ENACT_STATEMENT) || line.starts_with(LAWTEXT_FRAGMENTS)
+                || line.starts_with(LAWTEXT_FRAGMENT_POSITIONS)
+                || line.starts_with(LEGACY_LAWTEXT_STYLES)
+                || line.starts_with(LEGACY_LAWTEXT_STYLE_POSITIONS)
         });
     let Some(first) = lines.next() else {
         return false;
@@ -118,13 +122,13 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
     if let Some(encoded) = encode_tables(doc) {
         out.push_str(&format!("{LAWTEXT_TABLES}{encoded}\n"));
     }
-    if !doc.appdx_style_xml.is_empty() && let Ok(encoded) = serde_json::to_string(&doc.appdx_style_xml) {
-        out.push_str(&format!("{LAWTEXT_STYLES}{encoded}\n"));
+    if !doc.appdx_fragment_xml.is_empty() && let Ok(encoded) = serde_json::to_string(&doc.appdx_fragment_xml) {
+        out.push_str(&format!("{LAWTEXT_FRAGMENTS}{encoded}\n"));
     }
-    if !doc.appdx_style_positions.is_empty()
-        && let Ok(encoded) = serde_json::to_string(&doc.appdx_style_positions)
+    if !doc.appdx_fragment_positions.is_empty()
+        && let Ok(encoded) = serde_json::to_string(&doc.appdx_fragment_positions)
     {
-        out.push_str(&format!("{LAWTEXT_STYLE_POSITIONS}{encoded}\n"));
+        out.push_str(&format!("{LAWTEXT_FRAGMENT_POSITIONS}{encoded}\n"));
     }
     if !out.is_empty() {
         out.push('\n');
@@ -317,12 +321,18 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
     if table_xml.is_some() {
         lines.next();
     }
-    if let Some(encoded) = lines.peek().and_then(|line| line.trim().strip_prefix(LAWTEXT_STYLES)) {
-        doc.appdx_style_xml = read_encoded_appdx_styles(encoded);
+    if let Some(encoded) = lines.peek().and_then(|line| {
+        let line = line.trim();
+        line.strip_prefix(LAWTEXT_FRAGMENTS).or_else(|| line.strip_prefix(LEGACY_LAWTEXT_STYLES))
+    }) {
+        doc.appdx_fragment_xml = read_encoded_appdx_fragments(encoded);
         lines.next();
     }
-    if let Some(encoded) = lines.peek().and_then(|line| line.trim().strip_prefix(LAWTEXT_STYLE_POSITIONS)) {
-        doc.appdx_style_positions = read_encoded_appdx_style_positions(encoded, doc.appdx_style_xml.len());
+    if let Some(encoded) = lines.peek().and_then(|line| {
+        let line = line.trim();
+        line.strip_prefix(LAWTEXT_FRAGMENT_POSITIONS).or_else(|| line.strip_prefix(LEGACY_LAWTEXT_STYLE_POSITIONS))
+    }) {
+        doc.appdx_fragment_positions = read_encoded_appdx_fragment_positions(encoded, doc.appdx_fragment_xml.len());
         lines.next();
     }
     let mut header = lines.clone();

@@ -48,7 +48,7 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
             out.enact_statement = Some(s);
         }
     }
-    out.toc_xml = child_elem(body, "TOC").and_then(|toc| read_xml_fragment(&xml[toc.range()], "TOC"));
+    out.toc_xml = child_elem(body, "TOC").and_then(|toc| read_xml_fragment(&xml[toc.range()], &["TOC"]));
     if let Some(pre) = child_elem(body, "Preamble") {
         let s = collect_text(pre);
         if !s.is_empty() {
@@ -78,25 +78,27 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
                     out.appdx_table_xml.push(snapshot);
                 }
             }
-            "AppdxStyle" if appendix.tag_name().namespace().is_none() => {
-                if let Some(style) = read_xml_fragment(&xml[appendix.range()], "AppdxStyle") {
-                    out.appdx_style_positions.push(out.appdx_tables.len());
-                    out.appdx_style_xml.push(style);
+            name if APPDX_FRAGMENT_NAMES.contains(&name) && appendix.tag_name().namespace().is_none() => {
+                if let Some(fragment) = read_xml_fragment(&xml[appendix.range()], APPDX_FRAGMENT_NAMES) {
+                    out.appdx_fragment_positions.push(out.appdx_tables.len());
+                    out.appdx_fragment_xml.push(fragment);
                 }
             }
             _ => {}
         }
     }
-    if out.appdx_style_positions.first() == Some(&out.appdx_tables.len()) {
-        out.appdx_style_positions.clear();
+    if out.appdx_fragment_positions.first() == Some(&out.appdx_tables.len()) {
+        out.appdx_fragment_positions.clear();
     }
     Ok(out)
 }
 
-fn read_xml_fragment(xml: &str, name: &str) -> Option<String> {
+const APPDX_FRAGMENT_NAMES: &[&str] = &["Appdx", "AppdxFig", "AppdxFormat", "AppdxNote", "AppdxStyle"];
+
+fn read_xml_fragment(xml: &str, names: &[&str]) -> Option<String> {
     let doc = roxmltree::Document::parse(xml).ok()?;
     let node = doc.root_element();
-    if !node.has_tag_name(name) || node.tag_name().namespace().is_some() {
+    if !names.contains(&node.tag_name().name()) || node.tag_name().namespace().is_some() {
         return None;
     }
     Some(xml[node.range()].to_string())
@@ -104,20 +106,20 @@ fn read_xml_fragment(xml: &str, name: &str) -> Option<String> {
 
 pub(super) fn read_encoded_toc(encoded: &str) -> Option<String> {
     let toc = serde_json::from_str::<String>(encoded).ok()?;
-    read_xml_fragment(&toc, "TOC")
+    read_xml_fragment(&toc, &["TOC"])
 }
 
-pub(super) fn read_encoded_appdx_styles(encoded: &str) -> Vec<String> {
+pub(super) fn read_encoded_appdx_fragments(encoded: &str) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(encoded)
         .unwrap_or_default()
         .iter()
-        .filter_map(|fragment| read_xml_fragment(fragment, "AppdxStyle"))
+        .filter_map(|fragment| read_xml_fragment(fragment, APPDX_FRAGMENT_NAMES))
         .collect()
 }
 
-pub(super) fn read_encoded_appdx_style_positions(encoded: &str, style_count: usize) -> Vec<usize> {
+pub(super) fn read_encoded_appdx_fragment_positions(encoded: &str, fragment_count: usize) -> Vec<usize> {
     let positions: Vec<usize> = serde_json::from_str(encoded).unwrap_or_default();
-    if positions.len() == style_count && positions.is_sorted() {
+    if positions.len() == fragment_count && positions.is_sorted() {
         positions
     } else {
         Vec::new()
@@ -455,26 +457,26 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
         }
         out.push_str("    </SupplProvision>\n");
     }
-    let mut styles = doc.appdx_style_xml.iter();
-    let mut positions = doc.appdx_style_positions.iter().copied().peekable();
+    let mut fragments = doc.appdx_fragment_xml.iter();
+    let mut positions = doc.appdx_fragment_positions.iter().copied().peekable();
     for (index, appdx) in doc.appdx_tables.iter().enumerate() {
         while positions.next_if_eq(&index).is_some() {
-            if let Some(style) = styles.next() {
-                write_appdx_style(&mut out, style);
+            if let Some(fragment) = fragments.next() {
+                write_appdx_fragment(&mut out, fragment);
             }
         }
         write_appdx_table(&mut out, doc, appdx);
     }
-    for style in styles {
-        write_appdx_style(&mut out, style);
+    for fragment in fragments {
+        write_appdx_fragment(&mut out, fragment);
     }
     out.push_str("  </LawBody>\n</Law>\n");
     out
 }
 
-fn write_appdx_style(out: &mut String, style: &str) {
+fn write_appdx_fragment(out: &mut String, fragment: &str) {
     out.push_str("    ");
-    out.push_str(style);
+    out.push_str(fragment);
     out.push('\n');
 }
 

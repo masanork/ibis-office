@@ -336,8 +336,8 @@ fn appendix_style_metadata_keeps_multiple_forms_and_rejects_invalid_fragments() 
     let first = "<AppdxStyle><AppdxStyleTitle>様式一</AppdxStyleTitle><FigStruct><Fig src=\"./pict/a.pdf\"/></FigStruct></AppdxStyle>";
     let second = "<AppdxStyle><AppdxStyleTitle>様式二</AppdxStyleTitle><FigStruct><Fig src=\"./pict/b.pdf\"/></FigStruct></AppdxStyle>";
     let metadata = serde_json::to_string(&[first, "<AppdxStyle>", "<MainProvision/>", second]).unwrap();
-    let lawtext = format!(":law-appdx-styles: {metadata}\n\n試験法（令和七年法律第一号）\n\n第一条 規定する。");
-    let markdown = format!("---\ntype: lawtext\nlaw_appdx_styles: {metadata}\n---\n\n# 試験法\n\n## 第一条 規定する。");
+    let lawtext = format!(":law-appdx-styles: {metadata}\n:law-appdx-style-positions: [0,0]\n\n試験法（令和七年法律第一号）\n\n第一条 規定する。");
+    let markdown = format!("---\ntype: lawtext\nlaw_appdx_styles: {metadata}\nlaw_appdx_style_positions: [0,0]\n---\n\n# 試験法\n\n## 第一条 規定する。");
     for doc in [parse_lawtext(&lawtext).unwrap(), parse_markdown_law(&markdown).unwrap()] {
         let xml = to_law_xml(&doc);
         assert_eq!(xml.matches("<AppdxStyle>").count(), 2);
@@ -357,8 +357,12 @@ fn mixed_appendices_keep_their_order_even_when_a_table_cell_is_edited() {
     let form = include_str!("lawtext/food-inspection-form.xml");
     let form = form.split_once("<AppdxStyle>").unwrap().1;
     let form = form.split_once("</AppdxStyle>").unwrap().0;
+    let figure = r#"<AppdxFig Num="1"><AppdxFigTitle>図一</AppdxFigTitle><FigStruct><Fig src="./pict/figure.pdf"/></FigStruct></AppdxFig>"#;
+    let note = r#"<AppdxNote Num="2"><AppdxNoteTitle>注一</AppdxNoteTitle><FigStruct><Fig src="./pict/note.pdf"/></FigStruct></AppdxNote>"#;
+    let format = r#"<AppdxFormat Num="3"><AppdxFormatTitle WritingMode="horizontal">書式一</AppdxFormatTitle></AppdxFormat>"#;
+    let formula = "<Appdx><ArithFormulaNum>算式一</ArithFormulaNum><ArithFormula/></Appdx>";
     let xml = format!(
-        "{before}<AppdxStyle>{form}</AppdxStyle><AppdxTable>{table}</AppdxTable>\n         <AppdxStyle>{form}</AppdxStyle><AppdxTable>{}</AppdxTable>\n         <AppdxStyle>{form}</AppdxStyle>{after}",
+        "{before}{figure}<AppdxTable>{table}</AppdxTable>{note}{format}\n<AppdxStyle>{form}</AppdxStyle><AppdxTable>{}</AppdxTable>{formula}{after}",
         table.replace("別表第十八", "別表第十九"),
     );
     let source = parse_law_xml(&xml).unwrap();
@@ -373,12 +377,15 @@ fn mixed_appendices_keep_their_order_even_when_a_table_cell_is_edited() {
         let xml = roxmltree::Document::parse(&output).unwrap();
         let body = xml.root_element().children().find(|node| node.has_tag_name("LawBody")).unwrap();
         let appendices: Vec<_> = body.children()
-            .filter(|node| node.has_tag_name("AppdxTable") || node.has_tag_name("AppdxStyle"))
+            .filter(|node| node.is_element() && node.tag_name().name().starts_with("Appdx"))
             .collect();
         let tags: Vec<_> = appendices.iter().map(|node| node.tag_name().name()).collect();
-        assert_eq!(tags, ["AppdxStyle", "AppdxTable", "AppdxStyle", "AppdxTable", "AppdxStyle"]);
+        assert_eq!(tags, ["AppdxFig", "AppdxTable", "AppdxNote", "AppdxFormat", "AppdxStyle", "AppdxTable", "Appdx"]);
+        for fragment in [figure, note, format, formula] {
+            assert!(output.contains(fragment));
+        }
         assert!(appendices[1].descendants().any(|node| node.is_text() && node.text() == Some(expected_cell)));
-        assert!(appendices[3].descendants().any(|node| node.text() == Some("別表第十九")));
+        assert!(appendices[5].descendants().any(|node| node.text() == Some("別表第十九")));
     }
 }
 
