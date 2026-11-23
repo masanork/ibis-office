@@ -13,6 +13,7 @@ pub struct Timings {
     /// Includes schema inference.
     pub stage: Duration,
     pub sql: Duration,
+    pub write: Duration,
 }
 
 thread_local! {
@@ -20,6 +21,7 @@ thread_local! {
         schema: Duration::ZERO,
         stage: Duration::ZERO,
         sql: Duration::ZERO,
+        write: Duration::ZERO,
     }) };
 }
 
@@ -31,6 +33,7 @@ pub enum Phase {
     Schema,
     Stage,
     Sql,
+    Write,
 }
 
 pub struct Timer(Phase, Instant);
@@ -50,6 +53,7 @@ impl Drop for Timer {
                 Phase::Schema => value.schema += elapsed,
                 Phase::Stage => value.stage += elapsed,
                 Phase::Sql => value.sql += elapsed,
+                Phase::Write => value.write += elapsed,
             }
             timings.set(value);
         });

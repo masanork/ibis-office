@@ -705,6 +705,10 @@ impl SqliteQuerySession {
     }
 
     pub fn from_disk_datasets(sources: &[(String, DiskDataset)]) -> Result<Self, String> {
+        #[cfg(feature = "report-profiling")]
+        use super::report_profile::{Phase, Timer};
+        #[cfg(feature = "report-profiling")]
+        let setup_timer = Timer::start(Phase::Write);
         let temp = tempfile::Builder::new()
             .prefix("ibis-datasets-")
             .tempdir()
@@ -725,13 +729,21 @@ impl SqliteQuerySession {
                 .map_err(|error| error.to_string())
         };
         execute("PRAGMA temp_store = FILE")?;
+        #[cfg(feature = "report-profiling")]
+        drop(setup_timer);
         let mut staged_schema = SqliteInputSchema::new();
         for (alias, source) in sources {
             let identifier = sql_identifier(alias);
             let mut insert = None;
             let mut rows = 0usize;
-            execute("BEGIN")?;
+            {
+                #[cfg(feature = "report-profiling")]
+                let _timer = Timer::start(Phase::Write);
+                execute("BEGIN")?;
+            }
             source.visit(false, |columns, row| {
+                #[cfg(feature = "report-profiling")]
+                let _timer = Timer::start(Phase::Write);
                 if let Some(row) = row {
                     let stmt: &mut turso_core::Statement =
                         insert.as_mut().ok_or("Missing dataset schema")?;
@@ -766,6 +778,8 @@ impl SqliteQuerySession {
                 }
                 Ok(())
             })?;
+            #[cfg(feature = "report-profiling")]
+            let _timer = Timer::start(Phase::Write);
             execute("COMMIT")?;
         }
         connection.set_query_only(true);

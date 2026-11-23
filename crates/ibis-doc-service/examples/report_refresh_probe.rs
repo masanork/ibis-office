@@ -145,8 +145,11 @@ mod desktop {
                 let mut timing = timing;
                 let profile = ibis_doc_model::query::report_profile::take();
                 timing["schema_ms"] = json!(profile.schema.as_secs_f64() * 1000.0);
-                timing["stage_ms"] =
-                    json!(profile.stage.saturating_sub(profile.schema).as_secs_f64() * 1000.0);
+                let stage = profile.stage.saturating_sub(profile.schema);
+                timing["stage_ms"] = json!(stage.as_secs_f64() * 1000.0);
+                timing["stage_write_ms"] = json!(profile.write.as_secs_f64() * 1000.0);
+                timing["stage_read_ms"] =
+                    json!(stage.saturating_sub(profile.write).as_secs_f64() * 1000.0);
                 timing["sql_ms"] = json!(profile.sql.as_secs_f64() * 1000.0);
                 timing
             };
