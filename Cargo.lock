@@ -5592,6 +5592,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "branches",
+ "encoding_rs",
  "ibis-calc",
  "ibis-m-lang",
  "parquet",

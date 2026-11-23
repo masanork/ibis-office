@@ -752,7 +752,12 @@ fn visit_datasets(
         }
         let schema = |columns| QTable { columns, rows: Vec::new() };
         let table = if kind == "csv" {
-            read_csv_dataset(&path, cells, text, schema_only)?
+            match read_csv_dataset(&path, cells, text, schema_only) {
+                Err(error) if schema_only && csv_size_limit(&error.message) => {
+                    QTable { columns: DiskDataset::Csv(path).columns().map_err(sqlite_error)?, rows: Vec::new() }
+                }
+                result => result?,
+            }
         } else {
             match (kind, schema_only) {
                 ("sqlite", _) => {
@@ -797,6 +802,10 @@ fn visit_datasets(
     Ok(())
 }
 
+fn csv_size_limit(message: &str) -> bool {
+    matches!(message, "CSV exceeds the import size limit" | "CSV exceeds the decoded size limit")
+}
+
 fn read_csv_dataset(path: &Path, max_cells: usize, max_text: usize, schema_only: bool) -> Result<QTable, ToolError> {
     use ibis_doc_model::CellValue;
     use std::io::Read;
@@ -829,10 +838,11 @@ fn read_csv_dataset(path: &Path, max_cells: usize, max_text: usize, schema_only:
     if !schema_only {
         let width = columns.len();
         for record in records {
-            if record.len() != width || (rows.len() + 1) * width > max_cells {
-                return Err(ToolError::invalid(
-                    "CSV rows must match their header width and fit the cell limit",
-                ));
+            if record.len() != width {
+                return Err(ToolError::invalid("CSV rows must match their header width"));
+            }
+            if (rows.len() + 1) * width > max_cells {
+                return Err(ToolError::invalid(DATASET_MEMORY_LIMIT));
             }
             rows.push(record.into_iter().map(CellValue::Text).collect());
         }
@@ -1249,7 +1259,7 @@ fn report_error(name: &str, error: ToolError) -> ToolError {
 }
 
 fn streamable_kind(kind: &str) -> bool {
-    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite")
+    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite" | "csv")
 }
 
 fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) -> Result<SqliteQuerySession, ToolError> {
@@ -1286,6 +1296,7 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
             "parquet" => DiskDataset::Parquet(path, columns, filters.into_iter().map(|(name, value)| (name.to_owned(), value)).collect()),
             "sqlite" => DiskDataset::Sqlite(path, spec.opt_str("table")?
                 .ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?.to_owned()),
+            "csv" => DiskDataset::Csv(path),
             _ => DiskDataset::Avro(path, columns),
         };
         sources.push((alias, source));
@@ -1327,7 +1338,7 @@ fn batch_session(service: &Service, query: &Value, arrow_disk: bool) -> Result<S
         return disk_dataset_session(service, specs, false);
     }
     match memory_query_session(service, query) {
-        Err(error) if has_streaming && [
+        Err(error) if has_streaming && (csv_size_limit(&error.message) || [
             DATASET_MEMORY_LIMIT,
             "SQLite table exceeds the query editor's table size limit",
             "SQLite text exceeds the import limit",
@@ -1337,7 +1348,7 @@ fn batch_session(service: &Service, query: &Value, arrow_disk: bool) -> Result<S
             "Arrow IPC decoded buffers exceed the 128 MiB limit",
             "Arrow IPC text exceeds the 128 MiB limit",
             "Arrow IPC list exceeds the text budget",
-        ].iter().any(|limit| error.message.ends_with(limit)) => disk_dataset_session(service, specs, false),
+        ].iter().any(|limit| error.message.ends_with(limit))) => disk_dataset_session(service, specs, false),
         result => result,
     }
 }

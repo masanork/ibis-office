@@ -157,3 +157,37 @@ fn file_size_boundary_uses_disk_without_exceeding_the_decoded_budget() {
         assert_eq!(json!(output.rows), json!([[32, 160]]));
     }
 }
+
+#[test]
+fn csv_stages_only_above_the_budget_and_matches_legacy_decoding() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = Service::new(&[dir.path().into()], false, crate::Limits::default());
+    let path = dir.path().join("facts.csv");
+    let spec = json!({"source":path,"alias":"facts"});
+    let args = json!({"datasets":[spec]});
+    let text = "code,note\r\n001,\"あ\r\n\"\"x\"\"\"\r\n002,\r\n";
+    let expected = json!([["001", "あ\r\n\"x\""], ["002", ""]]);
+    let encodings = [
+        text.as_bytes().to_vec(),
+        [b"\xff\xfe".as_slice(), &text.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>()].concat(),
+        text.split('あ').map(str::as_bytes).collect::<Vec<_>>().join(&[0x82, 0xa0][..]),
+    ];
+    for bytes in encodings {
+        std::fs::write(&path, bytes).unwrap();
+        let memory = batch_session(&service, &args, false).unwrap();
+        let disk = disk_dataset_session(&service, args["datasets"].as_array().unwrap(), false).unwrap();
+        assert_eq!(memory.staged_disk_bytes().unwrap(), 0);
+        for session in [memory, disk] {
+            let output = session.query("SELECT code,note FROM facts ORDER BY code", &[], 10, 1024).unwrap();
+            assert_eq!(json!(output.rows), expected);
+        }
+    }
+
+    for row_count in [50_000, 50_001] {
+        std::fs::write(&path, format!("code,note\n{}", "001,a\n".repeat(row_count))).unwrap();
+        let session = batch_session(&service, &args, false).unwrap();
+        assert_eq!(session.staged_disk_bytes().unwrap() > 0, row_count > 50_000);
+        let output = session.query("SELECT count(*), min(code) FROM facts", &[], 10, 1024).unwrap();
+        assert_eq!(json!(output.rows), json!([[row_count, "001"]]));
+    }
+}
