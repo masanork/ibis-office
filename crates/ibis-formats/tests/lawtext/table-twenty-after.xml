@@ -1,0 +1,42 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<Law Era="Heisei" Lang="ja" LawType="MinisterialOrdinance" Num="010" PromulgateDay="20" PromulgateMonth="3" Year="27">
+  <LawNum>平成二十七年内閣府令第十号</LawNum>
+  <LawBody>
+    <LawTitle Abbrev="" AbbrevKana="" Kana="しょくひんひょうじきじゅん">食品表示基準</LawTitle>
+    <MainProvision>
+      <Article Num="1">
+        <ArticleCaption>（適用範囲）</ArticleCaption>
+        <ArticleTitle>第一条</ArticleTitle>
+        <Paragraph Num="1">
+          <ParagraphNum />
+          <ParagraphSentence>
+            <Sentence Function="main" Num="1" WritingMode="vertical">この府令は、食品関連事業者等が、加工食品、生鮮食品又は添加物を販売する場合について適用する。</Sentence>
+            <Sentence Function="proviso" Num="2" WritingMode="vertical">ただし、加工食品又は生鮮食品を設備を設けて飲食させる場合には、第四十条の規定を除き、適用しない。</Sentence>
+          </ParagraphSentence>
+        </Paragraph>
+      </Article>
+    </MainProvision>
+    <AppdxTable>
+      <AppdxTableTitle WritingMode="vertical">別表第二十</AppdxTableTitle>
+      <RelatedArticleNum>（第八条関係）</RelatedArticleNum>
+      <TableStruct>
+        <Table WritingMode="vertical">
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">機能性表示食品</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid" colspan="3">
+              <Sentence Num="1" WritingMode="vertical">別記様式一の規定による。</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid" colspan="4">
+              <Sentence Num="1" WritingMode="vertical">第八条各号の規定によるほか、次に定めるところによる。</Sentence>
+              <Sentence Num="2" WritingMode="vertical">一　機能性表示食品である旨は、容器包装の主要面の上部に「機能性表示食品」の文字を枠で囲んで表示する。</Sentence>
+              <Sentence Num="3" WritingMode="vertical">二　機能性関与成分及び当該成分又は当該成分を含有する食品が有する機能性並びに機能性及び安全性について国による評価を受けたものではない旨は、容器包装の同一面に表示する。</Sentence>
+              <Sentence Num="4" WritingMode="vertical">三　届出番号は、機能性表示食品である旨の表示に近接した箇所に表示する。</Sentence>
+            </TableColumn>
+          </TableRow>
+        </Table>
+      </TableStruct>
+    </AppdxTable>
+  </LawBody>
+</Law>

@@ -19,3 +19,6 @@ The corpus test checks supported text and records two current conversion losses,
 
 
 `food-labeling-2024-before.xml` and `food-labeling-2024-after.xml` are excerpts from the e-Gov revisions of 食品表示基準 for [2024-04-01](https://laws.e-gov.go.jp/law/427M60000002010/20240401_506M60000002050) and [2024-09-01](https://laws.e-gov.go.jp/law/427M60000002010/20240901_506M60000002071). They retain the title, first article, and existing 別表第二十五 plus the two newly added tables in the later revision. This isolates table insertion from the other changes in the published amendment.
+
+
+`table-twenty-before.xml` and `table-twenty-after.xml` retain the first article plus the amended row of 別表第二十 from the same dated e-Gov revisions. The after excerpt includes an inner Japanese quotation in the cell text. The test verifies the resulting replacement as a whole cell change.

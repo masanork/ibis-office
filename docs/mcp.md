@@ -123,6 +123,8 @@ ORDER BY occurrences DESC, key_type, unmatched_key
 LIMIT 20
 ```
 
+To show examples inline, save the same SQL under the check’s `diagnostic: {"sql":"…","params":[]}`. Batch preview reports the diagnostic under `checks[].diagnostic`. It runs in the same SQL session for checks over their maximum or informational checks with a positive count. Results are capped at 20 rows and 2 KiB. Diagnostic errors leave the count and pass/fail result intact.
+
 Compare the results with the master keys. For example, an unmatched integer `1` and a master text key `001` point to a type or representation mismatch. The separate diagnostic reads the sources again. Run it before replacing or editing those files to reproduce the failed check.
 
 On desktop, use **Data → Queries & Connections → Refresh SQL reports** to select reports, bind files, optionally compare numeric columns and review checks. Applying uses exactly the results shown in the preview.
