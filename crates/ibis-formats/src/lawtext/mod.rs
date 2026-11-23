@@ -2006,13 +2006,20 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
 }
 
 fn split_title_and_parens(s: &str) -> Option<(String, String)> {
-    let open = s.rfind('（')?;
-    let close = s.rfind('）')?;
-    if close > open && close == s.len() - '）'.len_utf8() {
-        Some((s[..open].trim().to_string(), s[open + '（'.len_utf8()..close].trim().to_string()))
-    } else {
-        None
+    let inner = s.strip_suffix('）')?;
+    let mut nested = 0;
+    for (index, ch) in inner.char_indices().rev() {
+        match ch {
+            '）' => nested += 1,
+            '（' if nested == 0 => {
+                return Some((inner[..index].trim().to_string(),
+                    inner[index + '（'.len_utf8()..].trim().to_string()));
+            }
+            '（' => nested -= 1,
+            _ => {}
+        }
     }
+    None
 }
 
 fn is_caption_line(s: &str) -> bool {

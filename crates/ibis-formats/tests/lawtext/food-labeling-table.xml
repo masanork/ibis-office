@@ -1,0 +1,85 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<Law Lang="ja" Era="Heisei" Year="27" Num="010" PromulgateMonth="03" PromulgateDay="20" LawType="MinisterialOrdinance">
+  <LawNum>平成二十七年内閣府令第十号</LawNum>
+  <LawBody>
+    <LawTitle Kana="しょくひんひょうじきじゅん" Abbrev="" AbbrevKana="">食品表示基準</LawTitle>
+    <EnactStatement>食品表示法（平成二十五年法律第七十号）第四条第一項の規定に基づき、食品表示基準を次のように定める。</EnactStatement>
+    <MainProvision>
+      <Article Num="1">
+        <ArticleCaption>（適用範囲）</ArticleCaption>
+        <ArticleTitle>第一条</ArticleTitle>
+        <Paragraph Num="1">
+          <ParagraphNum />
+          <ParagraphSentence>
+            <Sentence Function="main" Num="1" WritingMode="vertical">この府令は、食品関連事業者等が、加工食品、生鮮食品又は添加物を販売する場合について適用する。</Sentence>
+            <Sentence Function="proviso" Num="2" WritingMode="vertical">ただし、加工食品又は生鮮食品を設備を設けて飲食させる場合には、第四十条の規定を除き、適用しない。</Sentence>
+          </ParagraphSentence>
+        </Paragraph>
+      </Article>
+    </MainProvision>
+    <AppdxTable>
+      <AppdxTableTitle WritingMode="vertical">別表第十八</AppdxTableTitle>
+      <RelatedArticleNum>（第三条、第十八条関係）</RelatedArticleNum>
+      <TableStruct>
+        <Table WritingMode="vertical">
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">形質</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">加工食品</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">対象農産物</Sentence>
+            </TableColumn>
+          </TableRow>
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">ステアリドン酸産生</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">１　大豆を主な原材料とするもの（脱脂されたことにより、上欄に掲げる形質を有しなくなったものを除く。）</Sentence>
+              <Sentence Num="2" WritingMode="vertical">２　１に掲げるものを主な原材料とするもの</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">大豆</Sentence>
+            </TableColumn>
+          </TableRow>
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">高リシン</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">１　とうもろこしを主な原材料とするもの（上欄に掲げる形質を有しなくなったものを除く。）</Sentence>
+              <Sentence Num="2" WritingMode="vertical">２　１に掲げるものを主な原材料とするもの</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">とうもろこし</Sentence>
+            </TableColumn>
+          </TableRow>
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">エイコサペンタエン酸（ＥＰＡ）産生</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid" rowspan="2">
+              <Sentence Num="1" WritingMode="vertical">１　なたねを主な原材料とするもの（上欄に掲げる形質を有しなくなったものを除く。）</Sentence>
+              <Sentence Num="2" WritingMode="vertical">２　１に掲げるものを主な原材料とするもの</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="none" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">なたね</Sentence>
+            </TableColumn>
+          </TableRow>
+          <TableRow>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="solid">
+              <Sentence Num="1" WritingMode="vertical">ドコサヘキサエン酸（ＤＨＡ）産生</Sentence>
+            </TableColumn>
+            <TableColumn BorderBottom="solid" BorderLeft="solid" BorderRight="solid" BorderTop="none">
+              <Sentence Num="1" WritingMode="vertical" />
+            </TableColumn>
+          </TableRow>
+        </Table>
+      </TableStruct>
+    </AppdxTable>
+  </LawBody>
+</Law>
+    

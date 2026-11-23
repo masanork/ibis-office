@@ -277,3 +277,42 @@ fn lawtext_title_metadata_keeps_empty_attributes_and_plain_title() {
         ibis_formats::lawtext::parse_markdown_law(&markdown).unwrap()
     );
 }
+
+#[test]
+fn public_food_labeling_samples_expose_table_and_form_limits() {
+    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
+
+    let table = include_str!("lawtext/food-labeling-table.xml");
+    let form = include_str!("lawtext/food-inspection-form.xml");
+    assert!(table.contains("rowspan=\"2\""));
+    assert!(form.contains("<AppdxStyle>") && form.contains("<Fig src="));
+
+    for (xml, title) in [
+        (table, "食品表示基準"),
+        (
+            form,
+            "食品表示法第六条第三項の内閣府令・財務省令で定める表示事項及び遵守事項等を定める命令",
+        ),
+    ] {
+        let original = parse_law_xml(xml).unwrap();
+        for edited in [
+            parse_lawtext(&to_lawtext(&original)).unwrap(),
+            parse_markdown_law(&to_markdown(&original)).unwrap(),
+        ] {
+            assert_eq!(edited.law_title, title);
+            assert_eq!(edited.law_num, original.law_num);
+            assert_eq!(edited.main_provision, original.main_provision);
+            assert_eq!(edited.appdx_tables, original.appdx_tables);
+            assert_eq!(
+                parse_law_xml(&to_law_xml(&edited)).unwrap().law_title,
+                title
+            );
+        }
+    }
+
+    let table_output = to_law_xml(&parse_law_xml(table).unwrap());
+    assert!(table_output.contains("別表第十八"));
+    assert!(!table_output.contains("rowspan="));
+    let form_output = to_law_xml(&parse_law_xml(form).unwrap());
+    assert!(!form_output.contains("<AppdxStyle>"));
+}

@@ -9,3 +9,10 @@ CI uses this snapshot without contacting the API. Lawtext is generated from the 
 `administrative-procedure-act.lawtext` is the Administrative Procedure Act excerpt from the [upstream Lawtext README](https://github.com/yamachig/Lawtext/blob/60567c6ca7de6b14c8c1d895338c4614b49969d1/README.md#lawtextの例--example-of-lawtext), with its original whitespace and a final newline. The text is a public Japanese statute.
 
 `supplementary-amendment.xml` is a synthetic statute. Its corpus test builds a second revision with an inserted supplementary block, checks the XML–Lawtext round trip, and runs the five-piece CLI with and without an explicit amendment law number. It exercises the same supplementary-article numbers, extract ranges, and verification paths as the public vaccination-law example.
+
+Two public food-labeling snapshots were retrieved from the e-Gov Law API on 2026-11-23. Only the law XML is used, and linked form assets are excluded.
+
+- `food-labeling-table.xml` is an excerpt of [食品表示基準](https://laws.e-gov.go.jp/api/1/lawdata/427M60000002010), retaining the title, enactment statement, first article, and 別表第十八. The table includes a row span.
+- `food-inspection-form.xml` is the extracted `Law` element from the [inspection ordinance](https://laws.e-gov.go.jp/api/1/lawdata/427M60000042001). It includes three supplementary blocks and a prescribed form linked by a `Fig` element.
+
+The corpus test checks supported text and records two current conversion losses, the merged cell geometry and the prescribed form.
