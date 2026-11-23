@@ -44,7 +44,7 @@ ibisOffice は、MCP（Model Context Protocol）のサーバーとして動か�
 |---|---|
 | アプリ（全形式） | `app_get_version`、`app_list_documents`、`app_open_document`、`app_get_document_info`、`app_save_document`、`app_close_document`、`app_export_document`（PDF またはページごとの PNG）、`app_undo_document`、`app_redo_document` |
 | Word（.docx） | 読む：`docx_get_outline`、`docx_get_text`（Markdown またはプレーンテキスト）、`docx_list_paragraphs`、`docx_get_paragraph`、`docx_list_tables`、`docx_find_text`。編集：`docx_insert_text`、`docx_delete_text`、`docx_replace_text`、`docx_set_paragraph_text`、`docx_set_paragraph_format`、`docx_set_run_format`、`docx_insert_table` |
-| Excel（.xlsx） | 読む：`xlsx_list_sheets`、`xlsx_get_used_range`、`xlsx_get_cells`、`xlsx_find_text`、`xlsx_check_machine_readability`、`xlsx_trace_formula`、`xlsx_list_sheet_rules`、`xlsx_list_pivots`、`xlsx_list_query_reports`。編集：`xlsx_set_cells`（`=` に続けて数式を指定）、`xlsx_clear_cells`、`xlsx_set_format`、`xlsx_add_sheet`、`xlsx_delete_sheet`、`xlsx_rename_sheet`、`xlsx_calculate_workbook`、`xlsx_create_chart`、`xlsx_set_validation`、`xlsx_clear_validation`、`xlsx_create_pivot`、`xlsx_refresh_pivot` |
+| Excel（.xlsx） | 読む：`xlsx_list_sheets`、`xlsx_get_used_range`、`xlsx_get_cells`、`xlsx_find_text`、`xlsx_check_machine_readability`、`xlsx_trace_formula`、`xlsx_list_sheet_rules`、`xlsx_list_pivots`、`xlsx_list_query_reports`。編集：`xlsx_set_cells`（`=` に続けて数式を指定）、`xlsx_clear_cells`、`xlsx_set_format`、`xlsx_add_sheet`、`xlsx_delete_sheet`、`xlsx_rename_sheet`、`xlsx_calculate_workbook`、`xlsx_create_chart`、`xlsx_set_validation`、`xlsx_clear_validation`、`xlsx_create_pivot`、`xlsx_refresh_pivot`、`xlsx_set_query_report_checks` |
 | SQLite（.sqlite、.sqlite3、.db） | 読む：`sqlite_list_tables`、`sqlite_describe_table`、`sqlite_count_rows`、`sqlite_query`。ブック編集：`sqlite_query_to_table`、`sqlite_refresh_query_table`、`sqlite_refresh_query_reports` |
 | PowerPoint（.pptx） | 読む：`pptx_list_slides`、`pptx_get_slide`、`pptx_get_shape_text`、`pptx_get_notes`、`pptx_list_layouts`。編集：`pptx_set_shape_text`、`pptx_replace_text`、`pptx_set_run_format`、`pptx_set_notes`、`pptx_add_slide`、`pptx_delete_slide`、`pptx_move_slide`、`pptx_set_frame`、`pptx_delete_shape` |
 
@@ -87,6 +87,8 @@ CSVはカンマ区切り、先頭行が見出しで、値を文字列として�
 `sqlite_refresh_query_reports` は、複数のレポートを一括で確認・更新します。`bindings` で保存時のファイル名に今回のファイルを割り当てます。例えばMCPでは `{"monthly.csv":"/data/next.csv"}`、内蔵アシスタントではパスの代わりに選択したファイル番号を指定します。同じ保存名を参照するレポートは割り当てを共有します。`tables` を省略すると全件が対象になり、1回に更新できるのは12件までです。`preview: true` でブックを変更せずに更新前後の行数と配置の衝突を確認できます。適用時にクエリを再実行し、すべてを一度に取り消せる形で反映します。途中で失敗した場合は対象の表名を返し、ブックへの反映を中止します。
 
 `metrics` に `{"table":"QueryResult1","column":"件数"}` のように比較する表と数値列を指定すると、合計の前回値 `previous`、今回値 `current`、差 `delta`、増減率 `percent_change` が返ります。空セルやNULLは合計に加えず、文字列などの非数値がある列はエラーになります。増減率の分母は前回値の絶対値で、前回値が0の場合はNULLになります。
+
+`xlsx_set_query_report_checks` に保存済みレポートの `table` と `checks` を渡すと、レポートごとに最大4件の検証を登録できます。各検証に `name` と読み取り専用の `sql` を指定し、必要に応じて `params` と許容上限 `max` を渡します。SQLは0以上の整数を1つ返す必要があります。左結合でマスタ未登録の件数を数えたり、重複するキーの件数を数えたりできます。検証と本集計は同じ入力を使います。一括プレビューは検出件数を返し、上限を超えたときは `blocked` を返します。適用時に上限を超えると、個別更新も一括更新全体も中止します。`max` を省略すると件数の確認だけを行い、空の `checks` を渡すと検証を解除できます。
 
 ツールはメニューのコマンドと 1 対 1 で対応してはいません。読み取りと、よく使う編集をそろえたもので、形式が違っても同じツール名です。`--read-only` のときは、読み取りツールだけが利用できます。
 

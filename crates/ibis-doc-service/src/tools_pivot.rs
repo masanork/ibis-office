@@ -240,18 +240,7 @@ pub(crate) fn write_table(
         ));
     }
     blank_destination(sheet, &range)?;
-    if workbook.workbook.as_ref().is_some_and(|book| {
-        book.query_reports
-            .values()
-            .map(|definition| definition.to_string().len())
-            .sum::<usize>()
-            .saturating_add(definition.to_string().len())
-            > 512 * 1024
-    }) {
-        return Err(ToolError::invalid(
-            "The workbook's saved query definitions exceed 512 KiB.",
-        ));
-    }
+    crate::tools_sqlite::check_report_budget(workbook, None, &definition)?;
     let name = (1..)
         .map(|n| format!("QueryResult{n}"))
         .find(|name| {

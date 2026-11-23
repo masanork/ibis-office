@@ -5,9 +5,9 @@
 use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
-    ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqlitePredicate, SqliteRows, SqliteScalar, read_parquet_filtered,
-    read_sqlite_table_bounded, sqlite_columns, sqlite_count, sqlite_query, sqlite_query_datasets,
-    sqlite_tables,
+    ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqlitePredicate, SqliteQuerySession,
+    SqliteRows, SqliteScalar, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
+    sqlite_count, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
 
@@ -414,15 +414,9 @@ fn query_properties() -> Vec<(&'static str, Value)> {
     ]
 }
 
-fn run_query(
-    service: &Service,
-    args: &Value,
-    max_rows: usize,
-    max_bytes: usize,
-) -> Result<SqliteRows, ToolError> {
-    let sql = args.str_arg("sql")?;
-    let params = match args.get("params") {
-        None => Vec::new(),
+fn sql_params(args: &Value) -> Result<Vec<Option<SqliteScalar<'_>>>, ToolError> {
+    match args.get("params") {
+        None => Ok(Vec::new()),
         Some(Value::Array(values)) if values.len() <= 100 => values
             .iter()
             .map(|value| {
@@ -432,25 +426,49 @@ fn run_query(
                     parse_scalar(value).map(Some)
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?,
-        _ => {
-            return Err(ToolError::invalid(
-                "params must be an array of at most 100 values",
-            ));
-        }
-    };
+            .collect::<Result<Vec<_>, _>>(),
+        _ => Err(ToolError::invalid(
+            "params must be an array of at most 100 values",
+        )),
+    }
+}
+
+fn query_session(service: &Service, args: &Value) -> Result<SqliteQuerySession, ToolError> {
     if let Some(specs) = args.get("datasets") {
         if args.opt_str(PATH)?.is_some() {
             return Err(ToolError::invalid(
                 "use path for a SQLite database or datasets for registered tables",
             ));
         }
-        let tables = load_datasets(service, specs)?;
-        sqlite_query_datasets(&tables, sql, &params, max_rows, max_bytes).map_err(sqlite_error)
+        SqliteQuerySession::from_datasets(&load_datasets(service, specs)?).map_err(sqlite_error)
     } else {
-        sqlite_query(&database(service, args)?, sql, &params, max_rows, max_bytes)
-            .map_err(sqlite_error)
+        SqliteQuerySession::from_file(&database(service, args)?).map_err(sqlite_error)
     }
+}
+
+fn run_session_query(
+    session: &SqliteQuerySession,
+    args: &Value,
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<SqliteRows, ToolError> {
+    session
+        .query(
+            args.str_arg("sql")?,
+            &sql_params(args)?,
+            max_rows,
+            max_bytes,
+        )
+        .map_err(sqlite_error)
+}
+
+fn run_query(
+    service: &Service,
+    args: &Value,
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<SqliteRows, ToolError> {
+    run_session_query(&query_session(service, args)?, args, max_rows, max_bytes)
 }
 
 fn query(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -463,7 +481,10 @@ fn query(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 }
 
 fn complete_query(service: &Service, args: &Value) -> Result<SqliteRows, ToolError> {
-    let rows = run_query(service, args, 10_000, 4 * 1024 * 1024)?;
+    require_complete(run_query(service, args, 10_000, 4 * 1024 * 1024)?)
+}
+
+fn require_complete(rows: SqliteRows) -> Result<SqliteRows, ToolError> {
     if rows.truncated {
         return Err(ToolError::new(
             "result_too_large",
@@ -485,6 +506,7 @@ pub struct SqliteTableExport {
     rows: SqliteRows,
     definition: Value,
     refresh: bool,
+    checks: Vec<Value>,
 }
 
 impl SqliteTableExport {
@@ -500,7 +522,7 @@ impl SqliteTableExport {
             self.arguments,
             |service, args| {
                 if self.refresh {
-                    apply_single_refresh(service, args, self.rows, &self.definition)
+                    apply_single_refresh(service, args, self.rows, &self.definition, &self.checks)
                 } else {
                     crate::tools_pivot::write_table(service, args, self.rows, self.definition)
                 }
@@ -528,6 +550,7 @@ pub fn prepare_selected_datasets_export(
         rows,
         definition,
         refresh: false,
+        checks: Vec::new(),
     })
 }
 
@@ -537,11 +560,14 @@ fn parquet_filter_value(value: &Value) -> Result<ibis_doc_model::CellValue, Tool
         Value::String(value) => Ok(CellValue::Text(value.clone())),
         Value::Bool(value) => Ok(CellValue::Bool(*value)),
         Value::Null => Ok(CellValue::Empty),
-        Value::Number(value) => value.as_f64()
+        Value::Number(value) => value
+            .as_f64()
             .filter(|n| n.is_finite() && (value.is_f64() || n.abs() < (1_u64 << 53) as f64))
             .map(CellValue::Number)
             .ok_or_else(|| ToolError::invalid("Parquet filter number exceeds exact numeric range")),
-        _ => Err(ToolError::invalid("Parquet filter values must be scalar or null")),
+        _ => Err(ToolError::invalid(
+            "Parquet filter values must be scalar or null",
+        )),
     }
 }
 
@@ -550,21 +576,33 @@ fn parquet_predicate(value: &Value) -> Result<ParquetPredicate, ToolError> {
         return parquet_filter_value(value).map(ParquetPredicate::Equal);
     };
     if bounds.is_empty() {
-        return Err(ToolError::invalid("A Parquet range must specify at least one bound"));
+        return Err(ToolError::invalid(
+            "A Parquet range must specify at least one bound",
+        ));
     }
-    bounds.iter().map(|(key, value)| {
-        let bound = match key.as_str() {
-            "lt" => ParquetBound::Lt,
-            "lte" => ParquetBound::Le,
-            "gt" => ParquetBound::Gt,
-            "gte" => ParquetBound::Ge,
-            _ => return Err(ToolError::invalid("Parquet range operators are lt, lte, gt and gte")),
-        };
-        if !(value.is_string() || value.is_number()) {
-            return Err(ToolError::invalid("Parquet range bounds must be strings or numbers"));
-        }
-        Ok((bound, parquet_filter_value(value)?))
-    }).collect::<Result<Vec<_>, ToolError>>().map(ParquetPredicate::Range)
+    bounds
+        .iter()
+        .map(|(key, value)| {
+            let bound = match key.as_str() {
+                "lt" => ParquetBound::Lt,
+                "lte" => ParquetBound::Le,
+                "gt" => ParquetBound::Gt,
+                "gte" => ParquetBound::Ge,
+                _ => {
+                    return Err(ToolError::invalid(
+                        "Parquet range operators are lt, lte, gt and gte",
+                    ));
+                }
+            };
+            if !(value.is_string() || value.is_number()) {
+                return Err(ToolError::invalid(
+                    "Parquet range bounds must be strings or numbers",
+                ));
+            }
+            Ok((bound, parquet_filter_value(value)?))
+        })
+        .collect::<Result<Vec<_>, ToolError>>()
+        .map(ParquetPredicate::Range)
 }
 
 fn load_datasets(service: &Service, specs: &Value) -> Result<Vec<(String, QTable)>, ToolError> {
@@ -840,7 +878,8 @@ fn bound_query(definition: &Value, args: &Value) -> Result<Value, ToolError> {
             {
                 return Err(ToolError::invalid("A source binding has the wrong format"));
             }
-            let mut dataset = json!({"source":path,"alias":source["alias"],"table":source["table"]});
+            let mut dataset =
+                json!({"source":path,"alias":source["alias"],"table":source["table"]});
             for key in ["columns", "where"] {
                 if let Some(value) = source.get(key) {
                     dataset[key] = value.clone();
@@ -860,8 +899,9 @@ fn bound_query(definition: &Value, args: &Value) -> Result<Value, ToolError> {
 fn refresh_query_table(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let open = crate::tools_xlsx::workbook_document(service, args.str_arg("document_id")?)?;
     let definition = query_report_definition(open.document.presentation(), args)?;
-    let rows = complete_query(service, &bound_query(&definition, args)?)?;
-    apply_single_refresh(service, args, rows, &definition)
+    let (rows, checks) =
+        refresh_query_result(service, &bound_query(&definition, args)?, &definition)?;
+    apply_single_refresh(service, args, rows, &definition, &checks)
 }
 
 fn apply_single_refresh(
@@ -869,16 +909,21 @@ fn apply_single_refresh(
     args: &Value,
     rows: SqliteRows,
     definition: &Value,
+    checks: &[Value],
 ) -> Result<Value, ToolError> {
+    enforce_checks(checks)?;
     let id = args.str_arg("document_id")?;
     let open = crate::tools_xlsx::workbook_document(service, id)?;
-    let (summary, commands) = crate::tools_pivot::plan_query_table_refresh(
+    let (mut summary, commands) = crate::tools_pivot::plan_query_table_refresh(
         open.document.presentation(),
         args,
         rows,
         definition,
         &[],
     )?;
+    if !checks.is_empty() {
+        summary["checks"] = json!(checks);
+    }
     crate::edit::execute(open, commands)?;
     Ok(crate::edit::edited(id, open, summary, Vec::new()))
 }
@@ -895,12 +940,14 @@ pub fn prepare_selected_query_refresh(
         *entry = json!(selected_file(paths, entry)?);
     }
     let service = selected_file_service(paths);
-    let rows = complete_query(&service, &bound_query(&definition, &args)?)?;
+    let (rows, checks) =
+        refresh_query_result(&service, &bound_query(&definition, &args)?, &definition)?;
     Ok(SqliteTableExport {
         arguments: args,
         rows,
         definition,
         refresh: true,
+        checks,
     })
 }
 
@@ -972,6 +1019,7 @@ struct QueryReportResult {
     name: String,
     definition: Value,
     rows: SqliteRows,
+    checks: Vec<Value>,
 }
 
 fn batch_bindings(args: &Value) -> Result<&serde_json::Map<String, Value>, ToolError> {
@@ -996,7 +1044,7 @@ fn batch_query_results(
     reports
         .into_iter()
         .map(|(name, definition)| {
-            let result = (|| {
+            let (rows, checks) = (|| {
                 let sources = definition["sources"]
                     .as_array()
                     .filter(|sources| (1..=8).contains(&sources.len()))
@@ -1013,16 +1061,18 @@ fn batch_query_results(
                             })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                complete_query(
+                refresh_query_result(
                     service,
                     &bound_query(&definition, &json!({"sources":sources}))?,
+                    &definition,
                 )
             })()
             .map_err(|error| report_error(&name, error))?;
             Ok(QueryReportResult {
                 name,
                 definition,
-                rows: result,
+                rows,
+                checks,
             })
         })
         .collect()
@@ -1075,8 +1125,14 @@ fn apply_batch_refresh(
     let mut scratch = ibis_doc_model::Document::new(open.document.presentation().clone());
     let mut reports = Vec::with_capacity(results.len());
     let mut commands = Vec::new();
+    let mut blocked = false;
     for result in results {
-        let (summary, update) = crate::tools_pivot::plan_query_table_refresh(
+        let check_result = enforce_checks(&result.checks);
+        blocked |= check_result.is_err();
+        if !preview {
+            check_result.map_err(|error| report_error(&result.name, error))?;
+        }
+        let (mut summary, update) = crate::tools_pivot::plan_query_table_refresh(
             scratch.presentation(),
             &json!({"table":result.name}),
             result.rows,
@@ -1087,6 +1143,9 @@ fn apply_batch_refresh(
         scratch.execute(update.clone()).map_err(|error| {
             ToolError::new("edit_rejected", format!("{}: {error:?}", result.name))
         })?;
+        if !result.checks.is_empty() {
+            summary["checks"] = json!(result.checks);
+        }
         reports.push(summary);
         commands.extend(update);
     }
@@ -1096,7 +1155,7 @@ fn apply_batch_refresh(
     Ok(crate::edit::edited(
         id,
         open,
-        json!({"preview":preview,"reports":reports}),
+        json!({"preview":preview,"blocked":blocked,"reports":reports}),
         Vec::new(),
     ))
 }
@@ -1154,4 +1213,170 @@ pub fn prepare_selected_report_batch(
         arguments: args,
         results,
     })
+}
+
+pub(crate) const SET_QUERY_REPORT_CHECKS: Tool = Tool {
+    name: "xlsx_set_query_report_checks",
+    description: "Save read-only count checks on a query report. Checks run with its source bindings on every refresh. An empty list removes its checks.",
+    access: Access::Edit,
+    returns_content: false,
+    schema: || {
+        object(
+            &[
+                document_id(),
+                ("table", string("Name of an existing query report.")),
+                (
+                    "checks",
+                    json!({
+                        "type":"array","maxItems":4,
+                        "items":object(&[
+                            ("name", string("Name to identify the check in preview results.")),
+                            ("sql", string("One SELECT using the report's bound tables, returning one nonnegative integer.")),
+                            ("params", json!({"type":"array","maxItems":100,"items":{"type":["string","number","null"]}})),
+                            ("max", integer("Optional highest accepted count. Omit for an informational check.")),
+                        ], &["name","sql"]),
+                    }),
+                ),
+            ],
+            &["document_id", "table", "checks"],
+        )
+    },
+    run: set_query_report_checks,
+};
+
+fn validate_report_checks(value: &Value) -> Result<&[Value], ToolError> {
+    let checks = value
+        .as_array()
+        .filter(|checks| checks.len() <= 4)
+        .ok_or_else(|| ToolError::invalid("checks must be an array of up to four count queries"))?;
+    let mut names = std::collections::HashSet::new();
+    for check in checks {
+        crate::edit::only_known(check, &["name", "sql", "params", "max"])?;
+        let name = check.str_arg("name")?;
+        if name.trim().is_empty() || name.chars().count() > 80 || !names.insert(name) {
+            return Err(ToolError::invalid(
+                "Check names must be distinct, nonblank and at most 80 characters",
+            ));
+        }
+        validate_sqlite_select(check.str_arg("sql")?)
+            .map_err(|error| ToolError::invalid(format!("{name}: {error}")))?;
+        sql_params(check)?;
+        if let Some(max) = check.get("max")
+            && !max.as_i64().is_some_and(|max| max >= 0)
+        {
+            return Err(ToolError::invalid(
+                "max must be a nonnegative signed 64-bit integer",
+            ));
+        }
+    }
+    Ok(checks)
+}
+
+pub(crate) fn check_report_budget(
+    workbook: &ibis_doc_model::Presentation,
+    replacing: Option<&str>,
+    definition: &Value,
+) -> Result<(), ToolError> {
+    if workbook.workbook.as_ref().is_some_and(|book| {
+        book.query_reports
+            .iter()
+            .filter(|(name, _)| Some(name.as_str()) != replacing)
+            .map(|(_, definition)| definition.to_string().len())
+            .sum::<usize>()
+            .saturating_add(definition.to_string().len())
+            > 512 * 1024
+    }) {
+        return Err(ToolError::invalid(
+            "The workbook's saved query definitions exceed 512 KiB.",
+        ));
+    }
+    Ok(())
+}
+
+fn set_query_report_checks(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    use ibis_doc_model::{Command, SheetCommand};
+
+    let checks = validate_report_checks(&args["checks"])?;
+    let id = args.str_arg("document_id")?;
+    let open = crate::tools_xlsx::workbook_document(service, id)?;
+    let workbook = open.document.presentation();
+    let name = args.str_arg("table")?;
+    let mut definition = query_report_definition(workbook, args)?;
+    let table = crate::tools_xlsx::workbook_sheets(workbook)
+        .iter()
+        .flat_map(|(_, _, sheet)| &sheet.tables)
+        .find(|table| table.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| ToolError::invalid("The report table is missing."))?
+        .name
+        .clone();
+    definition
+        .as_object_mut()
+        .ok_or_else(|| ToolError::invalid("Invalid report definition"))?
+        .remove("checks");
+    if !checks.is_empty() {
+        definition["checks"] = json!(checks);
+    }
+    if definition.to_string().len() > 32 * 1024 {
+        return Err(ToolError::invalid(
+            "The saved report definition exceeds 32 KiB",
+        ));
+    }
+    check_report_budget(workbook, Some(&table), &definition)?;
+    let summary = json!({"table":table,"checks":checks.len()});
+    crate::edit::execute(
+        open,
+        vec![Command::Sheet(SheetCommand::SetQueryReport {
+            table,
+            definition,
+        })],
+    )?;
+    Ok(crate::edit::edited(id, open, summary, Vec::new()))
+}
+
+fn refresh_query_result(
+    service: &Service,
+    args: &Value,
+    definition: &Value,
+) -> Result<(SqliteRows, Vec<Value>), ToolError> {
+    let checks = definition
+        .get("checks")
+        .map(validate_report_checks)
+        .transpose()?
+        .unwrap_or_default();
+    let session = query_session(service, args)?;
+    let checks = checks
+        .iter()
+        .map(|check| {
+            let name = check.str_arg("name")?;
+            let result = run_session_query(&session, check, 1, 1024)
+                .map_err(|error| report_error(name, error))?;
+            let count = match result.rows.as_slice() {
+                [row] if !result.truncated && row.len() == 1 => {
+                    row[0].as_i64().filter(|&count| count >= 0)
+                }
+                _ => None,
+            }
+            .ok_or_else(|| {
+                ToolError::invalid(format!("{name}: check must return one nonnegative integer"))
+            })?;
+            let max = check["max"].as_i64();
+            let passed = max.map(|max| count <= max);
+            Ok(json!({"name":name,"count":count,"max":max,"passed":passed}))
+        })
+        .collect::<Result<Vec<_>, ToolError>>()?;
+    let rows = require_complete(run_session_query(&session, args, 10_000, 4 * 1024 * 1024)?)?;
+    Ok((rows, checks))
+}
+
+fn enforce_checks(checks: &[Value]) -> Result<(), ToolError> {
+    if let Some(check) = checks.iter().find(|check| check["passed"] == false) {
+        return Err(ToolError::new(
+            "query_check_failed",
+            format!(
+                "Check {} returned {}, exceeding its maximum {}",
+                check["name"], check["count"], check["max"],
+            ),
+        ));
+    }
+    Ok(())
 }

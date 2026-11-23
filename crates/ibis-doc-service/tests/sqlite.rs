@@ -481,6 +481,12 @@ fn sqlite_queries_join_registered_csv_and_sqlite_datasets() {
         "table":table["table"], "rows":["label"],"values":[{"field":"code","aggregate":"count"}],
     })).unwrap();
     assert_eq!(pivot["pivot"], "PivotTable1");
+    writer.call("xlsx_set_query_report_checks", &json!({
+        "document_id":id,"table":table["table"],"checks":[{
+            "name":"自治体マスタに未登録",
+            "sql":"SELECT count(*) FROM facts a LEFT JOIN labels b ON a.code=b.code WHERE b.code IS NULL",
+        }],
+    })).unwrap();
     let saved = dir.join("report.xlsx");
     writer
         .call("app_save_document", &json!({"document_id":id,"path":saved}))
@@ -512,6 +518,12 @@ fn sqlite_queries_join_registered_csv_and_sqlite_datasets() {
     let refreshed = writer.call("sqlite_refresh_query_table", &args).unwrap();
     assert_eq!(refreshed["range"], "A1:C2");
     assert_eq!(refreshed["updated_pivots"], 1);
+    assert_eq!(
+        refreshed["checks"],
+        json!([
+            {"name":"自治体マスタに未登録","count":2,"max":null,"passed":null}
+        ])
+    );
     let read = |writer: &mut Service| {
         writer
             .call(
@@ -666,6 +678,25 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
             "table":"QueryResult1","rows":["category"],"values":[{"field":"code","aggregate":"count"}],
         }),
     );
+    let check_args = json!({"document_id":id,"table":"QueryResult2","checks":[{
+        "name":"重複コード","sql":"SELECT count(*) FROM (SELECT code FROM monthly GROUP BY code HAVING count(*) > ?)","params":[1],"max":0
+    }]});
+    call(&mut service, "xlsx_set_query_report_checks", check_args);
+    let mut invalid = json!({"document_id":id,"table":"QueryResult2","checks":[{
+        "name":"bad","sql":"SELECT 1; DELETE FROM monthly"
+    }]});
+    assert!(
+        service
+            .call("xlsx_set_query_report_checks", &invalid)
+            .is_err()
+    );
+    invalid["checks"][0]["sql"] = json!("SELECT 1");
+    invalid["checks"][0]["max"] = json!(-1);
+    assert!(
+        service
+            .call("xlsx_set_query_report_checks", &invalid)
+            .is_err()
+    );
     let original = dir.join("original.xlsx");
     call(
         &mut service,
@@ -674,6 +705,32 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
     );
 
     let mut refresh = json!({"document_id":id, "bindings":{"monthly.csv":next}});
+    std::fs::write(&next, "code,category\n001,duplicate\n001,duplicate\n").unwrap();
+    refresh["preview"] = json!(true);
+    let blocked = call(
+        &mut service,
+        "sqlite_refresh_query_reports",
+        refresh.clone(),
+    );
+    assert_eq!(blocked["blocked"], true);
+    assert_eq!(
+        blocked["reports"][1]["checks"],
+        json!([{"name":"重複コード","count":1,"max":0,"passed":false}])
+    );
+    refresh["preview"] = json!(false);
+    let failed = service
+        .call("sqlite_refresh_query_reports", &refresh)
+        .unwrap_err();
+    assert_eq!(failed.code, "query_check_failed");
+    assert!(failed.message.contains("QueryResult2"));
+    assert_eq!(
+        call(
+            &mut service,
+            "xlsx_get_cells",
+            json!({"document_id":id,"sheet":sheet,"range":"B2"})
+        )["rows"],
+        json!([["old"]])
+    );
     std::fs::write(&next, "code,category\n001,new\n002,new\n003,new\n").unwrap();
     call(
         &mut service,
@@ -733,6 +790,9 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
         refresh.clone(),
     );
     assert_eq!(preview["preview"], true);
+    assert_eq!(preview["blocked"], false);
+    assert_eq!(preview["reports"][1]["checks"][0]["count"], 0);
+    assert_eq!(preview["reports"][1]["checks"][0]["passed"], true);
     assert_eq!(preview["reports"][0]["previous_rows"], 2);
     assert_eq!(preview["reports"][0]["rows"], 0);
     assert_eq!(preview["reports"][0]["updated_pivots"], 1);
@@ -813,13 +873,18 @@ fn sqlite_batch_refresh_previews_and_commits_zero_rows_atomically() {
 
 #[test]
 fn parquet_query_report_preserves_projection_and_filter_after_reopen() {
-    let dir = std::env::temp_dir().join(format!("ibis-parquet-query-columns-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("ibis-parquet-query-columns-{}", std::process::id()));
     std::fs::create_dir(&dir).unwrap();
     let source = dir.join("source.parquet");
     // Synthetic rows ("00", 0, [0]) and ("01", 1, [1]).
     std::fs::write(&source, include_bytes!("fixtures/query-projection.parquet")).unwrap();
     let workbook = dir.join("blank.xlsx");
-    std::fs::write(&workbook, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    std::fs::write(
+        &workbook,
+        ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap(),
+    )
+    .unwrap();
 
     let mut service = Service::new(&[dir.clone()], false, Limits::default());
     let mut call = |tool, args| service.call(tool, &args).unwrap();
@@ -832,11 +897,14 @@ fn parquet_query_report_preserves_projection_and_filter_after_reopen() {
     });
     let query = call("sqlite_query", args.clone());
     assert_eq!(query["columns"], columns);
-    assert_eq!(query["rows"], json!([[0,"00"],[1,"01"]]));
+    assert_eq!(query["rows"], json!([[0, "00"], [1, "01"]]));
     let filter = json!({"amount":{"gte":1,"lt":2}, "code":"01"});
     let mut report = args;
     report["datasets"][0]["where"] = filter.clone();
-    assert_eq!(call("sqlite_query", report.clone())["rows"], json!([[1,"01"]]));
+    assert_eq!(
+        call("sqlite_query", report.clone())["rows"],
+        json!([[1, "01"]])
+    );
     report["document_id"] = id.clone();
     report["destination_sheet"] = sheet;
     report["anchor"] = json!("A1");
@@ -848,14 +916,20 @@ fn parquet_query_report_preserves_projection_and_filter_after_reopen() {
     let reports = call("xlsx_list_query_reports", json!({"document_id":id}));
     assert_eq!(reports["reports"][0]["sources"][0]["columns"], columns);
     assert_eq!(reports["reports"][0]["sources"][0]["where"], filter);
-    let preview = call("sqlite_refresh_query_reports", json!({
-        "document_id":id,"bindings":{"source.parquet":source},"preview":true,
-    }));
+    let preview = call(
+        "sqlite_refresh_query_reports",
+        json!({
+            "document_id":id,"bindings":{"source.parquet":source},"preview":true,
+        }),
+    );
     assert_eq!(preview["reports"][0]["rows"], 1);
     assert_eq!(preview["dirty"], false);
-    let refreshed = call("sqlite_refresh_query_table", json!({
-        "document_id":id,"table":name,"sources":[source],
-    }));
+    let refreshed = call(
+        "sqlite_refresh_query_table",
+        json!({
+            "document_id":id,"table":name,"sources":[source],
+        }),
+    );
     assert_eq!(refreshed["rows"], 1);
     std::fs::remove_dir_all(dir).unwrap();
 }

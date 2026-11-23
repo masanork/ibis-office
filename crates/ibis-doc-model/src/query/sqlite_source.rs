@@ -375,6 +375,50 @@ pub struct SqliteRows {
     pub truncated: bool,
 }
 
+/// A read-only SQL connection over one source snapshot.
+pub struct SqliteQuerySession {
+    _database: Arc<Database>,
+    connection: Arc<Connection>,
+    path: Option<std::path::PathBuf>,
+}
+
+impl SqliteQuerySession {
+    pub fn from_file(path: &Path) -> Result<Self, String> {
+        let (database, connection) = open(path)?;
+        connection
+            .prepare("BEGIN")
+            .and_then(|mut stmt| stmt.run_ignore_rows())
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            _database: database,
+            connection,
+            path: Some(path.to_owned()),
+        })
+    }
+
+    pub fn query(
+        &self,
+        sql: &str,
+        params: &[Option<SqliteScalar<'_>>],
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> Result<SqliteRows, String> {
+        validate_sqlite_select(sql)?;
+        let parameters = params
+            .iter()
+            .map(|value| value.as_ref().map_or(Value::Null, SqliteScalar::to_sql))
+            .collect();
+        execute_query(
+            self.path.as_deref(),
+            &self.connection,
+            sql,
+            parameters,
+            max_rows,
+            max_bytes,
+        )
+    }
+}
+
 pub fn sqlite_query(
     path: &Path,
     sql: &str,
@@ -382,23 +426,10 @@ pub fn sqlite_query(
     max_rows: usize,
     max_bytes: usize,
 ) -> Result<SqliteRows, String> {
-    validate_select(sql)?;
-    let (_database, connection) = open(path)?;
-    let parameters = params
-        .iter()
-        .map(|value| value.as_ref().map_or(Value::Null, SqliteScalar::to_sql))
-        .collect();
-    execute_query(
-        Some(path),
-        &connection,
-        sql,
-        parameters,
-        max_rows,
-        max_bytes,
-    )
+    SqliteQuerySession::from_file(path)?.query(sql, params, max_rows, max_bytes)
 }
 
-fn validate_select(sql: &str) -> Result<(), String> {
+pub fn validate_sqlite_select(sql: &str) -> Result<(), String> {
     use turso_parser::{
         ast::{Cmd, Stmt},
         parser::Parser,
@@ -428,65 +459,72 @@ pub fn sqlite_query_datasets(
     max_rows: usize,
     max_bytes: usize,
 ) -> Result<SqliteRows, String> {
-    validate_select(sql)?;
-    let database = Database::open_file(
-        Arc::new(turso_core::MemoryIO::new()),
-        ":memory:",
-        Arc::new(SqliteDialect),
-    )
-    .map_err(|error| error.to_string())?;
-    let connection = database.connect().map_err(|error| error.to_string())?;
-    let execute = |sql: &str| {
-        connection
-            .prepare(sql)
-            .and_then(|mut stmt| stmt.run_ignore_rows())
-            .map_err(|error| error.to_string())
-    };
-    execute("BEGIN")?;
-    for (name, table) in tables {
-        let name = sql_identifier(name);
-        let columns = table
-            .columns
-            .iter()
-            .map(|column| sql_identifier(&column.name))
-            .collect::<Vec<_>>();
-        execute(&format!("CREATE TABLE {name} ({})", columns.join(", ")))?;
-        let placeholders = vec!["?"; columns.len()].join(", ");
-        let mut stmt = connection
-            .prepare(format!("INSERT INTO {name} VALUES ({placeholders})"))
-            .map_err(|error| error.to_string())?;
-        for row in &table.rows {
-            for (index, value) in row.iter().enumerate() {
-                let value = match value {
-                    CellValue::Empty => Value::Null,
-                    CellValue::Text(text) => Value::from_text(text.clone()),
-                    CellValue::Number(value)
-                        if matches!(table.columns[index].ty, QType::Whole | QType::Int32)
-                            && value.is_finite()
-                            && value.fract() == 0.0
-                            && value.abs() < (1u64 << 53) as f64 =>
-                    {
-                        Value::Numeric(Numeric::Integer(*value as i64))
-                    }
-                    CellValue::Number(value) if value.is_finite() => Value::from_f64(*value),
-                    CellValue::Bool(value) => Value::Numeric(Numeric::Integer(i64::from(*value))),
-                    _ => return Err("Unsupported dataset value".into()),
-                };
-                stmt.bind_at(NonZeroUsize::new(index + 1).unwrap(), value)
+    SqliteQuerySession::from_datasets(tables)?.query(sql, params, max_rows, max_bytes)
+}
+
+impl SqliteQuerySession {
+    pub fn from_datasets(tables: &[(String, QTable)]) -> Result<Self, String> {
+        let database = Database::open_file(
+            Arc::new(turso_core::MemoryIO::new()),
+            ":memory:",
+            Arc::new(SqliteDialect),
+        )
+        .map_err(|error| error.to_string())?;
+        let connection = database.connect().map_err(|error| error.to_string())?;
+        let execute = |sql: &str| {
+            connection
+                .prepare(sql)
+                .and_then(|mut stmt| stmt.run_ignore_rows())
+                .map_err(|error| error.to_string())
+        };
+        execute("BEGIN")?;
+        for (name, table) in tables {
+            let name = sql_identifier(name);
+            let columns = table
+                .columns
+                .iter()
+                .map(|column| sql_identifier(&column.name))
+                .collect::<Vec<_>>();
+            execute(&format!("CREATE TABLE {name} ({})", columns.join(", ")))?;
+            let placeholders = vec!["?"; columns.len()].join(", ");
+            let mut stmt = connection
+                .prepare(format!("INSERT INTO {name} VALUES ({placeholders})"))
+                .map_err(|error| error.to_string())?;
+            for row in &table.rows {
+                for (index, value) in row.iter().enumerate() {
+                    let value = match value {
+                        CellValue::Empty => Value::Null,
+                        CellValue::Text(text) => Value::from_text(text.clone()),
+                        CellValue::Number(value)
+                            if matches!(table.columns[index].ty, QType::Whole | QType::Int32)
+                                && value.is_finite()
+                                && value.fract() == 0.0
+                                && value.abs() < (1u64 << 53) as f64 =>
+                        {
+                            Value::Numeric(Numeric::Integer(*value as i64))
+                        }
+                        CellValue::Number(value) if value.is_finite() => Value::from_f64(*value),
+                        CellValue::Bool(value) => {
+                            Value::Numeric(Numeric::Integer(i64::from(*value)))
+                        }
+                        _ => return Err("Unsupported dataset value".into()),
+                    };
+                    stmt.bind_at(NonZeroUsize::new(index + 1).unwrap(), value)
+                        .map_err(|error| error.to_string())?;
+                }
+                stmt.run_ignore_rows()
+                    .and_then(|_| stmt.reset())
                     .map_err(|error| error.to_string())?;
             }
-            stmt.run_ignore_rows()
-                .and_then(|_| stmt.reset())
-                .map_err(|error| error.to_string())?;
         }
+        execute("COMMIT")?;
+        connection.set_query_only(true);
+        Ok(Self {
+            _database: database,
+            connection,
+            path: None,
+        })
     }
-    execute("COMMIT")?;
-    connection.set_query_only(true);
-    let parameters = params
-        .iter()
-        .map(|value| value.as_ref().map_or(Value::Null, SqliteScalar::to_sql))
-        .collect();
-    execute_query(None, &connection, sql, parameters, max_rows, max_bytes)
 }
 
 fn execute_query(
