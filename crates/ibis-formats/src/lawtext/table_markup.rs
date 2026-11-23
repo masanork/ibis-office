@@ -4,8 +4,10 @@
 
 //! Validated XML snapshots behind editable appendix-table rows.
 
+use std::borrow::Cow;
+
 use super::model::{LawAppdxTable, LawDoc};
-use super::xml::{child_elem, collect_text};
+use super::xml::{child_elem, collect_text, push_xml_escaped};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SavedAppdxTable {
@@ -28,6 +30,15 @@ impl SavedAppdxTable {
     }
 }
 
+fn table_rows<'a, 'input>(appdx: roxmltree::Node<'a, 'input>) -> impl Iterator<Item = Vec<roxmltree::Node<'a, 'input>>> {
+    child_elem(appdx, "TableStruct")
+        .and_then(|structure| child_elem(structure, "Table"))
+        .into_iter()
+        .flat_map(|table| table.children().filter(|node| node.has_tag_name("TableRow")))
+        .map(|row| row.children().filter(|node| node.has_tag_name("TableColumn")).collect::<Vec<_>>())
+        .filter(|row| !row.is_empty())
+}
+
 pub(super) fn parse_appdx_table(appdx: roxmltree::Node<'_, '_>) -> LawAppdxTable {
     let title = child_elem(appdx, "AppdxTableTitle")
         .map(collect_text)
@@ -36,24 +47,9 @@ pub(super) fn parse_appdx_table(appdx: roxmltree::Node<'_, '_>) -> LawAppdxTable
     let related_article_num = child_elem(appdx, "RelatedArticleNum")
         .map(collect_text)
         .filter(|s| !s.is_empty());
-    let mut rows = Vec::new();
-    if let Some(ts) = child_elem(appdx, "TableStruct") {
-        if let Some(tbl) = child_elem(ts, "Table") {
-            for tr in tbl
-                .children()
-                .filter(|n| n.is_element() && n.tag_name().name() == "TableRow")
-            {
-                let row: Vec<String> = tr
-                    .children()
-                    .filter(|n| n.is_element() && n.tag_name().name() == "TableColumn")
-                    .map(collect_text)
-                    .collect();
-                if !row.is_empty() {
-                    rows.push(row);
-                }
-            }
-        }
-    }
+    let rows = table_rows(appdx)
+        .map(|row| row.into_iter().map(collect_text).collect())
+        .collect();
     LawAppdxTable {
         title,
         related_article_num,
@@ -61,50 +57,109 @@ pub(super) fn parse_appdx_table(appdx: roxmltree::Node<'_, '_>) -> LawAppdxTable
     }
 }
 
+fn same_shape(saved: &LawAppdxTable, edited: &LawAppdxTable, padded: bool) -> bool {
+    saved.title == edited.title
+        && saved.related_article_num == edited.related_article_num
+        && saved.rows.len() == edited.rows.len()
+        && saved.rows.iter().zip(&edited.rows).all(|(stored, visible)| {
+            stored.len() == visible.len()
+                || padded && visible.get(stored.len()..)
+                    .is_some_and(|padding| padding.iter().all(String::is_empty))
+        })
+}
+
+fn update_cells(
+    snapshot: &SavedAppdxTable,
+    edited: &LawAppdxTable,
+) -> Option<SavedAppdxTable> {
+    let document = roxmltree::Document::parse(&snapshot.xml).ok()?;
+    let mut xml = String::new();
+    let mut cursor = 0;
+    for ((cells, stored), visible) in table_rows(document.root_element())
+        .zip(&snapshot.table.rows)
+        .zip(&edited.rows)
+    {
+        for ((cell, before), after) in cells.into_iter().zip(stored).zip(visible) {
+            if before == after {
+                continue;
+            }
+            // The flat editor can replace a single plain sentence unambiguously.
+            let mut elements = cell.children().filter(roxmltree::Node::is_element);
+            let sentence = elements.next()?;
+            if !sentence.has_tag_name("Sentence")
+                || elements.next().is_some()
+                || sentence.children().any(|child| !child.is_text())
+            {
+                return None;
+            }
+            let range = sentence.range();
+            let source = &snapshot.xml[range.clone()];
+            xml.push_str(&snapshot.xml[cursor..range.start]);
+            if let Some(open) = source.strip_suffix("/>") {
+                xml.push_str(open);
+                xml.push('>');
+            } else {
+                let opening_end = sentence.first_child().map_or(source.rfind("</")?, |text| {
+                    text.range().start - range.start
+                });
+                xml.push_str(&source[..opening_end]);
+            }
+            push_xml_escaped(&mut xml, after);
+            xml.push_str("</Sentence>");
+            cursor = range.end;
+        }
+    }
+    xml.push_str(&snapshot.xml[cursor..]);
+    let updated = SavedAppdxTable::read(&xml)?;
+    updated.table.rows.iter().zip(&edited.rows)
+        .all(|(stored, visible)| visible.starts_with(stored))
+        .then_some(updated)
+}
+
+pub(super) fn snapshot_for<'a>(
+    snapshots: &'a [SavedAppdxTable],
+    table: &LawAppdxTable,
+    padded: bool,
+) -> Option<Cow<'a, SavedAppdxTable>> {
+    let same_text = |snapshot: &&SavedAppdxTable| {
+        same_shape(&snapshot.table, table, padded)
+            && snapshot.table.rows.iter().zip(&table.rows)
+                .all(|(stored, visible)| visible.starts_with(stored))
+    };
+    let mut exact = snapshots.iter().filter(same_text);
+    if let Some(snapshot) = exact.next() {
+        return exact.next().is_none().then_some(Cow::Borrowed(snapshot));
+    }
+    let mut compatible = snapshots.iter().filter(|snapshot| same_shape(&snapshot.table, table, padded));
+    let snapshot = compatible.next()?;
+    if compatible.next().is_some() {
+        return None;
+    }
+    update_cells(snapshot, table).map(Cow::Owned)
+}
+
 pub(super) fn encode_tables(doc: &LawDoc) -> Option<String> {
-    let snapshots: Vec<_> = doc
-        .appdx_table_xml
-        .iter()
-        .filter(|snapshot| doc.appdx_tables.contains(&snapshot.table))
-        .map(|snapshot| snapshot.xml.as_str())
+    let snapshots: Vec<_> = doc.appdx_tables.iter()
+        .filter_map(|table| snapshot_for(&doc.appdx_table_xml, table, false))
         .collect();
     if snapshots.is_empty() {
-        None
-    } else {
-        serde_json::to_string(&snapshots).ok()
+        return None;
     }
+    let fragments: Vec<_> = snapshots.iter().map(|snapshot| snapshot.xml.as_str()).collect();
+    serde_json::to_string(&fragments).ok()
 }
 
 pub(super) fn restore_tables(doc: &mut LawDoc, encoded: &str, padded_markdown_rows: bool) {
     let Ok(fragments) = serde_json::from_str::<Vec<String>>(encoded) else {
         return;
     };
-    let snapshots: Vec<_> = fragments
-        .iter()
+    let snapshots: Vec<_> = fragments.iter()
         .filter_map(|xml| SavedAppdxTable::read(xml))
         .collect();
     for table in &mut doc.appdx_tables {
-        let mut matching = snapshots.iter().filter(|snapshot| {
-            let stored = &snapshot.table;
-            stored.title == table.title
-                && stored.related_article_num == table.related_article_num
-                && (stored.rows == table.rows
-                    || padded_markdown_rows
-                        && table.rows.len() == stored.rows.len()
-                        && table
-                            .rows
-                            .iter()
-                            .zip(&stored.rows)
-                            .all(|(visible, original)| {
-                                visible.starts_with(original)
-                                    && visible[original.len()..].iter().all(String::is_empty)
-                            }))
-        });
-        if let Some(snapshot) = matching.next()
-            && matching.next().is_none()
-        {
+        if let Some(snapshot) = snapshot_for(&snapshots, table, padded_markdown_rows) {
             table.rows.clone_from(&snapshot.table.rows);
-            doc.appdx_table_xml.push(snapshot.clone());
+            doc.appdx_table_xml.push(snapshot.into_owned());
         }
     }
 }

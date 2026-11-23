@@ -10,7 +10,7 @@ use super::model::{
     LawTitleAttributes, SupplProvision,
 };
 use super::syntax::to_fullwidth_digits;
-use super::table_markup::{SavedAppdxTable, parse_appdx_table};
+use super::table_markup::{SavedAppdxTable, parse_appdx_table, snapshot_for};
 
 /// Parse an e-Gov 法令標準XML string into a [`LawDoc`].
 pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
@@ -555,8 +555,7 @@ fn write_appdx_fragment(out: &mut String, fragment: &str) {
 }
 
 fn write_appdx_table(out: &mut String, doc: &LawDoc, appdx: &super::model::LawAppdxTable) {
-    let mut snapshots = doc.appdx_table_xml.iter().filter(|snapshot| snapshot.table == *appdx);
-    if let Some(snapshot) = snapshots.next() && snapshots.next().is_none() {
+    if let Some(snapshot) = snapshot_for(&doc.appdx_table_xml, appdx, false) {
         out.push_str("    ");
         out.push_str(&snapshot.xml);
         out.push('\n');
@@ -596,7 +595,7 @@ fn push_opt_attr(out: &mut String, name: &str, val: Option<&str>) {
     }
 }
 
-fn push_xml_escaped(out: &mut String, text: &str) {
+pub(super) fn push_xml_escaped(out: &mut String, text: &str) {
     for ch in text.chars() {
         match ch {
             '&' => out.push_str("&amp;"),

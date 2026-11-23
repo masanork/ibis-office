@@ -323,10 +323,26 @@ fn public_food_labeling_samples_preserve_table_and_form_markup() {
     assert!(table_output.contains("rowspan=\"2\""));
     assert!(table_output.contains("BorderBottom=\"solid\""));
     let source = parse_law_xml(table).unwrap();
-    let edited_markdown = to_markdown(&source).replace("| 形質 |", "| 形質区分 |");
-    let edited = to_law_xml(&parse_markdown_law(&edited_markdown).unwrap());
-    assert!(edited.contains("形質区分"));
-    assert!(!edited.contains("rowspan="));
+    let expected = table_output.replace(">形質</Sentence>", ">形質区分</Sentence>");
+    let lawtext = to_lawtext(&source).replace("| 形質 |", "| 形質区分 |");
+    let markdown = to_markdown(&source).replace("| 形質 |", "| 形質区分 |");
+    let mut rust_edit = source.clone();
+    let cell = rust_edit.appdx_tables[0].rows.iter_mut().flatten()
+        .find(|cell| cell.as_str() == "形質").unwrap();
+    *cell = "形質区分".to_owned();
+    for edited in [
+        rust_edit,
+        parse_lawtext(&lawtext).unwrap(),
+        parse_markdown_law(&markdown).unwrap(),
+    ] {
+        assert_eq!(to_law_xml(&edited), expected);
+        assert_eq!(to_law_xml(&parse_lawtext(&to_lawtext(&edited)).unwrap()), expected);
+    }
+
+    let changed_shape = lawtext.replace("| 形質区分 |", "| 形質区分 | 追加セル |");
+    let output = to_law_xml(&parse_lawtext(&changed_shape).unwrap());
+    assert!(output.contains("追加セル"));
+    assert!(!output.contains("rowspan="));
 }
 
 #[test]
