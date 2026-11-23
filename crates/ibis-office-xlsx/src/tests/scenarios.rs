@@ -716,6 +716,8 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::query_report_refresh_ui", crate::query_report_panel::refresh_report_scenario),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         ("xlsx::query_report_arrow_snapshot", crate::query_report_panel::arrow_report_snapshot_scenario),
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        ("xlsx::query_report_json_avro_snapshot", crate::query_report_panel::json_avro_report_snapshot_scenario),
         ("xlsx::query_dependent_pivots", query_dependent_pivots),
         ("xlsx::query_code_edit_issue_173", query_code_edit_issue_173),
         ("xlsx::query_steps_scroll_issue_172", query_steps_scroll_issue_172),
