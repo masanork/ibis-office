@@ -72,6 +72,8 @@ A Parquet entry can also specify `where`, an object of conditions on up to 16 co
 
 Use `{"amount": {"gte": 100, "lt": 200}}` for a range. The operators are `gt`, `gte`, `lt`, and `lte`. Multiple bounds are combined with AND. Ranges compare numbers or strings in the column’s type, with strings compared lexicographically. Missing values are excluded from ranges.
 
+When exact minimum and maximum statistics with a compatible sort order are present for signed integers or text, the reader skips row groups whose bounds prove they cannot match. It also uses known null counts. Groups with missing or unsuitable statistics are scanned and all retained rows are tested against the conditions.
+
 CSV uses a comma delimiter, a header row, and text fields, so leading zeros and empty strings are preserved. Parquet and SQLite reads preserve NULL. Sources that exceed the readers' exact numeric range are rejected. Up to eight dataset entries and 100,000 input cells total can be loaded. Every query loads its selected tables into a fresh in-memory database.
 
 Use the same SQL and parameters with `sqlite_query_to_table`, providing a workbook `document_id`, `destination_sheet` and single-cell `anchor`. It creates a named Excel table only when the complete result fits the export budget (10,000 rows, 100,000 cells and 4 MiB). Alias duplicate or blank column headings in SQL. Large integers can be cast to text to retain their digits. Choose a blank destination.

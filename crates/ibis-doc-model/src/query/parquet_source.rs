@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::{QColumn, QTable, QType};
 use crate::CellValue;
-use parquet::basic::{ConvertedType, LogicalType, Repetition, Type as PhysicalType};
+use parquet::basic::{ColumnOrder, ConvertedType, LogicalType, Repetition, SortOrder, Type as PhysicalType};
+use parquet::file::metadata::RowGroupMetaData;
+use parquet::file::statistics::Statistics;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::Field;
 use parquet::schema::types::Type;
@@ -323,6 +325,22 @@ pub enum ParquetBound {
     Ge,
 }
 
+impl ParquetBound {
+    fn matches(&self, value: &CellValue, target: &CellValue) -> Option<bool> {
+        let order = match (value, target) {
+            (CellValue::Text(a), CellValue::Text(b)) => a.cmp(b),
+            (CellValue::Number(a), CellValue::Number(b)) => a.partial_cmp(b)?,
+            _ => return None,
+        };
+        Some(match self {
+            Self::Lt => order.is_lt(),
+            Self::Le => order.is_le(),
+            Self::Gt => order.is_gt(),
+            Self::Ge => order.is_ge(),
+        })
+    }
+}
+
 pub enum ParquetPredicate {
     Equal(CellValue),
     Range(Vec<(ParquetBound, CellValue)>),
@@ -344,19 +362,65 @@ impl ParquetPredicate {
         match self {
             Self::Equal(expected) => expected == value,
             Self::Range(bounds) => bounds.iter().all(|(bound, target)| {
-                let order = match (value, target) {
-                    (CellValue::Text(a), CellValue::Text(b)) => Some(a.cmp(b)),
-                    (CellValue::Number(a), CellValue::Number(b)) => a.partial_cmp(b),
-                    _ => None,
-                };
-                order.is_some_and(|order| match bound {
-                    ParquetBound::Lt => order.is_lt(),
-                    ParquetBound::Le => order.is_le(),
-                    ParquetBound::Gt => order.is_gt(),
-                    ParquetBound::Ge => order.is_ge(),
-                })
+                bound.matches(value, target) == Some(true)
             }),
         }
+    }
+}
+
+// Only use statistics whose sort order and representation agree with the row matcher.
+fn exact_range(stats: &Statistics, order: ColumnOrder, ty: QType) -> Option<(CellValue, CellValue)> {
+    if stats.is_min_max_deprecated() || !stats.min_is_exact() || !stats.max_is_exact() {
+        return None;
+    }
+    let (min, max) = match (stats, order, ty) {
+        (Statistics::Int32(values), ColumnOrder::TYPE_DEFINED_ORDER(SortOrder::SIGNED), QType::Whole) => {
+            let min = *values.min_opt()?;
+            let max = *values.max_opt()?;
+            (integer(min.into()).ok()?.0, integer(max.into()).ok()?.0)
+        }
+        (Statistics::Int64(values), ColumnOrder::TYPE_DEFINED_ORDER(SortOrder::SIGNED), QType::Whole) => {
+            let min = *values.min_opt()?;
+            let max = *values.max_opt()?;
+            (integer(min.into()).ok()?.0, integer(max.into()).ok()?.0)
+        }
+        (Statistics::ByteArray(values), ColumnOrder::TYPE_DEFINED_ORDER(SortOrder::UNSIGNED), QType::Text) => {
+            let min = std::str::from_utf8(values.min_opt()?.data()).ok()?;
+            let max = std::str::from_utf8(values.max_opt()?.data()).ok()?;
+            (CellValue::Text(min.into()), CellValue::Text(max.into()))
+        }
+        _ => return None,
+    };
+    (ParquetBound::Le.matches(&min, &max) == Some(true)).then_some((min, max))
+}
+
+fn excludes_group(
+    group: &RowGroupMetaData,
+    index: usize,
+    order: ColumnOrder,
+    ty: QType,
+    predicate: &ParquetPredicate,
+) -> bool {
+    let Some(stats) = group.column(index).statistics() else { return false };
+    if matches!(predicate, ParquetPredicate::Equal(CellValue::Empty)) {
+        return stats.null_count_opt() == Some(0);
+    }
+    if stats.null_count_opt().is_some_and(|count| Some(count) == u64::try_from(group.num_rows()).ok()) {
+        return true;
+    }
+    let Some((min, max)) = exact_range(stats, order, ty) else { return false };
+    match predicate {
+        ParquetPredicate::Equal(value) => {
+            ParquetBound::Ge.matches(&max, value) == Some(false)
+                || ParquetBound::Le.matches(&min, value) == Some(false)
+        }
+        ParquetPredicate::Range(bounds) => bounds.iter().any(|(bound, target)| {
+            let endpoint = match bound {
+                ParquetBound::Lt | ParquetBound::Le => &min,
+                ParquetBound::Gt | ParquetBound::Ge => &max,
+            };
+            bound.matches(endpoint, target) == Some(false)
+        }),
     }
 }
 
@@ -414,6 +478,7 @@ fn read_columns_bounded(
     if expected.is_some_and(|expected| expected != columns) {
         return Err("Selected columns differ from the first Parquet file".into());
     }
+    let mut pruning_filters = Vec::new();
     let filter_indices = filters.iter().map(|(name, value)| {
         let field = match by_name.get(name) {
             Some(Some(field)) => *field,
@@ -428,6 +493,13 @@ fn read_columns_bounded(
             projected.push(field.clone());
             projected.len() - 1
         });
+        // A top-level primitive maps to exactly one physical leaf. Nested
+        // columns can have the same leaf name, so compare the entire path.
+        if let Some(leaf) = meta.schema_descr().columns().iter().position(|column| {
+            column.path().parts() == [*name]
+        }) {
+            pruning_filters.push((leaf, meta.column_order(leaf), ty, value));
+        }
         Ok((index, value))
     }).collect::<Result<Vec<_>, String>>()?;
     let rows = (rows_loaded as u64).saturating_add(meta.num_rows() as u64);
@@ -443,32 +515,40 @@ fn read_columns_bounded(
         .with_fields(projected)
         .build()
         .map_err(|e| e.to_string())?;
-    'rows: for row in reader
-        .get_row_iter(Some(projection))
-        .map_err(|e| e.to_string())?
-    {
-        let fields = row.map_err(|e| e.to_string())?.into_columns();
-        for &(index, expected) in &filter_indices {
-            let (name, field) = &fields[index];
-            let (value, _) = cell(field.clone()).map_err(|e| format!("{name}: {e}"))?;
-            if !expected.matches(&value) {
-                continue 'rows;
+    for (index, metadata) in reader.metadata().row_groups().iter().enumerate() {
+        if pruning_filters.iter().any(|&(leaf, order, ty, predicate)| {
+            excludes_group(metadata, leaf, order, ty, predicate)
+        }) {
+            continue;
+        }
+        let group = reader.get_row_group(index).map_err(|e| e.to_string())?;
+        'rows: for row in group
+            .get_row_iter(Some(projection.clone()))
+            .map_err(|e| e.to_string())?
+        {
+            let fields = row.map_err(|e| e.to_string())?.into_columns();
+            for &(index, expected) in &filter_indices {
+                let (name, field) = &fields[index];
+                let (value, _) = cell(field.clone()).map_err(|e| format!("{name}: {e}"))?;
+                if !expected.matches(&value) {
+                    continue 'rows;
+                }
             }
-        }
-        if (rows_loaded + table.rows.len() + 1).saturating_mul(width) > max_cells {
-            return Err("Parquet source exceeds the query editor's size limit".into());
-        }
-        let mut values = Vec::with_capacity(width);
-        for (name, field) in fields.into_iter().take(width) {
-            let (value, _) = cell(field).map_err(|e| format!("{name}: {e}"))?;
-            if let CellValue::Text(text) = &value {
-                max_text = max_text
-                    .checked_sub(text.len())
-                    .ok_or("Parquet text exceeds the import limit")?;
+            if (rows_loaded + table.rows.len() + 1).saturating_mul(width) > max_cells {
+                return Err("Parquet source exceeds the query editor's size limit".into());
             }
-            values.push(value);
+            let mut values = Vec::with_capacity(width);
+            for (name, field) in fields.into_iter().take(width) {
+                let (value, _) = cell(field).map_err(|e| format!("{name}: {e}"))?;
+                if let CellValue::Text(text) = &value {
+                    max_text = max_text
+                        .checked_sub(text.len())
+                        .ok_or("Parquet text exceeds the import limit")?;
+                }
+                values.push(value);
+            }
+            table.rows.push(values);
         }
-        table.rows.push(values);
     }
     Ok(table)
 }
@@ -476,6 +556,113 @@ fn read_columns_bounded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_grouped_fixture(path: &Path, groups: i64, rows: i64, statistics: bool) {
+        use parquet::data_type::{ByteArray, ByteArrayType, Int64Type};
+        use parquet::file::{properties::{EnabledStatistics, WriterProperties}, writer::SerializedFileWriter};
+        use parquet::schema::parser::parse_message_type;
+        use std::sync::Arc;
+
+        let schema = Arc::new(parse_message_type(
+            "message points { REQUIRED INT64 id; OPTIONAL INT64 amount; REQUIRED BINARY label (UTF8); }",
+        ).unwrap());
+        let properties = WriterProperties::builder()
+            .set_statistics_enabled(if statistics { EnabledStatistics::Chunk } else { EnabledStatistics::None })
+            .set_compression(parquet::basic::Compression::SNAPPY)
+            .build();
+        let mut writer = SerializedFileWriter::new(File::create(path).unwrap(), schema, Arc::new(properties)).unwrap();
+        for index in 0..groups {
+            let mut group = writer.next_row_group().unwrap();
+            let start = (index - groups / 2) * rows;
+            let ids: Vec<_> = (start..start + rows).collect();
+            let mut id = group.next_column().unwrap().unwrap();
+            id.typed::<Int64Type>().write_batch(&ids, None, None).unwrap();
+            id.close().unwrap();
+
+            let defined = i16::from(index != 0);
+            let amounts = if defined == 0 { &[][..] } else { ids.as_slice() };
+            let mut amount = group.next_column().unwrap().unwrap();
+            amount.typed::<Int64Type>().write_batch(amounts, Some(&vec![defined; ids.len()]), None).unwrap();
+            amount.close().unwrap();
+
+            let labels = vec![ByteArray::from(format!("{index:04}").as_str()); ids.len()];
+            let mut label = group.next_column().unwrap().unwrap();
+            label.typed::<ByteArrayType>().write_batch(&labels, None, None).unwrap();
+            label.close().unwrap();
+            group.close().unwrap();
+        }
+        writer.close().unwrap();
+    }
+
+    #[test]
+    fn parquet_pruning_matches_a_scan_without_statistics() {
+        use ParquetBound::{Ge, Lt};
+        let dir = tempfile::tempdir().unwrap();
+        let indexed = dir.path().join("indexed.parquet");
+        let scan = dir.path().join("scan.parquet");
+        write_grouped_fixture(&indexed, 6, 4, true);
+        write_grouped_fixture(&scan, 6, 4, false);
+
+        let range = ParquetPredicate::Range(vec![(Ge, CellValue::Number(-2.0)), (Lt, CellValue::Number(4.0))]);
+        let text = ParquetPredicate::Range(vec![(Ge, CellValue::Text("0002".into())), (Lt, CellValue::Text("0004".into()))]);
+        let missing = ParquetPredicate::Equal(CellValue::Empty);
+        for (leaf, name, ty, predicate, expected) in [
+            (1, "amount", QType::Whole, range, vec![-2, -1, 0, 1, 2, 3]),
+            (2, "label", QType::Text, text, (-4..4).collect()),
+            (1, "amount", QType::Whole, missing, (-12..-8).collect()),
+        ] {
+            let reader = open(&indexed).unwrap();
+            let meta = reader.metadata();
+            let excluded = meta.row_groups().iter().filter(|group| {
+                excludes_group(group, leaf, meta.file_metadata().column_order(leaf), ty, &predicate)
+            }).count();
+            assert!(excluded >= 4, "expected pruning for {name}, got {excluded}");
+
+            let filters = [(name, predicate)];
+            let projected = ["id".into()];
+            let actual = read_parquet_filtered(&indexed, &projected, &filters, 100, 100).unwrap();
+            let full = read_parquet_filtered(&scan, &projected, &filters, 100, 100).unwrap();
+            assert_eq!(actual.rows, full.rows);
+            assert_eq!(actual.rows, expected.into_iter().map(|id| vec![CellValue::Number(id.into())]).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    #[ignore = "manual synthetic Parquet timing comparison"]
+    fn benchmark_parquet_group_pruning() {
+        use std::time::Instant;
+        let dir = tempfile::tempdir().unwrap();
+        let indexed = dir.path().join("indexed.parquet");
+        let scan = dir.path().join("scan.parquet");
+        write_grouped_fixture(&indexed, 128, 4096, true);
+        write_grouped_fixture(&scan, 128, 4096, false);
+        let predicate = ParquetPredicate::Range(vec![
+            (ParquetBound::Ge, CellValue::Number(0.0)),
+            (ParquetBound::Lt, CellValue::Number(4096.0)),
+        ]);
+        let filters = [("amount", predicate)];
+        let projected = ["id".into(), "label".into()];
+        let load = |path| read_parquet_filtered(path, &projected, &filters, 20_000, 100_000).unwrap();
+
+        let expected = load(&scan);
+        assert_eq!(expected.rows.len(), 4096);
+        assert_eq!(load(&indexed).rows, expected.rows);
+        let mut measurements = [Vec::new(), Vec::new()];
+        let paths = [&scan, &indexed];
+        for pair in 0..7 {
+            for index in [pair % 2, 1 - pair % 2] {
+                let start = Instant::now();
+                let result = load(paths[index]);
+                measurements[index].push(start.elapsed());
+                assert_eq!(result.rows, expected.rows);
+            }
+        }
+        for times in &mut measurements {
+            times.sort_unstable();
+        }
+        eprintln!("524288 rows / 128 groups, 4096 rows matched, warm median of 7: scan {:?}, pruning {:?}",
+            measurements[0][3], measurements[1][3]);
+    }
 
     #[test]
     fn reads_a_snappy_table() {
