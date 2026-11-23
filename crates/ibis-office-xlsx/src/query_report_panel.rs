@@ -537,3 +537,133 @@ impl SlideEditor {
         ))
     }
 }
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn refresh_report_scenario() {
+    use crate::shell::scenario::{Scenario, button_probe};
+    use ibis_doc_model::{Document, SheetCommand};
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("monthly.csv");
+    let next = dir.path().join("next.csv");
+    std::fs::write(&source, "code,amount\n001,24\n").unwrap();
+    let mut scene = Scenario::new_document(ibis_formats::Kind::Workbook);
+    scene.update(|editor, _, cx| {
+        let slide = editor.current_slide;
+        let export = ibis_doc_service::prepare_selected_datasets_export(
+            std::slice::from_ref(&source),
+            json!({
+                "sql":"SELECT code, CAST(amount AS INTEGER) AS amount FROM monthly",
+                "datasets":[{"source":"1","alias":"monthly"}],"anchor":"A1",
+            }),
+        ).unwrap();
+        let mut draft = Document::new(editor.presentation().clone());
+        let (_, mut commands) = export.stage(&mut draft, ibis_doc_service::DraftToolContext {
+            workbook: ibis_doc_service::WorkbookToolContext { active_sheet: Some(slide), ..Default::default() },
+            ..Default::default()
+        }).unwrap();
+        let mut definition = ibis_doc_service::query_report_definition(
+            draft.presentation(), &json!({"table":"QueryResult1"}),
+        ).unwrap();
+        definition["checks"] = json!([{
+            "name":"重複コード",
+            "sql":"SELECT count(*) FROM (SELECT code FROM monthly GROUP BY code HAVING count(*) > 1)",
+            "max":0,
+        }]);
+        commands.push(Command::Sheet(SheetCommand::SetQueryReport { table:"QueryResult1".into(), definition }));
+        editor.document.execute(commands).unwrap();
+        editor.open_queries_panel(cx);
+    });
+
+    let _probe = button_probe::Probe::new();
+    scene.update(|_, _, cx| cx.notify());
+    button_probe::click(&mut scene, "queries-report-refresh");
+
+    // The headless platform cancels file pickers. Install the path returned by
+    // the picker before using the actual preview and apply buttons.
+    scene.update(|editor, _, cx| {
+        let panel = editor.query_reports_mut().unwrap();
+        panel.files.insert("monthly.csv".into(), next.clone());
+        panel.reports[0].metrics.insert("amount".into());
+        cx.notify();
+    });
+    let wait_for_review = |scene: &mut Scenario| {
+        for _ in 0..100 {
+            let (ready, busy, message) = scene.with(|editor, _| {
+                let panel = editor
+                    .wb()
+                    .panels
+                    .queries
+                    .as_ref()
+                    .unwrap()
+                    .reports
+                    .as_ref()
+                    .unwrap();
+                (panel.review.is_some(), panel.busy, panel.message.clone())
+            });
+            if ready {
+                return;
+            }
+            assert!(busy, "report preview failed: {message}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            scene.wait(20);
+        }
+        panic!("report preview did not complete");
+    };
+    let amount = |scene: &mut Scenario| {
+        scene.with(|editor, _| {
+            let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(
+                editor.presentation().slide(editor.current_slide).unwrap(),
+            )
+            .unwrap();
+            sheet.cell(1, 1).map(|cell| cell.value.clone())
+        })
+    };
+    std::fs::write(&next, "code,amount\n001,12\n001,12\n").unwrap();
+    button_probe::click(&mut scene, "query-reports-preview");
+    wait_for_review(&mut scene);
+    scene.with(|editor, _| {
+        let panel = editor
+            .wb()
+            .panels
+            .queries
+            .as_ref()
+            .unwrap()
+            .reports
+            .as_ref()
+            .unwrap();
+        let review = panel.review.as_ref().unwrap();
+        assert_eq!(review.result["blocked"], true);
+        assert_eq!(review.result["reports"][0]["checks"][0]["count"], 1);
+        assert!(review.commands.is_empty());
+    });
+    assert_eq!(amount(&mut scene), Some(CellValue::Number(24.0)));
+
+    std::fs::write(&next, "code,amount\n001,12\n").unwrap();
+    button_probe::click(&mut scene, "query-reports-preview");
+    wait_for_review(&mut scene);
+    scene.with(|editor, _| {
+        let panel = editor
+            .wb()
+            .panels
+            .queries
+            .as_ref()
+            .unwrap()
+            .reports
+            .as_ref()
+            .unwrap();
+        let review = panel.review.as_ref().unwrap();
+        assert_eq!(review.result["blocked"], false);
+        assert_eq!(review.result["reports"][0]["metrics"][0]["delta"], -12.0);
+    });
+    // Apply what appeared in the review even if the source is replaced meanwhile.
+    std::fs::write(&next, "code,amount\n001,6\n").unwrap();
+    button_probe::click(&mut scene, "query-reports-apply");
+    assert_eq!(amount(&mut scene), Some(CellValue::Number(12.0)));
+    button_probe::click(&mut scene, "query-reports-back");
+    button_probe::click(&mut scene, "queries-close");
+    scene.update(|editor, window, cx| {
+        editor.undo(&crate::shell::actions::Undo, window, cx);
+    });
+    assert_eq!(amount(&mut scene), Some(CellValue::Number(24.0)));
+}

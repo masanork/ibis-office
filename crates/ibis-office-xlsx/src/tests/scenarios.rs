@@ -712,6 +712,8 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::fn_random_numbers", fn_random_numbers),
         ("xlsx::fn_cell_info", fn_cell_info),
         ("xlsx::query001_editor", query001_editor),
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        ("xlsx::query_report_refresh_ui", crate::query_report_panel::refresh_report_scenario),
         ("xlsx::query_dependent_pivots", query_dependent_pivots),
         ("xlsx::query_code_edit_issue_173", query_code_edit_issue_173),
         ("xlsx::query_steps_scroll_issue_172", query_steps_scroll_issue_172),
