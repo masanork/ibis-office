@@ -99,3 +99,6 @@ ibis-office-base = { workspace = true, features = ["test-user-data"] }
 # The `objc` crate's msg_send!/class! macros test `cfg(feature = "cargo-clippy")`, which is not a feature of this crate.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+ibis-mcp.workspace = true

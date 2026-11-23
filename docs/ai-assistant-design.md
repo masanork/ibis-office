@@ -74,6 +74,12 @@ MCP の `assistant_list_sessions` は同じ作業フォルダーに共有され�
 
 接続情報は同一 OS ユーザー専用のローカル領域に置く。共有は起動時の指定で有効になり、通常終了時に登録を削除する。応答しない登録は一覧に出さない。`--read-only` では一覧・状態・結果だけを使える。既存の `--assistant-socket` は個別ウィンドウへの直接接続として使える。
 
+### 固定応答のヘッドレス実行先
+
+開発・検証用に、macOS・Linux で `ibisOffice --assistant-headless-demo /absolute/path/to/project` を実行できる。GUI と同じソケット受付、作業フォルダー登録、結果ジャーナルを使う。通常のMCPクライアントから `assistant_list_sessions` で `kind: "headless"` の実行先を取得し、`assistant_prompt` に `session_id` と指示を渡す。固定応答を `assistant_result` で取得できる。各実行先の `operations` はその実行先が対応する操作を示す。
+
+デモはモデルを呼び出さず、文書は開かない。結果は実行先のプロセスが生きている間、GUI と同じジャーナル上限で保持される。MCP プロセスを終了して起動し直しても同じセッション ID と実行 ID を使える。
+
 以下は導入時の設計メモ。
 
 ## 目的

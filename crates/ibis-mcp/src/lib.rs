@@ -7,7 +7,7 @@
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod live_assistant;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub mod assistant_workspace;
+mod assistant_workspace;
 mod cli;
 mod protocol;
 mod stdio;
@@ -18,3 +18,6 @@ pub const VERSION: &str = env!("IBIS_VERSION");
 pub use cli::run_from_args;
 pub use protocol::Server;
 pub use stdio::serve;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod assistant_endpoint;

@@ -5983,6 +5983,7 @@ dependencies = [
  "ibis-doc-service",
  "ibis-emf",
  "ibis-formats",
+ "ibis-mcp",
  "ibis-odf",
  "ibis-ofd",
  "ibis-office-base",

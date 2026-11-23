@@ -1082,6 +1082,19 @@ pub fn run_native() {
         ibis_calc::eval::convert::set_clock(clock::calc_clock);
         std::process::exit(ibis_mcp::run_from_args(std::env::args().skip(2)));
     }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if std::env::args().nth(1).as_deref() == Some("--assistant-headless-demo") {
+        let mut paths = std::env::args_os().skip(2);
+        let Some(workspace) = paths.next().filter(|_| paths.next().is_none()) else {
+            eprintln!("usage: ibisOffice --assistant-headless-demo <workspace>");
+            std::process::exit(2);
+        };
+        if let Err(error) = ibis_mcp::assistant_endpoint::run_demo(std::path::Path::new(&workspace)) {
+            eprintln!("ibisOffice Assistant demo: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     register_hooks();
     // TODAY, NOW and a date typed without its year read the local time.
     ibis_calc::eval::convert::set_clock(clock::calc_clock);
@@ -1094,18 +1107,13 @@ pub fn run_native() {
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let assistant_socket = {
-        use ibis_mcp::assistant_workspace::{REGISTRATION_NAME, SOCKET_NAME, Workspace};
-        use shell::assistant_socket::BoundSocket;
+        use ibis_mcp::assistant_endpoint::BoundSocket;
         let bind = || -> std::io::Result<Option<BoundSocket>> {
             if let Some(path) = &args.assistant_socket {
                 return BoundSocket::bind(path).map(Some);
             }
             let Some(path) = &args.assistant_workspace else { return Ok(None) };
-            let workspace = Workspace::open(path)?;
-            let registration = workspace.register()?;
-            let socket = BoundSocket::bind(&registration.path().join(SOCKET_NAME))?;
-            let record = registration.keep().join(REGISTRATION_NAME);
-            Ok(Some(socket.register(workspace.root().to_owned(), record)))
+            BoundSocket::bind_workspace(path).map(Some)
         };
         bind().unwrap_or_else(|error| {
             eprintln!("ibisOffice: cannot open Assistant connection: {error}");
@@ -1255,7 +1263,7 @@ pub fn run_native() {
                     editor.read_only = read_only;
                     #[cfg(any(target_os = "macos", target_os = "linux"))]
                     if let Some(socket) = assistant_socket {
-                        socket.start(editor, window, cx);
+                        shell::assistant_socket::start(socket, editor, window, cx);
                     }
                     let (position, destination) = std::sync::mpsc::channel();
                     let read = move || {
@@ -1274,7 +1282,7 @@ pub fn run_native() {
                     editor.read_only = read_only;
                     #[cfg(any(target_os = "macos", target_os = "linux"))]
                     if let Some(socket) = assistant_socket {
-                        socket.start(editor, _window, _cx);
+                        shell::assistant_socket::start(socket, editor, _window, _cx);
                     }
                 }),
             }

@@ -23,7 +23,7 @@ const TOOLS: &[(&str, &str, &str, bool)] = &[
     (
         "assistant_status",
         "status",
-        "Read the open GUI workbook, running turn, pending review, available skills and workspace context settings.",
+        "Read the Assistant endpoint state, including its supported operations and any open document.",
         true,
     ),
     (
@@ -35,7 +35,7 @@ const TOOLS: &[(&str, &str, &str, bool)] = &[
     (
         "assistant_prompt",
         "prompt",
-        "Send a prompt to the open GUI Assistant and return its run ID. Pass a skill name only when the user selects it. Inspect any resulting proposal before applying.",
+        "Send a prompt to the selected Assistant endpoint and return its run ID. Pass a skill name only when the user selects it. Inspect any resulting proposal before applying.",
         false,
     ),
     (
@@ -57,7 +57,7 @@ impl LiveAssistant {
         let workspace = matches!(self.endpoint, Endpoint::Workspace(_));
         let discovery = workspace.then(|| json!({
             "name":"assistant_list_sessions",
-            "description":"List explicitly shared Assistant windows in the configured workspace. Use the returned session_id to target a window.",
+            "description":"List explicitly shared Assistant endpoints in the configured workspace. Use session_id to select an endpoint and check its operations when present.",
             "inputSchema":{"type":"object","properties":{},"additionalProperties":false},
             "annotations":{"readOnlyHint":true}
         }));
@@ -169,7 +169,7 @@ fn exchange(path: &Path, request: &Value, timeout: Duration) -> Result<Value, St
         Ok(serde_json::from_slice(&line)?)
     };
     let response =
-        send().map_err(|error| format!("cannot communicate with the GUI Assistant: {error}"))?;
+        send().map_err(|error| format!("cannot communicate with the Assistant endpoint: {error}"))?;
     if let Some(error) = response["error"].as_str() {
         return Err(error.to_owned());
     }
@@ -191,6 +191,9 @@ fn list_sessions(workspace: &Workspace, args: Option<&Value>) -> Result<Value, S
         };
         sessions.push(json!({
             "session_id":id,
+            "kind":status["kind"].as_str().unwrap_or("gui"),
+            "label":status["label"],
+            "operations":status["operations"],
             "path":status["path"],
             "document_ready":status["document_ready"],
             "streaming":status["streaming"],

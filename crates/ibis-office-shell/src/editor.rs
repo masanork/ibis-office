@@ -405,7 +405,7 @@ pub struct SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) assistant_output: Option<std::sync::mpsc::Sender<serde_json::Value>>,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(crate) assistant_socket: Option<crate::assistant_socket::SocketLifetime>,
+    pub(crate) assistant_socket: Option<ibis_mcp::assistant_endpoint::SocketLifetime>,
     pub ai_assistant: Option<crate::ai_assistant::AiAssistantState>,
     _zoom_subscription: Subscription,
     /// The status bar's list of zooms is open.
