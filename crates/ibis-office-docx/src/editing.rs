@@ -7758,6 +7758,12 @@ impl SlideEditor {
     }
 
     pub fn follow_link(&mut self, pos: FlowPos, cx: &mut Context<Self>) -> bool {
+        self.follow_link_with_window(pos, None, cx)
+    }
+
+    pub(crate) fn follow_link_with_window(
+        &mut self, pos: FlowPos, window: Option<&mut Window>, cx: &mut Context<Self>,
+    ) -> bool {
         let Some(doc) = self.flow() else { return false };
         let Some(p) = flow_command::paragraph(doc, pos.para) else { return false };
         let mut at = 0;
@@ -7770,7 +7776,12 @@ impl SlideEditor {
             }
             at += len;
         }
-        if let Some(ibis_doc_model::Link::Url(url))=&link {crate::shell::links::open_external_url(url,cx);return true;}
+        if let Some(ibis_doc_model::Link::Url(url)) = &link {
+            if !window.is_some_and(|window| self.follow_folder_link(url, window, cx)) {
+                crate::shell::links::open_external_url(url, cx);
+            }
+            return true;
+        }
         let Some(ibis_doc_model::Link::Anchor(name)) = link else { return false };
         let Some(target) = find_bookmark(doc, &name) else { return false };
         self.jump_to(target, cx);

@@ -925,7 +925,7 @@ impl SlideEditor {
         let Some(pos) = self.position_at(index, x, y) else { return };
         // ⌘-click follows a link to its bookmark (a table of contents' entry).
         if event.click_count==1 && !event.modifiers.shift {
-            if let Some(link_pos)=self.doc_link_position_at_point(index,x,y){if self.follow_link(link_pos,cx){return;}}
+            if let Some(link_pos)=self.doc_link_position_at_point(index,x,y){if self.follow_link_with_window(link_pos,Some(window),cx){return;}}
         }
         if event.click_count == 1 {
             if self.toggle_checkbox_at(pos, cx) || self.cycle_dropdown_item_at(pos, cx) || self.step_date_picker_at(pos, 1, cx) {

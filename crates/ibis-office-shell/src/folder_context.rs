@@ -163,6 +163,18 @@ impl Folder {
         Ok(real)
     }
 
+    fn link_from_file(&self, file: &Path, url: &str) -> Option<Result<String, String>> {
+        if url.starts_with("//")
+            || url.split(['/', '?', '#']).next().is_some_and(|head| head.contains(':'))
+            || !matches!(extension(file).as_str(), "md" | "markdown")
+        {
+            return None;
+        }
+        let relative = file.strip_prefix(&self.root).ok()?;
+        let components = relative.iter().map(|part| part.to_str()).collect::<Option<Vec<_>>>()?;
+        Some(self.reference_path(&components.join("/"), url))
+    }
+
     fn reference_path(&self, from: &str, reference: &str) -> Result<String, String> {
         self.resolve(from)?;
         if let Some(wiki) = reference.strip_prefix("[[").and_then(|text| text.strip_suffix("]]")) {
@@ -755,6 +767,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read.references[0].path, "README.md");
+        let source = folder.root.join("資料/metric.md");
+        assert_eq!(folder.link_from_file(&source, "../README.md"), Some(Ok("README.md".into())));
+        assert!(folder.link_from_file(&source, "../../README.md").unwrap().is_err());
+        assert!(folder.link_from_file(&source, "https://example.com/README.md").is_none());
         assert_eq!(folder.reference_path("index.md", "[[metric]]").unwrap(), "資料/metric.md");
         fixture.write("metric.md", "# Duplicate\n");
         let folder = Folder::scan(&fixture.0).unwrap();

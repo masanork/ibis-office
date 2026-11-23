@@ -212,7 +212,9 @@ ibisOffice --export xlsx --out-dir rebuilt markdown/workbook.md
 
 ### Marp 原稿と PPTX
 
-`marp: true` の原稿は横罫線でスライドを区切り、見出しが複数あっても同じスライドに置きます。フロントマターと単独行から始まるコメントの `size: 16:9` と `size: 4:3` に対応し、`pptx_size` がある場合はそちらを優先します。
+`marp: true` の原稿は横罫線でスライドを区切ります。`headingDivider: 2` でATX見出しのレベル1・2を、`headingDivider: [1, 3]` でレベル1・3を区切りにできます。指定がなければ見出しが複数あっても同じスライドに置きます。 [Marpの見出し区切り](https://marp.app/docs/guide/heading-divider)
+
+フロントマターと単独行から始まるコメントの `size: 16:9` と `size: 4:3` に対応し、`pptx_size` がある場合はそちらを優先します。
 
 単独行から始まる HTML コメントは、対応する Marp ディレクティブを含むものや ibisOffice の位置注記を除き、複数行でも PPTX の発表者ノートに入ります。従来の `<!-- notes: … -->` も読み書きできます。コードフェンス内のコメントはコードとして扱います。
 
@@ -403,7 +405,9 @@ PPTX の表でも横結合・縦結合の印を使えます。横と縦を組み
 
 旧 OOMarkdown 原稿で目次・参考文献一覧を指定していた行は、`[[toc]]` を `::: toc`、`[[bibliography]]` を `::: bibliography`、`[[bibliography:1041]]` を `::: bibliography 1041` に置き換えてください。DOCX に保存済みのフィールドは、Markdown に書き出すと新しい記法になります。
 
-DOCX からは ibisOffice の Markdown 記法（`{#results}`、`[結果](#results)`、`> [!NOTE]` など）で書き出します。元の記法で編集を続ける場合は Markdown 原稿を保管してください。MyST の図・自動参照番号・引用や、Obsidian の Vault 内リンク解決・埋め込み・折りたたみ付き callout は試験対応の対象外です。
+DOCX からは ibisOffice の Markdown 記法（`{#results}`、`[結果](#results)`、`> [!NOTE]` など）で書き出します。元の記法で編集を続ける場合は Markdown 原稿を保管してください。MyST の自動参照番号・引用や、Obsidian の Vault 内リンク解決・埋め込み・折りたたみ付き callout は試験対応の対象外です。
+
+MyST のバッククォート囲みの `{figure} 画像パス` は、インライン画像とキャプション段落に変換します。`:alt:` を画像の代替テキスト、Word互換の `:label:` または `:name:` をキャプションのブックマークに使います。固定寸法の `width`・`height` と、左右・中央の `align` に対応します。DOCXからは標準Markdownの画像・段落・アンカーで書き出します。
 
 #### 別ノートへのリンク解決の設計案
 

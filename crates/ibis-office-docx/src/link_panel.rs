@@ -50,7 +50,7 @@ impl SlideEditor {
         if event.button==MouseButton::Right{
             if let Some((a,b,_))=self.doc_link_range(pos){self.set_caret(a,false,cx);self.set_caret(b,true,cx);self.open_hyperlink_context(event.position,self.doc_hyperlink_menu(),w,cx);return true;}
         }else if event.button==MouseButton::Left&&event.click_count==1&&!event.modifiers.shift{
-            self.focus_handle.focus(w,cx);return self.follow_link(pos,cx);
+            self.focus_handle.focus(w,cx);return self.follow_link_with_window(pos,Some(w),cx);
         }false
     }
 
@@ -255,7 +255,7 @@ impl SlideEditor {
         use crate::shell::chrome::{MenuItem,Submenu};
         if self.link_at_selection().is_none(){return Vec::new();}
         vec![Submenu::tr("hyperlink.menu","link",vec![
-            MenuItem::tr("hyperlink.open").on(|e,_,cx|{if let Some((a,_))=e.ordered_selection(){let p=e.doc_link_range(a).map(|(a,_,_)|a).unwrap_or(a);e.follow_link(p,cx);}}).into(),
+            MenuItem::tr("hyperlink.open").on(|e,w,cx|{if let Some((a,_))=e.ordered_selection(){let p=e.doc_link_range(a).map(|(a,_,_)|a).unwrap_or(a);e.follow_link_with_window(p,Some(w),cx);}}).into(),
             MenuItem::tr("hyperlink.edit").on(|e,w,cx|e.open_link(w,cx)).into(),
             MenuItem::tr("hyperlink.remove").on(|e,_,cx|e.set_link("",cx)).into(),
         ]).into()]

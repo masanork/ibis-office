@@ -8,9 +8,9 @@ ibisOfficeが受け付ける構文、通常の入出力での挙動、制限と�
 | --- | --- | --- |
 | [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/) | ATX見出し、段落、リスト、引用、強調、リンク、画像、コードなどの基本構文 | 上流テスト一式に対する適合は未検証。入れ子、HTML、参照リンクなどは個々の対応範囲を確認する。 |
 | [GFM 0.29](https://github.github.com/gfm/) と [GitHubの書式ガイド](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax) | パイプ表、タスクリスト、取り消し線、基本アラート | 表のセル結合やOfficeフィールドはibisOffice拡張。脚注とアラートはGFM形式仕様とは別にGitHubの書式ガイドを参照する。 |
-| [MyST Markdown](https://mystmd.org/guide/syntax-overview) | Word互換の見出しラベルと、コードフェンス・コロンフェンス内の単一段落の基本admonition | 図、自動参照番号、引用、プロジェクトの参照解決は未対応。 |
+| [MyST Markdown](https://mystmd.org/guide/syntax-overview) | Word互換の見出しラベルと、コードフェンス・コロンフェンス内の単一段落の基本admonition | コードフェンスの図は画像・代替テキスト・単一段落のキャプション・Word互換ラベルを取り込む。自動参照番号、引用、プロジェクトの参照解決は未対応。 |
 | [Obsidian内部リンク](https://obsidian.md/help/links) と [callouts](https://obsidian.md/help/callouts) | 明示ブックマークへの文書内Wikiリンクと基本callout | Assistantのフォルダー参照は別ノートを名前またはルート基準のパスで引ける。本文からのクリック、埋め込み、折りたたみは未対応。 |
-| [Marpit](https://marpit.marp.app/markdown) と [Marp Core](https://github.com/marp-team/marp-core/blob/main/docs/markdown.md) | スライド分割、標準サイズ、発表者ノートのPPTX変換 | CSSテーマ、背景、ページ番号、元原稿への編集差分反映は未対応。 |
+| [Marpit](https://marpit.marp.app/markdown) と [Marp Core](https://github.com/marp-team/marp-core/blob/main/docs/markdown.md) | スライド分割（ATX見出しの `headingDivider` を含む）、標準サイズ、発表者ノートのPPTX変換 | CSSテーマ、背景、ページ番号、元原稿への編集差分反映は未対応。 |
 | [Mermaid](https://mermaid.js.org/) と [ZenUML](https://zenuml.com/docs/) | 図種別の描画、対応するグラフのOffice変換、対応する図ソースの再出力 | 図種と個別構文の対応は[構文リファレンス](markdown-reference-ja.md#mermaid)を参照。 |
 | [Lawtext](https://github.com/yamachig/Lawtext) と [法令標準XML](https://laws.e-gov.go.jp/file/XMLSchemaForJapaneseLaw_v3.xsd) | 法令構造の変換と、元XMLへの限定的な編集反映 | 法令XMLを原本とし、対応を確認できない編集は診断で知らせる。 |
 | [OKF v0.3](https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md) と [YAML 1.2.2](https://yaml.org/spec/1.2.2/) | ローカルのフォルダーで知識項目の認識、種類による絞り込み、参照元を指定した相対・ルート基準パスの解決 | 検証状態・鮮度表示、本文編集以外のYAML書き換え、Git履歴ビューからのクリックによるリンク追跡、OKFCは今後の範囲。 |
@@ -22,7 +22,7 @@ ibisOfficeが受け付ける構文、通常の入出力での挙動、制限と�
 
 フォルダーペインとAssistantの `folder_list` は `type:Metric` のような絞り込みを共有します。拡張子 `.md` のファイルで、先頭のフロントマターに文字列の `type` がある場合に知識項目として扱います。`index.md` と `log.md` は知識項目から除外し、一般ファイルとして開けます。種類はフォルダーを開いたときに読み取り、フロントマターの探索はファイルあたり64 KiBまでです。
 
-Assistantの `folder_read` は任意の `from` に参照元ファイルを指定できます。たとえば `from: metrics/revenue.md` と `path: ../README.md` はルートのREADMEを読みます。`path: /docs/method.md` は開いたフォルダーのルートを基準にします。同じ操作で `[[method]]` や `[[docs/method]]` も読めます。同名の候補がある場合はパス指定が必要です。この操作はファイルを読み取り、フラグメントへのスクロールやブラウザーのクリック処理はまだ行いません。
+Assistantの `folder_read` は任意の `from` に参照元ファイルを指定できます。たとえば `from: metrics/revenue.md` と `path: ../README.md` はルートのREADMEを読みます。`path: /docs/method.md` は開いたフォルダーのルートを基準にします。同じ操作で `[[method]]` や `[[docs/method]]` も読めます。同名の候補がある場合はパス指定が必要です。フォルダーペインから開いたMarkdownでは、本文の通常の相対リンクとルート基準リンクをたどれます。別ファイルの見出しフラグメントへのスクロールとWikiリンクの本文クリックは未対応です。
 
 Gitワークツリー内のフォルダーでは、Assistantの `git_read` に `git_log` で得たコミットSHAと参照元を渡せます。参照元とリンク先の両方を同じコミットから読み、リンク先のフラグメントを返します。作業ツリーの内容への切り替えは行いません。
 
@@ -34,7 +34,7 @@ Gitワークツリー内のフォルダーでは、Assistantの `git_read` に `
 
 ## OKF対応を広げる順序
 
-1. ファイルを開く動作にリンク解決をつなぎ、クリック時に参照元とフォルダーのルートを渡す。Gitの履歴ビューでは開いているコミットのツリーから対象を読む。見出しフラグメントへの移動は、そのファイルの見出しを読み取ってから行う。
+1. Wikiリンクの本文クリックをフォルダーのリンク解決につなぐ。Gitの履歴ビューでは開いているコミットのツリーから対象を読む。見出しフラグメントへの移動は、そのファイルの見出しを読み取ってから行う。
 2. プロパティの編集を元のYAMLの該当箇所に反映する。未知キーは入れ子も含めて保持し、従来の形式名と同じ知識項目の型は、フォルダーの文脈を使って判定する。
 3. タイトル、タグ、見出し、出典、現在の検証状態を索引に加える。索引は実ファイルやGitのblobから再生成する。配布用OKFCはバンドルの範囲を指定して生成し、OKFCの格納スキーマとOKF文書の版を個別に検証する。 [soraneのOKFC実装](https://github.com/masanork/sorane/blob/abc1e3ea6d83f45a7e5110b66670aa889c5ba6d7/packages/okf/src/okfc.ts)
 

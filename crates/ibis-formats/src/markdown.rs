@@ -2536,6 +2536,35 @@ fn parse_blocks(
                 blocks.extend(build_blockquote_blocks(&quote, ctx));
                 continue;
             }
+            if closed && let Some(figure) = myst::figure(fence_info.trim(), content_lines) {
+                let runs = parse_inlines(&figure.image, ctx, &RunFormat::default());
+                if matches!(runs.as_slice(), [run] if matches!(run.kind, FlowRunKind::Picture { .. })) {
+                    let mut picture = FlowParagraph {
+                        id: ctx.fresh_id(),
+                        style: ctx.styles.default_paragraph.clone(),
+                        runs,
+                        direct: ParaFormat { align: figure.align, ..ParaFormat::default() },
+                        ..FlowParagraph::default()
+                    };
+                    let mut caption = (!figure.caption.is_empty()).then(|| FlowParagraph {
+                        id: ctx.fresh_id(),
+                        style: ctx.styles.default_paragraph.clone(),
+                        runs: parse_inlines(&figure.caption, ctx, &RunFormat::default()),
+                        direct: ParaFormat { align: figure.align, ..ParaFormat::default() },
+                        ..FlowParagraph::default()
+                    });
+                    if let Some(label) = figure.label {
+                        caption.as_mut().unwrap_or(&mut picture).bookmarks.push(label.into());
+                    }
+                    picture.resolve(&ctx.styles);
+                    blocks.push(Block::Paragraph(picture));
+                    if let Some(mut caption) = caption {
+                        caption.resolve(&ctx.styles);
+                        blocks.push(Block::Paragraph(caption));
+                    }
+                    continue;
+                }
+            }
             let content = content_lines.join("\n");
             match lang.split_whitespace().next().unwrap_or("") {
                 "math" | "latex" | "tex" => {
@@ -7500,7 +7529,9 @@ pub fn open_markdown_presentation_with_base_dir(
     let (frontmatter, body) = roundtrip::frontmatter(raw_text.trim_start())
         .map_or((None, raw_text), |(metadata, body)| (Some(metadata), body));
     let is_marp = frontmatter.is_some_and(marp::enabled);
-    let slide_chunks = split_markdown_slides(raw_text, is_marp);
+    let heading_dividers = frontmatter.filter(|_| is_marp)
+        .map_or_else(Vec::new, |metadata| marp::heading_dividers(metadata, body));
+    let slide_chunks = split_markdown_slides(raw_text, is_marp, &heading_dividers);
     let blank = crate::blank::blank_file(crate::Kind::Presentation)?;
     let mut opened = crate::save::open(blank)?;
     if let Some(size) = frontmatter.and_then(|fm| fm.lines().find_map(|line| line.strip_prefix("pptx_size:"))) {
@@ -7966,18 +7997,20 @@ fn serialize_slide_paragraph(para: &ibis_doc_model::Paragraph, out: &mut String)
     }
 }
 
-fn split_markdown_slides(text: &str, is_marp: bool) -> Vec<String> {
+fn split_markdown_slides(text: &str, is_marp: bool, heading_dividers: &[u8]) -> Vec<String> {
     let text = text.trim();
     let body = roundtrip::frontmatter(text).map_or(text, |(_, body)| body.trim());
 
     let mut chunks: Vec<String> = Vec::new();
     let mut cur: Vec<&str> = Vec::new();
+    let mut has_content = false;
     let mut in_fence = None;
     let mut lines = body.lines();
     while let Some(line) = lines.next() {
         let t = line.trim();
         if is_fenced_line(t, &mut in_fence) {
             cur.push(line);
+            has_content = true;
             continue;
         }
         if let Some(comment) = marp::block_comment(line, lines.clone()) {
@@ -7985,14 +8018,20 @@ fn split_markdown_slides(text: &str, is_marp: bool) -> Vec<String> {
             cur.extend(lines.by_ref().take(comment.following_lines));
             continue;
         }
-        if matches!(t, "---" | "***" | "___") || (is_marp && is_horizontal_rule(t)) {
+        let ruler = matches!(t, "---" | "***" | "___") || (is_marp && is_horizontal_rule(t));
+        let divided_heading = has_content && parse_atx_heading(line)
+            .is_some_and(|(level, _)| heading_dividers.contains(&level));
+        if ruler || divided_heading {
             let joined = cur.join("\n").trim().to_string();
             if !joined.is_empty() {
                 chunks.push(joined);
             }
             cur.clear();
-        } else {
+            has_content = false;
+        }
+        if !ruler {
             cur.push(line);
+            has_content |= !t.is_empty();
         }
     }
     let last = cur.join("\n").trim().to_string();
@@ -9597,6 +9636,23 @@ Front caption
         assert_eq!(shapes[2].text_body().unwrap().paragraphs[1].runs[0].text, "Edited paragraph");
         assert_eq!(shapes[3].frame, EmuRect::new(1000000, 650000, 2400000, 900000));
         assert_eq!(shapes[3].text_body().unwrap().paragraphs[0].runs[0].text, "Front caption");
+    }
+
+    #[test]
+    fn myst_figure_preserves_native_picture_alt_text_and_caption_bookmark() {
+        let input = b"See [figure](#fig_sample).\n\n```{figure} data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a5sAAAAASUVORK5CYII=\n:label: fig_sample\n:alt: Sample image\n:width: 80px\n:align: center\n\nA **caption**.\n```\n";
+        let saved = import_markdown_to_docx_bytes(input).unwrap();
+        let markdown = export_docx_to_markdown(&saved).unwrap();
+        assert!(markdown.contains("![Sample image](data:image/png"), "{markdown}");
+        assert!(markdown.contains("A **caption**. {#fig_sample align=center}"), "{markdown}");
+        assert!(markdown.contains("[figure](#fig_sample)"), "{markdown}");
+    }
+
+    #[test]
+    fn marp_heading_divider_uses_only_selected_levels_and_skips_code() {
+        let source = b"---\nmarp: true\nheadingDivider: 1\n---\n<!-- headingDivider: [1, 3] -->\n# First\n## Details\n```txt\n### Code\n```\n### Second\n\n---\n\n### Third\n";
+        let deck = import_markdown_to_pptx_bytes(source).unwrap();
+        assert_eq!(crate::read(&deck).unwrap().slides.len(), 3);
     }
 
     #[test]

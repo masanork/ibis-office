@@ -44,6 +44,44 @@ pub(super) fn comment_size(body: &str) -> Option<EmuSize> {
     selected
 }
 
+pub(super) fn heading_dividers(metadata: &str, body: &str) -> Vec<u8> {
+    fn value(text: &str) -> Option<&str> {
+        text.lines()
+            .filter_map(setting)
+            .filter_map(|(key, value)| (key == "headingDivider").then_some(value))
+            .last()
+    }
+    let mut selected = value(metadata).map(str::to_owned);
+    let mut lines = body.lines();
+    let mut fence = None;
+    while let Some(line) = lines.next() {
+        if !super::is_fenced_line(line.trim(), &mut fence)
+            && let Some(comment) = block_comment(line, lines.clone())
+        {
+            if !comment.text.trim_start().starts_with("notes:")
+                && let Some(override_value) = value(&comment.text)
+            {
+                selected = Some(override_value.to_owned());
+            }
+            lines.by_ref().take(comment.following_lines).for_each(drop);
+        }
+    }
+    let Some(selected) = selected else {
+        return Vec::new();
+    };
+    if let Ok(level) = selected.parse::<u8>() {
+        return if (1..=6).contains(&level) {
+            (1..=level).collect()
+        } else {
+            Vec::new()
+        };
+    }
+    serde_json::from_str::<Vec<u8>>(&selected)
+        .ok()
+        .filter(|levels| levels.iter().all(|level| (1..=6).contains(level)))
+        .unwrap_or_default()
+}
+
 pub(super) fn size_preset(size: EmuSize) -> Option<&'static str> {
     let (width, height) = (i128::from(size.width), i128::from(size.height));
     if width * 9 == height * 16 {

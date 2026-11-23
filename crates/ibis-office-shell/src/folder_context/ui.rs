@@ -112,6 +112,23 @@ impl SlideEditor {
         .detach();
     }
 
+    /// Follow a Markdown link against the folder that owns the open source file.
+    pub fn follow_folder_link(
+        &mut self,
+        url: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(pane) = &self.folder_pane else { return false };
+        let Some(file) = self.file_path() else { return false };
+        let Some(target) = pane.folder.link_from_file(&file, url) else { return false };
+        match target {
+            Ok(path) => self.open_folder_file(&path, window, cx),
+            Err(error) => self.show_alert(text("folder.error"), error.into(), cx),
+        }
+        true
+    }
+
     pub(crate) fn open_folder_file(
         &mut self,
         relative: &str,
