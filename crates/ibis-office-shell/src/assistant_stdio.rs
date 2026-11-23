@@ -25,6 +25,9 @@ struct Request {
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Command {
+    Open,
+    SetInput { text: String },
+    Send,
     Prompt { text: String },
     Stop { run_id: u64 },
     Apply { run_id: u64 },
@@ -66,7 +69,10 @@ pub fn start(
                 .update_in(cx, |editor, window, cx| {
                     let response = match serde_json::from_slice::<Request>(&line) {
                         Ok(request) => match dispatch(editor, request.command, window, cx) {
-                            Ok(run_id) => json!({"id":request.id, "ok":true, "run_id":run_id}),
+                            Ok(None) => json!({"id":request.id, "ok":true}),
+                            Ok(Some(run_id)) => {
+                                json!({"id":request.id, "ok":true, "run_id":run_id})
+                            }
                             Err(message) => json!({"id":request.id, "ok":false, "error":message}),
                         },
                         Err(error) => {
@@ -120,16 +126,23 @@ fn dispatch(
     command: Command,
     window: &mut Window,
     cx: &mut Context<SlideEditor>,
-) -> Result<u64, &'static str> {
+) -> Result<Option<u64>, &'static str> {
     match command {
-        Command::Prompt { text } => editor.submit_assistant_stdio_prompt(text, window, cx),
+        Command::Open => editor.open_assistant_stdio(window, cx).map(|()| None),
+        Command::SetInput { text } => editor
+            .set_assistant_stdio_input(text, window, cx)
+            .map(|()| None),
+        Command::Send => editor.send_assistant_stdio(window, cx).map(Some),
+        Command::Prompt { text } => editor
+            .submit_assistant_stdio_prompt(text, window, cx)
+            .map(Some),
         Command::Stop { run_id } => {
             editor.stop_assistant_stdio(run_id, cx)?;
-            Ok(run_id)
+            Ok(Some(run_id))
         }
         Command::Apply { run_id } | Command::Discard { run_id } => {
             editor.review_assistant_stdio(run_id, matches!(command, Command::Apply { .. }), cx)?;
-            Ok(run_id)
+            Ok(Some(run_id))
         }
     }
 }

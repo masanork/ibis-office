@@ -34,17 +34,23 @@ ibisOffice --assistant-stdio sample.xlsx
 `document_blocked`（`reason: "password"`）が届いたら、GUI でパスワードを入力する。
 ファイルを省略して起動した場合は、対象ウィンドウで文書を開いてから送信する。
 
-標準入力は1行1 JSON。各要求に `id` を付ける。1行は改行込みで最大256 KiB。上限を超えると `protocol_error` を返して入力を終了する。以下の `run_id` は `prompt` の成功応答、または GUI 送信時の
-`started` イベントで取得した値に置き換える。
+標準入力は1行1 JSON。各要求に `id` を付ける。1行は改行込みで最大256 KiB。上限を超えると `protocol_error` を返して入力を終了する。
+
+デモでは次の3行を順に送る。各要求の成功応答を待ち、入力欄の内容を見せたい場合は `set_input` と `send` の間を空ける。
 
 ```jsonl
-{"id":1,"op":"prompt","text":"Data シートの A1 に確認済みと入力して"}
-{"id":2,"op":"stop","run_id":0}
-{"id":3,"op":"apply","run_id":0}
-{"id":4,"op":"discard","run_id":0}
+{"id":1,"op":"open"}
+{"id":2,"op":"set_input","text":"Data シートの A1 に確認済みと入力して"}
+{"id":3,"op":"send"}
 ```
 
-- 要求への応答には同じ `id` と `ok` が入る。成功時は `run_id`、失敗時は `error` を返す。同期イベントが応答より先に届くこともある。
+`open` で Assistant サイドバーを開く。`set_input` は表示中の入力欄の全文を置き換える。空文字で消去できる。
+入力後は GUI からも編集・送信できる。`send` は送信時点で入力欄にあるテキストを GUI の送信ボタンと同じ処理で送る。
+編集案が出ている間や応答中も入力欄に次の指示を準備できる。送信はターンの終了と編集案の解決を待つ。
+入力欄を経由せずに送信する場合は `{"id":4,"op":"prompt","text":"Data シートの範囲を教えて"}` を使う。
+
+- 要求への応答には同じ `id` と `ok` が入る。`open` と `set_input` の成功応答はこの2項目。実行ターンを扱う操作の成功応答には `run_id` が入り、失敗応答には `error` が入る。同期イベントが応答より先に届くこともある。
+- 停止・適用・破棄は `{"id":5,"op":"stop","run_id":0}` のように送る。`op` は `stop`、`apply`、`discard` のいずれか。`run_id` は `send` または `prompt` の成功応答、あるいは GUI 送信時の `started` イベントから取得する。
 - `started`、`delta`、`message`、`tool_call`、`tool`、`review` で、送信内容、応答断片、確定した応答テキスト、ツールの実行前の引数、実行結果、GUI と同じ編集プレビューを参照できる。各イベントに `run_id` が入る。
 - `completed`、`stopped`、`error` でターンの終了を通知する。`completed` の `review: true` は適用または破棄を待っている状態。GUI と標準入力のどちらから操作しても `review_resolved` の `outcome` に `applied`、`discarded`、`error` のいずれかが入る。
 - Assistant の履歴を消すと `reset` が届く。接続はそのウィンドウに属する。標準入力を閉じても、GUI から操作を続けられる。
