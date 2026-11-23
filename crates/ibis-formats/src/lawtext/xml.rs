@@ -63,17 +63,16 @@ pub fn parse_law_xml(xml: &str) -> Result<LawDoc, Error> {
             .map(collect_text)
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "附則".to_string());
-        out.suppl_provisions.push(SupplProvision {
+        out.push_suppl_provision(SupplProvision {
             amend_law_num: suppl.attribute("AmendLawNum").map(str::to_string),
             extract: suppl.attribute("Extract").is_some_and(|v| v == "true"),
             label,
             nodes: parse_xml_nodes(suppl),
-            appendix_xml: suppl.children()
+        }, suppl.children()
                 .filter(|node| node.is_element() && node.tag_name().namespace().is_none())
                 .filter(|node| SUPPL_APPDX_NAMES.contains(&node.tag_name().name()))
                 .filter_map(|node| read_xml_fragment(&xml[node.range()], SUPPL_APPDX_NAMES))
-                .collect(),
-        });
+                .collect());
     }
     for appendix in body.children().filter(roxmltree::Node::is_element) {
         match appendix.tag_name().name() {
@@ -461,7 +460,7 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
         write_xml_node(&mut out, node, 3);
     }
     out.push_str("    </MainProvision>\n");
-    for suppl in &doc.suppl_provisions {
+    for (index, suppl) in doc.suppl_provisions.iter().enumerate() {
         out.push_str("    <SupplProvision");
         push_opt_attr(&mut out, "AmendLawNum", suppl.amend_law_num.as_deref());
         if suppl.extract {
@@ -474,7 +473,7 @@ pub fn to_law_xml(doc: &LawDoc) -> String {
         for node in &suppl.nodes {
             write_xml_node(&mut out, node, 3);
         }
-        for fragment in &suppl.appendix_xml {
+        for fragment in doc.suppl_appendices(index) {
             out.push_str("      ");
             out.push_str(fragment);
             out.push('\n');

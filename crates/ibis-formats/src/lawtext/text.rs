@@ -30,11 +30,11 @@ const LAWTEXT_FRAGMENT_POSITIONS: &str = ":law-appdx-fragment-positions: ";
 const LAWTEXT_FRAGMENTS: &str = ":law-appdx-fragments: ";
 pub(super) const LAWTEXT_SUPPL_APPENDICES: &str = ":law-suppl-appendices: ";
 
-pub(super) fn encode_suppl_appendices(suppl: &SupplProvision) -> Option<String> {
-    if suppl.appendix_xml.is_empty() {
+pub(super) fn encode_suppl_appendices(fragments: &[String]) -> Option<String> {
+    if fragments.is_empty() {
         return None;
     }
-    serde_json::to_string(&suppl.appendix_xml).ok()
+    serde_json::to_string(fragments).ok()
 }
 
 const LAWTEXT_TABLES: &str = ":law-appdx-tables: ";
@@ -154,7 +154,7 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
     for node in &doc.main_provision {
         write_lawtext_node(&mut out, node, true);
     }
-    for suppl in &doc.suppl_provisions {
+    for (index, suppl) in doc.suppl_provisions.iter().enumerate() {
         out.push_str(&suppl.label);
         if let Some(amend) = suppl.amend_law_num.as_deref().filter(|s| !s.is_empty()) {
             out.push('（');
@@ -165,7 +165,7 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
             out.push_str("（抄）");
         }
         out.push_str("\n\n");
-        if let Some(encoded) = encode_suppl_appendices(suppl) {
+        if let Some(encoded) = encode_suppl_appendices(doc.suppl_appendices(index)) {
             out.push_str(&format!("{LAWTEXT_SUPPL_APPENDICES}{encoded}\n\n"));
         }
         for node in &suppl.nodes {
@@ -406,16 +406,15 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
             let (label, amend) = split_title_and_parens(header)
                 .map(|(label, amend)| (label, Some(amend)))
                 .unwrap_or_else(|| (header.to_string(), None));
-            doc.suppl_provisions.push(SupplProvision {
+            doc.push_suppl_provision(SupplProvision {
                 amend_law_num: amend,
                 extract,
                 label,
                 nodes: Vec::new(),
-                appendix_xml: lines.next_if(|line| line.trim().starts_with(LAWTEXT_SUPPL_APPENDICES))
+            }, lines.next_if(|line| line.trim().starts_with(LAWTEXT_SUPPL_APPENDICES))
                     .and_then(|line| line.trim().strip_prefix(LAWTEXT_SUPPL_APPENDICES))
                     .map(read_encoded_suppl_appendices)
-                    .unwrap_or_default(),
-            });
+                    .unwrap_or_default());
             continue;
         }
         if let Some((kind, num)) = parse_division_header(trimmed) {

@@ -519,7 +519,7 @@ pub fn verify_aratame_with_bill_supplement(
             && !simulated_new.suppl_provisions.iter().any(matches_number)
         {
             let mut in_scope = expected_new.clone();
-            in_scope.suppl_provisions.remove(index);
+            in_scope.remove_suppl_provision(index);
             expected_in_scope = Some(in_scope);
             bill_supplement_law_num = Some(number.to_string());
         } else {
@@ -535,7 +535,10 @@ pub fn verify_aratame_with_bill_supplement(
         ("制定文", simulated_new.enact_statement == expected_new.enact_statement),
         ("前文", simulated_new.preamble == expected_new.preamble),
         ("本則", simulated_new.main_provision == expected_new.main_provision),
-        ("附則", simulated_new.suppl_provisions == expected_new.suppl_provisions),
+        ("附則", simulated_new.suppl_provisions == expected_new.suppl_provisions
+            && (0..expected_new.suppl_provisions.len()).all(|index| {
+                simulated_new.suppl_appendices(index) == expected_new.suppl_appendices(index)
+            })),
         ("別表", simulated_new.appdx_tables == expected_new.appdx_tables),
     ] {
         if !matches {

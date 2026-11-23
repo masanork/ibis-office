@@ -114,7 +114,7 @@ fn to_markdown_with_articles(
             out.push_str("（抄）");
         }
         out.push_str("\n\n");
-        if preserve_editing_metadata && let Some(encoded) = encode_suppl_appendices(suppl) {
+        if preserve_editing_metadata && let Some(encoded) = encode_suppl_appendices(doc.suppl_appendices(index)) {
             // Escape hyphens so fragment text cannot end the Markdown comment.
             let encoded = encoded.replace('-', "\\u002d");
             out.push_str(&format!("<!-- {LAWTEXT_SUPPL_APPENDICES}{encoded} -->\n\n"));
@@ -422,6 +422,7 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
     }
 
     let mut parsed = parse_lawtext(&lawtext_lines.join("\n"))?;
+    doc.take_suppl_provisions_from(&mut parsed);
     if doc.law_title.is_empty() {
         doc.law_title = parsed.law_title;
     }
@@ -429,7 +430,6 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
         doc.law_num = parsed.law_num;
     }
     doc.main_provision = std::mem::take(&mut parsed.main_provision);
-    doc.suppl_provisions = std::mem::take(&mut parsed.suppl_provisions);
     if let Some(encoded) = fragment_positions {
         doc.appdx_fragment_positions = read_encoded_appdx_fragment_positions(&encoded, doc.appdx_fragment_xml.len());
     }

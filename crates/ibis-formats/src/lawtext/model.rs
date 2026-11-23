@@ -3,6 +3,8 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Statutory document and amendment-comparison model.
 
+use std::collections::BTreeMap;
+
 /// Structural division kind within `MainProvision` or `SupplProvision`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DivisionKind {
@@ -214,7 +216,14 @@ pub struct SupplProvision {
     pub extract: bool,
     pub label: String,
     pub nodes: Vec<LawNode>,
-    pub(super) appendix_xml: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SupplAppendices {
+    amend_law_num: Option<String>,
+    extract: bool,
+    label: String,
+    fragments: Vec<String>,
 }
 
 /// An appended table (`AppdxTable`: 別表).
@@ -257,6 +266,7 @@ pub struct LawDoc {
     pub preamble: Option<String>,
     pub main_provision: Vec<LawNode>,
     pub suppl_provisions: Vec<SupplProvision>,
+    pub(super) suppl_appendices: BTreeMap<usize, SupplAppendices>,
     pub appdx_tables: Vec<LawAppdxTable>,
     pub(super) appdx_table_xml: Vec<super::table_markup::SavedAppdxTable>,
 }
@@ -281,8 +291,46 @@ impl Default for LawDoc {
             preamble: None,
             main_provision: Vec::new(),
             suppl_provisions: Vec::new(),
+            suppl_appendices: BTreeMap::new(),
             appdx_tables: Vec::new(),
             appdx_table_xml: Vec::new(),
+        }
+    }
+}
+
+impl LawDoc {
+    pub(super) fn push_suppl_provision(&mut self, suppl: SupplProvision, fragments: Vec<String>) {
+        if !fragments.is_empty() {
+            self.suppl_appendices.insert(self.suppl_provisions.len(), SupplAppendices {
+                amend_law_num: suppl.amend_law_num.clone(),
+                extract: suppl.extract,
+                label: suppl.label.clone(),
+                fragments,
+            });
+        }
+        self.suppl_provisions.push(suppl);
+    }
+
+    pub(super) fn suppl_appendices(&self, index: usize) -> &[String] {
+        let Some(suppl) = self.suppl_provisions.get(index) else {
+            return &[];
+        };
+        self.suppl_appendices.get(&index)
+            .filter(|saved| saved.amend_law_num == suppl.amend_law_num
+                && saved.extract == suppl.extract && saved.label == suppl.label)
+            .map_or(&[], |saved| saved.fragments.as_slice())
+    }
+
+    pub(super) fn take_suppl_provisions_from(&mut self, source: &mut Self) {
+        self.suppl_provisions = std::mem::take(&mut source.suppl_provisions);
+        self.suppl_appendices = std::mem::take(&mut source.suppl_appendices);
+    }
+
+    pub(super) fn remove_suppl_provision(&mut self, index: usize) {
+        self.suppl_provisions.remove(index);
+        self.suppl_appendices.remove(&index);
+        for (position, appendices) in self.suppl_appendices.split_off(&index) {
+            self.suppl_appendices.insert(position - 1, appendices);
         }
     }
 }

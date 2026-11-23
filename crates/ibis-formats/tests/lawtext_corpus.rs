@@ -390,6 +390,22 @@ fn mixed_appendices_keep_their_order_even_when_a_table_cell_is_edited() {
 }
 
 #[test]
+fn downstream_code_can_construct_a_supplement_with_a_struct_literal() {
+    use ibis_formats::lawtext::{LawDoc, SupplProvision, to_law_xml};
+
+    let mut doc = LawDoc::default();
+    doc.suppl_provisions.push(SupplProvision {
+        amend_law_num: Some("令和七年法律第二号".to_string()),
+        extract: true,
+        label: "附則".to_string(),
+        nodes: Vec::new(),
+    });
+    assert!(to_law_xml(&doc).contains(
+        "<SupplProvision AmendLawNum=\"令和七年法律第二号\" Extract=\"true\">",
+    ));
+}
+
+#[test]
 fn supplementary_appendices_roundtrip_under_their_own_headings_in_order() {
     use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
 
@@ -420,6 +436,17 @@ fn supplementary_appendices_roundtrip_under_their_own_headings_in_order() {
         supplement(third, &format!("{formula}{style}")),
     );
     let document = parse_law_xml(&input).unwrap();
+    let before_amendment = format!(
+        "{before}{}{}\n</LawBody>\n</Law>",
+        supplement(first, &format!("{style}{table}{formula}")),
+        supplement(third, &format!("{formula}{style}")),
+    );
+    let old = parse_law_xml(&before_amendment).unwrap();
+    let verification = ibis_formats::lawtext::verify_aratame_with_bill_supplement(
+        &old, "", &document, Some(second),
+    );
+    assert!(verification.diagnostics.is_empty(), "{:?}", verification.diagnostics);
+
     let lawtext = to_lawtext(&document);
     let markdown = to_markdown(&document);
     assert!(markdown.contains("sample\\u002d\\u002dform.pdf"));
