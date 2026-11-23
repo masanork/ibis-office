@@ -2,8 +2,9 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
-use super::{Row, Table, array};
+use super::{Row, Table, array, component_tree, inventory, parse, workbook};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 const ASSET_COLUMNS: &[&str] = &[
@@ -37,7 +38,20 @@ fn scalar(value: &Value) -> String {
     }
 }
 
-pub(super) fn tables(doc: &Value, items: &[(&Value, &str)]) -> Result<Vec<Table>, String> {
+const RELATIONSHIP_COLUMNS: &[&str] = &[
+    "Source reference",
+    "Source",
+    "Relationship",
+    "Target reference",
+    "Target",
+];
+
+struct CryptoInventory {
+    assets: Vec<Row>,
+    edges: Vec<Row>,
+}
+
+fn collect(doc: &Value, items: &[(&Value, &str)]) -> Result<CryptoInventory, String> {
     let mut assets = Vec::new();
     let mut crypto_refs = BTreeSet::new();
     let mut names = BTreeMap::new();
@@ -82,7 +96,10 @@ pub(super) fn tables(doc: &Value, items: &[(&Value, &str)]) -> Result<Vec<Table>
         ]);
     }
     if assets.is_empty() {
-        return Ok(Vec::new());
+        return Ok(CryptoInventory {
+            assets,
+            edges: Vec::new(),
+        });
     }
 
     let mut edges = BTreeSet::new();
@@ -113,9 +130,20 @@ pub(super) fn tables(doc: &Value, items: &[(&Value, &str)]) -> Result<Vec<Table>
             ]
         })
         .collect();
+    Ok(CryptoInventory {
+        assets,
+        edges: rows,
+    })
+}
+
+pub(super) fn tables(doc: &Value, items: &[(&Value, &str)]) -> Result<Vec<Table>, String> {
+    let CryptoInventory { assets, edges } = collect(doc, items)?;
+    if assets.is_empty() {
+        return Ok(Vec::new());
+    }
     Ok(vec![
         ("Cryptographic assets", ASSET_COLUMNS, assets),
-        ("Crypto relationships", &["Source reference", "Source", "Relationship", "Target reference", "Target"], rows),
+        ("Crypto relationships", RELATIONSHIP_COLUMNS, edges),
         ("Crypto notes", &["Scope"], vec![
             vec!["Relationships are declarations in the source BOM. provides means implementation or provision. dependsOn records a dependency. Confirm actual runtime use separately.".into()],
             vec!["Related material values are excluded. This table contains selected inventory metadata and does not assess PQC readiness.".into()],
@@ -123,10 +151,231 @@ pub(super) fn tables(doc: &Value, items: &[(&Value, &str)]) -> Result<Vec<Table>
     ])
 }
 
+fn comparison_input(input: (&str, &[u8])) -> Result<CryptoInventory, String> {
+    let doc = parse(input)?;
+    inventory(&doc)?;
+    let items = component_tree(&doc)?;
+    let mut refs = BTreeSet::new();
+    for (component, _) in &items {
+        if let Some(reference) = component["bom-ref"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+        {
+            if !refs.insert(reference) {
+                return Err(format!("duplicate BOM reference {reference}"));
+            }
+        }
+    }
+    collect(&doc, &items)
+}
+
+fn with_status(status: &str, mut row: Row) -> Row {
+    row.insert(0, status.into());
+    row
+}
+
+/// Compare the stated cryptographic assets and relationships in two CycloneDX inventories.
+pub fn compare_xlsx(inputs: [(&str, &[u8]); 2]) -> Result<Vec<u8>, String> {
+    let [old, new] =
+        inputs.map(|input| comparison_input(input).map_err(|err| format!("{}: {err}", input.0)));
+    let (old, new) = (old?, new?);
+    let mut asset_changes = Vec::new();
+    let mut field_changes = Vec::new();
+    let index_assets =
+        |rows: Vec<Row>, unmatched: &str, changes: &mut Vec<Row>| -> BTreeMap<String, Row> {
+            let mut indexed = BTreeMap::new();
+            for row in rows {
+                if row[2].is_empty() {
+                    changes.push(with_status(unmatched, row));
+                } else {
+                    indexed.insert(row[2].clone(), row);
+                }
+            }
+            indexed
+        };
+    let mut after = index_assets(new.assets, "Unmatched in new BOM", &mut asset_changes);
+    for (reference, before) in index_assets(old.assets, "Unmatched in old BOM", &mut asset_changes)
+    {
+        if let Some(current) = after.remove(&reference) {
+            if before != current {
+                for ((field, from), to) in ASSET_COLUMNS.iter().zip(&before).zip(&current) {
+                    if from != to {
+                        field_changes.push(vec![
+                            reference.clone(),
+                            current[0].clone(),
+                            (*field).into(),
+                            from.clone(),
+                            to.clone(),
+                        ]);
+                    }
+                }
+                asset_changes.push(with_status("Changed", current));
+            }
+        } else {
+            asset_changes.push(with_status("Removed", before));
+        }
+    }
+    asset_changes.extend(after.into_values().map(|row| with_status("Added", row)));
+    let index_edges = |rows: Vec<Row>| -> BTreeMap<[String; 3], Row> {
+        rows.into_iter()
+            .map(|row| ([row[0].clone(), row[2].clone(), row[3].clone()], row))
+            .collect()
+    };
+    let old_edges = index_edges(old.edges);
+    let new_edges = index_edges(new.edges);
+    let mut relationship_changes = Vec::new();
+    for (status, from, to) in [
+        ("Removed", &old_edges, &new_edges),
+        ("Added", &new_edges, &old_edges),
+    ] {
+        relationship_changes.extend(
+            from.iter()
+                .filter(|(key, _)| !to.contains_key(*key))
+                .map(|(_, row)| with_status(status, row.clone())),
+        );
+    }
+    let evidence = ["Old CBOM", "New CBOM"]
+        .into_iter()
+        .zip(inputs)
+        .map(|(role, (name, bytes))| {
+            vec![
+                role.into(),
+                name.into(),
+                format!("{:x}", Sha256::digest(bytes)),
+            ]
+        })
+        .collect();
+
+    // These headers match the asset view with a leading change column.
+    const ASSET_DIFF_COLUMNS: &[&str] = &[
+        "Change",
+        "Name",
+        "Asset type",
+        "BOM reference",
+        "Parent",
+        "OID",
+        "Primitive",
+        "Parameter set",
+        "Curve",
+        "Classical security level",
+        "NIST quantum security level",
+        "Protocol",
+        "Protocol version",
+        "Certificate subject",
+        "Certificate issuer",
+        "Certificate expiry",
+        "Signature algorithm reference",
+        "Subject public key reference",
+        "Material type",
+        "Material algorithm reference",
+        "Material expiry",
+    ];
+    workbook([
+        ("Asset changes", ASSET_DIFF_COLUMNS, asset_changes),
+        ("Changed asset fields", &["BOM reference", "Name", "Field", "Old", "New"], field_changes),
+        ("Relationship changes", &["Change", "Source reference", "Source", "Relationship", "Target reference", "Target"], relationship_changes),
+        ("Input artifacts", &["Role", "File", "SHA-256"], evidence),
+        ("Comparison notes", &["Scope"], vec![
+            vec!["Assets are matched by exact BOM reference. Use stable references across releases. Assets without a reference appear as unmatched.".into()],
+            vec!["Relationships are matched by source reference, kind and target reference. A changed target appears as a removed edge and an added edge.".into()],
+            vec!["The tables compare selected metadata and declarations. Confirm actual runtime use and PQC migration separately.".into()],
+        ]),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::*;
+    use super::super::{Digest, Sha256, open_table};
+    use super::{Value, compare_xlsx as compare_cbom_xlsx};
     use ibis_doc_model::sheet_calc::sheet_of_slide;
+
+    #[test]
+    fn compares_rsa_to_ml_dsa_inventory_and_relationships() {
+        let before = include_bytes!("../../../../test/fixtures/cbom/payment-before.cdx.json");
+        let after = include_bytes!("../../../../test/fixtures/cbom/payment-after.cdx.json");
+        let report = compare_cbom_xlsx([("before.json", before), ("after.json", after)]).unwrap();
+        let reopened = crate::open(report).unwrap();
+        let book = &reopened.presentation;
+        let sheet = |index: usize| sheet_of_slide(&book.slides[index]).unwrap();
+        assert_eq!(
+            book.workbook.as_ref().unwrap().sheets[2].name,
+            "Relationship changes"
+        );
+        let values = |index, row, columns: &[u32]| -> Vec<&str> {
+            columns
+                .iter()
+                .map(|column| sheet(index).cell(row, *column).unwrap().text.as_str())
+                .collect()
+        };
+        assert_eq!(
+            values(0, 1, &[0, 1]),
+            ["Changed", "Demo payment certificate"]
+        );
+        assert_eq!(values(0, 2, &[0, 1]), ["Removed", "Demo key entry"]);
+        assert_eq!(values(0, 3, &[0, 1]), ["Removed", "RSA-2048"]);
+        assert_eq!(values(0, 4, &[0, 1]), ["Added", "ML-DSA-65"]);
+        assert_eq!(
+            values(1, 2, &[2, 3, 4]),
+            ["Signature algorithm reference", "rsa", "ml-dsa"]
+        );
+        assert_eq!(
+            values(2, 1, &[0, 1, 3, 4]),
+            ["Removed", "cert", "dependsOn", "rsa"]
+        );
+        assert_eq!(
+            values(2, 2, &[0, 1, 3, 4]),
+            ["Removed", "provider", "provides", "rsa"]
+        );
+        assert_eq!(
+            values(2, 3, &[0, 1, 3, 4]),
+            ["Added", "cert", "dependsOn", "ml-dsa"]
+        );
+        assert_eq!(
+            values(2, 4, &[0, 1, 3, 4]),
+            ["Added", "provider", "provides", "ml-dsa"]
+        );
+        assert!(sheet(2).cell(5, 0).is_none());
+        assert_eq!(
+            sheet(3).cell(1, 2).unwrap().text,
+            format!("{:x}", Sha256::digest(before))
+        );
+        assert_eq!(
+            sheet(3).cell(2, 2).unwrap().text,
+            format!("{:x}", Sha256::digest(after))
+        );
+        assert!(
+            book.slides
+                .iter()
+                .filter_map(sheet_of_slide)
+                .flat_map(|sheet| sheet.cells.iter())
+                .all(|cell| !cell.text.contains("SYNTHETIC-MATERIAL-VALUE"))
+        );
+    }
+
+    #[test]
+    fn reports_missing_identity_without_guessing_and_rejects_duplicate_references() {
+        let doc = |assets: Value| {
+            serde_json::json!({
+                "bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": assets
+            })
+            .to_string()
+        };
+        let input = doc(serde_json::json!([{"type": "cryptographic-asset", "name": "Example"}]));
+        let report =
+            compare_cbom_xlsx([("old", input.as_bytes()), ("new", input.as_bytes())]).unwrap();
+        let opened = crate::open(report).unwrap();
+        let sheet = sheet_of_slide(&opened.presentation.slides[0]).unwrap();
+        assert_eq!(sheet.cell(1, 0).unwrap().text, "Unmatched in new BOM");
+        assert_eq!(sheet.cell(2, 0).unwrap().text, "Unmatched in old BOM");
+
+        let duplicate = doc(serde_json::json!([
+            {"type": "cryptographic-asset", "name": "One", "bom-ref": "same"},
+            {"type": "cryptographic-asset", "name": "Two", "bom-ref": "same"}
+        ]));
+        let error = compare_cbom_xlsx([("old", duplicate.as_bytes()), ("new", input.as_bytes())])
+            .unwrap_err();
+        assert_eq!(error, "old: duplicate BOM reference same");
+    }
 
     #[test]
     fn opens_and_reopens_synthetic_cbom_with_only_inventory_metadata() {

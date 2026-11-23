@@ -1,0 +1,81 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "version": 2,
+  "metadata": {
+    "component": {
+      "type": "application",
+      "name": "Demo payment service",
+      "bom-ref": "payments"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "Demo crypto provider",
+      "bom-ref": "provider",
+      "components": [
+        {
+          "type": "cryptographic-asset",
+          "name": "ML-DSA-65",
+          "bom-ref": "ml-dsa",
+          "cryptoProperties": {
+            "assetType": "algorithm",
+            "algorithmProperties": {
+              "primitive": "signature",
+              "parameterSetIdentifier": "65",
+              "nistQuantumSecurityLevel": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "name": "Demo payment certificate",
+      "bom-ref": "cert",
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=payments.example.test",
+          "issuerName": "CN=Demo CA",
+          "notValidAfter": "2029-12-31T00:00:00Z",
+          "signatureAlgorithmRef": "ml-dsa"
+        }
+      }
+    },
+    {
+      "type": "cryptographic-asset",
+      "name": "Demo TLS",
+      "bom-ref": "tls",
+      "cryptoProperties": {
+        "assetType": "protocol",
+        "protocolProperties": {
+          "type": "tls",
+          "version": "1.3"
+        }
+      }
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "payments",
+      "dependsOn": [
+        "tls",
+        "cert"
+      ]
+    },
+    {
+      "ref": "provider",
+      "provides": [
+        "ml-dsa"
+      ]
+    },
+    {
+      "ref": "cert",
+      "dependsOn": [
+        "ml-dsa"
+      ]
+    }
+  ]
+}

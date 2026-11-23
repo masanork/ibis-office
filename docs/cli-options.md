@@ -117,6 +117,8 @@ Use **File → Refresh vulnerability review…** to select a new OSV-Scanner JSO
 
 If a CycloneDX JSON file declares cryptographic assets, the workbook shows their inventory and relationships on separate sheets. The related cryptographic material value is excluded. [Synthetic CBOM example](../test/fixtures/cbom/README.md)
 
+Use `--export cbom-compare --old-sbom before.cdx.json --new-sbom after.cdx.json --out-file changes.xlsx` to report cryptographic asset and relationship changes. Asset matching uses exact `bom-ref` values.
+
 ---
 
 ## Print & Export Options

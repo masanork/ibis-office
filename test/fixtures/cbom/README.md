@@ -13,3 +13,15 @@ ibisOffice --export sbom-table payment-demo.cdx.json --out-file payment-crypto-i
 ```
 
 The related-material `value` field is excluded from the workbook. The sample illustrates inventory review and does not establish runtime use or PQC readiness.
+
+## Compare two releases
+
+```sh
+ibisOffice --export cbom-compare \
+  --old-sbom payment-before.cdx.json --new-sbom payment-after.cdx.json \
+  --out-file payment-crypto-changes.xlsx
+```
+
+Open the XLSX in ibisOffice. **Asset changes** shows RSA-2048 and its related key record removed, and ML-DSA-65 added. **Changed asset fields** shows the certificate declaration before and after. **Relationship changes** shows the certificate dependency and provider implementation changing from RSA-2048 to ML-DSA-65. The payment service dependencies on TLS and the certificate are unchanged.
+
+Keep `bom-ref` values stable for the same asset or endpoint across releases. An asset with a missing reference is listed as unmatched. Changes to edge targets appear as removal and addition. **Input artifacts** records the two filenames and SHA-256 values. This fixture describes fictional BOM declarations for an inventory comparison.

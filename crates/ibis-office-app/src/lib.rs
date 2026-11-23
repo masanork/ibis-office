@@ -579,8 +579,16 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
         if input_count != 0 || args.sbom_review_inputs.iter().any(Option::is_none) {
             return Err("--export sbom-review requires --old-sbom, --new-sbom, --old-scan and --new-scan".into());
         }
+    } else if args.export.as_deref() == Some("cbom-compare") {
+        let [old_bom, new_bom, old_scan, new_scan] = &args.sbom_review_inputs;
+        if input_count != 0 || old_bom.is_none() || new_bom.is_none()
+            || old_scan.is_some() || new_scan.is_some()
+            || !args.out_file.as_deref().is_some_and(is_xlsx_path)
+        {
+            return Err("--export cbom-compare requires --old-sbom, --new-sbom and --out-file <report.xlsx>".into());
+        }
     } else if args.sbom_review_inputs.iter().any(Option::is_some) {
-        return Err("SBOM review inputs require --export sbom-review".into());
+        return Err("SBOM inputs require --export sbom-review or --export cbom-compare".into());
     }
     if args.export.as_deref() == Some("sbom-table")
         && (input_count != 1 || !args.out_file.as_deref().is_some_and(is_xlsx_path))
@@ -698,6 +706,18 @@ fn write_sbom_export(out: Option<&std::path::Path>, bytes: &[u8]) -> Result<(), 
 /// `--export`: write the slides of the file and quit, without a window.
 #[cfg(not(target_family = "wasm"))]
 fn run_export(args: &Args, format: &str) -> Result<(), String> {
+    if format == "cbom-compare" {
+        let [Some(old), Some(new), None, None] = &args.sbom_review_inputs else {
+            return Err("CBOM comparison requires two JSON inputs".into());
+        };
+        let (old_name, old_bytes) = read_sbom_input(old)?;
+        let (new_name, new_bytes) = read_sbom_input(new)?;
+        let report = ibis_formats::sbom_review::compare_cbom_xlsx([
+            (old_name.as_ref(), &old_bytes),
+            (new_name.as_ref(), &new_bytes),
+        ])?;
+        return write_sbom_export(args.out_file.as_deref(), &report);
+    }
     if format == "sbom-table" {
         let path = args.path.as_deref().ok_or("SBOM table requires one JSON input")?;
         let (name, bytes) = read_sbom_input(path)?;

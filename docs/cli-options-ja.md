@@ -135,6 +135,8 @@ ibisOffice --export sbom-table scan.osv.json --out-file findings.xlsx
 
 CycloneDX JSON に暗号資産が含まれる場合は、暗号資産とその参照関係を別シートに表示します。暗号関連資材の値は表に転記されません。[CBOMの合成サンプル](../test/fixtures/cbom/README.md)
 
+旧版・新版の暗号資産と参照関係の差分をXLSXで確認するには、`--export cbom-compare --old-sbom before.cdx.json --new-sbom after.cdx.json --out-file changes.xlsx` を使用します。暗号資産は `bom-ref` で照合します。
+
 ---
 
 ## 印刷・エクスポート詳細オプション
