@@ -171,13 +171,7 @@ fn audit_reports_xml_model_changes_and_preserves_required_lawtext_attributes() {
     for path in ["/Law/@PromulgateMonth", "/Law/@PromulgateDay"] {
         assert!(model.iter().all(|change| change["path"] != path));
     }
-    assert_eq!(
-        lawtext,
-        &[serde_json::json!({
-            "kind": "element_removed",
-            "path": "/Law/LawBody[1]/EnactStatement[1]",
-        })],
-    );
+    assert!(lawtext.is_empty(), "{lawtext:?}");
     assert!(report["output_xsd"].is_null());
 }
 
@@ -295,7 +289,10 @@ fn public_food_labeling_samples_expose_table_and_form_limits() {
         ),
     ] {
         let original = parse_law_xml(xml).unwrap();
-        let lawtext = parse_lawtext(&to_lawtext(&original)).unwrap();
+        assert!(original.enact_statement.is_some());
+        let serialized = to_lawtext(&original);
+        assert!(ibis_formats::lawtext::is_lawtext(serialized.as_bytes()));
+        let lawtext = parse_lawtext(&serialized).unwrap();
         let markdown = parse_markdown_law(&to_markdown(&original)).unwrap();
         assert_eq!(lawtext.appdx_tables, original.appdx_tables);
         for edited in [lawtext, markdown] {
@@ -309,10 +306,9 @@ fn public_food_labeling_samples_expose_table_and_form_limits() {
                     to_law_xml(&original).split_once("<AppdxTable>").unwrap().1
                 );
             }
-            assert_eq!(
-                parse_law_xml(&to_law_xml(&edited)).unwrap().law_title,
-                title
-            );
+            let restored = parse_law_xml(&to_law_xml(&edited)).unwrap();
+            assert_eq!(restored.law_title, title);
+            assert_eq!(restored.enact_statement, original.enact_statement);
         }
     }
 

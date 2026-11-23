@@ -44,6 +44,10 @@ fn to_markdown_with_articles(
         write_title_attributes_fragment(&mut out, &doc.law_title_attributes);
         out.push('\n');
     }
+    if preserve_editing_metadata && let Some(statement) = &doc.enact_statement {
+        let encoded = serde_json::Value::String(statement.clone());
+        out.push_str(&format!("law_enact_statement: {encoded}\n"));
+    }
     if preserve_editing_metadata && let Some(toc) = &doc.toc_xml {
         let encoded = serde_json::Value::String(toc.clone());
         out.push_str(&format!("law_toc: {encoded}\n"));
@@ -301,6 +305,7 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
                                 doc.law_title_attributes = attributes;
                             }
                         }
+                        "law_enact_statement" => doc.enact_statement = serde_json::from_str(&v).ok(),
                         "law_toc" => doc.toc_xml = read_encoded_toc(&v),
                         "law_appdx_tables" => table_xml = Some(v),
                         "law_num" => doc.law_num = v,

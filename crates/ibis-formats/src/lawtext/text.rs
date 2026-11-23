@@ -25,6 +25,7 @@ use super::table_markup::{encode_tables, restore_tables};
 
 const LAWTEXT_TITLE_ATTRIBUTES: &str = ":law-title-attrs: ";
 const LAWTEXT_TABLES: &str = ":law-appdx-tables: ";
+const LAWTEXT_ENACT_STATEMENT: &str = ":law-enact-statement: ";
 const LAWTEXT_TOC: &str = ":law-toc: ";
 
 /// The upstream Lawtext examples put the law number on its own line.
@@ -70,6 +71,7 @@ pub fn is_lawtext(data: &[u8]) -> bool {
             lawtext_attributes(line).is_some() || line.strip_prefix(LAWTEXT_TITLE_ATTRIBUTES)
                 .and_then(parse_title_attributes_fragment).is_some()
                 || line.starts_with(LAWTEXT_TOC) || line.starts_with(LAWTEXT_TABLES)
+                || line.starts_with(LAWTEXT_ENACT_STATEMENT)
         });
     let Some(first) = lines.next() else {
         return false;
@@ -101,6 +103,10 @@ pub fn to_lawtext(doc: &LawDoc) -> String {
         out.push_str(LAWTEXT_TITLE_ATTRIBUTES);
         write_title_attributes_fragment(&mut out, &doc.law_title_attributes);
         out.push('\n');
+    }
+    if let Some(statement) = &doc.enact_statement {
+        let encoded = serde_json::Value::String(statement.clone());
+        out.push_str(&format!("{LAWTEXT_ENACT_STATEMENT}{encoded}\n"));
     }
     if let Some(toc) = &doc.toc_xml {
         let encoded = serde_json::Value::String(toc.clone());
@@ -281,6 +287,12 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
         .and_then(parse_title_attributes_fragment)
     {
         doc.law_title_attributes = attributes;
+        lines.next();
+    }
+    if let Some(encoded) = lines.peek()
+        .and_then(|line| line.trim().strip_prefix(LAWTEXT_ENACT_STATEMENT))
+    {
+        doc.enact_statement = serde_json::from_str(encoded).ok();
         lines.next();
     }
     if let Some(toc) = lines.peek()
