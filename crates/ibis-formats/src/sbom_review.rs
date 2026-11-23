@@ -10,7 +10,11 @@ use std::fmt::Write;
 mod crypto;
 pub use crypto::compare_xlsx as compare_cbom_xlsx;
 pub use crypto::is_cbom_inventory;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod build_search;
 mod ledger;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub use build_search::search_xlsx as search_sbom_builds_xlsx;
 pub use ledger::{can_refresh, open_action_queue, refresh_xlsx};
 
 type Package = (String, String);
@@ -105,11 +109,16 @@ fn add_component(component: &Value, bom: &mut Inventory) -> Result<(), String> {
     Ok(())
 }
 
-fn inventory(doc: &Value) -> Result<Inventory, String> {
+fn validate_cyclonedx(doc: &Value) -> Result<(), String> {
     if doc["bomFormat"] != "CycloneDX" {
         return Err("expected CycloneDX JSON".into());
     }
     required(doc, "specVersion")?;
+    Ok(())
+}
+
+fn inventory(doc: &Value) -> Result<Inventory, String> {
+    validate_cyclonedx(doc)?;
     let mut bom = Inventory::new();
     if let Some(subject) = doc["metadata"].get("component") {
         add_component(subject, &mut bom)?;
@@ -503,10 +512,7 @@ fn report_tables(
 ) -> Result<Vec<Table>, String> {
     match format {
         ReportFormat::CycloneDx => {
-            if doc["bomFormat"] != "CycloneDX" {
-                return Err("expected CycloneDX JSON".into());
-            }
-            required(doc, "specVersion")?;
+            validate_cyclonedx(doc)?;
             let items = component_tree(doc)?;
             let mut tables = crypto::tables(doc, &items)?;
             tables.push(("Components", COMPONENT_COLUMNS, component_rows(&items)));
