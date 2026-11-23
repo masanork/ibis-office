@@ -14,10 +14,10 @@ use gpui_kit::*;
 use super::{GitWorkspace, MAX_TEXT_DIFF_BYTES, Result, filename, markdown_block, short};
 use crate::{editor::SlideEditor, i18n::text};
 
-struct Change {
-    path: PathBuf,
-    index: u8,
-    worktree: u8,
+pub(super) struct Change {
+    pub(super) path: PathBuf,
+    pub(super) index: u8,
+    pub(super) worktree: u8,
 }
 
 impl Change {
@@ -180,7 +180,7 @@ pub(super) fn git_diff_document(
     Ok(ibis_formats::markdown::open_markdown(markdown)?)
 }
 
-fn status(root: &Path) -> Result<Vec<Change>> {
+pub(super) fn status(root: &Path, scope: Option<&Path>) -> Result<Vec<Change>> {
     let options = [
         "--no-optional-locks",
         "status",
@@ -189,7 +189,13 @@ fn status(root: &Path) -> Result<Vec<Change>> {
         "--untracked-files=all",
         "--no-renames",
     ];
-    let args = options.map(OsStr::new);
+    let mut args = options.map(OsStr::new).to_vec();
+    if let Some(scope) = scope {
+        args.extend([OsStr::new("--ignore-submodules=all"), OsStr::new("--")]);
+        if !scope.as_os_str().is_empty() {
+            args.push(scope.as_os_str());
+        }
+    }
     let bytes = git(root, &args)?;
     let mut changes = Vec::new();
     for row in bytes.split(|byte| *byte == 0).filter(|row| !row.is_empty()) {
@@ -330,7 +336,7 @@ fn perform(
         Ok(shifted.then_some(current))
     };
     Ok(Outcome {
-        changes: status(root).map_err(|error| error.to_string()),
+        changes: status(root, None).map_err(|error| error.to_string()),
         workspace,
         stashes: list_stashes(root).map_err(|error| error.to_string()),
         operation_error,
