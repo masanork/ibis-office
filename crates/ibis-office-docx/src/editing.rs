@@ -7783,7 +7783,15 @@ impl SlideEditor {
             return true;
         }
         let Some(ibis_doc_model::Link::Anchor(name)) = link else { return false };
-        let Some(target) = find_bookmark(doc, &name) else { return false };
+        let target = find_bookmark(doc, &name).or_else(|| {
+            let path = self.file_path()?;
+            let extension = path.extension()?.to_str()?;
+            if !extension.eq_ignore_ascii_case("md") && !extension.eq_ignore_ascii_case("markdown") {
+                return None;
+            }
+            ibis_formats::markdown::heading_fragment(doc, &name)
+        });
+        let Some(target) = target else { return false };
         self.jump_to(target, cx);
         true
     }

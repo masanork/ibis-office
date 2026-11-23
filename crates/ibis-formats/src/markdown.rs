@@ -234,11 +234,17 @@ pub fn heading_fragment(doc: &FlowDocument, fragment: &str) -> Option<u32> {
 
     let mut used = std::collections::HashSet::new();
     let mut next_suffix = HashMap::new();
+    let mut exact_heading = None;
     for paragraph in paragraphs {
         if ibis_doc_model::flow_command::heading_level(&doc.styles, paragraph).is_none() {
             continue;
         }
-        let slug: String = paragraph.text().trim().chars()
+        let heading = paragraph.text();
+        let heading = heading.trim();
+        if heading == fragment {
+            exact_heading.get_or_insert(paragraph.id);
+        }
+        let slug: String = heading.chars()
             .flat_map(char::to_lowercase)
             .filter_map(|ch| match ch {
                 ' ' | '\t' => Some('-'),
@@ -260,7 +266,7 @@ pub fn heading_fragment(doc: &FlowDocument, fragment: &str) -> Option<u32> {
             return Some(paragraph.id);
         }
     }
-    None
+    exact_heading
 }
 
 /// Read a Markdown document into a [`Presentation`] whose `flow` is the rich [`FlowDocument`].
@@ -5014,7 +5020,13 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             flush_plain(&mut plain, &mut out, base_fmt);
             let mut run = FlowRun::new(FlowRunKind::Text(label.into()), FlowRunStyle::default());
             run.format = link_format(base_fmt);
-            run.link = Some(Link::Anchor(anchor.into()));
+            let escaped = if is_word_bookmark(anchor) {
+                anchor.to_owned()
+            } else {
+                percent_encoding::utf8_percent_encode(anchor, percent_encoding::NON_ALPHANUMERIC)
+                    .to_string()
+            };
+            run.link = Some(Link::Anchor(escaped));
             out.push(run);
             i += len;
             continue;
@@ -9681,6 +9693,23 @@ Front caption
         assert_eq!(shapes[2].text_body().unwrap().paragraphs[1].runs[0].text, "Edited paragraph");
         assert_eq!(shapes[3].frame, EmuRect::new(1000000, 650000, 2400000, 900000));
         assert_eq!(shapes[3].text_body().unwrap().paragraphs[0].runs[0].text, "Front caption");
+    }
+
+    #[test]
+    fn obsidian_in_document_links_resolve_without_explicit_bookmarks() {
+        let source = "[[#Details]] / [[#日本語 見出し!|参照]] / [[#^block]] / ![[#Details]]\n\n# Details\n\n## 日本語 見出し!\n";
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        let doc = opened.presentation.flow.unwrap();
+        let paragraphs = ibis_doc_model::flow_command::all_paragraphs(&doc);
+        let targets: Vec<_> = paragraphs[0].runs.iter().filter_map(|run| {
+            let Some(Link::Anchor(fragment)) = &run.link else { return None };
+            heading_fragment(&doc, fragment)
+        }).collect();
+        assert_eq!(targets, [paragraphs[1].id, paragraphs[2].id]);
+        let output = export_markdown(&doc, &[]);
+        assert!(output.contains("[[#^block]]"), "{output}");
+        assert!(output.contains("![[#Details]]"), "{output}");
+        assert!(output.contains("[参照](#%E6"), "{output}");
     }
 
     #[test]

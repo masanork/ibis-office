@@ -19,7 +19,10 @@ pub(super) fn callout(line: &str) -> Option<&'static str> {
 pub(super) fn local_link(input: &str) -> Option<(usize, &str, &str)> {
     let (contents, _) = input.strip_prefix("[[#")?.split_once("]]")?;
     let (anchor, alias) = contents.split_once('|').unwrap_or((contents, contents));
-    if !super::is_word_bookmark(anchor)
+    let anchor = anchor.trim();
+    if anchor.is_empty()
+        || anchor.contains(['[', ']', '#', '\n', '\r'])
+        || anchor.starts_with('^')
         || alias.is_empty()
         || alias.contains(['[', ']', '|', '\n', '\r'])
     {
