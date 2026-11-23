@@ -22,13 +22,19 @@ const TOOLS: &[(&str, &str, &str, bool)] = &[
     (
         "assistant_result",
         "result",
-        "Read events for a turn, including whether a person applied or discarded its proposal.",
+        "Read events for a turn, including whether its proposal was applied or discarded.",
         true,
     ),
     (
         "assistant_prompt",
         "prompt",
-        "Send a prompt to the open GUI Assistant and return its run ID. Review changes in the GUI.",
+        "Send a prompt to the open GUI Assistant and return its run ID. Inspect any resulting proposal before applying.",
+        false,
+    ),
+    (
+        "assistant_apply",
+        "apply",
+        "Apply the pending undoable document edit for this run ID. Call only when the user explicitly asks to apply the changes. This does not save the document or apply source edits.",
         false,
     ),
 ];
@@ -39,6 +45,7 @@ impl LiveAssistant {
             let (properties, required) = match *op {
                 "prompt" => (json!({"text":{"type":"string","minLength":1}}), json!(["text"])),
                 "result" => (json!({"run_id":{"type":"integer","minimum":0},"after":{"type":"integer","minimum":0}}), json!(["run_id"])),
+                "apply" => (json!({"run_id":{"type":"integer","minimum":0}}), json!(["run_id"])),
                 _ => (json!({}), json!([])),
             };
             json!({"name":name,"description":description,"inputSchema":{
@@ -62,6 +69,7 @@ impl LiveAssistant {
         let keys: &[&str] = match op {
             "prompt" => &["text"],
             "result" => &["run_id", "after"],
+            "apply" => &["run_id"],
             _ => &[],
         };
         if args
@@ -77,13 +85,11 @@ impl LiveAssistant {
         {
             return Err("text is required".into());
         }
-        if op == "result"
-            && (args["run_id"].as_u64().is_none()
-                || args
-                    .get("after")
-                    .is_some_and(|after| after.as_u64().is_none()))
-        {
-            return Err("run_id and optional after must be nonnegative integers".into());
+        if matches!(op, "result" | "apply") && args["run_id"].as_u64().is_none() {
+            return Err("run_id must be a nonnegative integer".into());
+        }
+        if args.get("after").is_some_and(|after| after.as_u64().is_none()) {
+            return Err("after must be a nonnegative integer".into());
         }
         let mut request = args;
         request["op"] = json!(op);
@@ -117,7 +123,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn read_only_connection_does_not_forward_prompts() {
+    fn read_only_connection_excludes_write_tools() {
         let assistant = LiveAssistant {
             socket: PathBuf::new(),
             read_only: true,
@@ -130,9 +136,31 @@ mod tests {
         );
         assert!(
             assistant
+                .call("assistant_apply", Some(&json!({"run_id":0})))
+                .is_none()
+        );
+        assert!(
+            assistant
                 .call("assistant_result", Some(&json!({"run_id":0,"after":-1})))
                 .unwrap()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn apply_requires_a_valid_run_id() {
+        let assistant = LiveAssistant {
+            socket: PathBuf::new(),
+            read_only: false,
+        };
+        for args in [json!({}), json!({"run_id":-1}), json!({"run_id":"1"})] {
+            assert_eq!(
+                assistant
+                    .call("assistant_apply", Some(&args))
+                    .unwrap()
+                    .unwrap_err(),
+                "run_id must be a nonnegative integer"
+            );
+        }
     }
 }

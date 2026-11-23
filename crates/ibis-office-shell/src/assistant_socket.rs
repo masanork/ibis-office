@@ -102,6 +102,15 @@ impl BoundSocket {
                     if request["op"] == "status" {
                         return editor.assistant_connection_status();
                     }
+                    if request["op"] == "apply" {
+                        let Some(run_id) = request["run_id"].as_u64() else {
+                            return json!({"error":"run_id is required"});
+                        };
+                        return match editor.apply_assistant_socket_review(run_id, cx) {
+                            Ok(()) => json!({"run_id":run_id,"state":"applied"}),
+                            Err(message) => json!({"error":message}),
+                        };
+                    }
                     if request["op"] == "prompt"
                         && let Some(text) = request["text"].as_str()
                     {

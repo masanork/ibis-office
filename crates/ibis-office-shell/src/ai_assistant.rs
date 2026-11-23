@@ -902,9 +902,28 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(crate) fn apply_assistant_socket_review(
+        &mut self,
+        run_id: u64,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        self.check_assistant_connection_document()?;
+        let review = self
+            .ai_assistant
+            .as_ref()
+            .filter(|panel| panel.run_id == run_id && !panel.streaming)
+            .and_then(|panel| panel.assistant_review.as_ref())
+            .ok_or("no pending Assistant review for this run_id")?;
+        if review.turn.source_edit.is_some() || review.commands.is_empty() {
+            return Err("this proposal cannot be applied through MCP".into());
+        }
+        self.finish_assistant_review(true, cx)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn check_assistant_connection_document(&self) -> Result<(), &'static str> {
         if !self.has_document || self.watch.opening_path.is_some() {
-            return Err("open a document before sending a prompt");
+            return Err("open a document before using the Assistant");
         }
         if self.kind() == ibis_formats::Kind::Pdf {
             return Err("the Assistant is unavailable in the PDF viewer");
@@ -2098,9 +2117,9 @@ impl SlideEditor {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn finish_assistant_review(&mut self, apply: bool, cx: &mut Context<Self>) {
-        let Some(panel) = self.ai_assistant.as_mut() else { return };
-        let Some(mut review) = panel.assistant_review.take() else { return };
+    fn finish_assistant_review(&mut self, apply: bool, cx: &mut Context<Self>) -> Result<(), String> {
+        let panel = self.ai_assistant.as_mut().ok_or("Assistant panel is closed")?;
+        let mut review = panel.assistant_review.take().ok_or("no pending Assistant review")?;
         let run_id = panel.run_id;
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         let handoff = review.check_trial.take().and_then(|trial| {
@@ -2138,6 +2157,11 @@ impl SlideEditor {
                 (UiMessageKind::Error, "変更を適用できませんでした。".into())
             }
         };
+        let result = if kind == UiMessageKind::Error {
+            Err(message.clone())
+        } else {
+            Ok(())
+        };
         if self.assistant_output.is_some() {
             self.emit_assistant_event(json!({
                 "event":"review_resolved","run_id":run_id,"message":message,
@@ -2156,6 +2180,7 @@ impl SlideEditor {
             panel.scroll_handle.scroll_to_bottom();
         }
         cx.notify();
+        result
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -4603,11 +4628,15 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         let pending_box = panel.assistant_review.as_ref().map(|review| {
             let apply = Button::new("ai-workbook-apply").primary().small().label("適用")
-                .on_click(cx.listener(|this, _, _, cx| this.finish_assistant_review(true, cx)));
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let _ = this.finish_assistant_review(true, cx);
+                }));
             #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
             let apply = crate::scenario::button_probe::observe(apply, "ai-workbook-apply".into());
             let discard = Button::new("ai-workbook-discard").ghost().small().label("破棄")
-                .on_click(cx.listener(|this, _, _, cx| this.finish_assistant_review(false, cx)));
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let _ = this.finish_assistant_review(false, cx);
+                }));
             #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
             let discard = crate::scenario::button_probe::observe(discard, "ai-workbook-discard".into());
             let changes = report_check_changes(&review.turn);
