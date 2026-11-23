@@ -135,7 +135,7 @@ $$ {#eq_energy}
 
 ### 参考文献一覧
 
-一覧を置く位置に `[[bibliography]]` を独立した行で書きます。日本語ロケールを指定する場合は `[[bibliography:1041]]` と書きます。DOCX では Word の `BIBLIOGRAPHY` フィールドになり、Word でフィールドを更新すると、文献データから一覧が生成されます。
+一覧を置く位置に `::: bibliography` を独立した行で書きます。日本語ロケールを指定する場合は `::: bibliography 1041` と書きます。DOCX では Word の `BIBLIOGRAPHY` フィールドになり、Word でフィールドを更新すると、文献データから一覧が生成されます。
 
 独立した一覧を Markdown に戻すと、Word が生成した一覧は元の位置のマーカーに戻ります。Markdown 本文で一覧の見出しを自由に指定できます。文献の絞り込みなど、未対応のスイッチを含む一覧は表示テキストとして書き出します。Word for Mac では、文献2件の一覧を生成し、Markdown を経由して作り直した DOCX に一覧フィールドと後続段落が残ることを確認しました。
 
@@ -354,13 +354,13 @@ PPTX の表でも横結合・縦結合の印を使えます。横と縦を組み
 | コード・数式 | バッククォートまたはチルダのコードフェンス、インラインコード、`$...$`、`$$...$$`、`math` / `latex` / `tex` フェンス |
 | 表 | [横・縦結合と入れ子表](#表のセル結合)。パイプ区切り、`:---` / `:---:` / `---:` で列を左・中央・右揃え |
 | 区切り | `---` / `***` の水平線、`\newpage` / `::: pagebreak` / `<!-- pagebreak -->`、`\columnbreak` / `::: columnbreak` |
-| 目次・脚注 | `[[toc]]` / `::: toc`、`[^id]` と `[^id]: 本文`、文末脚注の `[^endnote-1]` |
+| 目次・脚注 | `::: toc` / `[TOC]`、`[^id]` と `[^id]: 本文`、文末脚注の `[^endnote-1]` |
 | 連番・相互参照 | [式・図・表の番号](#式図表に番号を付ける) の `{{seq:equation}}`、`{{seq:figure}}`、`{{seq:table}}`、`{{ref:名前}}` |
 | 強調・文字装飾 | `**太字**`、`*斜体*`、`***太字斜体***`、`~~削除線~~`、`++下線++`、`==強調表示==`、`^上付き^`、`~下付き~` |
 | 日本語組版 | `{漢字\|かんじ}` / `｜漢字《かんじ》` のルビ、`[25]{.tcy}` の縦中横、`《《傍点》》` / `[傍点]{.em}` |
 | リンク・画像 | `[名前](URL)`、`[名前](#anchor)`、`![代替テキスト](画像)`。画像には相対ファイルパスや Data URI、`{width=... height=...}` の寸法指定を利用できます。 |
 | 変更履歴・コメント | `{++挿入++}`、`{--削除--}`、`{~~旧~>新~~}`、`{>>著者: コメント<<}` |
-| 文献引用 | [本文中の文献引用](#本文中の文献引用) の `{{cite:タグ}}`、`{{cite:タグ:ロケール}}`、`{{cite:タグ:ロケール#ページ範囲}}`、[参考文献一覧](#参考文献一覧) の `[[bibliography]]` と `[[bibliography:ロケール]]` |
+| 文献引用 | [本文中の文献引用](#本文中の文献引用) の `{{cite:タグ}}`、`{{cite:タグ:ロケール}}`、`{{cite:タグ:ロケール#ページ範囲}}`、[参考文献一覧](#参考文献一覧) の `::: bibliography` と `::: bibliography ロケール` |
 | 図・グラフ | `mermaid` と `chart` フェンス。対応する図種・グラフ種は下記を参照してください。 |
 | プレゼンテーション | `marp: true` / `slides: true` / `type: presentation` / `type: slides`、スライド区切り、`<!-- notes: 発表者ノート -->`。 |
 | スプレッドシート | CLI で Markdown 表を XLSX に変換できます。`<!-- xlsx-sheet "シート名" -->` で表をシートに分けられます。 |
@@ -383,6 +383,17 @@ PPTX の表でも横結合・縦結合の印を使えます。横と縦を組み
 - `columns` は 1〜12、`line_numbers` は `true` / `page` / `continuous`。後者はページをまたいで行番号を振ります。
 - `style_set` は `default` / `casual` / `centered` / `formal` / `elegant` / `modern` / `simple` / `minimalist`。
 - `paragraph_spacing` は `default` / `no_space`（`no_paragraph_space`、`none`）/ `compact` / `tight` / `open` / `relaxed` / `double`。
+
+### MyST・Obsidian の取り込み（試験対応）
+
+同じ Markdown 原稿に、通常の記法と以下の構文を混在させられます。
+
+- MyST では、見出しの直前の `(results)=` を Word のブックマークにします。参照には既存の `[結果](#results)` を使えます。単一行の本文を持つ `{note}`、`{tip}`、`{important}`、`{warning}`、`{caution}` のコードフェンスは、既存のアラート書式で取り込みます。ラベルは ASCII 英字で始まる英数字・アンダースコア 40 文字以内です。
+- Obsidian では、同じ 5 種の大文字・小文字の違いを許容した基本 callout と、`[[#Results]]`、`[[#Results|結果]]` を取り込めます。リンク先の見出しには、対応するブックマークを `## Results {#Results}` のように指定します。別ノートを指す `[[toc]]` や `[[bibliography]]` は原稿上の文字列として保持します。
+
+旧 OOMarkdown 原稿で目次・参考文献一覧を指定していた行は、`[[toc]]` を `::: toc`、`[[bibliography]]` を `::: bibliography`、`[[bibliography:1041]]` を `::: bibliography 1041` に置き換えてください。DOCX に保存済みのフィールドは、Markdown に書き出すと新しい記法になります。
+
+DOCX からは ibisOffice の Markdown 記法（`{#results}`、`[結果](#results)`、`> [!NOTE]` など）で書き出します。元の記法で編集を続ける場合は Markdown 原稿を保管してください。MyST の図・自動参照番号・引用や、Obsidian の Vault 内リンク解決・埋め込み・折りたたみ付き callout は試験対応の対象外です。
 
 ### ネイティブグラフの chart フェンス
 

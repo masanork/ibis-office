@@ -20,7 +20,7 @@
 //!   - Native Office charts (` ```chart `) with `type`, `title`, `width`, `height`, and CSV or YAML series data
 //!   - GFM Pipe tables (`| ... |`) with column alignment (`:---`, `:---:`, `---:`), header shading, and inline formatting
 //!   - Page breaks (`\newpage`, `::: pagebreak`, `<!-- pagebreak -->`), column breaks (`\columnbreak`, `::: columnbreak`),
-//!     horizontal rules (`---`, `***`), Table of Contents (`[[toc]]`, `::: toc`), and Footnote definitions (`[^id]: ...`)
+//!     horizontal rules (`---`, `***`), Table of Contents (`::: toc`, `[TOC]`), and Footnote definitions (`[^id]: ...`)
 //! - Inline elements:
 //!   - `**bold**`, `*italic*`, `***bold italic***`, `~~strikethrough~~`, `++underline++`, `==highlight==`, `^superscript^`, `~subscript~`, `` `code` ``
 //!   - Inline math `$...$`
@@ -32,6 +32,8 @@
 //!   - Inline Data URI images `![alt](data:image/png;base64,...){width=... height=...}`
 
 mod metafile_preview;
+mod myst;
+mod obsidian;
 mod shape_text;
 pub(crate) mod roundtrip;
 pub use roundtrip::{SourceDiagnostic, SourceIssue};
@@ -119,8 +121,8 @@ pub fn is_markdown(data: &[u8]) -> bool {
             || l.starts_with("[^")
             || l == "\\newpage"
             || l == "\\columnbreak"
-            || l == "[[toc]]"
-            || markdown_bibliography_field(l).is_some()
+            || l.trim_end() == "[TOC]"
+            || obsidian::local_link(l).is_some()
             || l.starts_with("$$")
             || is_horizontal_rule(l)
             || is_ordered_list_line(l)
@@ -1625,7 +1627,7 @@ fn parse_markdown_into(
         resolve_all_blocks(part, &doc.styles);
     }
 
-    // If a `[[toc]]` placeholder was inserted, populate its entries from the document headings.
+    // If a TOC placeholder was inserted, populate its entries from the document headings.
     populate_toc_blocks(doc);
 
     for command in ibis_doc_model::flow_command::updated_fields(doc) {
@@ -1687,16 +1689,15 @@ fn populate_toc_blocks(doc: &mut FlowDocument) {
 
     let mut idx = 0;
     while idx < doc.body.len() {
-        let is_toc = matches!(
-            &doc.body[idx],
-            Block::Paragraph(p) if p.field_start.as_deref().is_some_and(|f| f.trim_start().starts_with("TOC")) && p.runs.is_empty()
-        );
-        if is_toc {
+        if let Block::Paragraph(placeholder) = &doc.body[idx]
+            && placeholder.field_start.as_deref().is_some_and(|f| f.trim_start().starts_with("TOC"))
+            && placeholder.runs.is_empty()
+        {
             let mut entries = Vec::new();
             let mut next_id = doc.new_id();
             for (i, (lvl, title, bm)) in headings.iter().enumerate() {
                 let mut p = FlowParagraph {
-                    id: next_id,
+                    id: if i == 0 { placeholder.id } else { next_id },
                     style: doc.styles.default_paragraph.clone(),
                     direct: ParaFormat {
                         left: Some(((lvl.saturating_sub(1) as i64) * 12) * EMU_PER_PT),
@@ -1706,7 +1707,7 @@ fn populate_toc_blocks(doc: &mut FlowDocument) {
                     field_end: i + 1 == headings.len(),
                     ..FlowParagraph::default()
                 };
-                next_id += 1;
+                next_id += u32::from(i != 0);
                 let mut run = FlowRun::new(FlowRunKind::Text(title.clone()), FlowRunStyle::default());
                 run.link = Some(Link::Anchor(bm.clone()));
                 p.runs.push(run);
@@ -2313,6 +2314,20 @@ fn note_body_line(line: &str) -> Option<&str> {
     line.strip_prefix("    ").or_else(|| line.strip_prefix('\t'))
 }
 
+fn myst_heading_target<'a>(lines: &[&'a str], index: usize) -> Option<&'a str> {
+    let target = myst::target(lines[index].trim())?;
+    let (_, heading) = parse_atx_heading(lines.get(index + 1)?.trim())?;
+    strip_trailing_block_attrs(heading).1.id.is_none().then_some(target)
+}
+
+fn document_block_field(line: &str) -> Option<String> {
+    if matches!(line, "[TOC]" | "::: toc") {
+        Some(r#"TOC \o "1-3" \h \z \u"#.to_owned())
+    } else {
+        markdown_bibliography_field(line)
+    }
+}
+
 fn parse_blocks(
     body_text: &str,
     ctx: &mut ParseContext<'_>,
@@ -2449,11 +2464,7 @@ fn parse_blocks(
             i += 1;
             continue;
         }
-        let field = if matches!(trimmed, "[[toc]]" | "[TOC]" | "::: toc") {
-            Some(r#"TOC \o "1-3" \h \z \u"#.to_owned())
-        } else {
-            markdown_bibliography_field(trimmed)
-        };
+        let field = document_block_field(trimmed);
         if let Some(instruction) = field {
             let p = FlowParagraph {
                 id: ctx.fresh_id(),
@@ -2496,14 +2507,18 @@ fn parse_blocks(
         if let Some((fence_marker, fence_info)) = opening_fence(trimmed) {
             let lang = fence_info.trim().to_ascii_lowercase();
             i += 1;
-            let mut content_lines = Vec::new();
-            while i < lines.len() {
-                if closes_fence(lines[i].trim(), fence_marker) {
-                    i += 1;
-                    break;
-                }
-                content_lines.push(lines[i]);
+            let start = i;
+            while i < lines.len() && !closes_fence(lines[i].trim(), fence_marker) {
                 i += 1;
+            }
+            let content_lines = &lines[start..i];
+            let closed = i < lines.len();
+            i += usize::from(closed);
+            if closed
+                && let Some(alert) = myst::admonition(fence_info.trim(), content_lines)
+            {
+                blocks.extend(build_blockquote_blocks(&[alert, content_lines[0]], ctx));
+                continue;
             }
             let content = content_lines.join("\n");
             match lang.split_whitespace().next().unwrap_or("") {
@@ -2557,8 +2572,14 @@ fn parse_blocks(
         }
 
         // ATX Heading: `#` .. `######`
-        if let Some((level, heading_text)) = parse_atx_heading(trimmed) {
-            let (clean_text, attrs) = strip_trailing_block_attrs(heading_text);
+        let target = myst_heading_target(&lines, i);
+        let heading = target.map_or(trimmed, |_| lines[i + 1].trim());
+        if let Some((level, heading_text)) = parse_atx_heading(heading) {
+            let (clean_text, mut attrs) = strip_trailing_block_attrs(heading_text);
+            if let Some(target) = target {
+                attrs.id = Some(target.to_owned());
+                i += 1;
+            }
             let style_id = ctx.ensure_heading_style(level);
             let mut p = FlowParagraph {
                 id: ctx.fresh_id(),
@@ -2597,6 +2618,11 @@ fn parse_blocks(
                 let stripped = l.strip_prefix("> ").or_else(|| l.strip_prefix('>')).unwrap_or("");
                 quote_lines.push(stripped);
                 i += 1;
+            }
+            if let Some(first) = quote_lines.first_mut()
+                && let Some(alert) = obsidian::callout(first.trim())
+            {
+                *first = alert;
             }
             blocks.extend(build_blockquote_blocks(&quote_lines, ctx));
             continue;
@@ -2667,13 +2693,12 @@ fn parse_blocks(
                 || l_trim.starts_with("~~~")
                 || l_trim.starts_with("$$")
                 || l_trim.starts_with('>')
-                || l_trim.starts_with(":::")
+                || matches!(l_trim, "::: pagebreak" | "::: columnbreak")
                 || l_trim == "\\newpage"
                 || l_trim == "\\pagebreak"
                 || l_trim == "\\columnbreak"
-                || l_trim == "[[toc]]"
-                || l_trim == "[TOC]"
-                || markdown_bibliography_field(l_trim).is_some()
+                || document_block_field(l_trim).is_some()
+                || myst_heading_target(&lines, i).is_some()
                 || is_horizontal_rule(l_trim)
                 || parse_atx_heading(l_trim).is_some()
                 || parse_list_marker(l_raw).is_some()
@@ -3003,10 +3028,10 @@ fn display_math_close(line: &str) -> Option<(&str, Option<&str>)> {
     }
     let (math, label) = line.strip_suffix('}')?.rsplit_once("{#")?;
     let math = math.trim_end().strip_suffix("$$")?;
-    is_equation_bookmark(label).then_some((math, Some(label)))
+    is_word_bookmark(label).then_some((math, Some(label)))
 }
 
-fn is_equation_bookmark(label: &str) -> bool {
+fn is_word_bookmark(label: &str) -> bool {
     label.len() <= 40
         && label.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
         && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
@@ -4152,10 +4177,10 @@ fn markdown_sequence(name: &str) -> Option<(&'static str, &'static str)> {
 }
 
 fn markdown_bibliography_field(line: &str) -> Option<String> {
-    if line == "[[bibliography]]" {
+    if line == "::: bibliography" {
         return Some("BIBLIOGRAPHY".into());
     }
-    let locale = line.strip_prefix("[[bibliography:")?.strip_suffix("]]")?;
+    let locale = line.strip_prefix("::: bibliography ")?.trim_start();
     locale.parse::<u16>().ok()?;
     Some(format!(r"BIBLIOGRAPHY \l {locale}"))
 }
@@ -4167,8 +4192,8 @@ fn format_markdown_bibliography(instruction: &str) -> Option<String> {
         return None;
     }
     match switches {
-        [] => Some("[[bibliography]]".into()),
-        [r"\l", locale] if locale.parse::<u16>().is_ok() => Some(format!("[[bibliography:{locale}]]")),
+        [] => Some("::: bibliography".into()),
+        [r"\l", locale] if locale.parse::<u16>().is_ok() => Some(format!("::: bibliography {locale}")),
         _ => None,
     }
 }
@@ -4283,7 +4308,7 @@ const PAGE_FIELDS: [(&str, &str); 4] = [
 fn markdown_page_field(value: &str) -> Option<String> {
     let (name, format) = value.split_once(':').map_or((value, None), |(name, format)| (name, Some(format)));
     if name == "page-ref" {
-        let bookmark = format.filter(|name| is_equation_bookmark(name))?;
+        let bookmark = format.filter(|name| is_word_bookmark(name))?;
         return Some(format!(r"PAGEREF {bookmark} \h"));
     }
     let (_, command) = PAGE_FIELDS.iter().find(|(label, _)| *label == name)?;
@@ -4309,7 +4334,7 @@ fn format_markdown_page_field(words: &[&str]) -> Option<String> {
 }
 
 fn format_markdown_page_ref(bookmark: &str, shown: &str, locked: bool) -> String {
-    if !locked && is_equation_bookmark(bookmark) {
+    if !locked && is_word_bookmark(bookmark) {
         format!("{{{{field:page-ref:{bookmark}}}}}")
     } else {
         shown.to_owned()
@@ -4322,7 +4347,7 @@ fn markdown_inline_field(rest: &str) -> Option<(usize, String)> {
     let (kind, value) = token.split_once(':')?;
     let instruction = match kind {
         "seq" => format!("SEQ {}", markdown_sequence(value)?.1),
-        "ref" if is_equation_bookmark(value) => format!("REF {value} \\h"),
+        "ref" if is_word_bookmark(value) => format!("REF {value} \\h"),
         "cite" => markdown_citation_instruction(value)?,
         "field" => markdown_page_field(value)?,
         _ => return None,
@@ -4336,7 +4361,7 @@ fn format_markdown_inline_field(instruction: &str, shown: &str) -> String {
         [seq, name] if seq.eq_ignore_ascii_case("SEQ") => {
             markdown_sequence(name).map_or_else(|| shown.to_owned(), |(label, _)| format!("{{{{seq:{label}}}}}"))
         }
-        [reference, name, r"\h"] if reference.eq_ignore_ascii_case("REF") && is_equation_bookmark(name) => {
+        [reference, name, r"\h"] if reference.eq_ignore_ascii_case("REF") && is_word_bookmark(name) => {
             format!("{{{{ref:{name}}}}}")
         }
         [citation, tag, switches @ ..] if citation.eq_ignore_ascii_case("CITATION") => {
@@ -4344,6 +4369,13 @@ fn format_markdown_inline_field(instruction: &str, shown: &str) -> String {
         }
         _ => format_markdown_page_field(&words).unwrap_or_else(|| shown.to_owned()),
     }
+}
+
+fn link_format(base: &RunFormat) -> RunFormat {
+    let mut format = base.clone();
+    format.color.get_or_insert(Rgb(0x0563C1));
+    format.underline.get_or_insert(true);
+    format
 }
 
 fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -> Vec<FlowRun> {
@@ -4872,14 +4904,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                         } else {
                             Link::Url(target.to_string())
                         };
-                        let mut link_fmt = base_fmt.clone();
-                        if link_fmt.color.is_none() {
-                            link_fmt.color = Some(Rgb(0x0563C1));
-                        }
-                        if link_fmt.underline.is_none() {
-                            link_fmt.underline = Some(true);
-                        }
-                        let mut runs = parse_inlines(inner_text, ctx, &link_fmt);
+                        let mut runs = parse_inlines(inner_text, ctx, &link_format(base_fmt));
                         for r in &mut runs {
                             r.link = Some(link.clone());
                         }
@@ -4889,6 +4914,19 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                     }
                 }
             }
+        }
+
+        if rest.starts_with("[[#")
+            && !text[..i].ends_with(['!', '['])
+            && let Some((len, anchor, label)) = obsidian::local_link(rest)
+        {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            let mut run = FlowRun::new(FlowRunKind::Text(label.into()), FlowRunStyle::default());
+            run.format = link_format(base_fmt);
+            run.link = Some(Link::Anchor(anchor.into()));
+            out.push(run);
+            i += len;
+            continue;
         }
 
         // Inline code: `` `code` ``
@@ -5370,7 +5408,7 @@ fn export_markdown_with_positions<'a>(
             continue;
         }
 
-        // Collapse TOC field blocks back to `[[toc]]`
+        // Collapse TOC field blocks back to the Markdown directive.
         if let Block::Paragraph(p) = block {
             if p.field_start
                 .as_deref()
@@ -5381,7 +5419,7 @@ fn export_markdown_with_positions<'a>(
                     prev_was_list = false;
                 }
                 let start = out.len();
-                out.push_str("[[toc]]\n\n");
+                out.push_str("::: toc\n\n");
                 record(MarkdownSource::Body(i, block), start, out.len());
                 while i < doc.body.len() {
                     let is_end = matches!(&doc.body[i], Block::Paragraph(ep) if ep.field_end);
@@ -6482,7 +6520,7 @@ fn serialize_paragraph(
                 out.push_str("$$\n");
                 out.push_str(&math.to_latex());
                 out.push_str("\n$$");
-                if let Some(bookmark) = p.bookmarks.iter().find(|name| is_equation_bookmark(name)) {
+                if let Some(bookmark) = p.bookmarks.iter().find(|name| is_word_bookmark(name)) {
                     out.push_str(&format!(" {{#{bookmark}}}"));
                 }
                 out.push_str("\n\n");
@@ -8517,10 +8555,10 @@ mod tests {
 
     #[test]
     fn bibliography_marker_round_trips_with_surrounding_paragraphs() {
-        let input = "Before.\n[[bibliography:1041]]\nAfter.\n\n[[bibliography]]\n";
+        let input = "Before.\n::: bibliography 1041\nAfter.\n\n::: bibliography\n";
         let docx = import_markdown_to_docx_bytes(input.as_bytes()).unwrap();
         let markdown = export_docx_to_markdown(&docx).unwrap();
-        assert_eq!(markdown, "Before.\n\n[[bibliography:1041]]\n\nAfter.\n\n[[bibliography]]\n");
+        assert_eq!(markdown, "Before.\n\n::: bibliography 1041\n\nAfter.\n\n::: bibliography\n");
         let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
         let document = crate::read_docx(&rebuilt).unwrap();
         let fields = document.flow.as_ref().unwrap().body.iter().filter_map(|block| {
@@ -8540,9 +8578,9 @@ mod tests {
         package.set_bytes(part, xml.into_bytes());
         let mixed = package.save(ibis_ooxml::SaveOptions::default()).unwrap();
         let exported = export_docx_to_markdown(&mixed).unwrap();
-        assert!(!exported.contains("[[bibliography:1041]]"));
+        assert!(!exported.contains("::: bibliography 1041"));
         assert!(exported.contains("Inline suffix."));
-        assert!(exported.contains("[[bibliography]]"));
+        assert!(exported.contains("::: bibliography"));
     }
 
     #[test]
@@ -8675,6 +8713,72 @@ Table {{seq:table}} {#tbl_results}
                 ("SEQ Table".into(), "1".into()),
             ],
         );
+    }
+
+    #[test]
+    fn myst_reuses_word_bookmarks_links_and_alerts() {
+        let source = b"See [Results](#results).
+
+Introduction.
+(results)=
+## Results
+
+```{note}
+A **check**.
+```
+";
+        let docx = import_markdown_to_docx_bytes(source).unwrap();
+        let markdown = export_docx_to_markdown(&docx).unwrap();
+        assert!(markdown.contains("[Results](#results)"), "{markdown}");
+        assert!(markdown.contains("## Results {#results}"), "{markdown}");
+        assert!(markdown.contains("> [!NOTE]\n> A **check**."), "{markdown}");
+    }
+
+    #[test]
+    fn word_directives_and_obsidian_syntax_can_share_a_manuscript() {
+        let source = b"::: toc
+
+## Results {#Results}
+
+See [[#Results|the results]] and `[[#Results]]`.
+
+> [!tip]
+> Check again.
+
+[[toc]]
+
+[[bibliography]]
+
+[[bibliography:1041]]
+
+::: bibliography unknown
+
+::: bibliography 1041
+";
+        let docx = import_markdown_to_docx_bytes(source).unwrap();
+        let markdown = export_docx_to_markdown(&docx).unwrap();
+        assert!(markdown.contains("[the results](#Results)"), "{markdown}");
+        assert!(markdown.contains("`[[#Results]]`"), "{markdown}");
+        assert!(markdown.contains("> [!TIP]\n> Check again."), "{markdown}");
+        assert!(markdown.contains("::: toc"), "{markdown}");
+        assert!(markdown.contains("::: bibliography 1041"), "{markdown}");
+        assert!(markdown.contains("\n[[toc]]\n"), "{markdown}");
+        assert!(markdown.contains("\n[[bibliography]]\n"), "{markdown}");
+        assert!(markdown.contains("\n[[bibliography:1041]]\n"), "{markdown}");
+        assert!(markdown.contains("\n::: bibliography unknown\n"), "{markdown}");
+
+        let rebuilt = import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        let document = crate::read(&rebuilt).unwrap().flow.unwrap();
+        let fields: Vec<_> = document
+            .body
+            .iter()
+            .filter_map(|block| match block {
+                Block::Paragraph(p) => p.field_start.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fields, [r#"TOC \o "1-3" \h \z \u"#, r"BIBLIOGRAPHY \l 1041"]);
+        assert_eq!(export_docx_to_markdown(&rebuilt).unwrap(), markdown);
     }
 
     #[test]
