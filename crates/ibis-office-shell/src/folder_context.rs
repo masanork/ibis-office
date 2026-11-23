@@ -228,7 +228,7 @@ const OFFICE_READS: &[&str] = &[
     "pptx_get_notes",
 ];
 
-pub(crate) fn tools() -> [ToolDefinition; 6] {
+pub(crate) fn tools() -> [ToolDefinition; 7] {
     let tool = |name, description, properties, required| ToolDefinition {
         kind: "function",
         function: ToolFunctionDef {
@@ -263,6 +263,8 @@ pub(crate) fn tools() -> [ToolDefinition; 6] {
             json!({"path":{"type":"string"},"offset":{"type":"integer","minimum":0}}), json!([])),
         tool("git_log", "Read first-parent commits that changed a file or directory under the open folder. Omit path for the folder itself. Pass next_cursor to continue, even if a page is empty.",
             json!({"path":{"type":"string"},"cursor":{"type":"string"}}), json!([])),
+        tool("git_read", "Read a file at a full commit SHA from git_log. With from, resolve path as an OKF URI reference within the same revision and folder. Pass next_offset to continue.",
+            json!({"path":{"type":"string"},"from":{"type":"string"},"commit":{"type":"string"},"offset":{"type":"integer","minimum":0}}), json!(["path","commit"])),
         tool("git_diff", "Compare one folder-relative file between two full commit SHAs from git_log. Office files are compared as extracted Markdown. Pass next_offset to continue.",
             json!({"path":{"type":"string"},"old_commit":{"type":"string"},"new_commit":{"type":"string"},"offset":{"type":"integer","minimum":0}}),
             json!(["path","old_commit","new_commit"])),
@@ -328,7 +330,7 @@ pub(crate) struct FolderResult {
 }
 
 pub(crate) fn recognizes(name: &str) -> bool {
-    matches!(name, "folder_list" | "folder_search" | "folder_read" | "git_status" | "git_log" | "git_diff")
+    matches!(name, "folder_list" | "folder_search" | "folder_read" | "git_status" | "git_log" | "git_diff" | "git_read")
 }
 
 pub(crate) fn run(folder: &Folder, call: &ToolCall) -> Result<FolderResult, String> {
@@ -400,7 +402,7 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall) -> Result<FolderResult, Stri
             let reference = FolderReference::new(relative, location);
             (json!({"path":relative,"content":result}), vec![reference])
         }
-        name @ ("git_status" | "git_log" | "git_diff") => (
+        name @ ("git_status" | "git_log" | "git_diff" | "git_read") => (
             crate::git_workspace::assistant::run(&folder.root, name, &args, offset)
                 .map_err(|error| error.to_string())?,
             Vec::new(),

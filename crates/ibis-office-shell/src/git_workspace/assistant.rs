@@ -22,6 +22,9 @@ pub(crate) fn run(folder: &Path, name: &str, args: &Value, offset: usize) -> Res
         .ok_or("The Git repository has no working tree.")?
         .canonicalize()?;
     let scope = folder.strip_prefix(&root)?;
+    if name == "git_read" {
+        return read_at_commit(&repo, scope, args, offset);
+    }
     let relative = match args.get("path") {
         Some(path) => allowed_path(path.as_str().ok_or("path must be a string")?)?,
         None if name != "git_diff" => PathBuf::new(),
@@ -88,6 +91,43 @@ pub(crate) fn run(folder: &Path, name: &str, args: &Value, offset: usize) -> Res
         }
         _ => Err("Unknown Git tool.".into()),
     }
+}
+
+fn read_at_commit(
+    repo: &gix::Repository,
+    scope: &Path,
+    args: &Value,
+    offset: usize,
+) -> Result<Value> {
+    let commit = commit_id(&args["commit"])?;
+    let reference = args["path"]
+        .as_str()
+        .ok_or("Provide a path or an OKF reference.")?;
+    let (path, fragment) = if let Some(from) = args["from"].as_str() {
+        let source = scope.join(allowed_path(from)?);
+        if optional_blob(repo, commit, &source)?.is_none() {
+            return Err("The reference source is absent in this revision.".into());
+        }
+        ibis_formats::okf::resolve(from, reference)
+            .ok_or("The link does not identify a file inside the open folder.")?
+    } else {
+        (reference.to_owned(), None)
+    };
+    let target = scope.join(allowed_path(&path)?);
+    let bytes = optional_blob(repo, commit, &target)?.ok_or("File is absent in this revision.")?;
+    let (content, format) = diff_text(&target, Some(bytes))?;
+    let mut lines = content.lines().enumerate().skip(offset);
+    let page: Vec<_> = lines.by_ref().take(40)
+        .map(|(index, line)| json!({"line":index + 1,"text":line.chars().take(120).collect::<String>()}))
+        .collect();
+    Ok(json!({
+        "path": path,
+        "fragment": fragment,
+        "commit": commit.to_string(),
+        "format": format,
+        "lines": page,
+        "next_offset": lines.next().map(|_| offset + page.len())
+    }))
 }
 
 fn allowed_path(path: &str) -> Result<PathBuf> {
@@ -191,6 +231,45 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn git_read_resolves_links_inside_the_selected_revision() {
+        assert!(crate::folder_context::recognizes("git_read"));
+        let repo = TempRepo::new();
+        let folder = repo.0.join("docs");
+        std::fs::create_dir(folder.join("notes")).unwrap();
+        repo.write("docs/notes/source.md", "[old](../target.md#details)");
+        repo.write("docs/target.md", "# Details\nFirst version.");
+        repo.write("outside.md", "outside");
+        repo.commit("Initial notes");
+        let log = run(&folder, "git_log", &json!({}), 0).unwrap();
+        let first = log["commits"][0]["commit"].as_str().unwrap();
+        repo.write("docs/target.md", "# Details\nCurrent version.");
+        repo.commit("Update target");
+        let read = run(
+            &folder,
+            "git_read",
+            &json!({
+                "commit":first,"from":"notes/source.md","path":"../target.md#details"
+            }),
+            0,
+        )
+        .unwrap();
+        assert_eq!(read["path"], "target.md");
+        assert_eq!(read["fragment"], "details");
+        assert_eq!(read["lines"][1]["text"], "First version.");
+        assert!(
+            run(
+                &folder,
+                "git_read",
+                &json!({
+                    "commit":first,"from":"notes/source.md","path":"../../outside.md"
+                }),
+                0
+            )
+            .is_err()
+        );
     }
 
     #[test]
