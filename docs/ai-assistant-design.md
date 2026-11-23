@@ -48,13 +48,15 @@ UI Automation や画面操作ではなく、既存の `ibis-doc-model` のコマ
 
 | 接続先 | `IBIS_AI_PROVIDER` | 認証 | モデルとリージョン |
 | --- | --- | --- | --- |
-| Claude API | `anthropic`（`claude` も可） | `ANTHROPIC_API_KEY` | `IBIS_AI_MODEL` または `ANTHROPIC_MODEL` |
-| Amazon Bedrock の Claude | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK` または AWS CLI プロファイル | `IBIS_AI_MODEL` または `IBIS_BEDROCK_MODEL_ID` にモデル ID または推論プロファイル ID。リージョンは `AWS_REGION` または `AWS_DEFAULT_REGION` |
+| Claude API | `anthropic`（`claude` も可） | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` |
+| Amazon Bedrock の Claude | `bedrock` | `AWS_BEARER_TOKEN_BEDROCK` または AWS CLI プロファイル | `ANTHROPIC_MODEL` にモデル ID または推論プロファイル ID。リージョンは `AWS_REGION` または `AWS_DEFAULT_REGION` |
 | OpenAI 互換 API | `openai` | GUI のキー、`IBIS_AI_API_KEY`、`OPENAI_API_KEY` の順 | `IBIS_AI_BASE_URL` と `IBIS_AI_MODEL` が GUI の値に優先 |
 
-`IBIS_AI_PROVIDER` を指定すると、既存の GUI 設定より接続先の選択が優先される。省略時は保存済みの GUI 設定または OpenAI 互換用のキーがあれば OpenAI 互換 API を選ぶ。それらが空の場合は、Claude API と Bedrock のキーのうち一方だけが設定されていれば、その接続先を選ぶ。両方設定した場合は `IBIS_AI_PROVIDER` を指定する。API キーがなく `IBIS_BEDROCK_MODEL_ID` がある場合は Bedrock の AWS プロファイル認証を選ぶ。
+`IBIS_AI_PROVIDER` を指定すると、その接続先を選ぶ。省略時に `CLAUDE_CODE_USE_BEDROCK=1` があれば Bedrock を選ぶ。両方とも省略した場合は保存済みの GUI 設定または OpenAI 互換用のキーがあれば OpenAI 互換 API を選ぶ。それらが空の場合は、Claude API と Bedrock のキーのうち一方だけが設定されていれば、その接続先を選ぶ。両方設定した場合は `IBIS_AI_PROVIDER` を指定する。API キーがなく `IBIS_BEDROCK_MODEL_ID` がある場合は Bedrock の AWS プロファイル認証を選ぶ。
 
 Bedrock は [Bedrock Runtime の Anthropic Messages API](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.html) に API キーまたは AWS CLI プロファイルで接続する。GUI の保存項目は OpenAI 互換 API 用。ブラウザー版の接続は同一オリジンの Worker が担当する。
+
+Claude API と Bedrock のモデル指定は `ANTHROPIC_MODEL`、`IBIS_AI_MODEL`、`IBIS_BEDROCK_MODEL_ID`（Bedrock のみ）、`ANTHROPIC_DEFAULT_MODEL` の順で参照する。Bedrock では利用するモデル ID、推論プロファイル ID、または ARN を指定する。
 
 #### Bedrock に AWS IAM Identity Center (SSO) で接続
 
@@ -64,8 +66,8 @@ AWS CLI v2 でプロファイルを作成し、ログインしてから同じシ
 aws configure sso --profile bedrock-sso   # プロファイル作成時のみ
 aws sso login --profile bedrock-sso
 export AWS_PROFILE=bedrock-sso
-export IBIS_AI_PROVIDER=bedrock
-export IBIS_BEDROCK_MODEL_ID='利用できる Claude のモデル ID または推論プロファイル ID'
+export CLAUDE_CODE_USE_BEDROCK=1
+export ANTHROPIC_MODEL='利用できる Claude のモデル ID または推論プロファイル ID'
 unset AWS_BEARER_TOKEN_BEDROCK
 /Applications/Docs.app/Contents/MacOS/ibisOffice
 ```

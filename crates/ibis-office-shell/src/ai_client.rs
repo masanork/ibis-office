@@ -388,6 +388,7 @@ impl Provider {
             Some("anthropic" | "claude") => Self::Anthropic,
             Some("bedrock") => Self::Bedrock,
             Some(_) => return Err("IBIS_AI_PROVIDER: openai / anthropic / bedrock".into()),
+            None if env("CLAUDE_CODE_USE_BEDROCK").as_deref() == Some("1") => Self::Bedrock,
             None if !saved.api_key.is_empty()
                 || !saved.base_url.is_empty()
                 || !saved.model.is_empty()
@@ -426,16 +427,21 @@ impl Provider {
                 )
             }
             Self::Anthropic | Self::Bedrock => {
-                let (key_name, model_name) = if provider == Self::Anthropic {
-                    ("ANTHROPIC_API_KEY", "ANTHROPIC_MODEL")
+                let key_name = if provider == Self::Anthropic {
+                    "ANTHROPIC_API_KEY"
                 } else {
-                    ("AWS_BEARER_TOKEN_BEDROCK", "IBIS_BEDROCK_MODEL_ID")
+                    "AWS_BEARER_TOKEN_BEDROCK"
                 };
                 let api_key = env(key_name);
-                let model = env("IBIS_AI_MODEL")
-                    .or_else(|| env(model_name))
+                let model = env("ANTHROPIC_MODEL")
+                    .or_else(|| env("IBIS_AI_MODEL"))
+                    .or_else(|| match provider {
+                        Self::Bedrock => env("IBIS_BEDROCK_MODEL_ID"),
+                        _ => None,
+                    })
+                    .or_else(|| env("ANTHROPIC_DEFAULT_MODEL"))
                     .ok_or_else(|| {
-                        format!("IBIS_AI_MODEL または {model_name} を設定してください。")
+                        "ANTHROPIC_MODEL にモデル ID を設定してください。".to_string()
                     })?;
                 let base_url = if provider == Self::Anthropic {
                     if api_key.is_none() {
@@ -1199,6 +1205,37 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.api_key, "saved-key");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn claude_code_bedrock_environment_selects_the_standard_model() {
+        let saved = AiConfig {
+            base_url: "https://api.openai.com/v1".into(),
+            model: "saved-model".into(),
+            api_key: "saved-key".into(),
+        };
+        let (provider, config) = Provider::resolve(&saved, |name| match name {
+            "CLAUDE_CODE_USE_BEDROCK" => Some("1".into()),
+            "ANTHROPIC_MODEL" => Some("global.anthropic.test-model".into()),
+            "IBIS_AI_MODEL" | "IBIS_BEDROCK_MODEL_ID" => Some("legacy-model".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(provider == Provider::BedrockProfile { region: None });
+        assert_eq!(config.model, "global.anthropic.test-model");
+        assert!(config.api_key.is_empty());
+
+        let (provider, config) = Provider::resolve(&saved, |name| match name {
+            "IBIS_AI_PROVIDER" => Some("anthropic".into()),
+            "CLAUDE_CODE_USE_BEDROCK" => Some("1".into()),
+            "ANTHROPIC_API_KEY" => Some("claude-key".into()),
+            "ANTHROPIC_DEFAULT_MODEL" => Some("claude-default".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(provider == Provider::Anthropic);
+        assert_eq!(config.model, "claude-default");
     }
 
     #[cfg(not(target_family = "wasm"))]
