@@ -530,21 +530,24 @@ impl Tree {
 
 pub(crate) type EditorTarget = (WeakEntity<crate::editor::SlideEditor>, AnyWindowHandle, u64);
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) struct InventoryTarget {
     editor: EditorTarget,
     source: crate::read_file::BomSource,
 }
 
+#[cfg(not(target_family = "wasm"))]
 enum Origin {
     Outline(EditorTarget),
     Inventory(InventoryTarget),
 }
 
-struct View {
+pub(crate) struct View {
     title: SharedString,
     source: Option<Arc<Source>>,
     tree: Tree,
     editor: Option<EditorTarget>,
+    #[cfg(not(target_family = "wasm"))]
     table: Option<InventoryTarget>,
     search: Entity<InputState>,
     matching: Vec<usize>,
@@ -579,7 +582,10 @@ impl View {
             })
             .unwrap_or(false);
         if moved {
+            #[cfg(not(target_family = "wasm"))]
             crate::open_guard::raise(*owner, cx);
+            #[cfg(target_family = "wasm")]
+            let _ = owner;
         }
     }
 
@@ -1000,29 +1006,38 @@ impl Render for View {
                             .text_lg()
                             .child(self.title.clone()),
                     )
-                    .children(self.table.as_ref().map(|_| {
-                        Button::new("structured-bom-table")
-                            .outline()
-                            .xsmall()
-                            .label(crate::i18n::text("structured.show-inventory"))
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                if let Some(table) = &view.table {
-                                    let (editor, owner, file_id) = &table.editor;
-                                    if editor
-                                        .upgrade()
-                                        .is_some_and(|editor| editor.read(cx).file_id == *file_id)
-                                    {
-                                        crate::open_guard::raise(*owner, cx);
-                                    } else {
-                                        crate::app::open_editor_for(
-                                            table.source.path.clone(),
-                                            None,
-                                            cx,
-                                        );
-                                    }
-                                }
+                    .when(cfg!(not(target_family = "wasm")), |row| {
+                        #[cfg(not(target_family = "wasm"))]
+                        {
+                            row.children(self.table.as_ref().map(|_| {
+                                Button::new("structured-bom-table")
+                                    .outline()
+                                    .xsmall()
+                                    .label(crate::i18n::text("structured.show-inventory"))
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        if let Some(table) = &view.table {
+                                            let (editor, owner, file_id) = &table.editor;
+                                            if editor
+                                                .upgrade()
+                                                .is_some_and(|editor| editor.read(cx).file_id == *file_id)
+                                            {
+                                                crate::open_guard::raise(*owner, cx);
+                                            } else {
+                                                crate::app::open_editor_for(
+                                                    table.source.path.clone(),
+                                                    None,
+                                                    cx,
+                                                );
+                                            }
+                                        }
+                                    }))
                             }))
-                    }))
+                        }
+                        #[cfg(target_family = "wasm")]
+                        {
+                            row
+                        }
+                    })
                     .children((lines && !is_csv && self.document_tree.is_some()).then(|| {
                         Button::new("structured-record-back")
                             .outline()
@@ -1490,6 +1505,7 @@ impl Render for View {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn open_view(
     title: SharedString,
     source: Option<Arc<Source>>,
@@ -1571,10 +1587,100 @@ fn open_view(
     });
 }
 
+/// Detect municipal standard linkage CSVs that should open in the structured tree view.
+#[cfg(target_family = "wasm")]
+pub(crate) fn is_linkage_csv(data: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(data.strip_prefix(b"\xef\xbb\xbf").unwrap_or(data)) else {
+        return false;
+    };
+    let mut records = ibis_formats::csv::CsvRecordIter::new(text, ',');
+    let Some(header) = records.next() else {
+        return false;
+    };
+    let signature = ["削除フラグ", "操作者ID", "操作年月日", "操作時刻"];
+    if !signature.iter().all(|name| header.iter().any(|column| column == name)) {
+        return false;
+    }
+    header.len() > 256
+        || header
+            .iter()
+            .filter_map(|column| column.rsplit_once('_'))
+            .any(|(name, index)| {
+                !name.is_empty()
+                    && index.trim_start_matches('0') == "1"
+                    && header
+                        .iter()
+                        .filter_map(|column| column.rsplit_once('_'))
+                        .any(|(other, index)| other == name && index.trim_start_matches('0') == "2")
+            })
+}
+
+/// Build an in-window structured tree view from CSV bytes (used by the Web build).
+#[cfg(target_family = "wasm")]
+pub(crate) fn create_csv_view(
+    title: SharedString,
+    bytes: Vec<u8>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Result<Entity<View>, String> {
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(crate::i18n::text("structured.size-limit").to_string());
+    }
+    let mut csv = csv::Csv::read(&bytes)?;
+    let source = Arc::new(Source {
+        bytes,
+        records: std::mem::take(&mut csv.records),
+        lines: true,
+        truncated: csv.truncated,
+        inventory: None,
+        csv: Some(csv),
+        notice: None,
+        linkage_review: None,
+        row_review: None,
+    });
+    let view = cx.new(|cx| {
+        let search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(crate::i18n::text("structured.search-columns"))
+        });
+        let subscription = cx.subscribe(&search, |view: &mut View, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                view.search(cx);
+            }
+        });
+        let matching = (0..source.records.len()).collect();
+        let mut view = View {
+            title,
+            source: Some(source),
+            tree: Tree::default(),
+            editor: None,
+            search,
+            matching,
+            query: String::new(),
+            hits: None,
+            record: 0,
+            record_scroll: UniformListScrollHandle::default(),
+            tree_scroll: UniformListScrollHandle::default(),
+            selected: None,
+            document_tree: None,
+            _subscription: subscription,
+        };
+        if view
+            .source
+            .as_ref()
+            .is_some_and(|source| !source.records.is_empty())
+        {
+            view.select_record(0, cx);
+        }
+        view
+    });
+    Ok(view)
+}
+
 pub(crate) fn has_row_schema(path: &std::path::Path) -> bool {
     row_schema::sidecar(path).is_some()
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl crate::editor::SlideEditor {
     pub(crate) fn open_bom_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(source) = self.bom_source.clone() else {

@@ -31,3 +31,34 @@ The `test.vsdx` package's `docProps/thumbnail.emf` stores Visio's raster preview
 It shows a white container body, with blue limited to the header and outline.
 Use this preview to verify which region is filled. Its low resolution limits
 comparisons of typefaces and thin outlines.
+
+## Fixed connection points saved by Microsoft Visio
+
+The libvisio corpus includes a [Visio-authored flowchart](https://github.com/LibreOffice/libvisio/blob/bc054fcd9de142eaa513ebaf5689e0bc84958f46/src/test/data/testfile3.vsdx)
+with inherited connection points and an orthogonal connector whose transform
+uses signed dimensions. The original SHA-256 is
+`9ea7dd2a88ecc4e7f29ff5b022712db18baa5b607e44b32d73f2b79bd4029387`.
+The test reconnects connector 17 to point 2 on shape 1, saves a separate copy,
+and checks the rendered endpoints and saved references after reopening.
+
+```sh
+VSDX_VISIO_GLUE_SAMPLE=/path/to/testfile3.vsdx \
+VSDX_VISIO_GLUE_OUTPUT=/path/to/testfile3-reconnected.vsdx \
+cargo test --locked -p ibis-vsdx --test visio_native_glue -- --ignored
+```
+
+Omit `VSDX_VISIO_GLUE_OUTPUT` to use and remove a temporary copy.
+
+## Circular line jumps
+
+The Aspose.Diagram examples include [modified.vsdx](https://github.com/aspose-diagram/Aspose.Diagram-for-Java/blob/4c46d5e3ab5ba8939b43d845633490794276a8e7/Examples/src/main/resources/com/aspose/diagram/examples/OLEObjectsinVisioDiagram/ManipulateEmbeddedOLEObjects/modified.vsdx),
+a Visio-origin drawing with two circular line jumps in one connector. The
+SHA-256 is `9c140154d9ff810cf72e5ced28d12072756cfccb004e9532b833b499182ad543`.
+The drawing has no explicit connection records for those endpoints, so this
+fixture tests rendering. The geometry edit suite uses a separate adapted
+flowchart to verify reconnection and save/reopen.
+
+```sh
+VSDX_VISIO_ARC_SAMPLE=/path/to/modified.vsdx \
+cargo test --locked -p ibis-vsdx --test visio_arc -- --ignored
+```

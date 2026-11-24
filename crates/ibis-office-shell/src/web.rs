@@ -62,6 +62,10 @@ extern "C" {
     /// resolves to `{ name, bytes }`, or to `null` when cancelled.
     #[wasm_bindgen(catch, js_name = ibisOfficePickFile)]
     fn pick_file_js() -> Result<js_sys::Promise, JsValue>;
+    /// Defined by `www/main.ts`: fetches a same-origin document URL and
+    /// resolves to `{ name, bytes }`.
+    #[wasm_bindgen(catch, js_name = ibisOfficeFetchUrl)]
+    fn fetch_url_js(url: &str) -> Result<js_sys::Promise, JsValue>;
 }
 
 #[wasm_bindgen]
@@ -114,16 +118,14 @@ pub(crate) async fn icc_load() -> Result<Option<(String, Vec<u8>)>, String> {
 
 /// Let the user choose a file; its name and contents, or `None` if cancelled.
 pub async fn pick_file() -> Result<Option<(String, Vec<u8>)>, String> {
-    let describe = |err: JsValue| err.as_string().unwrap_or_else(|| format!("{err:?}"));
-    let promise = pick_file_js().map_err(describe)?;
-    let value = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(describe)?;
-    if value.is_null() || value.is_undefined() {
-        return Ok(None);
-    }
-    let field = |name: &str| js_sys::Reflect::get(&value, &JsValue::from_str(name)).map_err(describe);
-    let name = field("name")?.as_string().unwrap_or_default();
-    let bytes = js_sys::Uint8Array::new(&field("bytes")?).to_vec();
-    Ok(Some((name, bytes)))
+    named_bytes(pick_file_js()).await
+}
+
+/// Fetch a same-origin file URL via the page host; returns its name and bytes.
+pub async fn fetch_url(url: &str) -> Result<(String, Vec<u8>), String> {
+    named_bytes(fetch_url_js(url))
+        .await?
+        .ok_or_else(|| "Empty response".to_string())
 }
 
 // ---- The downloadable fonts (セットアップ; shell/font_setup.rs) ------------------------------------------------------------

@@ -7,17 +7,136 @@
 //! files.
 
 use gpui_kit::component::ActiveTheme as _;
-#[cfg(not(target_family = "wasm"))]
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::v_flex;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use crate::palette::rgb;
+use std::cell::RefCell;
 
 use crate::actions::Open;
 use crate::editor::SlideEditor;
 use crate::icons::Material;
 use gpui_kit::component::Icon;
+
+/// Custom item displayed in the Web start view list (clicking fetches and opens in-app).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartViewItem {
+    pub title: String,
+    #[serde(default)]
+    pub subtitle: String,
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub badge: Option<String>,
+}
+
+/// Custom link displayed in the Web start view right-hand panel.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartViewLink {
+    pub label: String,
+    pub url: String,
+}
+
+/// Custom feature highlight card in the Web start view right-hand panel.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartViewFeature {
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Optional customization of the right-hand info panel on the start view.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartViewPanel {
+    #[serde(default)]
+    pub heading: Option<String>,
+    #[serde(default)]
+    pub body: Vec<String>,
+    #[serde(default)]
+    pub features: Vec<StartViewFeature>,
+    #[serde(default)]
+    pub links: Vec<StartViewLink>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Host-supplied configuration for the Web start view (`set_start_view_config`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartViewConfig {
+    #[serde(default)]
+    pub list_title: Option<String>,
+    #[serde(default)]
+    pub items: Vec<StartViewItem>,
+    #[serde(default)]
+    pub panel: Option<StartViewPanel>,
+}
+
+thread_local! {
+    static START_VIEW_CONFIG: RefCell<Option<StartViewConfig>> = const { RefCell::new(None) };
+}
+
+fn is_safe_same_origin_url(url: &str) -> bool {
+    (url.starts_with('/') && !url.starts_with("//")) || url.starts_with("./")
+}
+
+fn is_safe_link_url(url: &str) -> bool {
+    is_safe_same_origin_url(url) || url.starts_with("https://") || url.starts_with("http://")
+}
+
+/// Parse and install a Web start view configuration from JSON.
+pub fn set_start_view_config(json: &str) -> Result<(), String> {
+    if json.trim().is_empty() {
+        START_VIEW_CONFIG.with(|slot| *slot.borrow_mut() = None);
+        return Ok(());
+    }
+    let mut config: StartViewConfig = serde_json::from_str(json).map_err(|err| format!("invalid start view config: {err}"))?;
+    config.items.retain(|item| {
+        !item.title.trim().is_empty()
+            && !item.name.trim().is_empty()
+            && is_safe_same_origin_url(&item.url)
+    });
+    config.items.truncate(100);
+    if let Some(panel) = &mut config.panel {
+        panel.body.retain(|p| !p.trim().is_empty());
+        panel.body.truncate(8);
+        panel.features.retain(|f| !f.title.trim().is_empty());
+        panel.features.truncate(6);
+        panel.links.retain(|link| !link.label.trim().is_empty() && is_safe_link_url(&link.url));
+        panel.links.truncate(12);
+    }
+    START_VIEW_CONFIG.with(|slot| *slot.borrow_mut() = Some(config));
+    Ok(())
+}
+
+/// Current host-supplied Web start view configuration, if any.
+pub fn start_view_config() -> Option<StartViewConfig> {
+    START_VIEW_CONFIG.with(|slot| slot.borrow().clone())
+}
+
+#[cfg(target_family = "wasm")]
+fn badge_color(badge: &str) -> u32 {
+    match badge.to_ascii_uppercase().as_str() {
+        "DOCX" | "DOC" => 0x185abd,
+        "XLSX" | "XLS" => 0x107c41,
+        "PPTX" | "PPT" => 0xc43e1c,
+        "JTD" => 0x6d28d9,
+        "MD" | "MARKDOWN" => 0x334155,
+        "XDW" => 0x0f766e,
+        "HWPX" | "HWP" => 0x0284c7,
+        "VSDX" => 0x2563eb,
+        "CSV" => 0x15803d,
+        "OFD" => 0xb91c1c,
+        "ODS" | "ODF" => 0x047857,
+        "JSON" | "SBOM" | "CBOM" => 0x0e7490,
+        _ => 0x475569,
+    }
+}
 
 /// The colour of the links (開く…), as Office's start screen.
 const LINK_COLOR: u32 = 0x0f6cbd;
@@ -26,6 +145,8 @@ const COLUMN_WIDTH: f32 = 560.0;
 /// Height of one row of the recent files list, in pixels.
 #[cfg(not(target_family = "wasm"))]
 const RECENT_ROW_HEIGHT: f32 = 44.0;
+#[cfg(target_family = "wasm")]
+const WEB_ITEM_ROW_HEIGHT: f32 = 54.0;
 /// Space left under the recent files list, to the bottom of the window, in
 /// pixels; also the space above each section's title.
 const BOTTOM_MARGIN: f32 = 24.0;
@@ -75,6 +196,78 @@ const ISSUES_URL: &str = "https://github.com/masanork/ibis-office/issues";
 /// The window's title while no file is open: the app and its version.
 pub fn start_title() -> String {
     format!("Docs {}", env!("IBIS_VERSION"))
+}
+
+/// Custom right-hand landing panel supplied by a Web host (`StartViewPanel`).
+fn custom_panel(panel: &StartViewPanel, muted: Hsla) -> Div {
+    let mut card = v_flex()
+        .w(px(REQUEST_WIDTH))
+        .min_w(px(REQUEST_MIN_WIDTH))
+        .flex_shrink(1.0)
+        .mt(px(BOTTOM_MARGIN))
+        .mr(px(COLUMN_PADDING))
+        .p_4()
+        .gap_2()
+        .rounded(px(8.))
+        .bg(rgb(0xf0f4f9))
+        .text_size(px(14.0));
+    if let Some(heading) = &panel.heading {
+        if !heading.trim().is_empty() {
+            card = card.child(div().text_size(px(15.0)).font_weight(FontWeight::SEMIBOLD).child(heading.clone()));
+        }
+    }
+    for paragraph in &panel.body {
+        card = card.child(div().text_color(muted).child(paragraph.clone()));
+    }
+    if !panel.features.is_empty() {
+        let mut list = v_flex().mt_1().gap_2();
+        for feature in &panel.features {
+            let mut item = v_flex()
+                .px_3()
+                .py_2()
+                .gap_1()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(rgb(0xe2e8f0))
+                .bg(rgb(0xffffff))
+                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(feature.title.clone()));
+            if !feature.description.trim().is_empty() {
+                item = item.child(div().text_xs().text_color(muted).child(feature.description.clone()));
+            }
+            list = list.child(item);
+        }
+        card = card.child(list);
+    }
+    if !panel.links.is_empty() {
+        let mut links_row = div().mt_2().flex().flex_wrap().gap_2();
+        for (idx, link) in panel.links.iter().enumerate() {
+            let url = link.url.clone();
+            links_row = links_row.child(
+                div()
+                    .id(("start-panel-link", idx))
+                    .px_3()
+                    .py_1()
+                    .rounded(px(999.))
+                    .border_1()
+                    .border_color(rgb(0xd0d7e2))
+                    .bg(rgb(0xffffff))
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(LINK_COLOR))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(0xe8f0fe)))
+                    .child(link.label.clone())
+                    .on_click(move |_, _, cx| crate::external::open_url(&url, cx)),
+            );
+        }
+        card = card.child(links_row);
+    }
+    if let Some(note) = &panel.note {
+        if !note.trim().is_empty() {
+            card = card.child(div().mt_1().text_xs().text_color(muted).child(note.clone()));
+        }
+    }
+    card
 }
 
 /// 協力のお願い, right of the column: what ibisOffice aims at, and a link to
@@ -169,12 +362,27 @@ impl SlideEditor {
                 .children(Self::update_button())
                 .child(crate::chrome::brand_logo("start-app-logo",REQUEST_WIDTH / crate::chrome::LOGO_ASPECT,true))
                 .child(Self::version_line(muted))
-                .child(request_panel(muted).w_full().mt_0().mr_0())))
+                .child(
+                    match start_view_config().and_then(|c| c.panel) {
+                        Some(panel) => custom_panel(&panel, muted).w_full().mt_0().mr_0(),
+                        None => request_panel(muted).w_full().mt_0().mr_0(),
+                    }
+                )))
     }
 
-    /// 「ver.0.8.6」 under the logo, right-aligned, a little smaller than the body text.
+    /// 「Powered by ibisOffice」 and 「ver.0.8.x」 directly under the logo.
     fn version_line(muted: Hsla) -> impl IntoElement {
-        div().id("start-version").w_full().flex().justify_end().text_xs().text_color(muted).mt(px(-8.)).child(crate::i18n::format("start.version", &[("version", &env!("IBIS_VERSION"))]))
+        div()
+            .id("start-version")
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_between()
+            .text_xs()
+            .text_color(muted)
+            .mt(px(-8.))
+            .child(div().font_weight(FontWeight::MEDIUM).child("Powered by ibisOffice"))
+            .child(crate::i18n::format("start.version", &[("version", &env!("IBIS_VERSION"))]))
     }
 
     /// 「ibisOffice を更新する」 over the logo, right-aligned, when a newer version is known (never in the browser, which has no
@@ -371,9 +579,156 @@ impl SlideEditor {
         )
     }
 
-    /// The browser gives no file paths to reopen, so the web build has no history.
+    /// Host-supplied items (samples or shortcuts) shown in the Web start view.
+    /// When no items are configured, the web build shows no history section.
     #[cfg(target_family = "wasm")]
-    fn recent_files_list(&self, column: Div, _: &mut Context<Self>) -> Div {
+    fn recent_files_list(&self, column: Div, cx: &mut Context<Self>) -> Div {
+        let Some(config) = start_view_config() else {
+            return column;
+        };
+        if config.items.is_empty() {
+            return column;
+        }
+        let theme = cx.theme();
+        let (foreground, muted, border, hover, background) =
+            (theme.foreground, theme.muted_foreground, theme.border, theme.muted, theme.background);
+        let title_text: SharedString = config
+            .list_title
+            .filter(|t| !t.trim().is_empty())
+            .map(SharedString::from)
+            .unwrap_or_else(|| crate::i18n::text("start.recent").into());
+        let rows: Vec<AnyElement> = config
+            .items
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let badge_label = item.badge.unwrap_or_else(|| {
+                    item.name
+                        .rsplit_once('.')
+                        .map(|(_, ext)| ext.to_ascii_uppercase())
+                        .unwrap_or_else(|| "FILE".to_string())
+                });
+                let badge_bg = badge_color(&badge_label);
+                let title: SharedString = item.title.into();
+                let subtitle: SharedString = item.subtitle.into();
+                let has_subtitle = !subtitle.is_empty();
+                let url = item.url;
+                let name = item.name;
+                div()
+                    .id(("web-start-item", index))
+                    .flex_shrink_0()
+                    .min_h(px(WEB_ITEM_ROW_HEIGHT))
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .border_b_1()
+                    .border_color(border)
+                    .text_color(foreground)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_web_url(url.clone(), name.clone(), window, cx);
+                    }))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .w(px(44.))
+                            .py(px(2.))
+                            .rounded(px(4.))
+                            .bg(rgb(badge_bg))
+                            .text_color(crate::palette::doc(0xffffff))
+                            .text_size(px(10.))
+                            .font_weight(FontWeight::BOLD)
+                            .flex()
+                            .justify_center()
+                            .child(badge_label),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).truncate().child(title))
+                            .when(has_subtitle, |d| {
+                                d.child(div().text_xs().text_color(muted).truncate().child(subtitle))
+                            }),
+                    )
+                    .into_any_element()
+            })
+            .collect();
         column
+            .child(
+                div()
+                    .mt(px(BOTTOM_MARGIN - ICON_EDGE))
+                    .mb(px(TITLE_GAP))
+                    .text_sm()
+                    .line_height(px(14.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title_text),
+            )
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .border_1()
+                    .border_color(border)
+                    .rounded_sm()
+                    .bg(background)
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .id("recent-files-scroll")
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.recent_scroll)
+                            .children(rows),
+                    )
+                    .vertical_scrollbar(&self.recent_scroll),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[core::prelude::v1::test]
+    fn start_view_config_filters_unsafe_urls_and_resets() {
+        let json = r#"{
+            "listTitle": "サンプル",
+            "items": [
+                { "title": "Valid", "subtitle": "ok", "name": "a.docx", "url": "/samples/a.docx", "badge": "DOCX" },
+                { "title": "Relative", "name": "b.md", "url": "./samples/b.md" },
+                { "title": "CrossOrigin", "name": "c.docx", "url": "https://evil.example/c.docx" },
+                { "title": "ProtoRelative", "name": "d.docx", "url": "//evil.example/d.docx" },
+                { "title": "JsUrl", "name": "e.docx", "url": "javascript:alert(1)" }
+            ],
+            "panel": {
+                "heading": "Docs",
+                "body": ["Hello", ""],
+                "links": [
+                    { "label": "Files", "url": "/files" },
+                    { "label": "GitHub", "url": "https://github.com/masanork/ibis-office" },
+                    { "label": "Bad", "url": "javascript:void(0)" }
+                ]
+            }
+        }"#;
+        set_start_view_config(json).expect("valid config");
+        let cfg = start_view_config().expect("stored");
+        assert_eq!(cfg.list_title.as_deref(), Some("サンプル"));
+        assert_eq!(cfg.items.len(), 2);
+        assert_eq!(cfg.items[0].name, "a.docx");
+        assert_eq!(cfg.items[1].name, "b.md");
+        let panel = cfg.panel.expect("panel");
+        assert_eq!(panel.body, vec!["Hello".to_string()]);
+        assert_eq!(panel.links.len(), 2);
+
+        set_start_view_config("").expect("clear");
+        assert!(start_view_config().is_none());
     }
 }

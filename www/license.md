@@ -12,13 +12,13 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | ECMA-376 presetTableStyles.xml | Excel の組み込みテーブル スタイルの定義 | Ecma テキスト著作権ポリシー |
 | ECMA-376 presetCellStyles.xml | Excel の組み込みセルのスタイルの定義 | Ecma テキスト著作権ポリシー |
 | ECMA-376 OfficeOpenXML-WordprocessingMLArtBorders.zip | Word のページの絵柄罫線の絵（`assets/artborders/` に PNG を 1 枚ずつ、改変せずに） | Ecma テキスト著作権ポリシー |
-| IBM Plex Sans | UI の文字（Web 版） | SIL Open Font License 1.1 |
+| IBM Plex Sans | UI の文字 | SIL Open Font License 1.1 |
 | Lucide | アイコン（`assets/icons/`） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 | Unicode 15.0 | 文字の表示可否データ | Unicode-3.0 |
 | 異体字クラスターマップ | 異体字照合 | 調製・提供 楠 正憲 |
 
-## Rust の部品（682 件）
+## Rust の部品（685 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -289,6 +289,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | ibis-office-pdf | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-office-pdf |
 | ibis-ooxml | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-ooxml |
 | ibis-pdf | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-pdf |
+| ibis-vsdx | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-vsdx |
 | ibis-xdw | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-xdw |
 | ibis-xdw-read | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-xdw-read |
 | ibis-xps | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-xps |
@@ -448,6 +449,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | proc-macro2-diagnostics | 0.10.1 | MIT/Apache-2.0 | https://github.com/SergioBenitez/proc-macro2-diagnostics |
 | profiling | 1.0.18 | MIT OR Apache-2.0 | https://github.com/aclysma/profiling |
 | profiling-procmacros | 1.0.18 | MIT OR Apache-2.0 | https://github.com/aclysma/profiling |
+| pulldown-cmark | 0.13.6 | MIT | https://github.com/raphlinus/pulldown-cmark |
 | pulp | 0.22.3 | MIT | https://github.com/sarah-quinones/pulp/ |
 | pulp-wasm-simd-flag | 0.1.1 | MIT | https://github.com/sarah-quinones/pulp/ |
 | pure_jpegls | 2.1.0 | MIT OR Apache-2.0 | https://github.com/jpfielding/dicos.rs |
@@ -660,7 +662,6 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | wasm-bindgen-macro-support | 0.2.128 | MIT OR Apache-2.0 | https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support |
 | wasm-bindgen-shared | 0.2.128 | MIT OR Apache-2.0 | https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared |
 | wasm-streams | 0.4.2 | MIT OR Apache-2.0 | https://github.com/MattiasBuelens/wasm-streams/ |
-| wasm_thread | 0.3.3 | Apache-2.0 OR MIT | https://github.com/chemicstry/wasm_thread |
 | web-sys | 0.3.105 | MIT OR Apache-2.0 | https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys |
 | web-time | 1.1.0 | MIT OR Apache-2.0 | https://github.com/daxpedda/web-time |
 | weezl | 0.1.12 | MIT OR Apache-2.0 | https://github.com/image-rs/weezl |
@@ -702,7 +703,9 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | zip | 9.8.0 | MIT | https://github.com/zip-rs/zip2 |
 | zmij | 1.0.23 | MIT | https://github.com/dtolnay/zmij |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image |
+| zune-heic | 0.5.0 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/dev/crates/zune-heic |
 | zune-inflate | 0.2.54 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/main/zune-inflate |
+| zune-isobmff | 0.5.0 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/dev/crates/zune-isobmff |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg |
 
 MPL-2.0 の部品は、ソースを改変せずに使っています。ソースは上の入手先と crates.io から入手できます。
@@ -1434,6 +1437,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **proc-macro-error-attr 1.0.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru> / Copyright (c) 2019-2020 CreepySkeleton
 - **proc-macro2 1.0.107**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **proc-macro2-diagnostics 0.10.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016-2020 Sergio Benitez / COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+- **pulldown-cmark 0.13.6**：Copyright 2015 Google Inc. All rights reserved.
 - **pulp 0.22.3**：Copyright (c) 2021 sarah
 - **pxfm 0.1.30**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2024 Radzivon Bartoshyk / Copyright (c) Radzivon Bartoshyk. All rights reserved.
 - **qoi 0.4.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2022 Ivan Smirnov
@@ -1634,7 +1638,6 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **wasm-bindgen-macro-support 0.2.128**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 Alex Crichton
 - **wasm-bindgen-shared 0.2.128**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 Alex Crichton
 - **wasm-streams 0.4.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
-- **wasm_thread 0.3.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **web-sys 0.3.105**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 Alex Crichton
 - **web-time 1.1.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2023 dAxpeDDa / Copyright (c) 2023 dAxpeDDa
 - **weezl 0.1.12**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) HeroicKatora 2020
@@ -1673,6 +1676,8 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **zerovec-derive 0.11.6**：COPYRIGHT AND PERMISSION NOTICE / Copyright © 2020-2024 Unicode, Inc.
 - **zip 9.8.0**：Copyright (c) 2014 Mathijs van de Nes
 - **zune-core 0.5.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) zune-image developers / (C) zune-image developers
+- **zune-heic 0.5.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) zune-image developers / (C) zune-image developers
+- **zune-isobmff 0.5.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) zune-image developers / (C) zune-image developers
 - **zune-jpeg 0.5.15**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) zune-image developers / (C) zune-image developers
 
 ## 単一のライセンス（MIT・Apache-2.0 以外）の部品のライセンス本文
@@ -3434,9 +3439,79 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
 ```
 
 
+## 依存元の帰属表示と個別ライセンス
+
+### subsetter 0.2.6 / NOTICE
+
+```text
+# Code
+
+ttf-parser
+Code from ttf-parser was used/adapted for the following parts:
+- Reader, Writer, LazyArray16 and LazyArray16Iter
+- `name` table parsing.
+- `hmtx` table parsing.
+- Most of the `cff` parsing logic as well auxiliary structs and functions
+such as `calc_subroutine_bias`, `SIDMetadata`, `CIDMetadata` `RealNumber`,
+`Index`, `IndexSize`, `OffsetSize`, `FDSelect`, `ArgumentStack`, `Top Dict` and `FONT Dict`,
+`DictionaryParser`.
+
+The MIT license applies:
+
+Copyright (c) 2018 Yevhenii Reizner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+==============================================================================
+
+fonttools
+Code from fonttools was used/adapted for the following parts:
+- The `Decompiler` for charstrings.
+
+The MIT license applies:
+MIT License
+
+Copyright (c) 2017 Just van Rossum
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+
 ## ライセンス本文
 
-複数のライセンスから選べる部品は、MIT または Apache-2.0 を選んでいます。
+選択可能な場合は MIT または Apache-2.0 を使用します。AND で結ばれた条件は併せて適用します。
 
 ### Apache-2.0
 

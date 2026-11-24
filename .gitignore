@@ -3,6 +3,7 @@
 /www/samples/mermaid/
 /www/assets
 /www/*.js
+!/www/sorane-start.js
 /www/*.d.ts
 /www/fonts.json
 /www/build-info.ts
