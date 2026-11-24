@@ -386,6 +386,7 @@ pub fn parse_markdown_fragment_blocks(
         bullet_num_id: None,
         ordered_num_id: None,
         markdown_links: HashMap::new(),
+        reference_images: HashMap::new(),
         footnote_ids: HashMap::new(),
         footnote_order: Vec::new(),
         next_footnote_id: 1,
@@ -396,7 +397,7 @@ pub fn parse_markdown_fragment_blocks(
         base_dir: None,
     };
     let mut footnote_defs: HashMap<String, String> = HashMap::new();
-    let text = collect_markdown_links(text, &mut ctx.markdown_links);
+    let text = collect_markdown_links(text, &mut ctx);
     let mut blocks = parse_blocks(&text, &mut ctx, &mut footnote_defs)?;
     doc.styles = Arc::new(ctx.styles);
     resolve_myst_references(&mut blocks, &HashMap::new());
@@ -1358,6 +1359,7 @@ struct ParseContext<'a> {
     bullet_num_id: Option<u32>,
     ordered_num_id: Option<u32>,
     markdown_links: HashMap<String, Vec<MarkdownLink>>,
+    reference_images: HashMap<String, Vec<MarkdownReferenceImage>>,
     footnote_ids: HashMap<String, u32>,
     footnote_order: Vec<(String, u32)>,
     next_footnote_id: u32,
@@ -1562,6 +1564,7 @@ fn parse_markdown_into(
         bullet_num_id: None,
         ordered_num_id: None,
         markdown_links: HashMap::new(),
+        reference_images: HashMap::new(),
         footnote_ids: HashMap::new(),
         footnote_order: Vec::new(),
         next_footnote_id: 1,
@@ -1581,7 +1584,7 @@ fn parse_markdown_into(
         body_text = rest;
     }
     let mut footnote_defs: HashMap<String, String> = HashMap::new();
-    let body_text = collect_markdown_links(body_text, &mut ctx.markdown_links);
+    let body_text = collect_markdown_links(body_text, &mut ctx);
     let mut blocks = parse_blocks(&body_text, &mut ctx, &mut footnote_defs)?;
     if let Some(Block::Paragraph(paragraph)) = blocks.last()
         && paragraph.section_break == ibis_doc_model::SectionBreak::None
@@ -5038,9 +5041,22 @@ struct MarkdownLink {
     link: Link,
 }
 
+struct MarkdownReferenceImage {
+    source: String,
+    format: MediaFormat,
+    data: Arc<[u8]>,
+    alt_text: ibis_doc_model::AltText,
+}
+
+fn markdown_reference_image_label(source: &str) -> Option<&str> {
+    let after = source.strip_prefix("![")?;
+    let close = find_matching_bracket(after)?;
+    Some(&source[..close + 3])
+}
+
 fn collect_markdown_links<'a>(
     source: &'a str,
-    links: &mut HashMap<String, Vec<MarkdownLink>>,
+    ctx: &mut ParseContext<'_>,
 ) -> std::borrow::Cow<'a, str> {
     use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
 
@@ -5053,12 +5069,9 @@ fn collect_markdown_links<'a>(
     let mut unsupported_reference = false;
     let mut nested_reference_line = None;
     for (event, span) in parser.by_ref() {
-        let (link_type, dest_url, title) = match event {
-            Event::Start(Tag::Link { link_type, dest_url, title, .. }) => (link_type, dest_url, title),
-            Event::Start(Tag::Image { link_type: LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut, .. }) => {
-                unsupported_reference = true;
-                continue;
-            }
+        let (image, link_type, dest_url, title) = match event {
+            Event::Start(Tag::Link { link_type, dest_url, title, .. }) => (false, link_type, dest_url, title),
+            Event::Start(Tag::Image { link_type, dest_url, title, .. }) => (true, link_type, dest_url, title),
             _ => continue,
         };
         let reference = matches!(link_type, LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut);
@@ -5068,6 +5081,45 @@ fn collect_markdown_links<'a>(
             end += 2;
         }
         let raw = &source[start..end];
+        if image {
+            if !reference {
+                continue;
+            }
+            let label = (!raw.contains(['\r', '\n']) && !raw.starts_with("![[") && !source[..start].ends_with('['))
+                .then(|| markdown_reference_image_label(raw)).flatten();
+            let Some(key) = label else {
+                unsupported_reference = true;
+                continue;
+            };
+            let candidates = ctx.reference_images.entry(key.to_owned()).or_default();
+            if candidates.iter().any(|entry| entry.source == raw) {
+                continue;
+            }
+            let Some((format, data)) = decode_data_uri_image(&dest_url)
+                .or_else(|| load_local_image(&dest_url, ctx.base_dir))
+            else {
+                unsupported_reference = true;
+                continue;
+            };
+            // Keep the label in inline image context, even if it starts with a block marker.
+            let inline_image = format!("{key}(about:blank)");
+            let mut description = String::new();
+            for event in Parser::new(&inline_image) {
+                match event {
+                    Event::Text(text) | Event::Code(text) => description.push_str(&text),
+                    Event::SoftBreak | Event::HardBreak => description.push(' '),
+                    _ => {}
+                }
+            }
+            candidates.push(MarkdownReferenceImage {
+                source: raw.to_owned(),
+                format,
+                data: data.into(),
+                alt_text: ibis_doc_model::AltText { title: title.into_string(), description },
+            });
+            references += 1;
+            continue;
+        }
         let label = raw.strip_prefix('[').and_then(|after| {
             find_matching_bracket(after).map(|close| &raw[..close + 2])
         });
@@ -5121,12 +5173,15 @@ fn collect_markdown_links<'a>(
             Link::Url(dest_url.into_string())
         };
         let link = if title.is_empty() { link } else { link.with_title(title.into_string()) };
-        let candidates = links.entry(label.to_owned()).or_default();
+        let candidates = ctx.markdown_links.entry(label.to_owned()).or_default();
         if !candidates.iter().any(|entry| entry.source == raw) {
             candidates.push(MarkdownLink { source: raw.to_owned(), link });
         }
     }
-    for candidates in links.values_mut() {
+    for candidates in ctx.markdown_links.values_mut() {
+        candidates.sort_by_key(|entry| std::cmp::Reverse(entry.source.len()));
+    }
+    for candidates in ctx.reference_images.values_mut() {
         candidates.sort_by_key(|entry| std::cmp::Reverse(entry.source.len()));
     }
 
@@ -5494,6 +5549,26 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             run.format = base_fmt.clone();
             out.push(run);
             i += length;
+            continue;
+        }
+
+        if !ctx.reference_images.is_empty()
+            && let Some(key) = markdown_reference_image_label(rest)
+            && let Some(image) = ctx.reference_images.get(key)
+                .and_then(|candidates| candidates.iter().find(|entry| rest.starts_with(&entry.source)))
+        {
+            let (len, format, data, alt_text) = (
+                image.source.len(), image.format, image.data.clone(), image.alt_text.clone(),
+            );
+            flush_plain(&mut plain, &mut out, base_fmt);
+            let size = resolve_image_size(&data, format, None, None);
+            let media = ctx.fresh_media_id();
+            ctx.media.push(Media { id: media, format, data });
+            let look = PictureLook { alt_text, ..PictureLook::default() };
+            let mut run = FlowRun::new(FlowRunKind::Picture { media, size, look }, FlowRunStyle::default());
+            run.format = base_fmt.clone();
+            out.push(run);
+            i += len;
             continue;
         }
 
@@ -9359,6 +9434,68 @@ mod tests {
             assert_eq!(media.data.as_ref(), original);
             assert_eq!(size, EmuSize::new(width, height));
         }
+    }
+
+    #[test]
+    fn markdown_reference_images_preserve_bytes_alt_text_and_title() {
+        let encoded = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a5sAAAAASUVORK5CYII=";
+        let image_bytes = decode_base64(encoded).unwrap();
+        let source = format!(
+            "![# 図 **A** &amp; B][Diagram]\n\n![Diagram][]\n\n![diagram]\n\n[diagram]: data:image/png;base64,{encoded} 'Summary \"Q1\"'\n"
+        );
+        let check = |presentation: &Presentation| {
+            let flow = presentation.flow.as_deref().unwrap();
+            let pictures: Vec<_> = ibis_doc_model::flow_command::all_paragraphs(flow).into_iter()
+                .flat_map(|paragraph| &paragraph.runs)
+                .filter_map(|run| match &run.kind {
+                    FlowRunKind::Picture { media, look, .. } => Some((media, &look.alt_text)),
+                    _ => None,
+                }).collect();
+            assert_eq!(pictures.len(), 3);
+            for ((id, alt), expected) in pictures.into_iter().zip(["# 図 A & B", "Diagram", "diagram"]) {
+                assert_eq!(alt.description, expected);
+                assert_eq!(alt.title, "Summary \"Q1\"");
+                let image = presentation.media.iter().find(|entry| entry.id == *id).unwrap();
+                assert_eq!(image.format, MediaFormat::Png);
+                assert_eq!(image.data.as_ref(), image_bytes.as_slice());
+            }
+        };
+
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        check(&opened.presentation);
+        let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert_eq!(saved.matches("data:image/png;base64,").count(), 3);
+        assert!(!saved.contains("[diagram]:") && !saved.contains("}[]"), "{saved}");
+        check(&open_markdown(saved.as_bytes().to_vec()).unwrap().presentation);
+
+        let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+        check(&crate::read(&docx).unwrap());
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), saved);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn markdown_embeds_relative_reference_images_on_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf");
+        std::fs::write(dir.path().join("local diagram.emf"), original).unwrap();
+        let source = b"![Local figure][image]\n\n[image]: <local diagram.emf> \"Local title\"\n";
+        let opened = open_markdown_with_base_dir(source.to_vec(), Some(dir.path())).unwrap();
+        let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert!(saved.contains("![Local figure](data:image/x-emf;base64,"), "{saved}");
+        assert!(!saved.contains("local diagram.emf"), "{saved}");
+        let docx = import_markdown_to_docx_bytes(saved.as_bytes()).unwrap();
+        let reopened = crate::read(&docx).unwrap();
+        assert!(reopened.media.iter().any(|media| media.format == MediaFormat::Emf && media.data.as_ref() == original));
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), saved);
+    }
+
+    #[test]
+    fn markdown_keeps_unavailable_reference_image_source() {
+        let source = "![Unavailable][image]\n\n[image]: https://example.com/image.png \"Original title\"\n";
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        assert!(opened.presentation.media.is_empty());
+        assert_eq!(export_presentation_to_markdown(&opened.presentation).unwrap(), source);
     }
 
     #[test]
