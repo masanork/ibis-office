@@ -347,6 +347,8 @@ struct ReviewedRefresh {
     chart_diffs: Vec<Value>,
     chart_diffs_truncated: bool,
     quotient_previews: Vec<Value>,
+    preview_bar: Option<(ibis_doc_model::SlideId, ibis_doc_model::ShapeId, usize, usize)>,
+    preview_parameters: Value,
     quotient_selection: BTreeMap<usize, usize>,
     quotient_pages: BTreeMap<usize, (RankingPage, Value)>,
 }
@@ -437,6 +439,57 @@ impl QueryReportPanel {
 
 #[ibis_office_macros::editor_ext(QueryReportPanelExt)]
 impl SlideEditor {
+    fn visible_chart_review(&self) -> Option<(&ReviewedRefresh, &Presentation)> {
+        let panel = self.wb().panels.queries.as_ref()?.reports.as_ref()?;
+        let review = panel.review.as_ref()?;
+        if !self.sidebar_open || panel.busy || self.page_layout_shown() || self.presentation() != &review.base
+            || !review.result["charts"].as_array().is_some_and(|charts| charts.iter().any(|chart| chart["changed"] == true))
+        {
+            return None;
+        }
+        Some((review, review.candidate.as_ref()?))
+    }
+
+    pub(crate) fn report_preview_shown(&self) -> bool {
+        self.visible_chart_review().is_some()
+    }
+
+    pub(crate) fn report_preview_chart(&self, id: ibis_doc_model::ShapeId) -> Option<&ibis_doc_model::ShapeKind> {
+        let (_, candidate) = self.visible_chart_review()?;
+        let kind = &candidate.slide(self.current_slide)?.shape(id)?.kind;
+        matches!(kind, ibis_doc_model::ShapeKind::Chart(_)).then_some(kind)
+    }
+
+    pub(crate) fn select_report_preview_bar(
+        &mut self, id: ibis_doc_model::ShapeId, position: Option<(usize, usize)>, cx: &mut Context<Self>,
+    ) {
+        let slide = self.current_slide;
+        if let Some(review) = self.query_reports_mut().and_then(|panel| panel.review.as_mut()) {
+            review.preview_bar = position.map(|(series, point)| (slide, id, series, point));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn preview_chart_drill_down(&self, key: Option<&str>) -> Option<Value> {
+        let (review, candidate) = self.visible_chart_review()?;
+        let Some((slide, id, series, point)) = review.preview_bar.filter(|entry| entry.0 == self.current_slide) else {
+            return Some(json!({"state":"no_target","source":"preview"}));
+        };
+        let ibis_doc_model::ShapeKind::Chart(chart) = &candidate.slide(slide)?.shape(id)?.kind else { return None; };
+        let Some(drill) = crate::event_hooks::chart_drill_target(candidate, slide, chart, series, point) else {
+            return Some(json!({"state":"no_target","source":"preview"}));
+        };
+        let mut result = if let Some(key) = key {
+            drill.value_source().map_or_else(|| json!({"state":"no_target"}),
+                |source| crate::chart_cohort::applied_row(candidate, source, key))
+        } else {
+            crate::event_hooks::chart_drill_data(candidate, drill)
+        };
+        result["source"] = json!("preview");
+        result["parameter_values"] = review.preview_parameters.clone();
+        Some(result)
+    }
+
     fn open_quotient_group_search(&mut self, index: usize, generation: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(panel) = self.query_reports_mut().filter(|panel| panel.generation == generation && panel.review.is_some()) else { return };
         let filter = panel.quotient_filters.entry(index).or_default();
@@ -683,21 +736,26 @@ impl SlideEditor {
         }
 
         let selected_bar = (|| {
-            let (file, slide, shape, series, point) = self.selected_chart_bar?;
-            if file != self.file_id || slide != self.current_slide || self.selection != Some(shape) {
-                return None;
-            }
-            let ibis_doc_model::ShapeKind::Chart(chart) = &self.slide().shape(shape)?.kind else { return None };
+            let (workbook, slide, shape, series, point, source) = if let Some((review, candidate)) = self.visible_chart_review() {
+                let (slide, shape, series, point) = review.preview_bar?;
+                if slide != self.current_slide { return None; }
+                (candidate, slide, shape, series, point, "preview")
+            } else {
+                let (file, slide, shape, series, point) = self.selected_chart_bar?;
+                if file != self.file_id || slide != self.current_slide || self.selection != Some(shape) { return None; }
+                (self.presentation(), slide, shape, series, point, "applied")
+            };
+            let ibis_doc_model::ShapeKind::Chart(chart) = &workbook.slide(slide)?.shape(shape)?.kind else { return None };
             let data = chart.groups.iter().flat_map(|g| &g.series).nth(series)?;
             let refs = chart.cell_refs.get(series)?;
             let cell = |reference: &str| {
                 let reference = crate::sheet_ui::parse_reference(reference)?;
-                let (slide, range) = self.resolve_reference(&reference)?;
+                let (slide, range) = crate::sheet_ui::resolve_workbook_reference(workbook, &reference, slide)?;
                 let (column, row) = crate::event_hooks::chart_source_cell(range, point)?;
-                Some(json!({"sheet":self.presentation().slide(slide)?.name,"cell":ibis_doc_model::cell_name(column,row)}))
+                Some(json!({"sheet":workbook.slide(slide)?.name,"cell":ibis_doc_model::cell_name(column,row)}))
             };
             Some(json!({
-                "shape_id":shape.0,"series_index":series,"point_index":point,
+                "source":source,"shape_id":shape.0,"series_index":series,"point_index":point,
                 "title":chart.title.as_ref().map(|title| &title.text),
                 "series":data.name,"category":data.categories.get(point),
                 "category_cell":refs.categories.as_deref().and_then(cell),
@@ -713,7 +771,7 @@ impl SlideEditor {
                 } else {
                     json!({
                         "state":if review.result["blocked"] == true {"blocked"} else {"review"},
-                        "charts":review.result["charts"],
+                        "charts":review.result["charts"],"parameter_values":review.preview_parameters,
                         "reports":review.result["reports"].as_array().into_iter().flatten().map(|r| {
                             let comparison = r["table"].as_str().and_then(|table| book.query_reports.get(table)).and_then(|definition| definition.get("comparison"));
                             json!({"table":r["table"],"sheet":r["sheet"],"previous_rows":r["previous_rows"],"rows":r["rows"],"comparison":comparison})
@@ -925,6 +983,7 @@ impl SlideEditor {
                         .spawn(move || -> Result<ReviewedRefresh, ibis_doc_service::ToolError> {
                             let definitions =
                                 ibis_doc_service::batch_query_report_definitions(&base, &args)?;
+                            let preview_parameters = args["parameter_values"].clone();
                             let batch = ibis_doc_service::prepare_selected_report_batch(
                                 &paths, args, definitions,
                             )?;
@@ -947,7 +1006,7 @@ impl SlideEditor {
                                 }).collect()
                             }).unwrap_or_default();
                             Ok(ReviewedRefresh { base, result, commands, candidate, chart_diffs, chart_diffs_truncated,
-                                quotient_previews, quotient_selection: BTreeMap::new(), quotient_pages: BTreeMap::new() })
+                                quotient_previews, preview_bar: None, preview_parameters, quotient_selection: BTreeMap::new(), quotient_pages: BTreeMap::new() })
                         })
                         .map_err(|error| ibis_doc_service::ToolError::new("internal", error.to_string()))?
                         .join()
@@ -1263,6 +1322,25 @@ impl SlideEditor {
                     .font_weight(FontWeight::BOLD)
                     .child(text("query.report-preview")),
             );
+            if self.visible_chart_review().is_some() {
+                body = body.child(div().text_sm().child(text("query.report-chart-preview-on-sheet")));
+                if review.preview_bar.is_some()
+                    && let Some(detail) = self.preview_chart_drill_down(None).filter(|detail| detail["state"] == "ready")
+                {
+                    body = body.child(div().text_sm().font_weight(FontWeight::BOLD).child(text("query.report-chart-preview-evidence")));
+                    let value = &detail["value_cell"];
+                    let entry = |sheet: &Value, cell: &Value, value: &Value| saved_check_text(format!(
+                        "{}!{}  {}", sheet.as_str().unwrap_or_default(), cell.as_str().unwrap_or_default(),
+                        value["text"].as_str().unwrap_or_default(),
+                    ));
+                    body = body.child(entry(&value["sheet"], &value["cell"], &value["data"]));
+                    for section in std::iter::once(&detail["destination"]).chain(detail["evidence"].as_array().into_iter().flatten()) {
+                        for cell in section["cells"].as_array().into_iter().flatten() {
+                            body = body.child(entry(&section["sheet"], &cell["cell"], &cell["data"]));
+                        }
+                    }
+                }
+            }
             for chart in review.result["charts"].as_array().into_iter().flatten() {
                 let label = if chart["changed"] == true { "query.report-chart-changed" } else { "query.report-chart-unchanged" };
                 body = body.child(div().text_sm().child(format(label, &[

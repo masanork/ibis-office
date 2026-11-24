@@ -209,6 +209,11 @@ impl SlideEditor {
         let editing = self.editing.as_ref().filter(|e| e.shape == id);
         let positions = editing.map(|e| e.positions.clone());
         let mut drawn = shape.clone();
+        if matches!(shape.kind, ShapeKind::Chart(_))
+            && let Some(kind) = with_format!(self, workspace_chart_preview(self, id))
+        {
+            drawn.kind.clone_from(kind);
+        }
         if let Some(composing) = self.composing_body(id)
             && let Some(b) = drawn.text_body_mut()
         {

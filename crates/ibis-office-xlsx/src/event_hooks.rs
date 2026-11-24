@@ -10,6 +10,8 @@ use ibis_doc_model::{CellRange, Chart, Presentation, ShapeKind, SlideId};
 use crate::shell::editor::SlideEditor;
 use crate::sheet_ui::resolve_workbook_reference;
 use crate::ext::*;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use crate::query_report_panel::QueryReportPanelExtCrate as _;
 
 pub(crate) const COHORT_LINK_MARKER: &str = "ibis:cohort";
 
@@ -152,6 +154,13 @@ impl SlideEditor {
 
     /// A press on a form control, timeline, slicer or chart data point.
     pub(crate) fn xlsx_shape_press(&mut self, shape: ibis_doc_model::ShapeId, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if self.report_preview_chart(shape).is_some() {
+            let bar = self.chart_bar(shape, event.position);
+            self.selected_chart_bar = None;
+            self.select_report_preview_bar(shape, bar, cx);
+            return true;
+        }
         self.selected_chart_bar = self.chart_bar(shape, event.position)
             .map(|(series, index)| (self.file_id, self.current_slide, shape, series, index));
         if event.modifiers.platform && !event.modifiers.shift && !event.modifiers.alt && !event.modifiers.control
@@ -188,7 +197,10 @@ impl SlideEditor {
 
     fn chart_bar(&self, id: ibis_doc_model::ShapeId, position: Point<Pixels>) -> Option<(usize, usize)> {
         let shape = self.slide().shape(id)?;
-        let ShapeKind::Chart(chart) = &shape.kind else { return None };
+        let kind = &shape.kind;
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        let kind = self.report_preview_chart(id).unwrap_or(kind);
+        let ShapeKind::Chart(chart) = kind else { return None };
         if shape.rotation != 0 || shape.flip_h || shape.flip_v || chart.cell_refs.is_empty() || self.page_layout_shown() {
             return None;
         }
@@ -218,6 +230,7 @@ impl SlideEditor {
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     pub(crate) fn live_chart_contributor(&self, key: &str) -> serde_json::Value {
+        if let Some(result) = self.preview_chart_drill_down(Some(key)) { return result; }
         let source = self.selection.and_then(|id| self.chart_drill_target(id)).and_then(|target| target.value);
         source.map_or_else(
             || serde_json::json!({"state":"no_target"}),
@@ -228,6 +241,8 @@ impl SlideEditor {
     pub(crate) fn live_chart_drill_down(&self) -> serde_json::Value {
         use serde_json::json;
 
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        if let Some(result) = self.preview_chart_drill_down(None) { return result; }
         let Some(drill) = self.selection.and_then(|id| self.chart_drill_target(id)) else {
             return json!({"state":"no_target"});
         };
@@ -437,6 +452,11 @@ pub(crate) struct ChartDrillTarget {
     category: Option<ChartSourceCell>,
     value: Option<ChartSourceCell>,
     linked: bool,
+}
+
+impl ChartDrillTarget {
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) fn value_source(&self) -> Option<ChartSourceCell> { self.value }
 }
 
 fn range_contains(range: ibis_doc_model::CellRange, column: u32, row: u32) -> bool {

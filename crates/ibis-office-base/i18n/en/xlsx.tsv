@@ -3228,3 +3228,5 @@ query.report-quotient-excluded-both	Excluded by contribution direction and group
 query.report-quotient-subtotal-direction	Direction only ({count}): {total} {unit}
 query.report-quotient-subtotal-name	Name only ({count}): {total} {unit}
 query.report-quotient-subtotal-both	Both conditions ({count}): {total} {unit}
+query.report-chart-preview-on-sheet	The sheet shows proposed charts. Select a bar to see its proposed source cells.
+query.report-chart-preview-evidence	Proposed chart evidence

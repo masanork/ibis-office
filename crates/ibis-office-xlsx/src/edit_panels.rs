@@ -275,7 +275,13 @@ impl crate::shell::editor::SlideEditor {
             .or_else(|| self.recommended_charts_panel(cx).map(|panel| panel.modal_named("recommended_charts_panel")))
             .or_else(|| self.text_columns_panel(cx).map(|panel| panel.modal_named("text_columns_panel")))
             .or_else(|| self.import_text_panel(cx).map(|panel| panel.modal_named("import_text_panel")))
-            .or_else(|| self.queries_panel(cx).map(|panel| panel.modal_named("queries_panel")))
+            .or_else(|| {
+                #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                let docked = crate::query_report_panel::QueryReportPanelExtCrate::report_preview_shown(self);
+                #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+                let docked = false;
+                self.queries_panel(cx).map(|panel| if docked { panel } else { panel.modal_named("queries_panel") })
+            })
             .or_else(|| self.cells_dialog_panel(cx).map(|panel| panel.modal_named("cells_dialog_panel")))
             .or_else(|| self.external_links_panel(cx).map(|panel| panel.modal_named("external_links_panel")))
             .or_else(|| self.goto_special_panel(cx).map(|panel| panel.modal_named("goto_special_panel")))

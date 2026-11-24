@@ -647,6 +647,10 @@ pub trait FormatEditor {
     }
 
     /// Form controls are in design mode (a group box then takes the mouse).
+    fn workspace_chart_preview(_editor: &SlideEditor, _id: ibis_doc_model::ShapeId) -> Option<&ibis_doc_model::ShapeKind> {
+        None
+    }
+
     fn workspace_shape_design_mode(_editor: &SlideEditor) -> bool {
         false
     }
@@ -1468,6 +1472,7 @@ pub trait FormatDriver: Sync {
     fn workspace_sheet_frame(&self, _editor: &SlideEditor) -> Option<EmuRect>;
     fn workspace_hide_ink(&self, _editor: &SlideEditor) -> bool;
     fn workspace_sheet_overlays(&self, _editor: &SlideEditor, _scale: f32, _cx: &mut Context<SlideEditor>) -> SheetOverlays;
+    fn workspace_chart_preview<'a>(&self, editor: &'a SlideEditor, id: ibis_doc_model::ShapeId) -> Option<&'a ibis_doc_model::ShapeKind>;
     fn workspace_shape_design_mode(&self, _editor: &SlideEditor) -> bool;
     fn workspace_shape_has_right_click(&self, _editor: &SlideEditor) -> bool;
     fn workspace_shape_right_down(&self, _editor: &mut SlideEditor, _id: ibis_doc_model::ShapeId, _event: &MouseDownEvent, _window: &mut Window, _cx: &mut Context<SlideEditor>);
@@ -1869,6 +1874,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn workspace_sheet_overlays(&self, _editor: &SlideEditor, _scale: f32, _cx: &mut Context<SlideEditor>) -> SheetOverlays {
         F::workspace_sheet_overlays(_editor, _scale, _cx)
+    }
+    fn workspace_chart_preview<'a>(&self, editor: &'a SlideEditor, id: ibis_doc_model::ShapeId) -> Option<&'a ibis_doc_model::ShapeKind> {
+        F::workspace_chart_preview(editor, id)
     }
     fn workspace_shape_design_mode(&self, _editor: &SlideEditor) -> bool {
         F::workspace_shape_design_mode(_editor)

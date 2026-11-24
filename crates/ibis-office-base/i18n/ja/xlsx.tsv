@@ -3225,3 +3225,5 @@ query.report-quotient-excluded-both	対象外の理由：増減の符号とグ�
 query.report-quotient-subtotal-direction	符号のみ（{count}件） {total} {unit}
 query.report-quotient-subtotal-name	名前のみ（{count}件） {total} {unit}
 query.report-quotient-subtotal-both	両方（{count}件） {total} {unit}
+query.report-chart-preview-on-sheet	シートに更新候補の図を表示中です。棒を選ぶと候補の根拠セルが表示されます。
+query.report-chart-preview-evidence	更新候補の図の根拠
