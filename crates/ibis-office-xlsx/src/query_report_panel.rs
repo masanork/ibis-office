@@ -138,6 +138,12 @@ struct ReviewedRefresh {
     quotient_pages: BTreeMap<usize, (RankingPage, Value)>,
 }
 
+impl ReviewedRefresh {
+    fn is_current(&self, workbook: &Presentation) -> bool {
+        workbook == &self.base
+    }
+}
+
 pub(crate) struct QueryReportPanel {
     quotient_filters: BTreeMap<usize, QuotientFilterView>,
     reports: Vec<ReportChoice>,
@@ -224,24 +230,29 @@ impl QueryReportPanel {
 
 #[ibis_office_macros::editor_ext(QueryReportPanelExt)]
 impl SlideEditor {
-    fn visible_chart_review(&self) -> Option<(&ReviewedRefresh, &Presentation)> {
-        let panel = self.wb().panels.queries.as_ref()?.reports.as_ref()?;
-        let review = panel.review.as_ref()?;
-        if !self.sidebar_open || panel.busy || self.page_layout_shown() || self.presentation() != &review.base
+    fn chart_review_candidate<'a>(&self, panel: &'a QueryReportPanel, review: &'a ReviewedRefresh) -> Option<&'a Presentation> {
+        if !self.sidebar_open || panel.busy || self.page_layout_shown()
             || !review.result["charts"].as_array().is_some_and(|charts| charts.iter().any(|chart| chart["changed"] == true))
         {
             return None;
         }
-        Some((review, review.candidate.as_ref()?))
+        review.candidate.as_ref()
     }
 
-    pub(crate) fn report_preview_shown(&self) -> bool {
-        self.visible_chart_review().is_some()
+    fn visible_chart_review(&self) -> Option<(&ReviewedRefresh, &Presentation)> {
+        let panel = self.wb().panels.queries.as_ref()?.reports.as_ref()?;
+        let review = panel.review.as_ref()?;
+        let candidate = self.chart_review_candidate(panel, review)?;
+        review.is_current(self.presentation()).then_some((review, candidate))
+    }
+
+    pub(crate) fn report_preview_slide(&self) -> Option<&ibis_doc_model::Slide> {
+        let (_, candidate) = self.visible_chart_review()?;
+        candidate.slide(self.current_slide)
     }
 
     pub(crate) fn report_preview_chart(&self, id: ibis_doc_model::ShapeId) -> Option<&ibis_doc_model::ShapeKind> {
-        let (_, candidate) = self.visible_chart_review()?;
-        let kind = &candidate.slide(self.current_slide)?.shape(id)?.kind;
+        let kind = &self.report_preview_slide()?.shape(id)?.kind;
         matches!(kind, ibis_doc_model::ShapeKind::Chart(_)).then_some(kind)
     }
 
@@ -257,6 +268,10 @@ impl SlideEditor {
 
     pub(crate) fn preview_chart_drill_down(&self, key: Option<&str>) -> Option<Value> {
         let (review, candidate) = self.visible_chart_review()?;
+        self.preview_chart_evidence(review, candidate, key)
+    }
+
+    fn preview_chart_evidence(&self, review: &ReviewedRefresh, candidate: &Presentation, key: Option<&str>) -> Option<Value> {
         let Some((slide, id, series, point)) = review.preview_bar.filter(|entry| entry.0 == self.current_slide) else {
             return Some(json!({"state":"no_target","source":"preview"}));
         };
@@ -292,7 +307,7 @@ impl SlideEditor {
     fn filter_quotient_ranking(&mut self, index: usize, generation: u64, direction: Option<RankingDirection>, cx: &mut Context<Self>) {
         let Some(panel) = self.wb().panels.queries.as_ref().and_then(|panels| panels.reports.as_ref())
             .filter(|panel| panel.generation == generation) else { return };
-        let Some(review) = panel.review.as_ref().filter(|review| self.presentation() == &review.base) else { return };
+        let Some(review) = panel.review.as_ref().filter(|review| review.is_current(self.presentation())) else { return };
         let Some(comparison) = review.quotient_previews.get(index) else { return };
         let view = panel.quotient_filters.get(&index);
         let mut criteria = view.map_or_else(RankingFilter::default, |view| view.criteria.clone());
@@ -320,7 +335,7 @@ impl SlideEditor {
         let page = requested.and_then(|requested| {
             let panel = self.wb().panels.queries.as_ref()?.reports.as_ref()?;
             let review = panel.review.as_ref()?;
-            if panel.generation != generation || self.presentation() != &review.base {
+            if panel.generation != generation || !review.is_current(self.presentation()) {
                 return None;
             }
             let comparison = review.quotient_previews.get(index)?;
@@ -427,7 +442,7 @@ impl SlideEditor {
             return json!({"state":"previewing"});
         }
         let Some(review) = &panel.review else { return json!({"state":"idle"}) };
-        if self.presentation() != &review.base {
+        if !review.is_current(self.presentation()) {
             return json!({"state":"stale"});
         }
         let Some(candidate) = &review.candidate else { return json!({"state":"blocked"}) };
@@ -547,7 +562,7 @@ impl SlideEditor {
             if panel.busy {
                 json!({"state":"previewing"})
             } else if let Some(review) = &panel.review {
-                if self.presentation() != &review.base {
+                if !review.is_current(self.presentation()) {
                     json!({"state":"stale"})
                 } else {
                     json!({
@@ -835,7 +850,7 @@ impl SlideEditor {
         if review.commands.is_empty() {
             return;
         }
-        let message = if self.presentation() != &review.base {
+        let message = if !review.is_current(self.presentation()) {
             text("query.report-changed").to_string()
         } else {
             if let Some(state) = self.sheet_state_mut() {
@@ -863,6 +878,8 @@ impl SlideEditor {
         let workbook = self.presentation().workbook.as_ref()?;
         let generation = panel.generation;
         let busy = panel.busy;
+        let current_review = panel.review.as_ref().filter(|review| review.is_current(self.presentation()));
+        let chart_candidate = current_review.and_then(|review| self.chart_review_candidate(panel, review));
         let mut can_preview = panel.request().is_some() && !busy;
         let can_apply = !read_only
             && !busy
@@ -1100,10 +1117,10 @@ impl SlideEditor {
                     .font_weight(FontWeight::BOLD)
                     .child(text("query.report-preview")),
             );
-            if self.visible_chart_review().is_some() {
+            if let Some(candidate) = chart_candidate {
                 body = body.child(div().text_sm().child(text("query.report-chart-preview-on-sheet")));
                 if review.preview_bar.is_some()
-                    && let Some(detail) = self.preview_chart_drill_down(None).filter(|detail| detail["state"] == "ready")
+                    && let Some(detail) = self.preview_chart_evidence(review, candidate, None).filter(|detail| detail["state"] == "ready")
                 {
                     body = body.child(div().text_sm().font_weight(FontWeight::BOLD).child(text("query.report-chart-preview-evidence")));
                     let value = &detail["value_cell"];
@@ -1125,7 +1142,7 @@ impl SlideEditor {
                     ("chart", &chart["title"].as_str().unwrap_or_default()),
                 ])));
             }
-            if self.presentation() == &review.base {
+            if current_review.is_some() {
                 for (index, comparison) in review.quotient_previews.iter().enumerate() {
                     body = body.child(quotient_preview(&comparison.summary, panel.quotient_filters.get(&index), review.quotient_pages.get(&index), index,
                         review.quotient_selection.get(&index).copied(), generation, cx));
@@ -1320,11 +1337,12 @@ impl SlideEditor {
                     .disabled(!can_apply)
                     .on_click(cx.listener(|editor, _, _, cx| editor.apply_query_report_review(cx))),
             );
-        Some(SidebarPanel::with_footer(
+        let panel = SidebarPanel::with_footer(
             text("query.report-refresh-title"),
             body.into_any_element(),
             footer,
-        ))
+        );
+        Some(if chart_candidate.is_some() { panel } else { panel.modal_named("queries_panel") })
     }
 }
 

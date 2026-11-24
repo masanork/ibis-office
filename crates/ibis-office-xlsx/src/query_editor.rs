@@ -1059,7 +1059,7 @@ impl SlideEditor {
                     this.wb_mut().panels.queries = None;
                     cx.notify();
                 }))));
-        Some(SidebarPanel::with_footer(crate::shell::i18n::text("query.queries-title"), body.into_any_element(), panel_terminal_actions))
+        Some(SidebarPanel::with_footer(crate::shell::i18n::text("query.queries-title"), body.into_any_element(), panel_terminal_actions).modal_named("queries_panel"))
     }
 
     // ------------------------------------------------------------------- the editor's window

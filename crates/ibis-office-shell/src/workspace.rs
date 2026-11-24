@@ -146,10 +146,11 @@ impl SlideEditor {
         }
 
         let hide_ink = with_format!(self, workspace_hide_ink(self));
+        let chart_preview = with_format!(self, workspace_chart_preview(self));
         let mut shapes: Vec<AnyElement> = slide
             .shown_shapes()
             .filter(|shape| !(hide_ink && crate::ink::stroke_points(shape).is_some()))
-            .map(|shape| self.render_shape(shape, scale, cx))
+            .map(|shape| self.render_shape(shape, chart_preview, scale, cx))
             .collect();
         // The selected cell is drawn over the worksheet and under the charts
         // and pictures on it, as in Excel.
@@ -183,7 +184,7 @@ impl SlideEditor {
             })
     }
 
-    fn render_shape(&self, shape: &Shape, scale: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn render_shape(&self, shape: &Shape, chart_preview: Option<&ibis_doc_model::Slide>, scale: f32, cx: &mut Context<Self>) -> AnyElement {
         let id = shape.id;
         if let ShapeKind::Sheet(_) = &shape.kind {
             // The grid is the page itself: a press selects a cell, and the
@@ -210,9 +211,9 @@ impl SlideEditor {
         let positions = editing.map(|e| e.positions.clone());
         let mut drawn = shape.clone();
         if matches!(shape.kind, ShapeKind::Chart(_))
-            && let Some(kind) = with_format!(self, workspace_chart_preview(self, id))
+            && let Some(ShapeKind::Chart(chart)) = chart_preview.and_then(|slide| slide.shape(id)).map(|shape| &shape.kind)
         {
-            drawn.kind.clone_from(kind);
+            drawn.kind = ShapeKind::Chart(chart.clone());
         }
         if let Some(composing) = self.composing_body(id)
             && let Some(b) = drawn.text_body_mut()

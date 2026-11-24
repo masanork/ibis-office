@@ -1147,11 +1147,11 @@ impl FormatEditor for Workbook {
         crate::shell::format::SheetOverlays { over_sheet, page_lines: editor.render_page_break_preview(scale, true).map(|lines| lines.into_any_element()) }
     }
 
-    fn workspace_chart_preview(editor: &SlideEditor, id: ibis_doc_model::ShapeId) -> Option<&ibis_doc_model::ShapeKind> {
+    fn workspace_chart_preview(editor: &SlideEditor) -> Option<&ibis_doc_model::Slide> {
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        return query_report_panel::QueryReportPanelExtCrate::report_preview_chart(editor, id);
+        return query_report_panel::QueryReportPanelExtCrate::report_preview_slide(editor);
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-        { let _ = (editor, id); None }
+        { let _ = editor; None }
     }
 
     fn workspace_shape_design_mode(editor: &SlideEditor) -> bool {
