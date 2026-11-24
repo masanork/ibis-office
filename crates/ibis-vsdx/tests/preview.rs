@@ -19,7 +19,7 @@ fn relationship(kind: &str, target: &str, mode: &str) -> String {
     )
 }
 
-fn drawing(external_page: bool) -> Arc<[u8]> {
+fn drawing(external_page: bool, fill: &str) -> Arc<[u8]> {
     let mut zip = Writer::new();
     let mut add = |name: &str, data: &str| {
         zip.add(name, EntryMeta::new(), data.as_bytes()).unwrap();
@@ -38,7 +38,17 @@ fn drawing(external_page: bool) -> Arc<[u8]> {
     );
     add(
         "drawing/_rels/doc.xml.rels",
-        &relationship("pages", "sheets/index.xml", "Internal"),
+        &relationship("pages", "sheets/index.xml", "Internal").replace(
+            "</Relationships>",
+            r#"<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="palette.xml"/></Relationships>"#,
+        ),
+    );
+    add(
+        "drawing/palette.xml",
+        r#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <a:themeElements><a:clrScheme><a:accent1><a:srgbClr val="A08040"/></a:accent1></a:clrScheme>
+      <a:fmtScheme><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"><a:shade val="50000"/></a:schemeClr></a:solidFill></a:fillStyleLst></a:fmtScheme>
+      </a:themeElements></a:theme>"#,
     );
     add(
         "drawing/sheets/index.xml",
@@ -68,7 +78,7 @@ fn drawing(external_page: bool) -> Arc<[u8]> {
           <Cell N="PinX" V="1"/><Cell N="PinY" V="1"/>
           <Shapes><Shape ID="2">
             <Cell N="Width" V="2"/><Cell N="Height" V="1"/>
-            <Cell N="FillForegnd" V="#4080c0"/>
+            <Cell N="FillForegnd" V="{fill}"/><Cell N="QuickStyleFillColor" V="2"/><Cell N="QuickStyleFillMatrix" V="1"/>
             <Section N="Geometry" IX="0">
               <Row T="RelMoveTo"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row>
               <Row T="RelLineTo"><Cell N="X" V="1"/><Cell N="Y" V="0"/></Row>
@@ -90,7 +100,7 @@ fn drawing(external_page: bool) -> Arc<[u8]> {
 
 #[test]
 fn follows_package_relationships_and_draws_shapes_labels_and_connections() {
-    let bytes = drawing(false);
+    let bytes = drawing(false, "#4080c0");
     assert!(is_vsdx(&bytes));
     let document = VsdxContainer::from_bytes(bytes).unwrap();
     let pages = document.page_infos();
@@ -142,6 +152,19 @@ fn follows_package_relationships_and_draws_shapes_labels_and_connections() {
 
 #[test]
 fn rejects_an_external_page_relationship() {
-    assert!(VsdxContainer::from_bytes(drawing(true)).is_err());
+    assert!(VsdxContainer::from_bytes(drawing(true, "#4080c0")).is_err());
     assert!(!is_vsdx(b"PK not a ZIP archive"));
+}
+
+#[test]
+fn reads_solid_theme_fill_through_its_document_relationship() {
+    let document = VsdxContainer::from_bytes(drawing(false, "Themed")).unwrap();
+    let scene = document.interpret_page_scene(0).unwrap();
+    assert!(matches!(
+        scene.display_list.first(),
+        Some(DisplayCmd::DrawPath {
+            fill_rgba: Some([80, 64, 32, 255]),
+            ..
+        })
+    ));
 }

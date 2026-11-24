@@ -16,6 +16,7 @@ use roxmltree::{Document, Node};
 
 mod bitmap;
 mod geometry;
+mod theme;
 
 use geometry::{dashed_line, elliptical_arc, rounded_polygon, straight_vertices, triangle_arrow};
 
@@ -126,6 +127,10 @@ pub fn is_vsdx(bytes: &[u8]) -> bool {
 struct Page {
     name: String,
     info: PageInfo,
+    theme_index: Option<u16>,
+    color_scheme_index: Option<u16>,
+    color_variant: u16,
+    style_variant: u16,
 }
 
 pub struct VsdxContainer {
@@ -133,6 +138,7 @@ pub struct VsdxContainer {
     pages: Vec<Page>,
     masters: HashMap<String, String>,
     document: String,
+    themes: Vec<theme::Theme>,
 }
 
 impl VsdxContainer {
@@ -180,6 +186,15 @@ impl VsdxContainer {
             }
             pages.push(Page {
                 name,
+                theme_index: value(Some(sheet), "ThemeIndex").and_then(|v| v.parse().ok()),
+                color_scheme_index: value(Some(sheet), "ColorSchemeIndex")
+                    .and_then(|v| v.parse().ok()),
+                color_variant: value(Some(sheet), "VariationColorIndex")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+                style_variant: value(Some(sheet), "VariationStyleIndex")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
                 info: PageInfo {
                     index,
                     object_id: ObjectId::new(index as u32 + 1, 0),
@@ -208,11 +223,22 @@ impl VsdxContainer {
                 }
             }
         }
+        let themes = rels
+            .iter()
+            .filter(|rel| rel.kind == theme::REL)
+            .take(16)
+            .filter_map(|rel| {
+                let path = rel.target_part(&main)?;
+                let source = part(&zip, &path).ok()?;
+                theme::Theme::read(xml(&source).ok()?.root_element())
+            })
+            .collect();
         Ok(Self {
             bytes,
             pages,
             masters,
             document,
+            themes,
         })
     }
 
@@ -267,6 +293,8 @@ impl VsdxContainer {
             styles,
             shapes: 0,
             path_commands: 0,
+            themes: &self.themes,
+            page,
             bitmaps: bitmap::Bitmaps::new(&zip, &page.name),
         };
         let page_height = f64::from(page.info.crop_box.height());
@@ -325,6 +353,8 @@ struct Render<'a, 'i, 'package, 'bytes> {
     styles: HashMap<&'a str, Node<'a, 'i>>,
     shapes: usize,
     path_commands: usize,
+    themes: &'package [theme::Theme],
+    page: &'package Page,
     bitmaps: bitmap::Bitmaps<'package, 'bytes>,
 }
 
@@ -377,16 +407,73 @@ impl Render<'_, '_, '_, '_> {
             ]));
             let paint = |style, key| {
                 get(key).or_else(|| {
-                    let id = shape
-                        .attribute(style)
-                        .or_else(|| master?.attribute(style))?;
-                    value(self.styles.get(id).copied(), key)
+                    let mut next = shape.attribute(style).or_else(|| master?.attribute(style));
+                    for _ in 0..32 {
+                        let node = self.styles.get(next?).copied()?;
+                        if let Some(cell) = value(Some(node), key) {
+                            return Some(cell);
+                        }
+                        next = node.attribute(style);
+                    }
+                    None
                 })
             };
-            let fill = (paint("FillStyle", "FillPattern") != Some("0"))
-                .then(|| color(paint("FillStyle", "FillForegnd"), [255, 255, 255, 255]));
-            let stroke = (paint("LineStyle", "LinePattern") != Some("0"))
-                .then(|| color(paint("LineStyle", "LineColor"), [0, 0, 0, 255]));
+            let resolve = |style, key, quick, default| {
+                let cached = paint(style, key);
+                if cached != Some("Themed") {
+                    return color(cached, default);
+                }
+                let variant = |key, fallback| {
+                    paint(style, key)
+                        .and_then(|v| v.parse::<u16>().ok())
+                        .filter(|&v| v != 65534)
+                        .unwrap_or(fallback)
+                };
+                let theme_index = variant(
+                    "ColorSchemeIndex",
+                    self.page.color_scheme_index.unwrap_or_else(|| {
+                        variant("ThemeIndex", self.page.theme_index.unwrap_or(65534))
+                    }),
+                );
+                let theme = match theme_index {
+                    0 => None,
+                    65534 => (self.themes.len() == 1).then(|| &self.themes[0]),
+                    index => self.themes.iter().find(|theme| theme.index == Some(index)),
+                };
+                let Some(theme) = theme else { return default };
+                let base = theme.color(
+                    variant(quick, 100),
+                    variant("VariationColorIndex", self.page.color_variant),
+                );
+                if key == "FillForegnd" {
+                    theme
+                        .fill(
+                            base,
+                            variant("QuickStyleFillMatrix", 100),
+                            variant("VariationStyleIndex", self.page.style_variant),
+                        )
+                        .or(base)
+                        .unwrap_or(default)
+                } else {
+                    base.unwrap_or(default)
+                }
+            };
+            let fill = (paint("FillStyle", "FillPattern") != Some("0")).then(|| {
+                resolve(
+                    "FillStyle",
+                    "FillForegnd",
+                    "QuickStyleFillColor",
+                    [255, 255, 255, 255],
+                )
+            });
+            let stroke = (paint("LineStyle", "LinePattern") != Some("0")).then(|| {
+                resolve(
+                    "LineStyle",
+                    "LineColor",
+                    "QuickStyleLineColor",
+                    [0, 0, 0, 255],
+                )
+            });
             let weight = number(paint("LineStyle", "LineWeight"))
                 .unwrap_or(0.01)
                 .clamp(0.0, 5.0) as f32

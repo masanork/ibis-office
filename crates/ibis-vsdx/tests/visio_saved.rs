@@ -43,6 +43,18 @@ fn reads_drawings_saved_by_microsoft_visio() {
                 .any(|cmd| matches!(cmd, DisplayCmd::DrawPath { .. })),
             "{name}"
         );
+        if name == "test.vsdx" {
+            assert!(
+                scene.display_list.iter().any(|cmd| matches!(
+                    cmd,
+                    DisplayCmd::DrawPath {
+                        fill_rgba: Some([91, 155, 213, 255]),
+                        ..
+                    }
+                )),
+                "the star inherits the theme's blue fill"
+            );
+        }
         if name == "test_text_extraction.vsdx" {
             assert!(scene.display_list.iter().any(|cmd| {
                 matches!(cmd, DisplayCmd::DrawPath { bounds, commands, .. }
