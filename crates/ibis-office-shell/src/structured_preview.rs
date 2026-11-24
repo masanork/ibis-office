@@ -11,6 +11,17 @@ use std::path::Path;
 
 use ibis_formats::structured_preview::{Preview, xml_view};
 
+pub(crate) const XML_VIEW_CONFLICT: &str = "\u{1}xml-view-conflict:";
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub(crate) fn open_shared_directory(cx: &gpui_kit::App) -> Result<(), String> {
+    let path = shared_directory()
+        .ok_or_else(|| crate::i18n::text("settings.xml-views.unavailable").to_string())?;
+    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+    crate::external::open_with_system(&path, cx);
+    Ok(())
+}
+
 pub(crate) fn shared_directory() -> Option<std::path::PathBuf> {
     Some(
         crate::app_data::base()?
@@ -134,10 +145,11 @@ fn read_preview(
                                         .map(|name| literal(name))
                                         .collect::<Vec<_>>()
                                         .join(", ");
-                                    crate::i18n::format(
+                                    let message = crate::i18n::format(
                                         "structured-preview.xml-definition-conflict",
                                         &[("files", &files)],
-                                    )
+                                    );
+                                    format!("{XML_VIEW_CONFLICT}{message}")
                                 }
                             },
                         )?;
@@ -247,6 +259,7 @@ mod tests {
             error.contains("duplicate.view.json, profile-a.view.json, third.view.json"),
             "{error}"
         );
+        assert!(error.starts_with(XML_VIEW_CONFLICT), "{error}");
         assert!(!error.contains("profile-b.view.json"), "{error}");
         fs::write(&local, life_profile.replace("合成サンプル", "個別定義")).unwrap();
         assert_eq!(

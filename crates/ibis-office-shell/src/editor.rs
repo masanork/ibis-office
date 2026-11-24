@@ -615,6 +615,7 @@ pub struct SlideEditor {
     /// A message box with OK only (title, message), over the dimmed window: an error the user must see, such as a save
     /// dialog that could not open (shell/dialog.rs `show_alert`).
     pub alert: Option<(SharedString, SharedString)>,
+    pub(crate) alert_open_xml_views: bool,
     /// A question with OK and キャンセル (title, message, what OK does), over the window (shell/dialog.rs `ask`).
     pub ask: Option<crate::dialog::PendingAsk>,
     /// The About dialog inside the window, while it is open (shell/about.rs `render_modal`, on every platform).
@@ -982,6 +983,7 @@ impl SlideEditor {
             msgbox: Default::default(),
             panel_message: None,
             alert: None,
+            alert_open_xml_views: false,
             ask: None,
             about_open: false,
             about_third_party: false,
@@ -2238,12 +2240,15 @@ impl SlideEditor {
                     this.ask_password_to_open(path.clone(), slide, err == crate::read_file::WRONG_PASSWORD, window, cx);
                 }
                 Err(err) => {
+                    let conflict = err.strip_prefix(crate::structured_preview::XML_VIEW_CONFLICT);
+                    let error = conflict.unwrap_or(&err);
                     if this.assistant_output.is_some() {
-                        this.emit_assistant_event(serde_json::json!({"event":"document_error","path":path,"message":err}));
+                        this.emit_assistant_event(serde_json::json!({"event":"document_error","path":path,"message":error}));
                     }
-                    let message = crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]);
-                    // A file that cannot be opened (gone, no permission, broken) is told in a message box, not only in the status.
+                    let message = crate::i18n::format("file.open-failed", &[("name", &name), ("error", &error)]);
+                    // A file that cannot be opened is reported in a message box.
                     this.show_alert(crate::i18n::text("shell.open-failed.title"), message.clone().into(), cx);
+                    this.alert_open_xml_views = conflict.is_some();
                     this.fail_loading(message, cx)
                 }
             }})
@@ -5277,6 +5282,7 @@ impl SlideEditor {
                 msgbox: _,
                 panel_message: _,
                 alert: _,
+                alert_open_xml_views: _,
                 ask: _,
                 about_open: _,
                 about_third_party: _,

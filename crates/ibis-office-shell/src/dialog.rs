@@ -153,11 +153,13 @@ impl SlideEditor {
     /// Show `message` under `title` in a message box with OK, over the dimmed window (the backdrop).
     pub fn show_alert(&mut self, title: SharedString, message: SharedString, cx: &mut Context<Self>) {
         self.alert = Some((title, message));
+        self.alert_open_xml_views = false;
         self.dialog.drag = None;
         cx.notify();
     }
     pub fn dismiss_alert(&mut self, cx: &mut Context<Self>) {
         self.alert = None;
+        self.alert_open_xml_views = false;
         cx.notify();
     }
     /// The message box of `show_alert`: OK (or Enter, Escape) closes it.
@@ -166,7 +168,23 @@ impl SlideEditor {
         let (title, message) = self.alert.clone().unwrap_or_default();
         let ok = ActionDefinition::new("alert-ok", super::i18n::text("shell.action.ok"), ActionButtonKind::Primary)
             .on_click(cx.listener(|this, _, _, cx| this.dismiss_alert(cx)));
-        super::message_box::message_box("alert-dialog", title, message, action_bar().action(ok), &self.msgbox, true, cx)
+        let actions = action_bar();
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        let actions = if self.alert_open_xml_views {
+            actions.action(ActionDefinition::new(
+                "alert-open-xml-views",
+                super::i18n::text("settings.xml-views.open"),
+                ActionButtonKind::Normal,
+            ).on_click(cx.listener(|this, _, _, cx| {
+                if let Err(error) = crate::structured_preview::open_shared_directory(cx) {
+                    let failure = crate::i18n::format("settings.xml-views.failure", &[("error", &error)]);
+                    this.show_alert(crate::i18n::text("shell.open-failed.title"), failure.into(), cx);
+                }
+            })))
+        } else {
+            actions
+        };
+        super::message_box::message_box("alert-dialog", title, message, actions.action(ok), &self.msgbox, true, cx)
     }
     /// Ask `message` under `title` in a message box with OK and キャンセル; OK runs `on_ok`, キャンセル (or Escape) does nothing.
     pub fn ask(&mut self, title: SharedString, message: SharedString, on_ok: Rc<dyn Fn(&mut SlideEditor, &mut Context<SlideEditor>)>, cx: &mut Context<Self>) {

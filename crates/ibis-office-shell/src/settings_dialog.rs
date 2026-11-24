@@ -319,14 +319,8 @@ impl SlideEditor {
                 action_button("settings-xml-views-open")
                     .label(text("settings.xml-views.open"))
                     .on_click(cx.listener(|editor, _, _, cx| {
-                        let directory = crate::structured_preview::shared_directory();
-                        let result = directory.ok_or_else(|| text("settings.xml-views.unavailable").to_string())
-                            .and_then(|path| std::fs::create_dir_all(&path).map(|()| path).map_err(|error| error.to_string()));
-                        match result {
-                            Ok(path) => crate::external::open_with_system(&path, cx),
-                            Err(error) => editor.set_status(
-                                i18n::format("settings.xml-views.failure", &[("error", &error)]), cx,
-                            ),
+                        if let Err(error) = crate::structured_preview::open_shared_directory(cx) {
+                            editor.set_status(i18n::format("settings.xml-views.failure", &[("error", &error)]), cx);
                         }
                     })),
             ));

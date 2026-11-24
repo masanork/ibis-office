@@ -1573,7 +1573,7 @@ window.minimize	しまう
 app.services	サービス
 app.hide	ibisOffice を隠す
 file.copy-download	コピーの保存（ダウンロード）
-structured-preview.xml-definition-conflict	共有XML表示定義が競合しています（{files}）。設定の「表示定義フォルダーを開く」から不要な定義を外し、XMLを開き直してください。
+structured-preview.xml-definition-conflict	共有XML表示定義が競合しています（{files}）。共通フォルダーから不要な定義を外し、XMLを開き直してください。
 structured-preview.title	構造化データのプレビュー
 structured-preview.read-only	読み取り専用のプレビューです
 structured-preview.credential-type	資格情報の種類
