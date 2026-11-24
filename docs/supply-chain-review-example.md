@@ -112,3 +112,25 @@ SHA-256 `5b449e836986a3fec7ce3b5be40361fb94188947dd14f625e649167144b8ed62`
 の WASM を復元できた。上流 v0.8.9 の Web ZIP と既存フォーク CI の WASM は
 どちらも異なる SHA-256 だった。公開検証を通すには、実際にデプロイしたビルドの
 ZIP と BOM を成果物として保存し、デプロイ後の照合入力に渡す。
+
+### デプロイする Web ビルドの BOM を保存する
+
+配信に使うビルドを実行するときに、`IBIS_WEB_BOM_DIR` で新規ディレクトリを
+指定する。ビルド直後の `www/pkg/` を ZIP に保存し、その ZIP の SBOM／CBOM、
+ソース情報、チェックサムを同じ場所に書き出す。Web CI も同じ処理を使う。
+
+```sh
+IBIS_WEB_BOM_DIR=target/web-deployment-bom scripts/build-web.sh --release
+```
+
+このビルドの `www/` を配信し、配信後に保存済みの記録を使って照合する。
+
+```sh
+evidence=target/web-deployment-bom
+source_sha=$(jq -r .source_sha "$evidence/build-info.json")
+(cd "$evidence" && shasum -a 256 -c SHA256SUMS)
+python3 scripts/verify-build-boms.py wasm "$evidence" "$source_sha" \
+  --public-web-base https://docs.sorane.dev
+python3 scripts/verify-build-boms.py wasm "$evidence" "$source_sha" \
+  --public-web-base https://ibis.sorane.dev
+```

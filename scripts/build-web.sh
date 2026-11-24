@@ -6,6 +6,7 @@
 #
 #   scripts/build-web.sh            debug build
 #   scripts/build-web.sh --release  release build (plus wasm-opt when installed)
+#   IBIS_WEB_BOM_DIR=path scripts/build-web.sh --release  also save the built pkg/ and its BOMs
 #
 # Needs: rustup, wasm-bindgen-cli whose version matches the wasm-bindgen crate
 # in Cargo.lock, and `npm ci` for tsc. The Rust toolchain is chosen here: the
@@ -33,6 +34,13 @@ python3 scripts/check-web-sources.py
 PROFILE=debug
 FLAGS=()
 if [[ "${1:-}" == "--release" ]]; then PROFILE=release; FLAGS=(--release); fi
+
+# Capture the source before generated notices and assets are written to www/.
+if [[ -n "${IBIS_WEB_BOM_DIR:-}" ]]; then
+  mkdir -- "$IBIS_WEB_BOM_DIR"
+  web_source_sha=$(git rev-parse HEAD)
+  EXPECTED_SOURCE_SHA="$web_source_sha" python3 scripts/desktop-ci-info.py source "$IBIS_WEB_BOM_DIR" wasm
+fi
 
 scripts/build-font-subsetter.sh
 
@@ -118,5 +126,12 @@ unzip -q -o crates/ibis-formats/data/artborders/OfficeOpenXML-WordprocessingMLAr
 cp crates/ibis-formats/data/artborders/ECMA-NOTICE.txt www/assets/artborders/
 
 python3 scripts/check-web-assets.py www
+
+if [[ -n "${IBIS_WEB_BOM_DIR:-}" ]]; then
+  test "$(git rev-parse HEAD)" = "$web_source_sha"
+  python3 -m zipfile -c "$IBIS_WEB_BOM_DIR/wasm-ci.zip" www/pkg
+  python3 scripts/build-bom.py wasm "$IBIS_WEB_BOM_DIR/wasm-ci.zip" "$IBIS_WEB_BOM_DIR"
+  python3 scripts/desktop-ci-info.py artifacts "$IBIS_WEB_BOM_DIR"
+fi
 
 echo "Built www/ ($PROFILE). Serve it, e.g.: python3 -m http.server -d www 8080"

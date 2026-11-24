@@ -143,15 +143,10 @@ jobs:
             ~/.cargo/bin/wasm2es6js
           key: wasm-bindgen-cli-${{ runner.os }}-0.2.128
       - run: wasm-bindgen --version | grep -qx 'wasm-bindgen 0.2.128' || cargo install wasm-bindgen-cli --version 0.2.128 --locked
-      - run: python3 scripts/docs_build.py prepare-history
-      - run: scripts/build-web.sh --release
-      - name: Inventory the built WASM modules and glue
-        run: |
-          set -euo pipefail
-          mkdir -p ci-wasm
-          python3 -m zipfile -c ci-wasm/wasm-ci.zip www/pkg
-          python3 scripts/build-bom.py wasm ci-wasm/wasm-ci.zip ci-wasm
-          (cd ci-wasm && sha256sum wasm-ci.zip *.cdx.json docs-*.json > SHA256SUMS)
+      - name: Build and record the WASM package and its BOMs
+        env:
+          IBIS_WEB_BOM_DIR: ci-wasm
+        run: scripts/build-web.sh --release
       - uses: actions/upload-artifact@v4
         with:
           name: wasm-ci-bom
