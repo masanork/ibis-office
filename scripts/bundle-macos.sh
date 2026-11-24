@@ -132,6 +132,12 @@ cat > "$APP/Contents/Info.plist" <<EOF
 			<key>CFBundleTypeExtensions</key><array><string>jtd</string><string>jtt</string><string>jttc</string></array>
 		</dict>
 		<dict>
+			<key>CFBundleTypeName</key><string>WordPerfect document</string>
+			<key>CFBundleTypeRole</key><string>Viewer</string>
+			<key>LSHandlerRank</key><string>Alternate</string>
+			<key>CFBundleTypeExtensions</key><array><string>wpd</string><string>wp6</string></array>
+		</dict>
+		<dict>
 			<key>CFBundleTypeName</key><string>OFD document</string>
 			<key>CFBundleTypeRole</key><string>Viewer</string>
 			<key>LSHandlerRank</key><string>Alternate</string>
