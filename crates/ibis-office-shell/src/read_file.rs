@@ -261,8 +261,8 @@ fn read_file_data(
     let open_t0 = crate::clock::Instant::now();
     // An old binary file (.xls, .ppt, .doc): read by its content, not by its extension.
     let is_legacy_binary = ibis_formats::is_legacy_binary(&data);
-    let binary_hwp = extension.is_some_and(ibis_formats::hwp::is_extension) || ibis_formats::hwp::is_hwp(&data);
-    let converted_hangul = binary_hwp || extension.is_some_and(ibis_formats::hwpx::is_extension) || ibis_formats::hwpx::is_hwpx(&data);
+    let hangul = ibis_formats::hwp::Format::detect(extension, &data);
+    let converted_hangul = hangul.is_some();
     let external_document_format = ibis_formats::docx_convert::DocxConvertFormat::from_path(path);
     let mut cbom_source = None;
     let open_result = if let Some(law_md) = ibis_formats::lawtext::path_input_to_markdown(path, &data).map_err(|e| {
@@ -306,8 +306,8 @@ fn read_file_data(
         } else {
             ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent()).map(|opened| (opened, None))
         }
-    } else if converted_hangul {
-        (if binary_hwp { ibis_formats::hwp::open(&data) } else { ibis_formats::hwpx::open(&data) }).map(|opened| (opened, None))
+    } else if let Some(format) = hangul {
+        format.open(&data).map(|opened| (opened, None))
     } else if let Some(format) = external_document_format {
         (if format == ibis_formats::docx_convert::DocxConvertFormat::Odt { ibis_odf::import_odt(&data) } else { ibis_formats::docx_convert::import_docx_format(&data, format) }).map(|opened| (opened, None))
     } else {

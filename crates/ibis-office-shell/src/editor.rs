@@ -1660,8 +1660,8 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
-            let binary_hwp = extension.is_some_and(ibis_formats::hwp::is_extension) || ibis_formats::hwp::is_hwp(&data);
-            let converted_hangul = binary_hwp || extension.is_some_and(ibis_formats::hwpx::is_extension) || ibis_formats::hwpx::is_hwpx(&data);
+            let hangul = ibis_formats::hwp::Format::detect(extension, &data);
+            let converted_hangul = hangul.is_some();
             let mut image_provenance = None;
             let mut law_source = None;
             let mut result = if let Some(markdown) = law_input {
@@ -1670,8 +1670,8 @@ impl SlideEditor {
                     .and_then(|text| ibis_formats::markdown::open_markdown(text.into_bytes()))
                     .map(|opened| (opened, None))
                     .map_err(|e| e.to_string())
-            } else if converted_hangul {
-                (if binary_hwp { ibis_formats::hwp::open(&data) } else { ibis_formats::hwpx::open(&data) }).map(|opened| (opened, None)).map_err(|e| e.to_string())
+            } else if let Some(format) = hangul {
+                format.open(&data).map(|opened| (opened, None)).map_err(|e| e.to_string())
             } else if extension.is_some_and(ibis_formats::production_image::is_heic_extension) {
                 crate::web::open_heic(&data).await.map(|opened| (opened, None))
             } else {

@@ -215,8 +215,7 @@ pub(crate) fn is_opendocument(data: &[u8]) -> bool {
 /// `.docx` document (see [`read_docx`]): which one is told by the package's
 /// main part.
 pub fn read(data: &[u8]) -> Result<Presentation, Error> {
-    if hwp::is_hwp(data) { return Ok(hwp::open(data)?.presentation); }
-    if hwpx::is_hwpx(data) { return Ok(hwpx::open(data)?.presentation); }
+    if let Some(format) = hwp::Format::detect(None, data) { return Ok(format.open(data)?.presentation); }
     if jtd::is_jtd(data) { return jtd::read(data); }
     if is_opendocument(data) { return Err(Error::new(ODF_MESSAGE)); }
     if markdown::is_markdown(data) { return markdown::read_markdown(data); }

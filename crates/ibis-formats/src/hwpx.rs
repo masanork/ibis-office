@@ -453,7 +453,10 @@ mod tests {
         ] {
             writer.add(name, Default::default(), bytes).unwrap();
         }
-        let mut opened = open(&writer.finish().unwrap()).unwrap();
+        let data = writer.finish().unwrap();
+        let format = crate::hwp::Format::detect(None, &data).unwrap();
+        assert_eq!(format, crate::hwp::Format::Hwpx);
+        let mut opened = format.open(&data).unwrap();
         let flow = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
         let Block::Paragraph(p) = &mut flow.body[0] else {
             panic!("paragraph")

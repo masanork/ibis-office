@@ -38,6 +38,34 @@ const TABLE: u16 = 77;
 const COMPONENT: u16 = 76;
 const PICTURE: u16 = 85;
 
+/// Hancom input formats that open as editable DOCX documents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Format {
+    Hwp,
+    Hwpx,
+}
+
+impl Format {
+    /// Select the importer. An extension hint also routes malformed files to
+    /// the format-specific error. Preserve the existing binary HWP precedence.
+    pub fn detect(extension: Option<&str>, data: &[u8]) -> Option<Self> {
+        if extension.is_some_and(is_extension) || is_hwp(data) {
+            Some(Self::Hwp)
+        } else if extension.is_some_and(crate::hwpx::is_extension) || crate::hwpx::is_hwpx(data) {
+            Some(Self::Hwpx)
+        } else {
+            None
+        }
+    }
+
+    pub fn open(self, data: &[u8]) -> Result<Opened, Error> {
+        match self {
+            Self::Hwp => open(data),
+            Self::Hwpx => crate::hwpx::open(data),
+        }
+    }
+}
+
 pub fn is_hwp(data: &[u8]) -> bool {
     cfb::is_cfb(data)
         && cfb::stream_path(data, "FileHeader").is_ok_and(|h| h.starts_with(SIGNATURE))
@@ -1582,6 +1610,16 @@ mod tests {
                     .to_vec(),
             ),
         ])
+    }
+
+    #[test]
+    fn hancom_detection_preserves_binary_precedence_and_extension_hints() {
+        let binary = sample(0);
+        assert_eq!(Format::detect(None, &binary), Some(Format::Hwp));
+        assert_eq!(Format::detect(Some("HWPX"), &binary), Some(Format::Hwp));
+        assert_eq!(Format::detect(Some("HWP"), b""), Some(Format::Hwp));
+        assert_eq!(Format::detect(Some("HWPX"), b""), Some(Format::Hwpx));
+        assert_eq!(Format::detect(Some("docx"), b""), None);
     }
 
     #[test]
