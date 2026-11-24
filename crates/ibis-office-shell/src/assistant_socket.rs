@@ -52,6 +52,15 @@ pub fn start(
                             Err(message) => json!({"error":message}),
                         };
                     }
+                    if request["op"] == "cancel" {
+                        let Some(run_id) = request["run_id"].as_u64() else {
+                            return json!({"error":"run_id is required"});
+                        };
+                        return match editor.cancel_assistant_socket_run(run_id, cx) {
+                            Ok(()) => json!({"run_id":run_id,"state":"stopped"}),
+                            Err(message) => json!({"error":message}),
+                        };
+                    }
                     if request["op"] == "apply" {
                         let Some(run_id) = request["run_id"].as_u64() else {
                             return json!({"error":"run_id is required"});
@@ -66,6 +75,12 @@ pub fn start(
                     {
                         if request.get("skill").is_some_and(|value| !value.is_string()) {
                             return json!({"error":"skill must be a string"});
+                        }
+                        if request.get("harness").is_some_and(|value| !matches!(value.as_str(), Some("builtin" | "acp"))) {
+                            return json!({"error":"unsupported Assistant harness"});
+                        }
+                        if request["harness"] == "acp" && request.get("skill").is_some() {
+                            return json!({"error":"ACP turns do not yet support ibisOffice skill selection"});
                         }
                         if request["queue_phase"] == "admit" {
                             return match editor.check_assistant_connection_document() {
@@ -89,6 +104,7 @@ pub fn start(
                             text,
                             run_id,
                             request["skill"].as_str(),
+                            request["harness"].as_str(),
                             window,
                             cx,
                         ) {

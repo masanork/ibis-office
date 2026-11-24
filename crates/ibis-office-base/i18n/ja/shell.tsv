@@ -1826,5 +1826,5 @@ structured.document-schema-summary	JSON Schema · 指摘{issues}件
 structured.document-schema-issue	{field} · {message}
 structured.row-schema-contains-few	条件を満たす配列の要素が不足しています
 structured.row-schema-contains-many	条件を満たす配列の要素が多すぎます
-ai.send-opencode	OpenCode (ACP)
-ai.opencode-cancelled	OpenCodeの実行を停止しました。
+ai.send-acp	ACPエージェント
+ai.acp-cancelled	ACPエージェントの実行を停止しました。
