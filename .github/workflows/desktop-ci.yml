@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [masanork]
   workflow_dispatch:
+    inputs:
+      appimage_only:
+        description: Build and verify only the Linux AppImage
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -41,6 +46,7 @@ jobs:
           test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
 
   desktop:
+    if: github.event_name != 'workflow_dispatch' || !inputs.appimage_only
     name: ${{ matrix.name }}
     needs: validate-source
     strategy:
@@ -320,7 +326,83 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  attest-linux:
+    name: Sign Linux AppImage provenance
+    if: github.event_name != 'pull_request'
+    needs: linux
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-ci-linux-x64
+          path: linux
+      - name: Check the downloaded AppImage
+        working-directory: linux
+        run: sha256sum -c SHA256SUMS
+      - name: Attest Linux AppImage build provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: linux/desktop-linux-x64-ci.AppImage
+      - name: Name the portable provenance bundle
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$ATTESTATION_BUNDLE" desktop-linux-x64-ci.AppImage.intoto.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-ci-linux-x64-provenance
+          path: desktop-linux-x64-ci.AppImage.intoto.jsonl
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-linux-provenance:
+    name: Verify downloaded Linux AppImage provenance
+    needs: attest-linux
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-ci-linux-x64
+          path: linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-ci-linux-x64-provenance
+          path: provenance
+      - name: Verify signature, source and AppImage digest
+        run: |
+          set -euo pipefail
+          image=linux/desktop-linux-x64-ci.AppImage
+          bundle=provenance/desktop-linux-x64-ci.AppImage.intoto.jsonl
+          verify() {
+            gh attestation verify "$1" \
+              --bundle "$bundle" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/desktop-ci.yml" \
+              --source-digest "$EXPECTED_SOURCE_SHA" --source-ref "$2" \
+              --deny-self-hosted-runners
+          }
+          verify "$image" "$GITHUB_REF"
+          cp "$image" "$RUNNER_TEMP/tampered.AppImage"
+          printf '\n' >> "$RUNNER_TEMP/tampered.AppImage"
+          if verify "$RUNNER_TEMP/tampered.AppImage" "$GITHUB_REF"; then
+            echo "Verification unexpectedly accepted a modified AppImage" >&2
+            exit 1
+          fi
+          if verify "$image" refs/heads/unexpected-provenance-source; then
+            echo "Verification unexpectedly accepted an unexpected source ref" >&2
+            exit 1
+          fi
+
   android:
+    if: github.event_name != 'workflow_dispatch' || !inputs.appimage_only
     name: Android arm64
     needs: validate-source
     runs-on: ubuntu-latest
@@ -373,6 +455,7 @@ jobs:
           retention-days: 14
 
   ios:
+    if: github.event_name != 'workflow_dispatch' || !inputs.appimage_only
     name: iOS arm64
     needs: validate-source
     runs-on: macos-15
@@ -411,7 +494,7 @@ jobs:
   release:
     name: Publish milestone release
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [validate-source, desktop, linux, android, ios]
+    needs: [validate-source, desktop, linux, android, ios, verify-linux-provenance]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -449,6 +532,7 @@ jobs:
             cp "$dir/$package" "$dir/"*.cdx.json release/
             cp "$dir/build-info.json" "release/build-info-$platform.json"
           done
+          cp artifacts/desktop-ci-linux-x64-provenance/desktop-linux-x64-ci.AppImage.intoto.jsonl release/
           (cd release && sha256sum * > SHA256SUMS)
           release_flags=()
           [[ "$TAG" == *-*.*.*-* ]] && release_flags+=(--prerelease)
