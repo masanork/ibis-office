@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use ibis_doc_model::{CellValue, Presentation, cell_name};
 use serde_json::{Value, json};
@@ -158,14 +158,59 @@ impl QuotientTotals {
     }
 }
 
-struct Side {
+#[derive(Clone, Copy)]
+struct Group {
+    value: f64,
+    denominator: f64,
+}
+
+struct Effect {
+    within: f64,
+    composition: f64,
+    before_share: f64,
+    after_share: f64,
+}
+
+fn group_effect(before: Option<Group>, after: Option<Group>, before_total: f64, after_total: f64) -> Effect {
+    let before_share = before.map_or(0., |group| group.denominator / before_total);
+    let after_share = after.map_or(0., |group| group.denominator / after_total);
+    // A group with an observation on only one side has no measured change
+    // in value. Its entire contribution is assigned to composition.
+    let before_value = before.or(after).map_or(0., |group| group.value);
+    let after_value = after.or(before).map_or(0., |group| group.value);
+    let mean_share = (before_share + after_share) * 0.5;
+    Effect {
+        within: after_value * mean_share - before_value * mean_share,
+        composition: (before_value * 0.5 + after_value * 0.5) * (after_share - before_share),
+        before_share,
+        after_share,
+    }
+}
+
+#[derive(Default)]
+struct CompensatedSum {
+    sum: f64,
+    correction: f64,
+}
+
+impl CompensatedSum {
+    fn add(&mut self, value: f64) {
+        let adjusted = value - self.correction;
+        let next = self.sum + adjusted;
+        self.correction = (next - self.sum) - adjusted;
+        self.sum = next;
+    }
+}
+
+struct Side<'a> {
     metric: Metric,
     totals: QuotientTotals,
+    groups: BTreeMap<&'a str, Option<Group>>,
     evidence: Value,
     source: Value,
 }
 
-fn report_side(workbook: &Presentation, name: &str, metric: &str, key: Option<&str>) -> Result<Side, &'static str> {
+fn report_side<'a>(workbook: &'a Presentation, name: &str, metric: &str, key: Option<&str>) -> Result<Side<'a>, &'static str> {
     let definition = report_comparison_definition(workbook, name)?;
     let kind = Metric::from_definition(definition).ok_or("unknown_metric")?;
     if definition["metric"].as_str() != Some(metric) {
@@ -191,7 +236,7 @@ fn report_side(workbook: &Presentation, name: &str, metric: &str, key: Option<&s
     if range.last_row.saturating_sub(range.first_row) > 100_000 {
         return Err("too_many_rows");
     }
-    let mut keys = BTreeSet::new();
+    let mut groups = BTreeMap::new();
     let mut totals = QuotientTotals::default();
     let mut evidence = json!({"state":"absent"});
     for row in range.first_row + 1..=range.last_row.saturating_sub(table.totals_rows) {
@@ -199,15 +244,17 @@ fn report_side(workbook: &Presentation, name: &str, metric: &str, key: Option<&s
             return Err("invalid_key");
         };
         if label.trim().is_empty() { return Err("invalid_key"); }
-        if !keys.insert(label.as_str()) { return Err("duplicate_key"); }
         let numerator = Observation::read(sheet.cell(row, numerator_column));
         let denominator = Observation::read(sheet.cell(row, denominator_column));
         let state = totals.observe(kind, numerator, denominator);
+        let group = match (numerator, denominator) {
+            (Observation::Number(n), Observation::Number(d)) if state == "ready" =>
+                Some(Group { value: n / d, denominator: d }),
+            _ => None,
+        };
+        if groups.insert(label.as_str(), group).is_some() { return Err("duplicate_key"); }
         if key == Some(label.as_str()) {
-            let value = match (numerator, denominator) {
-                (Observation::Number(n), Observation::Number(d)) if state == "ready" => quotient(n, d),
-                _ => None,
-            };
+            let value = group.and_then(|group| group.value.is_finite().then_some(group.value));
             evidence = json!({
                 "state":if state == "ready" && value.is_none() {"non_finite"} else {state},
                 "sheet":page.name, "key_cell":cell_name(key_column, row), (kind.name()):value,
@@ -222,7 +269,58 @@ fn report_side(workbook: &Presentation, name: &str, metric: &str, key: Option<&s
         (left_column):definition[left_column],
         (right_column):definition[right_column],
     });
-    Ok(Side { metric: kind, totals, evidence, source })
+    Ok(Side { metric: kind, totals, groups, evidence, source })
+}
+
+fn decomposition(before: &Side<'_>, after: &Side<'_>, delta: Option<f64>, key: Option<&str>) -> Value {
+    let Some(delta) = delta else { return json!({"state":"unavailable"}); };
+    let scale = match before.metric { Metric::Rate => 100., Metric::Average => 1. };
+    let before_total = before.totals.denominator;
+    let after_total = after.totals.denominator;
+    let mut within = CompensatedSum::default();
+    let mut composition = CompensatedSum::default();
+    let mut magnitude = 0.;
+    let mut continued = 0;
+    let mut entered = 0;
+    let mut exited = 0;
+    let mut contributor = None;
+    let mut accumulate = |label: &str, before: Option<Group>, after: Option<Group>| {
+        match (before, after) {
+            (Some(_), Some(_)) => continued += 1,
+            (None, Some(_)) => entered += 1,
+            (Some(_), None) => exited += 1,
+            (None, None) => return,
+        }
+        let effect = group_effect(before, after, before_total, after_total);
+        within.add(effect.within);
+        composition.add(effect.composition);
+        magnitude += effect.within.abs() + effect.composition.abs();
+        if key == Some(label) {
+            contributor = Some(json!({
+                "within_group":effect.within * scale, "composition":effect.composition * scale,
+                "before_share":effect.before_share, "after_share":effect.after_share,
+            }));
+        }
+    };
+    for (&label, &group) in &before.groups {
+        accumulate(label, group, after.groups.get(label).copied().flatten());
+    }
+    for (&label, &group) in &after.groups {
+        if !before.groups.contains_key(label) { accumulate(label, None, group); }
+    }
+    let within = within.sum * scale;
+    let composition = composition.sum * scale;
+    let residual = (within + composition) - delta;
+    let tolerance = (8. * f64::EPSILON * magnitude).max(8. * f64::EPSILON * (delta.abs() / scale).max(1.)) * scale;
+    if !residual.is_finite() || !tolerance.is_finite() {
+        return json!({"state":"non_finite"});
+    }
+    json!({
+        "state":if residual.abs() <= tolerance {"ready"} else {"totals_mismatch"},
+        "within_group":within,"composition":composition,"residual":residual,"tolerance":tolerance,
+        "counts":{"continued":continued,"entered":entered,"exited":exited},
+        "contributor":contributor,
+    })
 }
 
 pub(crate) fn compare(base: &Presentation, candidate: &Presentation, table: &str, metric: &str, key: Option<&str>) -> Value {
@@ -241,7 +339,8 @@ pub(crate) fn compare(base: &Presentation, candidate: &Presentation, table: &str
     let (delta_key, delta) = kind.delta(before.totals.value(kind), after.totals.value(kind));
     let mut result = json!({"state":"review","table":table,"metric":metric,"kind":kind.name(),
         "before":before.totals.details(kind),"after":after.totals.details(kind),(delta_key):delta,
-        "source":{"before":before.source,"after":after.source}});
+        "source":{"before":before.source,"after":after.source},
+        "decomposition":decomposition(&before, &after, delta, key)});
     if let Ok(definition) = report_comparison_definition(base, table)
         && let Some(unit) = definition.get("unit")
     {
@@ -258,5 +357,21 @@ pub(crate) fn applied(workbook: &Presentation, table: &str, metric: &str, key: &
     match report_side(workbook, table, metric, Some(key)) {
         Ok(side) => json!({"state":side.evidence["state"],"kind":side.metric.name(),"table":table,"metric":metric,"key":key,"evidence":side.evidence}),
         Err(reason) => json!({"state":reason}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entries_and_exits_are_counted_only_in_composition() {
+        let group = Group { value: 3., denominator: 2. };
+        let entered = group_effect(None, Some(group), 4., 4.);
+        assert_eq!(entered.within, 0.);
+        assert_eq!(entered.composition, 1.5);
+        let exited = group_effect(Some(group), None, 4., 4.);
+        assert_eq!(exited.within, 0.);
+        assert_eq!(exited.composition, -1.5);
     }
 }

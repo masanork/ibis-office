@@ -1805,6 +1805,8 @@ fn assert_rate_evidence(summary: &Value, zero: &Value, missing: &Value, none: &V
     }
     let pp = summary["percentage_point_delta"].as_f64().unwrap();
     assert!((pp - (0.5 - 10. / 14.) * 100.).abs() < 1e-12);
+    assert_quotient_effects(summary, "percentage_point_delta", [-2125. / 84., 325. / 84.], [475. / 84., -125. / 28., 2. / 7., 1. / 6.]);
+    assert_eq!(none["decomposition"]["state"], "unavailable");
     let a = &summary["contributor"];
     assert_eq!(a["before"]["rate"], 0.25);
     assert_eq!(a["after"]["rate"], 0.5);
@@ -1889,6 +1891,8 @@ fn assert_average_evidence(summary: &Value, zero: &Value, missing: &Value, inval
         assert_eq!(summary[side]["counts"], json!({"included":2,"missing":1,"zero_count":1,"invalid":1}));
     }
     assert!((summary["delta"].as_f64().unwrap() - (140. / 11. - 20.)).abs() < 1e-12);
+    assert_quotient_effects(summary, "delta", [-491. / 55., 91. / 55.], [259. / 110., -119. / 110., 2. / 5., 3. / 11.]);
+    assert_eq!(none["decomposition"]["state"], "unavailable");
     let a = &summary["contributor"];
     assert_eq!(a["before"]["average"], 5.);
     assert_eq!(a["after"]["average"], 12.);
@@ -1909,4 +1913,22 @@ fn assert_average_evidence(summary: &Value, zero: &Value, missing: &Value, inval
     assert_eq!(none["after"]["state"], "no_eligible_rows");
     assert!(none["after"]["average"].is_null());
     assert!(none["delta"].is_null());
+}
+
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+fn assert_quotient_effects(summary: &Value, delta_key: &str, effects: [f64; 2], contributor: [f64; 4]) {
+    let breakdown = &summary["decomposition"];
+    assert_eq!(breakdown["state"], "ready");
+    assert_eq!(breakdown["counts"], json!({"continued":2,"entered":0,"exited":0}));
+    let within = breakdown["within_group"].as_f64().unwrap();
+    let composition = breakdown["composition"].as_f64().unwrap();
+    assert!((within - effects[0]).abs() < 1e-12);
+    assert!((composition - effects[1]).abs() < 1e-12);
+    assert!((within + composition - summary[delta_key].as_f64().unwrap()).abs()
+        <= breakdown["tolerance"].as_f64().unwrap());
+    assert!(breakdown["residual"].as_f64().unwrap().abs() <= breakdown["tolerance"].as_f64().unwrap());
+    for (field, expected) in ["within_group","composition","before_share","after_share"].into_iter().zip(contributor) {
+        assert!((breakdown["contributor"][field].as_f64().unwrap() - expected).abs() < 1e-12, "{field}");
+    }
 }
