@@ -14,7 +14,7 @@ from urllib.parse import quote
 import xml.etree.ElementTree as ET
 import zipfile
 
-from bom_payload import sha256, zip_components
+from bom_payload import file_components, sha256, zip_components
 
 PLATFORMS = {
     "linux-x64-appimage": ("Linux", "x86_64-unknown-linux-gnu", ("ibis-office-app", "ibis-office-updater", "ibis-appimage"), False),
@@ -120,21 +120,10 @@ def add_elf_links(path, source, components, edges):
 
 
 def add_payload(appdir, components, edges, namespace):
-    if not appdir.is_dir():
-        raise ValueError(f"missing payload directory: {appdir}")
-    for path in sorted(appdir.rglob("*")):
-        name = path.relative_to(appdir).as_posix()
-        ref = f"ibisoffice:{namespace}:file:{quote(name, safe='/')}"
-        component = {"type": "file", "bom-ref": ref, "name": name}
-        if path.is_symlink():
-            component["properties"] = [
-                {"name": f"ibisOffice:{namespace}:symlinkTarget", "value": os.readlink(path)},
-            ]
-        elif path.is_file():
-            component["hashes"] = [{"alg": "SHA-256", "content": sha256(path)}]
+    for path, component in file_components(appdir, namespace):
+        ref = component["bom-ref"]
+        if "hashes" in component:
             add_elf_links(path, ref, components, edges)
-        else:
-            continue
         components[ref] = component
 
 

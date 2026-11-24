@@ -2,13 +2,17 @@
 """Check CycloneDX inventories against a downloaded ibisOffice build."""
 
 import argparse
+import configparser
 import hashlib
 import json
-from pathlib import Path
+import subprocess
+from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory, TemporaryFile
+from urllib.parse import quote, urlsplit
 from urllib.request import urlopen
 from zipfile import BadZipFile, ZipFile
 
-from bom_payload import sha256, zip_components
+from bom_payload import file_components, sha256, stream_sha256, zip_components
 
 from jsonschema import Draft7Validator
 from referencing import Registry, Resource
@@ -32,6 +36,7 @@ PACKAGES = {
     "ios-arm64": "desktop-ios-arm64-ci.zip",
     "wasm": "wasm-ci.zip",
 }
+FLATPAK_ARCH = {"flatpak-x64": "x86_64", "flatpak-arm64": "aarch64"}
 REQUIRED_PAYLOAD = {
     "macos-arm64": {"Docs.app/Contents/MacOS/ibisOffice", "Docs.app/Contents/MacOS/ibisOfficeUpdater"},
     "windows-x64": {"ibisOffice/ibisOffice.exe", "ibisOffice/ibisOfficeUpdater.exe"},
@@ -59,6 +64,39 @@ def validator(schema_dir):
     return Draft7Validator(schemas["bom-1.6.schema.json"], registry=registry)
 
 
+def flatpak_package(directory, arch):
+    matches = sorted(directory.glob(f"ibisOffice-*-Linux-{arch}.flatpak"))
+    if len(matches) != 1:
+        raise ValueError(f"expected one Flatpak bundle for {arch}, found {len(matches)}")
+    return matches[0]
+
+
+def flatpak_components(package, arch):
+    with TemporaryDirectory() as work:
+        repo = f"--repo={work}/repo"
+        checkout = Path(work) / "checkout"
+        subprocess.run(["ostree", repo, "init", "--mode=archive"], check=True)
+        subprocess.run(["flatpak", "build-import-bundle", "--no-update-summary",
+                        f"{work}/repo", str(package)], check=True)
+        refs = subprocess.check_output(["ostree", repo, "refs"], text=True).splitlines()
+        ref_parts = refs[0].split("/") if len(refs) == 1 else []
+        if len(ref_parts) != 4 or ref_parts[0] != "app" or ref_parts[2] != arch:
+            raise ValueError(f"unexpected Flatpak application ref for {arch}: {refs}")
+        subprocess.run(["ostree", repo, "checkout", "--user-mode", refs[0], str(checkout)], check=True)
+        metadata = configparser.ConfigParser(interpolation=None)
+        metadata.read(checkout / "metadata")
+        app = metadata["Application"]
+        if app["name"] != ref_parts[1]:
+            raise ValueError("Flatpak application metadata does not match the ref")
+        runtime = app["runtime"]
+        print(f"{refs[0]}: declared runtime {runtime}")
+        components = {c["bom-ref"]: c for _, c in file_components(checkout / "files", "flatpak")}
+        binary = components.get("ibisoffice:flatpak:file:bin/ibisOffice", {})
+        if "hashes" not in binary:
+            raise ValueError("missing Flatpak ibisOffice binary")
+        return components
+
+
 def verify_wasm(archive):
     prefix = "pkg/"
     with ZipFile(archive) as zipped:
@@ -82,6 +120,37 @@ def verify_wasm(archive):
             data = zipped.read(prefix + name)
             if len(data) != single["size"] or hashlib.sha256(data).hexdigest() != single["sha256"]:
                 raise ValueError("compressed WASM does not match the manifest")
+
+
+def verify_public_web(base_url, payload):
+    parts = urlsplit(base_url)
+    if parts.scheme != "https" or not parts.netloc or parts.query or parts.fragment:
+        raise ValueError("public Web base must be an HTTPS URL without a query or fragment")
+    manifest = "pkg/ibis_office_app_bg.manifest.json"
+    # Start with the manifest to detect the wrong deployment before fetching modules.
+    components = sorted(payload.values(), key=lambda c: (c["name"] != manifest, c["name"]))
+    for component in components:
+        name = component["name"]
+        path = PurePosixPath(name)
+        if not path.parts or path.parts[0] != "pkg" or ".." in path.parts or path.as_posix() != name:
+            raise ValueError(f"unexpected browser package path: {name}")
+        if "hashes" not in component:
+            raise ValueError(f"expected a regular browser asset: {name}")
+        url = base_url.rstrip("/") + "/" + quote(name, safe="/")
+        with TemporaryFile() as response:
+            result = subprocess.run(
+                ["curl", "--disable", "--fail", "--silent", "--show-error", "--location",
+                 "--proto", "=https", "--proto-redir", "=https", "--max-time", "45", "--url", url],
+                stdout=response,
+            )
+            if result.returncode:
+                raise ValueError(f"could not download published asset: {name}")
+            response.seek(0)
+            observed = stream_sha256(response)
+        expected = component["hashes"][0]["content"]
+        if observed != expected:
+            raise ValueError(f"published asset differs from CI: {name} (expected {expected}, received {observed})")
+    print(f"{base_url}: {len(components)} published browser assets match CI")
 
 
 def verify(path, schema, platform, source_sha, image_digest, payload, *, crypto):
@@ -112,10 +181,12 @@ def verify(path, schema, platform, source_sha, image_digest, payload, *, crypto)
         raise ValueError("unexpected cryptographic asset coverage")
 
     if payload is not None:
-        observed = {c["bom-ref"]: c for c in components if c["bom-ref"].startswith("ibisoffice:archive:file:")}
+        namespace = "flatpak" if platform in FLATPAK_ARCH else "archive"
+        prefix = f"ibisoffice:{namespace}:file:"
+        observed = {c["bom-ref"]: c for c in components if c["bom-ref"].startswith(prefix)}
         if observed != payload:
             differences = {ref for ref in observed.keys() | payload.keys() if observed.get(ref) != payload.get(ref)}
-            raise ValueError(f"archive payload differs from BOM: {min(differences)}")
+            raise ValueError(f"package payload differs from BOM: {min(differences)}")
 
     nodes = set()
     linked_crypto = set()
@@ -128,7 +199,7 @@ def verify(path, schema, platform, source_sha, image_digest, payload, *, crypto)
         unknown = ({ref} | targets) - known
         if unknown:
             raise ValueError(f"unknown dependency reference: {min(unknown)}")
-        if payload is not None and ref == root["bom-ref"] and not payload.keys() <= targets:
+        if platform in REQUIRED_PAYLOAD and ref == root["bom-ref"] and not payload.keys() <= targets:
             raise ValueError("archive payload is not linked to the package")
         linked_crypto.update(targets & crypto_refs)
     if nodes != known:
@@ -140,16 +211,25 @@ def verify(path, schema, platform, source_sha, image_digest, payload, *, crypto)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("platform", choices=PACKAGES)
+    parser.add_argument("platform", choices=[*PACKAGES, *FLATPAK_ARCH])
     parser.add_argument("artifact_dir", type=Path)
     parser.add_argument("source_sha")
     parser.add_argument("--schema-dir", type=Path, help="Use local copies of the pinned schemas")
+    parser.add_argument("--public-web-base", help="Verify deployed WASM package files from an HTTPS site")
     args = parser.parse_args()
+    if args.public_web_base and args.platform != "wasm":
+        parser.error("--public-web-base requires the wasm platform")
     try:
         schema = validator(args.schema_dir)
-        image = args.artifact_dir / PACKAGES[args.platform]
-        image_digest = sha256(image)
-        payload = None
+        arch = FLATPAK_ARCH.get(args.platform)
+        if arch:
+            image = flatpak_package(args.artifact_dir, arch)
+            image_digest = sha256(image)
+            payload = flatpak_components(image.resolve(), arch)
+        else:
+            image = args.artifact_dir / PACKAGES[args.platform]
+            image_digest = sha256(image)
+            payload = None
         if args.platform in REQUIRED_PAYLOAD:
             payload = zip_components(image)
             files = {c["name"] for c in payload.values() if "hashes" in c}
@@ -158,7 +238,7 @@ def main():
                 raise ValueError(f"missing required package file: {min(missing)}")
             if args.platform == "wasm":
                 verify_wasm(image)
-    except (BadZipFile, KeyError, OSError, ValueError) as error:
+    except (BadZipFile, KeyError, OSError, ValueError, configparser.Error, subprocess.CalledProcessError) as error:
         parser.exit(1, f"{error}\n")
     for kind in ("sbom", "cbom"):
         path = args.artifact_dir / f"{args.platform}.{kind}.cdx.json"
@@ -166,6 +246,12 @@ def main():
             verify(path, schema, args.platform, args.source_sha, image_digest, payload, crypto=kind == "cbom")
         except (KeyError, OSError, ValueError) as error:
             parser.exit(1, f"{path.name}: {error}\n")
+
+    if args.public_web_base:
+        try:
+            verify_public_web(args.public_web_base, payload)
+        except (OSError, ValueError) as error:
+            parser.exit(1, f"{error}\n")
 
 
 if __name__ == "__main__":

@@ -76,3 +76,39 @@ WASM の成果物はブラウザー向けモジュールと JS の CI リリー�
 
 macOS の CI 成果物はアドホック署名、Windows は未署名。
 モバイルの成果物は CI ビルドであり、ストアの配信物と照合する場合はその配信物を入力とする。
+
+## 公開ファイルとの照合
+
+Flatpak は、公開先から取得したバンドルと同じビルドの SBOM／CBOM を同じ
+ディレクトリに置いて照合する。Linux 側に Flatpak と OSTree が必要。
+検証コマンドは一時 OSTree リポジトリにバンドルを取り込み、アプリを実行せずに
+アーキテクチャ、宣言されたランタイム、収録ファイルを確認する。ランタイム自体の
+構成とバージョン解決は別途確認する。
+
+```sh
+python3 -m pip install 'jsonschema==4.23.0'
+python3 scripts/verify-build-boms.py flatpak-x64 downloaded-x64 "$source_sha"
+python3 scripts/verify-build-boms.py flatpak-arm64 downloaded-arm64 "$source_sha"
+```
+
+Web は、公開したビルドの CI ZIP と両 BOM を入力とし、実際に配信される
+`pkg/` のファイルを再取得して全 SHA-256 を照合する。
+
+```sh
+python3 scripts/verify-build-boms.py wasm downloaded-web "$source_sha" \
+  --public-web-base https://ibis.sorane.dev
+```
+
+2026-11-24 に [上流 v0.8.9](https://github.com/ibisjp/ibis-office/releases/tag/v0.8.9)
+から公開 Flatpak 2種を取得し、添付の SHA-256 と照合して OSTree へ展開した。
+両方とも `org.freedesktop.Platform//24.08` を宣言し、アプリの同梱物は各20件だった。
+この Release に BOM は添付されていない。
+[フォークの Flatpak CI](https://github.com/masanork/ibis-office/actions/runs/45345837385)
+にも同じバージョン名の成果物があるため、照合にはバージョン名と併せて
+ハッシュとソースコミットを使用する。
+
+本番 Web のマニフェストに載っている4チャンクと Brotli 版を取得し、いずれからも
+SHA-256 `5b449e836986a3fec7ce3b5be40361fb94188947dd14f625e649167144b8ed62`
+の WASM を復元できた。上流 v0.8.9 の Web ZIP と既存フォーク CI の WASM は
+どちらも異なる SHA-256 だった。公開検証を通すには、実際にデプロイしたビルドの
+ZIP と BOM を成果物として保存し、デプロイ後の照合入力に渡す。

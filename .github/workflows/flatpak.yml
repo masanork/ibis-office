@@ -157,7 +157,7 @@ jobs:
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
             flatpak \
-            flatpak-builder
+            flatpak-builder ostree python3-venv
 
       - name: Install Flathub runtime and SDK
         timeout-minutes: 15
@@ -198,6 +198,20 @@ jobs:
           case "$ARCH" in x86_64) platform=flatpak-x64 ;; aarch64) platform=flatpak-arm64 ;; esac
           bundle=$(realpath target/dist/ibisOffice-*-Linux-"$ARCH".flatpak)
           python3 scripts/build-bom.py "$platform" "$bundle" target/dist --appdir target/dist/flatpak/build-dir/files
+
+      - name: Verify the packaged Flatpak and both BOMs
+        timeout-minutes: 10
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "$ARCH" in x86_64) platform=flatpak-x64 ;; aarch64) platform=flatpak-arm64 ;; esac
+          (cd target/dist && sha256sum -c ./*-Linux-"$ARCH".flatpak.sha256)
+          python3 -m venv "$RUNNER_TEMP/bom-validator"
+          python="$RUNNER_TEMP/bom-validator/bin/python"
+          "$python" -m pip install 'jsonschema==4.23.0'
+          "$python" scripts/verify-build-boms.py "$platform" target/dist "$(git rev-parse HEAD)"
 
       - name: Upload Flatpak artifact
         timeout-minutes: 10

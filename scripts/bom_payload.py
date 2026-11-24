@@ -2,6 +2,7 @@
 """Read package payload evidence without extracting archive paths."""
 
 import hashlib
+import os
 import stat
 from urllib.parse import quote
 import zipfile
@@ -40,3 +41,20 @@ def zip_components(archive):
             components[ref] = component
 
     return components
+
+def file_components(root, namespace):
+    if not root.is_dir():
+        raise ValueError(f"missing payload directory: {root}")
+    for path in sorted(root.rglob("*")):
+        name = path.relative_to(root).as_posix()
+        ref = f"ibisoffice:{namespace}:file:{quote(name, safe='/')}"
+        component = {"type": "file", "bom-ref": ref, "name": name}
+        if path.is_symlink():
+            component["properties"] = [
+                {"name": f"ibisOffice:{namespace}:symlinkTarget", "value": os.readlink(path)},
+            ]
+        elif path.is_file():
+            component["hashes"] = [{"alg": "SHA-256", "content": sha256(path)}]
+        else:
+            continue
+        yield path, component
