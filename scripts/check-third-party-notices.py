@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--plex")
     parser.add_argument("--desktop", action="store_true")
+    parser.add_argument("--web", action="store_true")
     args = parser.parse_args()
     if args.archive:
         with ZipFile(args.archive) as archive:
@@ -40,6 +41,12 @@ def main():
             "Copyright (c) 2009 The Go Authors",
             "Copyright 2015 The Chromium Authors",
             "Copyright 2015-2025 Brian Smith",
+        ]
+    if args.web:
+        required += [
+            "| zune-heic |",
+            "| zune-isobmff |",
+            "Copyright (c) zune-image developers",
         ]
     prose = " ".join(text.split())
     for value in required:

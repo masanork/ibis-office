@@ -36,8 +36,13 @@ BUILDS = {
     "windows": (os.path.join(ROOT, "crates", "ibis-office-app", "windows", "license.md"), "x86_64-pc-windows-msvc", "Windows 版"),
 }
 # What each build ships besides the app: the AppImage's runtime is in the Linux one.
-EXTRA_PACKAGES = {"web": ["ibis-font-subsetter"], "linux": ["ibis-appimage"]}
-OWN = {"ibis-font-subsetter", "ibis-office-app", "ibis-office-shell", "ibis-office-pptx", "ibis-office-docx", "ibis-office-xlsx", "ibis-office-render", "ibis-office-base", "ibis-office-macros", "ibis-doc-model", "ibis-formats", "ibis-emf", "ibis-eot", "ibis-imgdiff", "ibis-appimage"}
+EXTRA_PACKAGES = {
+    "web": ["ibis-font-subsetter", "ibis-heic-web"],
+    "macos": ["ibis-office-updater"],
+    "windows": ["ibis-office-updater"],
+    "linux": ["ibis-appimage", "ibis-office-updater"],
+}
+OWN = {"ibis-heic-web", "ibis-font-subsetter", "ibis-office-app", "ibis-office-shell", "ibis-office-pptx", "ibis-office-docx", "ibis-office-xlsx", "ibis-office-render", "ibis-office-base", "ibis-office-macros", "ibis-doc-model", "ibis-formats", "ibis-emf", "ibis-eot", "ibis-imgdiff", "ibis-appimage"}
 
 
 def run(*args):
