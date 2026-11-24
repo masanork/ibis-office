@@ -1695,6 +1695,9 @@ xlsx.sbom-refresh-failed	Could not refresh vulnerability review: {error}
 xlsx.sbom-actions	Show findings requiring action…
 xlsx.sbom-actions-failed	Could not open the vulnerability action queue: {error}
 file.open-folder	Open Folder…
+folder.backlinks	Referenced by
+folder.backlinks-empty	No references in the index
+folder.backlinks-partial	The Markdown index is partial
 folder.filter	File name, path, type:Metric, or tag:finance
 folder.okf.unverified	Unverified
 folder.okf.machine-confirmed	Machine-confirmed

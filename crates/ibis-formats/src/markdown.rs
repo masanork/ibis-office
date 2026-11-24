@@ -222,6 +222,13 @@ pub fn is_presentation_markdown(data: &[u8]) -> bool {
     })
 }
 
+/// Return the source body after a recognized frontmatter block, without rewriting it.
+pub fn body_without_frontmatter(text: &str) -> &str {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    roundtrip::document_frontmatter(text.trim_start_matches(['\n', '\r']))
+        .map_or(text, |frame| frame.body)
+}
+
 /// Resolve a Markdown heading fragment in the loaded document.
 pub fn heading_fragment(doc: &FlowDocument, fragment: &str) -> Option<u32> {
     HeadingFragments::new(doc).resolve(fragment)
