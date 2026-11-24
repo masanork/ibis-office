@@ -6001,6 +6001,7 @@ dependencies = [
  "moxcms",
  "notify",
  "objc",
+ "pulldown-cmark",
  "same-file",
  "serde",
  "serde_json",

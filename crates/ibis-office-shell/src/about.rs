@@ -109,8 +109,93 @@ fn about_body(on_notices: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
         )
 }
 
-fn third_party_body(cx: &App) -> Div {
+fn notice_table_row(cells: Vec<String>, heading: bool, cx: &App) -> Div {
     let theme = cx.theme();
+    let widths: &[f32] = match cells.len() {
+        3 => &[0.28, 0.30, 0.42],
+        4 => &[0.24, 0.12, 0.25, 0.39],
+        _ => &[],
+    };
+    let equal_width = 1.0 / cells.len().max(1) as f32;
+    div()
+        .flex()
+        .w_full()
+        .border_b_1()
+        .border_color(theme.border)
+        .when(heading, |row| row.bg(theme.secondary).font_weight(FontWeight::SEMIBOLD))
+        .children(cells.into_iter().enumerate().map(|(column, cell)| {
+            div()
+                .w(relative(widths.get(column).copied().unwrap_or(equal_width)))
+                .min_w_0()
+                .px_2()
+                .py_1()
+                .whitespace_normal()
+                .child(cell)
+        }))
+}
+
+fn hancom_table_row(cx: &App) -> Div {
+    notice_table_row(
+        vec![
+            "Hancom".into(),
+            i18n::text("about.hwp-spec-credit").to_string(),
+            ibis_formats::hwp::SPEC_CREDIT.into(),
+        ],
+        false,
+        cx,
+    )
+}
+
+fn notice_blocks(notices: &str, cx: &App) -> Vec<Div> {
+    use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+    let mut blocks = Vec::new();
+    let mut table = Vec::new();
+    let mut cells = Vec::new();
+    let mut text = String::new();
+    let mut first_table = true;
+    for event in Parser::new_ext(notices, Options::ENABLE_TABLES) {
+        match event {
+            Event::Text(value) | Event::Code(value) | Event::Html(value) | Event::InlineHtml(value) => {
+                text.push_str(&value);
+            }
+            Event::SoftBreak | Event::HardBreak => text.push('\n'),
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                // Link labels remain readable and the destination is available as text.
+                text.push_str(&dest_url);
+                text.push(' ');
+            }
+            Event::End(TagEnd::TableCell) => cells.push(std::mem::take(&mut text)),
+            Event::End(TagEnd::TableHead) => {
+                table.push(notice_table_row(std::mem::take(&mut cells), true, cx));
+            }
+            Event::End(TagEnd::TableRow) => {
+                table.push(notice_table_row(std::mem::take(&mut cells), false, cx));
+            }
+            Event::End(TagEnd::Table) => {
+                if std::mem::take(&mut first_table) {
+                    table.push(hancom_table_row(cx));
+                }
+                blocks.push(div().w_full().border_1().border_color(cx.theme().border).children(std::mem::take(&mut table)));
+            }
+            Event::End(TagEnd::Heading(level)) => {
+                let title = std::mem::take(&mut text);
+                if level != HeadingLevel::H1 {
+                    blocks.push(div().pt_2().font_weight(FontWeight::SEMIBOLD).child(title));
+                }
+            }
+            Event::End(TagEnd::Paragraph | TagEnd::CodeBlock | TagEnd::Item) if !text.is_empty() => {
+                blocks.push(div().whitespace_normal().child(std::mem::take(&mut text)));
+            }
+            _ => {}
+        }
+    }
+    if first_table {
+        blocks.insert(0, hancom_table_row(cx));
+    }
+    blocks
+}
+
+fn third_party_body(cx: &App) -> Div {
     let notices = include_str!(concat!(env!("OUT_DIR"), "/third-party-notices.md"));
     v_flex()
         .p_4()
@@ -118,20 +203,13 @@ fn third_party_body(cx: &App) -> Div {
         .child(div().font_weight(FontWeight::SEMIBOLD).child(i18n::text("about.third-party")))
         .child(
             v_flex()
-                .text_size(px(12.))
-                .text_color(theme.muted_foreground)
-                .child(div().child(i18n::text("about.hwp-spec-credit")))
-                .child(div().child(ibis_formats::hwp::SPEC_CREDIT)),
-        )
-        .child(
-            v_flex()
                 .id("third-party-notices-scroll")
                 .max_h(px(320.))
                 .overflow_y_scroll()
                 .text_size(px(12.))
                 .gap_2()
-                .when(notices.is_empty(), |view| view.child(i18n::text("about.third-party-unavailable")))
-                .children(notices.split("\n\n").filter(|section| !section.is_empty()).map(|section| div().child(section))),
+                .children(notice_blocks(notices, cx))
+                .when(notices.is_empty(), |view| view.child(i18n::text("about.third-party-unavailable"))),
         )
 }
 
