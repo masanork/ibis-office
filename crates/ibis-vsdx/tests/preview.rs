@@ -107,7 +107,7 @@ fn follows_package_relationships_and_draws_shapes_labels_and_connections() {
             commands,
             ..
         },
-        DisplayCmd::DrawGlyphRun { text, .. },
+        DisplayCmd::DrawStyledGlyphRun { text, .. },
         DisplayCmd::DrawPath {
             fill_rgba: connector_fill,
             commands: connector,

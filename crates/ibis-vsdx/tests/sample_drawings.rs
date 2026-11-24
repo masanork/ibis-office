@@ -12,10 +12,9 @@ fn open(bytes: &'static [u8]) -> VsdxContainer {
 
 fn assert_label(scene: &PageScene, label: &str) {
     assert!(
-        scene
-            .display_list
-            .iter()
-            .any(|cmd| { matches!(cmd, DisplayCmd::DrawGlyphRun { text, .. } if text == label) }),
+        scene.display_list.iter().any(|cmd| {
+            matches!(cmd, DisplayCmd::DrawStyledGlyphRun { text, .. } if text == label)
+        }),
         "missing label {label:?} on page {}",
         scene.info.index + 1
     );
@@ -33,7 +32,8 @@ fn refund_flowchart_renders_shapes_connector_and_labels() {
     assert_eq!(document.page_infos().len(), 1);
     let scene = document.interpret_page_scene(0).unwrap();
     assert_label(&scene, "Customer Refund Process");
-    assert_label(&scene, "Within 30 days?");
+    assert_label(&scene, "Within 30");
+    assert_label(&scene, "days?");
     assert_label(&scene, "yes");
     assert!(
         scene.display_list.iter().any(|cmd| {
@@ -73,6 +73,12 @@ fn handbook_keeps_page_order_and_mixed_page_sizes() {
         let scene = document.interpret_page_scene(index).unwrap();
         assert_eq!(scene.info.index, index);
         assert_label(&scene, title);
+        if index == 2 {
+            assert!(scene.display_list.windows(2).any(|pair| matches!(pair,
+                [DisplayCmd::DrawPath { fill_rgba: Some([255, 255, 255, 255]), stroke_rgba: None, .. },
+                 DisplayCmd::DrawStyledGlyphRun { text, .. }] if text == "yes (SEV-1/2)"
+            )));
+        }
         assert!(
             scene
                 .display_list
@@ -80,4 +86,55 @@ fn handbook_keeps_page_order_and_mixed_page_sizes() {
                 .any(|cmd| matches!(cmd, DisplayCmd::DrawPath { .. }))
         );
     }
+}
+
+#[test]
+fn sample_details_keep_their_styles_and_geometry() {
+    use ibis_pdf::scene::TextAnchor;
+
+    let document = open(include_bytes!("fixtures/01-basic-flowchart.vsdx"));
+    let scene = document.interpret_page_scene(0).unwrap();
+    let display = &scene.display_list;
+    assert!(display.iter().any(|cmd| matches!(cmd,
+        DisplayCmd::DrawStyledGlyphRun {
+            text, anchor: TextAnchor::Start, origin: (x, _), weight: 700,
+            rgba: [15, 23, 42, 255], ..
+        } if text == "Customer Refund Process" && near(*x, 18.43)
+    )));
+    assert!(display.iter().any(|cmd| matches!(cmd,
+        DisplayCmd::DrawStyledGlyphRun { text, anchor: TextAnchor::Center, .. }
+        if text == "Look up order"
+    )));
+    assert!(scene.text_index.plain_text().contains("Within 30 days?"));
+
+    let count_curves = |color| {
+        display
+            .iter()
+            .filter_map(|cmd| match cmd {
+                DisplayCmd::DrawPath {
+                    stroke_rgba: Some(rgba),
+                    commands,
+                    ..
+                } if *rgba == color => Some(
+                    commands
+                        .iter()
+                        .filter(|cmd| matches!(cmd, PathCmd::CubicTo(..)))
+                        .count(),
+                ),
+                _ => None,
+            })
+            .sum::<usize>()
+    };
+    // The cylindrical ledger has three arcs and the order box has four rounded corners.
+    assert!(count_curves([100, 116, 139, 255]) >= 6);
+    assert!(count_curves([108, 142, 191, 255]) >= 4);
+    assert!(display.iter().any(|cmd| matches!(cmd,
+        DisplayCmd::DrawPath { fill_rgba: None, stroke_rgba: Some([71, 85, 105, 255]), commands, .. }
+        if commands.iter().filter(|cmd| matches!(cmd, PathCmd::MoveTo(..))).count() > 10
+    )));
+    let arrows = display.iter().filter(|cmd| matches!(cmd,
+        DisplayCmd::DrawPath { fill_rgba: Some([71, 85, 105, 255]), stroke_rgba: None, commands, .. }
+        if matches!(commands.as_slice(), [PathCmd::MoveTo(..), PathCmd::LineTo(..), PathCmd::LineTo(..), PathCmd::Close])
+    )).count();
+    assert_eq!(arrows, 12);
 }

@@ -307,6 +307,7 @@ impl State {
                     font.angle
                 },
                 horizontal_scale: 1.0,
+                anchor: ibis_pdf::scene::TextAnchor::Start,
                 max_width,
                 rgba: self.text_color,
             }

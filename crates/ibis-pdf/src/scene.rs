@@ -91,6 +91,7 @@ pub enum DisplayCmd {
         italic: bool,
         angle: f32,
         horizontal_scale: f32,
+        anchor: TextAnchor,
         max_width: Option<f32>,
         rgba: [u8; 4],
     },
@@ -100,6 +101,14 @@ pub enum DisplayCmd {
         height: u32,
         rgba: Vec<u8>,
     },
+}
+
+/// Horizontal position of a styled glyph run relative to its origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextAnchor {
+    Start,
+    Center,
+    End,
 }
 
 /// Character bounding box for text selection, search, and highlight annotation creation.

@@ -202,6 +202,7 @@ pub fn paint_page_scene(
                 italic,
                 angle,
                 horizontal_scale,
+                anchor,
                 max_width,
                 rgba,
             } => {
@@ -247,10 +248,16 @@ pub fn paint_page_scene(
                 }
                 let baseline = map_pt(origin, scale, *x, *y);
                 let (sin, cos) = angle.sin_cos();
+                let anchor_fraction = match anchor {
+                    ibis_pdf::scene::TextAnchor::Start => 0.0,
+                    ibis_pdf::scene::TextAnchor::Center => 0.5,
+                    ibis_pdf::scene::TextAnchor::End => 1.0,
+                };
+                let shift = f32::from(shaped.width) * sx * anchor_fraction;
                 let device_scale = window.scale_factor();
                 for run in &shaped.runs {
                     for glyph in &run.glyphs {
-                        let dx = f32::from(glyph.position.x) * sx;
+                        let dx = f32::from(glyph.position.x) * sx - shift;
                         let dy = f32::from(glyph.position.y);
                         let at = point(
                             baseline.x + px(dx * cos - dy * sin),

@@ -10,9 +10,13 @@ use std::{
 
 use ibis_formats::zip::Archive;
 use ibis_ooxml::Relationship;
-use ibis_pdf::scene::{CharBox, FillRule, PathCmd, estimated_advance_em};
+use ibis_pdf::scene::{CharBox, FillRule, PathCmd, TextAnchor, estimated_advance_em};
 use ibis_pdf::{DisplayCmd, Error, ObjectId, PageInfo, PageScene, PdfRect, Result};
 use roxmltree::{Document, Node};
+
+mod geometry;
+
+use geometry::{dashed_line, elliptical_arc, rounded_polygon, straight_vertices, triangle_arrow};
 
 const VISIO: &str = "http://schemas.microsoft.com/office/visio/2012/main";
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -370,6 +374,13 @@ impl Render<'_, '_> {
                 .unwrap_or(0.01)
                 .clamp(0.0, 5.0) as f32
                 * 72.0;
+            let line = |key| paint("LineStyle", key);
+            let dash = line("LinePattern") == Some("2");
+            let arrows = (
+                line("BeginArrow") == Some("4"),
+                line("EndArrow") == Some("4"),
+            );
+            let rounding = num("Rounding").unwrap_or_default() as f32 * 72.0;
             let geometry = indexed_children(master, Some(shape), "Section", |node| {
                 node.attribute("N") == Some("Geometry")
             });
@@ -390,7 +401,7 @@ impl Render<'_, '_> {
                 let fill = fill.filter(|_| get("NoFill") != Some("1"));
                 let stroke = stroke.filter(|_| get("NoLine") != Some("1"));
                 drew_geometry |= commands.len() >= 2;
-                self.path(commands, fill, stroke, weight)?;
+                self.draw_geometry(commands, fill, stroke, weight, (dash, arrows), rounding)?;
             }
             if !drew_geometry
                 && !hidden_geometry
@@ -399,31 +410,143 @@ impl Render<'_, '_> {
             {
                 let (x0, y0) = parent.point(x0, y0);
                 let (x1, y1) = parent.point(x1, y1);
-                self.path(
+                self.draw_geometry(
                     vec![PathCmd::MoveTo(x0, y0), PathCmd::LineTo(x1, y1)],
                     None,
                     stroke,
                     weight,
+                    (dash, arrows),
+                    0.0,
                 )?;
             }
             if let Some(sub) = child(shape, "Shapes") {
                 self.shapes(sub, m, masters, depth + 1)?;
             }
-            if let Some(label) = child(shape, "Text").or_else(|| child(master?, "Text")) {
-                let family_size = shape
-                    .children()
-                    .find(|&n| named(n, "Section") && n.attribute("N") == Some("Character"))
-                    .and_then(|sec| child(sec, "Row"))
-                    .and_then(|row| number(value(Some(row), "Size")));
+            if let Some(label) = child(shape, "Text").or_else(|| child(master?, "Text"))
+                && label
+                    .descendants()
+                    .filter(Node::is_text)
+                    .filter_map(|n| n.text())
+                    .any(|text| !text.trim().is_empty())
+            {
+                let row = |section| {
+                    shape
+                        .children()
+                        .find(|&n| named(n, "Section") && n.attribute("N") == Some(section))
+                        .and_then(|sec| child(sec, "Row"))
+                };
+                let character = row("Character");
+                let paragraph = row("Paragraph");
+                let txt_width = num("TxtWidth");
+                let left_margin = num("LeftMargin").unwrap_or(0.0);
+                let right_margin = num("RightMargin").unwrap_or(0.0);
+                let pin = (
+                    num("TxtPinX").unwrap_or(w / 2.0),
+                    num("TxtPinY").unwrap_or(h / 2.0),
+                );
+                let (sin, cos) = num("TxtAngle").unwrap_or(0.0).sin_cos();
+                let text_matrix = m.child(Matrix([cos, sin, -sin, cos, pin.0, pin.1]));
+                let left = -num("TxtLocPinX").unwrap_or(txt_width.unwrap_or(w) / 2.0);
+                let height = num("TxtHeight").unwrap_or(h);
+                let bottom = -num("TxtLocPinY").unwrap_or(height / 2.0);
+                let top_margin = num("TopMargin").unwrap_or(0.0);
+                let bottom_margin = num("BottomMargin").unwrap_or(0.0);
+                if let Some(background) = get("TextBkgnd").filter(|v| v.starts_with('#')) {
+                    let mut rgba = color(Some(background), [255, 255, 255, 255]);
+                    let transparency = num("TextBkgndTrans").unwrap_or(0.0).clamp(0.0, 1.0);
+                    rgba[3] = ((1.0 - transparency) * 255.0).round() as u8;
+                    let right = left + txt_width.unwrap_or(w);
+                    let top = bottom + height;
+                    let a = text_matrix.point(left, top);
+                    let b = text_matrix.point(right, top);
+                    let c = text_matrix.point(right, bottom);
+                    let d = text_matrix.point(left, bottom);
+                    self.path(
+                        vec![
+                            PathCmd::MoveTo(a.0, a.1),
+                            PathCmd::LineTo(b.0, b.1),
+                            PathCmd::LineTo(c.0, c.1),
+                            PathCmd::LineTo(d.0, d.1),
+                            PathCmd::Close,
+                        ],
+                        Some(rgba),
+                        None,
+                        0.0,
+                    )?;
+                }
                 self.label(
                     label,
-                    m,
-                    (
-                        num("TxtPinX").unwrap_or(w / 2.0),
-                        num("TxtPinY").unwrap_or(h / 2.0),
-                    ),
-                    family_size.unwrap_or(1.0 / 6.0),
+                    text_matrix,
+                    LabelStyle {
+                        top: bottom + height - top_margin,
+                        bottom: bottom + bottom_margin,
+                        vertical_alignment: get("VerticalAlign").unwrap_or("1"),
+                        left: (left + left_margin) as f32 * 72.0,
+                        width: (txt_width.unwrap_or(w) - left_margin - right_margin).max(0.0)
+                            as f32
+                            * 72.0,
+                        wrap: txt_width.is_some(),
+                        alignment: value(paragraph, "HorzAlign").unwrap_or("1"),
+                        spacing: number(value(paragraph, "SpLine")).unwrap_or(-1.2),
+                        font_size: (number(value(character, "Size")).unwrap_or(1.0 / 6.0) * 72.0)
+                            .clamp(1.0, 400.0) as f32,
+                        family: value(character, "Font"),
+                        color: color(value(character, "Color"), [0, 0, 0, 255]),
+                        flags: value(character, "Style")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0),
+                    },
                 )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn draw_geometry(
+        &mut self,
+        mut commands: Vec<PathCmd>,
+        fill: Option<[u8; 4]>,
+        stroke: Option<[u8; 4]>,
+        weight: f32,
+        (dash, arrows): (bool, (bool, bool)),
+        rounding: f32,
+    ) -> Result<()> {
+        if !dash && !arrows.0 && !arrows.1 && rounding <= 0.0 {
+            return self.path(commands, fill, stroke, weight);
+        }
+        let points = straight_vertices(&commands);
+        if rounding > 0.0
+            && matches!(commands.last(), Some(PathCmd::Close))
+            && let Some(points) = &points
+            && points.len() >= 4
+        {
+            commands = rounded_polygon(&points[..points.len() - 1], rounding);
+        }
+        if dash && let (Some(points), Some(stroke)) = (&points, stroke) {
+            if fill.is_some() {
+                self.path(commands, fill, None, weight)?;
+            }
+            self.path(dashed_line(points, weight), None, Some(stroke), weight)?;
+        } else {
+            self.path(commands, fill, stroke, weight)?;
+        }
+        if let (Some(points), Some(stroke)) = (&points, stroke)
+            && points.len() >= 2
+            && points.first() != points.last()
+        {
+            let last = points.len() - 1;
+            for (enabled, tip, adjacent) in [
+                (arrows.0, points[0], points[1]),
+                (arrows.1, points[last], points[last - 1]),
+            ] {
+                if enabled {
+                    self.path(
+                        triangle_arrow(tip, adjacent, weight),
+                        Some(stroke),
+                        None,
+                        0.0,
+                    )?;
+                }
             }
         }
         Ok(())
@@ -483,13 +606,7 @@ impl Render<'_, '_> {
         Ok(())
     }
 
-    fn label(
-        &mut self,
-        node: Node<'_, '_>,
-        matrix: Matrix,
-        pin: (f64, f64),
-        inches: f64,
-    ) -> Result<()> {
+    fn label(&mut self, node: Node<'_, '_>, matrix: Matrix, style: LabelStyle<'_>) -> Result<()> {
         let text: String = node
             .descendants()
             .filter(Node::is_text)
@@ -502,44 +619,130 @@ impl Render<'_, '_> {
         if self.scene.text_index.chars.len().saturating_add(text.len()) > MAX_LABEL_CHARS {
             return Err(invalid());
         }
-        let font_size = (inches * 72.0).clamp(1.0, 400.0) as f32;
-        let (cx, cy) = matrix.point(pin.0, pin.1);
-        let line_count = text.lines().count() as f32;
-        for (index, line) in text.lines().enumerate() {
+        let font_size = style.font_size;
+        let lines = wrap_lines(text, style.wrap.then_some(style.width), font_size);
+        let distance = if style.spacing < 0.0 {
+            -style.spacing as f32 * font_size
+        } else {
+            style.spacing as f32 * 72.0
+        };
+        let line_count = lines.len() as f32;
+        let block_height = f64::from(font_size + (line_count - 1.0) * distance) / 72.0;
+        let center_y = match style.vertical_alignment {
+            "0" => style.top - block_height / 2.0,
+            "2" => style.bottom + block_height / 2.0,
+            _ => (style.top + style.bottom) / 2.0,
+        };
+        let angle = (-matrix.0[1]).atan2(matrix.0[0]) as f32;
+        for (index, line) in lines.into_iter().enumerate() {
             if line.is_empty() {
                 continue;
             }
-            let width = line.chars().map(estimated_advance_em).sum::<f32>() * font_size;
-            let origin = (
-                cx - width / 2.0,
-                cy + (index as f32 - (line_count - 1.0) / 2.0 + 0.33) * font_size * 1.2,
-            );
+            let visible = line.trim_end();
+            let width = text_width(visible, font_size);
+            let (anchor, fraction) = match style.alignment {
+                "0" => (TextAnchor::Start, 0.0),
+                "2" => (TextAnchor::End, 1.0),
+                _ => (TextAnchor::Center, 0.5),
+            };
+            let anchor_x = style.left + style.width * fraction;
+            let x = anchor_x - width * fraction;
+            let y = (index as f32 - (line_count - 1.0) / 2.0) * distance + font_size * 0.34;
+            let origin = matrix.point(f64::from(anchor_x) / 72.0, center_y - f64::from(y) / 72.0);
             let stream_op_index = self.scene.display_list.len();
-            self.scene.display_list.push(DisplayCmd::DrawGlyphRun {
-                text: line.into(),
-                origin,
-                font_size,
-                rgba: [0, 0, 0, 255],
-            });
-            let mut x = origin.0;
+            self.scene
+                .display_list
+                .push(DisplayCmd::DrawStyledGlyphRun {
+                    text: visible.into(),
+                    origin,
+                    font_size,
+                    family: style.family.unwrap_or_default().into(),
+                    weight: if style.flags & 1 != 0 { 700 } else { 400 },
+                    italic: style.flags & 2 != 0,
+                    angle,
+                    horizontal_scale: 1.0,
+                    anchor,
+                    max_width: (style.wrap && style.width > 0.0).then_some(style.width),
+                    rgba: style.color,
+                });
+            let mut cursor = x;
             for ch in line.chars() {
-                let x1 = x + estimated_advance_em(ch) * font_size;
+                let end = cursor + estimated_advance_em(ch) * font_size;
+                let pt = |x: f32, y: f32| {
+                    matrix.point(f64::from(x) / 72.0, center_y - f64::from(y) / 72.0)
+                };
+                let corners = [
+                    pt(cursor, y),
+                    pt(end, y),
+                    pt(cursor, y - font_size),
+                    pt(end, y - font_size),
+                ];
                 self.scene.text_index.chars.push(CharBox {
                     ch,
                     rect_pt: PdfRect {
-                        x0: x,
-                        y0: origin.1 - font_size,
-                        x1,
-                        y1: origin.1,
+                        x0: corners.iter().map(|p| p.0).fold(f32::INFINITY, f32::min),
+                        y0: corners.iter().map(|p| p.1).fold(f32::INFINITY, f32::min),
+                        x1: corners
+                            .iter()
+                            .map(|p| p.0)
+                            .fold(f32::NEG_INFINITY, f32::max),
+                        y1: corners
+                            .iter()
+                            .map(|p| p.1)
+                            .fold(f32::NEG_INFINITY, f32::max),
                     },
                     vertical: false,
                     stream_op_index,
                 });
-                x = x1;
+                cursor = end;
             }
         }
         Ok(())
     }
+}
+
+struct LabelStyle<'a> {
+    top: f64,
+    bottom: f64,
+    vertical_alignment: &'a str,
+    left: f32,
+    width: f32,
+    wrap: bool,
+    alignment: &'a str,
+    spacing: f64,
+    font_size: f32,
+    family: Option<&'a str>,
+    color: [u8; 4],
+    flags: u32,
+}
+
+fn text_width(text: &str, font_size: f32) -> f32 {
+    text.chars().map(estimated_advance_em).sum::<f32>() * font_size
+}
+
+fn wrap_lines(text: &str, width: Option<f32>, font_size: f32) -> Vec<&str> {
+    let Some(width) = width.filter(|&w| w > 0.0) else {
+        return text.lines().collect();
+    };
+    let mut lines = Vec::new();
+    for paragraph in text.lines() {
+        let mut start = 0;
+        let mut used = 0.0;
+        let mut used_bytes = 0;
+        for word in paragraph.split_inclusive(char::is_whitespace) {
+            let advance = text_width(word, font_size);
+            if used > 0.0 && used + text_width(word.trim_end(), font_size) > width {
+                lines.push(&paragraph[start..start + used_bytes]);
+                start += used_bytes;
+                used = 0.0;
+                used_bytes = 0;
+            }
+            used += advance;
+            used_bytes += word.len();
+        }
+        lines.push(&paragraph[start..]);
+    }
+    lines
 }
 
 fn color(value: Option<&str>, default: [u8; 4]) -> [u8; 4] {
@@ -598,6 +801,7 @@ fn geometry_path(
 ) -> Vec<PathCmd> {
     let mut out = Vec::new();
     let mut start = None;
+    let mut previous = None;
     for (base, local) in indexed_children(base, local, "Row", |_| true).into_values() {
         if local.or(base).and_then(|n| n.attribute("Del")) == Some("1") {
             continue;
@@ -615,11 +819,12 @@ fn geometry_path(
         let (Some(x), Some(y)) = (num("X", scales.0), num("Y", scales.1)) else {
             continue;
         };
-        let p = if relative {
-            m.point(x * size.0, y * size.1)
+        let end = if relative {
+            (x * size.0, y * size.1)
         } else {
-            m.point(x, y)
+            (x, y)
         };
+        let p = m.point(end.0, end.1);
         match kind {
             "MoveTo" | "RelMoveTo" => {
                 out.push(PathCmd::MoveTo(p.0, p.1));
@@ -627,6 +832,26 @@ fn geometry_path(
             }
             "LineTo" | "RelLineTo" if start.is_some() => {
                 out.push(PathCmd::LineTo(p.0, p.1));
+                if start == Some(p) {
+                    out.push(PathCmd::Close);
+                }
+            }
+            "EllipticalArcTo" if start.is_some() => {
+                let arc = previous.and_then(|from| {
+                    elliptical_arc(
+                        m,
+                        from,
+                        (num("A", scales.0)?, num("B", scales.1)?),
+                        end,
+                        num("C", 1.0)?,
+                        num("D", 1.0)?,
+                    )
+                });
+                if let Some(arc) = arc {
+                    out.extend(arc);
+                } else {
+                    out.push(PathCmd::LineTo(p.0, p.1));
+                }
                 if start == Some(p) {
                     out.push(PathCmd::Close);
                 }
@@ -657,6 +882,7 @@ fn geometry_path(
                 start = None;
             }
         }
+        previous = Some(end);
     }
     out
 }
