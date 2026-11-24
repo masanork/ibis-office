@@ -162,3 +162,31 @@ pub(super) fn imported_picture(
     shape.floating = Some(floating);
     FlowRunKind::Shape(Box::new(shape))
 }
+
+pub(crate) fn group_anchor() -> FloatingAnchor {
+    FloatingAnchor {
+        relative_h: "column".into(),
+        relative_v: "paragraph".into(),
+        wrap: "none".into(),
+        allow_overlap: true,
+        layout_in_cell: true,
+        relative_height: FloatingAnchor::DEFAULT_RELATIVE_HEIGHT,
+        ..Default::default()
+    }
+}
+
+pub(crate) fn offset_anchor(parent: &FloatingAnchor, x: i64, y: i64) -> FloatingAnchor {
+    let mut anchor = parent.clone();
+    anchor.offset_x = anchor.offset_x.saturating_add(x);
+    anchor.offset_y = anchor.offset_y.saturating_add(y);
+    anchor
+}
+
+pub(crate) fn shape_group(
+    children: Vec<ibis_doc_model::GroupMember>,
+) -> ibis_doc_model::ShapeGroup {
+    ibis_doc_model::ShapeGroup {
+        children,
+        ..ibis_doc_model::ShapeGroup::from_shape_ids("", "", &[])
+    }
+}

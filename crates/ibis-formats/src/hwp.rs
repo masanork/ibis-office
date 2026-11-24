@@ -9,10 +9,11 @@
 use std::collections::HashMap;
 
 use ibis_doc_model::{
-    Block, BorderStyle, CellAnchor, Emu, EmuSize, FloatingAnchor, FlowAlign, FlowBorder, FlowCell,
-    FlowDocument, FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowTable, LineHeight, ListLevel,
-    ListSuffix, MediaFormat, MediaId, Numbering, PageSetup, ParaFormat, PartKind, Presentation,
-    Rgb, RowHeight, RunFormat, SectionBreak, SectionSetup, VerticalMerge,
+    AutoShape, Block, BorderStyle, CellAnchor, Color, Emu, EmuRect, EmuSize, Fill, FloatingAnchor,
+    FlowAlign, FlowBorder, FlowCell, FlowDocument, FlowParagraph, FlowRow, FlowRun, FlowRunKind,
+    FlowTable, Geometry, GroupMember, LineDash, LineHeight, ListLevel, ListSuffix, MediaFormat,
+    MediaId, Numbering, PageSetup, ParaFormat, PartKind, Presentation, Rgb, RowHeight, RunFormat,
+    SectionBreak, SectionSetup, Shape, ShapeGroup, ShapeKind, Stroke, VerticalMerge,
 };
 
 use crate::{
@@ -34,6 +35,7 @@ const CONTROL: u16 = 71;
 const LIST: u16 = 72;
 const PAGE: u16 = 73;
 const TABLE: u16 = 77;
+const COMPONENT: u16 = 76;
 const PICTURE: u16 = 85;
 
 pub fn is_hwp(data: &[u8]) -> bool {
@@ -213,6 +215,7 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
         }
         document.body.extend(body);
     }
+    document.shape_groups = importer.shape_groups;
     std::sync::Arc::make_mut(&mut document.styles).numbering = importer.numbering;
     document.id_floor = importer.id;
     Ok(document)
@@ -269,6 +272,7 @@ struct Importer<'a> {
     media: HashMap<u16, MediaId>,
     remaining_media: usize,
     remaining_cells: usize,
+    shape_groups: Vec<ShapeGroup>,
 }
 
 impl<'a> Importer<'a> {
@@ -308,6 +312,7 @@ impl<'a> Importer<'a> {
             media: HashMap::new(),
             remaining_media: BODY_LIMIT,
             remaining_cells: 100_000,
+            shape_groups: Vec::new(),
         };
         for record in info {
             let bytes = record.bytes;
@@ -614,7 +619,7 @@ impl<'a> Importer<'a> {
                 if bytes.starts_with(b"onta") && dword(bytes, 4)? & 15 == 0 {
                     add_run(&mut paragraph, FlowRunKind::PageNumber, &run_format);
                 } else if bytes.starts_with(b" osg") {
-                    if let Some(kind) = self.picture(records, control)? {
+                    for kind in self.drawing(records, control)? {
                         add_run(&mut paragraph, kind, &run_format);
                     }
                 } else if records[control].bytes.starts_with(b" lbt") {
@@ -649,6 +654,138 @@ impl<'a> Importer<'a> {
             flush_paragraph(blocks, paragraph);
         }
         Ok(())
+    }
+
+    fn drawing(&mut self, records: &[Record<'_>], index: usize) -> Result<Vec<FlowRunKind>, Error> {
+        let control = records[index];
+        let mut runs = Vec::new();
+        if let Some(root) = records
+            .get(index + 1)
+            .filter(|r| index + 1 < control.end && r.tag == COMPONENT)
+        {
+            let anchor = picture_anchor(control.bytes)?.unwrap_or_default();
+            let size = EmuSize::new(dimension(control.bytes, 16)?, dimension(control.bytes, 20)?);
+            if let Some(GroupMember::Group(group)) =
+                self.component(records, index + 1, &anchor, Some(size), &mut runs, 0)
+            {
+                self.shape_groups.push(*group);
+            }
+            debug_assert!(root.end <= control.end);
+        }
+        if let Some(picture) = self.picture(records, index)? {
+            runs.push(picture);
+        }
+        Ok(runs)
+    }
+
+    fn component(
+        &mut self,
+        records: &[Record<'_>],
+        index: usize,
+        parent: &FloatingAnchor,
+        root_size: Option<EmuSize>,
+        runs: &mut Vec<FlowRunKind>,
+        depth: usize,
+    ) -> Option<GroupMember> {
+        if depth >= 32 {
+            return None;
+        }
+        let record = records[index];
+        let kind = record.bytes.get(..4)?;
+        let bytes = record
+            .bytes
+            .get(if root_size.is_some() { 8.. } else { 4.. })?;
+        let coord = |offset| dimension(bytes, offset).ok();
+        let mut anchor = parent.clone();
+        let size = if let Some(size) = root_size {
+            size
+        } else {
+            anchor = shared::offset_anchor(parent, coord(0)?, coord(4)?);
+            EmuSize::new(coord(20)?, coord(24)?)
+        };
+        if kind == b"noc$" {
+            if anchor.relative_h.is_empty() {
+                anchor = shared::group_anchor();
+            }
+            let mut members = Vec::new();
+            let mut child = index + 1;
+            while child < record.end {
+                let next = records[child];
+                if next.tag == COMPONENT
+                    && let Some(member) =
+                        self.component(records, child, &anchor, None, runs, depth + 1)
+                {
+                    members.push(member);
+                }
+                child = next.end;
+            }
+            return (!members.is_empty())
+                .then(|| GroupMember::Group(Box::new(shared::shape_group(members))));
+        }
+        let primitive_tag = match kind {
+            b"nil$" => 78,
+            b"cer$" => 79,
+            b"lle$" => 80,
+            _ => return None,
+        };
+        let primitive = records[index + 1..record.end]
+            .iter()
+            .find(|r| r.tag == primitive_tag && r.level == record.level + 1)?
+            .bytes;
+        if primitive_tag != 78 && (size.width <= 0 || size.height <= 0) {
+            return None;
+        }
+        let matrices = usize::from(word(bytes, 42).ok()?);
+        let style = bytes.get(92 + 96 * matrices..)?;
+        let line = dword(style, 8).ok()? & 63;
+        let stroke = (line != 0).then(|| {
+            let color = Color::opaque(rgb(dword(style, 0).unwrap_or(0)));
+            let width = word(style, 4).map_or(0, |n| units(i64::from(n as i16)).max(0));
+            let dash = match line {
+                2 | 5 | 6 => LineDash::Dash,
+                3 => LineDash::Dot,
+                4 => LineDash::DashDot,
+                _ => LineDash::Solid,
+            };
+            Stroke::solid(color, width).with_dash(dash)
+        });
+        let fill = if dword(style, 13).ok() == Some(1) && dword(style, 25).ok() == Some(u32::MAX) {
+            Fill::Solid(Color::opaque(rgb(dword(style, 17).ok()?)))
+        } else {
+            Fill::None
+        };
+        let mut reverse_h = false;
+        let mut reverse_v = false;
+        let shape_kind = match primitive_tag {
+            78 => {
+                reverse_h = dimension(primitive, 0).ok()? > dimension(primitive, 8).ok()?;
+                reverse_v = dimension(primitive, 4).ok()? > dimension(primitive, 12).ok()?;
+                ShapeKind::Line(stroke?)
+            }
+            79 => ShapeKind::Auto(AutoShape::new(Geometry::Rect, fill, stroke)),
+            80 => {
+                if dword(primitive, 0).ok()? & 2 != 0 {
+                    return None;
+                }
+                ShapeKind::Auto(AutoShape::new(Geometry::Ellipse, fill, stroke))
+            }
+            _ => unreachable!(),
+        };
+        let id = self.presentation.new_shape_id();
+        let mut shape = Shape::new(
+            id,
+            EmuRect::new(0, 0, size.width.max(1), size.height.max(1)),
+            shape_kind,
+        );
+        let flags = dword(bytes, 28).ok()?;
+        shape.flip_h = (flags & 1 != 0) ^ reverse_h;
+        shape.flip_v = (flags & 2 != 0) ^ reverse_v;
+        shape.rotation = i32::from(word(bytes, 32).ok()?).rem_euclid(360) * 60_000;
+        if root_size.is_none() || !parent.relative_h.is_empty() {
+            shape.floating = Some(anchor);
+        }
+        runs.push(FlowRunKind::Shape(Box::new(shape)));
+        Some(GroupMember::Shape(id))
     }
 
     fn picture(
@@ -1248,6 +1385,87 @@ mod tests {
                     .to_vec(),
             ),
         ])
+    }
+
+    #[test]
+    fn vector_group_survives_docx_roundtrip() {
+        let sample = sample(0);
+        let header = cfb::stream_path(&sample, "FileHeader").unwrap();
+        let mut body = Vec::new();
+        record(&mut body, PARA, 0, &[0; 24]);
+        record(&mut body, TEXT, 1, b"\x0b\0 osg\0\0\0\0\0\0\0\0\x0b\0\r\0");
+        let mut control = [0; 44];
+        control[..4].copy_from_slice(b" osg");
+        control[8..12].copy_from_slice(&900i32.to_le_bytes());
+        control[12..16].copy_from_slice(&1600i32.to_le_bytes());
+        control[16..20].copy_from_slice(&2000i32.to_le_bytes());
+        control[20..24].copy_from_slice(&1000i32.to_le_bytes());
+        record(&mut body, CONTROL, 1, &control);
+        let mut group = [0; 196];
+        group[..8].copy_from_slice(b"noc$noc$");
+        group[50] = 1;
+        record(&mut body, COMPONENT, 2, &group);
+        for (kind, tag, x, primitive) in [
+            (b"cer$", 79, 0i32, vec![0; 33]),
+            (b"lle$", 80, 700, vec![0; 60]),
+            (b"nil$", 78, 1300, {
+                let mut line = vec![0; 20];
+                line[..4].copy_from_slice(&500i32.to_le_bytes());
+                line[12..16].copy_from_slice(&500i32.to_le_bytes());
+                line
+            }),
+        ] {
+            let mut component = vec![0; 4 + 92 + 96 + 33];
+            component[..4].copy_from_slice(kind);
+            component[4..8].copy_from_slice(&x.to_le_bytes());
+            component[24..28].copy_from_slice(&500i32.to_le_bytes());
+            component[28..32].copy_from_slice(&500i32.to_le_bytes());
+            component[46] = 1;
+            let style = &mut component[192..];
+            style[4] = 33;
+            style[8] = 0x41;
+            style[13] = 1;
+            style[17..20].copy_from_slice(&[0x66, 0xcc, 0xff]);
+            style[25..29].fill(0xff);
+            record(&mut body, COMPONENT, 3, &component);
+            record(&mut body, tag, 4, &primitive);
+        }
+        let data = cfb::write(&[
+            Item::stream("FileHeader", header),
+            Item::stream("DocInfo", Vec::new()),
+            Item::storage("BodyText"),
+            Item::stream("BodyText/Section0", body),
+        ]);
+        let flow = open(&data).unwrap().presentation.flow.unwrap();
+        let Block::Paragraph(paragraph) = &flow.body[0] else {
+            panic!("paragraph")
+        };
+        let shapes: Vec<_> = paragraph
+            .runs
+            .iter()
+            .filter_map(|run| match &run.kind {
+                FlowRunKind::Shape(shape) => Some(shape),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shapes.len(), 3);
+        assert_eq!(
+            flow.shape_groups[0].leaf_shape_ids(),
+            shapes.iter().map(|s| s.id).collect::<Vec<_>>()
+        );
+        for (shape, expected, dx) in [
+            (&shapes[0], Geometry::Rect, 0),
+            (&shapes[1], Geometry::Ellipse, 700),
+        ] {
+            let ShapeKind::Auto(auto) = &shape.kind else {
+                panic!("vector shape")
+            };
+            assert_eq!(auto.geometry, expected);
+            assert_eq!(auto.fill, Fill::Solid(Color::opaque(Rgb(0x66_cc_ff))));
+            assert_eq!(shape.floating.as_ref().unwrap().offset_x, units(1600 + dx));
+        }
+        assert!(matches!(shapes[2].kind, ShapeKind::Line(_)));
+        assert!(shapes[2].flip_h);
     }
 
     #[test]

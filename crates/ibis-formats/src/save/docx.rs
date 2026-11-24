@@ -4464,7 +4464,7 @@ impl Writer<'_> {
             format!("グループ {group_id}") // i18n-ok（文書に保存する名前。ibis-formats は表を持たない）
         };
 
-        let mut children_xml = String::new();
+        let mut leaves = std::collections::HashMap::new();
         for s in shapes {
             let child_id = if s.id.0 > 0 && !used_ids.contains(&s.id.0) {
                 s.id.0
@@ -4475,8 +4475,50 @@ impl Writer<'_> {
             let (sx, sy) = pos_of(s);
             let off_x = sx - min_x;
             let off_y = sy - min_y;
-            children_xml.push_str(&self.wsp_xml(s, shape_body(s), child_id, off_x, off_y, true));
+            leaves.insert(s.id, self.wsp_xml(s, shape_body(s), child_id, off_x, off_y, true));
         }
+
+        // Imported leaves are already in document coordinates. The nested
+        // groups use identity transforms in the outer group's coordinate space.
+        fn members_xml(
+            group: &ibis_doc_model::ShapeGroup,
+            leaves: &std::collections::HashMap<ibis_doc_model::ShapeId, String>,
+            cx: i64,
+            cy: i64,
+            used_ids: &mut std::collections::HashSet<u64>,
+            out: &mut String,
+        ) {
+            for member in &group.children {
+                match member {
+                    ibis_doc_model::GroupMember::Shape(id) => {
+                        if let Some(xml) = leaves.get(id) {
+                            out.push_str(xml);
+                        }
+                    }
+                    ibis_doc_model::GroupMember::Group(group) => {
+                        use std::fmt::Write as _;
+                        let mut children = String::new();
+                        members_xml(group, leaves, cx, cy, used_ids, &mut children);
+                        if !children.is_empty() {
+                            let id = group.native_id.parse::<u64>().ok()
+                                .filter(|id| *id > 0 && !used_ids.contains(id))
+                                .unwrap_or_else(|| used_ids.iter().max().copied().unwrap_or(0) + 1);
+                            used_ids.insert(id);
+                            let name = group.name.replace('&', "&amp;").replace('<', "&lt;")
+                                .replace('>', "&gt;").replace('"', "&quot;");
+                            let _ = write!(out, concat!(
+                                r#"<wpg:grpSp><wpg:cNvPr id="{0}" name="{1}"/><wpg:cNvGrpSpPr/>"#,
+                                r#"<wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{2}" cy="{3}"/>"#,
+                                r#"<a:chOff x="0" y="0"/><a:chExt cx="{2}" cy="{3}"/></a:xfrm></wpg:grpSpPr>"#,
+                                "{4}</wpg:grpSp>"
+                            ), id, name, cx, cy, children);
+                        }
+                    }
+                }
+            }
+        }
+        let mut children_xml = String::new();
+        members_xml(group, &leaves, group_cx, group_cy, &mut used_ids, &mut children_xml);
 
         let xml = format!(
             concat!(
