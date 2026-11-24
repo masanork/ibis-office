@@ -124,4 +124,3 @@ jobs:
             target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak.sha256
             target/dist/flatpak-*.*.cdx.json
             target/dist/SHA256SUMS
-
