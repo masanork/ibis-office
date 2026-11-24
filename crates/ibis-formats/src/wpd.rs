@@ -12,7 +12,9 @@ use ibis_doc_model::flow::{
 use crate::{Error, Opened};
 
 mod appearance;
+mod picture;
 mod table;
+mod wpg;
 
 use appearance::Packets;
 
@@ -33,14 +35,17 @@ pub fn open(data: &[u8]) -> Result<Opened, Error> {
 }
 
 pub fn to_docx(data: &[u8]) -> Result<Vec<u8>, Error> {
-    crate::hwpx::document_to_docx(|_| read(data))
+    crate::hwpx::document_to_docx(|presentation| read(data, presentation))
 }
 
 fn malformed() -> Error {
     Error::new("WordPerfect の文書データが不正です")
 }
 
-fn read(data: &[u8]) -> Result<FlowDocument, Error> {
+fn read(
+    data: &[u8],
+    presentation: &mut ibis_doc_model::Presentation,
+) -> Result<FlowDocument, Error> {
     if !is_wpd(data) {
         return Err(malformed());
     }
@@ -78,7 +83,7 @@ fn read(data: &[u8]) -> Result<FlowDocument, Error> {
                 _ => {}
             }
         } else if deleted_depth == 0 {
-            importer.record(code, record)?;
+            importer.record(code, record, presentation)?;
         }
     }
     if deleted_depth != 0 || importer.table.is_some() {
@@ -121,6 +126,7 @@ fn next_id(ids: &mut u32) -> u32 {
 #[derive(Default)]
 struct Importer<'a> {
     packets: Packets<'a>,
+    pictures: picture::Pictures,
     document: FlowDocument,
     paragraph: FlowParagraph,
     text: String,
@@ -131,7 +137,12 @@ struct Importer<'a> {
 }
 
 impl Importer<'_> {
-    fn record(&mut self, code: u8, record: &[u8]) -> Result<(), Error> {
+    fn record(
+        &mut self,
+        code: u8,
+        record: &[u8],
+        presentation: &mut ibis_doc_model::Presentation,
+    ) -> Result<(), Error> {
         if code == 0xd4 && record[4] & 0x40 == 0 {
             match record[1] {
                 0x2a => {
@@ -190,6 +201,13 @@ impl Importer<'_> {
             }
         }
 
+        if code == 0xdf && record[1] <= 2 && record[4] & 0x40 == 0 {
+            let id = ibis_doc_model::ShapeId(u64::from(next_id(&mut self.ids)));
+            if let Some(image) = self.pictures.read(record, self.packets, presentation, id) {
+                self.push_run(image);
+            }
+            return Ok(());
+        }
         match code {
             0x01..=0x20 => self.text.push(INTERNATIONAL[usize::from(code - 1)].1),
             0x21..=0x7e => self.text.push(char::from(code)),
@@ -355,6 +373,9 @@ fn extended_character(character: u8, set: u8) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn read(data: &[u8]) -> Result<FlowDocument, Error> {
+        super::read(data, &mut ibis_doc_model::Presentation::default())
+    }
     use ibis_doc_model::flow::FlowRunStyle;
 
     fn fixture(body: &[u8]) -> Vec<u8> {
@@ -559,6 +580,72 @@ mod tests {
             assert_eq!((border.width * 8 + 6350) / 12700, eighth_points);
         }
         assert_eq!(continuation.own_borders[0], Some(None));
+    }
+
+    #[test]
+    fn saves_inline_and_floating_wp6_pictures_in_docx() {
+        use ibis_doc_model::{EmuSize, MediaFormat, ShapeKind};
+
+        let data = include_bytes!("../../../test/fixtures/wordperfect/images.wpd");
+        let opened = open(data).unwrap();
+        let flow = opened.presentation.flow.as_ref().unwrap();
+        let [
+            Block::Paragraph(inline),
+            Block::Paragraph(floating),
+            Block::Paragraph(_),
+        ] = flow.body.as_slice()
+        else {
+            panic!("expected two image-bearing paragraphs");
+        };
+        let (media, size) = inline
+            .runs
+            .iter()
+            .find_map(|run| match run.kind {
+                FlowRunKind::Picture { media, size, .. } => Some((media, size)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(size, EmuSize::new(1_371_600, 1_028_700));
+        let floating = floating
+            .runs
+            .iter()
+            .find_map(|run| match &run.kind {
+                FlowRunKind::Shape(shape) => Some(shape),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            EmuSize::new(floating.frame.width, floating.frame.height),
+            EmuSize::new(1_828_800, 1_371_600)
+        );
+        assert!(matches!(&floating.kind, ShapeKind::Picture(_)));
+        let anchor = floating.floating.as_ref().unwrap();
+        assert_eq!(
+            (anchor.relative_h.as_str(), anchor.offset_x),
+            ("page", 2_514_600)
+        );
+        assert_eq!(
+            (anchor.relative_v.as_str(), anchor.offset_y),
+            ("paragraph", 266_700)
+        );
+
+        let picture = opened
+            .presentation
+            .media
+            .iter()
+            .find(|picture| picture.id == media)
+            .unwrap();
+        assert_eq!(picture.format, MediaFormat::Png);
+        let bitmap = image::load_from_memory(&picture.data).unwrap().to_rgba8();
+        assert_eq!(bitmap.dimensions(), (8, 6));
+        for (x, y, expected) in [
+            (0, 0, [220, 30, 50, 255]),
+            (7, 0, [40, 180, 60, 255]),
+            (0, 5, [35, 70, 210, 255]),
+            (7, 5, [244, 195, 30, 255]),
+        ] {
+            assert_eq!(bitmap.get_pixel(x, y).0, expected);
+        }
     }
 
     #[test]

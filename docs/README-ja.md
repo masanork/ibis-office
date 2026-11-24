@@ -201,7 +201,7 @@ cargo build --release
 
   デスクトップ版とブラウザー版では `.jtd`・`.jtt` と一部の圧縮 `.jttc` も実験的な読み取り専用プレビューとして開けます。画像主体の文書など、開けない場合があります。認識できた内容は別の DOCX に書き出せます。詳細は [一太郎プレビュー](docs/jtd-preview.md) を参照してください。
   韓国 Hancom の HWP 5.0 と HWPX は、[Word 文書として取り込めます](hangul-import.md)。
-  WordPerfect 6 系の `.wpd`・`.wp6` は、本文・段落・明示的な改ページ・基本的な文字書式と、行・列、結合セル、罫線とセルの背景色を含む表を編集可能な Word 文書として取り込み、別名で DOCX に保存できます。一部の拡張文字は置換され、表の数式や複雑な罫線パターン、画像、ヘッダー・フッター、用紙設定は引き継がれません。暗号化と OLE ラッパーには未対応です。
+  WordPerfect 6 系の `.wpd`・`.wp6` は、本文・段落・明示的な改ページ・基本的な文字書式と、行・列、結合セル、罫線とセルの背景色を含む表を編集可能な Word 文書として取り込み、別名で DOCX に保存できます。一部の拡張文字は置換され、表の数式や複雑な罫線パターン、ヘッダー・フッター、用紙設定は引き継がれません。埋め込みのPNGやJPEGなどの画像と、対応するWPG 1・2のビットマップを取り込めます。WPGのベクター図形や複合描画、外部リンク画像には未対応です。暗号化と OLE ラッパーには未対応です。
 
   ビルドには Python 3 が必要です。Wasm は20 MiB以下のハッシュ付きファイルに分割され、ブラウザで検証・結合されます。HTTPS または localhost で配信してください。Cloudflare Workers Static Assets で配信する場合は `python3 scripts/check-web-assets.py` と `npx wrangler deploy --dry-run` で確認し、`wrangler.jsonc` の Worker 名とアカウントを確認してから `npx wrangler deploy` を実行してください。配信対象はエディターで、playground は含みません。
 
