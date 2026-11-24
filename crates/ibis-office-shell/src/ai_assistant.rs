@@ -94,6 +94,32 @@ enum AiDocKind {
     Docx,
 }
 
+#[cfg(not(target_family = "wasm"))]
+fn document_tool_definitions(kind: AiDocKind) -> Vec<ToolDefinition> {
+    match kind {
+        AiDocKind::Xlsx => spreadsheet_tool_definitions(),
+        AiDocKind::Pptx => pptx_tool_definitions(),
+        AiDocKind::Docx => docx_tool_definitions(),
+    }
+}
+
+/// Document tools supported through the live Assistant, including preparation
+/// of new unsaved Markdown drafts. Credential signing has its own UI boundary.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn acp_editor_tool_access(name: &str) -> Option<ibis_doc_service::Access> {
+    use ibis_doc_service::Access::{Edit, Read};
+    match name {
+        "select_range" | "switch_sheet" | "select_slide" | "audit_formulas" |
+        "inspect_vc_bindings" | "infer_vc_schema" | "parse_vc_token" |
+        "export_active_lawtext" | "generate_lawtext_5set" | "verify_lawtext_aratame" |
+        "lint_lawtext" | "search_egov_law" | "fetch_egov_law" => Some(Read),
+        "insert_rows_or_cols" | "delete_rows_or_cols" | "merge_cells" |
+        "set_axis_size" | "set_cell_comment" | "apply_vc_template" | "bind_vc_claim" |
+        "duplicate_slide" | "insert_text_box" | "set_shape_fill" | "open_markdown_document" => Some(Edit),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UiMessageKind {
     User,
@@ -1069,7 +1095,7 @@ impl SlideEditor {
         match harness {
             Some("acp") => {
                 let skill = skill.map(|name| self.load_assistant_skill(name)).transpose()?;
-                self.submit_acp_prompt(prompt.to_owned(), run_id, skill, cx)?;
+                self.submit_acp_prompt(prompt.to_owned(), run_id, skill, None, cx)?;
             }
             None | Some("builtin") => {
                 let skill = skill.map(|name| self.load_assistant_skill(name)).transpose()?;
@@ -2014,7 +2040,7 @@ impl SlideEditor {
         let Some(panel) = self.ai_assistant.as_ref() else { return };
         let user = panel.prompt_input.read(cx).value().trim().to_owned();
         let skill = panel.selected_skill.clone();
-        match self.submit_acp_prompt(user, ibis_mcp::assistant_endpoint::next_run_id(), skill, cx) {
+        match self.submit_acp_prompt(user, ibis_mcp::assistant_endpoint::next_run_id(), skill, None, cx) {
             Ok(()) => {
                 if let Some(panel) = self.ai_assistant.as_mut() {
                     panel.selected_skill = None;
@@ -2033,10 +2059,11 @@ impl SlideEditor {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn submit_acp_prompt(
         &mut self, user: String, run_id: u64, skill: Option<ibis_formats::agent_skill::Skill>,
-        cx: &mut Context<Self>,
+        formula_messages: Option<Vec<ChatMessage>>, cx: &mut Context<Self>,
     ) -> Result<(), String> {
         self.check_assistant_connection_document()?;
-        if user.is_empty() || user.len() > 8192 {
+        let formula_only = formula_messages.is_some();
+        if user.is_empty() || (!formula_only && user.len() > 8192) {
             return Err("ACP requires a prompt of 1 to 8192 bytes.".into());
         }
         let mut turn = self.assistant_turn();
@@ -2045,6 +2072,18 @@ impl SlideEditor {
         let mut tools = crate::ai_assistant_acp::document_schema(kind, read_only);
         if tools.is_empty() {
             return Err("ACP supports DOCX, XLSX and PPTX document drafts.".into());
+        }
+        let editor_kind = self.ai_doc_kind();
+        let mut editor_tools = std::collections::BTreeMap::new();
+        for definition in document_tool_definitions(editor_kind) {
+            let function = definition.function;
+            let Some(access) = acp_editor_tool_access(function.name) else { continue };
+            let readable = access == ibis_doc_service::Access::Read;
+            editor_tools.insert(function.name, access);
+            if !read_only || readable {
+                tools.push(json!({"name":function.name,"description":function.description,
+                    "inputSchema":function.parameters,"annotations":{"readOnlyHint":readable}}));
+            }
         }
         tools.push(json!({"name":"document_context","description":"Read the active document type, visible sheet or slide, and the selected A1 range if present.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true}}));
         let editable_sources: Vec<_> = [EditableSourceKind::Markdown, EditableSourceKind::Mermaid].into_iter()
@@ -2096,24 +2135,40 @@ impl SlideEditor {
             workspace_context: self.folder_pane.as_ref().map(|pane| (pane.use_agent_instructions, pane.use_agent_memory)),
             analysis_sources: analysis_sources.clone(),
         };
-        if panel.acp_session.as_ref().is_none_or(|(previous, _)| *previous != scope) {
+        let isolated_conversation = if let Some(messages) = formula_messages {
+            // The dedicated command sees only the selected formula, even after
+            // a conversation that had full document access.
+            prompt = messages.into_iter().filter_map(|message| message.content).collect::<Vec<_>>().join("\n\n");
+            tools.clear();
+            Some(crate::ai_assistant_acp::Conversation::start()?)
+        } else {
+            None
+        };
+        if !formula_only && panel.acp_session.as_ref().is_none_or(|(previous, _)| *previous != scope) {
             panel.acp_session = None;
             panel.acp_session = Some((scope.clone(), crate::ai_assistant_acp::Conversation::start()?));
         }
         let cancel = crate::ai_assistant_acp::Cancellation::default();
         let flag = cancel.flag();
         let display_prompt = user.clone();
-        let (_, conversation) = panel.acp_session.as_ref().expect("ACP conversation exists");
+        let mut law_baseline = (editor_kind == AiDocKind::Docx).then(|| panel.pending_old_lawtext.clone()).flatten();
+        let conversation = isolated_conversation.as_ref()
+            .or_else(|| panel.acp_session.as_ref().map(|(_, conversation)| conversation))
+            .expect("ACP conversation exists");
         let (deltas, mut updates) = futures::channel::mpsc::unbounded();
         let outcome = conversation.submit(json!(tools), move |session| {
             let mut commands = Vec::new();
             let mut labels = Vec::new();
             let mut edits = 0;
             let mut evidence = std::collections::BTreeSet::new();
+            let mut new_documents = Vec::new();
             let mut tool_calls = 0;
             let result = session.prompt(&prompt, flag, |chunk| {
                 if !chunk.is_empty() { let _ = deltas.unbounded_send(chunk.to_owned()); }
             }, |name, args| {
+                if formula_only {
+                    return Err("Document tools are unavailable for dedicated formula explanations.".into());
+                }
                 tool_calls += 1;
                 if tool_calls > 64 {
                     return Err("The ACP turn has reached its 64-tool limit.".into());
@@ -2122,10 +2177,7 @@ impl SlideEditor {
                     if !args.as_object().is_some_and(|args| args.is_empty()) {
                         return Err("document_context accepts no arguments".into());
                     }
-                    let slide = turn.base.slides.iter().position(|slide| slide.id == turn.active);
-                    return Ok(json!({"kind":format!("{kind:?}"),"active_index":slide,
-                        "active_name":turn.base.slide(turn.active).and_then(|slide| slide.name.as_ref()),
-                        "selection":turn.selection.as_ref().map(format_range)}));
+                    return Ok(Self::assistant_document_context(&turn));
                 }
                 let call = ToolCall {
                     id: name.into(), kind: "function".into(),
@@ -2179,18 +2231,35 @@ impl SlideEditor {
                     }
                     return Ok(value);
                 }
-                let tool = ibis_doc_service::document_tools(kind).find(|tool| tool.name == name)
+                let catalog_tool = ibis_doc_service::document_tools(kind).find(|tool| tool.name == name);
+                let access = catalog_tool.map(|tool| tool.access).or_else(|| editor_tools.get(name).copied())
                     .ok_or("Unsupported document tool")?;
-                if tool.access == ibis_doc_service::Access::Edit && (read_only || edits >= 16) {
+                if access == ibis_doc_service::Access::Edit && (read_only || edits >= 16) {
                     return Err("The document is read-only or the ACP draft has reached its 16-edit limit.".into());
                 }
-                let (value, staged, label) = Self::stage_catalog_tool(kind, &call, &mut turn);
+                if name == "open_markdown_document" {
+                    if new_documents.len() >= 4 {
+                        return Err("The ACP turn has reached its four-document limit.".into());
+                    }
+                    let (title, opened) = Self::prepare_assistant_markdown(&call.function.arguments)?;
+                    let result = json!({"prepared":true,"title":title});
+                    new_documents.push((title, opened));
+                    edits += 1;
+                    return Ok(result);
+                }
+                if name == "search_egov_law" {
+                    let arguments = serde_json::from_value(args).map_err(|error| error.to_string())?;
+                    let value = crate::ai_client::search_egov_law(arguments)?;
+                    if evidence.len() < 8 { evidence.insert("Evidence: search_egov_law".into()); }
+                    return Ok(value);
+                }
+                let (value, staged, label) = Self::stage_document_tool(editor_kind, kind, &call, &mut turn, &mut law_baseline);
                 let value: serde_json::Value = serde_json::from_str(&value).map_err(|error| error.to_string())?;
                 if let Some(error) = value["error"].as_str() { return Err(error.to_owned()); }
                 if !staged.is_empty() {
                     edits += 1;
                     labels.push(label);
-                } else if tool.returns_content && evidence.len() < 8 {
+                } else if catalog_tool.is_some_and(|tool| tool.returns_content) && evidence.len() < 8 {
                     evidence.insert(format!("Evidence: {label}"));
                 }
                 commands.extend(staged);
@@ -2200,7 +2269,13 @@ impl SlideEditor {
             if tool_calls > 64 {
                 return Err(crate::i18n::text("ai.tool-round-limit").to_string());
             }
-            result.map(|text| (text, turn, commands, labels))
+            let result = result.and_then(|text| {
+                if formula_only && text.trim().is_empty() {
+                    return Err(crate::i18n::text("xlsx.ai-explain-formula-incomplete").to_string());
+                }
+                Ok(text)
+            });
+            result.map(|text| (text, turn, commands, labels, law_baseline, new_documents))
         });
         let outcome = match outcome {
             Ok(outcome) => outcome,
@@ -2233,9 +2308,9 @@ impl SlideEditor {
                     && scope.file_id == editor.file_id && scope.path == editor.file_path()
                     && scope.kind == ibis_formats::Kind::of(editor.presentation()) && scope.read_only == editor.is_read_only()
                     && scope.workspace_context == editor.folder_pane.as_ref().map(|pane| (pane.use_agent_instructions, pane.use_agent_memory));
-                let result = result.and_then(|(text, turn, commands, labels)| {
+                let result = result.and_then(|(text, turn, commands, labels, law_baseline, new_documents)| {
                     if valid_scope && turn.matches_target(editor.file_id, editor.file_path().as_deref(), editor.presentation()) {
-                        Ok((text, turn, commands, labels))
+                        Ok((text, turn, commands, labels, law_baseline, new_documents))
                     } else {
                         Err("The document changed during the ACP turn.".into())
                     }
@@ -2244,8 +2319,17 @@ impl SlideEditor {
                 panel.acp_cancel = None;
                 panel.streaming = false;
                 panel.streaming_text.clear();
+                let mut navigation = None;
+                let mut prepared_documents = Vec::new();
                 let event = match result {
-                    Ok((text, turn, commands, labels)) => {
+                    Ok((text, turn, commands, labels, law_baseline, new_documents)) => {
+                        prepared_documents = new_documents;
+                        if !formula_only && editor_kind == AiDocKind::Docx {
+                            panel.pending_old_lawtext = law_baseline;
+                        }
+                        if !AssistantReview::has_changes(&turn, &commands) && turn.navigate {
+                            navigation = Some((turn.active, turn.selection));
+                        }
                         if !text.trim().is_empty() {
                             panel.messages.push(UiMessage::new(UiMessageKind::Assistant, text.clone()));
                         }
@@ -2256,12 +2340,18 @@ impl SlideEditor {
                         }
                     }
                     Err(error) => {
-                        panel.acp_session = None;
+                        if !formula_only { panel.acp_session = None; }
                         panel.messages.push(UiMessage::new(UiMessageKind::Error, error.clone()));
                         json!({"event":"error","run_id":run_id,"message":error})
                     }
                 };
                 panel.scroll_handle.scroll_to_bottom();
+                if let Some((active, selection)) = navigation {
+                    editor.apply_assistant_navigation(active, selection, cx);
+                }
+                for (title, opened) in prepared_documents {
+                    Self::open_prepared_assistant_markdown(title, opened, cx);
+                }
                 editor.emit_assistant_event(event);
                 cx.notify();
             });
@@ -2308,6 +2398,23 @@ impl SlideEditor {
         let messages = formula_explanation_messages(sheet, cell, formula);
         self.open_ai_assistant_panel(window, cx);
         self.submit_desktop_assistant(prompt, Some(messages), None, None, cx);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn explain_spreadsheet_formula_with_acp(
+        &mut self, sheet: &str, cell: &str, formula: &str, window: &mut Window, cx: &mut Context<Self>,
+    ) {
+        if !self.assistant_accepts_formula_explanation() { return; }
+        let title = crate::i18n::text("xlsx.ai-explain-formula");
+        let prompt = format!("{title} · {sheet}!{cell}\n{formula}");
+        let messages = formula_explanation_messages(sheet, cell, formula);
+        self.open_ai_assistant_panel(window, cx);
+        if let Err(error) = self.submit_acp_prompt(prompt, ibis_mcp::assistant_endpoint::next_run_id(), None, Some(messages), cx)
+            && let Some(panel) = self.ai_assistant.as_mut()
+        {
+            panel.messages.push(UiMessage::new(UiMessageKind::Error, error));
+            cx.notify();
+        }
     }
 
     fn submit_ai_assistant_text(&mut self, prompt: String, cx: &mut Context<Self>) {
@@ -2468,11 +2575,7 @@ impl SlideEditor {
         let tools: Vec<ToolDefinition> = if formula_only {
             Vec::new()
         } else {
-            match kind {
-                AiDocKind::Xlsx => spreadsheet_tool_definitions(),
-                AiDocKind::Pptx => pptx_tool_definitions(),
-                AiDocKind::Docx => docx_tool_definitions(),
-            }
+            document_tool_definitions(kind)
         };
 
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -2863,14 +2966,19 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     fn finish_assistant_navigation(&mut self, turn: &AssistantTurn, cx: &mut Context<Self>) {
         if self.file_id == turn.file_id && turn.navigate && self.presentation().slide(turn.active).is_some() {
-            if let Some(range) = turn.selection {
-                with_format!(self, set_ai_sheet_selection(self, turn.active, range));
-            } else {
-                self.current_slide = turn.active;
-                self.selection = None;
-            }
-            cx.notify();
+            self.apply_assistant_navigation(turn.active, turn.selection, cx);
         }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn apply_assistant_navigation(&mut self, active: SlideId, selection: Option<CellRange>, cx: &mut Context<Self>) {
+        if let Some(range) = selection {
+            with_format!(self, set_ai_sheet_selection(self, active, range));
+        } else {
+            self.current_slide = active;
+            self.selection = None;
+        }
+        cx.notify();
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -3556,9 +3664,6 @@ impl SlideEditor {
             let error = "review the proposed source edit before using other document tools";
             return (json!({ "error": error }).to_string(), Vec::new(), format!("✗ {name}: {error}"));
         }
-        if ibis_doc_service::document_tools(format).any(|tool| tool.name == name) {
-            return Self::stage_catalog_tool(format, call, turn);
-        }
         if matches!(kind, AiDocKind::Docx | AiDocKind::Pptx)
             && matches!(name, "read_editable_source" | "replace_source_text")
         {
@@ -3573,10 +3678,34 @@ impl SlideEditor {
                 Err(error) => (json!({ "error": error }).to_string(), Vec::new(), format!("✗ {name}: {error}")),
             };
         }
+        if kind == AiDocKind::Docx && name == "open_markdown_document" {
+            return match Self::prepare_assistant_markdown(args) {
+                Ok((title, opened)) => {
+                    Self::open_prepared_assistant_markdown(title.clone(), opened, cx);
+                    (json!({"opened":true,"title":title}).to_string(), Vec::new(), format!("✓ open_markdown_document ({title})"))
+                }
+                Err(error) => (json!({"error":error}).to_string(), Vec::new(), format!("✗ open_markdown_document: {error}")),
+            };
+        }
+        let mut fallback = None;
+        let law_baseline = self.ai_assistant.as_mut()
+            .map_or(&mut fallback, |panel| &mut panel.pending_old_lawtext);
+        Self::stage_document_tool(kind, format, call, turn, law_baseline)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn stage_document_tool(
+        kind: AiDocKind, format: ibis_formats::Kind, call: &ToolCall, turn: &mut AssistantTurn,
+        law_baseline: &mut Option<(String, String)>,
+    ) -> (String, Vec<Command>, String) {
+        let name = call.function.name.as_str();
+        if ibis_doc_service::document_tools(format).any(|tool| tool.name == name) {
+            return Self::stage_catalog_tool(format, call, turn);
+        }
         let (result, command, label) = match kind {
             AiDocKind::Xlsx => Self::execute_xlsx_tool(call, turn),
             AiDocKind::Pptx => Self::execute_pptx_tool(call, turn),
-            AiDocKind::Docx => self.execute_docx_tool(call, turn, cx),
+            AiDocKind::Docx => Self::execute_law_tool(call, turn, law_baseline),
         };
         let commands: Vec<_> = command.into_iter().collect();
         if !commands.is_empty()
@@ -3708,6 +3837,16 @@ impl SlideEditor {
         Ok(json!({ "ok": true, "changed": changed, "staged": turn.source_edit.is_some() }))
     }
 
+    fn assistant_document_context(turn: &AssistantTurn) -> serde_json::Value {
+        let presentation = turn.draft.presentation();
+        json!({
+            "kind": format!("{:?}", ibis_formats::Kind::of(presentation)),
+            "active_index": presentation.slide_index(turn.active),
+            "active_name": presentation.slide(turn.active).and_then(|slide| slide.name.as_ref()),
+            "selection": turn.selection.as_ref().map(format_range),
+        })
+    }
+
     fn execute_xlsx_tool(
         call: &ToolCall,
         turn: &mut AssistantTurn,
@@ -3716,9 +3855,8 @@ impl SlideEditor {
         let args = call.function.arguments.as_str();
         match name {
             "get_workbook_context" => {
-                let sheet = turn.draft.presentation().slide(turn.active).and_then(|slide| slide.name.as_deref());
-                let selection = turn.selection.as_ref().map(format_range);
-                (json!({ "active_sheet": sheet, "selection": selection }).to_string(), None, "✓ get_workbook_context".into())
+                let context = Self::assistant_document_context(turn);
+                (json!({ "active_sheet": context["active_name"], "selection": context["selection"] }).to_string(), None, "✓ get_workbook_context".into())
             }
             "select_range" => {
                 let slide = match Self::resolve_ai_target_slide(turn, args) {
@@ -4713,11 +4851,10 @@ impl SlideEditor {
         }
     }
 
-    fn execute_docx_tool(
-        &mut self,
+    fn execute_law_tool(
         call: &ToolCall,
         turn: &AssistantTurn,
-        cx: &mut Context<Self>,
+        baseline: &mut Option<(String, String)>,
     ) -> (String, Option<Command>, String) {
         let name = call.function.name.as_str();
         let args = call.function.arguments.as_str();
@@ -4762,10 +4899,7 @@ impl SlideEditor {
                             .as_deref()
                             .filter(|s| !s.trim().is_empty())
                             .or_else(|| {
-                                self.ai_assistant
-                                    .as_ref()
-                                    .and_then(|p| p.pending_old_lawtext.as_ref())
-                                    .map(|(_, s)| s.as_str())
+                                baseline.as_ref().map(|(_, s)| s.as_str())
                             });
                         let Some(old_str) = old_src else {
                             return (
@@ -4825,10 +4959,7 @@ impl SlideEditor {
                             .as_deref()
                             .filter(|s| !s.trim().is_empty())
                             .or_else(|| {
-                                self.ai_assistant
-                                    .as_ref()
-                                    .and_then(|p| p.pending_old_lawtext.as_ref())
-                                    .map(|(_, s)| s.as_str())
+                                baseline.as_ref().map(|(_, s)| s.as_str())
                             });
                         let Some(old_str) = old_src else {
                             return (
@@ -4884,10 +5015,7 @@ impl SlideEditor {
                             .as_deref()
                             .filter(|s| !s.trim().is_empty())
                             .or_else(|| {
-                                self.ai_assistant
-                                    .as_ref()
-                                    .and_then(|p| p.pending_old_lawtext.as_ref())
-                                    .map(|(_, s)| s.as_str())
+                                baseline.as_ref().map(|(_, s)| s.as_str())
                             });
                         let old_res = old_src.map(parse_law_input_str).transpose();
                         match (old_res, new_res) {
@@ -4937,12 +5065,7 @@ impl SlideEditor {
                                 let lt = ibis_formats::lawtext::to_lawtext(&doc);
                                 let set_baseline = a.set_as_baseline.unwrap_or(true);
                                 if set_baseline {
-                                    if let Some(p) = self.ai_assistant.as_mut() {
-                                        p.pending_old_lawtext = Some((
-                                            format!("{}.xml", doc.law_title),
-                                            law.xml,
-                                        ));
-                                    }
+                                    *baseline = Some((format!("{}.xml", doc.law_title), law.xml));
                                 }
                                 (
                                     json!({
@@ -4973,58 +5096,28 @@ impl SlideEditor {
                     },
                 }
             }
-            "open_markdown_document" => {
-                let parsed: Result<OpenMarkdownDocumentArgs, _> = serde_json::from_str(args);
-                match parsed {
-                    Err(e) => (
-                        json!({ "error": format!("invalid arguments: {e}") }).to_string(),
-                        None,
-                        format!("✗ open_markdown_document: {e}"),
-                    ),
-                    Ok(a) => match ibis_formats::markdown::open_markdown(a.markdown.into_bytes()) {
-                        Ok(opened) => {
-                            let title = a.title;
-                            let name: SharedString = title.clone().into();
-                            #[cfg(not(target_family = "wasm"))]
-                            {
-                                crate::app::open_window_with(cx, move |editor, window, cx| {
-                                    editor.show_new(opened, name, window, cx);
-                                });
-                                (
-                                    json!({ "opened": true, "title": title }).to_string(),
-                                    None,
-                                    format!("✓ open_markdown_document ({title})"),
-                                )
-                            }
-                            #[cfg(target_family = "wasm")]
-                            {
-                                let _ = (opened, name, cx);
-                                (
-                                    json!({
-                                        "opened": false,
-                                        "title": title,
-                                        "note": "Opening a separate window is only supported on desktop builds."
-                                    })
-                                    .to_string(),
-                                    None,
-                                    format!("✓ open_markdown_document (wasm noop: {title})"),
-                                )
-                            }
-                        }
-                        Err(e) => (
-                            json!({ "error": e.to_string() }).to_string(),
-                            None,
-                            format!("✗ open_markdown_document: {e}"),
-                        ),
-                    },
-                }
-            }
             other => (
                 json!({ "error": format!("unknown tool: {other}") }).to_string(),
                 None,
                 format!("✗ {other}: unknown tool"),
             ),
         }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn prepare_assistant_markdown(args: &str) -> Result<(String, ibis_formats::Opened), String> {
+        let args: OpenMarkdownDocumentArgs = serde_json::from_str(args)
+            .map_err(|error| format!("invalid arguments: {error}"))?;
+        let opened = ibis_formats::markdown::open_markdown(args.markdown.into_bytes())
+            .map_err(|error| error.to_string())?;
+        Ok((args.title, opened))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn open_prepared_assistant_markdown(title: String, opened: ibis_formats::Opened, cx: &mut Context<Self>) {
+        crate::app::open_window_with(cx, move |editor, window, cx| {
+            editor.show_new(opened, title.into(), window, cx);
+        });
     }
 
     /// Render the Assistant right sidebar panel.
@@ -5917,6 +6010,41 @@ mod assistant_review_tests {
         let data: serde_json::Value =
             serde_json::from_str(messages[1].content.as_deref().unwrap()).unwrap();
         assert_eq!(data, serde_json::json!({ "sheet": "作業 '1'", "cell": "B2", "formula": formula }));
+    }
+
+    #[test]
+    fn shared_document_dispatch_duplicates_a_slide_and_reads_the_draft() {
+        let kind = ibis_formats::Kind::Presentation;
+        let base = ibis_formats::read(&ibis_formats::blank_file(kind).unwrap()).unwrap();
+        let original_count = base.slides.len();
+        let mut turn = AssistantTurn {
+            active: base.slides[0].id, draft: Document::new(base.clone()), base, path: None, file_id: 0,
+            selection: None, source: None, navigate: false, private_chart_source: false, source_edit: None,
+        };
+        let mut baseline = None;
+        let (_, edits, _) = SlideEditor::stage_document_tool(super::AiDocKind::Pptx, kind,
+            &call("duplicate_slide", r#"{"slide_index":1}"#), &mut turn, &mut baseline);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(turn.draft.presentation().slides.len(), original_count + 1);
+        assert_eq!(SlideEditor::assistant_document_context(&turn)["active_index"], 1);
+        let mut live = Document::new(turn.base.clone());
+        live.execute(edits).unwrap();
+        assert!(live.presentation().slides == turn.draft.presentation().slides);
+        assert!(live.undo());
+        assert!(live.presentation().slides == turn.base.slides);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn acp_editor_tool_access_excludes_interactive_credential_operations() {
+        use ibis_doc_service::Access::{Edit, Read};
+        assert_eq!(super::acp_editor_tool_access("audit_formulas"), Some(Read));
+        assert_eq!(super::acp_editor_tool_access("set_cell_comment"), Some(Edit));
+        assert_eq!(super::acp_editor_tool_access("duplicate_slide"), Some(Edit));
+        assert_eq!(super::acp_editor_tool_access("open_markdown_document"), Some(Edit));
+        for name in ["issue_vc_preview", "prepare_oid4vp_presentation"] {
+            assert!(super::acp_editor_tool_access(name).is_none(), "{name}");
+        }
     }
 
     #[test]
