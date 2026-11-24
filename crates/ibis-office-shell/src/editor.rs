@@ -494,7 +494,6 @@ pub struct SlideEditor {
     /// left half does at once (`ToolButton::last_used`).
     pub(crate) last_choices: std::collections::HashMap<&'static str, String>,
     /// Scrolling of the recent files list of the start view.
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) recent_scroll: ScrollHandle,
     /// Whether each file of the recent list exists, checked once on a background thread (a network share
     /// may be slow), not at every paint; a path with no entry yet is drawn as existing. Cleared when the
@@ -514,6 +513,9 @@ pub struct SlideEditor {
     /// Exact input for comparison while this law has no edits.
     #[cfg(target_family = "wasm")]
     pub(crate) web_law_source: Option<std::sync::Arc<Vec<u8>>>,
+    /// In-window structured tree view for complex linkage CSVs in the Web build.
+    #[cfg(target_family = "wasm")]
+    pub(crate) web_structured_view: Option<Entity<crate::structured_view::View>>,
     /// An empty document stands in for the file being read (`begin_loading`).
     pub loading: bool,
     /// What only the open document's format has (see `shell/format.rs`).
@@ -909,7 +911,6 @@ impl SlideEditor {
             recent_colors: Vec::new(),
             last_colors: Default::default(),
             last_choices: Default::default(),
-            #[cfg(not(target_family = "wasm"))]
             recent_scroll: ScrollHandle::new(),
             #[cfg(not(target_family = "wasm"))]
             recent_exists: Default::default(),
@@ -921,6 +922,8 @@ impl SlideEditor {
             web_open_generation: 0,
             #[cfg(target_family = "wasm")]
             web_law_source: None,
+            #[cfg(target_family = "wasm")]
+            web_structured_view: None,
             loading: false,
             format,
             format_prefs: crate::format::drivers().iter().map(|(_, driver)| driver.new_prefs()).collect(),
@@ -1602,6 +1605,43 @@ impl SlideEditor {
         .detach();
     }
 
+    /// Fetch a same-origin URL (such as a start-view sample) and open it in the
+    /// running WASM window without reloading the page.
+    #[cfg(target_family = "wasm")]
+    pub fn open_web_url(&mut self, url: String, fallback_name: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.web_open_generation = self.web_open_generation.wrapping_add(1);
+        let generation = self.web_open_generation;
+        let closed = self.closed;
+        self.set_status(crate::i18n::format("file.opening", &[("name", &fallback_name)]), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            match crate::web::fetch_url(&url).await {
+                Ok((fetched_name, data)) => {
+                    let name = if fetched_name.is_empty() { fallback_name } else { fetched_name };
+                    this.update_in(cx, |this, window, cx| {
+                        if this.closed != closed || this.web_open_generation != generation {
+                            return;
+                        }
+                        this.open_web_bytes(name, data, false, window, cx);
+                    })
+                    .ok();
+                }
+                Err(err) => {
+                    this.update(cx, |this, cx| {
+                        if this.closed != closed || this.web_open_generation != generation {
+                            return;
+                        }
+                        this.set_status(
+                            crate::i18n::format("file.open-failed", &[("name", &fallback_name), ("error", &err)]),
+                            cx,
+                        );
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
+    }
+
     /// Show the loading state before parsing and prefetching the complete
     /// document. Initial links and the file picker use the same safe path.
     #[cfg(target_family = "wasm")]
@@ -1625,6 +1665,34 @@ impl SlideEditor {
             // holds the page while it runs.
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
             let extension = name.rsplit_once('.').map(|(_, ext)| ext);
+            if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
+                && crate::structured_view::is_linkage_csv(&data)
+            {
+                this.update_in(cx, |this, window, cx| {
+                    if this.closed != closed || this.web_open_generation != generation {
+                        return;
+                    }
+                    match crate::structured_view::create_csv_view(name.clone(), data, window, cx) {
+                        Ok(view) => {
+                            this.loading = false;
+                            this.has_document = true;
+                            this.file_name = Some(name.clone());
+                            this.web_structured_view = Some(view);
+                            this.status = None;
+                            window.set_window_title(&format!("{name} — Docs"));
+                            cx.notify();
+                        }
+                        Err(err) => {
+                            this.fail_loading(
+                                crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]),
+                                cx,
+                            );
+                        }
+                    }
+                })
+                .ok();
+                return;
+            }
             use crate::read_file::{EditableImport, PreviewImport};
             let preview_import = PreviewImport::detect(extension, &data);
             if let Some(PreviewImport::FixedLayout(format)) = preview_import {
@@ -1689,6 +1757,21 @@ impl SlideEditor {
                     .and_then(|text| ibis_formats::markdown::open_markdown(text.into_bytes()))
                     .map(|opened| (opened, None))
                     .map_err(|e| e.to_string())
+            } else if let Some((opened, _)) = if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
+                match ibis_formats::sbom_review::open_table_with_format((name.as_ref(), &data)) {
+                    Ok(found) => found,
+                    Err(err) => {
+                        this.update(cx, |this, cx| {
+                            if this.closed != closed || this.web_open_generation != generation { return; }
+                            this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx);
+                        }).ok();
+                        return;
+                    }
+                }
+            } else {
+                None
+            } {
+                Ok((opened, None))
             } else if let Some(format) = editable_import {
                 opened_import = Some(format);
                 format.open(&data).map(|opened| (opened, None)).map_err(|e| e.to_string())
@@ -2187,6 +2270,10 @@ impl SlideEditor {
         if self.loading {
             self.loading = false;
             self.has_document = false;
+        #[cfg(target_family = "wasm")]
+        {
+            self.web_structured_view = None;
+        }
         crate::app::track_start_window(cx.entity_id(),None,true,cx);
         self.document_memory = Default::default();
             self.file_name = None;
@@ -2240,11 +2327,15 @@ impl SlideEditor {
         }
         // The last window on the file, with edits not saved (any format, a new file too): ask first.
         if self.is_dirty() {
+            #[cfg(target_family = "wasm")]
+            self.ask_to_save(false, cx);
+            #[cfg(not(target_family = "wasm"))]
             self.ask_to_save(true, cx);
             return;
         }
-        // The window closes, in every format (not the start view in it); the app ends with its last window.
+        // In the browser, closing a document returns to the start view instead of removing the single canvas window.
         self.force_close_file(window, cx);
+        #[cfg(not(target_family = "wasm"))]
         window.remove_window();
     }
 
@@ -2346,6 +2437,10 @@ impl SlideEditor {
         self.load(Presentation::new(), SharedString::default(), window, cx);
         self.list_scroll.set_offset(Point::default());
         self.has_document = false;
+        #[cfg(target_family = "wasm")]
+        {
+            self.web_structured_view = None;
+        }
         crate::app::track_start_window(cx.entity_id(),None,true,cx);
         self.document_memory = Default::default();
         self.closed += 1;
@@ -2353,12 +2448,12 @@ impl SlideEditor {
         self.file_id = 0;
         self.window_number = None;
         window.set_window_title(&crate::start_view::start_title());
+        self.recent_scroll.set_offset(Point::default());
         // The file just closed is first, as other windows may have opened
         // files since this one's list was read.
         #[cfg(not(target_family = "wasm"))]
         {
             self.recent_files = crate::recent_files::load();
-            self.recent_scroll.set_offset(Point::default());
             self.recent_exists.clear();
         }
     }
@@ -4566,6 +4661,13 @@ impl SlideEditor {
             }
             return d.child(self.render_start_view(narrow_phone, cx));
         }
+        #[cfg(target_family = "wasm")]
+        if let Some(view) = self.web_structured_view.clone() {
+            return d
+                .child(self.render_title_row(window, cx))
+                .when(self.show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
+                .child(div().flex_1().min_h_0().w_full().child(view));
+        }
         #[cfg(any(target_os = "android", target_family = "wasm"))]
         self.update_phone_view(narrow_phone, window, cx);
         let mobile_viewer = self.phone_view_only();
@@ -5111,7 +5213,6 @@ impl SlideEditor {
                 recent_colors: _,
                 last_colors: _,
                 last_choices: _,
-                #[cfg(not(target_family = "wasm"))]
                 recent_scroll: _,
                 #[cfg(not(target_family = "wasm"))]
                 recent_exists: _,

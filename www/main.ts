@@ -7,6 +7,7 @@ import init, {
   run,
   set_embed_options,
   set_font_prompt,
+  set_start_view_config,
   set_host_mode,
   host_load,
   host_set_read_only,
@@ -62,12 +63,18 @@ interface EmbedOptions {
   targetOrigin?: string;
   /** Where the 'ibisoffice:close' and 'ibisoffice:download' events go (JavaScript only). Default: window. */
   eventTarget?: EventTarget;
+  /** Optional customization for the Web start view (items list and right-hand panel). */
+  startView?: Record<string, unknown>;
 }
 
 declare global {
   interface Window {
     /** Called from Rust for ファイル → 開く. */
     ibisOfficePickFile: () => Promise<PickedFile | null>;
+    /** Called from Rust to open a same-origin URL from the Web start view without reloading WASM. */
+    ibisOfficeFetchUrl: (url: string) => Promise<PickedFile>;
+    /** Optional runtime updater for the Web start view configuration. */
+    ibisOfficeSetStartView?: (config: Record<string, unknown>) => void;
     ibisOfficeDecodeHeic: (bytes: Uint8Array) => Promise<Uint8Array>;
     /** Awaited by Rust after parsing the complete model, before layout. */
     ibisOfficePreloadFonts: (text: string) => Promise<void>;
@@ -136,7 +143,7 @@ function flag(params: URLSearchParams, name: string): boolean | undefined {
 const standaloneEditor = document.body.hasAttribute('data-phone-editor');
 
 /** The embedding options: JavaScript's over the URL's, and everything off by default. */
-function embedOptions(): Required<Omit<EmbedOptions, 'eventTarget' | 'chunk'>> & Pick<EmbedOptions, 'eventTarget'> {
+function embedOptions(): Required<Omit<EmbedOptions, 'eventTarget' | 'chunk' | 'startView'>> & Pick<EmbedOptions, 'eventTarget'> {
   const params = new URLSearchParams(location.search);
   const js = window.ibisOfficeOptions ?? {};
   // The standalone editor owns its phone mode in the shell.
@@ -813,8 +820,23 @@ async function decodeHeic(bytes: Uint8Array): Promise<Uint8Array> {
   }
 }
 
+async function fetchSameOriginUrl(url: string): Promise<PickedFile> {
+  const resolved = new URL(url, location.href);
+  if (resolved.origin !== location.origin) {
+    throw new Error('Cross-origin URL is not allowed');
+  }
+  const response = await fetch(resolved.href, { credentials: 'same-origin' });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const path = resolved.pathname;
+  const name = decodeURIComponent(path.slice(path.lastIndexOf('/') + 1));
+  return { name, bytes: new Uint8Array(await response.arrayBuffer()) };
+}
+
 window.ibisOfficeDecodeHeic = decodeHeic;
 window.ibisOfficePickFile = () => pickFile();
+window.ibisOfficeFetchUrl = fetchSameOriginUrl;
 window.ibisOfficePickIcc = pickIcc;
 window.ibisOfficeIccSave = iccSave;
 window.ibisOfficeIccForget = iccForget;
@@ -948,6 +970,17 @@ if (!('gpu' in navigator)) {
     set_font_prompt(embed.fd);
     if (hostSession) {
       set_host_mode(resolveOptionUrls(hostSession.options, document.baseURI), [...hostSession.capabilities]);
+    } else {
+      const applyStartView = (config?: Record<string, unknown>) => {
+        if (!config) return;
+        try {
+          set_start_view_config(JSON.stringify(config));
+        } catch (error) {
+          console.warn('Invalid startView config', error);
+        }
+      };
+      applyStartView(window.ibisOfficeOptions?.startView);
+      window.ibisOfficeSetStartView = applyStartView;
     }
     await run(base, file?.name, file?.bytes);
     status?.remove();
