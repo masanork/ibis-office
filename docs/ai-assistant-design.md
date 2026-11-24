@@ -18,10 +18,10 @@ Linux・macOS の DOCX・XLSX・PPTX で、Assistant の入力欄に依頼を書
 
 別の ACP v1 エージェントを使う場合は、提供元の手順で stdio 対応の実行ファイルをインストールし、ibisOffice 起動時に `IBIS_ACP_COMMAND` と、引数の JSON 文字列配列 `IBIS_ACP_ARGS`（省略時は `[]`）を設定する。実行ファイルと引数はシェルを介さずに渡す。
 
-たとえば [Claude Agent ACP](https://zed.dev/acp/agent/claude-agent) を使う場合は、Node.js 環境でアダプターをインストールし、次のように起動する。認証はアダプターの案内に従う。
+たとえば [Claude Agent ACP](https://github.com/agentclientprotocol/claude-agent-acp) を使う場合は、Node.js 環境でアダプターをインストールし、次のように起動する。認証はアダプターの案内に従う。
 
 ```sh
-npm install --global @zed-industries/claude-agent-acp
+npm install --global @agentclientprotocol/claude-agent-acp
 IBIS_ACP_COMMAND=claude-agent-acp ibisOffice
 ```
 
