@@ -1075,6 +1075,15 @@ fn url_path(url: &str) -> Option<std::path::PathBuf> {
 /// Native entry point; see [`Args`] for the command line.
 #[cfg(all(not(target_family = "wasm"), not(target_os = "android"), not(target_os = "ios")))]
 pub fn run_native() {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if std::env::args().nth(1).as_deref() == Some("--assistant-acp-workbook") {
+        let Some(socket) = std::env::args_os().nth(2) else { std::process::exit(2) };
+        if let Err(error) = shell::ai_assistant_acp::workbook_mcp(std::path::Path::new(&socket)) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // `ibisOffice --mcp ...`: the MCP server (GitHub issue #159), headless: no window, no hooks of the windows. (On Windows the GUI program has no standard
     // input and output: `ibisOffice-mcp.exe` is the same server.)
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
