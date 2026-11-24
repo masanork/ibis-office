@@ -112,3 +112,13 @@ python3 "$tools/presentation.py" "$review_dir/childcare-request.md"
 資格情報原稿の `sd_jwt_vc` に試作用の `vct` と、各IDのクレームパスを明示する。今回の対象は固定・変則の両方にある項目。論理IDは現行の就労データのプロパティ階層をドットでつなぎ、SD-JWT VC用のクレームパスは同じ階層を配列で指定する。これにより、承認済み対応表から生成したJSONと照合できる。将来、形式ごとに別の階層を使う場合は、変換規則をその形式の対応に記述する。
 
 `work_schedule.total` は単位・時間・分・うち休憩分を含むオブジェクトとして要求する。実際の交付では同じ単位で開示できるようにエンコードする必要がある。出力は保有者の暗号学的な束縛を要求するDCQL。用途は原稿に記録し、検証者IDと `nonce` は実際の申請時に検証側で設定する。 [OpenID4VP 1.0](https://openid.net/specs/openid-4-verifiable-presentations-1_0-final.html)
+
+同じ提示要求をmdoc用に変換するには、`presentation.py` に `--format mso_mdoc` を指定する。省略時はSD-JWT VCを出力する。
+
+```sh
+python3 "$tools/presentation.py" "$review_dir/childcare-request.md" --format mso_mdoc
+```
+
+資格情報原稿の `mdoc.doctype` は試作の文書タイプを表す。`mdoc.paths` は論理項目IDを `[名前空間, 要素名]` に対応付ける。`certification_date` は西暦日付の文字列、`work_schedule_total` は単位・時間・分・うち休憩分を含む一つのCBORマップを想定する。合計の一部分だけを要求するには、交付側で要素の設計を変える必要がある。
+
+提示要求の任意の `intent_to_retain` はmdocの各要求要素に反映する。例では `false` を指定している。これは試作用の要求における受け手の保持の意図を表す。実際の保育申込での保持方針は提出先が決める。試作で確認するのはDCQLの生成までで、CBORデータの発行・Walletへの交付・提示検証は実装範囲外。 [OpenID4VP 1.0のmdoc形式](https://openid.net/specs/openid-4-verifiable-presentations-1_0-final.html#appendix-B.2)

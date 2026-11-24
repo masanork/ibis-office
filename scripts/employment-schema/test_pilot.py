@@ -63,6 +63,30 @@ class EmploymentSchemaTest(unittest.TestCase):
                 "claims": [{"path": ["certification_date"]}, {"path": ["work_schedule", "total"]}],
             }]})
             self.assertEqual(json.dumps(dcql(request)), json.dumps(query))
+            mdoc = dcql(request, "mso_mdoc")
+            self.assertEqual(mdoc, {"credentials": [{
+                "id": "employment",
+                "format": "mso_mdoc",
+                "meta": {"doctype_value": "org.example.employment.pilot.1"},
+                "require_cryptographic_holder_binding": True,
+                "claims": [
+                    {"path": ["org.example.employment.pilot.1", "certification_date"], "intent_to_retain": False},
+                    {"path": ["org.example.employment.pilot.1", "work_schedule_total"], "intent_to_retain": False},
+                ],
+            }]})
+            self.assertEqual(json.dumps(dcql(request, "mso_mdoc")), json.dumps(mdoc))
+            request.write_text(request_example.replace("false", '"false"'), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "must be a boolean"):
+                dcql(request, "mso_mdoc")
+            request.write_text(request_example, encoding="utf-8")
+            for element, message in (
+                ("certification_date", "Duplicate mdoc element"),
+                ("", "namespace and element"),
+            ):
+                concept.write_text(example.replace("work_schedule_total]", f"{element}]"), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    dcql(request, "mso_mdoc")
+            concept.write_text(example, encoding="utf-8")
             for claim, message in (
                 ("child_name", "Unknown"),
                 ("unknown", "Unknown"),

@@ -10,6 +10,11 @@ x-ibis-credential:
     paths:
       certification_date: [certification_date]
       work_schedule.total: [work_schedule, total]
+  mdoc:
+    doctype: org.example.employment.pilot.1
+    paths:
+      certification_date: [org.example.employment.pilot.1, certification_date]
+      work_schedule.total: [org.example.employment.pilot.1, work_schedule_total]
 ---
 
 # 証明する範囲

@@ -57,12 +57,12 @@ def local_reference(path, ref, suffix, field):
 def load_credential(path: Path):
     definition = read_metadata(path, "credential-definition").get("x-ibis-credential")
     required = {"version", "approved_mapping"}
-    if not isinstance(definition, dict) or not required <= definition.keys() <= required | {"sd_jwt_vc"}:
+    if not isinstance(definition, dict) or not required <= definition.keys() <= required | {"sd_jwt_vc", "mdoc"}:
         raise ValueError("Expected version and approved_mapping in x-ibis-credential")
     if type(definition["version"]) is not int or definition["version"] != 1:
         raise ValueError("Unsupported x-ibis-credential version")
     target = local_reference(path, definition["approved_mapping"], ".json", "approved_mapping")
-    return load_approved(target), definition.get("sd_jwt_vc")
+    return load_approved(target), definition
 
 
 def load_concept(path: Path):

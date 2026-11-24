@@ -5,6 +5,7 @@ x-ibis-presentation-request:
   version: 1
   credential: employment.md
   purpose: 保育利用申込における就労状況の確認
+  intent_to_retain: false
   claims:
     - certification_date
     - work_schedule.total
