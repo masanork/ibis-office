@@ -32,6 +32,49 @@ pub(super) struct Target {
     pub label: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum Relation {
+    DependsOn,
+    UsedBy,
+    Provides,
+    ProvidedBy,
+}
+
+impl Relation {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DependsOn => "structured.bom-depends-on",
+            Self::UsedBy => "structured.bom-used-by",
+            Self::Provides => "structured.bom-provides",
+            Self::ProvidedBy => "structured.bom-provided-by",
+        }
+    }
+}
+
+fn crypto_references(value: &serde_json::Value, refs: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (key, child) in fields {
+                if matches!(
+                    key.as_str(),
+                    "signatureAlgorithmRef" | "subjectPublicKeyRef" | "algorithmRef"
+                ) && let Some(reference) = child.as_str()
+                {
+                    refs.push(reference.to_owned());
+                } else {
+                    crypto_references(child, refs);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                crypto_references(item, refs);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(super) struct Inventory {
     pub version: String,
     pub subject: String,
@@ -40,6 +83,7 @@ pub(super) struct Inventory {
     pub services: usize,
     pub dependency_entries: usize,
     references: HashMap<String, Option<Target>>,
+    relationships: HashMap<usize, Vec<(Relation, String)>>,
 }
 
 #[derive(Clone, Copy)]
@@ -78,10 +122,12 @@ impl Inventory {
             services: 0,
             dependency_entries: 0,
             references: HashMap::new(),
+            relationships: HashMap::new(),
         };
         let Ok(root) = serde_json::from_slice::<&RawValue>(bytes) else {
             return None;
         };
+        let mut edges = Vec::new();
         let mut pending = vec![(root, Entry::Document)];
         while let Some((raw, entry)) = pending.pop() {
             let text = raw.get();
@@ -99,12 +145,14 @@ impl Inventory {
                 }));
                 continue;
             }
-            let value = |key| {
+            let field = |key| {
                 fields
                     .iter()
                     .find(|(name, _)| name == key)
-                    .and_then(|(_, raw)| serde_json::from_str::<String>(raw.get()).ok())
+                    .map(|(_, raw)| *raw)
             };
+            let value =
+                |key| field(key).and_then(|raw| serde_json::from_str::<String>(raw.get()).ok());
             match entry {
                 Entry::Component => {
                     inventory.components += 1;
@@ -113,10 +161,38 @@ impl Inventory {
                     }
                 }
                 Entry::Service => inventory.services += 1,
-                Entry::Dependency => inventory.dependency_entries += 1,
+                Entry::Dependency => {
+                    inventory.dependency_entries += 1;
+                    if let Some(reference) = value("ref") {
+                        for (key, kind) in [
+                            ("dependsOn", Relation::DependsOn),
+                            ("provides", Relation::Provides),
+                        ] {
+                            if let Some(raw) = field(key)
+                                && let Ok(items) =
+                                    serde_json::from_str::<Vec<serde_json::Value>>(raw.get())
+                            {
+                                edges.extend(items.into_iter().filter_map(|item| {
+                                    Some((reference.clone(), kind, item.as_str()?.to_owned()))
+                                }));
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
             if let Some(reference) = value("bom-ref").filter(|value| !value.is_empty()) {
+                if matches!(entry, Entry::Component)
+                    && let Some(raw) = field("cryptoProperties")
+                    && let Ok(crypto) = serde_json::from_str(raw.get())
+                {
+                    let mut refs = Vec::new();
+                    crypto_references(&crypto, &mut refs);
+                    edges.extend(
+                        refs.into_iter()
+                            .map(|target| (reference.clone(), Relation::DependsOn, target)),
+                    );
+                }
                 let target = Target {
                     span: source.span(raw),
                     label: excerpt(&value("name").unwrap_or_else(|| reference.clone()), 120),
@@ -141,7 +217,44 @@ impl Inventory {
                 Some((child, entry))
             }));
         }
+        edges.sort_unstable();
+        edges.dedup();
+        for (from, kind, to) in edges {
+            let (Some(source), Some(target)) = (inventory.resolve(&from), inventory.resolve(&to))
+            else {
+                continue;
+            };
+            let (start, end) = (source.span.start, target.span.start);
+            let reverse = if kind == Relation::Provides {
+                Relation::ProvidedBy
+            } else {
+                Relation::UsedBy
+            };
+            inventory
+                .relationships
+                .entry(start)
+                .or_default()
+                .push((kind, to));
+            inventory
+                .relationships
+                .entry(end)
+                .or_default()
+                .push((reverse, from));
+        }
+        for rows in inventory.relationships.values_mut() {
+            rows.sort_unstable();
+        }
         Some(inventory)
+    }
+
+    pub fn resolve(&self, reference: &str) -> Option<&Target> {
+        self.references.get(reference)?.as_ref()
+    }
+
+    pub fn relationships(&self, span: &Range<usize>) -> &[(Relation, String)] {
+        self.relationships
+            .get(&span.start)
+            .map_or(&[], Vec::as_slice)
     }
 
     pub fn target(&self, field: &str, parent: Option<&str>, reference: &str) -> Option<&Target> {
@@ -152,7 +265,7 @@ impl Inventory {
                     matches!(name, "dependsOn" | "provides") || name.ends_with("Refs")
                 }));
         if refers_to_object {
-            self.references.get(reference)?.as_ref()
+            self.resolve(reference)
         } else {
             None
         }
@@ -161,7 +274,7 @@ impl Inventory {
 
 #[cfg(test)]
 mod tests {
-    use super::Inventory;
+    use super::{Inventory, Relation};
     use crate::structured_view::Source;
 
     #[test]
@@ -184,6 +297,30 @@ mod tests {
                 .is_some()
         );
         assert!(inventory.target("name", None, "rsa").is_none());
+        let cert = inventory.resolve("cert").unwrap();
+        assert_eq!(
+            inventory
+                .relationships(&cert.span)
+                .iter()
+                .filter(|(relation, _)| *relation == Relation::DependsOn)
+                .count(),
+            1
+        );
+        assert!(
+            inventory
+                .relationships(&cert.span)
+                .contains(&(Relation::DependsOn, "rsa".into()))
+        );
+        assert!(
+            inventory
+                .relationships(&rsa.span)
+                .contains(&(Relation::UsedBy, "cert".into()))
+        );
+        assert!(
+            inventory
+                .relationships(&rsa.span)
+                .contains(&(Relation::ProvidedBy, "provider".into()))
+        );
     }
 
     #[test]

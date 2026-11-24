@@ -1759,3 +1759,7 @@ structured.csv-missing	項目なし
 structured.csv-unquoted-empty	引用符なしの空項目
 structured.collapse-body	本文のセクションを折りたたむ
 structured.expand-body	本文のセクションを展開する
+structured.bom-depends-on	依存先
+structured.bom-used-by	依存元
+structured.bom-provides	提供する項目
+structured.bom-provided-by	提供元

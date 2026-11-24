@@ -1761,3 +1761,7 @@ structured.csv-missing	Missing field
 structured.csv-unquoted-empty	Unquoted empty field
 structured.collapse-body	Collapse section in document
 structured.expand-body	Expand section in document
+structured.bom-depends-on	Depends on
+structured.bom-used-by	Used by
+structured.bom-provides	Provides
+structured.bom-provided-by	Provided by

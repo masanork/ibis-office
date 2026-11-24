@@ -821,6 +821,62 @@ impl Render for View {
                             )
                             .child(div().text_sm().truncate().child(target.label.clone()))
                     }))
+                    .children(inventory.and_then(|inventory| {
+                        let rows = inventory.relationships(&node.span);
+                        if rows.is_empty() {
+                            return None;
+                        }
+                        let count = rows.len();
+                        Some(
+                            uniform_list(
+                                "structured-bom-relationships",
+                                count,
+                                cx.processor(move |view, range: Range<usize>, _, cx| {
+                                    let inventory =
+                                        view.source.as_ref().unwrap().inventory.as_ref().unwrap();
+                                    let rows = inventory.relationships(&view.tree.nodes[id].span);
+                                    range
+                                        .filter_map(|index| {
+                                            let (relation, reference) = rows.get(index)?;
+                                            let target = inventory.resolve(reference)?;
+                                            let span = target.span.clone();
+                                            let label = target.label.clone();
+                                            Some(
+                                                h_flex()
+                                                    .h(px(28.))
+                                                    .gap_2()
+                                                    .child(
+                                                        div().w(px(135.)).text_xs().child(
+                                                            crate::i18n::text(relation.label()),
+                                                        ),
+                                                    )
+                                                    .child(
+                                                        Button::new((
+                                                            "structured-bom-related",
+                                                            index,
+                                                        ))
+                                                        .outline()
+                                                        .xsmall()
+                                                        .label(label.clone())
+                                                        .on_click(cx.listener(
+                                                            move |view, _, window, cx| {
+                                                                view.follow_reference(
+                                                                    span.clone(),
+                                                                    label.clone(),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                    ),
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                }),
+                            )
+                            .h(px(count.min(4) as f32 * 28.)),
+                        )
+                    }))
                     .child(
                         div()
                             .id("structured-detail")
