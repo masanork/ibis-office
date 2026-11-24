@@ -5115,8 +5115,11 @@ impl SlideEditor {
 
     #[cfg(not(target_family = "wasm"))]
     fn open_prepared_assistant_markdown(title: String, opened: ibis_formats::Opened, cx: &mut Context<Self>) {
-        crate::app::open_window_with(cx, move |editor, window, cx| {
-            editor.show_new(opened, title.into(), window, cx);
+        // Opening a window updates the window group, including the source editor.
+        cx.defer(move |cx| {
+            crate::app::open_window_with(cx, move |editor, window, cx| {
+                editor.show_new(opened, title.into(), window, cx);
+            });
         });
     }
 
