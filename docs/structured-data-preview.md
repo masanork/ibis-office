@@ -25,8 +25,10 @@ XMLの要素を日本語名などで表示できます。定義の `root` には
 
 ### 複数のXMLで表示定義を共有する
 
-アプリのデータフォルダーの `ibisOffice/xml-views` に、共有する
-`*.view.json` を置きます。macOSでは標準で
+デスクトップ版の **設定 → 一般 → 表示定義フォルダーを開く** を選び、
+開いたフォルダーに共有する `*.view.json` をコピーしてからXMLを開き直します。
+フォルダーがまだなければ、ボタンを押したときに作成します。
+アプリのデータフォルダー内の配置は `ibisOffice/xml-views` です。macOSでは標準で
 `~/Library/Application Support/ibisOffice/xml-views` です。
 Windowsでは `%APPDATA%/ibisOffice/xml-views`、Linuxでは
 `$XDG_DATA_HOME/ibisOffice/xml-views`（未設定なら `~/.local/share/ibisOffice/xml-views`）です。

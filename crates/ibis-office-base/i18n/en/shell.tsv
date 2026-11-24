@@ -136,6 +136,11 @@ settings.general	General
 settings.language	Language
 settings.language.system	Use System Setting
 settings.language.note	The language of the menus, toolbars and panes. It changes at once.
+settings.xml-views	XML view definitions
+settings.xml-views.note	Add .view.json files to this folder, then reopen the XML to apply a matching definition.
+settings.xml-views.open	Open View Definitions Folder
+settings.xml-views.unavailable	The application data folder is unavailable.
+settings.xml-views.failure	Could not open the view definitions folder ({error})
 app.quit	Quit Docs
 app.file.new	New Document
 app.file.open	Open File…

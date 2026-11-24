@@ -311,6 +311,25 @@ impl SlideEditor {
                 apply_scrollbar_mode(cx);
                 cx.notify();
             })));
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        let body = body
+            .child(section_heading(text("settings.xml-views")))
+            .child(panel_note(text("settings.xml-views.note")))
+            .child(div().child(
+                action_button("settings-xml-views-open")
+                    .label(text("settings.xml-views.open"))
+                    .on_click(cx.listener(|editor, _, _, cx| {
+                        let directory = crate::structured_preview::shared_directory();
+                        let result = directory.ok_or_else(|| text("settings.xml-views.unavailable").to_string())
+                            .and_then(|path| std::fs::create_dir_all(&path).map(|()| path).map_err(|error| error.to_string()));
+                        match result {
+                            Ok(path) => crate::external::open_with_system(&path, cx),
+                            Err(error) => editor.set_status(
+                                i18n::format("settings.xml-views.failure", &[("error", &error)]), cx,
+                            ),
+                        }
+                    })),
+            ));
         body
     }
 

@@ -136,6 +136,11 @@ settings.general	一般
 settings.language	言語
 settings.language.system	OS の設定に従う
 settings.language.note	メニュー・ツールバー・パネルの文字の言語。変えるとすぐに切り替わります。
+settings.xml-views	XMLの表示定義
+settings.xml-views.note	このフォルダーに .view.json を追加し、XMLを開き直すと、一致する定義が適用されます。
+settings.xml-views.open	表示定義フォルダーを開く
+settings.xml-views.unavailable	アプリのデータフォルダーが見つかりません。
+settings.xml-views.failure	表示定義フォルダーを開けませんでした（{error}）
 app.quit	Docs を終了
 app.file.new	新規ドキュメント
 app.file.open	ファイルを開く…

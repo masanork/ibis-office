@@ -11,8 +11,12 @@ use std::path::Path;
 
 use ibis_formats::structured_preview::{Preview, xml_view};
 
+pub(crate) fn shared_directory() -> Option<std::path::PathBuf> {
+    Some(crate::app_data::base()?.join("ibisOffice").join("xml-views"))
+}
+
 pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<Opened, String> {
-    let shared = crate::app_data::base().map(|dir| dir.join("ibisOffice").join("xml-views"));
+    let shared = shared_directory();
     let preview = read_preview(extension, data, definition, shared.as_deref())?;
     let bytes = ibis_formats::blank_file(Kind::Document).map_err(|e| e.to_string())?;
     let mut opened = ibis_formats::open(bytes).map_err(|e| e.to_string())?;
