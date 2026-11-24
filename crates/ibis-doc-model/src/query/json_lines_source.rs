@@ -510,6 +510,59 @@ fn recover_cell(raw: &RawValue) -> Result<(CellValue, Option<QType>), String> {
     }
 }
 
+fn infer_recoverable_cell(raw: &RawValue) -> Result<Option<QType>, String> {
+    match inferred_cell_type(raw) {
+        Err(error) if error == PRECISION_ERROR => {
+            check_text_limit(raw.get())?;
+            Ok(Some(QType::Text))
+        }
+        ty => ty,
+    }
+}
+
+fn infer_recoverable_pointer(value: &Value) -> Result<Option<QType>, String> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Bool(_) => Ok(Some(QType::Logical)),
+        Value::String(text) => {
+            check_text_limit(text)?;
+            Ok(Some(QType::Text))
+        }
+        // Validate the same normalized representation that would enter a cell.
+        _ => {
+            let raw = serde_json::value::to_raw_value(value).map_err(|error| error.to_string())?;
+            infer_recoverable_cell(&raw)
+        }
+    }
+}
+
+fn parse_recoverable_fields<T>(
+    line: Option<&[u8]>,
+    selected: &HashSet<&str>,
+    pointers: bool,
+    from_raw: impl Fn(&RawValue) -> Result<T, String>,
+    from_pointer: impl Fn(&Value) -> Result<T, String>,
+) -> Result<BTreeMap<String, T>, String> {
+    let line = line.ok_or("JSON Lines record exceeds 1 MiB")?;
+    let invalid = |error| format!("Expected one JSON object ({error})");
+    if pointers {
+        let root: Value = serde_json::from_slice(line).map_err(invalid)?;
+        if !root.is_object() {
+            return Err("Expected one JSON object".into());
+        }
+        return selected
+            .iter()
+            .filter_map(|&path| root.pointer(path).map(|value| (path, value)))
+            .map(|(path, value)| Ok((path.into(), from_pointer(value)?)))
+            .collect();
+    }
+    let raw: BTreeMap<String, &RawValue> = serde_json::from_slice(line).map_err(invalid)?;
+    raw.into_iter()
+        .filter(|(name, _)| selected.is_empty() || selected.contains(name.as_str()))
+        .map(|(name, value)| Ok((name, from_raw(value)?)))
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct JsonLinesRange {
     pub first: usize,
@@ -577,35 +630,16 @@ pub(super) fn visit_recoverable_json_lines(
     {
         return Err("Select nonempty JSON Pointer paths starting with /".into());
     }
-    let parse =
-        |line: Option<&[u8]>| -> Result<BTreeMap<String, (CellValue, Option<QType>)>, String> {
-            let line = line.ok_or("JSON Lines record exceeds 1 MiB")?;
-            if pointers {
-                let root: Value = serde_json::from_slice(line)
-                    .map_err(|error| format!("Expected one JSON object ({error})"))?;
-                if !root.is_object() {
-                    return Err("Expected one JSON object".into());
-                }
-                return selected
-                    .iter()
-                    .filter_map(|&path| root.pointer(path).map(|value| (path, value)))
-                    .map(|(path, value)| {
-                        let raw = serde_json::value::to_raw_value(value)
-                            .map_err(|error| error.to_string())?;
-                        Ok((path.into(), recover_cell(&raw)?))
-                    })
-                    .collect();
-            }
-            let raw: BTreeMap<String, &RawValue> = serde_json::from_slice(line)
-                .map_err(|error| format!("Expected one JSON object ({error})"))?;
-            raw.into_iter()
-                .filter(|(name, _)| selected.is_empty() || selected.contains(name.as_str()))
-                .map(|(name, value)| Ok((name, recover_cell(value)?)))
-                .collect()
-        };
     let position = scan_lines_up_to(&mut input, max_bytes, true, max_lines, |line, _| {
-        if let Ok(fields) = parse(line) {
-            for (name, (_, ty)) in fields {
+        let fields = parse_recoverable_fields(
+            line,
+            &selected,
+            pointers,
+            infer_recoverable_cell,
+            infer_recoverable_pointer,
+        );
+        if let Ok(fields) = fields {
+            for (name, ty) in fields {
                 if reserved(&name) {
                     return Err("JSON Lines recovery reserves _jsonl_line and _jsonl_error".into());
                 }
@@ -651,9 +685,19 @@ pub(super) fn visit_recoverable_json_lines(
             scan_lines_until(&mut input, remaining, true, line_limit, |line, number| {
                 let mut row = vec![CellValue::Empty; columns.len()];
                 row[0] = CellValue::Number((previous_lines + skipped_lines + number) as f64);
-                match parse(line) {
+                match parse_recoverable_fields(
+                    line,
+                    &selected,
+                    pointers,
+                    |raw| recover_cell(raw).map(|(value, _)| value),
+                    |value| {
+                        let raw = serde_json::value::to_raw_value(value)
+                            .map_err(|error| error.to_string())?;
+                        recover_cell(&raw).map(|(value, _)| value)
+                    },
+                ) {
                     Ok(fields) => {
-                        for (name, (value, _)) in fields {
+                        for (name, value) in fields {
                             let index = indices
                                 .get(&name)
                                 .copied()
@@ -1017,6 +1061,28 @@ fn exceeds_text_limit(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_type_inference_matches_cell_conversion() {
+        let oversized = "🦉".repeat(MAX_TEXT_UNITS / 2 + 1);
+        let values = [
+            Value::Null,
+            serde_json::json!(true),
+            serde_json::json!("escaped\n🦉"),
+            serde_json::json!(123),
+            serde_json::json!(123.25),
+            serde_json::json!(9_007_199_254_740_993u64),
+            serde_json::json!({"nested": [true, null]}),
+            serde_json::json!(&oversized),
+            serde_json::json!([oversized]),
+        ];
+        for value in values {
+            let raw = serde_json::value::to_raw_value(&value).unwrap();
+            let expected = recover_cell(&raw).map(|(_, ty)| ty);
+            assert_eq!(infer_recoverable_cell(&raw), expected);
+            assert_eq!(infer_recoverable_pointer(&value), expected);
+        }
+    }
 
     #[test]
     fn skipping_counts_physical_lines_and_respects_the_byte_budget() {
