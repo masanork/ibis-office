@@ -133,6 +133,17 @@ jobs:
           $verifiedApp = "$env:RUNNER_TEMP/verify-windows/ibisOffice"
           python scripts/check-bundled-variant-dictionary.py "$verifiedApp/ibisOffice.exe" "$verifiedApp/Resources/Licenses/license.md"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Generate and open desktop SBOM and CBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.platform }}" == macos-arm64 ]]; then
+            app="$RUNNER_TEMP/verify-app/Docs.app/Contents/MacOS/ibisOffice"
+          else
+            app="$RUNNER_TEMP/verify-windows/ibisOffice/ibisOffice.exe"
+          fi
+          ${{ matrix.python }} scripts/build-bom.py "${{ matrix.platform }}" \
+            "ci-artifact/desktop-${{ matrix.platform }}-ci.zip" ci-artifact --verify-with "$app"
       - name: Hash deliverables
         shell: bash
         run: ${{ matrix.python }} scripts/desktop-ci-info.py artifacts ci-artifact
@@ -282,7 +293,7 @@ jobs:
         run: |
           set -euo pipefail
           appdir="$RUNNER_TEMP/verify-linux/squashfs-root"
-          python3 scripts/linux-appimage-bom.py ci-artifact/desktop-linux-x64-ci.AppImage "$appdir" ci-artifact
+          python3 scripts/build-bom.py linux-x64-appimage ci-artifact/desktop-linux-x64-ci.AppImage ci-artifact --appdir "$appdir"
           app="$appdir/usr/bin/ibisOffice"
           for kind in sbom cbom; do
             workbook="$RUNNER_TEMP/linux-$kind.xlsx"
@@ -350,6 +361,8 @@ jobs:
           unzip -l "$APK" | grep -q "classes.dex"
           unzip -l "$APK" | grep -q "AndroidManifest.xml"
           cp "$APK" ci-artifact/desktop-android-arm64-ci.apk
+      - name: Generate Android SBOM and CBOM
+        run: python3 scripts/build-bom.py android-arm64 ci-artifact/desktop-android-arm64-ci.apk ci-artifact
       - name: Hash deliverables
         run: python3 scripts/desktop-ci-info.py artifacts ci-artifact
       - uses: actions/upload-artifact@v4
@@ -384,6 +397,8 @@ jobs:
           test -x target/ios-app/IbisOffice.app/IbisOffice
           test -f target/ios-app/IbisOffice.app/Info.plist
           (cd target/ios-app && ditto -c -k --keepParent IbisOffice.app ../../ci-artifact/desktop-ios-arm64-ci.zip)
+      - name: Generate iOS SBOM and CBOM
+        run: python3 scripts/build-bom.py ios-arm64 ci-artifact/desktop-ios-arm64-ci.zip ci-artifact
       - name: Hash deliverables
         run: python3 scripts/desktop-ci-info.py artifacts ci-artifact
       - uses: actions/upload-artifact@v4
@@ -431,7 +446,7 @@ jobs:
               android-arm64) package=desktop-android-arm64-ci.apk ;;
               ios-arm64) package=desktop-ios-arm64-ci.zip ;;
             esac
-            cp "$dir/$package" release/
+            cp "$dir/$package" "$dir/"*.cdx.json release/
             cp "$dir/build-info.json" "release/build-info-$platform.json"
           done
           (cd release && sha256sum * > SHA256SUMS)

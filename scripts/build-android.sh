@@ -37,7 +37,7 @@ if [[ "${1:-}" == "--release" ]]; then
 fi
 
 echo "1. Building libibis_office_app.so (arm64-v8a, $TARGET_PROFILE)..."
-cargo ndk -t arm64-v8a build -p ibis-office-app --no-default-features --lib ${PROFILE_FLAG[@]+"${PROFILE_FLAG[@]}"}
+cargo ndk -t arm64-v8a build --locked -p ibis-office-app --no-default-features --lib ${PROFILE_FLAG[@]+"${PROFILE_FLAG[@]}"}
 
 SO_PATH="target/aarch64-linux-android/$TARGET_PROFILE/libibis_office_app.so"
 OUT_DIR="target/android-apk"

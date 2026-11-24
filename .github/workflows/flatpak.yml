@@ -55,6 +55,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          persist-credentials: false
 
       # Only GitHub's own actions are allowed in this repository: Rust comes from
       # the official rustup installer, and the build is not cached.
@@ -80,6 +81,18 @@ jobs:
         timeout-minutes: 60
         run: scripts/bundle-linux.sh --release
 
+      - name: Generate and open AppImage SBOM and CBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          image=$(realpath target/dist/ibisOffice-*-Linux.AppImage)
+          mkdir -p "$RUNNER_TEMP/verify-appimage"
+          (cd "$RUNNER_TEMP/verify-appimage" && "$image" --appimage-extract)
+          appdir="$RUNNER_TEMP/verify-appimage/squashfs-root"
+          python3 scripts/build-bom.py linux-x64-appimage "$image" target/dist \
+            --appdir "$appdir" --verify-with "$appdir/usr/bin/ibisOffice"
+
       - name: Upload AppImage artifact
         timeout-minutes: 10
         uses: actions/upload-artifact@v4
@@ -88,6 +101,7 @@ jobs:
           path: |
             target/dist/ibisOffice-*-Linux.AppImage
             target/dist/ibisOffice-*-Linux.AppImage.sha256
+            target/dist/linux-x64-appimage.*.cdx.json
 
       - name: Attach AppImage to GitHub Release
         timeout-minutes: 10
@@ -103,6 +117,7 @@ jobs:
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
             target/dist/ibisOffice-*-Linux.AppImage \
             target/dist/ibisOffice-*-Linux.AppImage.sha256 \
+            target/dist/linux-x64-appimage.*.cdx.json \
             --clobber
 
   flatpak:
@@ -125,10 +140,10 @@ jobs:
           submodules: recursive
 
       - name: Install system build and Flatpak dependencies
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             build-essential \
             pkg-config \
             libssl-dev \
@@ -174,6 +189,16 @@ jobs:
         timeout-minutes: 60
         run: scripts/bundle-flatpak.sh --release
 
+      - name: Generate Flatpak SBOM and CBOM
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "$ARCH" in x86_64) platform=flatpak-x64 ;; aarch64) platform=flatpak-arm64 ;; esac
+          bundle=$(realpath target/dist/ibisOffice-*-Linux-"$ARCH".flatpak)
+          python3 scripts/build-bom.py "$platform" "$bundle" target/dist --appdir target/dist/flatpak/build-dir/files
+
       - name: Upload Flatpak artifact
         timeout-minutes: 10
         uses: actions/upload-artifact@v4
@@ -182,6 +207,7 @@ jobs:
           path: |
             target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak
             target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak.sha256
+            target/dist/flatpak-*.*.cdx.json
 
       - name: Attach Flatpak to GitHub Release
         timeout-minutes: 10
@@ -193,4 +219,5 @@ jobs:
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
             target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak \
             target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak.sha256 \
+            target/dist/flatpak-*.*.cdx.json \
             --clobber

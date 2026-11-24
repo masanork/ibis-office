@@ -131,6 +131,19 @@ jobs:
           key: wasm-bindgen-cli-${{ runner.os }}-0.2.128
       - run: wasm-bindgen --version | grep -qx 'wasm-bindgen 0.2.128' || cargo install wasm-bindgen-cli --version 0.2.128 --locked
       - run: scripts/build-web.sh
+      - name: Inventory the built WASM modules and glue
+        run: |
+          set -euo pipefail
+          mkdir -p ci-wasm
+          python3 -m zipfile -c ci-wasm/wasm-ci.zip www/pkg
+          python3 scripts/build-bom.py wasm ci-wasm/wasm-ci.zip ci-wasm
+          (cd ci-wasm && sha256sum wasm-ci.zip *.cdx.json > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-ci-bom
+          path: ci-wasm/
+          if-no-files-found: error
+          retention-days: 14
       - name: Exercise HTML downloads in Chrome
         run: |
           export IBIS_CHROME_PATH="$(command -v google-chrome)"

@@ -51,7 +51,7 @@ fi
 # The paths of this machine are not to go into the wasm (see bundle-macos.sh):
 # rewritten, in a target directory of its own.
 REMAP="--remap-path-prefix=$HOME/.cargo/registry/src=crates.io --remap-path-prefix=$HOME/.cargo/git/checkouts=git --remap-path-prefix=$HOME/.rustup=rustup --remap-path-prefix=$(pwd)=."
-RUSTFLAGS="$REMAP" CARGO_TARGET_DIR=target/dist cargo rustc -p ibis-office-app --lib --crate-type cdylib --target wasm32-unknown-unknown ${FLAGS[@]+"${FLAGS[@]}"} -- \
+RUSTFLAGS="$REMAP" CARGO_TARGET_DIR=target/dist cargo rustc --locked -p ibis-office-app --lib --crate-type cdylib --target wasm32-unknown-unknown ${FLAGS[@]+"${FLAGS[@]}"} -- \
   -C link-arg=-zstack-size=8388608
 
 WASM="target/dist/wasm32-unknown-unknown/$PROFILE/ibis_office_app.wasm"
@@ -97,7 +97,7 @@ node --test target/www-test/test/*.test.js www/test/copy_text.test.mjs
 python3 scripts/check-web-sources.py --dist
 
 # Icons are fetched on demand from /assets/icons/*.svg.
-ASSETS_DIR=$(cargo metadata --filter-platform wasm32-unknown-unknown --format-version 1 | python3 -c '
+ASSETS_DIR=$(cargo metadata --locked --filter-platform wasm32-unknown-unknown --format-version 1 | python3 -c '
 import json, os, sys
 meta = json.load(sys.stdin)
 pkg = next(p for p in meta["packages"] if p["name"] == "gpui-kit-assets")

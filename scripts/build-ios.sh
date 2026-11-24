@@ -31,7 +31,7 @@ for arg in "$@"; do
 done
 
 echo "1. Building libibis_office_app.a ($TARGET, $PROFILE)..."
-IPHONEOS_DEPLOYMENT_TARGET=16.0 cargo rustc -p ibis-office-app --no-default-features --lib --crate-type staticlib --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
+IPHONEOS_DEPLOYMENT_TARGET=16.0 cargo rustc --locked -p ibis-office-app --no-default-features --lib --crate-type staticlib --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
 
 LIB_PATH="target/$TARGET/$PROFILE/libibis_office_app.a"
 APP_DIR="target/ios-app/IbisOffice.app"
