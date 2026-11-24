@@ -1846,5 +1846,5 @@ vsdx.save-label-copy	VSDXを別名保存
 vsdx.keep-original	元の図面を保つため、別の保存先を指定してください。
 vsdx.label-copy-saved	更新したVSDXを別名で保存しました。
 vsdx.edit-geometry	図形の移動・接続変更…
-vsdx.geometry-command-help	{page}ページ · 図形IDを指定（インチ・上向きが正）
+vsdx.geometry-command-help	{page}ページ · 図形IDを指定（親座標・インチ・上向きが正）
 vsdx.geometry-command-error	move 図形ID 横移動 縦移動 または connect コネクタID begin/end 接続先ID を入力してください。
