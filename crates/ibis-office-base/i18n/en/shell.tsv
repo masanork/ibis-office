@@ -1830,3 +1830,10 @@ structured.row-schema-contains-few	Too few array items match the condition
 structured.row-schema-contains-many	Too many array items match the condition
 ai.send-opencode	OpenCode (ACP)
 ai.opencode-cancelled	OpenCode run cancelled.
+file.new.visio-draft	New Diagram (for Visio)
+file.export.vsdx	Visio Drawing (.vsdx)
+vsdx.draft-filename	Drawing.pptx
+vsdx.draft-unsupported	Visio export supports one page of rectangles, ellipses, diamonds, and straight connectors attached at both ends.
+vsdx.export-extension	Use the .vsdx file extension.
+vsdx.exported	Exported the Visio drawing.
+vsdx.export-use-command	Choose Export > Visio Drawing (.vsdx) to create a VSDX file.

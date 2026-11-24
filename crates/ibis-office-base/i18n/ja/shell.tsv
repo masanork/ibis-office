@@ -1828,3 +1828,10 @@ structured.row-schema-contains-few	条件を満たす配列の要素が不足し
 structured.row-schema-contains-many	条件を満たす配列の要素が多すぎます
 ai.send-opencode	OpenCode (ACP)
 ai.opencode-cancelled	OpenCodeの実行を停止しました。
+file.new.visio-draft	新規図面（Visio用）
+file.export.vsdx	Visio 図面（.vsdx）
+vsdx.draft-filename	図面.pptx
+vsdx.draft-unsupported	Visio 書き出しは、1ページの長方形・楕円・ひし形と、両端が図形に接続された直線に対応しています。
+vsdx.export-extension	ファイル名の拡張子に .vsdx を指定してください。
+vsdx.exported	Visio 図面を書き出しました。
+vsdx.export-use-command	VSDXにするには「書き出し」から「Visio 図面（.vsdx）」を選んでください。

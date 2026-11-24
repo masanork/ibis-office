@@ -172,6 +172,10 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
             .on(|this, window, cx| this.new_markdown_file(window, cx))
             .into(),
     );
+    #[cfg(not(target_family = "wasm"))]
+    if !crate::host::is_connected() {
+        new_items.push(item("file.new.visio-draft", "draw").on(|this, window, cx| this.new_visio_draft(window, cx)).into());
+    }
     let mut items: Vec<crate::chrome::MenuEntry> = Vec::new();
     // A host with no start window (`ui.startWindow` off: ibisWorks) has neither this line nor the separator after it (K0037).
     if cfg!(not(target_arch = "wasm32")) && !(crate::host::is_connected() && !crate::host::options().start_window) {
@@ -213,6 +217,11 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
                 if editor.can_edit_jtd_as_docx() {
                     entries.push(item("jtd.edit-as-docx", "edit").on(|this, window, cx| this.edit_jtd_as_docx(window, cx)).into());
                 }
+            }
+            #[cfg(not(target_family = "wasm"))]
+            if kind == ibis_formats::Kind::Presentation {
+                entries.push(item("file.export.vsdx", "draw").disabled(!crate::host::export_allowed("vsdx"))
+                    .on(|this, window, cx| this.export_visio(window, cx)).into());
             }
             // The screen's own kinds of file (a presentation: OpenDocument).
             entries.extend(with_format!(editor, menu_items(editor, MenuPart::FileExport)));

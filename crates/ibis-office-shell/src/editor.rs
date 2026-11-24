@@ -4430,6 +4430,12 @@ impl Render for SlideEditor {
             .on_action(cx.listener(|this, _: &crate::actions::StartNewDocument, window, cx| this.new_file(ibis_formats::Kind::Document, window, cx)))
             .on_action(cx.listener(|this, _: &crate::actions::StartNewWorkbook, window, cx| this.new_file(ibis_formats::Kind::Workbook, window, cx)))
             .on_action(cx.listener(|this, _: &crate::actions::StartNewPresentation, window, cx| this.new_file(ibis_formats::Kind::Presentation, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::actions::StartNewVisioDraft, window, cx| {
+                #[cfg(not(target_family = "wasm"))]
+                this.new_visio_draft(window, cx);
+                #[cfg(target_family = "wasm")]
+                let _ = (this, window, cx);
+            }))
             .on_action(cx.listener(|this, action: &crate::actions::OpenRecent, window, cx| {
                 #[cfg(not(target_family = "wasm"))]
                 this.open_path_or_raise(action.path.clone(), window, cx);

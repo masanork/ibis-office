@@ -32,9 +32,10 @@ fn lines() {
         menus.iter().find(|(m, _)| *m == id).map(|(_, entries)| entries.iter().filter_map(|e| if let MenuEntry::Item(i) = e { Some(i.id) } else { None }).collect()).unwrap_or_default()
     };
     let file = ids(MenuId::File);
-    assert_eq!(&file[..5], ["file.new-document", "file.new-workbook", "file.new-presentation", "file.open", "file.close-window"], "File menu: {file:?}");
+    assert_eq!(&file[..5], ["file.new-document", "file.new-workbook", "file.new-presentation", "file.new.visio-draft", "file.open"], "File menu: {file:?}");
     let keys: Vec<Option<&str>> = menus[0].1.iter().filter_map(|e| if let MenuEntry::Item(i) = e { Some(i.shortcut) } else { None }).take(5).collect();
-    assert_eq!(keys, [Some("⌘D"), Some("⌘E"), Some("⌘P"), Some("⌘O"), Some("⌘W")]);
+    assert_eq!(keys, [Some("⌘D"), Some("⌘E"), Some("⌘P"), None, Some("⌘O")]);
+    assert!(menus[0].1.iter().any(|e| matches!(e, MenuEntry::Item(i) if i.id == "file.close-window" && i.shortcut == Some("⌘W"))));
     assert!(menus[0].1.iter().any(|e| matches!(e, MenuEntry::Submenu(sub) if sub.id == "file.recent")), "the File menu has the recent files");
     assert!(ids(MenuId::Window).contains(&"window.minimize"), "the Window menu has Minimize");
     assert!(ids(MenuId::Help).contains(&"help.about"), "the Help menu has About");

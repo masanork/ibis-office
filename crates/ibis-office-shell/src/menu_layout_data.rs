@@ -14,6 +14,7 @@ pub(super) const DOC: &[MenuSpec] = &[
         LayoutItem::Sub { id: Some("file.new"), label_key: "file.new", items: &[
             LayoutItem::Cmd("file.new.document"),
             LayoutItem::Cmd("file.new.workbook"),
+            LayoutItem::Cmd("file.new.visio-draft"),
             LayoutItem::Cmd("file.new.presentation"),
         ] },
         LayoutItem::Cmd("file.open"),
@@ -631,6 +632,7 @@ pub(super) const SHEET: &[MenuSpec] = &[
         LayoutItem::Sep,
         LayoutItem::Sub { id: Some("file.new"), label_key: "file.new", items: &[
             LayoutItem::Cmd("file.new.workbook"),
+            LayoutItem::Cmd("file.new.visio-draft"),
             LayoutItem::Cmd("file.new.document"),
             LayoutItem::Cmd("file.new.presentation"),
         ] },
@@ -1263,6 +1265,7 @@ pub(super) const SLIDE: &[MenuSpec] = &[
             LayoutItem::Cmd("file.new.presentation"),
             LayoutItem::Cmd("file.new.document"),
             LayoutItem::Cmd("file.new.workbook"),
+            LayoutItem::Cmd("file.new.visio-draft"),
         ] },
         LayoutItem::Cmd("file.open"),
         LayoutItem::Cmd("file.open-folder"),
@@ -1282,6 +1285,7 @@ pub(super) const SLIDE: &[MenuSpec] = &[
             LayoutItem::CmdOrPlanned { id: "pptx.export-gif", key: "menu.planned.slide.file.5" },
             LayoutItem::CmdOrPlanned { id: "file.export.svg", key: "menu.planned.slide.file.6" },
             LayoutItem::Cmd("file.export.odp"),
+            LayoutItem::Cmd("file.export.vsdx"),
             LayoutItem::CmdAs { id: "pptx.export-html", label_key: "pptx.export-html" },
         ] },
         LayoutItem::Cmd("file.print"),

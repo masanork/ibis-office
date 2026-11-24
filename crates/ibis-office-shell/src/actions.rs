@@ -30,6 +30,7 @@ actions!(
         StartNewWorkbook,
         /// The start window's ファイル > 新しいプレゼンテーション (⌘P, only in the start window).
         StartNewPresentation,
+        StartNewVisioDraft,
         /// Minimize the window (ウィンドウ > しまう, ⌘M).
         MinimizeWindow,
         /// Look for a newer version (ヘルプ > 更新の確認…).

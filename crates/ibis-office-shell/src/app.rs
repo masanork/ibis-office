@@ -132,6 +132,8 @@ pub(crate) fn start_app_menus() -> [Menu; 4] {
             MenuItem::action(text("file.new-document"), StartNewDocument),
             MenuItem::action(text("file.new-workbook"), StartNewWorkbook),
             MenuItem::action(text("file.new-presentation"), StartNewPresentation),
+            #[cfg(not(target_family = "wasm"))]
+            MenuItem::action(text("file.new.visio-draft"), StartNewVisioDraft),
             MenuItem::action(text("app.file.open"), Open),
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             MenuItem::action(text("file.open-folder"), OpenFolder),

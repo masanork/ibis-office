@@ -393,6 +393,9 @@ impl SlideEditor {
         if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::production_image::supports_extension) {
             return Err("Choose a document extension to save the imported image".into());
         }
+        if crate::visio::is_visio_path(&path) {
+            return Err(crate::i18n::text("vsdx.export-use-command").to_string());
+        }
         self.check_standard_copy_format(&path)?;
         if self.standard_source_path.as_deref().is_some_and(|original| same_file(original, &path)) {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());

@@ -68,6 +68,7 @@ struct End {
 struct Connector {
     start: End,
     end: End,
+    arrows: (bool, bool),
 }
 
 /// A new single-page diagram. Coordinates are points relative to the page's top left.
@@ -128,6 +129,16 @@ impl Drawing {
     }
 
     pub fn connect(&mut self, start: (ShapeId, Side), end: (ShapeId, Side)) -> Result<()> {
+        self.connect_with_arrows(start, end, (false, true))
+    }
+
+    /// Connect two shapes with an optional triangular arrow at each end.
+    pub fn connect_with_arrows(
+        &mut self,
+        start: (ShapeId, Side),
+        end: (ShapeId, Side),
+        arrows: (bool, bool),
+    ) -> Result<()> {
         self.check_item_limit()?;
         if start.0 == end.0 || start.0.0 > self.shapes.len() || end.0.0 > self.shapes.len() {
             return Err(Error::new(
@@ -143,6 +154,7 @@ impl Drawing {
                 shape: end.0,
                 side: end.1,
             },
+            arrows,
         });
         Ok(())
     }
@@ -314,7 +326,13 @@ impl Drawing {
         let (x0, y0) = self.endpoint(connector.start);
         let (x1, y1) = self.endpoint(connector.end);
         let length = (x1 - x0).hypot(y1 - y0);
-        write!(out, r#"<Shape ID="{id}" Type="Shape"><Cell N="FillPattern" V="0"/><Cell N="LinePattern" V="1"/><Cell N="EndArrow" V="4"/>"#).unwrap();
+        write!(out, r#"<Shape ID="{id}" Type="Shape"><Cell N="FillPattern" V="0"/><Cell N="LinePattern" V="1"/>"#).unwrap();
+        cell(
+            out,
+            "BeginArrow",
+            if connector.arrows.0 { 4.0 } else { 0.0 },
+        );
+        cell(out, "EndArrow", if connector.arrows.1 { 4.0 } else { 0.0 });
         for (prefix, end, (x, y)) in [
             ("Begin", connector.start, (x0, y0)),
             ("End", connector.end, (x1, y1)),

@@ -70,6 +70,58 @@ impl SlideEditor {
         }
     }
 
+    /// Open a blank diagram draft in the existing shape editor.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn new_visio_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::host::is_connected() {
+            return;
+        }
+        self.commit_edit(window, cx);
+        let mut opened = match ibis_formats::blank_file(ibis_formats::Kind::Presentation).and_then(ibis_formats::open) {
+            Ok(opened) => opened,
+            Err(error) => return self.set_status(crate::i18n::format("file.new-failed", &[("error", &error)]), cx),
+        };
+        let layout = opened.presentation.layouts.iter().find(|layout| layout.placeholders.is_empty()).map(|layout| layout.id);
+        let slide = &mut opened.presentation.slides[0];
+        slide.shapes.clear();
+        slide.placeholders.clear();
+        slide.backdrop.clear();
+        slide.layout = layout;
+        let name = crate::i18n::text("vsdx.draft-filename");
+        if self.has_document {
+            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+        } else {
+            self.show_new(opened, name, window, cx);
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn export_visio(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !crate::host::export_allowed("vsdx") {
+            return;
+        }
+        self.commit_edit(window, cx);
+        let (stem, _) = self.name_parts();
+        self.ask_path(format!("{stem}.vsdx"), window, cx, |this, path, _, cx| {
+            let result = this.export_visio_to(&path).map(|()| crate::i18n::text("vsdx.exported").to_string());
+            this.report(result, cx);
+        });
+    }
+
+    /// Write the diagram to a separate VSDX file.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn export_visio_to(&self, path: &std::path::Path) -> Result<(), String> {
+        if self.kind() != ibis_formats::Kind::Presentation || !crate::host::export_allowed("vsdx") {
+            return Err(crate::i18n::text("vsdx.draft-unsupported").to_string());
+        }
+        if !crate::visio::is_visio_path(path) {
+            return Err(crate::i18n::text("vsdx.export-extension").to_string());
+        }
+        let bytes = crate::visio::from_presentation(self.presentation())?;
+        crate::save::write_replacing(path, &bytes)
+            .map_err(|error| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &error)]))
+    }
+
     /// A new, empty Markdown document backed by a `.docx` flow model (`Document1.md` / `文書 1.md`).
     pub fn new_markdown_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_edit(window, cx);
@@ -351,6 +403,9 @@ impl SlideEditor {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::production_image::supports_extension) {
             return Err("Choose a document extension to save the imported image".into());
+        }
+        if crate::visio::is_visio_path(path) {
+            return Err(crate::i18n::text("vsdx.export-use-command").to_string());
         }
         self.check_standard_copy_format(path)?;
         if self.current_csv_format.is_some() && self.path.as_deref().is_some_and(|original| crate::save::same_file(original, path)) {
