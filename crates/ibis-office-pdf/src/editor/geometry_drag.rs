@@ -23,15 +23,11 @@ pub(super) struct GeometryDrag {
     current: (f32, f32),
 }
 
-fn shape_at<'a>(
-    shapes: impl Iterator<Item = &'a (u32, ibis_pdf::PdfRect)>,
-    x: f32,
-    y: f32,
-) -> Option<u32> {
+fn shape_at(shapes: impl Iterator<Item = (u32, ibis_pdf::PdfRect)>, x: f32, y: f32) -> Option<u32> {
     shapes
         .filter(|(_, r)| r.x0 <= x && x <= r.x1 && r.y0 <= y && y <= r.y1)
         .min_by(|(_, a), (_, b)| (a.width() * a.height()).total_cmp(&(b.width() * b.height())))
-        .map(|(id, _)| *id)
+        .map(|(id, _)| id)
 }
 
 pub(super) fn targets(editor: &SlideEditor, page: usize) -> Arc<GeometryTargets> {
@@ -77,7 +73,9 @@ pub(super) fn press(
                     .group_children
                     .iter()
                     .rev()
-                    .chain(targets.shapes.iter().rev()),
+                    .filter(|child| child.contains(x, y))
+                    .map(|child| (child.id, child.bounds))
+                    .chain(targets.shapes.iter().rev().copied()),
                 x,
                 y,
             )
@@ -121,7 +119,13 @@ pub(super) fn ghost(drag: &GeometryDrag, targets: &GeometryTargets) -> ibis_pdf:
         && let Some((_, rect)) = targets
             .shapes
             .iter()
-            .chain(&targets.group_children)
+            .copied()
+            .chain(
+                targets
+                    .group_children
+                    .iter()
+                    .map(|child| (child.id, child.bounds)),
+            )
             .find(|(shape, _)| *shape == id)
     {
         let (dx, dy) = (x - drag.start.0, y - drag.start.1);
@@ -167,13 +171,18 @@ pub(super) fn release(
         return true;
     }
     let edit = match drag.object {
-        Object::Shape(shape) => GeometryEdit::Move {
-            shape,
-            dx: f64::from(dx) / 72.0,
-            dy: -f64::from(dy) / 72.0,
-        },
+        Object::Shape(shape) => {
+            let (dx, dy) = (f64::from(dx) / 72.0, -f64::from(dy) / 72.0);
+            let (dx, dy) = mode
+                .targets
+                .group_children
+                .iter()
+                .find(|child| child.id == shape)
+                .map_or((dx, dy), |child| child.local_delta(dx, dy));
+            GeometryEdit::Move { shape, dx, dy }
+        }
         Object::Connector(connector, endpoint) => {
-            let Some(target) = shape_at(mode.targets.shapes.iter().rev(), x, y) else {
+            let Some(target) = shape_at(mode.targets.shapes.iter().rev().copied(), x, y) else {
                 editor.report(
                     Err(ibis_office_shell::i18n::text("vsdx.geometry-drop-target").to_string()),
                     cx,

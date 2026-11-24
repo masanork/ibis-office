@@ -24,6 +24,9 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         scenarios.push(("shell::vsdx_visio_authored_drawing_edit_mode", vsdx_visio_authored_edit_mode));
         scenarios.push(("shell::vsdx_visio_authored_group_drag", vsdx_visio_authored_group_drag));
     }
+    if std::env::var_os("VSDX_VISIO_TRANSFORMED_GROUP_SAMPLE").is_some() {
+        scenarios.push(("shell::vsdx_visio_transformed_group_drag", vsdx_visio_transformed_group_drag));
+    }
     scenarios
 }
 
@@ -428,37 +431,64 @@ fn vsdx_visio_authored_edit_mode() {
 }
 
 fn vsdx_visio_authored_group_drag() {
+    let input = std::env::var("VSDX_VISIO_GLUED_ARC_SAMPLE").unwrap();
+    group_drag_roundtrip(
+        &input, "visio-group-child-edited.vsdx", ("536", "537"),
+        (16.035433, 0.65), (1.7143403, 9.852173),
+        ([0.280673746, 0.780542173], [0.530673746, 0.905542173]),
+    );
+}
+
+fn vsdx_visio_transformed_group_drag() {
+    let input = std::env::var("VSDX_VISIO_TRANSFORMED_GROUP_SAMPLE").unwrap();
+    // Mario Pipes, Page-1. Group 48 is rotated 45 degrees and flipped vertically.
+    let pin = 0.1377952755905518;
+    let diagonal = std::f64::consts::FRAC_1_SQRT_2;
+    group_drag_roundtrip(
+        &input, "visio-transformed-group-child-edited.vsdx", ("48", "50"),
+        (45.271654, 0.40), (15.7672, 28.985147),
+        ([pin, pin], [pin + 0.375 * diagonal, pin + 0.125 * diagonal]),
+    );
+}
+
+fn group_drag_roundtrip(
+    input: &str,
+    filename: &str,
+    (parent_id, child_id): (&str, &str),
+    (height, zoom): (f32, f32),
+    (x, y): (f32, f32),
+    (original_pins, moved_pins): ([f64; 2], [f64; 2]),
+) {
     use ibis_office_pdf::editor::{geometry_screen_point, staged_geometry_bytes, write_vsdx_copy};
 
-    let input = std::env::var("VSDX_VISIO_GLUED_ARC_SAMPLE").unwrap();
-    let mut s = Scenario::open(&input);
+    let mut s = Scenario::open(input);
     let path = s.with(|editor, _| editor.file_path().unwrap());
     let original = std::fs::read(&path).unwrap();
     s.menu("vsdx.resume-edit");
     s.size(1500.0, 1200.0);
     s.update(|editor, _, cx| {
-        editor.zoom = Some(0.65);
+        editor.zoom = Some(zoom);
         cx.notify();
     });
-    // CSV shape 537 sits inside group 536. Move its center by +0.25, +0.125 inches.
+    // Move the center right 0.25 inches and up 0.125 inches in page coordinates.
     let mut screen = |x: f32, y: f32| {
         s.with(|editor, _| {
-            geometry_screen_point(editor, 0, x * 72.0, (16.035433 - y) * 72.0).unwrap()
+            geometry_screen_point(editor, 0, x * 72.0, (height - y) * 72.0).unwrap()
         })
     };
-    let start = screen(1.7143403, 9.852173);
-    let end = screen(1.9643403, 9.977173);
+    let start = screen(x, y);
+    let end = screen(x + 0.25, y + 0.125);
     s.drag(start, end);
     let edited = s.with(|editor, _| staged_geometry_bytes(editor))
         .unwrap_or_else(|| panic!("group drag failed: {:?}", s.status_texts()));
 
-    let output = "target/scenario/vsdx-geometry-src/visio-group-child-edited.vsdx";
-    let copy = crate::shell::scenario::repo_root().join(output);
+    let output = format!("target/scenario/vsdx-geometry-src/{filename}");
+    let copy = crate::shell::scenario::repo_root().join(&output);
     std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
     write_vsdx_copy(Some(&path), &copy, &edited).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), original);
     drop(s);
-    let reopened = Scenario::open(output)
+    let reopened = Scenario::open(&output)
         .with(|editor, _| editor.presentation().pdf_bytes.clone()).unwrap();
     let before = ibis_formats::zip::Archive::new(&original).unwrap();
     let after = ibis_formats::zip::Archive::new(&reopened).unwrap();
@@ -475,10 +505,10 @@ fn vsdx_visio_authored_group_drag() {
         let redact_pins = |source: &str, expected: [f64; 2]| {
             let doc = roxmltree::Document::parse(source).unwrap();
             let shape = doc.descendants()
-                .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some("537"))
+                .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some(child_id))
                 .unwrap();
             let parent = shape.parent().unwrap().parent().unwrap();
-            assert_eq!(parent.attribute("ID"), Some("536"));
+            assert_eq!(parent.attribute("ID"), Some(parent_id));
             let mut ranges = Vec::new();
             for ((pin, dimension), expected) in [("PinX", "Width"), ("PinY", "Height")].into_iter().zip(expected) {
                 let pin = shape.children().find(|n| n.attribute("N") == Some(pin)).unwrap();
@@ -486,7 +516,7 @@ fn vsdx_visio_authored_group_drag() {
                 let extent: f64 = parent.children().find(|n| n.attribute("N") == Some(dimension))
                     .unwrap().attribute("V").unwrap().parse().unwrap();
                 let formula = pin.attribute("F").unwrap();
-                let fraction: f64 = formula.strip_prefix(&format!("Sheet.536!{dimension}*"))
+                let fraction: f64 = formula.strip_prefix(&format!("Sheet.{parent_id}!{dimension}*"))
                     .unwrap().parse().unwrap();
                 assert!((pos - expected).abs() < 0.01, "{pin:?}: {pos}");
                 assert!((pos - extent * fraction).abs() < 1e-9, "{formula}");
@@ -499,8 +529,8 @@ fn vsdx_visio_authored_group_drag() {
             }
             unchanged
         };
-        assert!(redact_pins(&old, [0.280673746, 0.780542173])
-            == redact_pins(&new, [0.530673746, 0.905542173]),
+        assert!(redact_pins(&old, original_pins)
+            == redact_pins(&new, moved_pins),
             "only the child position cells should differ");
     }
 }

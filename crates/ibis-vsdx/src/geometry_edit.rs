@@ -908,8 +908,32 @@ impl EditableRoute<'_, '_> {
 #[derive(Default)]
 pub struct GeometryTargets {
     pub shapes: Vec<(u32, ibis_pdf::PdfRect)>,
-    pub group_children: Vec<(u32, ibis_pdf::PdfRect)>,
+    pub group_children: Vec<GroupChildTarget>,
     pub endpoints: Vec<(u32, Endpoint, (f32, f32))>,
+}
+
+pub struct GroupChildTarget {
+    pub id: u32,
+    pub bounds: ibis_pdf::PdfRect,
+    parent: crate::Matrix,
+    frame: crate::Matrix,
+    size: (f64, f64),
+    page_height: f32,
+}
+
+impl GroupChildTarget {
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        let [_, _, _, _, tx, ty] = self.frame.0;
+        let (u, v) = self.frame.inverse_vector(
+            f64::from(x) / 72.0 - tx,
+            f64::from(self.page_height - y) / 72.0 - ty,
+        );
+        (0.0..=self.size.0).contains(&u) && (0.0..=self.size.1).contains(&v)
+    }
+
+    pub fn local_delta(&self, dx: f64, dy: f64) -> (f64, f64) {
+        self.parent.inverse_vector(dx, dy)
+    }
 }
 
 impl VsdxContainer {
@@ -933,7 +957,7 @@ impl VsdxContainer {
         let height = page.info.crop_box.height();
         let point = |x: f64, y: f64| ((x * 72.0) as f32, height - (y * 72.0) as f32);
         let mut targets = GeometryTargets::default();
-        collect_shape_targets(shapes, &masters, &links, height, (0.0, 0.0), 0, &mut targets);
+        collect_shape_targets(shapes, &masters, &links, height, crate::Matrix::IDENTITY, 0, &mut targets);
         let connectors: BTreeSet<_> = links
             .iter()
             .filter_map(|&link| id(link, "FromSheet"))
@@ -957,7 +981,7 @@ fn collect_shape_targets(
     masters: &HashMap<&str, roxmltree::Document<'_>>,
     links: &[XmlNode<'_, '_>],
     height: f32,
-    offset: (f64, f64),
+    parent: crate::Matrix,
     depth: usize,
     targets: &mut GeometryTargets,
 ) {
@@ -969,53 +993,59 @@ fn collect_shape_targets(
             continue;
         };
         let master = master_for(shape, masters, 0);
-        let Some(((left, bottom), (width, shape_height))) = target_bounds(shape, master) else {
+        let get = |key| inherited_value(shape, master, key).ok();
+        let (Some(width), Some(shape_height)) = (get("Width"), get("Height")) else {
             continue;
         };
-        let left = left + offset.0;
-        let bottom = bottom + offset.1;
-        if movable_pin(shape, master).is_ok() {
-            let rect = ibis_pdf::PdfRect {
-                x0: (left * 72.0) as f32,
-                x1: ((left + width) * 72.0) as f32,
-                y0: height - ((bottom + shape_height) * 72.0) as f32,
-                y1: height - (bottom * 72.0) as f32,
-            };
-            if depth == 0 {
-                targets.shapes.push((shape_id, rect));
-            } else if ["PinX", "PinY"].into_iter().all(|key| {
+        let (Some(px), Some(py)) = (get("PinX"), get("PinY")) else {
+            continue;
+        };
+        if width <= 0.0 || shape_height <= 0.0 {
+            continue;
+        }
+        let angle = get("Angle").unwrap_or(0.0);
+        let flip_x = get("FlipX") == Some(1.0);
+        let flip_y = get("FlipY") == Some(1.0);
+        let frame = parent.child(crate::Matrix::shape(
+            (px, py),
+            (get("LocPinX").unwrap_or(width / 2.0), get("LocPinY").unwrap_or(shape_height / 2.0)),
+            angle,
+            flip_x,
+            flip_y,
+        ));
+        let can_drag = if depth == 0 {
+            angle == 0.0 && !flip_x && !flip_y
+        } else {
+            ["PinX", "PinY"].into_iter().all(|key| {
                 cell(shape, key).is_ok_and(|cell| cell.attribute("F").is_none())
                     || parent_pin_scale(shape, key).is_some()
             }) && check_move_links(shape, shape_id, true, links).is_ok()
-            {
-                targets.group_children.push((shape_id, rect));
+        };
+        if can_drag && movable_pin(shape, master).is_ok() {
+            let corners = [(0.0, 0.0), (width, 0.0), (0.0, shape_height), (width, shape_height)];
+            let mut bounds = ibis_pdf::PdfRect {
+                x0: f32::INFINITY, y0: f32::INFINITY,
+                x1: f32::NEG_INFINITY, y1: f32::NEG_INFINITY,
+            };
+            for (x, y) in corners {
+                let (x, y) = frame.point(x, y);
+                let (x, y) = (x * 72.0, height - y * 72.0);
+                bounds.x0 = bounds.x0.min(x);
+                bounds.x1 = bounds.x1.max(x);
+                bounds.y0 = bounds.y0.min(y);
+                bounds.y1 = bounds.y1.max(y);
+            }
+            if depth == 0 {
+                targets.shapes.push((shape_id, bounds));
+            } else {
+                targets.group_children.push(GroupChildTarget {
+                    id: shape_id, bounds, parent, frame, size: (width, shape_height),
+                    page_height: height,
+                });
             }
         }
         if let Some(children) = child(shape, "Shapes") {
-            // For an unrotated, unflipped group the local origin is just translated.
-            collect_shape_targets(children, masters, links, height, (left, bottom), depth + 1, targets);
+            collect_shape_targets(children, masters, links, height, frame, depth + 1, targets);
         }
     }
-}
-
-fn target_bounds(
-    shape: XmlNode<'_, '_>,
-    master: Option<XmlNode<'_, '_>>,
-) -> Option<((f64, f64), (f64, f64))> {
-    if ["Angle", "FlipX", "FlipY"]
-        .into_iter()
-        .any(|name| inherited_value(shape, master, name).is_ok_and(|value| value != 0.0))
-    {
-        return None;
-    }
-    let x = inherited_value(shape, master, "PinX").ok()?;
-    let y = inherited_value(shape, master, "PinY").ok()?;
-    let w = inherited_value(shape, master, "Width").ok()?;
-    let h = inherited_value(shape, master, "Height").ok()?;
-    if w <= 0.0 || h <= 0.0 {
-        return None;
-    }
-    let local_x = inherited_value(shape, master, "LocPinX").unwrap_or(w / 2.0);
-    let local_y = inherited_value(shape, master, "LocPinY").unwrap_or(h / 2.0);
-    Some(((x - local_x, y - local_y), (w, h)))
 }

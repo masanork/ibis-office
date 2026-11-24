@@ -418,7 +418,7 @@ fn moves_an_unconnected_child_in_group_coordinates() {
         source
     });
     let targets = doc.geometry_targets(0).unwrap();
-    let (_, child) = targets.group_children.iter().find(|(id, _)| *id == 1).unwrap();
+    let child = targets.group_children.iter().find(|child| child.id == 1).unwrap().bounds;
     assert!(!targets.shapes.iter().any(|(id, _)| *id == 1));
     assert!(((child.x0 + child.x1) / 2.0 - (9.931102 + 1.0) * 72.0).abs() < 0.01);
     let bytes = doc
@@ -443,6 +443,39 @@ fn moves_an_unconnected_child_in_group_coordinates() {
     let xml = roxmltree::Document::parse(&page).unwrap();
     assert!((cell_value(&xml, "1", "PinX") - 10.181102).abs() < 1e-6);
     assert_eq!(cell_value(&xml, "100", "PinX"), 1.0);
+}
+
+#[test]
+fn group_drag_inverts_the_composed_rotation_and_reflection() {
+    let doc = rewrite_flowchart(|mut source| {
+        let xml = roxmltree::Document::parse(&source).unwrap();
+        let shape = xml.descendants()
+            .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some("1"))
+            .unwrap().range();
+        source.insert_str(shape.end, "</Shapes></Shape></Shapes></Shape>");
+        source.insert_str(shape.start, concat!(
+            r#"<Shape ID="100" Type="Group"><Cell N="PinX" V="12"/><Cell N="PinY" V="1"/><Cell N="LocPinX" V="0"/><Cell N="LocPinY" V="0"/><Cell N="Width" V="20"/><Cell N="Height" V="3"/><Cell N="Angle" V="1.5707963267948966"/><Shapes>"#,
+            r#"<Shape ID="101" Type="Group"><Cell N="PinX" V="1"/><Cell N="PinY" V="2"/><Cell N="LocPinX" V="0"/><Cell N="LocPinY" V="0"/><Cell N="Width" V="20"/><Cell N="Height" V="3"/><Cell N="FlipX" V="1"/><Shapes>"#,
+        ));
+        source
+    });
+    let before = doc.geometry_targets(0).unwrap();
+    let child = before.group_children.iter().find(|child| child.id == 1).unwrap();
+    let cx = (child.bounds.x0 + child.bounds.x1) / 2.0;
+    let cy = (child.bounds.y0 + child.bounds.y1) / 2.0;
+    assert!(child.contains(cx, cy));
+    let (dx, dy) = child.local_delta(0.25, 0.125);
+    assert!((dx + 0.125).abs() < 1e-9 && (dy + 0.25).abs() < 1e-9);
+    let bytes = doc.edit_geometry(0, GeometryEdit::Move { shape: 1, dx, dy }).unwrap();
+    let reopened = VsdxContainer::from_bytes(bytes.into()).unwrap();
+    let after = reopened.geometry_targets(0).unwrap();
+    let moved = after.group_children.iter().find(|child| child.id == 1).unwrap();
+    let parent = |targets: &ibis_vsdx::geometry_edit::GeometryTargets| {
+        targets.group_children.iter().find(|child| child.id == 101).unwrap().bounds
+    };
+    assert_eq!(parent(&before), parent(&after));
+    assert!((moved.bounds.x0 - child.bounds.x0 - 18.0).abs() < 0.01);
+    assert!((moved.bounds.y0 - child.bounds.y0 + 9.0).abs() < 0.01);
 }
 
 #[test]

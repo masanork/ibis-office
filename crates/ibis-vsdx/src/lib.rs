@@ -346,6 +346,30 @@ fn number(s: Option<&str>) -> Option<f64> {
 struct Matrix([f64; 6]);
 
 impl Matrix {
+    const IDENTITY: Self = Self([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+
+    fn shape(pin: (f64, f64), local: (f64, f64), angle: f64, flip_x: bool, flip_y: bool) -> Self {
+        let (sin, cos) = angle.sin_cos();
+        let fx = if flip_x { -1.0 } else { 1.0 };
+        let fy = if flip_y { -1.0 } else { 1.0 };
+        let (px, py) = pin;
+        let (lx, ly) = local;
+        Self([
+            cos * fx,
+            sin * fx,
+            -sin * fy,
+            cos * fy,
+            px - cos * fx * lx + sin * fy * ly,
+            py - sin * fx * lx - cos * fy * ly,
+        ])
+    }
+
+    // Shape matrices contain only translation and orthogonal rotation/reflection.
+    fn inverse_vector(self, x: f64, y: f64) -> (f64, f64) {
+        let [a, b, c, d, _, _] = self.0;
+        (a * x + b * y, c * x + d * y)
+    }
+
     fn point(self, x: f64, y: f64) -> (f32, f32) {
         let [a, b, c, d, tx, ty] = self.0;
         ((a * x + c * y + tx) as f32, (b * x + d * y + ty) as f32)
@@ -413,17 +437,10 @@ impl Render<'_, '_, '_, '_> {
             let py = num("PinY").unwrap_or(h / 2.0);
             let lx = num("LocPinX").unwrap_or(w / 2.0);
             let ly = num("LocPinY").unwrap_or(h / 2.0);
-            let (sin, cos) = num("Angle").unwrap_or(0.0).sin_cos();
-            let fx = if get("FlipX") == Some("1") { -1.0 } else { 1.0 };
-            let fy = if get("FlipY") == Some("1") { -1.0 } else { 1.0 };
-            let m = parent.child(Matrix([
-                cos * fx,
-                sin * fx,
-                -sin * fy,
-                cos * fy,
-                px - cos * fx * lx + sin * fy * ly,
-                py - sin * fx * lx - cos * fy * ly,
-            ]));
+            let m = parent.child(Matrix::shape(
+                (px, py), (lx, ly), num("Angle").unwrap_or(0.0),
+                get("FlipX") == Some("1"), get("FlipY") == Some("1"),
+            ));
             let paint = |style, key| {
                 get(key).or_else(|| {
                     let mut next = shape.attribute(style).or_else(|| master?.attribute(style));

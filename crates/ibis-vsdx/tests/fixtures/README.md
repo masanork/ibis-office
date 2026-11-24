@@ -88,3 +88,17 @@ shapes and package parts after reopening.
 VSDX_VISIO_GLUED_ARC_SAMPLE=/path/to/original.vsdx \
 cargo test --locked -p ibis-office-app --test scenarios -- shell::vsdx_visio_authored_drawing_edit_mode
 ```
+
+## Drag inside a rotated and flipped Visio group
+
+The [Mario Pipes drawing](https://github.com/bhdicaire/visioStencils/blob/f87f1f5b12f867149de92894778c9c056eb68340/Documents/IT%20Vendors/Mario%20Pipes%20%28mrpaulandrew%29.vsdx)
+was saved by Microsoft Visio. Its SHA-256 is
+`882c47022e76d2cd21017b16abc7112d1036204e2d7c4b74c12941c3979058af`.
+Group 48 is rotated 45 degrees and flipped vertically. The desktop scenario
+drags child 50 right and up, saves a copy, and checks on reopening that only
+the child's position cells changed.
+
+```sh
+VSDX_VISIO_TRANSFORMED_GROUP_SAMPLE=/path/to/mario-pipes.vsdx \
+cargo test --locked -p ibis-office-app --test scenarios -- shell::vsdx_visio_transformed_group_drag
+```
