@@ -4,10 +4,14 @@ use std::{borrow::Cow, collections::HashMap, ops::Range};
 
 use ibis_formats::csv::{OriginalEncoding, raw_csv_record_ranges, raw_utf8_csv_record_fields};
 
-use super::{MAX_RECORDS, Node, Tree, excerpt, linkage};
+use super::{
+    ADDRESSEE_ID, MAX_RECORDS, Node, RECORD_NAME_FIELDS, Tree, excerpt, linkage, record_heading,
+};
 
 pub(super) struct Csv {
     columns: Vec<Column>,
+    addressee: Option<usize>,
+    names: Vec<usize>,
     pub records: Vec<Range<usize>>,
     pub truncated: bool,
     pub data_count: usize,
@@ -75,11 +79,31 @@ impl Csv {
         records.remove(0);
         Ok(Self {
             columns,
+            addressee: names.iter().position(|name| name == ADDRESSEE_ID),
+            names: RECORD_NAME_FIELDS
+                .iter()
+                .filter_map(|field| names.iter().position(|name| name == *field))
+                .collect(),
             records,
             truncated,
             data_count,
             definition: None,
         })
+    }
+
+    pub fn record_heading(&self, bytes: &[u8]) -> Option<String> {
+        if self.addressee.is_none() && self.names.is_empty() {
+            return None;
+        }
+        let fields = raw_utf8_csv_record_fields(bytes).ok()?;
+        let read = |column| {
+            let range: &Range<usize> = fields.get(column)?;
+            let value = cell_text(&bytes[range.clone()]);
+            (!value.trim().is_empty()).then_some(value)
+        };
+        let id = self.addressee.and_then(read);
+        let name = self.names.iter().find_map(|&column| read(column));
+        record_heading(id.as_deref(), name.as_deref())
     }
 
     pub fn review(
@@ -233,6 +257,25 @@ fn branch(name: String, span: Range<usize>, expanded: bool, parent: Option<usize
 #[cfg(test)]
 mod tests {
     use super::{Csv, linkage};
+
+    #[test]
+    fn csv_record_heading_preserves_literal_id_and_decodes_the_name() {
+        let data = "市区町村コード,氏名,宛名番号\r\n131016,\"山田 \"\"花子\"\"\",000042\r\n131016,李 明,\r\n131016, ,\r\n";
+        let csv = Csv::read(data.as_bytes()).unwrap();
+        let headings = csv
+            .records
+            .iter()
+            .map(|span| csv.record_heading(&data.as_bytes()[span.clone()]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            headings,
+            [
+                Some("000042 · 山田 \"花子\"".into()),
+                Some("李 明".into()),
+                None
+            ]
+        );
+    }
 
     #[test]
     fn linkage_conditions_use_literal_values_and_report_unavailable_references() {

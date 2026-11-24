@@ -306,6 +306,43 @@ impl Source {
     }
 }
 
+const RECORD_NAME_FIELDS: &[&str] = &["氏名", "氏名_外国人漢字", "氏名_外国人ローマ字"];
+const ADDRESSEE_ID: &str = "宛名番号";
+
+fn record_heading(id: Option<&str>, name: Option<&str>) -> Option<String> {
+    let present = |value: &&str| !value.is_empty();
+    match (
+        id.map(str::trim).filter(present),
+        name.map(str::trim).filter(present),
+    ) {
+        (Some(id), Some(name)) => Some(format!("{} · {}", excerpt(id, 48), excerpt(name, 96))),
+        (Some(value), None) | (None, Some(value)) => Some(excerpt(value, 150)),
+        (None, None) => None,
+    }
+}
+
+fn json_record_heading(bytes: &[u8]) -> Option<String> {
+    // Keep scrolling responsive even when a single JSONL record is very large.
+    if bytes.len() > 64 * 1024 {
+        return None;
+    }
+    let fields: std::collections::HashMap<String, &RawValue> =
+        serde_json::from_slice(bytes).ok()?;
+    let read = |key| {
+        serde_json::from_str::<String>(fields.get(key)?.get())
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    };
+    let id = read(ADDRESSEE_ID).or_else(|| {
+        let raw = fields.get(ADDRESSEE_ID)?.get();
+        raw.bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| raw.to_owned())
+    });
+    let name = RECORD_NAME_FIELDS.iter().find_map(|&key| read(key));
+    record_heading(id.as_deref(), name.as_deref())
+}
+
 fn excerpt(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         text.to_owned()
@@ -805,7 +842,14 @@ impl Render for View {
                         let index = view.matching[position];
                         let source = view.source.as_ref().unwrap();
                         let bytes = &source.bytes[source.records[index].clone()];
-                        let sample = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]);
+                        let label = match &source.csv {
+                            Some(csv) => csv.record_heading(bytes),
+                            None => json_record_heading(bytes),
+                        }
+                        .unwrap_or_else(|| {
+                            let sample = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]);
+                            excerpt(sample.trim(), 150)
+                        });
                         div()
                             .id(("record", index))
                             .h(px(34.))
@@ -827,12 +871,7 @@ impl Render for View {
                                     .text_color(cx.theme().muted_foreground)
                                     .child((index + 1).to_string()),
                             )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .truncate()
-                                    .child(excerpt(sample.trim(), 150)),
-                            )
+                            .child(div().text_sm().truncate().child(label))
                     })
                     .collect::<Vec<_>>()
             }),
@@ -1614,6 +1653,24 @@ impl crate::editor::SlideEditor {
 #[cfg(test)]
 mod tests {
     use super::{PAGE_SIZE, Source, Tree};
+
+    #[test]
+    fn json_record_heading_prefers_literal_addressee_and_name() {
+        let record = r#"{"市区町村コード":"131016","宛名番号":"000042","氏名":"山田 花子"}"#;
+        assert_eq!(
+            super::json_record_heading(record.as_bytes()).as_deref(),
+            Some("000042 · 山田 花子")
+        );
+        let record = r#"{"宛名番号":123456789012345678901,"氏名":" ","氏名_外国人漢字":"李 明"}"#;
+        assert_eq!(
+            super::json_record_heading(record.as_bytes()).as_deref(),
+            Some("123456789012345678901 · 李 明")
+        );
+        assert_eq!(
+            super::json_record_heading(br#"{"municipality":"131016","name":"Example"}"#),
+            None
+        );
+    }
 
     #[test]
     fn schema_path_expands_nested_arrays_to_the_selected_field() {
