@@ -15,6 +15,7 @@ mod appearance;
 mod picture;
 mod table;
 mod wpg;
+mod wpg_drawing;
 
 use appearance::Packets;
 
@@ -645,6 +646,51 @@ mod tests {
             (7, 5, [244, 195, 30, 255]),
         ] {
             assert_eq!(bitmap.get_pixel(x, y).0, expected);
+        }
+    }
+
+    #[test]
+    fn preserves_wpg2_vector_and_bitmap_paint_order_in_docx() {
+        use ibis_doc_model::{EmuSize, MediaFormat};
+
+        let data = include_bytes!("../../../test/fixtures/wordperfect/mixed-wpg2.wpd");
+        let opened = open(data).unwrap();
+        let flow = opened.presentation.flow.as_ref().unwrap();
+        let Block::Paragraph(paragraph) = &flow.body[0] else {
+            panic!("expected inline picture paragraph");
+        };
+        let (media, size) = paragraph
+            .runs
+            .iter()
+            .find_map(|run| match run.kind {
+                FlowRunKind::Picture { media, size, .. } => Some((media, size)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(size, EmuSize::new(1_371_600, 1_028_700));
+        let media = opened
+            .presentation
+            .media
+            .iter()
+            .find(|item| item.id == media)
+            .unwrap();
+        assert_eq!(media.format, MediaFormat::Png);
+        let pixels = image::load_from_memory(&media.data).unwrap().to_rgba8();
+        assert_eq!(pixels.dimensions(), (300, 225));
+        for (x, y, expected) in [
+            (0, 0, [0, 0, 0, 0]),
+            (15, 45, [236, 236, 236, 255]),
+            (50, 40, [214, 46, 70, 255]),
+            (205, 52, [24, 133, 205, 255]),
+            (230, 120, [131, 47, 182, 255]),
+            (60, 110, [220, 30, 50, 255]),
+            (150, 110, [40, 180, 60, 255]),
+            (60, 175, [35, 70, 210, 255]),
+            (151, 175, [244, 195, 30, 255]),
+            (130, 150, [232, 136, 32, 255]),
+            (237, 190, [15, 110, 80, 255]),
+        ] {
+            assert_eq!(pixels.get_pixel(x, y).0, expected, "pixel at ({x}, {y})");
         }
     }
 
