@@ -3836,8 +3836,7 @@ fn starts_markdown_block(lines: &[&str], i: usize) -> bool {
     let l_raw = lines[i];
     let l_trim = l_raw.trim();
     l_trim.is_empty()
-        || l_trim.starts_with("```")
-        || l_trim.starts_with("~~~")
+        || opening_fence(l_trim).is_some()
         || l_trim.starts_with("$$")
         || l_trim.starts_with('>')
         || matches!(l_trim, "::: pagebreak" | "::: columnbreak")
@@ -3862,6 +3861,15 @@ fn append_markdown_paragraph_lines(
     runs: &mut Vec<FlowRun>,
     para_attrs: &mut BlockAttrs,
 ) {
+    let joined;
+    let joined_lines;
+    let para_lines = if para_lines.len() > 1 && para_lines.iter().any(|line| line.contains('`')) {
+        joined = join_multiline_code_spans(para_lines);
+        joined_lines = joined.split('\n').collect::<Vec<_>>();
+        &joined_lines
+    } else {
+        para_lines
+    };
     for (li, pline) in para_lines.iter().enumerate() {
         let has_next_line = li + 1 < para_lines.len();
         let content = if has_next_line && ends_with_markdown_break_escape(pline) {
@@ -3894,6 +3902,24 @@ fn append_markdown_paragraph_lines(
         }
         runs.extend(parse_inlines(content, ctx, &RunFormat::default()));
     }
+}
+
+fn join_multiline_code_spans(lines: &[&str]) -> String {
+    use pulldown_cmark::{Event, Parser};
+    let source = lines.join("\n");
+    let inline = format!("x {source}");
+    let mut output = String::with_capacity(source.len());
+    let mut start = 0;
+    for (event, span) in Parser::new(&inline).into_offset_iter() {
+        if matches!(event, Event::Code(_)) && inline[span.clone()].contains('\n') {
+            let (begin, end) = (span.start - 2, span.end - 2);
+            output.push_str(&source[start..begin]);
+            output.push_str(&source[begin..end].replace('\n', " "));
+            start = end;
+        }
+    }
+    output.push_str(&source[start..]);
+    output
 }
 
 fn ends_with_markdown_break_escape(line: &str) -> bool {
@@ -5239,7 +5265,8 @@ fn opening_fence(line: &str) -> Option<(&str, &str)> {
         return None;
     }
     let count = line.bytes().take_while(|&byte| byte == marker).count();
-    (count >= 3).then(|| line.split_at(count))
+    let (fence, info) = line.split_at(count);
+    (count >= 3 && (marker != b'`' || !info.contains('`'))).then_some((fence, info))
 }
 
 fn closes_fence(line: &str, marker: &str) -> bool {
@@ -5900,6 +5927,18 @@ fn collect_markdown_links<'a>(
 
 const MARKDOWN_ESCAPED_PUNCTUATION_STYLE: &str = "IbisMarkdownEscapedPunctuation";
 
+fn markdown_literal_punctuation(character: char, format: &RunFormat, ctx: &mut ParseContext<'_>) -> FlowRun {
+    ctx.styles.styles.entry(MARKDOWN_ESCAPED_PUNCTUATION_STYLE.to_owned()).or_insert_with(|| FlowStyle {
+        name: "Markdown escaped punctuation".to_owned(),
+        kind: StyleKind::Character,
+        ..FlowStyle::default()
+    });
+    let mut run = FlowRun::new(FlowRunKind::Text(character.to_string()), FlowRunStyle::default());
+    run.format = format.clone();
+    run.char_style = Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE.to_owned());
+    run
+}
+
 const MARKDOWN_LINK_START_STYLE: &str = "IbisMarkdownLinkStart";
 
 fn markdown_link_start(style: Option<&str>) -> Option<u8> {
@@ -5927,10 +5966,17 @@ fn apply_markdown_link(runs: &mut [FlowRun], link: Link, base: &RunFormat, previ
     }
 }
 
-fn markdown_emphasis_ranges(text: &str) -> HashMap<usize, (usize, Option<usize>)> {
-    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
-    let mut ranges = HashMap::new();
-    if !text.contains(['*', '_']) {
+#[derive(Default)]
+struct MarkdownInlineRanges {
+    emphasis: HashMap<usize, (usize, Option<usize>)>,
+    code: BTreeMap<usize, (usize, String)>,
+    literal: HashMap<usize, usize>,
+}
+
+fn markdown_inline_ranges(text: &str) -> MarkdownInlineRanges {
+    use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
+    let mut ranges = MarkdownInlineRanges::default();
+    if !text.contains(['*', '_', '`']) {
         return ranges;
     }
     // Force inline context, even for a label starting with a block marker.
@@ -5954,8 +6000,16 @@ fn markdown_emphasis_ranges(text: &str) -> HashMap<usize, (usize, Option<usize>)
             Event::End(TagEnd::Strong | TagEnd::Emphasis) => {
                 stack.pop();
                 if stack.is_empty() && let Some((start, end, delimiter)) = outer.take() {
-                    ranges.insert(start - 2, (end - 2, delimiter));
+                    ranges.emphasis.insert(start - 2, (end - 2, delimiter));
                 }
+            }
+            Event::InlineHtml(_) | Event::Start(Tag::Link { link_type: LinkType::Autolink | LinkType::Email, .. })
+                if inline[span.clone()].contains('`') =>
+            {
+                ranges.literal.insert(span.start - 2, span.end - 2);
+            }
+            Event::Code(code) => {
+                ranges.code.insert(span.start - 2, (span.end - 2, code.into_string()));
             }
             _ => {}
         }
@@ -5968,7 +6022,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
     let mut plain = String::new();
     let mut i = 0;
     let bytes = text.as_bytes();
-    let emphasis = markdown_emphasis_ranges(text);
+    let inline = markdown_inline_ranges(text);
 
     let flush_plain = |plain: &mut String, out: &mut Vec<FlowRun>, fmt: &RunFormat| {
         if !plain.is_empty() {
@@ -6012,15 +6066,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             let next_ch = text[i + 1..].chars().next().unwrap();
             if next_ch.is_ascii_punctuation() {
                 flush_plain(&mut plain, &mut out, base_fmt);
-                ctx.styles.styles.entry(MARKDOWN_ESCAPED_PUNCTUATION_STYLE.to_owned()).or_insert_with(|| FlowStyle {
-                    name: "Markdown escaped punctuation".to_owned(),
-                    kind: StyleKind::Character,
-                    ..FlowStyle::default()
-                });
-                let mut run = FlowRun::new(FlowRunKind::Text(next_ch.to_string()), FlowRunStyle::default());
-                run.format = base_fmt.clone();
-                run.char_style = Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE.to_owned());
-                out.push(run);
+                out.push(markdown_literal_punctuation(next_ch, base_fmt, ctx));
                 i += 1 + next_ch.len_utf8();
                 continue;
             }
@@ -6500,7 +6546,10 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
         // Span attributes or Link: `[text]{.tcy}` / `[text]{.em}` / `[text](url)`
         if let Some(after_open) = rest.strip_prefix('[') {
-            if let Some(close_bracket) = find_matching_bracket(after_open) {
+            if let Some(close_bracket) = find_matching_bracket_outside(after_open, |offset| {
+                let position = i + 1 + offset;
+                inline.code.range(..=position).next_back().is_some_and(|(_, (end, _))| position < *end)
+            }) {
                 let inner_text = &after_open[..close_bracket];
                 let after_bracket = &after_open[close_bracket + 1..];
 
@@ -6594,31 +6643,29 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             continue;
         }
 
-        // Inline code: `` `code` ``
-        if let Some(after) = rest.strip_prefix('`') {
-            if let Some(end) = after.find('`') {
-                if end > 0 {
-                    flush_plain(&mut plain, &mut out, base_fmt);
-                    let mut fmt = base_fmt.clone();
-                    fmt.font = Some("Consolas".to_string());
-                    fmt.h_ansi_font = Some("Consolas".to_string());
-                    fmt.east_asian_font = Some("ＭＳ ゴシック".to_string());
-                    fmt.highlight = Some(Some(Rgb(0xF2F4F8)));
-                    out.push(FlowRun {
-                        kind: FlowRunKind::Text(after[..end].to_string()),
-                        style: FlowRunStyle::default(),
-                        format: fmt,
-                        char_style: None,
-                        link: None,
-                        revision: None,
-                        show_field_code: false,
-                        field_locked: false,
-                        control: None,
-                    });
-                    i += 1 + end + 1;
-                    continue;
-                }
-            }
+        if let Some(&end) = inline.literal.get(&i) {
+            plain.push_str(&text[i..end]);
+            i = end;
+            continue;
+        }
+        if let Some((end, code)) = inline.code.get(&i) {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            let mut format = base_fmt.clone();
+            format.font = Some("Consolas".to_owned());
+            format.h_ansi_font = Some("Consolas".to_owned());
+            format.east_asian_font = Some("ＭＳ ゴシック".to_owned());
+            format.highlight = Some(Some(Rgb(0xF2F4F8)));
+            let mut run = FlowRun::new(FlowRunKind::Text(code.clone()), FlowRunStyle::default());
+            run.format = format;
+            out.push(run);
+            i = *end;
+            continue;
+        }
+        if bytes[i] == b'`' {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            out.push(markdown_literal_punctuation('`', base_fmt, ctx));
+            i += 1;
+            continue;
         }
 
         // Inline math: `$math$`
@@ -6650,7 +6697,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             }
         }
 
-        if let Some(&(end, delimiter)) = emphasis.get(&i) {
+        if let Some(&(end, delimiter)) = inline.emphasis.get(&i) {
             if let Some(delimiter) = delimiter {
                 flush_plain(&mut plain, &mut out, base_fmt);
                 let mut fmt = base_fmt.clone();
@@ -6755,9 +6802,16 @@ fn find_unescaped_markdown_delimiter(text: &str, delimiter: &str) -> Option<usiz
 }
 
 fn find_matching_bracket(s: &str) -> Option<usize> {
+    find_matching_bracket_outside(s, |_| false)
+}
+
+fn find_matching_bracket_outside(s: &str, ignored: impl Fn(usize) -> bool) -> Option<usize> {
     let mut depth = 1usize;
     let mut escaped = false;
     for (idx, ch) in s.char_indices() {
+        if ignored(idx) {
+            continue;
+        }
         if escaped {
             escaped = false;
             continue;
@@ -9392,13 +9446,25 @@ fn escape_literal_form_markers(text: &str) -> String {
     output
 }
 
+fn format_markdown_code_span(text: &str) -> String {
+    let longest = text.split(|character| character != '`').map(str::len).max().unwrap_or(0);
+    let delimiter = "`".repeat(longest + 1);
+    let needs_padding = text.starts_with('`') || text.ends_with('`')
+        || (text.starts_with(' ') && text.ends_with(' ') && text.bytes().any(|byte| byte != b' '));
+    if needs_padding {
+        format!("{delimiter} {text} {delimiter}")
+    } else {
+        format!("{delimiter}{text}{delimiter}")
+    }
+}
+
 fn format_text_run(text: &str, fmt: &RunFormat, is_link: bool) -> String {
     if text.is_empty() {
         return String::new();
     }
     // Inline code detection
     if fmt.font.as_deref() == Some("Consolas") && fmt.highlight.is_some_and(|h| h.is_some()) {
-        return format!("`{text}`");
+        return format_markdown_code_span(text);
     }
 
     let mut s = text.to_string();
@@ -10633,6 +10699,33 @@ mod tests {
         assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
         let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+    }
+
+    #[test]
+    fn markdown_code_spans_keep_ticks_spaces_and_line_endings_through_docx() {
+        for (source, canonical, text) in [
+            ("` `` `\n", "``` `` ```\n", "``"),
+            ("`  ``  `\n", "```  ``  ```\n", " `` "),
+            ("``\nfoo \n``\n", "`foo `\n", "foo "),
+            ("` foo `` bar `\n", "```foo `` bar```\n", "foo `` bar"),
+            ("```foo``\n", "\\`\\`\\`foo\\`\\`\n", "```foo``"),
+            ("`foo``bar``\n", "\\`foo`bar`\n", "`foobar"),
+            ("[not a `link](/foo`)\n", "[not a `link](/foo`)\n", "[not a link](/foo)"),
+            ("[foo`](/uri)`\n", "[foo`](/uri)`\n", "[foo](/uri)"),
+            ("<a href=\"`\">`\n", "<a href=\"`\">\\`\n", "<a href=\"`\">`"),
+            ("<https://foo.bar.`baz>`\n", "<https://foo.bar.`baz>\\`\n", "<https://foo.bar.`baz>`"),
+            ("`code\\\nspan`\n", "`code\\ span`\n", "code\\ span"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let flow = opened.presentation.flow.as_deref().unwrap();
+            assert!(matches!(&flow.body[0], Block::Paragraph(p) if p.text() == text), "{source}");
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, canonical, "{source}");
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), canonical, "{source}");
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), canonical, "{source}");
+        }
     }
 
     #[test]
