@@ -6,11 +6,11 @@ from pathlib import Path
 from review import load_approved
 
 
-def load_concept(path: Path):
+def read_metadata(path: Path, concept_type):
     try:
         import yaml
     except ImportError as error:
-        raise ValueError("PyYAML is required for --okf") from error
+        raise ValueError("PyYAML is required to read an OKF concept") from error
 
     class UniqueKeyLoader(yaml.SafeLoader):
         def construct_mapping(self, node, deep=False):
@@ -36,21 +36,34 @@ def load_concept(path: Path):
         metadata = yaml.load(b"\n".join(lines[1:end]).decode("utf-8"), Loader=UniqueKeyLoader)
     except yaml.YAMLError as error:
         raise ValueError(f"Invalid OKF YAML: {error}") from error
-    if not isinstance(metadata, dict) or metadata.get("type") != "credential-definition":
-        raise ValueError("Expected an OKF credential-definition concept")
-    definition = metadata.get("x-ibis-credential")
-    if not isinstance(definition, dict) or definition.keys() != {"version", "approved_mapping"}:
-        raise ValueError("Expected version and approved_mapping in x-ibis-credential")
-    if type(definition["version"]) is not int or definition["version"] != 1:
-        raise ValueError("Unsupported x-ibis-credential version")
-    ref = definition["approved_mapping"]
+    if not isinstance(metadata, dict) or metadata.get("type") != concept_type:
+        raise ValueError(f"Expected an OKF {concept_type} concept")
+    return metadata
+
+
+def local_reference(path, ref, suffix, field):
     if not isinstance(ref, str) or not ref or "\\" in ref or ":" in ref:
-        raise ValueError("approved_mapping must be a local relative JSON path")
+        raise ValueError(f"{field} must be a local relative {suffix} path")
     relative = Path(ref)
-    if relative.is_absolute() or ".." in relative.parts or relative.suffix != ".json":
-        raise ValueError("approved_mapping must be a local relative JSON path")
+    if relative.is_absolute() or ".." in relative.parts or relative.suffix != suffix:
+        raise ValueError(f"{field} must be a local relative {suffix} path")
     directory = path.resolve().parent
     target = (directory / relative).resolve(strict=True)
     if not target.is_relative_to(directory):
-        raise ValueError("approved_mapping must stay within the concept directory")
-    return load_approved(target)
+        raise ValueError(f"{field} must stay within the concept directory")
+    return target
+
+
+def load_credential(path: Path):
+    definition = read_metadata(path, "credential-definition").get("x-ibis-credential")
+    required = {"version", "approved_mapping"}
+    if not isinstance(definition, dict) or not required <= definition.keys() <= required | {"sd_jwt_vc"}:
+        raise ValueError("Expected version and approved_mapping in x-ibis-credential")
+    if type(definition["version"]) is not int or definition["version"] != 1:
+        raise ValueError("Unsupported x-ibis-credential version")
+    target = local_reference(path, definition["approved_mapping"], ".json", "approved_mapping")
+    return load_approved(target), definition.get("sd_jwt_vc")
+
+
+def load_concept(path: Path):
+    return load_credential(path)[0]

@@ -5,6 +5,11 @@ description: 会社が証明する就労項目と公式Excel様式の対応
 x-ibis-credential:
   version: 1
   approved_mapping: approved.json
+  sd_jwt_vc:
+    vct: https://credentials.example.org/employment-pilot/v1
+    paths:
+      certification_date: [certification_date]
+      work_schedule.total: [work_schedule, total]
 ---
 
 # 証明する範囲

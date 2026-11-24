@@ -99,3 +99,16 @@ python3 "$tools/pilot.py" extract cells.json --okf "$review_dir/employment.md"
 参照先は原稿のディレクトリを起点とするローカルの相対JSONパス。サブディレクトリも使える。親ディレクトリ参照、原稿のディレクトリ外に出るシンボリックリンク、URL、重複するYAMLキーはエラーにする。承認の有無と対応表の変更は既存の承認検査で確認する。
 
 固定勤務・変則勤務のスキーマや抽出結果は、承認済みJSONを直接指定した場合と同じになる。提示要求で使う論理項目ID、SD-JWT VCとmdocへの割り当て、DCQLの生成規則は、提示要求を試作する段階で検討する。
+
+## 保育利用申込の提示要求をDCQLに変換する
+
+[提示要求のOKF原稿例](../scripts/employment-schema/childcare-request.example.md)を、`employment.md` と同じディレクトリに置く。原稿の `type` は `presentation-request`。拡張キー `x-ibis-presentation-request` に版、資格情報原稿への相対パス、用途、要求する論理項目IDを記述する。
+
+```sh
+cp "$tools/childcare-request.example.md" "$review_dir/childcare-request.md"
+python3 "$tools/presentation.py" "$review_dir/childcare-request.md"
+```
+
+資格情報原稿の `sd_jwt_vc` に試作用の `vct` と、各IDのクレームパスを明示する。今回の対象は固定・変則の両方にある項目。論理IDは現行の就労データのプロパティ階層をドットでつなぎ、SD-JWT VC用のクレームパスは同じ階層を配列で指定する。これにより、承認済み対応表から生成したJSONと照合できる。将来、形式ごとに別の階層を使う場合は、変換規則をその形式の対応に記述する。
+
+`work_schedule.total` は単位・時間・分・うち休憩分を含むオブジェクトとして要求する。実際の交付では同じ単位で開示できるようにエンコードする必要がある。出力は保有者の暗号学的な束縛を要求するDCQL。用途は原稿に記録し、検証者IDと `nonce` は実際の申請時に検証側で設定する。 [OpenID4VP 1.0](https://openid.net/specs/openid-4-verifiable-presentations-1_0-final.html)

@@ -8,6 +8,7 @@ from jsonschema import Draft202012Validator
 
 from pilot import extract, schema
 from okf import load_concept
+from presentation import dcql
 from review import load_approved, reviewed_mapping
 
 COMMON = {"Z4": "架空事業所", "I19": "架空従業員", "AA3": 2026, "AF3": 11, "AI3": 23}
@@ -49,6 +50,31 @@ class EmploymentSchemaTest(unittest.TestCase):
             self.assertEqual(schema(load_concept(concept)), schema())
             for cells in (FIXED, {**VARIABLE, "I52": "架空児童"}):
                 self.assertEqual(extract(cells, load_concept(concept)), extract(cells))
+            request = file.with_name("request.md")
+            request_example = Path(__file__).with_name("childcare-request.example.md").read_text(encoding="utf-8")
+            request_example = request_example.replace("employment.md", concept.name)
+            request.write_text(request_example, encoding="utf-8")
+            query = dcql(request)
+            self.assertEqual(query, {"credentials": [{
+                "id": "employment",
+                "format": "dc+sd-jwt",
+                "meta": {"vct_values": ["https://credentials.example.org/employment-pilot/v1"]},
+                "require_cryptographic_holder_binding": True,
+                "claims": [{"path": ["certification_date"]}, {"path": ["work_schedule", "total"]}],
+            }]})
+            self.assertEqual(json.dumps(dcql(request)), json.dumps(query))
+            for claim, message in (
+                ("child_name", "Unknown"),
+                ("unknown", "Unknown"),
+                ("employer_name", "Missing SD-JWT VC binding"),
+            ):
+                request.write_text(request_example.replace("certification_date", claim), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    dcql(request)
+            request.write_text(request_example, encoding="utf-8")
+            concept.write_text(example.replace("[work_schedule, total]", "[employee_name]"), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "preserve"):
+                dcql(request)
             for invalid, message in (
                 (example.replace("version: 1", "version: 2"), "Unsupported"),
                 (example.replace("version: 1", "version: 1\n  version: 1"), "unique string keys"),
@@ -65,6 +91,8 @@ class EmploymentSchemaTest(unittest.TestCase):
             file.write_text(json.dumps(approved), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "changed after approval"):
                 load_concept(concept)
+            with self.assertRaisesRegex(ValueError, "changed after approval"):
+                dcql(request)
 
     def test_schema_is_reproducible(self):
         checked_in = Path(__file__).with_name("employment.schema.json").read_text(encoding="utf-8")
