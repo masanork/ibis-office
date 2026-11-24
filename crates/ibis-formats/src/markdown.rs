@@ -416,7 +416,7 @@ pub fn export_blocks_to_markdown(
     let mut prev_was_list = false;
     for (index, block) in blocks.iter().enumerate() {
         let is_list = is_markdown_list_item(block);
-        if prev_was_list && !is_list && !starts_tight_item_quote(block) && !out.ends_with("\n\n") {
+        if prev_was_list && !is_list && !starts_tight_item_quote(block) && !starts_item_table(block) && !out.ends_with("\n\n") {
             out.push('\n');
         }
         serialize_block(block, doc, media, &comments_by_id, &mut out, &mut Vec::new());
@@ -1506,7 +1506,8 @@ impl<'a> ParseContext<'a> {
             return default;
         }
         let previous = blocks.iter().rev().filter(|block| {
-            markdown_item_quote_style(block_markdown_style(block)).is_none() || is_markdown_list_item(block)
+            !matches!(block, Block::Table(table) if markdown_item_table_style(table).is_some())
+                && (markdown_item_quote_style(block_markdown_style(block)).is_none() || is_markdown_list_item(block))
         }).map_while(|block| match block {
             Block::Paragraph(paragraph) => paragraph.list,
             _ => None,
@@ -2601,6 +2602,7 @@ enum MarkdownContinuation<'a> {
     Html { item: Option<(usize, bool, String)> },
     Quote,
     ItemQuote { item_line: usize, indent: usize, start_column: usize },
+    ItemTable { indent: usize, first_content: bool, first_column: usize },
 }
 
 // Use CommonMark's container boundaries to distinguish paragraphs and code
@@ -2631,10 +2633,13 @@ fn markdown_continuations<'a>(
             Event::Start(tag) => {
                 let first = line_starts.partition_point(|&start| start <= span.start) - 1;
                 let next = line_starts.partition_point(|&start| start < span.end);
-                let item = match parents.last() {
+                let item_start = match parents.last() {
                     Some((TagEnd::Item, item, _)) => *item,
                     _ => None,
                 };
+                let item = item_start.filter(|&(line, _)| {
+                    parse_list_marker(lines[line]).is_some_and(|marker| !marker.text.trim().is_empty())
+                });
                 let continuation_indent = item
                     .filter(|&(item_line, _)| first > item_line && lines[first].starts_with([' ', '\t']))
                     .map(|(_, indent)| indent);
@@ -2646,15 +2651,21 @@ fn markdown_continuations<'a>(
                         && let Some(marker) = parse_list_marker(lines[item_line])
                         && marker.task_checked.is_none() =>
                     {
-                        let content = marker.text.trim_start_matches([' ', '\t']);
-                        let prefix = &lines[item_line][..lines[item_line].len() - content.len()];
-                        let indent = prefix.bytes().fold(0usize, |column, byte| {
-                            if byte == b'\t' { column + 4 - column % 4 } else { column + 1 }
-                        });
+                        let indent = markdown_item_content_indent(lines[item_line], &marker);
                         if indent <= 64 {
                             blocks.insert(first, (next, MarkdownContinuation::ItemQuote {
                                 item_line, indent, start_column: span.start - line_starts[first],
                             }));
+                        }
+                    }
+                    Tag::Table(_) if let Some((item_line, _)) = item_start
+                        && let Some(marker) = parse_list_marker(lines[item_line]) =>
+                    {
+                        let indent = markdown_item_content_indent(lines[item_line], &marker);
+                        if (2..=64).contains(&indent) {
+                            let first_content = first == item_line || (first == item_line + 1 && marker.text.trim().is_empty());
+                            let first_column = if first == item_line { span.start - line_starts[first] } else { 0 };
+                            blocks.insert(first, (next, MarkdownContinuation::ItemTable { indent, first_content, first_column }));
                         }
                     }
                     Tag::HtmlBlock if parents.is_empty() && is_preserved_html_block(lines[first]) => {
@@ -2703,9 +2714,7 @@ fn markdown_continuations<'a>(
                 let item = if matches!(tag, Tag::Item)
                     && parents.iter().all(|(tag, _, _)| matches!(tag, TagEnd::List(_) | TagEnd::Item))
                 {
-                    parse_list_marker(lines[first])
-                        .filter(|item| !item.text.trim().is_empty())
-                        .map(|item| {
+                    parse_list_marker(lines[first]).map(|item| {
                             let marker_width = if item.ordered {
                                 item.start.to_string().len() + 2
                             } else {
@@ -2857,7 +2866,27 @@ fn markdown_item_quote_style(style: Option<&str>) -> Option<(usize, bool, bool, 
         .then_some((indent, flags & 1 != 0, flags & 2 != 0, base))
 }
 
-fn strip_item_quote_indent(line: &str, indent: usize) -> &str {
+fn markdown_item_content_indent(raw: &str, marker: &ListMarker<'_>) -> usize {
+    let content = marker.text.trim_start_matches([' ', '\t']);
+    raw[..raw.len() - content.len()].bytes().fold(0, |column, byte| {
+        if byte == b'\t' { column + 4 - column % 4 } else { column + 1 }
+    })
+}
+
+const MARKDOWN_ITEM_TABLE_STYLE: &str = "IbisMarkdownListTable";
+
+fn markdown_item_table_style(table: &FlowTable) -> Option<(usize, bool)> {
+    let id = table.style.as_ref()?.id.strip_prefix(MARKDOWN_ITEM_TABLE_STYLE)?;
+    let (indent, first) = id.strip_suffix("First").map_or((id, false), |indent| (indent, true));
+    let indent = indent.parse().ok()?;
+    (2..=64).contains(&indent).then_some((indent, first))
+}
+
+fn starts_item_table(block: &Block) -> bool {
+    matches!(block, Block::Table(table) if matches!(markdown_item_table_style(table), Some((_, true))))
+}
+
+fn strip_list_item_indent(line: &str, indent: usize) -> &str {
     let mut column = 0;
     let mut bytes = 0;
     for byte in line.bytes() {
@@ -2922,7 +2951,7 @@ fn parse_blocks_at_quote_depth(
             let blank_before = i > 0 && lines[i - 1].trim().is_empty();
             let first = strip_quote_marker(&raw[start_column..]);
             let mut quote_lines = vec![first];
-            quote_lines.extend(lines[i + 1..next].iter().map(|line| strip_quote_marker(strip_item_quote_indent(line, indent))));
+            quote_lines.extend(lines[i + 1..next].iter().map(|line| strip_quote_marker(strip_list_item_indent(line, indent))));
             if let Some(mut quoted) = parse_structured_quote(&quote_lines, ctx, quote_depth.max(1))? {
                 let list = if starts_item && let Some(item) = parse_list_marker(raw) {
                     if let Some(spec) = quoted_items.get(&i) {
@@ -2964,6 +2993,50 @@ fn parse_blocks_at_quote_depth(
             let (mut block, indent, info) = match continuation {
                 MarkdownContinuation::Quote | MarkdownContinuation::ItemQuote { .. } => {
                     unreachable!("quote boundaries are consumed separately")
+                }
+                MarkdownContinuation::ItemTable { indent, first_content, first_column } => {
+                    let rows: Vec<_> = lines[i..next].iter().enumerate()
+                        .map(|(index, line)| {
+                            if index == 0 && first_column != 0 {
+                                line[first_column..].trim()
+                            } else {
+                                strip_list_item_indent(line, indent).trim()
+                            }
+                        }).collect();
+                    if first_column != 0 && let Some(item) = parse_list_marker(raw) {
+                        let num_id = if item.ordered { ctx.ordered_list_for(&item, &blocks) } else { ctx.ensure_bullet_list() };
+                        let mut paragraph = FlowParagraph {
+                            id: ctx.fresh_id(),
+                            style: ctx.styles.default_paragraph.clone(),
+                            direct: ParaFormat {
+                                num_id: Some(num_id),
+                                level: Some(u32::from(item.level)),
+                                ..ParaFormat::default()
+                            },
+                            ..FlowParagraph::default()
+                        };
+                        paragraph.resolve(&ctx.styles);
+                        blocks.push(Block::Paragraph(paragraph));
+                    }
+                    let mut block = build_table_block(
+                        split_table_row(rows[0]), parse_table_alignments(rows[1]),
+                        rows[2..].iter().map(|row| split_table_row(row)).collect(), ctx, 0,
+                    );
+                    if let Block::Table(table) = &mut block
+                        && let Some(style) = &mut table.style
+                    {
+                        let suffix = if first_content { "First" } else { "" };
+                        let id = format!("{MARKDOWN_ITEM_TABLE_STYLE}{indent}{suffix}");
+                        ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
+                            name: format!("Markdown list table ({indent}{suffix})"),
+                            kind: StyleKind::Table,
+                            based_on: Some(style.id.clone()),
+                            ..FlowStyle::default()
+                        });
+                        style.id = id;
+                        table.indent = indent as i64 * 9 * EMU_PER_PT;
+                    }
+                    (block, None, "")
                 }
                 MarkdownContinuation::Code { indent, text, info } => (build_code_block(&text, ctx), indent, info),
                 MarkdownContinuation::Html { item: None } => {
@@ -4173,12 +4246,9 @@ fn is_table_separator(s: &str) -> bool {
 }
 
 pub(crate) fn split_table_row(s: &str) -> Vec<String> {
-    let inner = s
-        .trim()
-        .strip_prefix('|')
-        .unwrap_or(s)
-        .strip_suffix('|')
-        .unwrap_or(s);
+    let trimmed = s.trim();
+    let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
     let mut cells = Vec::new();
     let mut cur = String::new();
     let mut chars = inner.chars().peekable();
@@ -6686,7 +6756,7 @@ fn export_markdown_with_positions<'a>(
         }
 
         let is_list = is_markdown_list_item(block);
-        if prev_was_list && !is_list && !starts_tight_item_quote(block) && !out.ends_with("\n\n") {
+        if prev_was_list && !is_list && !starts_tight_item_quote(block) && !starts_item_table(block) && !out.ends_with("\n\n") {
             out.push('\n');
         }
 
@@ -8236,7 +8306,9 @@ fn serialize_table<'a>(
     let anchor = t.rows.iter().flat_map(|row| &row.cells).next()
         .map_or(ibis_doc_model::CellAnchor::Top, |cell| cell.anchor);
 
+    let list_indent = " ".repeat(markdown_item_table_style(t).map_or(0, |(indent, _)| indent));
     let mut write_row = |row_index: usize, row: &'a FlowRow, out: &mut String| {
+        out.push_str(&list_indent);
         out.push_str("| ");
         if form_layout {
             use std::fmt::Write;
@@ -8342,7 +8414,7 @@ fn serialize_table<'a>(
         sep_cells.resize(sep_cells.len() + span - 1, "---");
     }
     sep_cells.resize(col_count, "---");
-    out.push_str(&format!("| {} |\n", sep_cells.join(" | ")));
+    out.push_str(&format!("{list_indent}| {} |\n", sep_cells.join(" | ")));
 
     for (index, row) in t.rows.iter().enumerate().skip(1) {
         write_row(index + 1, row, out);
@@ -9885,6 +9957,61 @@ mod tests {
             assert_eq!(media.data.as_ref(), original);
             assert_eq!(size, EmuSize::new(width, height));
         }
+    }
+
+    #[test]
+    fn gfm_tables_keep_their_list_item_and_column_alignment_through_docx() {
+        for (marker, indent, next) in [("10.", "    ", "11."), ("-", "  ", "-")] {
+            let source = format!(
+                "{marker} Check the evidence\n\n{indent}| Label | Status | Count |\n{indent}| :--- | :---: | ---: |\n{indent}| A \\| B | **Ready** | 42 |\n\n{next} Publish\n\nOutside.\n"
+            );
+            let check = |presentation: &Presentation| {
+                let flow = presentation.flow.as_deref().unwrap();
+                let [Block::Paragraph(item), Block::Table(table), Block::Paragraph(sibling), Block::Paragraph(outside)] =
+                    flow.body.as_slice() else { panic!("expected an item, its table, a sibling, and outside prose"); };
+                assert!(item.list.is_some() && sibling.list.is_some() && outside.list.is_none());
+                assert_eq!(markdown_item_table_style(table), Some((indent.len(), false)));
+                assert!(table.rows[0].header && !table.rows[1].header);
+                let cells = |row: usize| table.rows[row].cells.iter().map(|cell| {
+                    let Block::Paragraph(p) = &cell.blocks[0] else { panic!() };
+                    let text: String = p.runs.iter().filter_map(|run| match &run.kind {
+                        FlowRunKind::Text(text) => Some(text.as_str()),
+                        _ => None,
+                    }).collect();
+                    (text, p.direct.align)
+                }).collect::<Vec<_>>();
+                for (row, expected) in [["Label", "Status", "Count"], ["A | B", "Ready", "42"]].into_iter().enumerate() {
+                    let cells = cells(row);
+                    assert_eq!(cells.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>(), expected);
+                    assert_eq!(cells.iter().map(|(_, align)| *align).collect::<Vec<_>>(),
+                        [Some(FlowAlign::Left), Some(FlowAlign::Center), Some(FlowAlign::Right)]);
+                }
+            };
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            check(&opened.presentation);
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert!(saved.contains(&format!("\n\n{indent}| **Label** | **Status** | **Count** |\n{indent}| :--- | :---: | ---: |")), "{saved}");
+            assert!(saved.contains(&format!("\n\n{next} Publish\n\nOutside.")), "{saved}");
+            let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+            check(&reopened.presentation);
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), saved);
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            check(&crate::read(&docx).unwrap());
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), saved);
+        }
+    }
+
+    #[test]
+    fn gfm_table_can_be_the_first_content_of_a_list_item() {
+        let source = "- | Name | Count |\n  | :--- | ---: |\n  | A | 42 |\n\n- Next\n";
+        let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+        let saved = export_docx_to_markdown(&docx).unwrap();
+        assert!(saved.starts_with("- \n  | **Name** | **Count** |\n  | :--- | ---: |"), "{saved}");
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        let flow = reopened.presentation.flow.as_deref().unwrap();
+        assert!(matches!(flow.body.as_slice(), [Block::Paragraph(item), Block::Table(table), Block::Paragraph(next)]
+            if item.list.is_some() && next.list.is_some() && markdown_item_table_style(table) == Some((2, true))));
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), saved);
     }
 
     #[test]
