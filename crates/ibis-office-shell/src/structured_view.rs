@@ -1680,37 +1680,6 @@ fn open_view(
     });
 }
 
-/// Detect municipal standard linkage CSVs that should open in the structured tree view.
-#[cfg(target_family = "wasm")]
-pub(crate) fn is_linkage_csv(data: &[u8]) -> bool {
-    let Ok(text) = std::str::from_utf8(data.strip_prefix(b"\xef\xbb\xbf").unwrap_or(data)) else {
-        return false;
-    };
-    let mut records = ibis_formats::csv::CsvRecordIter::new(text, ',');
-    let Some(header) = records.next() else {
-        return false;
-    };
-    let signature = ["削除フラグ", "操作者ID", "操作年月日", "操作時刻"];
-    if !signature
-        .iter()
-        .all(|name| header.iter().any(|column| column == name))
-    {
-        return false;
-    }
-    header.len() > 256
-        || header
-            .iter()
-            .filter_map(|column| column.rsplit_once('_'))
-            .any(|(name, index)| {
-                !name.is_empty()
-                    && index.trim_start_matches('0') == "1"
-                    && header
-                        .iter()
-                        .filter_map(|column| column.rsplit_once('_'))
-                        .any(|(other, index)| other == name && index.trim_start_matches('0') == "2")
-            })
-}
-
 /// Build an in-window structured tree view from CSV bytes (used by the Web build).
 #[cfg(target_family = "wasm")]
 pub(crate) fn create_csv_view(
