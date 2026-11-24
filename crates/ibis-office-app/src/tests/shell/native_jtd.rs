@@ -62,7 +62,7 @@ fn image_switch() {
         if s.with(|e, _| e.is_jtd_read_only()) { break; }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.gallery));
     assert!(s.with(|e, _| e.write_pdf(path.clone())).is_err());
     assert!(s.with(|e, _| e.write_png(path.clone(), None)).is_err());
     assert!(s.with(|e, _| e.write_gif(path.clone(), None)).is_err());
@@ -83,21 +83,21 @@ fn image_switch() {
         e.open_path(invalid.clone(), None, w, cx);
     });
     s.wait(1000);
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.gallery));
     assert_eq!(s.with(|e, _| e.path.clone()), Some(path.clone()));
     s.update(|e, w, cx| {
         e.show_jtd_thumbnail(w, cx);
         e.open_path(invalid.clone(), None, w, cx);
     });
     s.wait(1000);
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_thumbnail && !e.jtd_gallery));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.thumbnail && !e.jtd.gallery));
     assert_eq!(s.with(|e, _| e.path.clone()), Some(path.clone()));
     let old_stamp = s.with(|e, _| e.watch.known.clone());
     // Thumbnail from the body remains read-only, cannot be exported, and returns to the same body.
     s.update(|e, w, cx| e.show_jtd_thumbnail(w, cx));
-    for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd_thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+    for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd.thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
     s.with(|e, _| {
-        assert!(e.jtd_thumbnail && e.jtd_gallery && e.is_read_only());
+        assert!(e.jtd.thumbnail && e.jtd.gallery && e.is_read_only());
         assert_eq!(e.presentation().media.len(), 1);
         assert_eq!(e.path.as_deref(), Some(path.as_path()));
         assert_eq!(e.watch.known, old_stamp);
@@ -108,20 +108,20 @@ fn image_switch() {
         assert!(crate::shell::scenario::find_item(&menu, "jtd.show-images").is_none());
     });
     s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
-    assert!(s.with(|e, _| e.jtd_thumbnail && e.is_jtd_read_only()));
+    assert!(s.with(|e, _| e.jtd.thumbnail && e.is_jtd_read_only()));
     s.wait(1000);
     s.screenshot("jtd-thumbnail");
     s.update(|e, w, cx| e.return_from_jtd_thumbnail(w, cx));
-    assert!(s.with(|e, _| !e.jtd_thumbnail && !e.jtd_gallery));
+    assert!(s.with(|e, _| !e.jtd.thumbnail && !e.jtd.gallery));
     assert_eq!(s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone()), body_before);
     s.update(|e, w, cx| e.show_jtd_images(w, cx));
     for _ in 0..200 {
         s.wait(50);
-        if s.with(|e, _| e.jtd_gallery) { break; }
+        if s.with(|e, _| e.jtd.gallery) { break; }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     s.with(|e, _| {
-        assert!(e.jtd_gallery && e.jtd_gallery_body.is_some() && e.is_read_only());
+        assert!(e.jtd.gallery && e.jtd.gallery_body.is_some() && e.is_read_only());
         assert_eq!(e.presentation().media.len(), 2);
         let texts: Vec<String> = e.presentation().flow.as_ref().unwrap().body.iter().filter_map(|block| {
             if let ibis_doc_model::Block::Paragraph(paragraph) = block { Some(paragraph.text()) } else { None }
@@ -141,13 +141,13 @@ fn image_switch() {
     s.screenshot("jtd-mixed-unplaced");
     let gallery_before = s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone());
     s.update(|e, w, cx| e.show_jtd_thumbnail(w, cx));
-    for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd_thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
-    assert!(s.with(|e, _| e.jtd_thumbnail && e.jtd_gallery));
+    for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd.thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+    assert!(s.with(|e, _| e.jtd.thumbnail && e.jtd.gallery));
     s.update(|e, w, cx| e.return_from_jtd_thumbnail(w, cx));
-    assert!(s.with(|e, _| !e.jtd_thumbnail && e.jtd_gallery && e.jtd_gallery_body.is_some()));
+    assert!(s.with(|e, _| !e.jtd.thumbnail && e.jtd.gallery && e.jtd.gallery_body.is_some()));
     assert_eq!(s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone()), gallery_before);
     s.update(|e, w, cx| e.show_jtd_body(w, cx));
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery && e.jtd_gallery_body.is_none()));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.gallery && e.jtd.gallery_body.is_none()));
     assert!(s.paragraph(0).1.contains("日本語 test"));
     assert_eq!(s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone()), body_before);
     assert_eq!(s.with(|e, _| e.path.clone()), Some(path.clone()));
@@ -245,7 +245,7 @@ fn unplaced_images() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     s.with(|e, _| {
-        assert!(e.is_jtd_read_only() && e.jtd_gallery);
+        assert!(e.is_jtd_read_only() && e.jtd.gallery);
         assert!(e.status.as_deref().unwrap().contains(&*crate::shell::i18n::text("jtd.gallery-notice")));
         assert!(e.current_bytes().is_err());
         assert!(e.export_jtd_docx_to(&path.with_extension("docx")).is_err());
@@ -253,7 +253,7 @@ fn unplaced_images() {
         assert!(crate::shell::scenario::find_item(&menu, "jtd.show-body").is_none());
     });
     s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
-    assert!(s.with(|e, _| e.is_jtd_read_only() && e.jtd_gallery));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && e.jtd.gallery));
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     s.screenshot("jtd-unplaced-images");
     // Optional, locally owned sample; never part of a distributable fixture.
@@ -267,19 +267,19 @@ fn unplaced_images() {
         s.update(|e, w, cx| e.open_path(sample.clone(), None, w, cx));
         for _ in 0..100 {
             s.wait(50);
-            if s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd_gallery) { break; }
+            if s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd.gallery) { break; }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd_gallery));
+        assert!(s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd.gallery));
         s.wait(1000);
         s.screenshot("jtd-local-unplaced-images");
         s.update(|e, w, cx| e.show_jtd_thumbnail(w, cx));
-        for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd_thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
-        assert!(s.with(|e, _| e.jtd_thumbnail && e.is_read_only() && e.path.as_deref() == Some(sample.as_path())));
+        for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd.thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+        assert!(s.with(|e, _| e.jtd.thumbnail && e.is_read_only() && e.path.as_deref() == Some(sample.as_path())));
         s.wait(1000);
         s.screenshot("jtd-local-saved-thumbnail");
         s.update(|e, w, cx| e.return_from_jtd_thumbnail(w, cx));
-        assert!(s.with(|e, _| e.jtd_gallery && !e.jtd_thumbnail && e.path.as_deref() == Some(sample.as_path())));
+        assert!(s.with(|e, _| e.jtd.gallery && !e.jtd.thumbnail && e.path.as_deref() == Some(sample.as_path())));
         assert_eq!(std::fs::read(&sample).unwrap(), sample_original);
     }
 }
@@ -400,7 +400,7 @@ fn open_read_only() {
         if s.with(|e, _| e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.thumbnail-unavailable"))) { break; }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery && !e.jtd_thumbnail && e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.thumbnail-unavailable"))));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.gallery && !e.jtd.thumbnail && e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.thumbnail-unavailable"))));
     // A document without supported images remains on its body preview.
     s.update(|e, w, cx| e.show_jtd_images(w, cx));
     for _ in 0..100 {
@@ -408,7 +408,7 @@ fn open_read_only() {
         if s.with(|e, _| e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.no-embedded-images"))) { break; }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery && e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.no-embedded-images"))));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.gallery && e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.no-embedded-images"))));
     let (paragraph, _) = s.paragraph(0);
     s.click_text(ibis_doc_model::FlowPos::new(paragraph, 0));
     s.type_text("forbidden");

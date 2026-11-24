@@ -211,7 +211,7 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
             if matches!(editor.kind(), ibis_formats::Kind::Workbook | ibis_formats::Kind::Presentation) {
                 entries.push(item_key("file.export.html", "description", "docx.convert.format.html").on(|this, window, cx| this.export_office_html(window, cx)).into());
             }
-            if editor.is_jtd_read_only() && !editor.jtd_gallery {
+            if editor.is_jtd_read_only() && !editor.jtd.gallery {
                 entries.push(item("jtd.export-docx", "description").on(|this, window, cx| this.export_jtd_docx(window, cx)).into());
                 entries.push(item("jtd.export-html", "code").on(|this, window, cx| this.export_jtd_html(window, cx)).into());
                 if editor.can_edit_jtd_as_docx() {
@@ -275,13 +275,13 @@ pub fn view_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
     // The screen's own lines come first: its views and what it shows.
     let mut entries = with_format!(editor, menu_items(editor, MenuPart::ViewStart));
     if editor.is_jtd_read_only() {
-        if editor.jtd_thumbnail {
+        if editor.jtd.thumbnail {
             entries.push(item("jtd.thumbnail-back", "arrow_back").on(|this, window, cx| this.return_from_jtd_thumbnail(window, cx)).into());
         } else {
             entries.push(item("jtd.show-thumbnail", "image").on(|this, window, cx| this.show_jtd_thumbnail(window, cx)).into());
-            if !editor.jtd_gallery {
+            if !editor.jtd.gallery {
                 entries.push(item("jtd.show-images", "image").on(|this, window, cx| this.show_jtd_images(window, cx)).into());
-            } else if editor.jtd_gallery_body.is_some() {
+            } else if editor.jtd.gallery_body.is_some() {
                 entries.push(item("jtd.show-body", "description").on(|this, window, cx| this.show_jtd_body(window, cx)).into());
             }
         }
