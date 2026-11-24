@@ -64,6 +64,9 @@ jobs:
             python: python
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    env:
+      # rustc expands deeply nested GPUI test code in the shell.
+      RUST_MIN_STACK: '33554432'
     steps:
       - uses: actions/checkout@v4
         with:
