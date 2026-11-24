@@ -81,6 +81,22 @@ macOS arm64、Windows x64、Linux x64 AppImage をビルドする。PR はマー
 CI の起動テストは異常な引数の
 終了コードやパッケージ構造を確認するもので、GUI 操作の検証ではない。
 
+### Linux AppImage の SBOM と CBOM
+
+Desktop build CI の Linux x64 ジョブは `desktop-ci-linux-x64` に CycloneDX 1.6 の
+`linux-x64-appimage.sbom.cdx.json` と `linux-x64-appimage.cbom.cdx.json` を収録する。
+両方のメタデータにソース SHA、Cargo ターゲット、AppImage の SHA-256、棚卸し範囲を記録する。
+SBOM はアプリ、アップデーター、AppImage クレートの通常の Cargo 依存を対象にする。
+ビルド依存、開発依存、手続きマクロ、同梱素材とシステムライブラリは初期範囲の外にある。
+AppImage クレート内のパッカーと組み込みランタイムはクレート単位で扱う。
+
+CBOM はこの依存グラフに、OOXML 文書暗号化のソースで確認した AES-CBC を追加する。
+暗号資産を追加する際は、対象ビルドでの依存関係と実装経路を確認し、根拠のソースを記録する。
+ここで記録するのはソース上で確認した利用経路であり、実行時の暗号操作の観測は別途行う。
+
+CI は AppImage から取り出した ibisOffice で両方を XLSX に変換してシート名を確認する。
+差分や例外の正解を固定した回帰テストには、既存の合成フィクスチャを引き続き使う。
+
 ## マイルストーン Release
 
 `masanork` の履歴にある検証済みコミットに `sorane-v1.2.3` のようなタグを
