@@ -64,7 +64,7 @@ pub fn parse_law_input(text: &str) -> Result<LawDoc, Error> {
     let text = text.trim_start_matches('\u{feff}').trim_start();
     let doc = if text.starts_with('<') {
         parse_law_xml(text)?
-    } else if crate::markdown::roundtrip::has_document_type(text, "lawtext") {
+    } else if crate::markdown::roundtrip::document_frontmatter(text).is_some_and(|frame| frame.lawtext) {
         parse_markdown_law(text)?
     } else {
         parse_lawtext(text)?

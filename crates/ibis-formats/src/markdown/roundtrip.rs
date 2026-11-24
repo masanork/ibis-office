@@ -6,22 +6,61 @@
 
 use super::split_frontmatter_body;
 
-pub(crate) fn frontmatter(text: &str) -> Option<(&str, &str)> {
+/// Physical framing does not imply that the content is usable YAML.
+fn frontmatter_frame(text: &str) -> Option<(&str, &str)> {
     let content = text
         .strip_prefix("---\n")
         .or_else(|| text.strip_prefix("---\r\n"))?;
-    let (metadata, body) = split_frontmatter_body(content)?;
-    // A thematic break can also open a Markdown document. Only a YAML
-    // mapping between the delimiters supplies document metadata.
-    let yaml = serde_saphyr::from_str::<serde_json::Value>(metadata).ok()?;
-    yaml.is_object().then_some((metadata, body))
+    split_frontmatter_body(content)
 }
 
-pub(crate) fn has_document_type(text: &str, expected: &str) -> bool {
-    let Some((metadata, _)) = frontmatter(text) else {
-        return false;
-    };
-    document_type_is(metadata, expected)
+fn yaml_mapping(metadata: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    match serde_saphyr::from_str(metadata).ok()? {
+        serde_json::Value::Object(fields) => Some(fields),
+        _ => None,
+    }
+}
+
+fn law_profile(fields: &serde_json::Map<String, serde_json::Value>) -> bool {
+    fields.get("x-ibis-format").or_else(|| fields.get("type"))
+        .and_then(serde_json::Value::as_str) == Some("lawtext")
+}
+
+// The writer puts this canonical marker on the first metadata line.
+// A nested field, legacy type alias, or later prose line is not an
+// independent declaration when the YAML cannot be validated.
+fn has_recoverable_law_marker(metadata: &str) -> bool {
+    metadata.lines().find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim_end() == "x-ibis-format: lawtext")
+}
+
+pub(crate) fn law_profile_is_declared(metadata: &str) -> bool {
+    yaml_mapping(metadata).as_ref().map_or_else(
+        || has_recoverable_law_marker(metadata), law_profile,
+    )
+}
+
+pub(crate) struct DocumentFrontmatter<'a> {
+    pub metadata: &'a str,
+    pub body: &'a str,
+    pub lawtext: bool,
+    pub damaged: bool,
+}
+
+pub(crate) fn document_frontmatter(text: &str) -> Option<DocumentFrontmatter<'_>> {
+    let (metadata, body) = frontmatter_frame(text)?;
+    if let Some(fields) = yaml_mapping(metadata) {
+        return Some(DocumentFrontmatter { metadata, body, lawtext: law_profile(&fields), damaged: false });
+    }
+    has_recoverable_law_marker(metadata).then_some(DocumentFrontmatter {
+        metadata, body, lawtext: true, damaged: true,
+    })
+}
+
+pub(crate) fn frontmatter(text: &str) -> Option<(&str, &str)> {
+    let (metadata, body) = frontmatter_frame(text)?;
+    // Unmarked ambiguous thematic breaks are Markdown, not metadata.
+    yaml_mapping(metadata).map(|_| (metadata, body))
 }
 
 pub(crate) fn metadata_value<'a>(metadata: &'a str, key: &str) -> Option<&'a str> {
@@ -32,11 +71,6 @@ pub(crate) fn metadata_value<'a>(metadata: &'a str, key: &str) -> Option<&'a str
             let (name, value) = line.split_once(':')?;
             (name.trim_end() == key).then(|| value.trim().trim_matches(['\'', '"']))
         })
-}
-
-pub(crate) fn document_type_is(metadata: &str, expected: &str) -> bool {
-    metadata_value(metadata, "x-ibis-format").or_else(|| metadata_value(metadata, "type"))
-        == Some(expected)
 }
 
 const PROFILE_PROPERTY: &str = "ibisOffice.MarkdownProfile";

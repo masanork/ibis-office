@@ -27,7 +27,7 @@ use super::text::{LAWTEXT_SUPPL_APPENDICES, encode_suppl_appendices, is_lawtext,
 const TABLE_SOURCE_ANCHOR: &str = " {#ibis_law_table_";
 
 pub(crate) fn is_law_profile(metadata: &str) -> bool {
-    crate::markdown::roundtrip::document_type_is(metadata, "lawtext")
+    crate::markdown::roundtrip::law_profile_is_declared(metadata)
 }
 
 pub(crate) fn markdown_profile(metadata: &str) -> Option<String> {
@@ -351,9 +351,9 @@ pub fn parse_markdown_law_with_diagnostics(
     let mut fragment_positions = None;
     let mut suppl_positions = None;
     let mut body = md.trim_start_matches('\u{feff}');
-    if let Some((fm, rest)) = crate::markdown::roundtrip::frontmatter(body) {
-        body = rest;
-        for line in fm.lines() {
+    if let Some(frame) = crate::markdown::roundtrip::document_frontmatter(body) {
+        body = frame.body;
+        for line in frame.metadata.lines() {
             if let Some((k, v)) = line.split_once(':') {
                 let v = v.trim().to_string();
                 match k.trim() {

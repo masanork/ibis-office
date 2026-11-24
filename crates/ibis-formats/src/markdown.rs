@@ -82,8 +82,8 @@ pub fn is_markdown(data: &[u8]) -> bool {
     }
 
     // Check YAML frontmatter at top of file.
-    if let Some((fm, _rest)) = roundtrip::frontmatter(trimmed) {
-        if fm.lines().any(|l| {
+    if let Some(frame) = roundtrip::document_frontmatter(trimmed) {
+        if frame.lawtext || frame.metadata.lines().any(|l| {
             let l = l.trim();
             !l.is_empty()
                 && !l.starts_with('#')
@@ -1580,14 +1580,9 @@ fn parse_markdown_into(
     base_dir: Option<&std::path::Path>,
 ) -> Result<(), Error> {
     let text = shape_text::strip(metafile_preview::strip(text));
-    let mut body_text = text;
-    let mut frontmatter_text = None;
-
     let trimmed_start = text.trim_start_matches(['\n', '\r']);
-    if let Some((fm, rest)) = roundtrip::frontmatter(trimmed_start) {
-        frontmatter_text = Some(fm);
-        body_text = rest;
-    }
+    let frontmatter = roundtrip::document_frontmatter(trimmed_start);
+    let mut body_text = frontmatter.as_ref().map_or(text, |frame| frame.body);
 
     let mut ctx = ParseContext {
         next_id: doc.new_id().max(10),
@@ -1610,8 +1605,14 @@ fn parse_markdown_into(
         base_dir,
     };
 
-    if let Some(fm) = frontmatter_text {
-        apply_frontmatter(fm, doc, &mut ctx);
+    if let Some(frame) = frontmatter {
+        if frame.damaged {
+            // Do not apply unvalidated YAML to the generic document. Keep
+            // the original profile for a later format-specific diagnosis.
+            roundtrip::store_profile(frame.metadata.trim_end_matches(['\r', '\n']).to_owned(), &mut doc.properties);
+        } else {
+            apply_frontmatter(frame.metadata, doc, &mut ctx);
+        }
     }
 
     while let Some((xml, rest)) = bibliography_fence(body_text) {

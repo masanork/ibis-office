@@ -508,7 +508,7 @@ fn legacy_markdown_does_not_reuse_one_snapshot_for_two_tables() {
 
 #[test]
 fn broken_markdown_table_sources_are_reported_without_overwriting_edits() {
-    use ibis_formats::lawtext::{parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
+    use ibis_formats::lawtext::{parse_law_input, parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
     use ibis_formats::markdown::SourceIssue;
 
     let source = include_str!("lawtext/food-labeling-table.xml");
@@ -520,20 +520,36 @@ fn broken_markdown_table_sources_are_reported_without_overwriting_edits() {
             if line.starts_with("law_appdx_tables:") { replacement } else { line }
         }).collect::<Vec<_>>().join("\n")
     };
-    for (markdown, issue) in [
-        (unmarked.clone(), SourceIssue::Missing),
-        (edited.replace("ibis_law_table_0", "ibis_law_table_999"), SourceIssue::Missing),
-        (edited.replace("ibis_law_table_0", "ibis_law_table_bad"), SourceIssue::Invalid),
-        (replace_fragments(&edited, r#"law_appdx_tables: ["<not-a-table/>"]"#), SourceIssue::Invalid),
-        (replace_fragments(&unmarked, "law_appdx_tables: [broken"), SourceIssue::Invalid),
-        (replace_fragments(&edited, ""), SourceIssue::Missing),
+    let malformed_metadata = replace_fragments(&unmarked, "law_appdx_tables: [broken");
+    for (case, markdown, issue) in [
+        ("missing anchor", unmarked.clone(), SourceIssue::Missing),
+        ("unknown anchor", edited.replace("ibis_law_table_0", "ibis_law_table_999"), SourceIssue::Missing),
+        ("invalid anchor", edited.replace("ibis_law_table_0", "ibis_law_table_bad"), SourceIssue::Invalid),
+        ("invalid XML", replace_fragments(&edited, r#"law_appdx_tables: ["<not-a-table/>"]"#), SourceIssue::Invalid),
+        ("malformed metadata", malformed_metadata.clone(), SourceIssue::Invalid),
+        ("missing metadata", replace_fragments(&edited, ""), SourceIssue::Missing),
     ] {
         let (law, diagnostics) = parse_markdown_law_with_diagnostics(&markdown).unwrap();
-        assert!(diagnostics.iter().any(|diagnostic| diagnostic.issue == issue), "{diagnostics:?}");
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic.issue == issue), "{case}: {diagnostics:?}");
         let xml = to_law_xml(&law);
         assert!(xml.contains("形質区分"));
         assert!(!xml.contains("rowspan="));
     }
+
+    let xml = to_law_xml(&parse_law_input(&malformed_metadata).unwrap());
+    assert!(xml.contains("形質区分"));
+    assert!(!xml.contains("rowspan="));
+
+    let opened = ibis_formats::markdown::open_markdown(malformed_metadata.as_bytes().to_vec()).unwrap();
+    let docx = opened.source.save(&opened.presentation, Default::default()).unwrap();
+    let reopened = ibis_formats::read(&docx).unwrap();
+    let markdown = ibis_formats::markdown::export_presentation_to_markdown(&reopened).unwrap();
+    assert!(markdown.contains("law_appdx_tables: [broken"), "{markdown}");
+    let (restored, diagnostics) = parse_markdown_law_with_diagnostics(&markdown).unwrap();
+    assert!(diagnostics.iter().any(|entry| entry.location == "law_appdx_tables" && entry.issue == SourceIssue::Invalid));
+    let xml = to_law_xml(&restored);
+    assert!(xml.contains("形質区分"));
+    assert!(!xml.contains("rowspan="));
 
     let legacy = unmarked.replace("law_appdx_source_ids: true\n", "");
     let (law, diagnostics) = parse_markdown_law_with_diagnostics(&legacy).unwrap();
