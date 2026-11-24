@@ -38,6 +38,8 @@ pub struct State {
     pub page_input: Entity<InputState>,
     pub find_open: bool,
     pub page_open: bool,
+    #[cfg(not(target_family = "wasm"))]
+    label_edit: Option<LabelEdit>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -53,7 +55,7 @@ impl ibis_office_shell::format::GestureView for State {
     type Snapshot = ();
 
     fn gesture_snapshot(&self) {
-        let State { viewer: _, ui: _, find_input: _, page_input: _, find_open: _, page_open: _, _subscriptions: _ } = self;
+        let State { viewer: _, ui: _, find_input: _, page_input: _, find_open: _, page_open: _, _subscriptions: _, .. } = self;
     }
 
     fn gesture_restore(&mut self, _: ()) {}
@@ -352,6 +354,8 @@ impl FormatEditor for PdfDocument {
             page_input,
             find_open: false,
             page_open: false,
+            #[cfg(not(target_family = "wasm"))]
+            label_edit: None,
             _subscriptions: subscriptions,
         })
     }
@@ -400,6 +404,14 @@ impl FormatEditor for PdfDocument {
                 entries.insert(at, MenuItem::tr("edit.go-to").icon("arrow_forward").on(|this, window, cx| open_go_to(this, window, cx)).into());
             }
         }
+        #[cfg(not(target_family = "wasm"))]
+        if viewer_of(_editor).is_some_and(|v| v.lock().expect("pdf viewer lock").is_vsdx()) && ibis_office_shell::host::export_allowed("vsdx") {
+            use ibis_office_shell::chrome::{MenuId, MenuItem};
+            menus.items_mut(MenuId::Edit).push(
+                MenuItem::tr("vsdx.edit-label").icon("edit")
+                    .on(|editor, window, cx| open_label_edit(editor, window, cx)).into()
+            );
+        }
         if let Some(item) = menus.find_mut("edit.copy") {
             item.disabled = !selected;
         }
@@ -428,6 +440,12 @@ impl FormatEditor for PdfDocument {
     /// but the two small fields; with the cursor in one of them the keys are its own.
     fn format_key(editor: &mut SlideEditor, keystroke: &gpui_kit::Keystroke, window: &mut Window, cx: &mut Context<SlideEditor>) -> bool {
         let in_field = editor.format_state::<State>().is_some_and(|s| s.find_input.read(cx).focus_handle(cx).is_focused(window) || s.page_input.read(cx).focus_handle(cx).is_focused(window));
+        #[cfg(not(target_family = "wasm"))]
+        if editor.format_state::<State>().and_then(|s| s.label_edit.as_ref())
+            .is_some_and(|e| e.input.read(cx).focus_handle(cx).is_focused(window))
+        {
+            return false;
+        }
         if in_field && !(keystroke.modifiers.platform && keystroke.key == "f") {
             return false;
         }
@@ -577,6 +595,11 @@ impl FormatEditor for PdfDocument {
         let entity = cx.entity().downgrade();
         let find_bar = find_open.then(|| find_bar(editor, &find_input, cx));
         let page_bar = page_open.then(|| page_bar(editor, &page_input, cx));
+        #[cfg(not(target_family = "wasm"))]
+        let label_bar = editor.format_state::<State>().and_then(|s| s.label_edit.as_ref())
+            .map(|mode| label_edit_bar(mode, cx));
+        #[cfg(target_family = "wasm")]
+        let label_bar: Option<AnyElement> = None;
 
         div()
             .relative()
@@ -668,6 +691,7 @@ impl FormatEditor for PdfDocument {
             .scrollbar(&editor.workspace_scroll, ScrollbarAxis::Both)
             .children(find_bar)
             .children(page_bar)
+            .children(label_bar)
             .into_any_element()
     }
 }
@@ -784,6 +808,132 @@ fn find_bar(editor: &SlideEditor, input: &Entity<InputState>, cx: &mut Context<S
             window.focus(&e.focus_handle, cx);
             cx.notify();
         })))
+        .into_any_element()
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct LabelEdit {
+    document: Arc<ibis_vsdx::VsdxContainer>,
+    page: usize,
+    labels: Vec<ibis_vsdx::edit::EditableLabel>,
+    changed_labels: std::collections::BTreeMap<usize, String>,
+    selected: usize,
+    input: Entity<InputState>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn open_label_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
+    use ibis_office_shell::i18n::text;
+    if let Some(mode) = editor.format_state::<State>().and_then(|state| state.label_edit.as_ref()) {
+        window.focus(&mode.input.read(cx).focus_handle(cx), cx);
+        return;
+    }
+    let Some(viewer) = viewer_of(editor) else { return };
+    let (document, page) = {
+        let viewer = viewer.lock().expect("pdf viewer lock");
+        let crate::ViewerSource::Vsdx(document) = &viewer.source else { return };
+        (document.clone(), viewer.current_page)
+    };
+    let labels = match document.editable_labels(page) {
+        Ok(labels) if !labels.is_empty() => labels,
+        Ok(_) => return editor.report(Err(text("vsdx.no-editable-labels").to_string()), cx),
+        Err(error) => return editor.report(Err(error.to_string()), cx),
+    };
+    let input = cx.new(|cx| InputState::new(window, cx).default_value(labels[0].text.clone()));
+    if let Some(state) = editor.format_state_mut::<State>() {
+        state.find_open = false;
+        state.label_edit = Some(LabelEdit { document, page, labels, changed_labels: Default::default(), selected: 0, input: input.clone() });
+    }
+    window.focus(&input.read(cx).focus_handle(cx), cx);
+    cx.notify();
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn select_label(editor: &mut SlideEditor, forward: bool, window: &mut Window, cx: &mut Context<SlideEditor>) {
+    let Some(mode) = editor.format_state::<State>().and_then(|s| s.label_edit.as_ref()) else { return };
+    let input = mode.input.clone();
+    let old = input.read(cx).value().to_string();
+    let Some(mode) = editor.format_state_mut::<State>().and_then(|s| s.label_edit.as_mut()) else { return };
+    mode.changed_labels.insert(mode.selected, old);
+    let count = mode.labels.len();
+    mode.selected = if forward { (mode.selected + 1) % count } else { (mode.selected + count - 1) % count };
+    let value = mode.changed_labels.get(&mode.selected).unwrap_or(&mode.labels[mode.selected].text).clone();
+    input.update(cx, |input, cx| input.set_value(value, window, cx));
+    cx.notify();
+}
+
+/// The current label edit applied to a copy of the original drawing.
+#[cfg(not(target_family = "wasm"))]
+pub fn label_copy_bytes(editor: &SlideEditor, cx: &gpui_kit::App) -> Result<Vec<u8>, String> {
+    let mode = editor.format_state::<State>().and_then(|s| s.label_edit.as_ref())
+        .ok_or_else(|| ibis_office_shell::i18n::text("vsdx.no-editable-labels").to_string())?;
+    let replacement = mode.input.read(cx).value();
+    let mut edits: Vec<_> = mode.changed_labels.iter().filter_map(|(&idx, text)| {
+        let label = &mode.labels[idx];
+        (idx != mode.selected && label.text != *text).then_some((label.shape_id, text.as_str()))
+    }).collect();
+    let label = &mode.labels[mode.selected];
+    if label.text.as_str() != replacement.as_ref() {
+        edits.push((label.shape_id, replacement.as_ref()));
+    }
+    mode.document.replace_labels(mode.page, &edits)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn save_label_copy(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
+    use ibis_office_shell::{i18n::text, save};
+    if !ibis_office_shell::host::export_allowed("vsdx") { return; }
+    let bytes = match label_copy_bytes(editor, cx) {
+        Ok(bytes) => bytes,
+        Err(error) => return editor.report(Err(error), cx),
+    };
+    let original = editor.file_path();
+    let (stem, _) = editor.name_parts();
+    let suggested = format!("{stem}-edited.vsdx");
+    let picked = cx.prompt_for_new_path(&editor.save_dialog_folder(), Some(&suggested));
+    cx.spawn_in(window, async move |this, cx| {
+        let Ok(Ok(Some(path))) = picked.await else { return };
+        this.update_in(cx, |editor, _, cx| {
+            let result = if !ibis_office_shell::host::export_allowed("vsdx") { return; }
+                else if original.as_deref().is_some_and(|original| save::same_file(original, &path)) {
+                Err(text("vsdx.keep-original").to_string())
+            } else if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("vsdx")) {
+                Err(text("vsdx.export-extension").to_string())
+            } else {
+                save::write_replacing(&path, &bytes)
+                    .map(|()| text("vsdx.label-copy-saved").to_string())
+                    .map_err(|error| error.to_string())
+            };
+            editor.report(result, cx);
+        }).ok();
+    }).detach();
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn label_edit_bar(mode: &LabelEdit, cx: &mut Context<SlideEditor>) -> AnyElement {
+    use ibis_office_shell::chrome::{FindNav, action_button, find_nav_button, text_field};
+    use ibis_office_shell::i18n::{format, text};
+    let status = format("vsdx.label-number", &[("n", &(mode.selected + 1)), ("total", &mode.labels.len())]);
+    bar_style()
+        .id("vsdx-label-edit")
+        .absolute().top(px(12.0)).right(px(24.0))
+        .child(div().child(status))
+        .child(find_nav_button("vsdx-label-previous", FindNav::Previous)
+            .on_click(cx.listener(|e, _, window, cx| select_label(e, false, window, cx))))
+        .child(find_nav_button("vsdx-label-next", FindNav::Next)
+            .on_click(cx.listener(|e, _, window, cx| select_label(e, true, window, cx))))
+        .child(text_field(&mode.input).width(px(220.0)).select_on_focus())
+        .child(action_button("vsdx-label-save").small().label(text("vsdx.save-label-copy"))
+            .on_click(cx.listener(|e, _, window, cx| save_label_copy(e, window, cx))))
+        .child(action_button("vsdx-label-close").small().label(text("_shell.close"))
+            .on_click(cx.listener(|e, _, window, cx| {
+                if let Some(state) = e.format_state_mut::<State>() {
+                    state.label_edit = None;
+                }
+                window.focus(&e.focus_handle, cx);
+                cx.notify();
+            })))
         .into_any_element()
 }
 
