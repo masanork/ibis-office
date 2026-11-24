@@ -9,10 +9,10 @@
 use std::collections::HashMap;
 
 use ibis_doc_model::{
-    Block, BorderStyle, CellAnchor, Emu, EmuSize, FlowAlign, FlowBorder, FlowCell, FlowDocument,
-    FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowTable, LineHeight, ListLevel, ListSuffix,
-    MediaFormat, MediaId, Numbering, PageSetup, ParaFormat, PartKind, Presentation, Rgb, RowHeight,
-    RunFormat, SectionBreak, SectionSetup, VerticalMerge,
+    Block, BorderStyle, CellAnchor, Emu, EmuSize, FloatingAnchor, FlowAlign, FlowBorder, FlowCell,
+    FlowDocument, FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowTable, LineHeight, ListLevel,
+    ListSuffix, MediaFormat, MediaId, Numbering, PageSetup, ParaFormat, PartKind, Presentation,
+    Rgb, RowHeight, RunFormat, SectionBreak, SectionSetup, VerticalMerge,
 };
 
 use crate::{
@@ -693,11 +693,19 @@ impl<'a> Importer<'a> {
             self.media.insert(id, media);
             media
         };
-        Ok(Some(FlowRunKind::Picture {
+        // A grouped child uses local coordinates; the control's anchor
+        // belongs to the group.
+        let floating = if picture.level <= control.level + 2 {
+            picture_anchor(control.bytes)?.map(|anchor| (self.presentation.new_shape_id(), anchor))
+        } else {
+            None
+        };
+        Ok(Some(shared::imported_picture(
             media,
-            size: EmuSize::new(width, height),
-            look: Default::default(),
-        }))
+            EmuSize::new(width, height),
+            Default::default(),
+            floating,
+        )))
     }
 
     fn table(
@@ -797,7 +805,7 @@ impl<'a> Importer<'a> {
                     && required <= height
                     && blocks.iter().all(|block| {
                         matches!(block, Block::Paragraph(p)
-                        if !p.runs.iter().any(|r| matches!(r.kind, FlowRunKind::Picture { .. })))
+                        if !p.runs.iter().any(|r| matches!(r.kind, FlowRunKind::Picture { .. } | FlowRunKind::Shape(_))))
                     });
             }
             for line in row..row + down {
@@ -913,6 +921,62 @@ fn measured_paragraph_height(bytes: &[u8], include_final_gap: bool) -> Option<Em
         }
     }
     Some(total)
+}
+
+fn picture_anchor(bytes: &[u8]) -> Result<Option<FloatingAnchor>, Error> {
+    let flags = dword(bytes, 4)?;
+    if flags & 1 != 0 {
+        return Ok(None);
+    }
+    let offset_x = dimension(bytes, 12)?;
+    let offset_y = dimension(bytes, 8)?;
+    let relative_h = ["page", "margin", "column", "column"][((flags >> 8) & 3) as usize];
+    let relative_v = ["page", "margin", "paragraph", "paragraph"][((flags >> 3) & 3) as usize];
+    let align = |offset, code: u32, labels: &[&str]| {
+        (offset == 0)
+            .then(|| labels.get(code as usize).map(|s| (*s).to_owned()))
+            .flatten()
+    };
+    let align_h = align(
+        offset_x,
+        (flags >> 10) & 7,
+        &["left", "center", "right", "inside", "outside"],
+    );
+    let align_v = align(
+        offset_y,
+        (flags >> 5) & 7,
+        &["top", "center", "bottom", "inside", "outside"],
+    );
+    let wrap = match (flags >> 21) & 7 {
+        1 => "tight",
+        2 => "through",
+        3 => "topAndBottom",
+        4 | 5 => "none",
+        _ => "square",
+    };
+    let wrap_text = ["bothSides", "left", "right", "largest"][((flags >> 24) & 3) as usize];
+    let margin = |offset| word(bytes, offset).map(|n| units(i64::from(n)));
+    Ok(Some(FloatingAnchor {
+        offset_x,
+        offset_y,
+        align_h,
+        align_v,
+        relative_h: relative_h.into(),
+        relative_v: relative_v.into(),
+        wrap: wrap.into(),
+        behind_doc: (flags >> 21) & 7 == 4,
+        dist_l: margin(28)?,
+        dist_r: margin(30)?,
+        dist_t: margin(32)?,
+        dist_b: margin(34)?,
+        wrap_text: Some(wrap_text.into()),
+        locked: false,
+        allow_overlap: flags & (1 << 14) != 0,
+        layout_in_cell: true,
+        relative_height: dword(bytes, 24)?,
+        wrap_polygon: None,
+        glue: Default::default(),
+    }))
 }
 
 fn embedded_picture(
@@ -1105,6 +1169,10 @@ mod tests {
     }
 
     fn sample(flags: u32) -> Vec<u8> {
+        sample_with_picture_mode(flags, 1)
+    }
+
+    fn sample_with_picture_mode(flags: u32, picture_flags: u32) -> Vec<u8> {
         let mut header = vec![0; 256];
         header[..SIGNATURE.len()].copy_from_slice(SIGNATURE);
         header[32..36].copy_from_slice(&0x0501_0001u32.to_le_bytes());
@@ -1119,6 +1187,10 @@ mod tests {
         record(&mut body, TEXT, 1, &text);
         let mut control = [0; 46];
         control[..4].copy_from_slice(b" osg");
+        control[4..8].copy_from_slice(&picture_flags.to_le_bytes());
+        control[8..12].copy_from_slice(&1200i32.to_le_bytes());
+        control[12..16].copy_from_slice(&(-300i32).to_le_bytes());
+        control[28..30].copy_from_slice(&140u16.to_le_bytes());
         control[16..20].copy_from_slice(&3600u32.to_le_bytes());
         control[20..24].copy_from_slice(&2400u32.to_le_bytes());
         record(&mut body, CONTROL, 1, &control);
@@ -1192,6 +1264,34 @@ mod tests {
             assert!(matches!(p.runs[1].kind, FlowRunKind::Picture { .. }));
             assert_eq!(opened.presentation.media[0].format, MediaFormat::Png);
         }
+    }
+
+    #[test]
+    fn binary_floating_picture_survives_docx_roundtrip() {
+        let flags = (2 << 8) | (2 << 3) | (1 << 14) | (4 << 21);
+        let f = open(&sample_with_picture_mode(1, flags))
+            .unwrap()
+            .presentation
+            .flow
+            .unwrap();
+        let Block::Paragraph(p) = &f.body[0] else {
+            panic!("paragraph expected")
+        };
+        let FlowRunKind::Shape(shape) = &p.runs[1].kind else {
+            panic!("floating picture expected")
+        };
+        assert!(matches!(shape.kind, ibis_doc_model::ShapeKind::Picture(_)));
+        let anchor = shape.floating.as_ref().unwrap();
+        assert_eq!(
+            (anchor.offset_x, anchor.offset_y),
+            (units(-300), units(1200))
+        );
+        assert_eq!(
+            (anchor.relative_h.as_str(), anchor.relative_v.as_str()),
+            ("column", "paragraph")
+        );
+        assert!(anchor.behind_doc && anchor.allow_overlap);
+        assert_eq!(anchor.dist_l, units(140));
     }
 
     #[test]

@@ -7,10 +7,12 @@
 use std::collections::HashMap;
 
 use ibis_doc_model::{
-    Block, BorderStyle, CellAnchor, Emu, EmuSize, FlowAlign, FlowBorder, FlowCell, FlowDocument,
-    FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowTable, LineHeight, ListLevel, ListSuffix,
-    MediaFormat, MediaId, Numbering, PageSetup, ParaFormat, PartKind, Presentation, Rgb, RowHeight,
-    RunFormat, SectionBreak, SectionSetup, VerticalMerge,
+    AutoShape, Block, BorderStyle, CellAnchor, Color, Emu, EmuRect, EmuSize, Fill, FloatingAnchor,
+    FlowAlign, FlowBorder, FlowCell, FlowDocument, FlowParagraph, FlowRow, FlowRun, FlowRunKind,
+    FlowTable, Geometry, GradientStop, LineDash, LineHeight, ListLevel, ListSuffix, MediaFormat,
+    MediaId, Numbering, PageSetup, ParaFormat, PartKind, PictureLook, Presentation, Rgb, RowHeight,
+    RunFormat, SectionBreak, SectionSetup, Shape, ShapeKind, Stroke, TextBody, TextStyle,
+    VerticalAnchor, VerticalMerge,
 };
 use roxmltree::{Document, Node};
 
@@ -377,11 +379,22 @@ mod tests {
             </hh:head>"##
         );
         let section = format!(
-            r#"<hs:sec xmlns:hs="{SECTION}" xmlns:hp="{PARAGRAPH}"
+            r##"<hs:sec xmlns:hs="{SECTION}" xmlns:hp="{PARAGRAPH}"
             xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
             <hp:p paraPrIDRef="1"><hp:run charPrIDRef="1">
               <hp:secPr><hp:pagePr width="50000" height="70000"><hp:margin left="4300"/></hp:pagePr></hp:secPr>
               <hp:t>안내</hp:t><hp:pic><hp:sz width="3600" height="2400"/><hc:img binaryItemIDRef="logo"/></hp:pic>
+              <hp:pic textWrap="TOP_AND_BOTTOM" zOrder="4"><hp:sz width="3600" height="2400"/>
+                <hp:pos treatAsChar="0" horzRelTo="PAPER" horzOffset="4294966996" vertRelTo="PAGE" vertAlign="CENTER" vertOffset="0"/>
+                <hp:outMargin top="300"/><hp:flip horizontal="1"/><hp:rotationInfo angle="30"/>
+                <hc:img binaryItemIDRef="logo"/>
+              </hp:pic>
+              <hp:rect textWrap="IN_FRONT_OF_TEXT"><hp:sz width="4900" height="4200"/>
+                <hp:pos treatAsChar="0" horzRelTo="PAPER" horzOffset="5000" vertRelTo="PAPER" vertOffset="2500"/>
+                <hp:lineShape color="#000000" width="100" style="DOT"/>
+                <hc:fillBrush><hc:winBrush faceColor="#86AFDC"/></hc:fillBrush>
+                <hp:drawText><hp:subList vertAlign="CENTER"><hp:p><hp:run><hp:t>ABC</hp:t></hp:run></hp:p></hp:subList><hp:textMargin left="400"/></hp:drawText>
+              </hp:rect>
             </hp:run></hp:p>
             <hp:p><hp:run><hp:tbl rowCnt="3" colCnt="3" pageBreak="TABLE" repeatHeader="1" cellSpacing="100">
               <hp:tr><hp:tc header="1"><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="2" rowSpan="2"/>
@@ -405,7 +418,7 @@ mod tests {
             <hp:p><hp:run><hp:tbl rowCnt="1" colCnt="1" pageBreak="CELL" repeatHeader="0">
               <hp:tr><hp:tc header="1"><hp:cellAddr colAddr="0" rowAddr="0"/></hp:tc></hp:tr>
             </hp:tbl></hp:run></hp:p>
-            </hs:sec>"#
+            </hs:sec>"##
         );
         let png = include_bytes!("../../../test/fixtures/markdown-desktop/images/revenue.png");
         let mut writer = ibis_ooxml::zip::Writer::new();
@@ -434,6 +447,35 @@ mod tests {
             panic!("expected picture")
         };
         assert_eq!(presentation.media(media).unwrap().data.as_ref(), png);
+        let FlowRunKind::Shape(shape) = &p.runs[2].kind else {
+            panic!("floating picture expected")
+        };
+        assert!(matches!(shape.kind, ibis_doc_model::ShapeKind::Picture(_)));
+        assert!(shape.flip_h);
+        assert_eq!(shape.rotation, 1_800_000);
+        let anchor = shape.floating.as_ref().unwrap();
+        assert_eq!(
+            (anchor.relative_h.as_str(), anchor.relative_v.as_str()),
+            ("page", "margin")
+        );
+        assert_eq!(anchor.offset_x, units(-300));
+        assert_eq!(anchor.align_v.as_deref(), Some("center"));
+        assert_eq!(anchor.wrap, "topAndBottom");
+        assert_eq!(anchor.dist_t, units(300));
+        let FlowRunKind::Shape(rect) = &p.runs[3].kind else {
+            panic!("rectangle expected")
+        };
+        let ShapeKind::Auto(rectangle) = &rect.kind else {
+            panic!("auto shape expected")
+        };
+        assert_eq!(rectangle.geometry, Geometry::Rect);
+        assert_eq!(rectangle.fill, Fill::Solid(Color::opaque(Rgb(0x86_af_dc))));
+        assert_eq!(rectangle.stroke.as_ref().unwrap().dash, LineDash::Dot);
+        let text = rectangle.text.as_ref().unwrap();
+        assert_eq!(text.text(), "ABC");
+        assert_eq!(text.anchor, VerticalAnchor::Middle);
+        assert_eq!(text.insets.left, units(400));
+        assert_eq!(rect.floating.as_ref().unwrap().wrap, "none");
         let Block::Table(table) = &flow.body[1] else {
             panic!("expected table")
         };
@@ -889,6 +931,17 @@ impl Importer<'_, '_> {
                         if let Some(kind) = self.picture(item)? {
                             paragraph.runs.push(FlowRun::new(kind, Default::default()));
                         }
+                    } else if item.has_tag_name((PARAGRAPH, "rect"))
+                        || item.has_tag_name((PARAGRAPH, "ellipse"))
+                    {
+                        let geometry = if item.has_tag_name((PARAGRAPH, "rect")) {
+                            Geometry::Rect
+                        } else {
+                            Geometry::Ellipse
+                        };
+                        if let Some(kind) = self.basic_shape(item, geometry) {
+                            paragraph.runs.push(FlowRun::new(kind, Default::default()));
+                        }
                     } else if item.has_tag_name((PARAGRAPH, "ctrl"))
                         && part(item, "autoNum")
                             .is_some_and(|n| n.attribute("numType") == Some("PAGE"))
@@ -934,12 +987,7 @@ impl Importer<'_, '_> {
         let Some(&href) = self.items.get(id) else {
             return Ok(None);
         };
-        let Some(size) = ["sz", "curSz", "orgSz"].into_iter().find_map(|name| {
-            let n = part(node, name)?;
-            let width = number::<i64>(n, "width")?;
-            let height = number::<i64>(n, "height")?;
-            (width > 0 && height > 0).then(|| EmuSize::new(units(width), units(height)))
-        }) else {
+        let Some(size) = object_size(node) else {
             return Ok(None);
         };
 
@@ -967,11 +1015,91 @@ impl Importer<'_, '_> {
             self.images.insert(href, media);
             media
         };
-        Ok(media.map(|media| FlowRunKind::Picture {
-            media,
-            size,
-            look: Default::default(),
+        let look = picture_look(node);
+        Ok(media.map(|media| {
+            let floating =
+                picture_anchor(node).map(|anchor| (self.presentation.new_shape_id(), anchor));
+            shared::imported_picture(media, size, look, floating)
         }))
+    }
+
+    fn basic_shape(&mut self, node: Node<'_, '_>, geometry: Geometry) -> Option<FlowRunKind> {
+        if matches!(geometry, Geometry::Ellipse) && is_true(node.attribute("hasArcPr")) {
+            return None;
+        }
+        let size = object_size(node)?;
+        let brush = node
+            .children()
+            .find(|n| n.has_tag_name((CORE, "fillBrush")));
+        let fill = brush.map_or(Fill::None, shape_fill);
+        let stroke = part(node, "lineShape").and_then(|n| {
+            let style = n.attribute("style")?;
+            if style == "NONE" {
+                return None;
+            }
+            let width = number::<i64>(n, "width").map(units)?;
+            let color = n.attribute("color").and_then(color)?;
+            let dash = match style {
+                "DOT" => LineDash::Dot,
+                "DASH" => LineDash::Dash,
+                "DASH_DOT" | "DASH_DOT_DOT" => LineDash::DashDot,
+                _ => LineDash::Solid,
+            };
+            Some(Stroke::solid(Color::opaque(color), width.max(0)).with_dash(dash))
+        });
+        let mut auto = AutoShape::new(geometry, fill, stroke);
+        if let Some(draw) = part(node, "drawText")
+            && let Some(content) = part(draw, "subList")
+        {
+            let lines: Vec<String> = content
+                .children()
+                .filter(|p| p.has_tag_name((PARAGRAPH, "p")))
+                .map(|p| {
+                    p.children()
+                        .filter(|r| r.has_tag_name((PARAGRAPH, "run")))
+                        .flat_map(|r| r.children().filter(|t| t.has_tag_name((PARAGRAPH, "t"))))
+                        .flat_map(|t| {
+                            t.children().filter_map(|n| {
+                                if n.has_tag_name((PARAGRAPH, "lineBreak")) {
+                                    Some("\n")
+                                } else if n.has_tag_name((PARAGRAPH, "tab")) {
+                                    Some("\t")
+                                } else {
+                                    n.is_text().then(|| n.text()).flatten()
+                                }
+                            })
+                        })
+                        .collect()
+                })
+                .collect();
+            if !lines.is_empty() {
+                let mut text = TextBody::plain(&lines.join("\n"), TextStyle::default());
+                text.anchor = match content.attribute("vertAlign") {
+                    Some("CENTER") => VerticalAnchor::Middle,
+                    Some("BOTTOM") => VerticalAnchor::Bottom,
+                    _ => VerticalAnchor::Top,
+                };
+                if let Some(margins) = part(draw, "textMargin") {
+                    let inset = |side| number::<i64>(margins, side).map_or(0, |n| units(n.max(0)));
+                    text.insets.left = inset("left");
+                    text.insets.right = inset("right");
+                    text.insets.top = inset("top");
+                    text.insets.bottom = inset("bottom");
+                }
+                auto.text = Some(text);
+            }
+        }
+        let mut shape = Shape::new(
+            self.presentation.new_shape_id(),
+            EmuRect::new(0, 0, size.width, size.height),
+            ShapeKind::Auto(auto),
+        );
+        let look = picture_look(node);
+        shape.rotation = look.rotation;
+        shape.flip_h = look.flip_h;
+        shape.flip_v = look.flip_v;
+        shape.floating = picture_anchor(node);
+        Some(FlowRunKind::Shape(Box::new(shape)))
     }
 
     fn table(&mut self, table: Node<'_, '_>, depth: usize) -> Result<FlowTable, Error> {
@@ -1153,6 +1281,159 @@ impl Importer<'_, '_> {
 
 // A merged cell provides the sum of its rows' heights. Use that information
 // to fill gaps, leaving rows with individual measurements untouched.
+fn object_size(node: Node<'_, '_>) -> Option<EmuSize> {
+    ["sz", "curSz", "orgSz"].into_iter().find_map(|name| {
+        let n = part(node, name)?;
+        let width = number::<i64>(n, "width")?;
+        let height = number::<i64>(n, "height")?;
+        (width > 0 && height > 0).then(|| EmuSize::new(units(width), units(height)))
+    })
+}
+
+fn shape_fill(brush: Node<'_, '_>) -> Fill {
+    if let Some(rgb) = brush
+        .children()
+        .find(|n| n.has_tag_name((CORE, "winBrush")))
+        .and_then(|n| n.attribute("faceColor"))
+        .and_then(color)
+    {
+        return Fill::Solid(Color::opaque(rgb));
+    }
+    let Some(gradient) = brush
+        .children()
+        .find(|n| n.has_tag_name((CORE, "gradation")))
+        .filter(|n| n.attribute("type") == Some("LINEAR"))
+    else {
+        return Fill::None;
+    };
+    let colors: Vec<_> = gradient
+        .children()
+        .filter(|n| n.has_tag_name((CORE, "color")))
+        .filter_map(|n| n.attribute("value").and_then(color))
+        .take(3)
+        .collect();
+    let [first, last] = colors.as_slice() else {
+        return Fill::None;
+    };
+    let angle = number::<i32>(gradient, "angle")
+        .unwrap_or(0)
+        .rem_euclid(360)
+        * 60_000;
+    Fill::Linear {
+        angle,
+        scaled: true,
+        stops: vec![
+            GradientStop {
+                position: 0,
+                color: Color::opaque(*first),
+            },
+            GradientStop {
+                position: 100_000,
+                color: Color::opaque(*last),
+            },
+        ],
+    }
+}
+
+fn picture_look(node: Node<'_, '_>) -> PictureLook {
+    let flip = part(node, "flip");
+    let rotation = part(node, "rotationInfo")
+        .and_then(|node| number::<i32>(node, "angle"))
+        .map_or(0, |angle| angle.rem_euclid(360) * 60_000);
+    let mut look = PictureLook {
+        rotation,
+        flip_h: flip.is_some_and(|flip| is_true(flip.attribute("horizontal"))),
+        flip_v: flip.is_some_and(|flip| is_true(flip.attribute("vertical"))),
+        ..Default::default()
+    };
+    if let Some(description) = part(node, "shapeComment").and_then(|node| node.text()) {
+        look.alt_text.description = description.into();
+    }
+    look
+}
+
+fn is_true(value: Option<&str>) -> bool {
+    matches!(value, Some("1" | "true"))
+}
+
+fn picture_anchor(node: Node<'_, '_>) -> Option<FloatingAnchor> {
+    let pos = part(node, "pos")?;
+    if is_true(pos.attribute("treatAsChar")) {
+        return None;
+    }
+    let dist = |side| {
+        part(node, "outMargin")
+            .and_then(|margin| number::<i64>(margin, side))
+            .map_or(0, |n| units(n.max(0)))
+    };
+    let offset = |name| {
+        let Some(raw) = number::<i64>(pos, name) else {
+            return 0;
+        };
+        // Hancom also saves negative HWPUNIT offsets as unsigned 32-bit values.
+        let signed = u32::try_from(raw).map_or(raw, |value| i64::from(value as i32));
+        units(signed)
+    };
+    let offset_x = offset("horzOffset");
+    let offset_y = offset("vertOffset");
+    let align = |offset, attr: &str, accepted: &[&str]| {
+        let value = pos.attribute(attr)?.to_ascii_lowercase();
+        (offset == 0 && accepted.contains(&value.as_str())).then_some(value)
+    };
+    let relative_h = match pos.attribute("horzRelTo") {
+        Some("PAPER") => "page",
+        Some("PAGE") => "margin",
+        _ => "column",
+    };
+    let relative_v = match pos.attribute("vertRelTo") {
+        Some("PAPER") => "page",
+        Some("PAGE") => "margin",
+        _ => "paragraph",
+    };
+    let wrap = match node.attribute("textWrap") {
+        Some("TIGHT") => "tight",
+        Some("THROUGH") => "through",
+        Some("TOP_AND_BOTTOM") => "topAndBottom",
+        Some("BEHIND_TEXT" | "IN_FRONT_OF_TEXT") => "none",
+        _ => "square",
+    };
+    let wrap_text = match node.attribute("textFlow") {
+        Some("LEFT_ONLY") => "left",
+        Some("RIGHT_ONLY") => "right",
+        Some("LARGEST_ONLY") => "largest",
+        _ => "bothSides",
+    };
+    Some(FloatingAnchor {
+        offset_x,
+        offset_y,
+        align_h: align(
+            offset_x,
+            "horzAlign",
+            &["left", "center", "right", "inside", "outside"],
+        ),
+        align_v: align(
+            offset_y,
+            "vertAlign",
+            &["top", "center", "bottom", "inside", "outside"],
+        ),
+        relative_h: relative_h.into(),
+        relative_v: relative_v.into(),
+        wrap: wrap.into(),
+        behind_doc: node.attribute("textWrap") == Some("BEHIND_TEXT"),
+        dist_l: dist("left"),
+        dist_r: dist("right"),
+        dist_t: dist("top"),
+        dist_b: dist("bottom"),
+        wrap_text: Some(wrap_text.into()),
+        locked: is_true(node.attribute("lock")),
+        allow_overlap: is_true(pos.attribute("allowOverlap")),
+        layout_in_cell: true,
+        relative_height: number(node, "zOrder").unwrap_or(0),
+        wrap_polygon: None,
+        glue: Default::default(),
+    })
+}
+
 fn fill_merged_row_heights(heights: &mut [Emu], spans: &mut [(usize, usize, Emu)]) {
     spans.sort_unstable();
     for &(span, start, height) in spans.iter() {

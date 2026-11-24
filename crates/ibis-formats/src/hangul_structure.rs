@@ -3,8 +3,9 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
 use ibis_doc_model::{
-    AbstractList, Block, FlowAlign, FlowDocument, FlowParagraph, FlowRun, FlowRunKind,
-    ListInstance, ListLevel, ListSuffix, Numbering, PartKind, SectionSetup,
+    AbstractList, Block, EmuRect, EmuSize, FloatingAnchor, FlowAlign, FlowDocument, FlowParagraph,
+    FlowRun, FlowRunKind, ListInstance, ListLevel, ListSuffix, MediaId, Numbering, PartKind,
+    Picture, PictureLook, SectionSetup, Shape, ShapeId, ShapeKind,
 };
 
 pub(super) fn add_list(numbering: &mut Numbering, levels: Vec<ListLevel>) -> u32 {
@@ -131,4 +132,33 @@ pub(super) fn set_last_section(doc: &mut FlowDocument, section: SectionSetup) {
         };
         *target = part.unwrap_or_default();
     }
+}
+
+pub(super) fn imported_picture(
+    media: MediaId,
+    size: EmuSize,
+    look: PictureLook,
+    floating: Option<(ShapeId, FloatingAnchor)>,
+) -> FlowRunKind {
+    let Some((id, floating)) = floating else {
+        return FlowRunKind::Picture { media, size, look };
+    };
+    let mut picture = Picture::new(media);
+    picture.crop = look.crop;
+    picture.alt_text = look.alt_text;
+    let mut shape = Shape::new(
+        id,
+        EmuRect::new(
+            floating.offset_x,
+            floating.offset_y,
+            size.width,
+            size.height,
+        ),
+        ShapeKind::Picture(picture),
+    );
+    shape.rotation = look.rotation;
+    shape.flip_h = look.flip_h;
+    shape.flip_v = look.flip_v;
+    shape.floating = Some(floating);
+    FlowRunKind::Shape(Box::new(shape))
 }
