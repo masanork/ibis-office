@@ -8180,6 +8180,14 @@ fn write_styles(package: &mut Package, map: &SourceMap, old: &ibis_doc_model::Fl
                 writer.doc.set_attr(e, "w:type", kind);
                 writer.doc.set_attr(e, "w:styleId", id);
                 writer.val(e, "name", Some(&style.name), STYLE_ORDER);
+                if style.kind == StyleKind::Paragraph
+                    && let Some(level) = style.name.to_ascii_lowercase().strip_prefix("heading ")
+                        .and_then(|text| text.parse::<u8>().ok())
+                        .filter(|level| (1..=9).contains(level))
+                {
+                    let ppr = writer.ensure(e, "pPr", STYLE_ORDER);
+                    writer.val(ppr, "outlineLvl", Some(&(level - 1).to_string()), PPR_ORDER);
+                }
                 writer.val(e, "basedOn", style.based_on.as_deref(), STYLE_ORDER);
                 writer.val(e, "next", style.next.as_deref(), STYLE_ORDER);
                 if style.auto_update {

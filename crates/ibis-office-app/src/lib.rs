@@ -904,12 +904,14 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "md" | "markdown" | "xml" | "lawtext" | "txt"));
         match format {
             "docx" => {
-                let opened = ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent())
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
-                let out_bytes = opened
-                    .source
-                    .save(&opened.presentation, Default::default())
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let out_bytes = if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::uot::is_extension)
+                    || ibis_formats::uot::is_uot(&data)
+                {
+                    ibis_formats::uot::to_docx(&data)
+                } else {
+                    ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent())
+                        .and_then(|opened| opened.source.save(&opened.presentation, Default::default()))
+                }.map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_path = out_dir.join(format!("{stem}.docx"));
                 std::fs::write(&out_path, out_bytes)
                     .map_err(|e| format!("{}: {e}", out_path.display()))?;
