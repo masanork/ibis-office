@@ -281,15 +281,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/linux-appimage-bom.py ci-artifact/desktop-linux-x64-ci.AppImage ci-artifact
-          app="$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
+          appdir="$RUNNER_TEMP/verify-linux/squashfs-root"
+          python3 scripts/linux-appimage-bom.py ci-artifact/desktop-linux-x64-ci.AppImage "$appdir" ci-artifact
+          app="$appdir/usr/bin/ibisOffice"
           for kind in sbom cbom; do
             workbook="$RUNNER_TEMP/linux-$kind.xlsx"
             "$app" --export sbom-table "ci-artifact/linux-x64-appimage.$kind.cdx.json" --out-file "$workbook"
             unzip -p "$workbook" xl/workbook.xml > "$RUNNER_TEMP/linux-$kind-workbook.xml"
             grep -F 'name="Components"' "$RUNNER_TEMP/linux-$kind-workbook.xml"
           done
-          grep -F 'name="Cryptographic assets"' "$RUNNER_TEMP/linux-cbom-workbook.xml"
+          grep -qF 'name="Cryptographic assets"' "$RUNNER_TEMP/linux-cbom-workbook.xml"
+          grep -qF 'name="Crypto relationships"' "$RUNNER_TEMP/linux-cbom-workbook.xml"
+          unzip -p "$RUNNER_TEMP/linux-sbom.xlsx" 'xl/*.xml' > "$RUNNER_TEMP/linux-sbom-cells.xml"
+          unzip -p "$RUNNER_TEMP/linux-cbom.xlsx" 'xl/*.xml' > "$RUNNER_TEMP/linux-cbom-cells.xml"
+          for component in usr/bin/ibisOffice usr/bin/ibisOfficeUpdater libc.so.6; do
+            grep -qF "$component" "$RUNNER_TEMP/linux-sbom-cells.xml"
+          done
+          for algorithm in AES-256-CBC RC4 RSA-PSS-SHA-256 ECDSA-P-256-SHA-256 SM2-with-SM3; do
+            grep -qF "$algorithm" "$RUNNER_TEMP/linux-cbom-cells.xml"
+          done
       - name: Hash deliverables
         run: python3 scripts/desktop-ci-info.py artifacts ci-artifact
       - uses: actions/upload-artifact@v4

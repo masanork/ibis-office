@@ -87,14 +87,20 @@ Desktop build CI の Linux x64 ジョブは `desktop-ci-linux-x64` に CycloneDX
 `linux-x64-appimage.sbom.cdx.json` と `linux-x64-appimage.cbom.cdx.json` を収録する。
 両方のメタデータにソース SHA、Cargo ターゲット、AppImage の SHA-256、棚卸し範囲を記録する。
 SBOM はアプリ、アップデーター、AppImage クレートの通常の Cargo 依存を対象にする。
-ビルド依存、開発依存、手続きマクロ、同梱素材とシステムライブラリは初期範囲の外にある。
 AppImage クレート内のパッカーと組み込みランタイムはクレート単位で扱う。
+展開した同梱物は相対パスと SHA-256 で記録し、シンボリックリンクはリンク先文字列を記録する。
+AppImage ランタイムと同梱 ELF の直接動的依存は `readelf` の `DT_NEEDED` 名を記録する。
+ホスト上で解決されるライブラリのパスや版、ホスト依存の推移閉包、動的ロード、
+Cargo のビルド依存、開発依存、手続きマクロは範囲外。
 
-CBOM はこの依存グラフに、OOXML 文書暗号化のソースで確認した AES-CBC を追加する。
+CBOM はこの依存グラフに、OOXML の文書暗号化、PDF Standard Security Handler、
+OOXML の XMLDSig 署名値検証、OFD の署名値と参照ダイジェストの検証を追加する。
 暗号資産を追加する際は、対象ビルドでの依存関係と実装経路を確認し、根拠のソースを記録する。
 ここで記録するのはソース上で確認した利用経路であり、実行時の暗号操作の観測は別途行う。
+PDF 署名の CMS、証明書の信頼判定や失効確認はこの署名値検証の棚卸し範囲外。
 
-CI は AppImage から取り出した ibisOffice で両方を XLSX に変換してシート名を確認する。
+CI は AppImage から取り出した ibisOffice で両方を XLSX に変換する。
+対象シートと、同梱バイナリ、動的ライブラリ名、各暗号利用経路を代表する資産名を確認する。
 差分や例外の正解を固定した回帰テストには、既存の合成フィクスチャを引き続き使う。
 
 ## マイルストーン Release
