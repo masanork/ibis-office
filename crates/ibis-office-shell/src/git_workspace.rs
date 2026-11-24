@@ -64,7 +64,14 @@ pub(crate) struct GitWorkspace {
 
 impl GitWorkspace {
     fn open(path: &Path) -> Result<Self> {
-        let repo = gix::discover(path)?;
+        Self::from_repository(gix::discover(path)?)
+    }
+
+    pub(crate) fn for_selected_folder(path: &Path) -> Option<Self> {
+        Self::from_repository(gix::open(path).ok()?).ok()
+    }
+
+    fn from_repository(repo: gix::Repository) -> Result<Self> {
         let head = repo.head_id()?.detach();
         let worktree = repo.workdir().map(Path::to_path_buf);
         let name = worktree.as_deref().unwrap_or_else(|| repo.path());
@@ -383,36 +390,6 @@ fn unified_diff(old: &str, new: &str, old_label: &str, new_label: &str) -> Strin
 }
 
 impl SlideEditor {
-    pub(crate) fn pick_git_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            extensions: Vec::new(),
-            prompt: Some(text("file.open-repository")),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else {
-                return;
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
-            let result = cx
-                .background_executor()
-                .spawn(async move { GitWorkspace::open(&path).map_err(|err| err.to_string()) })
-                .await;
-            let _ = this.update(cx, |editor, cx| match result {
-                Ok(workspace) => crate::app::open_window_with(cx, move |editor, _, cx| {
-                    editor.git_workspace = Some(workspace);
-                    cx.notify();
-                }),
-                Err(error) => editor.show_alert(text("git.failed"), error.into(), cx),
-            });
-        })
-        .detach();
-    }
-
     fn git_toggle_dir(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let Some(state) = self.git_workspace.as_mut().filter(|s| !s.busy) else {
             return;

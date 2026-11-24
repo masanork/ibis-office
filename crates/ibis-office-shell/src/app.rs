@@ -133,6 +133,8 @@ pub(crate) fn start_app_menus() -> [Menu; 4] {
             MenuItem::action(text("file.new-workbook"), StartNewWorkbook),
             MenuItem::action(text("file.new-presentation"), StartNewPresentation),
             MenuItem::action(text("app.file.open"), Open),
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            MenuItem::action(text("file.open-folder"), OpenFolder),
             MenuItem::submenu(Menu::new(text("file.recent")).items(recent)),
             MenuItem::separator(),
             MenuItem::action(text("app.file.save"), Save),

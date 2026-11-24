@@ -1211,26 +1211,6 @@ impl crate::editor::SlideEditor {
         .detach();
     }
 
-    pub(crate) fn pick_structured_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            extensions: vec!["json".into(), "jsonl".into(), "ndjson".into(), "csv".into()],
-            prompt: Some(crate::i18n::text("structured.open")),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = picked.await
-                && let Some(path) = paths.into_iter().next()
-            {
-                let _ = this.update_in(cx, |editor, window, cx| {
-                    editor.open_structured_data(path, window, cx)
-                });
-            }
-        })
-        .detach();
-    }
-
     pub(crate) fn open_structured_outline(&mut self, window: &Window, cx: &mut Context<Self>) {
         if let Some(flow) = self.presentation().flow.as_ref() {
             let tree = Tree::outline(flow);

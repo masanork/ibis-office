@@ -17,9 +17,7 @@ pub(super) const DOC: &[MenuSpec] = &[
             LayoutItem::Cmd("file.new.presentation"),
         ] },
         LayoutItem::Cmd("file.open"),
-        LayoutItem::Cmd("structured.open"),
         LayoutItem::Cmd("file.open-folder"),
-        LayoutItem::Cmd("file.open-repository"),
         LayoutItem::Sub { id: Some("file.recent"), label_key: "file.recent", items: &[
             LayoutItem::Planned { key: "menu.planned.doc.file.1" },
         ] },
@@ -637,12 +635,10 @@ pub(super) const SHEET: &[MenuSpec] = &[
             LayoutItem::Cmd("file.new.presentation"),
         ] },
         LayoutItem::Cmd("file.open"),
-        LayoutItem::Cmd("structured.open"),
         LayoutItem::Cmd("file.open-folder"),
         LayoutItem::Cmd("xlsx.cbom-compare"),
         LayoutItem::Cmd("xlsx.sbom-refresh"),
         LayoutItem::Cmd("xlsx.sbom-actions"),
-        LayoutItem::Cmd("file.open-repository"),
         LayoutItem::Sub { id: Some("file.recent"), label_key: "file.recent", items: &[
             LayoutItem::Planned { key: "menu.planned.sheet.file.1" },
         ] },
@@ -1268,9 +1264,7 @@ pub(super) const SLIDE: &[MenuSpec] = &[
             LayoutItem::Cmd("file.new.workbook"),
         ] },
         LayoutItem::Cmd("file.open"),
-        LayoutItem::Cmd("structured.open"),
         LayoutItem::Cmd("file.open-folder"),
-        LayoutItem::Cmd("file.open-repository"),
         LayoutItem::Sub { id: Some("file.recent"), label_key: "file.recent", items: &[
             LayoutItem::Planned { key: "menu.planned.slide.file.1" },
         ] },

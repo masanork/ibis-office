@@ -54,6 +54,13 @@ impl SlideEditor {
     }
 
     pub(crate) fn pick_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::git_workspace::GitWorkspace;
+
+        enum OpenedFolder {
+            Files(Folder),
+            Repository(Box<GitWorkspace>),
+        }
+
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -70,13 +77,23 @@ impl SlideEditor {
             };
             let result = cx
                 .background_executor()
-                .spawn(async move { Folder::scan(&path) })
+                .spawn(async move {
+                    if let Some(workspace) = GitWorkspace::for_selected_folder(&path) {
+                        Ok(OpenedFolder::Repository(Box::new(workspace)))
+                    } else {
+                        Folder::scan(&path).map(OpenedFolder::Files)
+                    }
+                })
                 .await;
             let _ = this.update_in(cx, |editor, window, cx| match result {
-                Ok(folder) => {
+                Ok(OpenedFolder::Files(folder)) => {
                     editor.reset_ai_folder_context(cx);
                     editor.set_folder_pane(Arc::new(folder), window, cx);
                 }
+                Ok(OpenedFolder::Repository(workspace)) => crate::app::open_window_with(cx, move |editor, _, cx| {
+                    editor.git_workspace = Some(*workspace);
+                    cx.notify();
+                }),
                 Err(error) => editor.show_alert(text("folder.error"), error.into(), cx),
             });
         })

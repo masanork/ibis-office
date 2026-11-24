@@ -20,6 +20,8 @@ actions!(
         CancelTool,
         /// Open a PowerPoint, Excel or Word file.
         Open,
+        /// Open a local folder or its Git history.
+        OpenFolder,
         /// Make a new, empty Word document (ファイル > 新規作成 > ドキュメント).
         NewDocument,
         /// The start window's ファイル > 新しい文書 (⌘D, only in the start window): a new, empty document.

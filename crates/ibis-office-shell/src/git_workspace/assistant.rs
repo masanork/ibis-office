@@ -234,6 +234,18 @@ mod tests {
     }
 
     #[test]
+    fn folder_open_recognizes_the_selected_repository_root() {
+        use super::super::GitWorkspace;
+
+        let repo = TempRepo::new();
+        assert!(GitWorkspace::for_selected_folder(&repo.0).is_none());
+        repo.write("docs/example.md", "# Example");
+        repo.commit("Add example");
+        assert!(GitWorkspace::for_selected_folder(&repo.0).is_some());
+        assert!(GitWorkspace::for_selected_folder(&repo.0.join("docs")).is_none());
+    }
+
+    #[test]
     fn markdown_preview_links_keep_the_commit_and_reject_ambiguous_wikis() {
         use super::super::{PreviewLocation, preview_link};
 

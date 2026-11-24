@@ -1892,6 +1892,18 @@ impl SlideEditor {
             }
             this.watch.opening_path = None;
             let restore = this.watch.restore_view.take().filter(|(p, _)| *p == path).map(|(_, view)| view);
+            // Specialized JSON imports have already been selected by the reader.
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                && match &result {
+                    Ok(loaded) => loaded.structured_preview,
+                    Err(error) => error == ibis_formats::structured_preview::SIZE_LIMIT_ERROR,
+                }
+            {
+                this.fail_loading(String::new(), cx);
+                this.open_structured_data(path, window, cx);
+                return;
+            }
             match result {
                 Ok(loaded) => {
                     let signature_presence = loaded.source.has_package_signatures();
@@ -4376,6 +4388,12 @@ impl Render for SlideEditor {
             .on_action(cx.listener(Self::delete_selection))
             .on_action(cx.listener(Self::cancel_tool))
             .on_action(cx.listener(Self::open_file))
+            .on_action(cx.listener(|editor, _: &crate::actions::OpenFolder, window, cx| {
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                editor.pick_folder(window, cx);
+                #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+                let _ = (editor, window, cx);
+            }))
             .on_action(cx.listener(|_, _: &crate::actions::OpenStartWindow, _, cx| crate::app::open_editor(None, None, cx)))
             .on_action(cx.listener(|this, _: &crate::actions::NewDocument, window, cx| {
                 let kind = if this.kind() == ibis_formats::Kind::Pdf { ibis_formats::Kind::Document } else { this.kind() };

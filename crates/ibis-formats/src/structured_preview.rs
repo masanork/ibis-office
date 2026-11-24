@@ -9,6 +9,7 @@ use ibis_doc_model::sd_jwt_import::{
 use serde_json::Value;
 
 const MAX_BYTES: usize = 1024 * 1024;
+pub const SIZE_LIMIT_ERROR: &str = "Structured preview accepts files up to 1 MiB";
 const MAX_FIELDS: usize = 1_000;
 const MAX_DEPTH: usize = 32;
 
@@ -38,7 +39,7 @@ pub fn supports_extension(extension: &str) -> bool {
 
 pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
     if bytes.len() > MAX_BYTES {
-        return Err("Structured preview accepts files up to 1 MiB".into());
+        return Err(SIZE_LIMIT_ERROR.into());
     }
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let text =
