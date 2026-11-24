@@ -3476,7 +3476,57 @@ fn build_display_math_block(latex: &str, bookmark: Option<&str>, ctx: &mut Parse
     Block::Paragraph(p)
 }
 
+const MARKDOWN_QUOTED_CODE_STYLE: &str = "IbisMarkdownQuotedCode";
+
+fn quoted_code(lines: &[&str]) -> Option<String> {
+    use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+
+    let source = lines.join("\n");
+    let mut events = Parser::new(&source);
+    match events.next()? {
+        Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)) => {}
+        Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) if info.is_empty() => {}
+        _ => return None,
+    }
+    let mut code = String::new();
+    for event in events.by_ref() {
+        match event {
+            Event::Text(text) => code.push_str(&text),
+            Event::End(TagEnd::CodeBlock) => break,
+            _ => return None,
+        }
+    }
+    if events.next().is_some() {
+        return None;
+    }
+    if code.ends_with('\n') {
+        code.pop();
+    }
+    Some(code)
+}
+
 fn build_blockquote_blocks(lines: &[&str], ctx: &mut ParseContext<'_>) -> Vec<Block> {
+    if lines.iter().find(|line| !line.trim().is_empty()).is_some_and(|line| {
+        line.starts_with("    ") || line.contains('\t') || opening_fence(line.trim()).is_some()
+    }) && let Some(code) = quoted_code(lines)
+    {
+        let id = MARKDOWN_QUOTED_CODE_STYLE.to_owned();
+        ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
+            name: "Markdown quoted code".to_owned(),
+            kind: StyleKind::Paragraph,
+            based_on: ctx.styles.default_paragraph.clone(),
+            next: ctx.styles.default_paragraph.clone(),
+            ..FlowStyle::default()
+        });
+        let Block::Paragraph(mut paragraph) = build_code_block(&code, ctx) else {
+            unreachable!("code blocks are paragraphs");
+        };
+        paragraph.style = Some(id);
+        paragraph.direct.left = Some(22 * EMU_PER_PT);
+        paragraph.resolve(&ctx.styles);
+        return vec![Block::Paragraph(paragraph)];
+    }
+
     let first = lines.first().map(|s| s.trim()).unwrap_or("");
     let alert = match first {
         "[!NOTE]" => Some(("NOTE", Rgb(0x0969DA), Rgb(0xEDF5FF))),
@@ -7037,7 +7087,23 @@ fn serialize_paragraph(
                 _ => {}
             }
         }
-        if is_literal_mermaid_fence(&code) {
+        if p.style.as_deref() == Some(MARKDOWN_QUOTED_CODE_STYLE) {
+            if !p.runs.is_empty() {
+                code.push('\n');
+            }
+            let mut fenced = String::new();
+            write_named_fence("", &code, &mut fenced);
+            for line in fenced.strip_suffix("\n").unwrap_or(&fenced).lines() {
+                if line.is_empty() {
+                    out.push('>');
+                } else {
+                    out.push_str("> ");
+                    out.push_str(line);
+                }
+                out.push('\n');
+            }
+            out.push('\n');
+        } else if is_literal_mermaid_fence(&code) {
             out.push_str(&code);
             out.push_str("\n\n");
         } else {
@@ -10151,6 +10217,16 @@ Front caption
         assert!(output.contains("[[#^block]]"), "{output}");
         assert!(output.contains("![[#Details]]"), "{output}");
         assert!(output.contains("[参照](#%E6"), "{output}");
+    }
+
+    #[test]
+    fn markdown_preserves_quoted_code_through_docx() {
+        let source = b">     *literal*  \n>\n>       deeper\n\n>    prose\n";
+        let docx = import_markdown_to_docx_bytes(source).unwrap();
+        let output = export_docx_to_markdown(&docx).unwrap();
+        assert_eq!(output.trim_end(), "> ```\n> *literal*  \n>\n>   deeper\n> ```\n\n> prose");
+        let second = import_markdown_to_docx_bytes(output.as_bytes()).unwrap();
+        assert_eq!(export_docx_to_markdown(&second).unwrap(), output);
     }
 
     #[test]
