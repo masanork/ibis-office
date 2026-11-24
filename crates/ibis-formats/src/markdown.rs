@@ -2958,8 +2958,22 @@ fn parse_blocks(
         }
 
         // Normal paragraph (accumulate consecutive non-blank, non-special lines)
+        let paragraph_start = i;
         let mut para_lines: Vec<&str> = Vec::new();
+        let mut setext_eligible = true;
+        let mut setext_level = None;
         while i < lines.len() {
+            if setext_eligible
+                && !para_lines.is_empty()
+                && let Some(level) = parse_setext_underline(lines[i])
+            {
+                if is_setext_heading(&lines[paragraph_start..=i]) {
+                    setext_level = Some(level);
+                    i += 1;
+                    break;
+                }
+                setext_eligible = false;
+            }
             let l_raw = lines[i];
             let l_trim = l_raw.trim();
             if l_trim.is_empty()
@@ -2991,6 +3005,15 @@ fn parse_blocks(
         if !para_lines.is_empty() {
             let mut runs = Vec::new();
             let mut para_attrs = BlockAttrs::default();
+            let joined_heading;
+            if setext_level.is_some()
+                && para_lines.len() > 1
+                && !para_lines[..para_lines.len() - 1].iter().any(|line|
+                    line.ends_with("  ") || ends_with_markdown_break_escape(line))
+            {
+                joined_heading = para_lines.iter().map(|line| line.trim()).collect::<Vec<_>>().join(" ");
+                para_lines = vec![&joined_heading];
+            }
             for (li, pline) in para_lines.iter().enumerate() {
                 let has_next_line = li + 1 < para_lines.len();
                 let content = if has_next_line && ends_with_markdown_break_escape(pline) {
@@ -3023,9 +3046,12 @@ fn parse_blocks(
                 }
                 runs.extend(parse_inlines(content, ctx, &RunFormat::default()));
             }
+            let style = setext_level
+                .map(|level| ctx.ensure_heading_style(level))
+                .or_else(|| ctx.styles.default_paragraph.clone());
             let mut p = FlowParagraph {
                 id: ctx.fresh_id(),
-                style: ctx.styles.default_paragraph.clone(),
+                style,
                 direct: para_attrs.paragraph_format(),
                 bookmarks: para_attrs.id.into_iter().collect(),
                 runs,
@@ -3132,6 +3158,28 @@ fn is_horizontal_rule(s: &str) -> bool {
     }
     let first = chars[0];
     matches!(first, '-' | '*' | '_') && chars.iter().all(|&c| c == first)
+}
+
+// Validate paragraph eligibility using the CommonMark block parser. For example,
+// an HTML block or a standalone link definition cannot become a Setext heading.
+fn is_setext_heading(lines: &[&str]) -> bool {
+    use pulldown_cmark::{Event, Parser, Tag};
+
+    let candidate = lines.join("\n");
+    matches!(Parser::new(&candidate).next(), Some(Event::Start(Tag::Heading { .. })))
+}
+
+fn parse_setext_underline(line: &str) -> Option<u8> {
+    let marker = line.trim_start_matches(' ');
+    if line.len() - marker.len() > 3 {
+        return None;
+    }
+    let marker = marker.trim_end_matches([' ', '\t']);
+    match marker.as_bytes().first()? {
+        b'=' if marker.bytes().all(|byte| byte == b'=') => Some(1),
+        b'-' if marker.bytes().all(|byte| byte == b'-') => Some(2),
+        _ => None,
+    }
 }
 
 fn parse_atx_heading(s: &str) -> Option<(u8, &str)> {
@@ -10045,6 +10093,17 @@ Front caption
         assert!(output.contains("[[#^block]]"), "{output}");
         assert!(output.contains("![[#Details]]"), "{output}");
         assert!(output.contains("[参照](#%E6"), "{output}");
+    }
+
+    #[test]
+    fn markdown_preserves_setext_headings_through_docx() {
+        let source = b"Release *notes*\n   === \t\n\nTwo *emphasized\nlines*\n-\n\nParagraph\n\n---\n\nPlain\n- - -\n";
+        let docx = import_markdown_to_docx_bytes(source).unwrap();
+        let output = export_docx_to_markdown(&docx).unwrap();
+        assert!(output.contains("# Release *notes*\n"), "{output}");
+        assert!(output.contains("## Two *emphasized lines*\n"), "{output}");
+        assert!(output.contains("Paragraph\n\n---"), "{output}");
+        assert!(output.contains("Plain\n\n---"), "{output}");
     }
 
     #[test]
