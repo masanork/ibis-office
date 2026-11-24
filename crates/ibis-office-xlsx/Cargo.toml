@@ -18,12 +18,12 @@ ibis-formats.workspace = true
 ibis-odf.workspace = true
 gpui-kit.workspace = true
 log = "0.4"
+serde_json = "1"
 ttf-parser = "0.25"
 
 # The pictures the checks make and read (src/tests/): the same declaration as ibis-office-app's.
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 ibis-doc-service.workspace = true
-serde_json = "1"
 tempfile = "3"
 image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg", "tiff"], optional = true }
 

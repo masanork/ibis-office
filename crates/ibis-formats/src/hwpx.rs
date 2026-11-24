@@ -9,10 +9,10 @@ use std::collections::HashMap;
 use ibis_doc_model::{
     AutoShape, Block, BorderStyle, CellAnchor, Color, Emu, EmuRect, EmuSize, Fill, FloatingAnchor,
     FlowAlign, FlowBorder, FlowCell, FlowDocument, FlowParagraph, FlowRow, FlowRun, FlowRunKind,
-    FlowTable, Geometry, GradientStop, LineDash, LineHeight, ListLevel, ListSuffix, MediaFormat,
-    MediaId, Numbering, PageSetup, ParaFormat, PartKind, PictureLook, Presentation, Rgb, RowHeight,
-    RunFormat, SectionBreak, SectionSetup, Shape, ShapeKind, Stroke, TextBody, TextStyle,
-    VerticalAnchor, VerticalMerge,
+    FlowTable, Geometry, GradientStop, GroupMember, LineDash, LineHeight, ListLevel, ListSuffix,
+    MediaFormat, MediaId, Numbering, PageSetup, ParaFormat, PartKind, PictureLook, Presentation,
+    Rgb, RowHeight, RunFormat, SectionBreak, SectionSetup, Shape, ShapeGroup, ShapeKind, Stroke,
+    TextBody, TextStyle, VerticalAnchor, VerticalMerge,
 };
 use roxmltree::{Document, Node};
 
@@ -125,6 +125,7 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
         images: HashMap::new(),
         remaining_images: 64 * 1024 * 1024,
         remaining_cells: 100_000,
+        shape_groups: Vec::new(),
     };
     let header = items
         .get("header")
@@ -189,6 +190,7 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
         }
         document.body.extend(blocks);
     }
+    document.shape_groups = importer.shape_groups;
     std::sync::Arc::make_mut(&mut document.styles).numbering = importer.numbering;
     document.id_floor = importer.id;
     Ok(document)
@@ -240,6 +242,137 @@ fn attribute<'a>(node: Node<'a, '_>, name: &str) -> Result<&'a str, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transformed_picture_and_curve_share_a_group_after_docx_conversion() {
+        let package = format!(
+            r#"<package xmlns="{OPF}"><manifest><item id="s" href="section0.xml"/><item id="photo" href="BinData/photo.png"/></manifest><spine><itemref idref="s"/></spine></package>"#
+        );
+        let matrix = r#"<hp:renderingInfo>
+            <hc:transMatrix e1="1" e2="0" e3="100" e4="0" e5="1" e6="0"/>
+            <hc:scaMatrix e1="2" e2="0" e3="0" e4="0" e5="3" e6="0"/>
+            <hc:rotMatrix e1="0" e2="-1" e3="900" e4="-1" e5="0" e6="1000"/>
+            </hp:renderingInfo>"#;
+        let section = format!(
+            r##"<hs:sec xmlns:hs="{SECTION}" xmlns:hp="{PARAGRAPH}" xmlns:hc="{CORE}">
+            <hp:p><hp:run><hp:container>
+            <hp:pos horzRelTo="PAPER" vertRelTo="PAPER"/>
+            <hp:pic><hp:orgSz width="400" height="200"/>{matrix}<hc:img binaryItemIDRef="photo"/></hp:pic>
+            <hp:curve><hp:orgSz width="400" height="200"/>
+              <hp:lineShape style="SOLID" width="33" color="#000000"/>
+              <hp:seg type="CURVE" x1="0" y1="0" x2="200" y2="200"/>
+              <hp:seg type="CURVE" x1="200" y1="200" x2="400" y2="0"/>
+            </hp:curve>
+            </hp:container></hp:run></hp:p></hs:sec>"##
+        );
+        let png = include_bytes!("../../../test/fixtures/markdown-desktop/images/revenue.png");
+        let mut writer = ibis_ooxml::zip::Writer::new();
+        for (name, bytes) in [
+            ("mimetype", MIME_TYPE),
+            (PACKAGE, package.as_bytes()),
+            ("Contents/section0.xml", section.as_bytes()),
+            ("BinData/photo.png", png.as_slice()),
+        ] {
+            writer.add(name, Default::default(), bytes).unwrap();
+        }
+        let presentation = open(&writer.finish().unwrap()).unwrap().presentation;
+        let flow = presentation.flow.as_ref().unwrap();
+        let Block::Paragraph(paragraph) = &flow.body[0] else {
+            panic!("paragraph")
+        };
+        let [image, curve] = paragraph.runs.as_slice() else {
+            panic!("two members")
+        };
+        let (FlowRunKind::Shape(image), FlowRunKind::Shape(curve)) = (&image.kind, &curve.kind)
+        else {
+            panic!("editable members")
+        };
+        assert_eq!(flow.shape_groups[0].leaf_shape_ids(), [image.id, curve.id]);
+        let ShapeKind::Picture(pic) = &image.kind else {
+            panic!("picture")
+        };
+        assert_eq!(presentation.media(pic.media).unwrap().data.as_ref(), png);
+        assert_eq!(
+            (image.frame.width, image.frame.height),
+            (units(800), units(600))
+        );
+        assert_eq!(image.rotation, 270 * 60_000);
+        assert!(image.flip_v);
+        let anchor = image.floating.as_ref().unwrap();
+        assert_eq!((anchor.offset_x, anchor.offset_y), (units(300), units(300)));
+        let ShapeKind::Auto(auto) = &curve.kind else {
+            panic!("curve")
+        };
+        let Geometry::Formula(geometry) = &auto.geometry else {
+            panic!("custom geometry")
+        };
+        assert!(matches!(
+            geometry.def.paths[0].ops[1],
+            ibis_doc_model::PathOp::CubicTo(_)
+        ));
+    }
+
+    #[test]
+    fn nested_vector_group_survives_docx_roundtrip() {
+        let package = format!(
+            r#"<package xmlns="{OPF}"><manifest><item id="s" href="section0.xml"/></manifest><spine><itemref idref="s"/></spine></package>"#
+        );
+        let stroke = r##"<hp:lineShape style="SOLID" width="33" color="#ff0000"/>"##;
+        let section = format!(
+            r#"<hs:sec xmlns:hs="{SECTION}" xmlns:hp="{PARAGRAPH}" xmlns:hc="{CORE}">
+        <hp:p><hp:run><hp:container textWrap="IN_FRONT_OF_TEXT">
+          <hp:pos horzRelTo="PAPER" vertRelTo="PAPER" horzOffset="1200" vertOffset="900"/>
+          <hp:ellipse><hp:orgSz width="250" height="350"/>{stroke}</hp:ellipse>
+          <hp:container><hp:offset x="600" y="300"/>
+            <hp:rect><hp:offset x="4294967196" y="100"/><hp:orgSz width="350" height="250"/>{stroke}</hp:rect>
+            <hp:line><hp:offset x="400" y="200"/>{stroke}<hc:startPt x="200" y="0"/><hc:endPt x="0" y="0"/></hp:line>
+          </hp:container>
+        </hp:container></hp:run></hp:p></hs:sec>"#
+        );
+        let mut writer = ibis_ooxml::zip::Writer::new();
+        for (name, bytes) in [
+            ("mimetype", MIME_TYPE),
+            (PACKAGE, package.as_bytes()),
+            ("Contents/section0.xml", section.as_bytes()),
+        ] {
+            writer.add(name, Default::default(), bytes).unwrap();
+        }
+        let flow = open(&writer.finish().unwrap())
+            .unwrap()
+            .presentation
+            .flow
+            .unwrap();
+        let [group] = flow.shape_groups.as_slice() else {
+            panic!("one outer group")
+        };
+        let [GroupMember::Shape(_), GroupMember::Group(inner)] = group.children.as_slice() else {
+            panic!("nested group expected");
+        };
+        assert_ne!(group.native_id, inner.native_id);
+        assert_eq!(inner.leaf_shape_ids().len(), 2);
+        let Block::Paragraph(paragraph) = &flow.body[0] else {
+            panic!("paragraph")
+        };
+        let offsets: Vec<_> = paragraph
+            .runs
+            .iter()
+            .filter_map(|run| match &run.kind {
+                FlowRunKind::Shape(shape) => {
+                    let anchor = shape.floating.as_ref().unwrap();
+                    Some((anchor.offset_x, anchor.offset_y, shape.flip_h))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            offsets,
+            [
+                (units(1200), units(900), false),
+                (units(1700), units(1300), false),
+                (units(2200), units(1400), true)
+            ]
+        );
+    }
 
     #[test]
     fn reads_korean_body_in_spine_order() {
@@ -597,6 +730,7 @@ struct Importer<'a, 'package> {
     images: HashMap<&'package str, Option<MediaId>>,
     remaining_images: usize,
     remaining_cells: usize,
+    shape_groups: Vec<ShapeGroup>,
 }
 
 impl Importer<'_, '_> {
@@ -931,17 +1065,16 @@ impl Importer<'_, '_> {
                         if let Some(kind) = self.picture(item)? {
                             paragraph.runs.push(FlowRun::new(kind, Default::default()));
                         }
-                    } else if item.has_tag_name((PARAGRAPH, "rect"))
-                        || item.has_tag_name((PARAGRAPH, "ellipse"))
-                    {
-                        let geometry = if item.has_tag_name((PARAGRAPH, "rect")) {
-                            Geometry::Rect
-                        } else {
-                            Geometry::Ellipse
-                        };
-                        if let Some(kind) = self.basic_shape(item, geometry) {
-                            paragraph.runs.push(FlowRun::new(kind, Default::default()));
+                    } else if item.has_tag_name((PARAGRAPH, "container")) {
+                        let anchor = picture_anchor(item).unwrap_or_else(shared::group_anchor);
+                        if let Some(group) =
+                            self.group(item, &anchor, &anchor, &mut paragraph.runs, 0)?
+                        {
+                            self.shape_groups.push(group);
                         }
+                    } else if let Some(shape) = self.vector(item) {
+                        let kind = FlowRunKind::Shape(Box::new(shape));
+                        paragraph.runs.push(FlowRun::new(kind, Default::default()));
                     } else if item.has_tag_name((PARAGRAPH, "ctrl"))
                         && part(item, "autoNum")
                             .is_some_and(|n| n.attribute("numType") == Some("PAGE"))
@@ -977,6 +1110,14 @@ impl Importer<'_, '_> {
     }
 
     fn picture(&mut self, node: Node<'_, '_>) -> Result<Option<FlowRunKind>, Error> {
+        self.picture_at(node, picture_anchor(node))
+    }
+
+    fn picture_at(
+        &mut self,
+        node: Node<'_, '_>,
+        anchor: Option<FloatingAnchor>,
+    ) -> Result<Option<FlowRunKind>, Error> {
         let Some(id) = node
             .children()
             .find(|n| n.has_tag_name((CORE, "img")))
@@ -1017,36 +1158,166 @@ impl Importer<'_, '_> {
         };
         let look = picture_look(node);
         Ok(media.map(|media| {
-            let floating =
-                picture_anchor(node).map(|anchor| (self.presentation.new_shape_id(), anchor));
+            let floating = anchor.map(|anchor| (self.presentation.new_shape_id(), anchor));
             shared::imported_picture(media, size, look, floating)
         }))
     }
 
-    fn basic_shape(&mut self, node: Node<'_, '_>, geometry: Geometry) -> Option<FlowRunKind> {
-        if matches!(geometry, Geometry::Ellipse) && is_true(node.attribute("hasArcPr")) {
+    fn group(
+        &mut self,
+        node: Node<'_, '_>,
+        anchor: &FloatingAnchor,
+        root: &FloatingAnchor,
+        runs: &mut Vec<FlowRun>,
+        depth: usize,
+    ) -> Result<Option<ShapeGroup>, Error> {
+        if depth >= 16 {
+            return Ok(None);
+        }
+        let mut members = Vec::new();
+        for child in node
+            .children()
+            .filter(|n| n.tag_name().namespace() == Some(PARAGRAPH))
+        {
+            let offset = |name| part(child, "offset").map_or(0, |n| signed_offset(n, name));
+            let child_anchor = shared::offset_anchor(anchor, offset("x"), offset("y"));
+            if child.has_tag_name((PARAGRAPH, "container")) {
+                if let Some(group) = self.group(child, &child_anchor, root, runs, depth + 1)? {
+                    members.push(GroupMember::Group(Box::new(group)));
+                }
+                continue;
+            }
+            let shape = if child.has_tag_name((PARAGRAPH, "pic")) {
+                match self.picture_at(child, Some(child_anchor.clone()))? {
+                    Some(FlowRunKind::Shape(shape)) => Some(shape),
+                    _ => None,
+                }
+            } else {
+                self.vector(child).map(Box::new)
+            };
+            if let Some(mut shape) = shape {
+                shape.floating = Some(child_anchor);
+                if let (Some(size), Some(info)) =
+                    (size_part(child, "orgSz"), part(child, "renderingInfo"))
+                {
+                    let matrices: Option<Vec<_>> = info
+                        .children()
+                        .filter(|n| n.tag_name().namespace() == Some(CORE))
+                        .filter(|n| {
+                            matches!(
+                                n.tag_name().name(),
+                                "transMatrix" | "scaMatrix" | "rotMatrix"
+                            )
+                        })
+                        .map(|n| {
+                            Some([
+                                number(n, "e1")?,
+                                number(n, "e2")?,
+                                number(n, "e3")?,
+                                number(n, "e4")?,
+                                number(n, "e5")?,
+                                number(n, "e6")?,
+                            ])
+                        })
+                        .collect();
+                    if let Some(matrices) = matrices
+                        .filter(|m| m.len() >= 3 && m.iter().flatten().all(|v: &f64| v.is_finite()))
+                    {
+                        shared::place_group_leaf(&mut shape, root, size, matrices);
+                    }
+                }
+                members.push(GroupMember::Shape(shape.id));
+                runs.push(FlowRun::new(FlowRunKind::Shape(shape), Default::default()));
+            }
+        }
+        Ok((!members.is_empty()).then(|| shared::shape_group(members)))
+    }
+
+    fn vector(&mut self, node: Node<'_, '_>) -> Option<Shape> {
+        if node.tag_name().namespace() != Some(PARAGRAPH) {
             return None;
         }
-        let size = object_size(node)?;
+        let (kind, size, reverse_h, reverse_v) = match node.tag_name().name() {
+            "line" => {
+                let point = |name| {
+                    let n = node.children().find(|n| n.has_tag_name((CORE, name)))?;
+                    Some((signed_offset(n, "x"), signed_offset(n, "y")))
+                };
+                let (x1, y1) = point("startPt")?;
+                let (x2, y2) = point("endPt")?;
+                let size = object_size(node).unwrap_or_else(|| {
+                    EmuSize::new(
+                        x2.saturating_sub(x1).saturating_abs(),
+                        y2.saturating_sub(y1).saturating_abs(),
+                    )
+                });
+                (ShapeKind::Line(shape_stroke(node)?), size, x1 > x2, y1 > y2)
+            }
+            "curve" => {
+                let size = object_size(node)?;
+                let mut points = Vec::new();
+                let mut curved = Vec::new();
+                for seg in node
+                    .children()
+                    .filter(|n| n.has_tag_name((PARAGRAPH, "seg")))
+                    .take(4097)
+                {
+                    let start = (signed_offset(seg, "x1"), signed_offset(seg, "y1"));
+                    if points.is_empty() {
+                        points.push(start);
+                    }
+                    if points.last() != Some(&start) {
+                        return None;
+                    }
+                    points.push((signed_offset(seg, "x2"), signed_offset(seg, "y2")));
+                    curved.push(seg.attribute("type") == Some("CURVE"));
+                }
+                if !(2..=4097).contains(&points.len()) {
+                    return None;
+                }
+                let geometry = shared::curve_geometry(
+                    &points,
+                    &curved,
+                    size_part(node, "orgSz").unwrap_or(size),
+                )?;
+                (self.basic_shape(node, geometry), size, false, false)
+            }
+            name @ ("rect" | "ellipse") => {
+                let geometry = if name == "rect" {
+                    Geometry::Rect
+                } else if is_true(node.attribute("hasArcPr")) {
+                    return None;
+                } else {
+                    Geometry::Ellipse
+                };
+                (
+                    self.basic_shape(node, geometry),
+                    object_size(node)?,
+                    false,
+                    false,
+                )
+            }
+            _ => return None,
+        };
+        let mut shape = Shape::new(
+            self.presentation.new_shape_id(),
+            EmuRect::new(0, 0, size.width.max(1), size.height.max(1)),
+            kind,
+        );
+        let look = picture_look(node);
+        shape.rotation = look.rotation;
+        shape.flip_h = look.flip_h ^ reverse_h;
+        shape.flip_v = look.flip_v ^ reverse_v;
+        shape.floating = picture_anchor(node);
+        Some(shape)
+    }
+
+    fn basic_shape(&self, node: Node<'_, '_>, geometry: Geometry) -> ShapeKind {
         let brush = node
             .children()
             .find(|n| n.has_tag_name((CORE, "fillBrush")));
         let fill = brush.map_or(Fill::None, shape_fill);
-        let stroke = part(node, "lineShape").and_then(|n| {
-            let style = n.attribute("style")?;
-            if style == "NONE" {
-                return None;
-            }
-            let width = number::<i64>(n, "width").map(units)?;
-            let color = n.attribute("color").and_then(color)?;
-            let dash = match style {
-                "DOT" => LineDash::Dot,
-                "DASH" => LineDash::Dash,
-                "DASH_DOT" | "DASH_DOT_DOT" => LineDash::DashDot,
-                _ => LineDash::Solid,
-            };
-            Some(Stroke::solid(Color::opaque(color), width.max(0)).with_dash(dash))
-        });
+        let stroke = shape_stroke(node);
         let mut auto = AutoShape::new(geometry, fill, stroke);
         if let Some(draw) = part(node, "drawText")
             && let Some(content) = part(draw, "subList")
@@ -1089,17 +1360,7 @@ impl Importer<'_, '_> {
                 auto.text = Some(text);
             }
         }
-        let mut shape = Shape::new(
-            self.presentation.new_shape_id(),
-            EmuRect::new(0, 0, size.width, size.height),
-            ShapeKind::Auto(auto),
-        );
-        let look = picture_look(node);
-        shape.rotation = look.rotation;
-        shape.flip_h = look.flip_h;
-        shape.flip_v = look.flip_v;
-        shape.floating = picture_anchor(node);
-        Some(FlowRunKind::Shape(Box::new(shape)))
+        ShapeKind::Auto(auto)
     }
 
     fn table(&mut self, table: Node<'_, '_>, depth: usize) -> Result<FlowTable, Error> {
@@ -1282,11 +1543,33 @@ impl Importer<'_, '_> {
 // A merged cell provides the sum of its rows' heights. Use that information
 // to fill gaps, leaving rows with individual measurements untouched.
 fn object_size(node: Node<'_, '_>) -> Option<EmuSize> {
-    ["sz", "curSz", "orgSz"].into_iter().find_map(|name| {
-        let n = part(node, name)?;
-        let width = number::<i64>(n, "width")?;
-        let height = number::<i64>(n, "height")?;
-        (width > 0 && height > 0).then(|| EmuSize::new(units(width), units(height)))
+    ["sz", "curSz", "orgSz"]
+        .into_iter()
+        .find_map(|name| size_part(node, name))
+}
+
+fn size_part(node: Node<'_, '_>, name: &str) -> Option<EmuSize> {
+    let n = part(node, name)?;
+    let width = number::<i64>(n, "width")?;
+    let height = number::<i64>(n, "height")?;
+    (width > 0 && height > 0).then(|| EmuSize::new(units(width), units(height)))
+}
+
+fn shape_stroke(node: Node<'_, '_>) -> Option<Stroke> {
+    part(node, "lineShape").and_then(|n| {
+        let style = n.attribute("style")?;
+        if style == "NONE" {
+            return None;
+        }
+        let width = number::<i64>(n, "width").map(units)?;
+        let color = n.attribute("color").and_then(color)?;
+        let dash = match style {
+            "DOT" => LineDash::Dot,
+            "DASH" => LineDash::Dash,
+            "DASH_DOT" | "DASH_DOT_DOT" => LineDash::DashDot,
+            _ => LineDash::Solid,
+        };
+        Some(Stroke::solid(Color::opaque(color), width.max(0)).with_dash(dash))
     })
 }
 
@@ -1356,6 +1639,12 @@ fn is_true(value: Option<&str>) -> bool {
     matches!(value, Some("1" | "true"))
 }
 
+fn signed_offset(node: Node<'_, '_>, name: &str) -> Emu {
+    let raw = number::<i64>(node, name).unwrap_or(0);
+    // Hancom also saves negative HWPUNIT offsets as unsigned 32-bit values.
+    units(u32::try_from(raw).map_or(raw, |value| i64::from(value as i32)))
+}
+
 fn picture_anchor(node: Node<'_, '_>) -> Option<FloatingAnchor> {
     let pos = part(node, "pos")?;
     if is_true(pos.attribute("treatAsChar")) {
@@ -1366,16 +1655,8 @@ fn picture_anchor(node: Node<'_, '_>) -> Option<FloatingAnchor> {
             .and_then(|margin| number::<i64>(margin, side))
             .map_or(0, |n| units(n.max(0)))
     };
-    let offset = |name| {
-        let Some(raw) = number::<i64>(pos, name) else {
-            return 0;
-        };
-        // Hancom also saves negative HWPUNIT offsets as unsigned 32-bit values.
-        let signed = u32::try_from(raw).map_or(raw, |value| i64::from(value as i32));
-        units(signed)
-    };
-    let offset_x = offset("horzOffset");
-    let offset_y = offset("vertOffset");
+    let offset_x = signed_offset(pos, "horzOffset");
+    let offset_y = signed_offset(pos, "vertOffset");
     let align = |offset, attr: &str, accepted: &[&str]| {
         let value = pos.attribute(attr)?.to_ascii_lowercase();
         (offset == 0 && accepted.contains(&value.as_str())).then_some(value)

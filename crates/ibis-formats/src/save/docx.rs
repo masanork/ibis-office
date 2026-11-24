@@ -4429,6 +4429,20 @@ impl Writer<'_> {
     }
 
     /// A new group shape (`<wpg:wgp>` inside `<mc:AlternateContent>`), containing `shapes`.
+    fn group_picture_xml(&self, shape: &Shape, pic: &ibis_doc_model::Picture, id: u64, x: i64, y: i64) -> Option<String> {
+        let rid = self.added.get(&pic.media)?;
+        let (cx, cy) = (shape.frame.width, shape.frame.height);
+        let (rot, fh, fv) = (shape.rotation, u8::from(shape.flip_h), u8::from(shape.flip_v));
+        let name = crate::picture_name(id);
+        Some(format!(concat!(
+            r#"<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+            r#"<pic:nvPicPr><pic:cNvPr id="{id}" name="{name}"/><pic:cNvPicPr/></pic:nvPicPr>"#,
+            r#"<pic:blipFill><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>"#,
+            r#"<pic:spPr><a:xfrm rot="{rot}" flipH="{fh}" flipV="{fv}"><a:off x="{x}" y="{y}"/>"#,
+            r#"<a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>"#
+        ), id=id, name=name, rid=rid, rot=rot, fh=fh, fv=fv, x=x, y=y, cx=cx, cy=cy))
+    }
+
     fn new_group_shape(&mut self, group: &ibis_doc_model::ShapeGroup, shapes: &[&Shape]) -> NodeId {
         let root = self.doc.root_element().unwrap_or(XmlDocument::ROOT);
         let mut used_ids: std::collections::HashSet<u64> = self
@@ -4464,7 +4478,7 @@ impl Writer<'_> {
             format!("グループ {group_id}") // i18n-ok（文書に保存する名前。ibis-formats は表を持たない）
         };
 
-        let mut children_xml = String::new();
+        let mut leaves = std::collections::HashMap::new();
         for s in shapes {
             let child_id = if s.id.0 > 0 && !used_ids.contains(&s.id.0) {
                 s.id.0
@@ -4475,8 +4489,56 @@ impl Writer<'_> {
             let (sx, sy) = pos_of(s);
             let off_x = sx - min_x;
             let off_y = sy - min_y;
-            children_xml.push_str(&self.wsp_xml(s, shape_body(s), child_id, off_x, off_y, true));
+            let xml = match &s.kind {
+                ShapeKind::Picture(pic) => self.group_picture_xml(s, pic, child_id, off_x, off_y),
+                _ => Some(self.wsp_xml(s, shape_body(s), child_id, off_x, off_y, true)),
+            };
+            if let Some(xml) = xml {
+                leaves.insert(s.id, xml);
+            }
         }
+
+        // Imported leaves are already in document coordinates. The nested
+        // groups use identity transforms in the outer group's coordinate space.
+        fn members_xml(
+            group: &ibis_doc_model::ShapeGroup,
+            leaves: &std::collections::HashMap<ibis_doc_model::ShapeId, String>,
+            cx: i64,
+            cy: i64,
+            used_ids: &mut std::collections::HashSet<u64>,
+            out: &mut String,
+        ) {
+            for member in &group.children {
+                match member {
+                    ibis_doc_model::GroupMember::Shape(id) => {
+                        if let Some(xml) = leaves.get(id) {
+                            out.push_str(xml);
+                        }
+                    }
+                    ibis_doc_model::GroupMember::Group(group) => {
+                        use std::fmt::Write as _;
+                        let mut children = String::new();
+                        members_xml(group, leaves, cx, cy, used_ids, &mut children);
+                        if !children.is_empty() {
+                            let id = group.native_id.parse::<u64>().ok()
+                                .filter(|id| *id > 0 && !used_ids.contains(id))
+                                .unwrap_or_else(|| used_ids.iter().max().copied().unwrap_or(0) + 1);
+                            used_ids.insert(id);
+                            let name = group.name.replace('&', "&amp;").replace('<', "&lt;")
+                                .replace('>', "&gt;").replace('"', "&quot;");
+                            let _ = write!(out, concat!(
+                                r#"<wpg:grpSp><wpg:cNvPr id="{0}" name="{1}"/><wpg:cNvGrpSpPr/>"#,
+                                r#"<wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{2}" cy="{3}"/>"#,
+                                r#"<a:chOff x="0" y="0"/><a:chExt cx="{2}" cy="{3}"/></a:xfrm></wpg:grpSpPr>"#,
+                                "{4}</wpg:grpSp>"
+                            ), id, name, cx, cy, children);
+                        }
+                    }
+                }
+            }
+        }
+        let mut children_xml = String::new();
+        members_xml(group, &leaves, group_cx, group_cy, &mut used_ids, &mut children_xml);
 
         let xml = format!(
             concat!(
