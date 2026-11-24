@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use std::{
-    io::{BufRead, BufReader, Write},
+    fs::{self, File, OpenOptions},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::{
-        fs::DirBuilderExt,
+        ffi::OsStrExt,
+        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         net::{UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
@@ -68,12 +70,121 @@ fn send(writer: &mut impl Write, value: Value) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// A handle to the agent's saved session, scoped to the file and configured adapter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResumeRecord(PathBuf);
+
+impl ResumeRecord {
+    pub(crate) fn for_document(path: &Path, read_only: bool) -> Option<Self> {
+        use sha2::{Digest, Sha256};
+        let path = path.canonicalize().ok()?;
+        let metadata = path.metadata().ok()?;
+        if !metadata.is_file() {
+            return None;
+        }
+        let mut scope = Sha256::new();
+        let mut add = |value: &[u8]| {
+            scope.update((value.len() as u64).to_le_bytes());
+            scope.update(value);
+        };
+        add(path.as_os_str().as_bytes());
+        for value in [
+            metadata.dev(),
+            metadata.ino(),
+            metadata.size(),
+            metadata.mtime() as u64,
+            metadata.mtime_nsec() as u64,
+            metadata.ctime() as u64,
+            metadata.ctime_nsec() as u64,
+        ] {
+            add(&value.to_le_bytes());
+        }
+        add(&[read_only as u8]);
+        for name in ["IBIS_ACP_COMMAND", "IBIS_ACP_ARGS", "IBIS_OPENCODE"] {
+            add(std::env::var_os(name)
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes());
+        }
+        let root = ibis_office_base::app_data::base()?
+            .join("ibisOffice")
+            .join("acp-sessions");
+        root.is_absolute()
+            .then(|| Self(root.join(format!("{:x}", scope.finalize()))))
+    }
+
+    fn open(&self) -> std::io::Result<(PathBuf, File)> {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.0)?;
+        let cwd = self.0.join("work");
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&cwd)?;
+        for path in [&self.0, &cwd] {
+            let info = fs::symlink_metadata(path)?;
+            if !info.is_dir() || info.permissions().mode() & 0o077 != 0 {
+                return Err(std::io::Error::other(
+                    "ACP session directory is not private",
+                ));
+            }
+        }
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(self.0.join("lock"))?;
+        lock.try_lock()?;
+        Ok((cwd, lock))
+    }
+
+    fn load(&self) -> Option<String> {
+        let mut stored = String::new();
+        File::open(self.0.join("session"))
+            .ok()?
+            .take(4097)
+            .read_to_string(&mut stored)
+            .ok()?;
+        (valid_session_id(&stored)).then_some(stored)
+    }
+
+    pub(crate) fn save(&self, id: &str) -> std::io::Result<()> {
+        if !valid_session_id(id) {
+            return Err(std::io::Error::other("Invalid ACP session ID"));
+        }
+        let pending = self.0.join("session.new");
+        let _ = fs::remove_file(&pending);
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&pending)?;
+        file.write_all(id.as_bytes())?;
+        fs::rename(pending, self.0.join("session"))
+    }
+
+    pub(crate) fn clear(&self) {
+        let _ = fs::remove_file(self.0.join("session"));
+    }
+}
+
+fn valid_session_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 4096 && !id.chars().any(char::is_control)
+}
+
 type Work = Box<dyn FnOnce(&mut Option<Session>) + Send>;
 
-pub(crate) struct Conversation(mpsc::Sender<Work>);
+pub(crate) struct Conversation {
+    send: mpsc::Sender<Work>,
+    resume: Option<ResumeRecord>,
+}
 
 impl Conversation {
-    pub(crate) fn start() -> Result<Self, String> {
+    pub(crate) fn start(resume: Option<ResumeRecord>) -> Result<Self, String> {
         let (send, receive) = mpsc::channel::<Work>();
         // Draft operations can exceed the GPUI worker stack.
         std::thread::Builder::new()
@@ -102,7 +213,24 @@ impl Conversation {
                 }
             })
             .map_err(|error| format!("Could not start the ACP worker: {error}"))?;
-        Ok(Self(send))
+        Ok(Self { send, resume })
+    }
+
+    pub(crate) fn restrict_resume(&mut self, current: Option<&ResumeRecord>) {
+        if self.resume.as_ref() != current {
+            self.clear_resume();
+            self.resume = None;
+        }
+    }
+
+    pub(crate) fn can_save(&self, record: &ResumeRecord) -> bool {
+        self.resume.as_ref() == Some(record)
+    }
+
+    pub(crate) fn clear_resume(&self) {
+        if let Some(record) = &self.resume {
+            record.clear();
+        }
     }
 
     pub(crate) fn submit<T: Send + 'static>(
@@ -111,11 +239,12 @@ impl Conversation {
         work: impl FnOnce(&mut Session) -> Result<T, String> + Send + 'static,
     ) -> Result<futures::channel::oneshot::Receiver<Result<T, String>>, String> {
         let (finished, outcome) = futures::channel::oneshot::channel();
-        self.0
+        let resume = self.resume.clone();
+        self.send
             .send(Box::new(move |session| {
                 let result = (|| {
                     if session.is_none() {
-                        *session = Some(Session::start(tools.clone())?);
+                        *session = Some(Session::start(tools.clone(), resume)?);
                     }
                     let active = session.as_mut().expect("ACP session exists");
                     active.tools = tools;
@@ -135,7 +264,10 @@ pub(crate) struct Session {
     child: Child,
     input: ChildStdin,
     output: Option<mpsc::Receiver<Result<Value, String>>>,
-    dir: Directory,
+    _dir: Directory,
+    cwd: PathBuf,
+    resume: Option<(ResumeRecord, File)>,
+    resumable: bool,
     socket: PathBuf,
     listener: UnixListener,
     id: Option<String>,
@@ -158,7 +290,7 @@ fn request(id: u64, method: &str, params: Value) -> Value {
 }
 
 impl Session {
-    fn start(tools: Value) -> Result<Self, String> {
+    fn start(tools: Value, record: Option<ResumeRecord>) -> Result<Self, String> {
         let mut random = [0_u8; 12];
         getrandom::fill(&mut random).map_err(|e| e.to_string())?;
         let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -169,6 +301,12 @@ impl Session {
             .map_err(|e| e.to_string())?;
         let dir = Directory(path);
         let socket = dir.0.join("mcp");
+        let (cwd, resume) = record
+            .and_then(|record| {
+                let (cwd, lock) = record.open().ok()?;
+                Some((cwd, Some((record, lock))))
+            })
+            .unwrap_or_else(|| (dir.0.clone(), None));
         let listener = UnixListener::bind(&socket).map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let mut command = if let Some(executable) = std::env::var_os("IBIS_ACP_COMMAND") {
@@ -189,7 +327,7 @@ impl Session {
             command
         };
         let mut child = command
-            .current_dir(&dir.0)
+            .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -219,7 +357,10 @@ impl Session {
             child,
             input,
             output: Some(rx),
-            dir,
+            _dir: dir,
+            cwd,
+            resume,
+            resumable: false,
             socket,
             listener,
             id: None,
@@ -278,6 +419,19 @@ impl Session {
         true
     }
 
+    fn session_params(&self) -> Result<Value, String> {
+        Ok(json!({"cwd":self.cwd,"mcpServers":[{"name":"workbook",
+            "command":std::env::current_exe().map_err(|error| error.to_string())?,
+            "args":["--assistant-acp-workbook",self.socket],"env":[]}]}))
+    }
+
+    pub(crate) fn checkpoint(&self) -> Option<(ResumeRecord, String)> {
+        if !self.resumable {
+            return None;
+        }
+        Some((self.resume.as_ref()?.0.clone(), self.id.clone()?))
+    }
+
     fn send_prompt(&mut self, request_id: u64, prompt: &str) -> Result<(), String> {
         send(
             &mut self.input,
@@ -304,6 +458,7 @@ impl Session {
         let deadline = Instant::now() + Duration::from_secs(180);
         let mut text = String::new();
         let mut stop = None;
+        let mut loading = None;
         loop {
             if cancelled.load(Ordering::Relaxed) && stop.is_none() {
                 if let Some(id) = &self.id {
@@ -371,23 +526,57 @@ impl Session {
                 continue;
             }
             if let Some(error) = message["error"]["message"].as_str() {
+                if message["id"] == 2 && loading.take().is_some() {
+                    if let Some((record, _)) = &self.resume {
+                        record.clear();
+                    }
+                    on_text(
+                        "The saved ACP session could not be restored. Starting a new conversation.\n",
+                    );
+                    let params = self.session_params()?;
+                    send(&mut self.input, request(2, "session/new", params))?;
+                    continue;
+                }
                 return Err(error.to_owned());
             }
             match message["id"].as_u64() {
-                Some(1) if self.id.is_none() && message["result"]["protocolVersion"] == 1 => send(
-                    &mut self.input,
-                    request(
-                        2,
-                        "session/new",
-                        json!({"cwd":self.dir.0,"mcpServers":[{"name":"workbook","command":std::env::current_exe().map_err(|error| error.to_string())?,"args":["--assistant-acp-workbook",self.socket],"env":[]}]}),
-                    ),
-                )?,
+                Some(1) if self.id.is_none() && message["result"]["protocolVersion"] == 1 => {
+                    let capabilities = &message["result"]["agentCapabilities"];
+                    let mode = if capabilities
+                        .pointer("/sessionCapabilities/resume")
+                        .is_some_and(Value::is_object)
+                    {
+                        Some("session/resume")
+                    } else if capabilities["loadSession"] == true {
+                        Some("session/load")
+                    } else {
+                        None
+                    };
+                    self.resumable = mode.is_some();
+                    let mut params = self.session_params()?;
+                    let method = match (
+                        mode,
+                        self.resume.as_ref().and_then(|(record, _)| record.load()),
+                    ) {
+                        (Some(method), Some(id)) => {
+                            params["sessionId"] = json!(&id);
+                            loading = Some(id);
+                            method
+                        }
+                        _ => "session/new",
+                    };
+                    send(&mut self.input, request(2, method, params))?;
+                }
                 Some(1) => return Err("ACP agent did not negotiate ACP v1".into()),
                 Some(2) if self.id.is_none() => {
-                    let id = message["result"]["sessionId"]
-                        .as_str()
-                        .ok_or("ACP agent returned no session ID")?;
-                    self.id = Some(id.to_owned());
+                    self.id = Some(match loading.take() {
+                        Some(id) => id,
+                        None => message["result"]["sessionId"]
+                            .as_str()
+                            .filter(|id| valid_session_id(id))
+                            .ok_or("ACP agent returned no session ID")?
+                            .to_owned(),
+                    });
                     self.send_prompt(request_id, prompt)?;
                 }
                 Some(id)
@@ -507,6 +696,40 @@ pub fn workbook_mcp(socket: &Path) -> Result<(), String> {
 mod tests {
     use super::document_schema;
     use ibis_formats::Kind;
+
+    #[test]
+    fn resume_records_are_scoped_to_the_saved_revision_and_permissions() {
+        use super::ResumeRecord;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = super::Directory(std::env::temp_dir().join(format!("ibis-acp-test-{nonce}")));
+        std::fs::create_dir(&dir.0).unwrap();
+        let file = dir.0.join("document.xlsx");
+        std::fs::write(&file, b"first version").unwrap();
+        let writable = ResumeRecord::for_document(&file, false).unwrap();
+        assert_eq!(
+            ResumeRecord::for_document(&file, false),
+            Some(writable.clone())
+        );
+        assert_ne!(
+            ResumeRecord::for_document(&file, true),
+            Some(writable.clone())
+        );
+        std::fs::write(&file, b"replacement version").unwrap();
+        assert_ne!(ResumeRecord::for_document(&file, false), Some(writable));
+
+        let record = ResumeRecord(dir.0.join("test-record"));
+        let (_, lock) = record.open().unwrap();
+        assert!(record.open().is_err());
+        record.save("sample-session").unwrap();
+        assert_eq!(record.load().as_deref(), Some("sample-session"));
+        assert!(record.save("bad\nvalue").is_err());
+        record.clear();
+        assert!(record.load().is_none());
+        drop(lock);
+    }
 
     #[test]
     fn catalog_schemas_are_scoped_to_the_active_draft() {
