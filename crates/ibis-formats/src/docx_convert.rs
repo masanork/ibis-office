@@ -1784,8 +1784,11 @@ pub fn export_odt(doc: &FlowDocument) -> Result<Vec<u8>, Error> {
             FlowAlign::Right => "end",
             FlowAlign::Justify | FlowAlign::Distribute => "justify",
         };
+        // A heading's automatic style has the default heading style `Heading N` as its parent (as LibreOffice writes it), so that a reader
+        // knows the paragraph is a heading of that level.
+        let parent = p.heading.map(|h| format!(r#" style:parent-style-name="Heading_20_{h}""#)).unwrap_or_default();
         auto_styles.push_str(&format!(
-            r#"<style:style style:name="{p_style_name}" style:family="paragraph"><style:paragraph-properties fo:text-align="{fo_align}"/></style:style>"#
+            r#"<style:style style:name="{p_style_name}" style:family="paragraph"{parent}><style:paragraph-properties fo:text-align="{fo_align}"/></style:style>"#
         ));
 
         if let Some(h) = p.heading {

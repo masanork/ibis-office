@@ -37,8 +37,8 @@ fn package(mime: &str, body: &str, styles: &str) -> Vec<u8> {
 }
 
 fn check_import_and_ooxml_save(data: Vec<u8>, check: impl Fn(&Presentation)) {
-    check(&ibis_formats::read(&data).unwrap());
-    let opened = ibis_formats::open(data).unwrap();
+    check(&ibis_odf::read(&data).unwrap());
+    let opened = ibis_odf::open(data).unwrap();
     check(&opened.presentation);
     let saved = opened
         .source
@@ -225,10 +225,10 @@ fn ods_local_named_ranges_recalculate_in_their_own_sheets() {
         assert_eq!(value(&document, 0), CellValue::Number(10.0));
         assert_eq!(value(&document, 1), CellValue::Number(16.0));
         for (sheet, n, expected) in [(0, 7.0, [14.0, 18.0]), (1, 13.0, [14.0, 20.0])] {
-            let slide = presentation.slides[sheet].id;
+            let sheet = presentation.slides[sheet].id;
             document
                 .execute(vec![Command::Sheet(SheetCommand::SetCells {
-                    slide,
+                    sheet,
                     edits: vec![CellEdit {
                         row: 0,
                         column: 0,

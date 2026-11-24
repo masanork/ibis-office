@@ -3,6 +3,8 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
 use ibis_doc_model::{Block, Presentation};
+// This suite covers the legacy ODT conversion API in ibis-formats.
+use ibis_formats::docx_convert::import_odt;
 use ibis_ooxml::zip::{EntryMeta, STORED, Writer, crc32};
 
 const MIME: &[u8] = b"application/vnd.oasis.opendocument.text";
@@ -101,8 +103,7 @@ fn preserves_list_and_section_paragraphs_in_order() {
             </tbl:table-row></tbl:table>
             <t:p>後</t:p>
         </o:text>"#);
-    check_body(&ibis_formats::read(&data).unwrap());
-    let opened = ibis_formats::open(data).unwrap();
+    let opened = import_odt(&data).unwrap();
     check_body(&opened.presentation);
     let saved = opened
         .source
@@ -113,9 +114,9 @@ fn preserves_list_and_section_paragraphs_in_order() {
 
 #[test]
 fn rejects_non_text_body_and_accepts_empty_text_body() {
-    let error = ibis_formats::open(odt("<o:spreadsheet/>")).err().unwrap();
+    let error = import_odt(&odt("<o:spreadsheet/>")).err().unwrap();
     assert!(error.to_string().contains("office:body/office:text"));
-    assert!(ibis_formats::open(odt("<o:text/>")).is_ok());
+    assert!(import_odt(&odt("<o:text/>")).is_ok());
 }
 
 #[test]
@@ -160,8 +161,7 @@ fn preserves_merged_and_repeated_table_cells_in_their_grid_positions() {
             );
         }
     };
-    check(&ibis_formats::read(&data).unwrap());
-    let opened = ibis_formats::open(data).unwrap();
+    let opened = import_odt(&data).unwrap();
     check(&opened.presentation);
     let saved = opened
         .source
@@ -178,7 +178,20 @@ fn rejects_table_expansion_that_exceeds_the_import_limit() {
         r#"<tbl:table-row><tbl:table-cell><t:p><t:s t:c="999999999"/></t:p></tbl:table-cell></tbl:table-row>"#,
     ] {
         let data = odt(&format!("<o:text><tbl:table>{table}</tbl:table></o:text>"));
-        let error = ibis_formats::open(data).err().unwrap();
+        let error = import_odt(&data).err().unwrap();
         assert!(error.to_string().contains("表を展開すると大きすぎます"));
     }
+}
+
+#[test]
+fn odt_export_entry_points_preserve_the_heading_style() {
+    let input = odt(r#"<o:text><t:h t:outline-level="2">見出し</t:h></o:text>"#);
+    let opened = import_odt(&input).unwrap();
+    let exported = ibis_odf::export_docx_to_odt(&opened.presentation).unwrap();
+    let legacy = ibis_formats::docx_convert::export_docx_to_odt(&opened.presentation).unwrap();
+    assert_eq!(exported, legacy);
+
+    let archive = ibis_formats::zip::Archive::new(&exported).unwrap();
+    let content = String::from_utf8(archive.read("content.xml").unwrap().unwrap()).unwrap();
+    assert!(content.contains(r#"style:parent-style-name="Heading_20_2""#));
 }
