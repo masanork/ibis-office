@@ -111,8 +111,8 @@ Linux のビルドと署名は、コミットを固定した再利用ワーク�
 ```bash
 gh attestation verify desktop-linux-x64-ci.AppImage \
   --bundle desktop-linux-x64-ci.AppImage.intoto.jsonl \
-  --repo masanork/ibis-office \
-  --signer-workflow masanork/ibis-office/.github/workflows/linux-appimage-builder.yml \
+  --repo sorane-dev/docs \
+  --signer-workflow sorane-dev/docs/.github/workflows/linux-appimage-builder.yml \
   --signer-digest 0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93 \
   --source-digest "$EXPECTED_SOURCE_SHA" --source-ref "$EXPECTED_REF" \
   --deny-self-hosted-runners
