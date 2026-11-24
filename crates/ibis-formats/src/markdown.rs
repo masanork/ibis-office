@@ -2693,7 +2693,7 @@ fn markdown_continuations<'a>(
     use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
     let mut blocks = HashMap::new();
-    if !in_quote && !lines.iter().any(|line| line.starts_with([' ', '\t', '<', '>']) || line.contains('>') || parse_list_marker(line).is_some()) {
+    if !in_quote && !lines.iter().any(|line| line.starts_with([' ', '\t', '<', '>', '[']) || line.contains('>') || parse_list_marker(line).is_some()) {
         return blocks;
     }
 
@@ -2711,6 +2711,11 @@ fn markdown_continuations<'a>(
         let next = line_starts.partition_point(|&start| start < span.end);
         (first < next).then_some((first, (next, span.start - line_starts[first])))
     }).collect();
+    for (&first, &(next, column)) in &reference_lines {
+        if column <= 3 && (next > first + 1 || lines.get(next).is_some_and(|line| !line.trim().is_empty())) {
+            blocks.insert(first, (next, MarkdownContinuation::Reference { indent: 0 }));
+        }
+    }
     for (event, span) in parser.into_offset_iter() {
         match event {
             Event::Start(tag) => {
@@ -3257,7 +3262,7 @@ fn parse_blocks_at_quote_depth(
                     let source = lines[i..next].iter().map(|line| strip_list_item_indent(line, indent))
                         .collect::<Vec<_>>().join("\n");
                     (build_markdown_source_block(&source, MARKDOWN_REFERENCE_BLOCK_STYLE, "Markdown reference definition", ctx),
-                        Some(indent), "", false)
+                        (indent != 0).then_some(indent), "", false)
                 }
                 MarkdownContinuation::Html { item: None } => {
                     (build_html_block(&lines[i..next].join("\n"), ctx), None, "", false)
@@ -5940,17 +5945,26 @@ fn markdown_literal_punctuation(character: char, format: &RunFormat, ctx: &mut P
 }
 
 const MARKDOWN_LINK_START_STYLE: &str = "IbisMarkdownLinkStart";
+const MARKDOWN_EMPTY_LINK: u8 = 16;
+const MARKDOWN_EMPTY_LINK_TEXT: &str = "\u{200b}";
 
 fn markdown_link_start(style: Option<&str>) -> Option<u8> {
-    style?.strip_prefix(MARKDOWN_LINK_START_STYLE)?.parse::<u8>().ok().filter(|flags| *flags < 16)
+    style?.strip_prefix(MARKDOWN_LINK_START_STYLE)?.parse::<u8>().ok().filter(|flags| *flags < 32)
 }
 
-fn apply_markdown_link(runs: &mut [FlowRun], link: Link, base: &RunFormat, previous: Option<&FlowRun>, ctx: &mut ParseContext<'_>) {
+fn apply_markdown_link(runs: &mut Vec<FlowRun>, link: Link, base: &RunFormat, previous: Option<&FlowRun>, ctx: &mut ParseContext<'_>) {
+    let empty = runs.is_empty();
+    if empty {
+        let mut run = FlowRun::new(FlowRunKind::Text(MARKDOWN_EMPTY_LINK_TEXT.to_owned()), FlowRunStyle::default());
+        run.format = link_format(base);
+        runs.push(run);
+    }
     if let Some(first) = runs.first_mut() {
         // Record emphasis inherited from outside the label separately.
         let flags = u8::from(base.bold == Some(true))
             | (u8::from(base.italic == Some(true)) << 1)
-            | (u8::from(first.char_style.as_deref() == Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE)) << 2);
+            | (u8::from(first.char_style.as_deref() == Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE)) << 2)
+            | if empty { MARKDOWN_EMPTY_LINK } else { 0 };
         // A distinct first run keeps two adjacent links to the same address separate.
         let alternate = previous.and_then(|run| markdown_link_start(run.char_style.as_deref())) == Some(flags);
         let id = format!("{MARKDOWN_LINK_START_STYLE}{}", flags | (u8::from(alternate) << 3));
@@ -5971,18 +5985,21 @@ struct MarkdownInlineRanges {
     emphasis: HashMap<usize, (usize, Option<usize>)>,
     code: BTreeMap<usize, (usize, String)>,
     literal: HashMap<usize, usize>,
+    links: BTreeMap<usize, (usize, String, String)>,
+    images: HashMap<usize, (usize, String, ibis_doc_model::AltText)>,
 }
 
 fn markdown_inline_ranges(text: &str) -> MarkdownInlineRanges {
     use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
     let mut ranges = MarkdownInlineRanges::default();
-    if !text.contains(['*', '_', '`']) {
+    if !text.contains(['*', '_', '`', '[']) {
         return ranges;
     }
     // Force inline context, even for a label starting with a block marker.
     let inline = format!("x {text}");
     let mut stack = Vec::new();
     let mut outer = None;
+    let mut images = Vec::new();
     for (event, span) in Parser::new(&inline).into_offset_iter() {
         match event {
             Event::Start(tag @ (Tag::Strong | Tag::Emphasis)) => {
@@ -6008,7 +6025,31 @@ fn markdown_inline_ranges(text: &str) -> MarkdownInlineRanges {
             {
                 ranges.literal.insert(span.start - 2, span.end - 2);
             }
+            Event::Start(Tag::Link { link_type: LinkType::Inline, dest_url, title, .. }) => {
+                ranges.links.insert(span.start - 2, (span.end - 2, dest_url.into_string(), title.into_string()));
+            }
+            Event::Start(Tag::Image { dest_url, title, .. }) => {
+                images.push(span.start - 2);
+                ranges.images.insert(span.start - 2, (span.end - 2, dest_url.into_string(), ibis_doc_model::AltText {
+                    title: title.into_string(),
+                    description: String::new(),
+                }));
+            }
+            Event::End(TagEnd::Image) => { images.pop(); }
+            Event::Text(text) if !images.is_empty() => {
+                for start in &images {
+                    ranges.images.get_mut(start).unwrap().2.description.push_str(&text);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak if !images.is_empty() => {
+                for start in &images {
+                    ranges.images.get_mut(start).unwrap().2.description.push(' ');
+                }
+            }
             Event::Code(code) => {
+                for start in &images {
+                    ranges.images.get_mut(start).unwrap().2.description.push_str(&code);
+                }
                 ranges.code.insert(span.start - 2, (span.end - 2, code.into_string()));
             }
             _ => {}
@@ -6382,138 +6423,132 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             continue;
         }
 
-        // Inline image: `![alt](data:image/...;base64,...){width=... height=...}`
-        if let Some(after_bang) = rest.strip_prefix("![") {
-            if let Some(alt_end) = after_bang.find("](") {
-                let alt = &after_bang[..alt_end];
-                let after_open_paren = &after_bang[alt_end + 2..];
-                if let Some(url_end) = after_open_paren.find(')') {
-                    let raw_target = after_open_paren[..url_end].trim();
-                    let url = strip_markdown_link_title(raw_target);
-                    let mut total_consumed = 2 + alt_end + 2 + url_end + 1;
-                    let mut explicit_w: Option<Emu> = None;
-                    let mut explicit_h: Option<Emu> = None;
-                    let mut anchor = None;
-                    let mut look = PictureLook::default();
-                    let mut title_only = false;
-                    let after_paren = &after_open_paren[url_end + 1..];
-                    if let Some(attr_open) = after_paren.strip_prefix('{') {
-                        if let Some(attr_close) = attr_open.find('}') {
-                            let attr_str = &attr_open[..attr_close];
-                            for part in attr_str.split_whitespace() {
-                                if let Some(w) = part.strip_prefix("width=").and_then(parse_length_emu).filter(|w| *w > 0) {
-                                    explicit_w = Some(w);
-                                } else if let Some(h) = part.strip_prefix("height=").and_then(parse_length_emu).filter(|h| *h > 0) {
-                                    explicit_h = Some(h);
-                                } else if let Some(encoded) = part.strip_prefix(picture_anchor::ATTRIBUTE) {
-                                    anchor = picture_anchor::decode(encoded);
-                                } else if let Some(crop) = part.strip_prefix("docx-crop=").and_then(parse_picture_crop) {
-                                    look.crop = crop;
-                                } else if let Some((rotation, flip_h, flip_v)) =
-                                    part.strip_prefix("docx-transform=").and_then(parse_picture_transform)
-                                {
-                                    look.rotation = rotation;
-                                    look.flip_h = flip_h;
-                                    look.flip_v = flip_v;
-                                } else if let Some((bright, contrast)) =
-                                    part.strip_prefix("docx-lum=").and_then(|value| value.split_once(','))
-                                        .and_then(|(bright, contrast)| {
-                                            let bright: i32 = bright.parse().ok()?;
-                                            let contrast: i32 = contrast.parse().ok()?;
-                                            (-100_000..=100_000).contains(&bright)
-                                                .then_some(())?;
-                                            (-100_000..=100_000).contains(&contrast)
-                                                .then_some((bright, contrast))
-                                        })
-                                {
-                                    look.luminance = Some((bright, contrast));
-                                } else if let Some((dark, light)) =
-                                    part.strip_prefix("docx-duotone=").and_then(|value| value.split_once(','))
-                                        .and_then(|(dark, light)| Some((parse_hex_rgb(dark)?, parse_hex_rgb(light)?)))
-                                {
-                                    look.duotone = Some((dark, light));
-                                } else if let Some(clear) = part.strip_prefix("docx-clear=").and_then(parse_hex_rgb) {
-                                    look.clear = Some(clear);
-                                } else if let Some(opacity) = part.strip_prefix("docx-opacity=")
-                                    .and_then(|value| value.parse().ok()).filter(|value| (0..=100_000).contains(value))
-                                {
-                                    look.effects.opacity = Some(opacity);
-                                } else if let Some(saturation) = part.strip_prefix("docx-saturation=")
-                                    .and_then(|value| value.parse().ok()).filter(|value| (0..=400_000).contains(value))
-                                {
-                                    look.effects.saturation = Some(saturation);
-                                } else if let Some(threshold) = part.strip_prefix("docx-bilevel=")
-                                    .and_then(|value| value.parse().ok()).filter(|value| (0..=100_000).contains(value))
-                                {
-                                    look.effects.bilevel = Some(threshold);
-                                } else if part == "docx-grayscale=true" {
-                                    look.effects.grayscale = true;
-                                } else if let Some(title) = part.strip_prefix("docx-title=")
-                                    .and_then(decode_base64).and_then(|bytes| String::from_utf8(bytes).ok())
-                                {
-                                    look.alt_text.title = title;
-                                } else if part == "docx-alt=title" {
-                                    title_only = true;
-                                } else if part == "docx-decorative=true" {
-                                    look.decorative = true;
-                                }
-                            }
-                            total_consumed += 1 + attr_close + 1;
+        // Images without available media still retain their Markdown source.
+        if let Some((end, url, alt_text)) = inline.images.get(&i) {
+            let mut total_consumed = end - i;
+            let mut explicit_w: Option<Emu> = None;
+            let mut explicit_h: Option<Emu> = None;
+            let mut anchor = None;
+            let mut look = PictureLook { alt_text: alt_text.clone(), ..PictureLook::default() };
+            let mut title_only = false;
+            let after_paren = &text[*end..];
+            if let Some(attr_open) = after_paren.strip_prefix('{') {
+                if let Some(attr_close) = attr_open.find('}') {
+                    let attr_str = &attr_open[..attr_close];
+                    for part in attr_str.split_whitespace() {
+                        if let Some(w) = part.strip_prefix("width=").and_then(parse_length_emu).filter(|w| *w > 0) {
+                            explicit_w = Some(w);
+                        } else if let Some(h) = part.strip_prefix("height=").and_then(parse_length_emu).filter(|h| *h > 0) {
+                            explicit_h = Some(h);
+                        } else if let Some(encoded) = part.strip_prefix(picture_anchor::ATTRIBUTE) {
+                            anchor = picture_anchor::decode(encoded);
+                        } else if let Some(crop) = part.strip_prefix("docx-crop=").and_then(parse_picture_crop) {
+                            look.crop = crop;
+                        } else if let Some((rotation, flip_h, flip_v)) =
+                            part.strip_prefix("docx-transform=").and_then(parse_picture_transform)
+                        {
+                            look.rotation = rotation;
+                            look.flip_h = flip_h;
+                            look.flip_v = flip_v;
+                        } else if let Some((bright, contrast)) =
+                            part.strip_prefix("docx-lum=").and_then(|value| value.split_once(','))
+                                .and_then(|(bright, contrast)| {
+                                    let bright: i32 = bright.parse().ok()?;
+                                    let contrast: i32 = contrast.parse().ok()?;
+                                    (-100_000..=100_000).contains(&bright)
+                                        .then_some(())?;
+                                    (-100_000..=100_000).contains(&contrast)
+                                        .then_some((bright, contrast))
+                                })
+                        {
+                            look.luminance = Some((bright, contrast));
+                        } else if let Some((dark, light)) =
+                            part.strip_prefix("docx-duotone=").and_then(|value| value.split_once(','))
+                                .and_then(|(dark, light)| Some((parse_hex_rgb(dark)?, parse_hex_rgb(light)?)))
+                        {
+                            look.duotone = Some((dark, light));
+                        } else if let Some(clear) = part.strip_prefix("docx-clear=").and_then(parse_hex_rgb) {
+                            look.clear = Some(clear);
+                        } else if let Some(opacity) = part.strip_prefix("docx-opacity=")
+                            .and_then(|value| value.parse().ok()).filter(|value| (0..=100_000).contains(value))
+                        {
+                            look.effects.opacity = Some(opacity);
+                        } else if let Some(saturation) = part.strip_prefix("docx-saturation=")
+                            .and_then(|value| value.parse().ok()).filter(|value| (0..=400_000).contains(value))
+                        {
+                            look.effects.saturation = Some(saturation);
+                        } else if let Some(threshold) = part.strip_prefix("docx-bilevel=")
+                            .and_then(|value| value.parse().ok()).filter(|value| (0..=100_000).contains(value))
+                        {
+                            look.effects.bilevel = Some(threshold);
+                        } else if part == "docx-grayscale=true" {
+                            look.effects.grayscale = true;
+                        } else if let Some(title) = part.strip_prefix("docx-title=")
+                            .and_then(decode_base64).and_then(|bytes| String::from_utf8(bytes).ok())
+                        {
+                            look.alt_text.title = title;
+                        } else if part == "docx-alt=title" {
+                            title_only = true;
+                        } else if part == "docx-decorative=true" {
+                            look.decorative = true;
                         }
                     }
-                    if let Some((format, data)) = decode_data_uri_image(url).or_else(|| load_local_image(url, ctx.base_dir)) {
-                        let img_size = resolve_image_size(&data, format, explicit_w, explicit_h);
-                        flush_plain(&mut plain, &mut out, base_fmt);
-                        let media_id = ctx.fresh_media_id();
-                        ctx.media.push(Media {
-                            id: media_id,
-                            format,
-                            data: data.into(),
-                        });
-                        if title_only {
-                            look.alt_text.title = decode_picture_label(alt);
-                        } else {
-                            look.alt_text.description = decode_picture_label(alt);
-                        }
-                        let kind = if let Some(anchor) = anchor {
-                            let mut picture = ibis_doc_model::Picture::new(media_id);
-                            picture.alt_text = look.alt_text;
-                            picture.decorative = look.decorative;
-                            picture.crop = look.crop;
-                            picture.luminance = look.luminance;
-                            picture.duotone = look.duotone;
-                            picture.clear = look.clear;
-                            picture.effects = look.effects;
-                            let mut shape = Shape::new(
-                                ctx.fresh_shape_id(),
-                                EmuRect::new(anchor.offset_x, anchor.offset_y, img_size.width, img_size.height),
-                                ShapeKind::Picture(picture),
-                            );
-                            shape.floating = Some(anchor);
-                            shape.rotation = look.rotation;
-                            shape.flip_h = look.flip_h;
-                            shape.flip_v = look.flip_v;
-                            FlowRunKind::Shape(Box::new(shape))
-                        } else {
-                            FlowRunKind::Picture { media: media_id, size: img_size, look }
-                        };
-                        out.push(FlowRun {
-                            kind,
-                            style: FlowRunStyle::default(),
-                            format: base_fmt.clone(),
-                            char_style: None,
-                            link: None,
-                            revision: None,
-                            show_field_code: false,
-                            field_locked: false,
-                            control: None,
-                        });
-                        i += total_consumed;
-                        continue;
-                    }
+                    total_consumed += 1 + attr_close + 1;
                 }
             }
+            if let Some((format, data)) = decode_data_uri_image(url).or_else(|| load_local_image(url, ctx.base_dir)) {
+                let img_size = resolve_image_size(&data, format, explicit_w, explicit_h);
+                flush_plain(&mut plain, &mut out, base_fmt);
+                let media_id = ctx.fresh_media_id();
+                ctx.media.push(Media {
+                    id: media_id,
+                    format,
+                    data: data.into(),
+                });
+                if title_only {
+                    look.alt_text.title = std::mem::take(&mut look.alt_text.description);
+                }
+                let kind = if let Some(anchor) = anchor {
+                    let mut picture = ibis_doc_model::Picture::new(media_id);
+                    picture.alt_text = look.alt_text;
+                    picture.decorative = look.decorative;
+                    picture.crop = look.crop;
+                    picture.luminance = look.luminance;
+                    picture.duotone = look.duotone;
+                    picture.clear = look.clear;
+                    picture.effects = look.effects;
+                    let mut shape = Shape::new(
+                        ctx.fresh_shape_id(),
+                        EmuRect::new(anchor.offset_x, anchor.offset_y, img_size.width, img_size.height),
+                        ShapeKind::Picture(picture),
+                    );
+                    shape.floating = Some(anchor);
+                    shape.rotation = look.rotation;
+                    shape.flip_h = look.flip_h;
+                    shape.flip_v = look.flip_v;
+                    FlowRunKind::Shape(Box::new(shape))
+                } else {
+                    FlowRunKind::Picture { media: media_id, size: img_size, look }
+                };
+                out.push(FlowRun {
+                    kind,
+                    style: FlowRunStyle::default(),
+                    format: base_fmt.clone(),
+                    char_style: None,
+                    link: None,
+                    revision: None,
+                    show_field_code: false,
+                    field_locked: false,
+                    control: None,
+                });
+                i += total_consumed;
+                continue;
+            }
+            plain.push_str(&rest[..total_consumed]);
+            i += total_consumed;
+            continue;
         }
+
 
         // Footnote reference: `[^id]`
         if let Some(after) = rest.strip_prefix("[^") {
@@ -6590,22 +6625,27 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                     continue;
                 }
 
-                // `[text](url)`
-                if let Some(paren_after) = after_bracket.strip_prefix('(') {
-                    if let Some(close_paren) = paren_after.find(')') {
-                        let target = paren_after[..close_paren].trim();
-                        flush_plain(&mut plain, &mut out, base_fmt);
-                        let link = if let Some(anchor) = target.strip_prefix('#') {
-                            Link::Anchor(anchor.to_string())
-                        } else {
-                            Link::Url(target.to_string())
-                        };
-                        let mut runs = parse_inlines(inner_text, ctx, &link_format(base_fmt));
-                        apply_markdown_link(&mut runs, link, base_fmt, out.last(), ctx);
-                        out.extend(runs);
-                        i += 1 + close_bracket + 1 + 1 + close_paren + 1;
-                        continue;
-                    }
+                if let Some((end, target, title)) = inline.links.get(&i) {
+                    flush_plain(&mut plain, &mut out, base_fmt);
+                    let link = if let Some(anchor) = target.strip_prefix('#') {
+                        Link::Anchor(anchor.to_owned())
+                    } else {
+                        Link::Url(target.clone())
+                    };
+                    let link = if title.is_empty() { link } else { link.with_title(title.clone()) };
+                    let mut runs = parse_inlines(inner_text, ctx, &link_format(base_fmt));
+                    apply_markdown_link(&mut runs, link, base_fmt, out.last(), ctx);
+                    out.extend(runs);
+                    i = *end;
+                    continue;
+                }
+                if let Some(target) = after_bracket.strip_prefix("(<")
+                    && !target.contains('>')
+                {
+                    flush_plain(&mut plain, &mut out, base_fmt);
+                    out.push(markdown_literal_punctuation('[', base_fmt, ctx));
+                    i += 1;
+                    continue;
                 }
             }
         }
@@ -6839,18 +6879,6 @@ fn split_critic_author(s: &str) -> (String, &str) {
         }
     }
     ("Author".to_string(), s)
-}
-
-fn strip_markdown_link_title(target: &str) -> &str {
-    let trimmed = target.trim();
-    let trimmed = trimmed.strip_prefix('<').and_then(|s| s.strip_suffix('>')).unwrap_or(trimmed);
-    if let Some((path, _)) = trimmed.split_once(" \"") {
-        path.trim()
-    } else if let Some((path, _)) = trimmed.split_once(" '") {
-        path.trim()
-    } else {
-        trimmed
-    }
 }
 
 fn decode_data_uri_image(uri: &str) -> Option<(MediaFormat, Vec<u8>)> {
@@ -9077,33 +9105,12 @@ fn encode_picture_label(label: &str) -> String {
     use std::fmt::Write as _;
     let mut output = String::new();
     for c in label.chars() {
-        if matches!(c, '&' | '[' | ']' | '<' | '>' | '|' | '\\' | '\r' | '\n' | '\t') {
+        if matches!(c, '&' | '[' | ']' | '<' | '>' | '|' | '*' | '_' | '`' | '\\' | '\r' | '\n' | '\t') {
             let _ = write!(output, "&#{};", u32::from(c));
         } else {
             output.push(c);
         }
     }
-    output
-}
-
-fn decode_picture_label(label: &str) -> String {
-    let mut output = String::new();
-    let mut tail = label;
-    while let Some((before, after)) = tail.split_once("&#") {
-        output.push_str(before);
-        let semicolon = after.as_bytes().iter().take(4).position(|&byte| byte == b';');
-        if let Some(end) = semicolon
-            && let Some(c) = after[..end].parse().ok().and_then(char::from_u32)
-            && matches!(c, '&' | '[' | ']' | '<' | '>' | '|' | '\\' | '\r' | '\n' | '\t')
-        {
-            output.push(c);
-            tail = &after[end + 1..];
-        } else {
-            output.push_str("&#");
-            tail = after;
-        }
-    }
-    output.push_str(tail);
     output
 }
 
@@ -9177,7 +9184,7 @@ fn serialize_picture(
         MediaFormat::Wmf => "x-wmf",
         _ => return String::new(),
     };
-    let alt = encode_picture_label(if alt_text.description.is_empty() { &alt_text.title } else { &alt_text.description });
+    let alt = encode_picture_label(&alt_text.description);
     let b64 = encode_base64(&media.data);
     let mm = |length: Emu| {
         let value = format!("{:.5}", length as f64 / EMU_PER_MM);
@@ -9190,23 +9197,27 @@ fn serialize_picture(
     if decorative {
         attributes.push_str(" docx-decorative=true");
     } else if !alt_text.title.is_empty() {
-        if alt_text.description.is_empty() {
-            attributes.push_str(" docx-alt=title");
-        } else {
-            let _ = write!(attributes, " docx-title={}", encode_base64(alt_text.title.as_bytes()));
-        }
+        let _ = write!(attributes, " docx-title={}", encode_base64(alt_text.title.as_bytes()));
     }
     format!("![{alt}](data:image/{mime};base64,{b64}){{{attributes}}}")
 }
 
 fn format_markdown_link(text: &str, link: &Link) -> String {
     let address = link.address();
-    let Some(title) = link.title() else {
-        return link.external_url().and_then(|url| obsidian::format_file_link(url, text))
-            .unwrap_or_else(|| format!("[{text}]({address})"));
-    };
+    let title = link.title();
+    if title.is_none() {
+        if let Some(wiki) = link.external_url().and_then(|url| obsidian::format_file_link(url, text)) {
+            return wiki;
+        }
+        if !address.contains(['(', ')', '<', '>', '\\', '&']) && !address.chars().any(char::is_whitespace) {
+            return format!("[{text}]({address})");
+        }
+    }
     let address = address.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
         .replace('\\', "&#92;").replace('\n', "&#10;").replace('\r', "&#13;");
+    let Some(title) = title else {
+        return format!("[{text}](<{address}>)");
+    };
     let title = title.replace('&', "&amp;").replace('\\', "&#92;").replace('"', "&quot;")
         .replace('\n', "&#10;").replace('\r', "&#13;");
     format!("[{text}](<{address}> \"{title}\")")
@@ -9264,7 +9275,7 @@ fn serialize_runs(
             let label = write_markdown_emphasis(runs[index..end].iter().map(|run| {
                 (markdown_emphasis_flags(run) & !flags, serialize_run_piece(run, media, comments))
             }).collect());
-            if !label.is_empty() {
+            if !label.is_empty() || is_markdown_empty_link(run) {
                 pieces.push((flags, format_markdown_link(&label, link)));
             }
         } else {
@@ -9284,6 +9295,11 @@ fn serialize_runs(
         index = end;
     }
     write_markdown_emphasis(pieces)
+}
+
+fn is_markdown_empty_link(run: &FlowRun) -> bool {
+    markdown_link_start(run.char_style.as_deref()).is_some_and(|flags| flags & MARKDOWN_EMPTY_LINK != 0)
+        && matches!(&run.kind, FlowRunKind::Text(text) if text == MARKDOWN_EMPTY_LINK_TEXT)
 }
 
 fn markdown_run_has_escape(run: &FlowRun) -> bool {
@@ -9336,6 +9352,9 @@ fn serialize_run_piece(
     media: &[Media],
     comments: &HashMap<u32, &Comment>,
 ) -> String {
+    if is_markdown_empty_link(run) {
+        return String::new();
+    }
     let mut format = run.format.clone();
     if markdown_emphasis_flags(run) != 0 {
         format.bold = None;
@@ -10699,6 +10718,68 @@ mod tests {
         assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
         let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+    }
+
+    #[test]
+    fn markdown_preserves_empty_links_and_unavailable_images_through_docx() {
+        for source in [
+            "[](./target.md)\n",
+            "[]()\n",
+            "[](/url)[](/url)\n",
+            "![](/missing.png)\n",
+            "[![moon](missing.png)](/uri)\n",
+            "[foo [bar](/uri)](/uri)\n",
+            "[foo *[bar [baz](/uri)](/uri)*](/uri)\n",
+            "![[[foo](uri1)](uri2)](uri3)\n",
+            "![foo ![bar](/url)](/url2)\n",
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, source);
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+        }
+    }
+
+    #[test]
+    fn markdown_link_destinations_and_definitions_preserve_their_boundaries() {
+        for (source, canonical) in [
+            ("[link](</my uri>)\n", "[link](</my uri>)\n"),
+            ("[a](<b)c>)\n", "[a](<b)c>)\n"),
+            ("[x](a\\&copy;)\n", "[x](<a&amp;copy;>)\n"),
+            ("[link](foo\\(and\\(bar\\))\n", "[link](<foo(and(bar)>)\n"),
+            ("[link](foo\\)\\:)\n", "[link](<foo):>)\n"),
+            ("[\nfoo\n]: /url\nbar\n", "[\nfoo\n]: /url\n\nbar\n"),
+            ("[foo]: /url\n\"title\" ok\n", "[foo]: /url\n\n\"title\" ok\n"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, canonical);
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), canonical);
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), canonical);
+        }
+    }
+
+    #[test]
+    fn markdown_image_title_does_not_fill_empty_alt_on_docx_round_trip() {
+        let data = encode_base64(include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf"));
+        let source = format!(r#"![](data:image/x-emf;base64,{data} "集計表")"#);
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert!(saved.starts_with("![]("));
+        let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+        let docx_document = crate::read_docx(&docx).unwrap();
+        let flow = docx_document.flow.as_deref().unwrap();
+        let Block::Paragraph(paragraph) = &flow.body[0] else { panic!("expected picture paragraph") };
+        assert!(matches!(&paragraph.runs[0].kind, FlowRunKind::Picture { look, .. }
+            if look.alt_text.description.is_empty() && look.alt_text.title == "集計表"));
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), saved);
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), saved);
     }
 
     #[test]
