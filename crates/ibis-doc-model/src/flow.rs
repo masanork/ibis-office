@@ -4751,9 +4751,9 @@ pub fn list_labels(doc: &FlowDocument) -> std::collections::HashMap<u32, String>
     use std::collections::HashMap;
     let numbering = &doc.styles.numbering;
     // Counters per list definition (or per list, when it restarts levels).
-    let mut counters: HashMap<(u32, bool), [u32; 9]> = HashMap::new();
+    let mut counters: HashMap<(u32, bool), [Option<u32>; 9]> = HashMap::new();
     let mut out = HashMap::new();
-    fn walk(blocks: &[Block], numbering: &Numbering, counters: &mut HashMap<(u32, bool), [u32; 9]>, out: &mut HashMap<u32, String>) {
+    fn walk(blocks: &[Block], numbering: &Numbering, counters: &mut HashMap<(u32, bool), [Option<u32>; 9]>, out: &mut HashMap<u32, String>) {
         for b in blocks {
             match b {
                 Block::Paragraph(p) => {
@@ -4763,10 +4763,10 @@ pub fn list_labels(doc: &FlowDocument) -> std::collections::HashMap<u32, String>
                     let key = if num.start_overrides.is_empty() { (num.abstract_id, false) } else { (list.num_id, true) };
                     let level = (list.level as usize).min(8);
                     let start = |l: usize| num.start_overrides.get(&(l as u32)).copied().unwrap_or_else(|| abs.levels.get(l).map_or(1, |x| x.start));
-                    let c = counters.entry(key).or_insert([0; 9]);
-                    c[level] = if c[level] == 0 { start(level) } else { c[level] + 1 };
+                    let c = counters.entry(key).or_insert([None; 9]);
+                    c[level] = Some(c[level].map_or_else(|| start(level), |current| current.saturating_add(1)));
                     for deeper in c.iter_mut().skip(level + 1) {
-                        *deeper = 0;
+                        *deeper = None;
                     }
                     let Some(lvl) = abs.levels.get(level) else { continue };
                     let mut text = String::new();
@@ -4777,7 +4777,7 @@ pub fn list_labels(doc: &FlowDocument) -> std::collections::HashMap<u32, String>
                         {
                             chars.next();
                             let l = (d as usize).saturating_sub(1).min(8);
-                            let n = if c[l] == 0 { start(l) } else { c[l] };
+                            let n = c[l].unwrap_or_else(|| start(l));
                             let format = abs.levels.get(l).map_or("decimal", |x| x.format.as_str());
                             text.push_str(&format_list_number(n, format));
                         } else {
