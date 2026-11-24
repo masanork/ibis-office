@@ -5712,6 +5712,10 @@ fn export_markdown_with_positions<'a>(
     mut record: impl FnMut(MarkdownSource<'a>, usize, usize),
 ) -> String {
     let mut out = String::new();
+    let list_labels = doc.styles.numbering.nums.values()
+        .any(|list| list.start_overrides.values().any(|&start| start != 1))
+        .then(|| ibis_doc_model::flow::list_labels(doc));
+
 
     // 1. YAML Frontmatter (written when metadata, non-default page setup, headers/footers, or watermark exist)
     let fm = serialize_frontmatter(doc, source_diagnostics);
@@ -5787,7 +5791,10 @@ fn export_markdown_with_positions<'a>(
             Block::Table(table) => serialize_table(table, media, &comments_by_id, &mut out, &mut |row, column, cell, start, end| {
                 record(MarkdownSource::TableCell { index: i, table, row, column, cell }, start, end);
             }),
-            Block::Paragraph(p) => serialize_paragraph(p, doc, media, &comments_by_id, &mut out, form_layout, source_diagnostics),
+            Block::Paragraph(p) => serialize_paragraph(
+                p, doc, media, &comments_by_id, &mut out, form_layout, source_diagnostics,
+                list_labels.as_ref().and_then(|labels| labels.get(&p.id)).map(String::as_str),
+            ),
         }
         record(MarkdownSource::Body(i, block), start, out.len());
         prev_was_list = is_list;
@@ -6288,7 +6295,7 @@ fn prepare_ai_edit(
                 return serialize_table_paragraph(paragraph, media, &comments);
             }
             let mut out = String::new();
-            serialize_paragraph(paragraph, doc, media, &comments, &mut out, false, &mut Vec::new());
+            serialize_paragraph(paragraph, doc, media, &comments, &mut out, false, &mut Vec::new(), None);
             out
         };
         let original = render(paragraph);
@@ -6841,7 +6848,7 @@ fn serialize_block(
     source_diagnostics: &mut Vec<SourceDiagnostic>,
 ) {
     match block {
-        Block::Paragraph(p) => serialize_paragraph(p, doc, media, comments, out, false, source_diagnostics),
+        Block::Paragraph(p) => serialize_paragraph(p, doc, media, comments, out, false, source_diagnostics, None),
         Block::Table(t) => serialize_table(t, media, comments, out, &mut |_, _, _, _, _| {}),
     }
 }
@@ -6854,6 +6861,7 @@ fn serialize_paragraph(
     out: &mut String,
     form_layout: bool,
     source_diagnostics: &mut Vec<SourceDiagnostic>,
+    list_label: Option<&str>,
 ) {
     // 1. Standalone PageBreak / ColumnBreak
     if p.runs.len() == 1 {
@@ -7031,7 +7039,12 @@ fn serialize_paragraph(
         let marker = if is_ordered {
             let start = doc.styles.numbering.nums.get(&num_id)
                 .and_then(|list| list.start_overrides.get(&level)).copied().unwrap_or(1);
-            format!("{start}.")
+            let number = list_label.and_then(|label| label.strip_suffix('.'))
+                .filter(|_| start != 1)
+                .and_then(|number| number.parse::<u32>().ok())
+                .filter(|&number| number <= 999_999_999)
+                .unwrap_or(start);
+            format!("{number}.")
         } else {
             "-".to_owned()
         };
@@ -10045,8 +10058,8 @@ Front caption
             .filter_map(|paragraph| numbers.get(&paragraph.id).map(String::as_str)).collect();
         assert_eq!(labels, ["3.", "4.", "7.", "8.", "1."]);
         let markdown = export_presentation_to_markdown(&opened).unwrap();
-        assert!(markdown.contains("3. Approve"));
-        assert!(markdown.contains("7. Review"));
+        assert!(markdown.contains("3. Approve\n4. Publish"));
+        assert!(markdown.contains("7. Review\n8. Archive"));
     }
 
     #[test]
