@@ -1785,3 +1785,8 @@ structured.hed-filename	ファイル名
 structured.hed-bytes	バイト数
 structured.hed-records	データ件数
 structured.hed-difference	{field}・.hed の値 {declared}・CSV の値 {actual}
+structured.no-search-results	一致する項目がありません
+structured.back-to-record	レコード全体に戻る
+structured.searching	検索中…
+structured.search-bom	名前・参照ID・種類を検索
+structured.search-columns	選択中のレコードの列を検索

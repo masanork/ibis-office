@@ -175,5 +175,7 @@ mod tests {
         assert_eq!(tree.nodes[children[7]].span, 0..0);
         assert_eq!(tree.nodes[7444].name, "[7443] 備考");
         assert_eq!(tree.nodes[7445].name, "[7444] 備考");
+        assert_eq!(tree.visible("[7444]"), [(7445, 1)]);
+        assert_eq!(tree.visible("12345678901234567890"), [(children[1], 2)]);
     }
 }
