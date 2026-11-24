@@ -217,11 +217,25 @@ pub(super) fn place_group_leaf(
     if !(1e-6..=1000.0).contains(&sx) || !(1e-6..=1000.0).contains(&sy) {
         return None;
     }
-    // Orthogonal axes can be written as a rotated DrawingML rectangle.
-    // For a shear, use the perpendicular height of the transformed frame.
     let determinant = a * d - b * c;
     let width = original.width as f64;
     let height = original.height as f64;
+    let tx = (x + translation[2]) * 127.0;
+    let ty = (y + translation[5]) * 127.0;
+    // DrawingML's rotation and scale cannot express nonorthogonal axes.
+    if (a * b + c * d).abs() > sx * sy * 1e-5
+        && let ShapeKind::Auto(auto) = &mut shape.kind
+        && let Some((geometry, frame)) =
+            shear_outline(&auto.geometry, original, [a, b, tx, c, d, ty])
+    {
+        auto.geometry = geometry;
+        shape.frame = EmuRect::new(0, 0, frame.width, frame.height);
+        shape.rotation = 0;
+        shape.flip_h = false;
+        shape.flip_v = false;
+        shape.floating = Some(offset_anchor(anchor, frame.x, frame.y));
+        return Some(());
+    }
     let cx = (a * width + b * height) / 2.0 + (x + translation[2]) * 127.0;
     let cy = (c * width + d * height) / 2.0 + (y + translation[5]) * 127.0;
     let bounded = |n: f64| n.round().clamp(-127_000_000.0, 127_000_000.0) as i64;
@@ -238,6 +252,143 @@ pub(super) fn place_group_leaf(
     Some(())
 }
 
+/// Bake a sheared vector into editable DrawingML paths. The Bézier control
+/// points undergo the same affine transform as the vertices.
+fn shear_outline(
+    geometry: &ibis_doc_model::Geometry,
+    size: EmuSize,
+    [a, b, tx, c, d, ty]: [f64; 6],
+) -> Option<(ibis_doc_model::Geometry, EmuRect)> {
+    use ibis_doc_model::{FormulaGeometry, Geometry, GeometryDef, GeometryPath, PathOp};
+    let w = size.width.max(1) as f64;
+    let h = size.height.max(1) as f64;
+    let project = |x, y| (a * x + b * y + tx, c * x + d * y + ty);
+    let corners = [
+        project(0.0, 0.0),
+        project(w, 0.0),
+        project(0.0, h),
+        project(w, h),
+    ];
+    let extrema = |axis: fn((f64, f64)) -> f64| {
+        let mut values = corners.into_iter().map(axis);
+        let first = values.next().unwrap();
+        values.fold((first, first), |(lo, hi), v| (lo.min(v), hi.max(v)))
+    };
+    let (left, right) = extrema(|p| p.0);
+    let (top, bottom) = extrema(|p| p.1);
+    if [left, right, top, bottom]
+        .into_iter()
+        .any(|v| !v.is_finite() || v.abs() > 127_000_000.0)
+    {
+        return None;
+    }
+    let left = left.floor();
+    let top = top.floor();
+    let frame = EmuRect::new(
+        left as i64,
+        top as i64,
+        ((right.ceil() - left) as i64).max(1),
+        ((bottom.ceil() - top) as i64).max(1),
+    );
+    let point = |x, y| {
+        let (x, y) = project(x, y);
+        [
+            (x - left).round().to_string(),
+            (y - top).round().to_string(),
+        ]
+    };
+    let path = |ops| GeometryPath {
+        width: frame.width,
+        height: frame.height,
+        fill: Default::default(),
+        stroke: true,
+        ops,
+    };
+    let paths = match geometry {
+        Geometry::Rect => {
+            let [x, y] = point(0.0, 0.0);
+            let mut ops = vec![PathOp::MoveTo(x, y)];
+            for (x, y) in [(w, 0.0), (w, h), (0.0, h)] {
+                let [x, y] = point(x, y);
+                ops.push(PathOp::LineTo(x, y));
+            }
+            ops.push(PathOp::Close);
+            vec![path(ops)]
+        }
+        Geometry::Ellipse => {
+            let (rx, ry) = (w / 2.0, h / 2.0);
+            let (kx, ky) = (rx * 0.5522847498307936, ry * 0.5522847498307936);
+            let [x, y] = point(w, ry);
+            let mut ops = vec![PathOp::MoveTo(x, y)];
+            for (p, q, end) in [
+                ((w, ry + ky), (rx + kx, h), (rx, h)),
+                ((rx - kx, h), (0.0, ry + ky), (0.0, ry)),
+                ((0.0, ry - ky), (rx - kx, 0.0), (rx, 0.0)),
+                ((rx + kx, 0.0), (w, ry - ky), (w, ry)),
+            ] {
+                let [x1, y1] = point(p.0, p.1);
+                let [x2, y2] = point(q.0, q.1);
+                let [x3, y3] = point(end.0, end.1);
+                ops.push(PathOp::CubicTo([x1, y1, x2, y2, x3, y3]));
+            }
+            ops.push(PathOp::Close);
+            vec![path(ops)]
+        }
+        Geometry::Formula(formula) if formula.preset.is_none() => {
+            let mut paths = Vec::new();
+            for source in &formula.def.paths {
+                let sx = w / source.width.max(1) as f64;
+                let sy = h / source.height.max(1) as f64;
+                let convert = |x: &str, y: &str| {
+                    Some(point(
+                        x.parse::<i64>().ok()? as f64 * sx,
+                        y.parse::<i64>().ok()? as f64 * sy,
+                    ))
+                };
+                let mut ops = Vec::new();
+                for op in &source.ops {
+                    ops.push(match op {
+                        PathOp::MoveTo(x, y) => {
+                            let [x, y] = convert(x, y)?;
+                            PathOp::MoveTo(x, y)
+                        }
+                        PathOp::LineTo(x, y) => {
+                            let [x, y] = convert(x, y)?;
+                            PathOp::LineTo(x, y)
+                        }
+                        PathOp::CubicTo([x1, y1, x2, y2, x3, y3]) => {
+                            let [x1, y1] = convert(x1, y1)?;
+                            let [x2, y2] = convert(x2, y2)?;
+                            let [x3, y3] = convert(x3, y3)?;
+                            PathOp::CubicTo([x1, y1, x2, y2, x3, y3])
+                        }
+                        PathOp::Close => PathOp::Close,
+                        _ => return None,
+                    });
+                }
+                paths.push(GeometryPath {
+                    fill: source.fill,
+                    stroke: source.stroke,
+                    ..path(ops)
+                });
+            }
+            paths
+        }
+        _ => return None,
+    };
+    Some((
+        Geometry::Formula(FormulaGeometry {
+            preset: None,
+            adjust: Vec::new(),
+            def: std::sync::Arc::new(GeometryDef {
+                paths,
+                ..Default::default()
+            }),
+        }),
+        frame,
+    ))
+}
+
 pub(super) fn curve_geometry(
     points: &[(i64, i64)],
     curved: &[bool],
@@ -245,24 +396,36 @@ pub(super) fn curve_geometry(
 ) -> Option<ibis_doc_model::Geometry> {
     use ibis_doc_model::{FormulaGeometry, Geometry, GeometryDef, GeometryPath, PathFill, PathOp};
     let &(x, y) = points.first()?;
-    let mut ops = vec![PathOp::MoveTo(x.to_string(), y.to_string())];
-    for (i, (&(x0, y0), &(x1, y1))) in points.iter().zip(&points[1..]).enumerate() {
-        if curved.get(i).copied().unwrap_or(false) {
-            let (px, py) = points[i.saturating_sub(1)];
-            let (nx, ny) = points[(i + 2).min(points.len() - 1)];
-            ops.push(PathOp::CubicTo([
-                (x0 + (x1 - px) / 6).to_string(),
-                (y0 + (y1 - py) / 6).to_string(),
-                (x1 - (nx - x0) / 6).to_string(),
-                (y1 - (ny - y0) / 6).to_string(),
-                x1.to_string(),
-                y1.to_string(),
-            ]));
-        } else {
-            ops.push(PathOp::LineTo(x1.to_string(), y1.to_string()));
-        }
-    }
     let closed = points.len() > 2 && points.first() == points.last();
+    let segments = points.len() - 1;
+    let is_curve = |i| curved.get(i).copied().unwrap_or(false);
+    let mut ops = vec![PathOp::MoveTo(x.to_string(), y.to_string())];
+    for i in 0..segments {
+        let p = points[i];
+        let q = points[i + 1];
+        if !is_curve(i) || p == q {
+            ops.push(PathOp::LineTo(q.0.to_string(), q.1.to_string()));
+            continue;
+        }
+        let before = i.checked_sub(1).or_else(|| closed.then_some(segments - 1));
+        let after = if i + 1 == segments && closed {
+            0
+        } else {
+            i + 1
+        };
+        let previous = before.filter(|&j| is_curve(j)).map(|j| points[j]);
+        let next = (after < segments && is_curve(after)).then(|| points[after + 1]);
+        let c1 = curve_handle(p, q, previous);
+        let c2 = curve_handle(q, p, next);
+        ops.push(PathOp::CubicTo([
+            c1.0.to_string(),
+            c1.1.to_string(),
+            c2.0.to_string(),
+            c2.1.to_string(),
+            q.0.to_string(),
+            q.1.to_string(),
+        ]));
+    }
     if closed {
         ops.push(PathOp::Close);
     }
@@ -284,4 +447,100 @@ pub(super) fn curve_geometry(
             ..Default::default()
         }),
     }))
+}
+
+// Centripetal Catmull–Rom: shorter chords influence the tangent more.
+// Use a one-sided tangent at endpoints and at line/curve joins.
+fn curve_handle(p: (i64, i64), q: (i64, i64), previous: Option<(i64, i64)>) -> (i64, i64) {
+    let delta = ((q.0 - p.0) as f64, (q.1 - p.1) as f64);
+    let step = delta.0.hypot(delta.1).sqrt();
+    let tangent = previous.filter(|&r| r != p).map_or(delta, |r| {
+        let back = ((p.0 - r.0) as f64, (p.1 - r.1) as f64);
+        let prior = back.0.hypot(back.1).sqrt();
+        let blend = |a, b| (a * step * step / prior + b * prior) / (prior + step);
+        (blend(back.0, delta.0), blend(back.1, delta.1))
+    });
+    (
+        (p.0 as f64 + tangent.0 / 3.0).round() as i64,
+        (p.1 as f64 + tangent.1 / 3.0).round() as i64,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ibis_doc_model::{AutoShape, Fill, Geometry, PathOp};
+
+    #[test]
+    fn hwp_shear_keeps_transformed_outline_and_anchor() {
+        let size = EmuSize::new(25400, 12700);
+        let anchor = offset_anchor(&group_anchor(), 1270, 2540);
+        let mut shape = Shape::new(
+            ShapeId(1),
+            EmuRect::new(0, 0, size.width, size.height),
+            ShapeKind::Auto(AutoShape::new(Geometry::Rect, Fill::None, None)),
+        );
+        place_group_leaf(
+            &mut shape,
+            &anchor,
+            size,
+            [[1., 0., 7., 0., 1., 11.], [1., -0.5, 0., 0.25, 1., 0.]],
+        )
+        .unwrap();
+        assert_eq!(shape.frame, EmuRect::new(0, 0, 31750, 19050));
+        assert_eq!(shape.rotation, 0);
+        let placed = shape.floating.unwrap();
+        assert_eq!((placed.offset_x, placed.offset_y), (-4191, 3937));
+        let ShapeKind::Auto(auto) = shape.kind else {
+            panic!("auto shape")
+        };
+        let Geometry::Formula(geometry) = auto.geometry else {
+            panic!("custom path")
+        };
+        assert_eq!(
+            geometry.def.paths[0].ops,
+            [
+                PathOp::MoveTo("6350".into(), "0".into()),
+                PathOp::LineTo("31750".into(), "6350".into()),
+                PathOp::LineTo("25400".into(), "19050".into()),
+                PathOp::LineTo("0".into(), "12700".into()),
+                PathOp::Close,
+            ]
+        );
+    }
+
+    #[test]
+    fn hwpx_curve_joins_are_smooth_at_the_seam_and_preserve_straight_segments() {
+        let points = [(0, 0), (900, 0), (1000, 1200), (0, 0)];
+        let Some(Geometry::Formula(closed)) =
+            curve_geometry(&points, &[true; 3], EmuSize::new(1000, 1200))
+        else {
+            panic!("closed curve")
+        };
+        let ops = &closed.def.paths[0].ops;
+        let (PathOp::CubicTo(first), PathOp::CubicTo(last)) = (&ops[1], &ops[3]) else {
+            panic!("cubic segments")
+        };
+        let x1 = first[0].parse::<i64>().unwrap();
+        let y1 = first[1].parse::<i64>().unwrap();
+        let x2 = -last[2].parse::<i64>().unwrap();
+        let y2 = -last[3].parse::<i64>().unwrap();
+        assert!((x1 * y2 - x2 * y1).abs() < 500);
+        assert!(x1 * x2 + y1 * y2 > 0);
+        assert_eq!(ops.last(), Some(&PathOp::Close));
+
+        let Some(Geometry::Formula(mixed)) =
+            curve_geometry(&points[..3], &[false, true], EmuSize::new(1000, 1200))
+        else {
+            panic!("mixed path")
+        };
+        assert_eq!(
+            mixed.def.paths[0].ops[1],
+            PathOp::LineTo("900".into(), "0".into())
+        );
+        let PathOp::CubicTo(segment) = &mixed.def.paths[0].ops[2] else {
+            panic!("cubic segment")
+        };
+        assert_eq!(&segment[..2], ["933", "400"]);
+    }
 }
