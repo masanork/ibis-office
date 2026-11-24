@@ -264,6 +264,9 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
         if defaults.font.is_some() {
             styles.defaults_run.font = defaults.font.clone();
             styles.defaults_run.east_asian_font = defaults.east_asian_font.clone();
+            // A resolved JTD face also covers the extended Latin slot. Keep
+            // Word's template face from replacing its ambiguous characters.
+            styles.defaults_run.h_ansi_font = defaults.font.clone();
             styles.defaults_run.bold = Some(defaults.bold);
             styles.defaults_run.italic = Some(defaults.italic);
         }
@@ -1939,7 +1942,7 @@ mod tests {
     #[test]
     fn explicitly_agreeing_font_references_survive_word_export() {
         let data = ibis_ooxml::cfb::write(&[
-            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&[0x7532])),
+            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&[0x25cb, 0x7532])),
             ibis_ooxml::cfb::Item::stream(
                 "Font",
                 font::fixture(&[
@@ -1960,10 +1963,10 @@ mod tests {
             let Block::Paragraph(p) = &flow.body[0] else {
                 panic!("paragraph")
             };
-            assert_eq!(
-                p.runs[0].style.east_asian_font.as_deref(),
-                Some("ＭＳ 明朝")
-            );
+            for character in ['○', '甲', 'é'] {
+                assert_eq!(p.runs[0].style.font_for(character), Some("ＭＳ 明朝"));
+            }
+            assert_eq!(flow.styles.defaults_run.h_ansi_font.as_deref(), Some("ＭＳ 明朝"));
         }
         let fonts = inspect_fonts(&data).unwrap();
         assert!(default_font(&font_styles(0, 9), &fonts).is_none());
