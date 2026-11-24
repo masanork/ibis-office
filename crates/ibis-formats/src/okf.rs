@@ -6,6 +6,7 @@
 
 use serde_json::{Map, Value};
 
+pub mod diagnostics;
 mod review;
 pub use review::{Freshness, Review, Trust};
 

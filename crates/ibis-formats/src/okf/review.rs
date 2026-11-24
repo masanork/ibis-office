@@ -30,11 +30,11 @@ pub struct Review {
     deadline: Option<DateTime<Utc>>,
 }
 
-fn present(value: &Value) -> bool {
+pub(super) fn present(value: &Value) -> bool {
     !value.is_null() && value.as_str() != Some("") && !value.as_array().is_some_and(Vec::is_empty)
 }
 
-fn timestamp(value: &Value) -> Option<DateTime<Utc>> {
+pub(super) fn timestamp(value: &Value) -> Option<DateTime<Utc>> {
     let text = value.as_str()?;
     if text.len() == 10 {
         return Some(

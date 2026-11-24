@@ -166,6 +166,14 @@ impl Folder {
     }
 
     fn resolve_file(&self, relative: &str) -> Result<PathBuf, String> {
+        let real = self.resolve_entry(relative)?;
+        if !real.is_file() {
+            return Err("Path must identify a file inside the open folder.".into());
+        }
+        Ok(real)
+    }
+
+    fn resolve_entry(&self, relative: &str) -> Result<PathBuf, String> {
         if self.root.canonicalize().ok().as_ref() != Some(&self.root) || !self.root.is_dir() {
             return Err("The reference folder moved. Open it again.".into());
         }
@@ -181,7 +189,7 @@ impl Folder {
             }
         }
         let real = path.canonicalize().map_err(|err| err.to_string())?;
-        if !real.starts_with(&self.root) || !real.is_file() {
+        if !real.starts_with(&self.root) {
             return Err("Path must identify a file inside the open folder.".into());
         }
         Ok(real)
@@ -266,7 +274,7 @@ const OFFICE_READS: &[&str] = &[
     "pptx_get_notes",
 ];
 
-pub(crate) fn tools() -> [ToolDefinition; 7] {
+pub(crate) fn tools() -> [ToolDefinition; 8] {
     let tool = |name, description, properties, required| ToolDefinition {
         kind: "function",
         function: ToolFunctionDef {
@@ -278,6 +286,12 @@ pub(crate) fn tools() -> [ToolDefinition; 7] {
         },
     };
     [
+        tool(
+            "folder_diagnose_okf",
+            "Inspect OKF YAML metadata and its local path fields in the open folder. Findings are advisory and no files are changed. Pass next_offset to inspect more Markdown files.",
+            json!({"offset":{"type":"integer","minimum":0}}),
+            json!([]),
+        ),
         tool(
             "folder_list",
             "List reference files in the open folder, optionally filtering by path text, knowledge type (type:Metric), or tag (tag:finance). Paths are relative to the folder.",
@@ -369,7 +383,7 @@ pub(crate) struct FolderResult {
 }
 
 pub(crate) fn recognizes(name: &str) -> bool {
-    matches!(name, "folder_list" | "folder_search" | "folder_read" | "git_status" | "git_log" | "git_diff" | "git_read")
+    matches!(name, "folder_diagnose_okf" | "folder_list" | "folder_search" | "folder_read" | "git_status" | "git_log" | "git_diff" | "git_read")
 }
 
 pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Result<FolderResult, String> {
@@ -377,6 +391,42 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
         serde_json::from_str(&call.function.arguments).map_err(|err| err.to_string())?;
     let offset = number(&args["offset"], 0)?;
     let (value, references) = match call.function.name.as_str() {
+        "folder_diagnose_okf" => {
+            let mut files = folder.files.iter().filter(|path| path.ends_with(".md")).skip(offset);
+            let mut examined = 0;
+            let mut issues = Vec::new();
+            let mut partial = folder.truncated || folder.skipped > 0;
+            for path in files.by_ref().take(32) {
+                examined += 1;
+                let Some(prefix) = folder.resolve(path).ok().and_then(|path| std::fs::File::open(path).ok())
+                    .and_then(frontmatter_prefix)
+                else {
+                    partial = true;
+                    continue;
+                };
+                let findings = ibis_formats::okf::diagnostics::inspect(path, &prefix, |target| {
+                    folder.resolve_entry(target).is_ok()
+                });
+                partial |= findings.len() > 12;
+                for finding in findings.into_iter().take(12) {
+                    if issues.len() >= 16 {
+                        partial = true;
+                        break;
+                    }
+                    issues.push(json!({
+                        "path": excerpt(path, 120),
+                        "field": finding.field,
+                        "code": finding.code,
+                        "target": finding.target.as_deref().map(|target| excerpt(target, 100)),
+                    }));
+                }
+                if issues.len() >= 16 {
+                    break;
+                }
+            }
+            let next = files.next().map(|_| offset.saturating_add(examined));
+            (json!({"issues":issues,"examined":examined,"next_offset":next,"partial":partial}), Vec::new())
+        }
         "folder_list" => {
             let query = args["query"].as_str().unwrap_or_default().to_lowercase();
             let mut matches = folder
@@ -511,21 +561,30 @@ fn read_frontmatter(path: &Path) -> Option<String> {
 }
 
 fn bounded_frontmatter(source: impl Read) -> Option<String> {
+    frontmatter_prefix(source).filter(|prefix| {
+        (prefix.starts_with("---\n") || prefix.starts_with("---\r\n"))
+            && prefix.lines().skip(1).last() == Some("---")
+    })
+}
+
+fn frontmatter_prefix(source: impl Read) -> Option<String> {
     let mut reader = BufReader::new(source.take(64 * 1024 + 1));
     let mut frontmatter = String::new();
     reader.read_line(&mut frontmatter).ok()?;
     if !matches!(frontmatter.as_str(), "---\n" | "---\r\n") {
-        return None;
+        return Some(String::new());
     }
     loop {
         let start = frontmatter.len();
         if reader.read_line(&mut frontmatter).ok()? == 0 || frontmatter.len() > 64 * 1024 {
-            return None;
+            frontmatter.truncate(start);
+            break;
         }
         if matches!(&frontmatter[start..], "---\n" | "---\r\n" | "---") {
-            return Some(frontmatter);
+            break;
         }
     }
+    Some(frontmatter)
 }
 
 fn read_text(path: &Path) -> Result<(String, bool), String> {
@@ -873,6 +932,30 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn folder_okf_diagnostics_are_read_only_and_distinguish_missing_local_targets() {
+        let fixture = Fixture::new();
+        std::fs::create_dir(fixture.0.join("nested")).unwrap();
+        std::fs::create_dir(fixture.0.join("assets")).unwrap();
+        let concept = "---\ntype: Metric\ntags: [finance, false]\nresource: /assets/\ncomputation: ../missing.md\nsuperseded_by: ../../outside.md\nsources: {resource: https://example.org/data}\n---\n";
+        fixture.write("nested/metric.md", concept);
+        fixture.write("assets/raw.bin", "asset");
+        fixture.write("broken.md", "---\n[one, two]\n---\n");
+        fixture.write("unterminated.md", "---\ntype: Metric\n");
+        fixture.write("nested/log.md", "---\ntitle: Log\n---\n");
+        fixture.write("index.md", "---\nokf_version: 0.3\n---\n");
+        fixture.write("ordinary.md", "# Ordinary Markdown");
+        let folder = Folder::scan(&fixture.0).unwrap();
+        let result = call(&folder, "folder_diagnose_okf", json!({})).unwrap();
+        assert_eq!(result.value["partial"], false);
+        assert_eq!(result.value["next_offset"], Value::Null);
+        let codes: Vec<_> = result.value["issues"].as_array().unwrap().iter()
+            .map(|issue| issue["code"].as_str().unwrap()).collect();
+        assert_eq!(codes, ["invalid_yaml_mapping", "invalid_version", "unexpected_reserved_frontmatter",
+            "invalid_tags", "unresolved_local_target", "outside_or_invalid_path", "incomplete_frontmatter"]);
+        assert_eq!(std::fs::read_to_string(fixture.0.join("nested/metric.md")).unwrap(), concept);
     }
 
     #[test]
