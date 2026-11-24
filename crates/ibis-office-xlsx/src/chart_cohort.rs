@@ -186,9 +186,30 @@ impl Change<'_> {
     }
 }
 
+/// All integer intermediates are exactly representable when the combined
+/// absolute input amounts fit in the consecutive-integer range of f64.
+fn exact_integer_inputs(before: &Rows<'_>, after: &Rows<'_>, old: f64, new: f64) -> bool {
+    const LIMIT: u64 = 1 << 53;
+    let integer = |value: f64| value.is_finite() && value.fract() == 0. && value.abs() <= LIMIT as f64;
+    integer(old) && integer(new)
+        && before.entries.values().chain(after.entries.values())
+            .try_fold(0_u64, |sum, row| {
+                if !integer(row.amount) { return None; }
+                let combined = sum + row.amount.abs() as u64;
+                (combined <= LIMIT).then_some(combined)
+            }).is_some()
+}
+
+fn reconciliation(actual: f64, expected: f64, exact: bool) -> (bool, Value) {
+    let residual = actual - expected;
+    let tolerance = if exact { 0. } else { 8. * f64::EPSILON * actual.abs().max(expected.abs()).max(1.) };
+    (residual.is_finite() && tolerance.is_finite() && residual.abs() <= tolerance,
+        json!({"residual":residual,"tolerance":tolerance}))
+}
+
 fn decompose(before: Rows<'_>, after: Rows<'_>, old: f64, new: f64, key: Option<&str>) -> Value {
-    let close = |a: f64, b: f64| a.is_finite() && b.is_finite()
-        && (a - b).abs() <= 8. * f64::EPSILON * a.abs().max(b.abs()).max(1.);
+    let exact = exact_integer_inputs(&before, &after, old, new);
+    let mut precision = json!({"mode":if exact {"exact_integer"} else {"binary64"},"checks":{}});
     let mut retained = Contribution::default();
     let mut added = Contribution::default();
     let mut removed = Contribution::default();
@@ -209,10 +230,21 @@ fn decompose(before: Rows<'_>, after: Rows<'_>, old: f64, new: f64, key: Option<
         }
     }
     let delta = (retained.after - retained.before) + added.after - removed.before;
-    if !close(retained.before + removed.before, old) || !close(retained.after + added.after, new)
-        || !close(delta, new - old) || changes.iter().any(|change| !change.delta().is_finite())
-    {
-        return json!({"state":"totals_mismatch"});
+    let checks = [
+        ("before_total", retained.before + removed.before, old),
+        ("after_total", retained.after + added.after, new),
+        ("group_delta", delta, new - old),
+    ];
+    let mut matches = true;
+    for (name, actual, expected) in checks {
+        let (ok, mut check) = reconciliation(actual, expected, exact);
+        let scale = old.abs().max(new.abs());
+        check["relative_to_total"] = json!((scale > 0. && scale.is_finite()).then(|| (actual - expected).abs() / scale));
+        precision["checks"][name] = check;
+        matches &= ok;
+    }
+    if !matches || changes.iter().any(|change| !change.delta().is_finite()) {
+        return json!({"state":"totals_mismatch","precision":precision});
     }
 
     let top = |increasing: bool| {
@@ -231,13 +263,22 @@ fn decompose(before: Rows<'_>, after: Rows<'_>, old: f64, new: f64, key: Option<
         let (old, new) = change.amounts();
         remainder.add(old, new);
     }
+    let ranked_delta = increases.iter().chain(&decreases).map(Change::delta).sum::<f64>()
+        + (remainder.after - remainder.before);
+    let (rank_matches, mut rank_check) = reconciliation(ranked_delta, new - old, exact);
+    let scale = old.abs().max(new.abs());
+    rank_check["relative_to_total"] = json!((scale > 0. && scale.is_finite()).then(|| (ranked_delta - (new - old)).abs() / scale));
+    precision["checks"]["ranked_delta"] = rank_check;
+    if !rank_matches {
+        return json!({"state":"totals_mismatch","precision":precision});
+    }
     let contributor = key.and_then(|key| changes.iter().find(|change| change.key == key))
         .map(|change| change.evidence(&before, &after));
     let serialize = |changes: Vec<Change<'_>>| {
         changes.into_iter().map(|change| change.evidence(&before, &after)).collect::<Vec<_>>()
     };
     let mut result = json!({"state":"ready","retained":retained.summary(),"added":added.summary(),"removed":removed.summary(),"delta":delta,
-        "increases":serialize(increases),"decreases":serialize(decreases),"remainder":remainder.summary()});
+        "increases":serialize(increases),"decreases":serialize(decreases),"remainder":remainder.summary(),"precision":precision});
     if key.is_some() {
         result["contributor"] = contributor.unwrap_or_else(|| json!({"state":"absent"}));
     }
@@ -291,6 +332,9 @@ mod tests {
         assert_eq!(got["added"]["delta"], 40.);
         assert_eq!(got["removed"]["delta"], -20.);
         assert_eq!(got["delta"], 40.);
+        assert_eq!(got["precision"]["mode"], "exact_integer");
+        assert_eq!(got["precision"]["checks"]["ranked_delta"]["tolerance"], 0.);
+        assert_eq!(got["precision"]["checks"]["ranked_delta"]["residual"], 0.);
         assert_eq!(got["increases"][0]["key"], "003");
         assert!(got["increases"][0]["before"].is_null());
         assert_eq!(got["decreases"][0]["key"], "002");
@@ -319,6 +363,31 @@ mod tests {
         assert_eq!(got["decreases"][4]["key"], "12");
         assert_eq!(got["remainder"], json!({"count":4,"before":80.,"after":88.,"delta":8.}));
         assert_eq!(got["contributor"]["key"], "07");
+    }
+
+    #[test]
+    fn one_unit_mismatch_is_rejected_for_representable_integers() {
+        let amount = (1_u64 << 52) as f64;
+        let rows = |value| Rows {
+            sheet: None,
+            key_column: 0,
+            amount_column: 1,
+            entries: BTreeMap::from([("01", Row { amount: value, index: 1 })]),
+        };
+        let got = decompose(rows(0.), rows(amount), 0., amount + 1., None);
+        assert_eq!(got["state"], "totals_mismatch");
+        assert_eq!(got["precision"]["mode"], "exact_integer");
+        assert_eq!(got["precision"]["checks"]["after_total"]["residual"], -1.);
+        assert_eq!(got["precision"]["checks"]["after_total"]["tolerance"], 0.);
+    }
+
+    #[test]
+    fn fractional_checks_disclose_residual_and_tolerance() {
+        let (ok, diagnostic) = reconciliation(0.1 + 0.2, 0.3, false);
+        assert!(ok);
+        assert!(diagnostic["residual"].as_f64().unwrap() > 0.);
+        assert!(diagnostic["tolerance"].as_f64().unwrap() > diagnostic["residual"].as_f64().unwrap());
+        assert!(!reconciliation(0.1 + 0.2, 0.3, true).0);
     }
 
 }
