@@ -672,6 +672,8 @@ pub struct SlideEditor {
     vsdx_viewer: bool,
     #[cfg(not(target_family = "wasm"))]
     pub(crate) visio_draft: bool,
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) resumable_visio: std::sync::OnceLock<bool>,
     #[cfg(any(target_os = "android", target_family = "wasm"))]
     pub(crate) phone_editing: bool,
     #[cfg(any(target_os = "android", target_family = "wasm"))]
@@ -1015,6 +1017,8 @@ impl SlideEditor {
             vsdx_viewer,
             #[cfg(not(target_family = "wasm"))]
             visio_draft: false,
+            #[cfg(not(target_family = "wasm"))]
+            resumable_visio: Default::default(),
             standard_read_only: false,
             structured_preview: false,
             #[cfg(not(target_family = "wasm"))]
@@ -1371,7 +1375,7 @@ impl SlideEditor {
         self.vsdx_viewer = presentation.pdf_bytes.as_deref().is_some_and(ibis_vsdx::is_vsdx);
         self.structured_preview = false;
         #[cfg(not(target_family = "wasm"))]
-        { self.bom_source = None; self.visio_draft = false; }
+        { self.bom_source = None; self.visio_draft = false; self.resumable_visio = Default::default(); }
         #[cfg(target_family = "wasm")]
         { self.web.law_source = None; }
         #[cfg(any(target_os = "android", target_family = "wasm"))]

@@ -51,6 +51,19 @@ fn shape_move_updates_connector_position_and_keeps_connection_points() {
         .move_shape(b, frame(260.0, 60.0, 380.0, 120.0))
         .unwrap();
     let bytes = drawing.to_vsdx().unwrap();
+    let editing = Drawing::from_vsdx(&bytes).unwrap();
+    assert_eq!(editing.to_vsdx().unwrap(), bytes);
+    assert_eq!(editing.shapes().count(), 2);
+    assert_eq!(
+        editing.connectors().next(),
+        Some(((0, Side::Right), (1, Side::Left), (false, true)))
+    );
+    let mut foreign = ibis_ooxml::package::Package::open(bytes.as_slice()).unwrap();
+    foreign.set_bytes("custom-data.xml", b"<data/>".to_vec());
+    let foreign = foreign
+        .save(ibis_ooxml::package::SaveOptions::default())
+        .unwrap();
+    assert!(Drawing::from_vsdx(&foreign).is_err());
     let zip = Archive::new(&bytes).unwrap();
     let xml = String::from_utf8(
         zip.read_bounded("visio/pages/page1.xml", 10_000)

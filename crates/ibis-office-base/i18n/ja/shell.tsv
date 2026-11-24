@@ -1870,3 +1870,5 @@ structured.schema-edit-saved	スキーマのコピーを保存しました。
 structured.schema-edit-save-error	スキーマを保存できませんでした。{error}
 structured.schema-choose	JSON Schemaを選択…
 file.save-format.vsdx	Visio 図面 (.vsdx)
+vsdx.resume-edit	図面を編集
+vsdx.resume-error	ファイルが変更されています。開き直してから編集してください。

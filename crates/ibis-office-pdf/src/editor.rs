@@ -420,6 +420,14 @@ impl FormatEditor for PdfDocument {
                     .on(|editor, window, cx| open_geometry_edit(editor, window, cx)).into()
             );
         }
+        #[cfg(not(target_family = "wasm"))]
+        if _editor.can_resume_visio() {
+            use ibis_office_shell::chrome::{MenuId, MenuItem};
+            menus.items_mut(MenuId::Edit).push(
+                MenuItem::tr("vsdx.resume-edit").icon("edit")
+                    .on(|editor, window, cx| editor.resume_visio(window, cx)).into()
+            );
+        }
         if let Some(item) = menus.find_mut("edit.copy") {
             item.disabled = !selected;
         }

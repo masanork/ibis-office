@@ -1872,3 +1872,5 @@ structured.schema-edit-saved	Saved the schema copy.
 structured.schema-edit-save-error	Could not save the schema copy. {error}
 structured.schema-choose	Choose JSON Schema…
 file.save-format.vsdx	Visio Drawing (.vsdx)
+vsdx.resume-edit	Edit Drawing
+vsdx.resume-error	The file has changed. Reopen it before editing.

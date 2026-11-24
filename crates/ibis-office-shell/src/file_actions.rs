@@ -100,6 +100,45 @@ impl SlideEditor {
     }
 
     #[cfg(not(target_family = "wasm"))]
+    pub fn is_visio_draft(&self) -> bool {
+        self.visio_draft
+    }
+
+    /// Offer full editing only when the drawing can be written back losslessly.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn can_resume_visio(&self) -> bool {
+        !self.read_only && !crate::host::is_connected() && self.file_path().is_some()
+            && self.presentation().pdf_bytes.as_deref().is_some_and(|bytes| {
+                *self.resumable_visio.get_or_init(|| ibis_vsdx::write::Drawing::from_vsdx(bytes).is_ok())
+            })
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub fn resume_visio(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_resume_visio() { return; }
+        let result = (|| {
+            let path = self.file_path().ok_or_else(|| crate::i18n::text("vsdx.resume-error").to_string())?;
+            let bytes = self.presentation().pdf_bytes.as_deref().unwrap();
+            let on_disk = std::fs::read(&path).map_err(|error| error.to_string())?;
+            if on_disk != bytes {
+                return Err(crate::i18n::text("vsdx.resume-error").to_string());
+            }
+            let drawing = ibis_vsdx::write::Drawing::from_vsdx(bytes).map_err(|error| error.to_string())?;
+            let opened = crate::visio::editable_presentation(&drawing)?;
+            Ok((path, opened))
+        })();
+        let (path, opened) = match result {
+            Ok(opened) => opened,
+            Err(error) => return self.report(Err(error), cx),
+        };
+        let name = self.file_name.clone().unwrap_or_else(|| crate::i18n::text("vsdx.draft-filename"));
+        self.show_new(opened, name, window, cx);
+        self.visio_draft = true;
+        self.set_file_path(Some(path));
+        cx.notify();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn export_visio(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !crate::host::export_allowed("vsdx") {
             return;

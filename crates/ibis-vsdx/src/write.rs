@@ -140,7 +140,12 @@ impl Drawing {
         arrows: (bool, bool),
     ) -> Result<()> {
         self.check_item_limit()?;
-        if start.0 == end.0 || start.0.0 > self.shapes.len() || end.0.0 > self.shapes.len() {
+        if start.0 == end.0
+            || start.0.0 == 0
+            || end.0.0 == 0
+            || start.0.0 > self.shapes.len()
+            || end.0.0 > self.shapes.len()
+        {
             return Err(Error::new(
                 "A connector must join two different drawing shapes",
             ));
@@ -391,3 +396,173 @@ const CONTENT_TYPES: &str = r#"<Types xmlns="http://schemas.openxmlformats.org/p
 <Override PartName="/visio/pages/pages.xml" ContentType="application/vnd.ms-visio.pages+xml"/>
 <Override PartName="/visio/pages/page1.xml" ContentType="application/vnd.ms-visio.page+xml"/>
 </Types>"#;
+
+impl Drawing {
+    /// Read an unchanged drawing from this writer. Reject packages with any
+    /// parts or geometry the editor would discard when saving it again.
+    pub fn from_vsdx(bytes: &[u8]) -> Result<Self> {
+        use super::{child, named, open_archive, part, xml};
+
+        let zip = open_archive(bytes)?;
+        let pages = part(&zip, "visio/pages/pages.xml")?;
+        let index = xml(&pages)?;
+        let size = child(
+            child(index.root_element(), "Page").ok_or_else(super::invalid)?,
+            "PageSheet",
+        )
+        .ok_or_else(super::invalid)?;
+        let number = |node: roxmltree::Node<'_, '_>, key| {
+            super::number(super::value(Some(node), key)).ok_or_else(super::invalid)
+        };
+        let mut drawing = Self::new(
+            number(size, "PageWidth")? * 72.0,
+            number(size, "PageHeight")? * 72.0,
+        )?;
+        let content = part(&zip, "visio/pages/page1.xml")?;
+        let page = xml(&content)?;
+        let root = page.root_element();
+        let shapes = child(root, "Shapes").ok_or_else(super::invalid)?;
+        let mut nodes: Vec<_> = shapes
+            .children()
+            .filter(|&n| named(n, "Shape"))
+            .map(|node| {
+                let id = node
+                    .attribute("ID")
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .ok_or_else(super::invalid)?;
+                Ok((id, node))
+            })
+            .collect::<Result<_>>()?;
+        if nodes.len() > MAX_DRAWING_ITEMS {
+            return Err(super::invalid());
+        }
+        nodes.sort_by_key(|(id, _)| *id);
+        for (id, node) in nodes
+            .iter()
+            .copied()
+            .take_while(|(_, n)| super::value(Some(*n), "BeginX").is_none())
+        {
+            if id != drawing.shapes.len() + 1 {
+                return Err(super::invalid());
+            }
+            let geometry = node
+                .children()
+                .find(|&n| named(n, "Section") && n.attribute("N") == Some("Geometry"))
+                .ok_or_else(super::invalid)?;
+            let first = child(geometry, "Row").ok_or_else(super::invalid)?;
+            let kind = match first.attribute("T") {
+                Some("Ellipse") => ShapeKind::Ellipse,
+                Some("RelMoveTo") if number(first, "Y")? == 0.0 => ShapeKind::Rectangle,
+                Some("RelMoveTo") => ShapeKind::Diamond,
+                _ => return Err(super::invalid()),
+            };
+            let (w, h) = (
+                number(node, "Width")? * 72.0,
+                number(node, "Height")? * 72.0,
+            );
+            let (x, y) = (
+                number(node, "PinX")? * 72.0,
+                drawing.height - number(node, "PinY")? * 72.0,
+            );
+            let x0 = x - w / 2.0;
+            let y0 = y - h / 2.0;
+            let zero = |v: f64| if v.abs() < 1e-9 { 0.0 } else { v as f32 };
+            let frame = PdfRect {
+                x0: zero(x0),
+                y0: zero(y0),
+                x1: (x + w / 2.0) as f32,
+                y1: (y + h / 2.0) as f32,
+            };
+            let color = super::value(Some(node), "FillForegnd")
+                .and_then(|v| v.strip_prefix('#'))
+                .and_then(|v| u32::from_str_radix(v, 16).ok())
+                .ok_or_else(super::invalid)?;
+            let label: String = child(node, "Text")
+                .into_iter()
+                .flat_map(|n| n.children())
+                .filter(|n| n.is_text())
+                .filter_map(|n| n.text())
+                .collect();
+            drawing.add_shape(
+                kind,
+                frame,
+                label,
+                [(color >> 16) as u8, (color >> 8) as u8, color as u8],
+            )?;
+        }
+
+        let mut links = std::collections::HashMap::new();
+        for link in child(root, "Connects")
+            .into_iter()
+            .flat_map(|n| n.children())
+            .filter(|&n| named(n, "Connect"))
+        {
+            let parse = |key| {
+                link.attribute(key)
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .ok_or_else(super::invalid)
+            };
+            let from = match link.attribute("FromCell") {
+                Some("BeginX") => false,
+                Some("EndX") => true,
+                _ => return Err(super::invalid()),
+            };
+            let row = link
+                .attribute("ToCell")
+                .and_then(|s| s.strip_prefix("Connections.X"))
+                .and_then(|s| s.parse::<usize>().ok())
+                .and_then(|n| n.checked_sub(1))
+                .and_then(|n| Side::ALL.get(n).copied())
+                .ok_or_else(super::invalid)?;
+            if links
+                .insert(
+                    (parse("FromSheet")?, from),
+                    (ShapeId(parse("ToSheet")?), row),
+                )
+                .is_some()
+            {
+                return Err(super::invalid());
+            }
+        }
+        for (id, node) in nodes.into_iter().skip(drawing.shapes.len()) {
+            if id != drawing.shapes.len() + drawing.connectors.len() + 1 {
+                return Err(super::invalid());
+            }
+            let start = links.remove(&(id, false)).ok_or_else(super::invalid)?;
+            let end = links.remove(&(id, true)).ok_or_else(super::invalid)?;
+            drawing.connect_with_arrows(
+                start,
+                end,
+                (
+                    number(node, "BeginArrow")? == 4.0,
+                    number(node, "EndArrow")? == 4.0,
+                ),
+            )?;
+        }
+        if drawing.to_vsdx()?.as_slice() != bytes {
+            return Err(super::invalid());
+        }
+        Ok(drawing)
+    }
+
+    pub fn page_size(&self) -> (f64, f64) {
+        (self.width, self.height)
+    }
+
+    pub fn shapes(&self) -> impl Iterator<Item = (ShapeKind, PdfRect, [u8; 3], &str)> {
+        self.shapes
+            .iter()
+            .map(|shape| (shape.kind, shape.frame, shape.fill, shape.label.as_str()))
+    }
+
+    /// Return zero-based shape indices, attachment sides, and arrowheads.
+    pub fn connectors(&self) -> impl Iterator<Item = ((usize, Side), (usize, Side), (bool, bool))> {
+        self.connectors.iter().map(|c| {
+            (
+                (c.start.shape.0 - 1, c.start.side),
+                (c.end.shape.0 - 1, c.end.side),
+                c.arrows,
+            )
+        })
+    }
+}
