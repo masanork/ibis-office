@@ -695,6 +695,45 @@ mod tests {
     }
 
     #[test]
+    fn transforms_nested_wpg2_bitmap_and_vectors_in_paint_order() {
+        let data = include_bytes!("../../../test/fixtures/wordperfect/grouped-wpg2.wpd");
+        let opened = open(data).unwrap();
+        let flow = opened.presentation.flow.as_ref().unwrap();
+        let Block::Paragraph(paragraph) = &flow.body[0] else {
+            panic!("expected inline picture paragraph");
+        };
+        let media = paragraph
+            .runs
+            .iter()
+            .find_map(|run| match run.kind {
+                FlowRunKind::Picture { media, .. } => Some(media),
+                _ => None,
+            })
+            .unwrap();
+        let media = opened
+            .presentation
+            .media
+            .iter()
+            .find(|item| item.id == media)
+            .unwrap();
+        let picture = image::load_from_memory(&media.data).unwrap().to_rgba8();
+        assert_eq!(picture.dimensions(), (300, 225));
+        for (x, y, expected) in [
+            (35, 50, [24, 133, 205, 255]), // Outside the group: unchanged.
+            (110, 160, [0, 0, 0, 0]),
+            (172, 30, [236, 236, 236, 255]),
+            (179, 109, [131, 47, 182, 255]),
+            (206, 75, [40, 180, 60, 255]),
+            (206, 137, [220, 30, 50, 255]),
+            (242, 53, [244, 195, 30, 255]),
+            (242, 143, [35, 70, 210, 255]),
+            (222, 90, [232, 136, 32, 255]), // Vector in front of the transformed bitmap.
+        ] {
+            assert_eq!(picture.get_pixel(x, y).0, expected, "pixel at ({x}, {y})");
+        }
+    }
+
+    #[test]
     fn handles_framed_breaks_and_rejects_invalid_records() {
         let data =
             fixture(b"A\xd0\x04\x09\x00\x00\x00\x09\x00\xd0\xd0\x09\x09\x00\x00\x00\x09\x00\xd0B");

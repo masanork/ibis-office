@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
-use image::{RgbaImage, imageops};
+use image::RgbaImage;
 use tiny_skia::{
     ColorU8, FillRule, IntSize, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke,
     Transform,
@@ -10,7 +10,7 @@ use tiny_skia::{
 
 use super::{
     appearance::word,
-    wpg::{Bounds, Canvas, limit, split},
+    wpg::{Bounds, Canvas, split},
 };
 
 #[derive(Default)]
@@ -42,13 +42,14 @@ impl Drawing {
         canvas: Canvas,
         bitmap: RgbaImage,
         bounds: Bounds,
+        local: Transform,
     ) -> Option<()> {
-        if self.blend.is_none() && self.first_bitmap.is_none() {
+        if self.blend.is_none() && self.first_bitmap.is_none() && local.is_identity() {
             self.first_bitmap = Some((bitmap, bounds));
             return Some(());
         }
         self.surface(canvas)?;
-        Self::paint_bitmap(self.blend.as_mut()?, canvas, &bitmap, bounds)
+        Self::paint_bitmap(self.blend.as_mut()?, canvas, bitmap, bounds, local)
     }
 
     fn surface(&mut self, canvas: Canvas) -> Option<()> {
@@ -68,7 +69,7 @@ impl Drawing {
                 (h * factor).round().max(1.0) as u32,
             )?;
             if let Some((bitmap, bounds)) = self.first_bitmap.take() {
-                Self::paint_bitmap(&mut surface, canvas, &bitmap, bounds)?;
+                Self::paint_bitmap(&mut surface, canvas, bitmap, bounds, Transform::identity())?;
             }
             self.blend = Some(surface);
         }
@@ -85,35 +86,37 @@ impl Drawing {
     fn paint_bitmap(
         surface: &mut Pixmap,
         canvas: Canvas,
-        bitmap: &RgbaImage,
+        bitmap: RgbaImage,
         [left, bottom, right, top]: Bounds,
+        local: Transform,
     ) -> Option<()> {
-        let map = Self::transform(surface, canvas);
-        let x = (left as f32 * map.sx + map.tx).round() as i32;
-        let y = (top as f32 * map.sy + map.ty).round() as i32;
-        let width = ((right as f32 * map.sx + map.tx).round() as i64 - i64::from(x)).max(1) as u32;
-        let height =
-            ((bottom as f32 * map.sy + map.ty).round() as i64 - i64::from(y)).max(1) as u32;
-        limit(width as usize, height as usize)?;
-        let mut scaled =
-            imageops::resize(bitmap, width, height, imageops::FilterType::Nearest).into_raw();
-        for rgba in scaled.chunks_exact_mut(4) {
+        let size = IntSize::from_wh(bitmap.width(), bitmap.height())?;
+        let sx = (right - left) as f32 / bitmap.width() as f32;
+        let sy = (bottom - top) as f32 / bitmap.height() as f32;
+        let bitmap_space = Transform::from_row(sx, 0.0, 0.0, sy, left as f32, top as f32);
+        let map = Self::transform(surface, canvas)
+            .pre_concat(local)
+            .pre_concat(bitmap_space);
+        if !map.is_finite() {
+            return None;
+        }
+        let mut rgba = bitmap.into_raw();
+        for rgba in rgba.chunks_exact_mut(4) {
             let pixel = ColorU8::from_rgba(rgba[0], rgba[1], rgba[2], rgba[3]).premultiply();
             rgba.copy_from_slice(&[pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()]);
         }
-        let pixmap = Pixmap::from_vec(scaled, IntSize::from_wh(width, height)?)?;
-        surface.draw_pixmap(
-            x,
-            y,
-            pixmap.as_ref(),
-            &PixmapPaint::default(),
-            Transform::identity(),
-            None,
-        );
+        let pixmap = Pixmap::from_vec(rgba, size)?;
+        surface.draw_pixmap(0, 0, pixmap.as_ref(), &PixmapPaint::default(), map, None);
         Some(())
     }
 
-    pub(super) fn record(&mut self, canvas: Canvas, kind: u8, record: &[u8]) -> Option<()> {
+    pub(super) fn record(
+        &mut self,
+        canvas: Canvas,
+        kind: u8,
+        record: &[u8],
+        parent: Transform,
+    ) -> Option<()> {
         let color = |bytes: &[u8]| {
             let [r, g, b, transparency] = *bytes.first_chunk::<4>()?;
             Some([r, g, b, 255 - transparency])
@@ -127,11 +130,16 @@ impl Drawing {
             0x31 if record.first() == Some(&0) => self.style.fill = color(record.get(1..)?)?,
             0x29 if word(record, 0)? == 0 => {}
             0x15 | 0x18 | 0x19 => {
-                let (flags, mut shape) = canvas.object(record)?;
+                let (flags, local, mut shape) = canvas.object(record)?;
                 let path = path(canvas, kind, flags, &mut shape)?;
                 self.surface(canvas)?;
                 let surface = self.blend.as_mut()?;
-                let map = Self::transform(surface, canvas);
+                let map = Self::transform(surface, canvas)
+                    .pre_concat(parent)
+                    .pre_concat(local);
+                if !map.is_finite() {
+                    return None;
+                }
                 if flags & 0x2000 != 0 {
                     let mut paint = Paint::default();
                     let [r, g, b, a] = self.style.fill;

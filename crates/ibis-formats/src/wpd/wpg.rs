@@ -4,6 +4,7 @@
 
 use ibis_doc_model::EmuSize;
 use image::{ImageEncoder, Rgba, RgbaImage};
+use tiny_skia::Transform;
 
 use super::{appearance::word, wpg_drawing::Drawing};
 
@@ -47,20 +48,36 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
     let mut result = None;
     let mut drawing = Drawing::default();
     let mut ended = false;
+    let mut scopes: Vec<(usize, Transform)> = Vec::new();
     while !records.is_empty() {
         if version == 2 {
             byte(&mut records)?; // record class
         }
         let kind = byte(&mut records)?;
-        if version == 2 {
-            number(&mut records)?; // number of subordinate records
+        let children = if version == 2 {
+            number(&mut records)?
+        } else {
+            0
+        };
+        while scopes.last().is_some_and(|&(remaining, _)| remaining == 0) {
+            scopes.pop();
         }
+        let parent = if let Some((remaining, transform)) = scopes.last_mut() {
+            *remaining -= 1;
+            *transform
+        } else {
+            Transform::identity()
+        };
         let len = number(&mut records)?;
         let record = split(&mut records, len)?;
+        let mut child_transform = parent;
         match (version, kind) {
             (1, 0x0f) => {}
             (2, 1) => canvas = Some(Canvas::read(record)?),
             (1, 0x10) | (2, 2) => {
+                if !scopes.is_empty() || children != 0 {
+                    return None;
+                }
                 ended = true;
                 break;
             }
@@ -81,7 +98,16 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
                     ]));
                 }
             }
-            (2, 0x1b) => bitmap_box = Some(canvas?.bitmap_box(record)?),
+            (2, 0x1b) => {
+                let (bounds, transform) = canvas?.bitmap_box(record)?;
+                bitmap_box = Some((bounds, parent.pre_concat(transform)));
+            }
+            (2, 0x20) => {
+                if !record.is_empty() {
+                    let (_, transform, _) = canvas?.object(record)?;
+                    child_transform = parent.pre_concat(transform);
+                }
+            }
             (1, 0x0b | 0x14) => {
                 if result.is_some() {
                     return None;
@@ -89,10 +115,11 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
                 result = Some(bitmap_v1(record, kind == 0x14, &palette)?);
             }
             (2, 0x0e) => {
-                drawing.bitmap(canvas?, bitmap_v2(record, &palette)?, bitmap_box.take()?)?
+                let (bounds, transform) = bitmap_box.take()?;
+                drawing.bitmap(canvas?, bitmap_v2(record, &palette)?, bounds, transform)?
             }
             (2, 0x15 | 0x18 | 0x19 | 0x25 | 0x29 | 0x2b | 0x2c | 0x31) => {
-                drawing.record(canvas?, kind, record)?;
+                drawing.record(canvas?, kind, record, parent)?;
             }
             (1, 0x02..=0x0a | 0x11..=0x13 | 0x15..=0x1b)
             | (
@@ -102,7 +129,8 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
                 | 0x0f..=0x12
                 | 0x16..=0x17
                 | 0x1a
-                | 0x1c..=0x22
+                | 0x1c..=0x1f
+                | 0x21..=0x22
                 | 0x26
                 | 0x2a
                 | 0x2d..=0x30
@@ -111,6 +139,12 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
                 | 0x3a..=0x3f,
             ) => return None,
             _ => {}
+        }
+        if children != 0 {
+            if scopes.len() >= 64 || !child_transform.is_finite() {
+                return None;
+            }
+            scopes.push((children, child_transform));
         }
     }
     if !ended {
@@ -192,25 +226,54 @@ impl Canvas {
         })
     }
 
-    pub(super) fn object(self, record: &[u8]) -> Option<(u16, &[u8])> {
+    pub(super) fn object(self, record: &[u8]) -> Option<(u16, Transform, &[u8])> {
         let flags = word(record, 0)?;
-        // Identity transforms, with an optional lock or object identifier.
-        if flags & 0x1f != 0 {
-            return None;
+        if flags & 1 != 0 {
+            return None; // Perspective taper requires a projective transform.
         }
-        let mut at = 2 + usize::from(flags & 0x80 != 0) * 4;
+        let mut data = record.get(2..)?;
+        if flags & 0x80 != 0 {
+            split(&mut data, 4)?;
+        }
         if flags & 0x20 != 0 {
-            at += if word(record, at)? & 0x8000 == 0 {
-                2
-            } else {
-                4
-            };
+            let id = word(split(&mut data, 2)?, 0)?;
+            if id & 0x8000 != 0 {
+                split(&mut data, 2)?;
+            }
         }
-        Some((flags, record.get(at..)?))
+        if flags & 0x10 != 0 {
+            // The angle is also stored for editors. Its sine/cosine terms
+            // below already incorporate scaling and are authoritative.
+            split(&mut data, 4)?;
+        }
+        fn signed(data: &mut &[u8]) -> Option<f32> {
+            Some(i32::from_le_bytes(split(data, 4)?.try_into().ok()?) as f32)
+        }
+        let (sx, sy) = if flags & 0x18 != 0 {
+            (signed(&mut data)? / 65536.0, signed(&mut data)? / 65536.0)
+        } else {
+            (1.0, 1.0)
+        };
+        let (kx, ky) = if flags & 0x14 != 0 {
+            (signed(&mut data)? / 65536.0, signed(&mut data)? / 65536.0)
+        } else {
+            (0.0, 0.0)
+        };
+        let mut offset = || {
+            let fraction = f32::from(word(split(&mut data, 2)?, 0)?) / 65536.0;
+            Some(signed(&mut data)? + fraction)
+        };
+        let (x, y) = if flags & 2 != 0 {
+            (offset()?, offset()?)
+        } else {
+            (0.0, 0.0)
+        };
+        Some((flags, Transform::from_row(sx, ky, kx, sy, x, y), data))
     }
 
-    fn bitmap_box(self, record: &[u8]) -> Option<Bounds> {
-        bounds(self.object(record)?.1, self.coordinate_bytes)
+    fn bitmap_box(self, record: &[u8]) -> Option<(Bounds, Transform)> {
+        let (_, transform, data) = self.object(record)?;
+        Some((bounds(data, self.coordinate_bytes)?, transform))
     }
 
     pub(super) fn size(self) -> Option<EmuSize> {
@@ -471,6 +534,35 @@ mod tests {
         }
         wpg.truncate(wpg.len() - 3);
         assert!(decode(&wpg).is_none());
+    }
+
+    #[test]
+    fn decodes_non_right_angle_wpg2_rotation_with_nonuniform_scale() {
+        let mut object = 0x12u16.to_le_bytes().to_vec();
+        let cos = 30f32.to_radians().cos();
+        for value in [30.0, 1.5 * cos, 0.5 * cos, -0.25, 0.75] {
+            object.extend(((value * 65536.0).round() as i32).to_le_bytes());
+        }
+        for (integer, fraction) in [(28i32, 32768u16), (-10, 0)] {
+            object.extend(fraction.to_le_bytes());
+            object.extend(integer.to_le_bytes());
+        }
+        let canvas = Canvas {
+            bounds: [0, 0, 1200, 900],
+            dpi_x: 1200,
+            dpi_y: 1200,
+            coordinate_bytes: 2,
+        };
+        let (_, transform, rest) = canvas.object(&object).unwrap();
+        let mut x = tiny_skia::Point::from_xy(100.0, 0.0);
+        let mut y = tiny_skia::Point::from_xy(0.0, 100.0);
+        transform.map_point(&mut x);
+        transform.map_point(&mut y);
+        assert!((x.x - (28.5 + 150.0 * cos)).abs() < 0.002);
+        assert_eq!(x.y, 65.0);
+        assert_eq!(y.x, 3.5);
+        assert!((y.y - (-10.0 + 50.0 * cos)).abs() < 0.002);
+        assert!(rest.is_empty());
     }
 
     #[test]
