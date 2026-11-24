@@ -938,6 +938,7 @@ fn save_label_copy(editor: &mut SlideEditor, window: &mut Window, cx: &mut Conte
 
 #[cfg(not(target_family = "wasm"))]
 fn label_edit_bar(mode: &LabelEdit, cx: &mut Context<SlideEditor>) -> AnyElement {
+    use gpui_kit::prelude::FluentBuilder;
     use ibis_office_shell::chrome::{FindNav, action_button, find_nav_button, text_field};
     use ibis_office_shell::i18n::{format, text};
     let status = format("vsdx.label-number", &[("page", &(mode.page + 1)), ("n", &(mode.selected + 1)), ("total", &mode.labels.len())]);
@@ -945,6 +946,9 @@ fn label_edit_bar(mode: &LabelEdit, cx: &mut Context<SlideEditor>) -> AnyElement
         .id("vsdx-label-edit")
         .absolute().top(px(12.0)).right(px(24.0))
         .child(div().child(status))
+        .when(mode.labels[mode.selected].has_multiple_runs, |bar| {
+            bar.child(div().child(text("vsdx.edit-formatted-run")))
+        })
         .child(find_nav_button("vsdx-label-previous", FindNav::Previous)
             .on_click(cx.listener(|e, _, window, cx| select_label(e, false, window, cx))))
         .child(find_nav_button("vsdx-label-next", FindNav::Next)

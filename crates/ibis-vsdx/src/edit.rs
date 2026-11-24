@@ -17,6 +17,7 @@ use super::{
 pub struct EditableLabel {
     pub shape_id: u32,
     pub text: String,
+    pub has_multiple_runs: bool,
 }
 
 impl VsdxContainer {
@@ -28,15 +29,17 @@ impl VsdxContainer {
         let doc = xml(&source)?;
         Ok(shapes(doc.root_element())
             .filter_map(|shape| {
+                let runs = text_runs(shape)?;
                 Some(EditableLabel {
                     shape_id: shape.attribute("ID")?.parse().ok()?,
-                    text: label_text(plain_text_node(shape)?.text().unwrap_or_default()).to_owned(),
+                    text: joined_label(&runs),
+                    has_multiple_runs: runs.len() > 1,
                 })
             })
             .collect())
     }
 
-    /// Replace a local, single-run label and return a new VSDX package.
+    /// Replace a local label and return a new VSDX package.
     /// The original archive and the other package parts are preserved.
     pub fn replace_label(&self, page: usize, shape_id: u32, replacement: &str) -> Result<Vec<u8>> {
         self.replace_labels(page, &[(shape_id, replacement)])
@@ -110,26 +113,29 @@ fn patch_page(mut source: String, replacements: HashMap<u32, &str>) -> Result<Op
         }
         for (id, replacement) in replacements {
             let target = *targets.get(&id).ok_or_else(invalid)?;
-            let label = plain_text_node(target).ok_or_else(|| {
-                Error::new("This Visio label uses unsupported formatting or fields")
-            })?;
-            if label.text().map(label_text) != Some(replacement) {
-                let mut range = label.range();
+            let runs = text_runs(target)
+                .ok_or_else(|| Error::new("This Visio label uses unsupported markup or fields"))?;
+            let original = joined_label(&runs);
+            if original != replacement {
+                let (run, updated) = replace_run(&runs, &original, replacement)?;
+                let mut range = run.range();
                 let raw = &source[range.clone()];
-                // Keep the final paragraph terminator emitted by Visio.
-                if raw.ends_with("\r\n") {
-                    range.end -= 2;
-                } else if raw.ends_with(['\n', '\r']) {
-                    range.end -= 1;
+                if run == runs[runs.len() - 1] {
+                    // Keep the final paragraph terminator emitted by Visio.
+                    if raw.ends_with("\r\n") {
+                        range.end -= 2;
+                    } else if raw.ends_with(['\n', '\r']) {
+                        range.end -= 1;
+                    }
                 }
-                let suffix = if replacement.is_empty() && range.end == label.range().end {
+                let suffix = if updated.is_empty() && range.end == run.range().end {
                     "\n"
                 } else {
                     ""
                 };
                 patches.push((
                     range,
-                    ibis_formats::docx_convert::xml_escape(replacement) + suffix,
+                    ibis_formats::docx_convert::xml_escape(&updated) + suffix,
                 ));
             }
         }
@@ -149,29 +155,93 @@ fn patch_page(mut source: String, replacements: HashMap<u32, &str>) -> Result<Op
     Ok(Some(source.into_bytes()))
 }
 
-fn label_text(text: &str) -> &str {
-    text.strip_suffix('\n').unwrap_or(text)
+fn joined_label(runs: &[Node<'_, '_>]) -> String {
+    let mut label = String::new();
+    for run in runs {
+        label.push_str(run.text().unwrap_or_default());
+    }
+    if label.ends_with('\n') {
+        label.pop();
+    }
+    label
+}
+
+fn replace_run<'a, 'i>(
+    runs: &[Node<'a, 'i>],
+    original: &str,
+    replacement: &str,
+) -> Result<(Node<'a, 'i>, String)> {
+    if let [run] = runs {
+        return Ok((*run, replacement.to_owned()));
+    }
+    // Match whole Unicode characters so each offset is also a UTF-8 boundary.
+    let start: usize = original
+        .chars()
+        .zip(replacement.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum();
+    let suffix: usize = original[start..]
+        .chars()
+        .rev()
+        .zip(replacement[start..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum();
+    let end = original.len() - suffix;
+    let mut offset = 0;
+    for (index, run) in runs.iter().enumerate() {
+        let last = index + 1 == runs.len();
+        let text = run.text().unwrap_or_default();
+        let text = if last {
+            text.strip_suffix('\n').unwrap_or(text)
+        } else {
+            text
+        };
+        let run_end = offset + text.len();
+        // Inserting exactly between two runs has no unambiguous format.
+        if start >= offset
+            && end <= run_end
+            && (start != end || (start != offset || index == 0) && (start != run_end || last))
+        {
+            let mut updated = text.to_owned();
+            updated.replace_range(
+                start - offset..end - offset,
+                &replacement[start..replacement.len() - suffix],
+            );
+            if !updated.is_empty() {
+                return Ok((*run, updated));
+            }
+        }
+        offset = run_end;
+    }
+    Err(Error::new(
+        "Edit one formatted run at a time and keep at least one character in that run",
+    ))
 }
 
 fn shapes<'a, 'i>(root: Node<'a, 'i>) -> impl Iterator<Item = Node<'a, 'i>> {
     root.descendants().filter(|&n| named(n, "Shape"))
 }
 
-fn plain_text_node<'a, 'i>(shape: Node<'a, 'i>) -> Option<Node<'a, 'i>> {
+fn text_runs<'a, 'i>(shape: Node<'a, 'i>) -> Option<Vec<Node<'a, 'i>>> {
     let label = child(shape, "Text")?;
-    let mut text_nodes = label.children().filter(Node::is_text);
-    let text = text_nodes.next().filter(|_| text_nodes.next().is_none())?;
-    let mut markers = [false; 3];
-    for node in label.children().filter(Node::is_element) {
-        let index = ["cp", "pp", "tp"].iter().position(|tag| named(node, tag))?;
-        if markers[index] || node.range().start > text.range().start || node.first_child().is_some()
+    let mut runs = Vec::new();
+    for node in label.children() {
+        if node.is_text() {
+            let raw = label.document().input_text().get(node.range())?;
+            if raw.contains('<') {
+                return None;
+            }
+            runs.push(node);
+        } else if node.is_element()
+            && (!(named(node, "cp") || named(node, "pp") || named(node, "tp"))
+                || node.first_child().is_some())
         {
             return None;
         }
-        markers[index] = true;
     }
-    let raw = label.document().input_text().get(text.range())?;
-    (!raw.contains('<')).then_some(text)
+    (!runs.is_empty()).then_some(runs)
 }
 
 fn package_error(error: ibis_ooxml::Error) -> Error {

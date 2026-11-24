@@ -1839,6 +1839,7 @@ ai.send-acp	ACP agent
 ai.acp-cancelled	ACP run cancelled.
 vsdx.edit-label	Edit Diagram Labels…
 vsdx.no-editable-labels	This page has no editable plain-text labels.
+vsdx.edit-formatted-run	Edit within one formatting run
 vsdx.label-number	Page {page} · Label {n} / {total}
 vsdx.save-label-copy	Save VSDX Copy
 vsdx.keep-original	Choose a different path to preserve the original diagram.

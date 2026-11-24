@@ -117,7 +117,7 @@ fn patches_multiple_labels_by_shape_id_in_one_save() {
 }
 
 #[test]
-fn keeps_mixed_format_labels_out_of_the_edit_list() {
+fn updates_one_formatted_run_and_preserves_adjacent_runs() {
     let source = Archive::new(SAMPLE.into()).unwrap();
     let mut zip = Writer::new();
     for entry in source.entries() {
@@ -143,14 +143,33 @@ fn keeps_mixed_format_labels_out_of_the_edit_list() {
         .unwrap()
         .shape_id;
     let mixed = VsdxContainer::from_bytes(zip.finish().unwrap().into()).unwrap();
-    assert!(
-        !mixed
+    assert_eq!(
+        mixed
             .editable_labels(1)
             .unwrap()
             .iter()
-            .any(|label| label.shape_id == shape)
+            .find(|label| label.shape_id == shape)
+            .unwrap()
+            .text,
+        "2. Auth & Token Flow"
     );
+    let updated = mixed
+        .replace_label(1, shape, "2. 認証 & Token Flow")
+        .unwrap();
+    let zip = Archive::new(updated.into()).unwrap();
+    let page = zip
+        .entries()
+        .iter()
+        .find(|entry| entry.name == "visio/pages/page2.xml")
+        .unwrap();
+    let xml = String::from_utf8(zip.read(page).unwrap()).unwrap();
+    assert!(xml.contains(r#"2. 認証 <cp IX="1"/>&amp; Token Flow"#));
     assert!(mixed.replace_label(1, shape, "replacement").is_err());
+    assert!(
+        mixed
+            .replace_label(1, shape, "2. Auth more & Token Flow")
+            .is_err()
+    );
 }
 
 #[test]
