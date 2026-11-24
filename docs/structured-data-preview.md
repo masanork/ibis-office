@@ -45,6 +45,9 @@ Windowsでは `%APPDATA%/ibisOffice/xml-views`、Linuxでは
 合成XMLだけを別のフォルダーに移して開くと、どちらも同じ名前空間と版
 （`VR="1.1"`）を使い、ルート要素に応じた表示になります。
 
+[FDSN StationXML 1.2の試用ファイル](../test/fixtures/structured-preview/stationxml)でも、
+共有定義をコピーして観測所の名前・座標・標高の表示を確認できます。
+
 ## 連携CSVを定義に沿って確認する
 
 自治体標準仕様の連携CSVと同じフォルダーに、`mrlgss` の
