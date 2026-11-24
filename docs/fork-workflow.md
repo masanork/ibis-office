@@ -113,7 +113,7 @@ gh attestation verify desktop-linux-x64-ci.AppImage \
   --bundle desktop-linux-x64-ci.AppImage.intoto.jsonl \
   --repo masanork/ibis-office \
   --signer-workflow masanork/ibis-office/.github/workflows/linux-appimage-builder.yml \
-  --signer-digest 2062233a3157023613938c8edc00148cbac3a51b \
+  --signer-digest 4ece3e9e7bcb6c57466f9dcd8a3b52599441fe61 \
   --source-digest "$EXPECTED_SOURCE_SHA" --source-ref "$EXPECTED_REF" \
   --deny-self-hosted-runners
 ```

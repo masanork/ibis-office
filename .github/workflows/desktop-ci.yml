@@ -24,7 +24,7 @@ env:
   EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   IBIS_BUILD_BRANCH: ${{ github.head_ref || github.ref_name }}
   CARGO_TERM_COLOR: never
-  APPIMAGE_BUILDER_SHA: 2062233a3157023613938c8edc00148cbac3a51b
+  APPIMAGE_BUILDER_SHA: 4ece3e9e7bcb6c57466f9dcd8a3b52599441fe61
 
 jobs:
   validate-source:
@@ -167,7 +167,7 @@ jobs:
     needs: validate-source
     permissions:
       contents: read
-    uses: masanork/ibis-office/.github/workflows/linux-appimage-builder.yml@2062233a3157023613938c8edc00148cbac3a51b
+    uses: masanork/ibis-office/.github/workflows/linux-appimage-compile.yml@4ece3e9e7bcb6c57466f9dcd8a3b52599441fe61
 
   linux:
     name: Linux AppImage trusted build
@@ -177,7 +177,7 @@ jobs:
       attestations: write
       contents: read
       id-token: write
-    uses: masanork/ibis-office/.github/workflows/linux-appimage-builder.yml@2062233a3157023613938c8edc00148cbac3a51b
+    uses: masanork/ibis-office/.github/workflows/linux-appimage-builder.yml@4ece3e9e7bcb6c57466f9dcd8a3b52599441fe61
 
   verify-linux-provenance:
     name: Verify downloaded Linux AppImage provenance
