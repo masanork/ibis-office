@@ -721,6 +721,8 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         ("xlsx::report_precision", crate::query_report_panel::report_precision_scenario),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
+        ("xlsx::report_rate", crate::query_report_panel::report_rate_scenario),
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         ("xlsx::query_report_arrow_snapshot", crate::query_report_panel::arrow_report_snapshot_scenario),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         ("xlsx::query_report_json_avro_snapshot", crate::query_report_panel::json_avro_report_snapshot_scenario),

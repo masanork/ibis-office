@@ -1741,3 +1741,85 @@ fn assert_report_precision(summary: &Value) {
         assert!((relative - residual / total).abs() < 1e-17);
     }
 }
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn report_rate_scenario() {
+    use crate::shell::scenario::{Scenario, button_probe};
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("traffic.csv");
+    let new = dir.path().join("next.csv");
+    let blank = dir.path().join("blank.xlsx");
+    let workbook = dir.path().join("traffic.xlsx");
+    std::fs::write(&old, "sku,orders,visits\nA,1,4\nB,9,10\nM,,3\nZ,7,0\nX,2,-1\n").unwrap();
+    std::fs::write(&new, "sku,orders,visits\nA,2,4\nB,10,20\nM,3,\nZ,9,0\nX,2,-1\n").unwrap();
+    std::fs::write(&blank, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut service = ibis_doc_service::Service::new(&[dir.path().to_owned()], false, ibis_doc_service::Limits::default());
+    let id = service.call("app_open_document", &json!({"path":blank})).unwrap()["document_id"].clone();
+    let sheet = service.call("xlsx_list_sheets", &json!({"document_id":id})).unwrap()["sheets"][0]["name"].clone();
+    let sql = "SELECT sku, CAST(NULLIF(orders,'') AS INTEGER) AS orders, CAST(NULLIF(visits,'') AS INTEGER) AS visits FROM src";
+    for (anchor, query) in [("C4", format!("{sql} ORDER BY sku")), ("I4", format!("{sql} WHERE sku IN ('M','Z') ORDER BY sku"))] {
+        let result = service.call("sqlite_query_to_table", &json!({
+            "document_id":id,"destination_sheet":sheet,"anchor":anchor,"sql":query,
+            "datasets":[{"source":old,"alias":"src"}],
+        })).unwrap();
+        service.call("xlsx_set_query_report_comparison", &json!({
+            "document_id":id,"table":result["table"],
+            "comparison":{"kind":"rate","key_column":"sku","metric":"conversion","numerator_column":"orders","denominator_column":"visits"},
+        })).unwrap();
+    }
+    service.call("app_save_document", &json!({"document_id":id,"path":workbook})).unwrap();
+    let mut scene = Scenario::open(workbook.to_str().unwrap());
+    let _probe = button_probe::Probe::new();
+    scene.update(|editor, _, cx| {
+        editor.open_queries_panel(cx);
+        editor.open_query_report_panel(cx);
+        editor.query_reports_mut().unwrap().files.insert("traffic.csv".into(), new.clone());
+        cx.notify();
+    });
+    button_probe::click(&mut scene, "query-reports-preview");
+    let args = |table, key| json!({"table":table,"metric":"conversion","contributor_key":key});
+    let mut summary = Value::Null;
+    for _ in 0..250 {
+        summary = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult1", "A")));
+        if summary["state"] == "review" { break; }
+        assert_eq!(summary["state"], "previewing");
+        std::thread::sleep(Duration::from_millis(20));
+        scene.wait(20);
+    }
+    let zero = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult1", "Z")));
+    let missing = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult1", "M")));
+    let none = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult2", "Z")));
+    assert_rate_evidence(&summary, &zero, &missing, &none);
+}
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+fn assert_rate_evidence(summary: &Value, zero: &Value, missing: &Value, none: &Value) {
+    assert_eq!(summary["state"], "review");
+    for (side, numerator, denominator) in [("before", 10., 14.), ("after", 12., 24.)] {
+        assert_eq!(summary[side]["numerator"], numerator);
+        assert_eq!(summary[side]["denominator"], denominator);
+        assert!((summary[side]["rate"].as_f64().unwrap() - numerator / denominator).abs() < 1e-12);
+        assert_eq!(summary[side]["counts"], json!({"included":2,"missing":1,"zero_denominator":1,"invalid":1}));
+    }
+    let pp = summary["percentage_point_delta"].as_f64().unwrap();
+    assert!((pp - (0.5 - 10. / 14.) * 100.).abs() < 1e-12);
+    let a = &summary["contributor"];
+    assert_eq!(a["before"]["rate"], 0.25);
+    assert_eq!(a["after"]["rate"], 0.5);
+    assert_eq!(a["percentage_point_delta"], 25.);
+    assert_eq!(a["after"]["key_cell"], "C5");
+    assert_eq!(a["after"]["numerator"], json!({"cell":"D5","value":2.}));
+    assert_eq!(a["after"]["denominator"], json!({"cell":"E5","value":4.}));
+    assert_eq!(zero["contributor"]["after"]["state"], "zero_denominator");
+    assert_eq!(zero["contributor"]["after"]["denominator"]["value"], 0.);
+    assert!(zero["contributor"]["after"]["rate"].is_null());
+    assert_eq!(missing["contributor"]["before"]["state"], "missing");
+    assert!(missing["contributor"]["before"]["numerator"]["value"].is_null());
+    assert_eq!(missing["contributor"]["after"]["state"], "missing");
+    assert!(missing["contributor"]["after"]["denominator"]["value"].is_null());
+    assert_eq!(none["after"]["state"], "no_eligible_rows");
+    assert!(none["after"]["rate"].is_null());
+    assert!(none["percentage_point_delta"].is_null());
+}

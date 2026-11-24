@@ -2063,7 +2063,7 @@ fn set_query_report_checks(service: &mut Service, args: &Value) -> Result<Value,
 
 pub(crate) const SET_QUERY_REPORT_COMPARISON: Tool = Tool {
     name: "xlsx_set_query_report_comparison",
-    description: "Save or remove the comparison columns and unit on an existing query report. The key must be unique text and the metric must be additive.",
+    description: "Save or remove comparison metadata on a saved report. Configure an additive metric and unit, or a named rate with numerator and denominator columns. Keys must be unique text.",
     access: Access::Edit,
     returns_content: false,
     schema: || object(&[
@@ -2073,7 +2073,13 @@ pub(crate) const SET_QUERY_REPORT_COMPARISON: Tool = Tool {
             ("key_column", string("Column containing unique string keys.")),
             ("metric_column", string("Column containing an additive numeric metric.")),
             ("unit", string("Unit of the metric, such as USD or items.")),
-        ], &["key_column","metric_column","unit"])]})),
+        ], &["key_column","metric_column","unit"]),object(&[
+            ("kind", json!({"const":"rate"})),
+            ("key_column", string("Column containing unique string keys.")),
+            ("metric", string("Name used to query the rate.")),
+            ("numerator_column", string("Additive numerator column.")),
+            ("denominator_column", string("Additive denominator column.")),
+        ], &["kind","key_column","metric","numerator_column","denominator_column"])]})),
     ], &["document_id", "table", "comparison"]),
     run: set_query_report_comparison,
 };
@@ -2095,14 +2101,28 @@ fn set_query_report_comparison(service: &mut Service, args: &Value) -> Result<Va
     if comparison.is_null() {
         properties.remove("comparison");
     } else {
-        crate::edit::only_known(comparison, &["key_column", "metric_column", "unit"])?;
         let key = comparison.str_arg("key_column")?;
-        let metric = comparison.str_arg("metric_column")?;
-        let unit = comparison.str_arg("unit")?;
-        if key == metric || [key, metric].into_iter().any(|column| {
-            column.trim().is_empty() || table.columns.iter().filter(|name| name.as_str() == column).count() != 1
-        }) || unit.trim().is_empty() || unit.len() > 128 {
-            return Err(ToolError::invalid("Supply two distinct, uniquely named report columns and a nonempty unit of at most 128 bytes."));
+        let valid_columns = |columns: &[&str]| {
+            columns.iter().enumerate().all(|(index, column)| {
+                !column.trim().is_empty() && !columns[..index].contains(column)
+                    && table.columns.iter().filter(|name| name.as_str() == *column).count() == 1
+            })
+        };
+        if comparison["kind"] == "rate" {
+            crate::edit::only_known(comparison, &["kind", "key_column", "metric", "numerator_column", "denominator_column"])?;
+            let metric = comparison.str_arg("metric")?;
+            let numerator = comparison.str_arg("numerator_column")?;
+            let denominator = comparison.str_arg("denominator_column")?;
+            if metric.trim().is_empty() || metric.len() > 128 || !valid_columns(&[key, numerator, denominator]) {
+                return Err(ToolError::invalid("Supply three distinct, uniquely named report columns and a nonempty rate name of at most 128 bytes."));
+            }
+        } else {
+            crate::edit::only_known(comparison, &["key_column", "metric_column", "unit"])?;
+            let metric = comparison.str_arg("metric_column")?;
+            let unit = comparison.str_arg("unit")?;
+            if !valid_columns(&[key, metric]) || unit.trim().is_empty() || unit.len() > 128 {
+                return Err(ToolError::invalid("Supply two distinct, uniquely named report columns and a nonempty unit of at most 128 bytes."));
+            }
         }
         properties.insert("comparison".into(), comparison.clone());
     }
