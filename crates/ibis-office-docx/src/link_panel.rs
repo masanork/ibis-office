@@ -102,6 +102,15 @@ impl SlideEditor {
         } else {
             Some(Link::Url(address.to_string()))
         };
+        let link = link.map(|link| {
+            let title = self.doc_link_range(start)
+                .filter(|(first, last, _)| first.para == end.para && first.offset <= start.offset && last.offset >= end.offset)
+                .and_then(|(_, _, current)| current.title().map(str::to_owned));
+            match title {
+                Some(title) => link.with_title(title),
+                None => link,
+            }
+        });
         let keep = self.text_selection();
         let Some(doc) = self.flow() else { return false };
         let inserting=insertion.is_some();
@@ -192,11 +201,7 @@ impl SlideEditor {
         if target.0==target.1 {
             if let Some((a,b,_))=self.doc_link_range(target.0).or_else(||target.0.offset.checked_sub(1).and_then(|offset|self.doc_link_range(ibis_doc_model::FlowPos::new(target.0.para,offset)))) {target=(a,b);}
         }
-        let current = match self.link_at_selection() {
-            Some(Link::Url(u)) => u,
-            Some(Link::Anchor(a)) => format!("#{a}"),
-            None => String::new(),
-        };
+        let current = self.link_at_selection().map_or_else(String::new, |link| link.address());
         if self.doc_state().is_some_and(|s| s.link.is_none()) {
             let address = cx.new(|cx| InputState::new(window, cx).placeholder(crate::shell::i18n::text("docx.link-panel.https-start-bookmark")));
             let subscription = cx.subscribe_in(&address, window, |this, input, event: &InputEvent, _window, cx| {

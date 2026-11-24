@@ -5771,15 +5771,19 @@ impl Writer<'_> {
                     h
                 };
                 self.doc.insert_before(first, h);
-                if original.is_none() { match &link {
-                    Link::Url(url) => {
+                if original.is_none() {
+                    if let Some(url) = link.external_url() {
                         let Some(rid) = self.link_rels.get(url) else { return Err(unsupported("リンク")) };
                         let r = self.doc.lookup_prefix(parent, "http://schemas.openxmlformats.org/officeDocument/2006/relationships").unwrap_or_else(|| "r".into());
                         self.doc.set_attr(h, &format!("{r}:id"), rid);
+                    } else if let Some(anchor) = link.anchor() {
+                        self.doc.set_attr(h, "w:anchor", anchor);
                     }
-                    Link::Anchor(a) => self.doc.set_attr(h, "w:anchor", a),
+                    if let Some(title) = link.title() {
+                        self.doc.set_attr(h, "w:tooltip", title);
+                    }
+                    self.doc.set_attr(h, "w:history", "1");
                 }
-                self.doc.set_attr(h, "w:history", "1"); }
                 for n in nodes {
                     if self.doc.parent(n) == Some(parent) {
                         let end = self.doc.children(h).len();
@@ -8633,8 +8637,8 @@ fn links_in(blocks: &[Block], out: &mut HashSet<String>) {
         match b {
             Block::Paragraph(p) => {
                 for r in &p.runs {
-                    if let Some(Link::Url(u)) = &r.link {
-                        out.insert(u.clone());
+                    if let Some(url) = r.link.as_ref().and_then(Link::external_url) {
+                        out.insert(url.to_owned());
                     }
                 }
             }

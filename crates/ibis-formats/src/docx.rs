@@ -1186,6 +1186,10 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
                     // Where it goes: a relationship's target, or a bookmark.
                     let url = rattr(node, "id").and_then(|id| rels.get(id)).map(|r| Link::Url(r.target.clone()));
                     let inner = url.or_else(|| wattr(node, "anchor").map(|a| Link::Anchor(a.to_string())));
+                    let inner = inner.map(|link| match wattr(node, "tooltip") {
+                        Some(title) => link.with_title(title.to_owned()),
+                        None => link,
+                    });
                     let first = out.len();
                     self.inline(node, rels, base, field, read, out, &inner);
                     // A `w:hyperlink` that holds a picture or a shape and no text has no link in Word's PDF (Word's ExportAsFixedFormat, #227): the

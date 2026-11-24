@@ -1936,6 +1936,49 @@ pub enum Link {
     Url(String),
     /// A bookmark of the document (`w:anchor`).
     Anchor(String),
+    /// A link with a Markdown title or Word ScreenTip.
+    Titled { target: Box<Link>, title: String },
+}
+
+impl Link {
+    pub fn with_title(self, title: String) -> Self {
+        let target = match self {
+            Self::Titled { target, .. } => target,
+            target => Box::new(target),
+        };
+        Self::Titled { target, title }
+    }
+
+    pub fn external_url(&self) -> Option<&str> {
+        match self {
+            Self::Url(url) => Some(url),
+            Self::Anchor(_) => None,
+            Self::Titled { target, .. } => target.external_url(),
+        }
+    }
+
+    pub fn anchor(&self) -> Option<&str> {
+        match self {
+            Self::Anchor(anchor) => Some(anchor),
+            Self::Url(_) => None,
+            Self::Titled { target, .. } => target.anchor(),
+        }
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        match self {
+            Self::Titled { title, .. } => Some(title),
+            Self::Url(_) | Self::Anchor(_) => None,
+        }
+    }
+
+    pub fn address(&self) -> String {
+        if let Some(anchor) = self.anchor() {
+            format!("#{anchor}")
+        } else {
+            self.external_url().unwrap_or_default().to_owned()
+        }
+    }
 }
 
 impl FlowRun {

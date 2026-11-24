@@ -9765,12 +9765,13 @@ pub fn page_links(doc: &Arc<FlowDocument>, res: &Resources) -> Vec<Vec<PageLinkR
     };
     let target_of = |to: &LinkTo| -> Option<PageLinkTarget> {
         match to {
-            LinkTo::Link(Link::Url(u)) if !u.is_empty() => Some(PageLinkTarget::Url(u.clone())),
-            LinkTo::Link(Link::Anchor(name)) => {
-                let (para, offset) = *anchors.get(name.as_str())?;
+            LinkTo::Link(link) => {
+                if let Some(url) = link.external_url().filter(|url| !url.is_empty()) {
+                    return Some(PageLinkTarget::Url(url.to_owned()));
+                }
+                let (para, offset) = *anchors.get(link.anchor()?)?;
                 place_of_para(para, offset)
             }
-            LinkTo::Link(_) => None,
             LinkTo::Note { endnote, id } => {
                 let notes = if *endnote { &doc.endnotes } else { &doc.footnotes };
                 let first = notes.iter().find(|n| n.id == *id)?.blocks.iter().find_map(|b| match b {

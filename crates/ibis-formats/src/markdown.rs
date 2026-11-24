@@ -385,6 +385,7 @@ pub fn parse_markdown_fragment_blocks(
         styles: (*doc.styles).clone(),
         bullet_num_id: None,
         ordered_num_id: None,
+        markdown_links: HashMap::new(),
         footnote_ids: HashMap::new(),
         footnote_order: Vec::new(),
         next_footnote_id: 1,
@@ -395,7 +396,8 @@ pub fn parse_markdown_fragment_blocks(
         base_dir: None,
     };
     let mut footnote_defs: HashMap<String, String> = HashMap::new();
-    let mut blocks = parse_blocks(text, &mut ctx, &mut footnote_defs)?;
+    let text = collect_markdown_links(text, &mut ctx.markdown_links);
+    let mut blocks = parse_blocks(&text, &mut ctx, &mut footnote_defs)?;
     doc.styles = Arc::new(ctx.styles);
     resolve_myst_references(&mut blocks, &HashMap::new());
     resolve_all_blocks(&mut blocks, &doc.styles);
@@ -1355,6 +1357,7 @@ struct ParseContext<'a> {
     styles: FlowStyles,
     bullet_num_id: Option<u32>,
     ordered_num_id: Option<u32>,
+    markdown_links: HashMap<String, Vec<MarkdownLink>>,
     footnote_ids: HashMap<String, u32>,
     footnote_order: Vec<(String, u32)>,
     next_footnote_id: u32,
@@ -1558,6 +1561,7 @@ fn parse_markdown_into(
         styles: (*doc.styles).clone(),
         bullet_num_id: None,
         ordered_num_id: None,
+        markdown_links: HashMap::new(),
         footnote_ids: HashMap::new(),
         footnote_order: Vec::new(),
         next_footnote_id: 1,
@@ -1577,7 +1581,8 @@ fn parse_markdown_into(
         body_text = rest;
     }
     let mut footnote_defs: HashMap<String, String> = HashMap::new();
-    let mut blocks = parse_blocks(body_text, &mut ctx, &mut footnote_defs)?;
+    let body_text = collect_markdown_links(body_text, &mut ctx.markdown_links);
+    let mut blocks = parse_blocks(&body_text, &mut ctx, &mut footnote_defs)?;
     if let Some(Block::Paragraph(paragraph)) = blocks.last()
         && paragraph.section_break == ibis_doc_model::SectionBreak::None
         && let Some(section) = &paragraph.section
@@ -5028,6 +5033,127 @@ fn link_format(base: &RunFormat) -> RunFormat {
     format
 }
 
+struct MarkdownLink {
+    source: String,
+    link: Link,
+}
+
+fn collect_markdown_links<'a>(
+    source: &'a str,
+    links: &mut HashMap<String, Vec<MarkdownLink>>,
+) -> std::borrow::Cow<'a, str> {
+    use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
+
+    if !source.contains('[') {
+        return source.into();
+    }
+    let parser = Parser::new_ext(source, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES | Options::ENABLE_MATH);
+    let mut parser = parser.into_offset_iter();
+    let mut references = 0;
+    let mut unsupported_reference = false;
+    let mut nested_reference_line = None;
+    for (event, span) in parser.by_ref() {
+        let (link_type, dest_url, title) = match event {
+            Event::Start(Tag::Link { link_type, dest_url, title, .. }) => (link_type, dest_url, title),
+            Event::Start(Tag::Image { link_type: LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut, .. }) => {
+                unsupported_reference = true;
+                continue;
+            }
+            _ => continue,
+        };
+        let reference = matches!(link_type, LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut);
+        let start = span.start;
+        let mut end = span.end;
+        if link_type == LinkType::Collapsed && !source[start..end].ends_with("[]") && source[end..].starts_with("[]") {
+            end += 2;
+        }
+        let raw = &source[start..end];
+        let label = raw.strip_prefix('[').and_then(|after| {
+            find_matching_bracket(after).map(|close| &raw[..close + 2])
+        });
+        let Some(label) = label.filter(|_| !raw.contains(['\r', '\n']) && !raw.starts_with("[[")) else {
+            unsupported_reference |= reference;
+            continue;
+        };
+        if reference {
+            let line_start = source[..start].rfind('\n').map_or(0, |pos| pos + 1);
+            let prefix = &source[line_start..start];
+            let mut depth = 0usize;
+            let mut escaped = false;
+            for ch in prefix.chars() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match ch {
+                    '\\' => escaped = true,
+                    '[' => depth += 1,
+                    ']' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+            if depth > 0 {
+                nested_reference_line = Some(line_start);
+            }
+            if nested_reference_line == Some(line_start) {
+                unsupported_reference = true;
+                continue;
+            }
+        }
+        if reference && (
+            label[1..label.len() - 1].contains('[')
+                || source[..start].ends_with(['[', '!', '*', '_'])
+                || (title.is_empty() && dest_url.contains(|ch: char| ch.is_whitespace() || matches!(ch, '(' | ')' | '<' | '>' | '\\')))
+        ) {
+            unsupported_reference = true;
+            continue;
+        }
+        if !reference && !(link_type == LinkType::Inline && !title.is_empty()) {
+            continue;
+        }
+
+        if reference {
+            references += 1;
+        }
+        let link = if let Some(anchor) = dest_url.strip_prefix('#') {
+            Link::Anchor(anchor.to_owned())
+        } else {
+            Link::Url(dest_url.into_string())
+        };
+        let link = if title.is_empty() { link } else { link.with_title(title.into_string()) };
+        let candidates = links.entry(label.to_owned()).or_default();
+        if !candidates.iter().any(|entry| entry.source == raw) {
+            candidates.push(MarkdownLink { source: raw.to_owned(), link });
+        }
+    }
+    for candidates in links.values_mut() {
+        candidates.sort_by_key(|entry| std::cmp::Reverse(entry.source.len()));
+    }
+
+    // Keep definitions if an unsupported reference may still use them.
+    if references == 0 || unsupported_reference {
+        return source.into();
+    }
+    let mut definitions: Vec<_> = parser.reference_definitions().iter().filter_map(|(_, definition)| {
+        let span = &definition.span;
+        let start = source[..span.start].rfind('\n').map_or(0, |pos| pos + 1);
+        let end = source[span.end..].find('\n').map_or(source.len(), |pos| span.end + pos);
+        (source[start..span.start].trim().is_empty() && source[span.end..end].trim().is_empty())
+            .then_some(start..end)
+    }).collect();
+    definitions.sort_unstable_by_key(|span| span.start);
+    let mut output = String::with_capacity(source.len());
+    let mut end = 0;
+    for span in definitions {
+        if span.start >= end {
+            output.push_str(&source[end..span.start]);
+            end = span.end;
+        }
+    }
+    output.push_str(&source[end..]);
+    output.into()
+}
+
 fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -> Vec<FlowRun> {
     let mut out = Vec::new();
     let mut plain = String::new();
@@ -5561,6 +5687,23 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                     }
                 }
 
+                let label = &rest[..close_bracket + 2];
+                if !after_bracket.starts_with(':')
+                    && let Some(entry) = ctx.markdown_links.get(label)
+                    .and_then(|candidates| candidates.iter().find(|entry| rest.starts_with(&entry.source)))
+                {
+                    let link = entry.link.clone();
+                    let len = entry.source.len();
+                    flush_plain(&mut plain, &mut out, base_fmt);
+                    let mut runs = parse_inlines(inner_text, ctx, &link_format(base_fmt));
+                    for run in &mut runs {
+                        run.link = Some(link.clone());
+                    }
+                    out.extend(runs);
+                    i += len;
+                    continue;
+                }
+
                 // `[text](url)`
                 if let Some(paren_after) = after_bracket.strip_prefix('(') {
                     if let Some(close_paren) = paren_after.find(')') {
@@ -5800,8 +5943,14 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
 fn find_matching_bracket(s: &str) -> Option<usize> {
     let mut depth = 1usize;
+    let mut escaped = false;
     for (idx, ch) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match ch {
+            '\\' => escaped = true,
             '[' => depth += 1,
             ']' => {
                 depth -= 1;
@@ -7995,13 +8144,32 @@ fn serialize_picture(
     format!("![{alt}](data:image/{mime};base64,{b64}){{{attributes}}}")
 }
 
+fn format_markdown_link(text: &str, link: &Link) -> String {
+    let address = link.address();
+    let Some(title) = link.title() else {
+        return link.external_url().and_then(|url| obsidian::format_file_link(url, text))
+            .unwrap_or_else(|| format!("[{text}]({address})"));
+    };
+    let address = address.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+        .replace('\\', "&#92;").replace('\n', "&#10;").replace('\r', "&#13;");
+    let title = title.replace('&', "&amp;").replace('\\', "&#92;").replace('"', "&quot;")
+        .replace('\n', "&#10;").replace('\r', "&#13;");
+    format!("[{text}](<{address}> \"{title}\")")
+}
+
 fn serialize_runs(
     runs: &[FlowRun],
     media: &[Media],
     comments: &HashMap<u32, &Comment>,
 ) -> String {
     let mut out = String::new();
+    let mut titled_link: Option<(&Link, String)> = None;
     for run in runs {
+        if titled_link.as_ref().is_some_and(|(link, _)| Some(*link) != run.link.as_ref() || run.revision.is_some())
+            && let Some((link, text)) = titled_link.take()
+        {
+            out.push_str(&format_markdown_link(&text, link));
+        }
         let mut piece = match &run.kind {
             FlowRunKind::Text(t) if t.contains("{{form:")
                 && !(run.format.font.as_deref() == Some("Consolas") && run.format.highlight.is_some_and(|h| h.is_some())) =>
@@ -8095,11 +8263,11 @@ fn serialize_runs(
         if let Some(link) = &run.link
             && !piece.is_empty()
         {
-            piece = match link {
-                Link::Url(url) => obsidian::format_file_link(url, &piece)
-                    .unwrap_or_else(|| format!("[{piece}]({url})")),
-                Link::Anchor(bookmark) => format!("[{piece}](#{bookmark})"),
-            };
+            if link.title().is_some() && run.revision.is_none() {
+                titled_link.get_or_insert_with(|| (link, String::new())).1.push_str(&piece);
+                continue;
+            }
+            piece = format_markdown_link(&piece, link);
         }
 
         if let Some(rev) = &run.revision
@@ -8117,6 +8285,9 @@ fn serialize_runs(
         }
 
         out.push_str(&piece);
+    }
+    if let Some((link, text)) = titled_link {
+        out.push_str(&format_markdown_link(&text, link));
     }
     out
 }
@@ -10466,6 +10637,52 @@ Front caption
         assert!(output.contains("[[#^block]]"), "{output}");
         assert!(output.contains("![[#Details]]"), "{output}");
         assert!(output.contains("[参照](#%E6"), "{output}");
+    }
+
+    #[test]
+    fn markdown_reference_links_are_editable_and_round_trip_with_titles() {
+        use ibis_doc_model::{FlowCommand, FlowPos};
+
+        let source = concat!(
+            "See [the **ticket**][Ticket ID].\n\n",
+            "[Details][] and [details].\n\n",
+            "[ticket id]: https://example.com/a_(b)?x=1&y=2 'Task \"details\"'\n",
+            "[details]: #details \"Read more\"\n\n",
+            "## Details\n",
+        );
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        let mut flow = opened.presentation.flow.unwrap().as_ref().clone();
+        let Block::Paragraph(paragraph) = &flow.body[0] else { panic!() };
+        let links: Vec<_> = paragraph.runs.iter().filter_map(|run| run.link.as_ref()).collect();
+        assert_eq!(links.len(), 2);
+        for link in links {
+            assert_eq!(link.external_url(), Some("https://example.com/a_(b)?x=1&y=2"));
+            assert_eq!(link.title(), Some("Task \"details\""));
+        }
+        let Block::Paragraph(anchors) = &flow.body[1] else { panic!() };
+        let links: Vec<_> = anchors.runs.iter().filter_map(|run| run.link.as_ref()).collect();
+        assert_eq!(links.len(), 2);
+        assert!(links.iter().all(|link| link.anchor() == Some("details") && link.title() == Some("Read more")));
+
+        let id = paragraph.id;
+        let changed = Link::Url("https://example.com/edited".to_owned()).with_title("Task \"details\"".to_owned());
+        ibis_doc_model::flow_command::apply_to(&mut flow, FlowCommand::SetLink {
+            from: FlowPos::new(id, 4),
+            to: FlowPos::new(id, 14),
+            link: Some(changed),
+        }).unwrap();
+
+        let saved = export_markdown(&flow, &[]);
+        assert!(saved.contains(r#"[the **ticket**](<https://example.com/edited> "Task &quot;details&quot;")"#), "{saved}");
+        assert!(!saved.contains("[ticket id]:") && !saved.contains(")[]"), "{saved}");
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), saved);
+
+        let docx = import_markdown_to_docx_bytes(saved.as_bytes()).unwrap();
+        let package = ibis_ooxml::Package::open(docx.clone()).unwrap();
+        let document = String::from_utf8(package.read("word/document.xml").unwrap()).unwrap();
+        assert!(document.contains(r#"w:tooltip="Task &quot;details&quot;""#), "{document}");
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), saved);
     }
 
     #[test]

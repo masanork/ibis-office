@@ -41,7 +41,7 @@ impl SlideEditor {
             offset += len;
             if a == b { continue; }
             let FlowRunKind::Text(value) = &r.kind else { return false };
-            if r.revision.is_some() || matches!(r.link, Some(Link::Anchor(_))) { return false; }
+            if r.revision.is_some() || r.link.as_ref().and_then(Link::anchor).is_some() { return false; }
             let mut run = r.clone();
             run.kind = FlowRunKind::Text(value.chars().skip(a).take(b - a).collect());
             run.format = resolved_format(r);
@@ -171,7 +171,7 @@ impl SlideEditor {
         for block in &doc.body[a..=b] {
             let Block::Paragraph(p) = block else { return false };
             if p.section.is_some() || !p.bookmarks.is_empty() || p.field_start.is_some() || p.field_end
-                || p.runs.iter().any(|r| r.revision.is_some() || matches!(r.link, Some(Link::Anchor(_)))
+                || p.runs.iter().any(|r| r.revision.is_some() || r.link.as_ref().and_then(Link::anchor).is_some()
                     || !matches!(r.kind, FlowRunKind::Text(_) | FlowRunKind::Picture { .. } | FlowRunKind::PictureControl { .. } | FlowRunKind::Shape(_) | FlowRunKind::Tab | FlowRunKind::PositionalTab { .. } | FlowRunKind::LineBreak | FlowRunKind::CheckBox { .. } | FlowRunKind::DropDownList { .. } | FlowRunKind::DatePicker { .. } | FlowRunKind::RichText { .. } | FlowRunKind::PlainText { .. } | FlowRunKind::BuildingBlockGallery { .. } | FlowRunKind::RepeatingSection { .. } | FlowRunKind::Group { .. } | FlowRunKind::FormField(_))) { return false; }
             paragraphs.push(p.clone());
         }

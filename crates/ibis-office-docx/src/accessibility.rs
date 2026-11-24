@@ -397,10 +397,7 @@ fn collect_screen_reader_landmarks(doc: &FlowDocument, filter: Option<ScreenRead
                                     FlowRunKind::Text(s) => s.as_str(),
                                     _ => "",
                                 };
-                                let link_target = match link {
-                                    ibis_doc_model::Link::Url(u) => u.clone(),
-                                    ibis_doc_model::Link::Anchor(a) => format!("#{a}"), // i18n-ok
-                                };
+                                let link_target = link.address();
                                 out.push(ScreenReaderLandmark {
                                     kind: ScreenReaderLandmarkKind::Link,
                                     at: FlowPos::new(p.id, offset),
@@ -608,10 +605,7 @@ impl SlideEditor {
                 let len = r.len();
                 if caret.offset >= off && caret.offset <= off + len {
                     if let Some(link) = &r.link {
-                        let link_target = match link {
-                            ibis_doc_model::Link::Url(u) => u.as_str(),
-                            ibis_doc_model::Link::Anchor(a) => a.as_str(),
-                        };
+                        let link_target = link.address();
                         parts.push(format!("Link to {link_target}")); // i18n-ok
                     }
                     match &r.kind {

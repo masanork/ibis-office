@@ -994,10 +994,7 @@ pub fn doc_flow_to_conv_blocks(doc: &FlowDocument) -> Vec<ConvBlock> {
                             strike: r.style.strike || r.style.double_strike,
                             color: (r.style.color != Rgb::BLACK).then_some(r.style.color),
                             size_half_pt: Some((r.style.size / 50).max(2)),
-                            link_url: match &r.link {
-                                Some(Link::Url(u)) => Some(u.clone()),
-                                _ => None,
-                            },
+                            link_url: r.link.as_ref().and_then(Link::external_url).map(str::to_owned),
                             ..Default::default()
                         });
                     }
@@ -1436,10 +1433,11 @@ pub fn export_html(doc: &FlowDocument) -> String {
                     run.style.color.0 & 0xFF_FFFF
                 );
             }
-            if let Some(Link::Url(url)) = &run.link
-                && let Some(url) = safe_html_link(url)
+            if let Some(link) = &run.link
+                && let Some(url) = link.external_url().and_then(safe_html_link)
             {
-                chunk = format!("<a href=\"{}\">{chunk}</a>", xml_escape(url));
+                let title = link.title().map_or_else(String::new, |title| format!(" title=\"{}\"", xml_escape(title)));
+                chunk = format!("<a href=\"{}\"{title}>{chunk}</a>", xml_escape(url));
             }
             out.push_str(&chunk);
         }
