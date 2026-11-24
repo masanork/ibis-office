@@ -173,19 +173,20 @@ fn palette_wrap(){
 }
 fn office_theme_color_picker_tracks_preset() {
     use crate::shell::chrome::MenuEntry;
-    for (file, action_prefix, toolbar_id) in [
-        ("test/editing/docx-report.docx", "docx.design.theme-colors", "text-color"),
-        ("test/editing/pptx-plan.pptx", "pptx.theme.palette", "background"),
+    use ibis_formats::Kind;
+    for (kind, action_prefix, toolbar_id) in [
+        (Kind::Document, "docx.design.theme-colors", "text-color"),
+        (Kind::Presentation, "pptx.theme.palette", "background"),
     ] {
-        let mut scenario = Scenario::open(file);
+        let mut scenario = Scenario::new_document(kind);
         for (preset, expected_accent) in [("office", 0x156082), ("office_2013_2022", 0x4472c4)] {
             scenario.menu(&format!("{action_prefix}.{preset}"));
             let button = scenario.tool_button(toolbar_id).expect("toolbar color picker");
             let palette = button.menu.unwrap().into_iter().find_map(|entry| match entry {
                 MenuEntry::Palette(palette) => Some(palette),
                 _ => None,
-            }).expect("Font Color palette");
-            assert_eq!(palette.theme[0][4].rgb.0, expected_accent, "{file} {preset}");
+            }).expect("toolbar palette");
+            assert_eq!(palette.theme[0][4].rgb.0, expected_accent, "{kind:?} {preset}");
             assert_eq!(palette.theme[1][4].rgb, ibis_formats::tinted(palette.theme[0][4].rgb, 800_000));
         }
     }

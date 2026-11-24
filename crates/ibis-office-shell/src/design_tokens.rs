@@ -95,7 +95,11 @@ fn literal_rgb(value: &Value) -> Option<Rgb> {
         .map(Rgb)
 }
 
-fn resolve(value: &Value, colors: &BTreeMap<String, &Value>) -> Option<Rgb> {
+fn resolve(
+    value: &Value,
+    colors: &BTreeMap<String, &Value>,
+    set_aliases: &BTreeMap<&str, Option<&Value>>,
+) -> Option<Rgb> {
     let mut value = value;
     // Bound alias traversal, including cycles.
     for _ in 0..64 {
@@ -104,7 +108,12 @@ fn resolve(value: &Value, colors: &BTreeMap<String, &Value>) -> Option<Rgb> {
             .and_then(|text| text.strip_prefix('{'))
             .and_then(|text| text.strip_suffix('}'));
         match alias {
-            Some(path) => value = colors.get(path)?,
+            Some(path) => {
+                value = colors
+                    .get(path)
+                    .copied()
+                    .or_else(|| set_aliases.get(path).copied().flatten())?;
+            }
             None => return literal_rgb(value),
         }
     }
@@ -119,9 +128,28 @@ fn parse(bytes: &[u8]) -> Option<Import> {
         serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).ok()?;
     let mut colors = BTreeMap::new();
     collect(&root, "", None, &mut colors);
+    // Tokens Studio wraps each set in an extra group. References omit the set name.
+    let sets = root
+        .pointer("/$metadata/tokenSetOrder")
+        .and_then(Value::as_array);
+    let mut set_aliases = BTreeMap::new();
+    if let Some(sets) = sets {
+        let set_names: std::collections::BTreeSet<_> =
+            sets.iter().filter_map(Value::as_str).collect();
+        for (path, &value) in &colors {
+            if let Some((set, token)) = path.split_once('.')
+                && set_names.contains(set)
+            {
+                set_aliases
+                    .entry(token)
+                    .and_modify(|candidate| *candidate = None)
+                    .or_insert(Some(value));
+            }
+        }
+    }
     let swatches: Vec<_> = colors
         .iter()
-        .filter_map(|(name, value)| Some((name.clone(), resolve(value, &colors)?)))
+        .filter_map(|(name, value)| Some((name.clone(), resolve(value, &colors, &set_aliases)?)))
         .take(MAX_SWATCHES)
         .collect();
     (!swatches.is_empty()).then(|| Import {
@@ -234,7 +262,7 @@ mod tests {
         assert_eq!(imported.skipped, 12);
         assert_eq!(
             colors["Color.Color.Key.500"],
-            colors["Color.Primitive.Blue.500"]
+            colors["Color.Color.Primitive.Blue.500"]
         );
     }
 }
