@@ -5898,6 +5898,8 @@ fn collect_markdown_links<'a>(
     output.into()
 }
 
+const MARKDOWN_ESCAPED_PUNCTUATION_STYLE: &str = "IbisMarkdownEscapedPunctuation";
+
 fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -> Vec<FlowRun> {
     let mut out = Vec::new();
     let mut plain = String::new();
@@ -5945,7 +5947,16 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
         if bytes[i] == b'\\' && i + 1 < text.len() {
             let next_ch = text[i + 1..].chars().next().unwrap();
             if next_ch.is_ascii_punctuation() {
-                plain.push(next_ch);
+                flush_plain(&mut plain, &mut out, base_fmt);
+                ctx.styles.styles.entry(MARKDOWN_ESCAPED_PUNCTUATION_STYLE.to_owned()).or_insert_with(|| FlowStyle {
+                    name: "Markdown escaped punctuation".to_owned(),
+                    kind: StyleKind::Character,
+                    ..FlowStyle::default()
+                });
+                let mut run = FlowRun::new(FlowRunKind::Text(next_ch.to_string()), FlowRunStyle::default());
+                run.format = base_fmt.clone();
+                run.char_style = Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE.to_owned());
+                out.push(run);
                 i += 1 + next_ch.len_utf8();
                 continue;
             }
@@ -6581,7 +6592,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
         // Bold + Italic: `***text***`
         if let Some(after) = rest.strip_prefix("***") {
-            if let Some(end) = after.find("***") {
+            if let Some(end) = find_unescaped_markdown_delimiter(after, "***") {
                 if end > 0 {
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut fmt = base_fmt.clone();
@@ -6596,7 +6607,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
         // Bold: `**text**`
         if let Some(after) = rest.strip_prefix("**") {
-            if let Some(end) = after.find("**") {
+            if let Some(end) = find_unescaped_markdown_delimiter(after, "**") {
                 if end > 0 {
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut fmt = base_fmt.clone();
@@ -6610,7 +6621,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
         // Strikethrough: `~~text~~`
         if let Some(after) = rest.strip_prefix("~~") {
-            if let Some(end) = after.find("~~") {
+            if let Some(end) = find_unescaped_markdown_delimiter(after, "~~") {
                 if end > 0 {
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut fmt = base_fmt.clone();
@@ -6624,7 +6635,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
         // Underline: `++text++`
         if let Some(after) = rest.strip_prefix("++") {
-            if let Some(end) = after.find("++") {
+            if let Some(end) = find_unescaped_markdown_delimiter(after, "++") {
                 if end > 0 {
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut fmt = base_fmt.clone();
@@ -6638,7 +6649,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
         // Highlight: `==text==`
         if let Some(after) = rest.strip_prefix("==") {
-            if let Some(end) = after.find("==") {
+            if let Some(end) = find_unescaped_markdown_delimiter(after, "==") {
                 if end > 0 {
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut fmt = base_fmt.clone();
@@ -6653,7 +6664,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
         // Italic: `*text*`
         if let Some(after) = rest.strip_prefix('*') {
             if !after.starts_with('*') && !after.starts_with(' ') {
-                if let Some(end) = after.find('*') {
+                if let Some(end) = find_unescaped_markdown_delimiter(after, "*") {
                     if end > 0 {
                         flush_plain(&mut plain, &mut out, base_fmt);
                         let mut fmt = base_fmt.clone();
@@ -6668,7 +6679,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
         // Superscript: `^text^`
         if let Some(after) = rest.strip_prefix('^') {
-            if let Some(end) = after.find('^') {
+            if let Some(end) = find_unescaped_markdown_delimiter(after, "^") {
                 if end > 0 && !after[..end].contains(' ') {
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut fmt = base_fmt.clone();
@@ -6683,7 +6694,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
         // Subscript: `~text~`
         if let Some(after) = rest.strip_prefix('~') {
             if !after.starts_with('~') {
-                if let Some(end) = after.find('~') {
+                if let Some(end) = find_unescaped_markdown_delimiter(after, "~") {
                     if end > 0 && !after[..end].contains(' ') {
                         flush_plain(&mut plain, &mut out, base_fmt);
                         let mut fmt = base_fmt.clone();
@@ -6703,6 +6714,12 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
     flush_plain(&mut plain, &mut out, base_fmt);
     out
+}
+
+fn find_unescaped_markdown_delimiter(text: &str, delimiter: &str) -> Option<usize> {
+    text.match_indices(&delimiter[..1]).map(|(index, _)| index).find(|&index| {
+        text[index..].starts_with(delimiter) && !ends_with_markdown_break_escape(&text[..index])
+    })
 }
 
 fn find_matching_bracket(s: &str) -> Option<usize> {
@@ -9114,6 +9131,32 @@ fn serialize_runs(
     media: &[Media],
     comments: &HashMap<u32, &Comment>,
 ) -> String {
+    // Drop the escape-only style before joining text with the same formatting.
+    let mut escaped_paragraph;
+    let runs = if runs.iter().any(|run| run.char_style.as_deref() == Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE)) {
+        escaped_paragraph = FlowParagraph { runs: runs.to_vec(), ..FlowParagraph::default() };
+        for run in &mut escaped_paragraph.runs {
+            if run.char_style.as_deref() == Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE) {
+                run.char_style = None;
+                if let FlowRunKind::Text(text) = &mut run.kind
+                    && !(run.format.font.as_deref() == Some("Consolas") && run.format.highlight.is_some_and(|h| h.is_some()))
+                {
+                    let mut escaped = String::with_capacity(text.len());
+                    for character in text.chars() {
+                        if character.is_ascii_punctuation() {
+                            escaped.push('\\');
+                        }
+                        escaped.push(character);
+                    }
+                    *text = escaped;
+                }
+            }
+        }
+        escaped_paragraph.normalize();
+        escaped_paragraph.runs.as_slice()
+    } else {
+        runs
+    };
     let mut out = String::new();
     let mut titled_link: Option<(&Link, String)> = None;
     for run in runs {
@@ -9126,7 +9169,7 @@ fn serialize_runs(
             FlowRunKind::Text(t) if t.contains("{{form:")
                 && !(run.format.font.as_deref() == Some("Consolas") && run.format.highlight.is_some_and(|h| h.is_some())) =>
             {
-                format_text_run(&t.replace("{{form:", r"\{{form:"), &run.format, run.link.is_some())
+                format_text_run(&escape_literal_form_markers(t), &run.format, run.link.is_some())
             }
             FlowRunKind::Text(t) => format_text_run(t, &run.format, run.link.is_some()),
             FlowRunKind::PlainText { .. }
@@ -9242,6 +9285,20 @@ fn serialize_runs(
         out.push_str(&format_markdown_link(&text, link));
     }
     out
+}
+
+fn escape_literal_form_markers(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut start = 0;
+    for (index, _) in text.match_indices("{{form:") {
+        output.push_str(&text[start..index]);
+        if !ends_with_markdown_break_escape(&text[..index]) {
+            output.push('\\');
+        }
+        start = index;
+    }
+    output.push_str(&text[start..]);
+    output
 }
 
 fn format_text_run(text: &str, fmt: &RunFormat, is_link: bool) -> String {
@@ -10485,6 +10542,28 @@ mod tests {
         assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
         let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+    }
+
+    #[test]
+    fn markdown_preserves_escaped_punctuation_through_docx() {
+        for (source, text) in [
+            ("\\## literal heading\n", "## literal heading"),
+            ("\\[ref]\n\n[ref]: /url\n", "[ref]"),
+            ("\\{{form:example}}\n", "{{form:example}}"),
+            ("# foo *bar* \\*baz\\*\n", "foo bar *baz*"),
+            ("*a \\* b*\n", "a * b"),
+            ("\\\\*emphasis*\n", "\\emphasis"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let flow = opened.presentation.flow.as_deref().unwrap();
+            assert!(matches!(&flow.body[0], Block::Paragraph(p) if p.text() == text), "{source}");
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, source);
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+        }
     }
 
     #[test]
