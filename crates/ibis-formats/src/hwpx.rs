@@ -8,13 +8,13 @@ use std::collections::HashMap;
 
 use ibis_doc_model::{
     Block, BorderStyle, CellAnchor, Emu, EmuSize, FlowAlign, FlowBorder, FlowCell, FlowDocument,
-    FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowTable, LineHeight, MediaFormat, MediaId,
-    PageSetup, ParaFormat, Presentation, Rgb, RowHeight, RunFormat, SectionBreak, SectionSetup,
-    VerticalMerge,
+    FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowTable, LineHeight, ListLevel, ListSuffix,
+    MediaFormat, MediaId, Numbering, PageSetup, ParaFormat, PartKind, Presentation, Rgb, RowHeight,
+    RunFormat, SectionBreak, SectionSetup, VerticalMerge,
 };
 use roxmltree::{Document, Node};
 
-use crate::{Error, Kind, Opened, SaveOptions, zip::Archive};
+use crate::{Error, Kind, Opened, SaveOptions, hangul_structure as shared, zip::Archive};
 
 const PACKAGE: &str = "Contents/content.hpf";
 const MIME_TYPE: &[u8] = b"application/hwp+zip";
@@ -44,7 +44,9 @@ pub(super) fn document_to_docx(
     // The incremental DOCX writer uses the blank document's paragraph as
     // the existing body node around which it inserts new blocks.
     if let Some(baseline) = &blank.presentation.flow {
+        let numbering = document.styles.numbering.clone();
         document.styles = baseline.styles.clone();
+        std::sync::Arc::make_mut(&mut document.styles).numbering = numbering;
         if let Some(Block::Paragraph(anchor)) = baseline.body.first() {
             let first = document.body.iter_mut().find_map(|block| match block {
                 Block::Paragraph(paragraph) => Some(paragraph),
@@ -111,6 +113,10 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
         runs: HashMap::new(),
         paragraphs: HashMap::new(),
         borders: HashMap::new(),
+        numbering: Numbering::default(),
+        list_ids: HashMap::new(),
+        heading_refs: HashMap::new(),
+        outline: 0,
         archive: &archive,
         items: &items,
         presentation,
@@ -153,36 +159,35 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
         if !root.has_tag_name((SECTION, "sec")) {
             return Err(Error::new("HWPX の区画 XML が不正です"));
         }
-        let page = read_page(root);
-        let blocks = importer.blocks(root, 0)?;
-        sections.push((page, blocks));
+        let properties = section_properties(root);
+        importer.outline = properties
+            .and_then(|n| number(n, "outlineShapeIDRef"))
+            .unwrap_or(0);
+        let (setup, blocks) = importer.section(root, properties)?;
+        sections.push((setup, blocks));
     }
-    let Some((page, _)) = sections.last() else {
+    if sections.is_empty() {
         return Err(Error::new("HWPX に本文区画がありません"));
-    };
-    let mut document = FlowDocument {
-        page: *page,
-        ..Default::default()
-    };
+    }
+    let mut document = FlowDocument::default();
     let count = sections.len();
-    for (index, (page, mut blocks)) in sections.into_iter().enumerate() {
+    for (index, (setup, mut blocks)) in sections.into_iter().enumerate() {
+        document.even_and_odd |= setup.parts[PartKind::HeaderEven.index()].is_some()
+            || setup.parts[PartKind::FooterEven.index()].is_some();
         if index + 1 < count {
             if !matches!(blocks.last(), Some(Block::Paragraph(_))) {
                 blocks.push(Block::Paragraph(importer.paragraph()));
             }
             if let Some(Block::Paragraph(last)) = blocks.last_mut() {
                 last.section_break = SectionBreak::NextPage;
-                last.section = Some(
-                    SectionSetup {
-                        page,
-                        ..Default::default()
-                    }
-                    .into(),
-                );
+                last.section = Some(setup.into());
             }
+        } else {
+            shared::set_last_section(&mut document, setup);
         }
         document.body.extend(blocks);
     }
+    std::sync::Arc::make_mut(&mut document.styles).numbering = importer.numbering;
     document.id_floor = importer.id;
     Ok(document)
 }
@@ -276,6 +281,86 @@ mod tests {
         assert_eq!(first.section_break, SectionBreak::NextPage);
         assert!(first.section.is_some());
     }
+    #[test]
+    fn editable_lists_and_page_fields_survive_docx() {
+        let package = format!(
+            r#"<package xmlns="{OPF}"><manifest>
+            <item id="header" href="Contents/header.xml"/><item id="body" href="Contents/section0.xml"/>
+            </manifest><spine><itemref idref="body"/></spine></package>"#
+        );
+        let header = format!(
+            r#"<hh:head xmlns:hh="{HEAD}">
+            <hh:numbering id="1"><hh:paraHead level="1" start="3" numFormat="DIGIT">^1.</hh:paraHead>
+              <hh:paraHead level="2" numFormat="HANGUL_SYLLABLE">^N</hh:paraHead></hh:numbering>
+            <hh:bullet id="1" char="■"/>
+            <hh:paraPr id="1"><hh:heading type="OUTLINE" idRef="0" level="1"/></hh:paraPr>
+            <hh:paraPr id="2"><hh:heading type="BULLET" idRef="1" level="0"/></hh:paraPr>
+            </hh:head>"#
+        );
+        let section = format!(
+            r#"<hs:sec xmlns:hs="{SECTION}" xmlns:hp="{PARAGRAPH}">
+            <hp:p paraPrIDRef="1"><hp:run>
+              <hp:secPr outlineShapeIDRef="1"><hp:startNum page="23"/></hp:secPr>
+              <hp:ctrl><hp:header applyPageType="BOTH"><hp:subList><hp:p><hp:run><hp:t>머리말</hp:t>
+                <hp:ctrl><hp:autoNum numType="PAGE"/></hp:ctrl>
+              </hp:run></hp:p></hp:subList></hp:header></hp:ctrl>
+              <hp:ctrl><hp:footer applyPageType="ODD"><hp:subList><hp:p><hp:run><hp:t>홀수</hp:t></hp:run></hp:p></hp:subList></hp:footer></hp:ctrl>
+              <hp:ctrl><hp:pageNum pos="BOTTOM_OUTSIDE" formatType="ROMAN_SMALL" sideChar="-"/></hp:ctrl>
+              <hp:t>항목</hp:t>
+            </hp:run></hp:p>
+            <hp:p paraPrIDRef="2"><hp:run><hp:t>불릿</hp:t></hp:run></hp:p>
+            </hs:sec>"#
+        );
+        let mut writer = ibis_ooxml::zip::Writer::new();
+        for (name, data) in [
+            ("mimetype", MIME_TYPE),
+            (PACKAGE, package.as_bytes()),
+            ("Contents/header.xml", header.as_bytes()),
+            ("Contents/section0.xml", section.as_bytes()),
+        ] {
+            writer.add(name, Default::default(), data).unwrap();
+        }
+        let f = open(&writer.finish().unwrap())
+            .unwrap()
+            .presentation
+            .flow
+            .unwrap();
+        let [Block::Paragraph(item), Block::Paragraph(bullet)] = f.body.as_slice() else {
+            panic!("expected two body paragraphs")
+        };
+        assert_eq!(item.text(), "항목");
+        let item = item.list.as_ref().unwrap();
+        let level = f.styles.numbering.level(item.num_id, item.level).unwrap();
+        assert_eq!((&*level.format, &*level.text), ("ganada", "%1.%2."));
+        assert_eq!(f.styles.numbering.level(item.num_id, 0).unwrap().start, 3);
+        let bullet = bullet.list.as_ref().unwrap();
+        assert_eq!(
+            f.styles.numbering.level(bullet.num_id, 0).unwrap().text,
+            "■"
+        );
+        assert_eq!(f.page.first_page, 23);
+        assert_eq!(f.page_number_format.as_deref(), Some("lowerRoman"));
+        assert!(f.even_and_odd);
+        let Block::Paragraph(header) = &f.header[0] else {
+            panic!("expected header")
+        };
+        assert!(header.text().starts_with("머리말"));
+        assert!(
+            header
+                .runs
+                .iter()
+                .any(|r| matches!(r.kind, FlowRunKind::PageNumber))
+        );
+        let Block::Paragraph(odd) = f.footer.last().unwrap() else {
+            panic!("expected footer")
+        };
+        let Block::Paragraph(even) = f.footer_even.last().unwrap() else {
+            panic!("expected even footer")
+        };
+        assert_eq!((odd.align, even.align), (FlowAlign::Right, FlowAlign::Left));
+        assert_eq!((f.footer.len(), f.footer_even.len()), (2, 1));
+    }
+
     #[test]
     fn preserves_merged_cells_styles_page_and_picture_in_docx() {
         let package = format!(
@@ -417,15 +502,16 @@ fn color(value: &str) -> Option<Rgb> {
         .flatten()
 }
 
-fn read_page(root: Node<'_, '_>) -> PageSetup {
-    let mut page = PageSetup::default();
-    let Some(props) = root
-        .children()
+fn section_properties<'a, 'i>(root: Node<'a, 'i>) -> Option<Node<'a, 'i>> {
+    root.children()
         .filter(|n| n.has_tag_name((PARAGRAPH, "p")))
         .flat_map(|p| p.children().filter(|n| n.has_tag_name((PARAGRAPH, "run"))))
-        .filter_map(|run| part(run, "secPr"))
-        .find_map(|props| part(props, "pagePr"))
-    else {
+        .find_map(|run| part(run, "secPr"))
+}
+
+fn read_page(properties: Option<Node<'_, '_>>) -> PageSetup {
+    let mut page = PageSetup::default();
+    let Some(props) = properties.and_then(|props| part(props, "pagePr")) else {
         return page;
     };
     if let (Some(width), Some(height)) = (
@@ -459,6 +545,10 @@ struct Importer<'a, 'package> {
     runs: HashMap<u32, RunFormat>,
     paragraphs: HashMap<u32, ParaFormat>,
     borders: HashMap<u32, [Option<FlowBorder>; 4]>,
+    numbering: Numbering,
+    list_ids: HashMap<(bool, u32), u32>,
+    heading_refs: HashMap<u32, (bool, bool, u32, u32)>,
+    outline: u32,
     archive: &'a Archive<'a>,
     items: &'a HashMap<&'package str, &'package str>,
     presentation: &'a mut Presentation,
@@ -538,6 +628,20 @@ impl Importer<'_, '_> {
                 }
                 "paraPr" => {
                     self.paragraphs.insert(id, read_para_format(style));
+                    if let Some(heading) = field("heading") {
+                        let kind = heading.attribute("type");
+                        if matches!(kind, Some("NUMBER" | "BULLET" | "OUTLINE")) {
+                            self.heading_refs.insert(
+                                id,
+                                (
+                                    kind == Some("BULLET"),
+                                    kind == Some("OUTLINE"),
+                                    number(heading, "idRef").unwrap_or(0),
+                                    number::<u32>(heading, "level").unwrap_or(0).min(8),
+                                ),
+                            );
+                        }
+                    }
                 }
                 "borderFill" => {
                     self.borders.insert(
@@ -549,6 +653,154 @@ impl Importer<'_, '_> {
                 _ => {}
             }
         }
+        for definition in root
+            .descendants()
+            .filter(|n| n.tag_name().namespace() == Some(HEAD))
+        {
+            let Some(id) = number::<u32>(definition, "id") else {
+                continue;
+            };
+            let levels = match definition.tag_name().name() {
+                "numbering" => {
+                    let mut levels = Vec::new();
+                    for head in definition
+                        .children()
+                        .filter(|n| n.has_tag_name((HEAD, "paraHead")))
+                    {
+                        let Some(level) =
+                            number::<u32>(head, "level").filter(|n| (1..=9).contains(n))
+                        else {
+                            continue;
+                        };
+                        levels.resize_with(levels.len().max(level as usize), ListLevel::default);
+                        levels[level as usize - 1] = ListLevel {
+                            start: number::<u32>(head, "start")
+                                .unwrap_or_else(|| number(definition, "start").unwrap_or(1))
+                                .max(1),
+                            format: xml_number_format(head.attribute("numFormat")).into(),
+                            text: shared::list_text(head.text().unwrap_or("^n"), level),
+                            suffix: ListSuffix::Space,
+                            run: number::<u32>(head, "charPrIDRef")
+                                .and_then(|id| self.runs.get(&id))
+                                .cloned()
+                                .unwrap_or_default(),
+                            ..Default::default()
+                        };
+                    }
+                    levels
+                }
+                "bullet" if definition.attribute("useImage") != Some("1") => {
+                    let Some(ch) = definition.attribute("char").and_then(|s| s.chars().next())
+                    else {
+                        continue;
+                    };
+                    vec![shared::bullet_level(ch)]
+                }
+                _ => continue,
+            };
+            if !levels.is_empty() {
+                self.list_ids.insert(
+                    (definition.tag_name().name() == "bullet", id),
+                    shared::add_list(&mut self.numbering, levels),
+                );
+            }
+        }
+    }
+
+    fn section(
+        &mut self,
+        root: Node<'_, '_>,
+        properties: Option<Node<'_, '_>>,
+    ) -> Result<(SectionSetup, Vec<Block>), Error> {
+        let page = read_page(properties);
+        let mut setup = SectionSetup {
+            page,
+            ..Default::default()
+        };
+        let paragraphs = root.children().filter(|p| p.has_tag_name((PARAGRAPH, "p")));
+        let first = paragraphs.clone().next();
+        let body_runs =
+            paragraphs.flat_map(|p| p.children().filter(|r| r.has_tag_name((PARAGRAPH, "run"))));
+        let controls = body_runs
+            .flat_map(|run| {
+                run.children()
+                    .filter(|n| n.has_tag_name((PARAGRAPH, "ctrl")))
+            })
+            .flat_map(|control| control.children());
+        let mut restart = properties
+            .and_then(|n| part(n, "startNum"))
+            .and_then(|n| number::<u32>(n, "page"))
+            .unwrap_or(0);
+        let mut page_numbers = None;
+        for node in controls.chain(properties.into_iter().flat_map(|n| n.children())) {
+            if node.tag_name().namespace() != Some(PARAGRAPH) {
+                continue;
+            }
+            match node.tag_name().name() {
+                kind @ ("header" | "footer") => {
+                    let Some(content) = part(node, "subList") else {
+                        continue;
+                    };
+                    let (regular, even) = if kind == "header" {
+                        (PartKind::Header, PartKind::HeaderEven)
+                    } else {
+                        (PartKind::Footer, PartKind::FooterEven)
+                    };
+                    let apply = node.attribute("applyPageType");
+                    if apply != Some("EVEN") {
+                        setup.parts[regular.index()] = Some(self.blocks(content, 0)?);
+                    } else {
+                        setup.parts[regular.index()].get_or_insert_with(Vec::new);
+                    }
+                    if apply != Some("ODD") {
+                        setup.parts[even.index()] = Some(self.blocks(content, 0)?);
+                    } else {
+                        setup.parts[even.index()].get_or_insert_with(Vec::new);
+                    }
+                }
+                "newNum"
+                    if node.attribute("numType") == Some("PAGE")
+                        && restart == 0
+                        && node.ancestors().find(|n| n.has_tag_name((PARAGRAPH, "p"))) == first =>
+                {
+                    restart = number(node, "num").unwrap_or(0);
+                }
+                "pageNum" => page_numbers = Some(node),
+                _ => {}
+            }
+        }
+        if restart != 0 {
+            setup.page.first_page = restart;
+            setup.restart_numbering = true;
+        }
+        if let Some(node) = page_numbers {
+            let position = node.attribute("pos").unwrap_or("");
+            let kinds = if position.starts_with("TOP_") {
+                [PartKind::Header, PartKind::HeaderEven]
+            } else {
+                [PartKind::Footer, PartKind::FooterEven]
+            };
+            if position.starts_with("TOP_") || position.starts_with("BOTTOM_") {
+                let side = node.attribute("sideChar").unwrap_or("");
+                for (i, kind) in kinds.into_iter().enumerate() {
+                    let align = match (position.rsplit('_').next(), i) {
+                        (Some("LEFT"), _) | (Some("OUTSIDE"), 1) | (Some("INSIDE"), 0) => {
+                            FlowAlign::Left
+                        }
+                        (Some("RIGHT"), _) | (Some("OUTSIDE"), 0) | (Some("INSIDE"), 1) => {
+                            FlowAlign::Right
+                        }
+                        _ => FlowAlign::Center,
+                    };
+                    setup.parts[kind.index()]
+                        .get_or_insert_with(Vec::new)
+                        .push(shared::page_number(self.next_id(), align, side, side));
+                }
+                setup.page_number_format =
+                    Some(xml_number_format(node.attribute("formatType")).into());
+            }
+        }
+        Ok((setup, self.blocks(root, 0)?))
     }
 
     fn blocks(&mut self, node: Node<'_, '_>, depth: usize) -> Result<Vec<Block>, Error> {
@@ -567,6 +819,15 @@ impl Importer<'_, '_> {
                 .and_then(|id| self.paragraphs.get(&id))
                 .cloned()
                 .unwrap_or_default();
+            if let Some(&(bullet, outline, id, level)) =
+                number(source, "paraPrIDRef").and_then(|id| self.heading_refs.get(&id))
+                && let Some(&list) = self
+                    .list_ids
+                    .get(&(bullet, if outline { self.outline } else { id }))
+            {
+                paragraph.direct.num_id = Some(list);
+                paragraph.direct.level = Some(if bullet { 0 } else { level });
+            }
             if source.attribute("pageBreak") == Some("1") {
                 paragraph.direct.page_break_before = Some(true);
             }
@@ -617,6 +878,8 @@ impl Importer<'_, '_> {
                             let mut next = self.paragraph();
                             next.direct = paragraph.direct.clone();
                             next.direct.page_break_before = None;
+                            next.direct.num_id = None;
+                            next.direct.level = None;
                             paragraph.resolve(&Default::default());
                             blocks.push(Block::Paragraph(std::mem::replace(&mut paragraph, next)));
                         }
@@ -626,6 +889,13 @@ impl Importer<'_, '_> {
                         if let Some(kind) = self.picture(item)? {
                             paragraph.runs.push(FlowRun::new(kind, Default::default()));
                         }
+                    } else if item.has_tag_name((PARAGRAPH, "ctrl"))
+                        && part(item, "autoNum")
+                            .is_some_and(|n| n.attribute("numType") == Some("PAGE"))
+                    {
+                        let mut field = FlowRun::new(FlowRunKind::PageNumber, Default::default());
+                        field.format = format.clone();
+                        paragraph.runs.push(field);
                     } else if item.has_tag_name((PARAGRAPH, "t")) {
                         for child in item.children() {
                             let kind = if let Some(text) = child.text().filter(|_| child.is_text())
@@ -896,6 +1166,20 @@ fn fill_merged_row_heights(heights: &mut [Emu], spans: &mut [(usize, usize, Emu)
                 extra = extra.saturating_sub(1).max(0);
             }
         }
+    }
+}
+
+fn xml_number_format(format: Option<&str>) -> &'static str {
+    match format {
+        Some("CIRCLED_DIGIT") => "decimalEnclosedCircle",
+        Some("ROMAN_CAPITAL") => "upperRoman",
+        Some("ROMAN_SMALL") => "lowerRoman",
+        Some("LATIN_CAPITAL") => "upperLetter",
+        Some("LATIN_SMALL") => "lowerLetter",
+        Some("HANGUL_SYLLABLE") => "ganada",
+        Some("HANGUL_JAMO") => "chosung",
+        Some("HANJA") => "ideographDigital",
+        _ => "decimal",
     }
 }
 

@@ -10,13 +10,13 @@ use std::collections::HashMap;
 
 use ibis_doc_model::{
     Block, BorderStyle, CellAnchor, Emu, EmuSize, FlowAlign, FlowBorder, FlowCell, FlowDocument,
-    FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowTable, LineHeight, MediaFormat, MediaId,
-    PageSetup, ParaFormat, Presentation, Rgb, RowHeight, RunFormat, SectionBreak, SectionSetup,
-    VerticalMerge,
+    FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowTable, LineHeight, ListLevel, ListSuffix,
+    MediaFormat, MediaId, Numbering, PageSetup, ParaFormat, PartKind, Presentation, Rgb, RowHeight,
+    RunFormat, SectionBreak, SectionSetup, VerticalMerge,
 };
 
 use crate::{
-    Error, Opened,
+    Error, Opened, hangul_structure as shared,
     hwpx::{line_pitch, units},
     ibis_ooxml::cfb,
 };
@@ -187,6 +187,9 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
             .map(|record| page_setup(record.bytes))
             .transpose()?
             .unwrap_or(document.page);
+        let setup = importer.section_setup(&section, page)?;
+        document.even_and_odd |= setup.parts[PartKind::HeaderEven.index()].is_some()
+            || setup.parts[PartKind::FooterEven.index()].is_some();
         let mut body = Vec::new();
         let mut cursor = 0;
         while cursor < section.len() {
@@ -202,18 +205,15 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
             }
             if let Some(Block::Paragraph(last)) = body.last_mut() {
                 last.section_break = SectionBreak::NextPage;
-                last.section = Some(
-                    SectionSetup {
-                        page,
-                        ..Default::default()
-                    }
-                    .into(),
-                );
+                last.section = Some(setup.into());
             }
+            document.page = page;
+        } else {
+            shared::set_last_section(&mut document, setup);
         }
-        document.page = page;
         document.body.extend(body);
     }
+    std::sync::Arc::make_mut(&mut document.styles).numbering = importer.numbering;
     document.id_floor = importer.id;
     Ok(document)
 }
@@ -257,6 +257,11 @@ struct Importer<'a> {
     id: u32,
     runs: Vec<RunFormat>,
     paragraphs: Vec<ParaFormat>,
+    heading_refs: Vec<(u32, u16, u32)>,
+    numbering: Numbering,
+    list_ids: Vec<u32>,
+    bullet_ids: Vec<u32>,
+    outline: u16,
     fills: Vec<CellFill>,
     data: &'a [u8],
     presentation: &'a mut Presentation,
@@ -291,6 +296,11 @@ impl<'a> Importer<'a> {
             id: 10,
             runs: Vec::new(),
             paragraphs: Vec::new(),
+            heading_refs: Vec::new(),
+            numbering: Numbering::default(),
+            list_ids: Vec::new(),
+            bullet_ids: Vec::new(),
+            outline: 0,
             fills: Vec::new(),
             data,
             presentation,
@@ -334,7 +344,42 @@ impl<'a> Importer<'a> {
                         ..Default::default()
                     });
                 }
-                25 => importer.paragraphs.push(para_format(bytes, version)?),
+                23 => {
+                    let id = binary_numbering(bytes, &importer.runs)
+                        .ok()
+                        .map_or(0, |levels| {
+                            shared::add_list(&mut importer.numbering, levels)
+                        });
+                    importer.list_ids.push(id);
+                }
+                24 => {
+                    let extended = bytes.len() >= 14;
+                    let at = if extended { 12 } else { 8 };
+                    let id = word(bytes, at)
+                        .ok()
+                        .and_then(|unit| char::from_u32(u32::from(unit)))
+                        .map_or(0, |ch| {
+                            let mut level = shared::bullet_level(ch);
+                            if extended {
+                                level.run = dword(bytes, 8)
+                                    .ok()
+                                    .and_then(|id| importer.runs.get(id as usize))
+                                    .cloned()
+                                    .unwrap_or_default();
+                            }
+                            shared::add_list(&mut importer.numbering, vec![level])
+                        });
+                    importer.bullet_ids.push(id);
+                }
+                25 => {
+                    importer.paragraphs.push(para_format(bytes, version)?);
+                    let flags = dword(bytes, 0)?;
+                    importer.heading_refs.push((
+                        (flags >> 23) & 3,
+                        word(bytes, 30)?,
+                        (flags >> 25) & 7,
+                    ));
+                }
                 _ => {}
             }
         }
@@ -351,6 +396,103 @@ impl<'a> Importer<'a> {
             id: self.next_id(),
             ..Default::default()
         }
+    }
+
+    fn section_setup(
+        &mut self,
+        records: &[Record<'_>],
+        page: PageSetup,
+    ) -> Result<SectionSetup, Error> {
+        let mut setup = SectionSetup {
+            page,
+            ..Default::default()
+        };
+        let definition = records
+            .iter()
+            .find(|r| r.tag == CONTROL && r.level == 1 && r.bytes.starts_with(b"dces"));
+        self.outline = definition.and_then(|r| word(r.bytes, 18).ok()).unwrap_or(0);
+        if let Some(restart) = definition
+            .and_then(|r| word(r.bytes, 20).ok())
+            .filter(|&n| n != 0)
+        {
+            setup.page.first_page = u32::from(restart);
+            setup.restart_numbering = true;
+        }
+        let mut page_number = None;
+        let first_end = records
+            .iter()
+            .find(|r| r.tag == PARA && r.level == 0)
+            .map_or(0, |r| r.end);
+        for (index, control) in records
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.tag == CONTROL && r.level == 1)
+        {
+            let bytes = control.bytes;
+            match bytes.get(..4) {
+                Some(b"onwn")
+                    if index < first_end
+                        && dword(bytes, 4)? & 15 == 0
+                        && !setup.restart_numbering =>
+                {
+                    let restart = word(bytes, 8)?;
+                    if restart != 0 {
+                        setup.page.first_page = u32::from(restart);
+                        setup.restart_numbering = true;
+                    }
+                }
+                Some(b"daeh" | b"toof") => {
+                    let (regular, even) = if bytes.starts_with(b"daeh") {
+                        (PartKind::Header, PartKind::HeaderEven)
+                    } else {
+                        (PartKind::Footer, PartKind::FooterEven)
+                    };
+                    let apply = dword(bytes, 4)? & 3;
+                    for (kind, include) in [(regular, apply != 1), (even, apply != 2)] {
+                        if include {
+                            let mut blocks = Vec::new();
+                            for cursor in index + 1..control.end {
+                                let record = records[cursor];
+                                if record.tag == PARA && record.level == control.level + 1 {
+                                    self.paragraph(records, cursor, &mut blocks, 0, false)?;
+                                }
+                            }
+                            setup.parts[kind.index()] = Some(blocks);
+                        } else {
+                            setup.parts[kind.index()].get_or_insert_with(Vec::new);
+                        }
+                    }
+                }
+                Some(b"pngp") => page_number = Some(bytes),
+                _ => {}
+            }
+        }
+        if let Some(bytes) = page_number.filter(|bytes| {
+            dword(bytes, 4).is_ok_and(|flags| (1..=10).contains(&((flags >> 8) & 15)))
+        }) {
+            let flags = dword(bytes, 4)?;
+            let position = (flags >> 8) & 15;
+
+            let prefix = decoration(word(bytes, 10)?);
+            let suffix = decoration(word(bytes, 12)?);
+            let kinds = if matches!(position, 1..=3 | 7 | 9) {
+                [PartKind::Header, PartKind::HeaderEven]
+            } else {
+                [PartKind::Footer, PartKind::FooterEven]
+            };
+            for (index, kind) in kinds.into_iter().enumerate() {
+                let align = match (position, index) {
+                    (1 | 4, _) | (7 | 8, 1) | (9 | 10, 0) => FlowAlign::Left,
+                    (3 | 6, _) | (7 | 8, 0) | (9 | 10, 1) => FlowAlign::Right,
+                    _ => FlowAlign::Center,
+                };
+                setup.parts[kind.index()]
+                    .get_or_insert_with(Vec::new)
+                    .push(shared::page_number(self.next_id(), align, &prefix, &suffix));
+            }
+            setup.page_number_format = Some(shared::number_format(flags & 255).into());
+        }
+        Ok(setup)
     }
 
     fn paragraph(
@@ -371,6 +513,23 @@ impl<'a> Importer<'a> {
             .get(usize::from(word(record.bytes, 8)?))
             .cloned()
             .unwrap_or_default();
+        if let Some(&(kind, id, level)) = self.heading_refs.get(usize::from(word(record.bytes, 8)?))
+        {
+            let (ids, source_id) = match kind {
+                1 => (&self.list_ids[..], self.outline),
+                2 => (&self.list_ids[..], id),
+                3 => (&self.bullet_ids[..], id),
+                _ => (&[][..], 0),
+            };
+            if let Some(&list) = usize::from(source_id)
+                .checked_sub(1)
+                .and_then(|id| ids.get(id))
+                .filter(|&&id| id != 0)
+            {
+                paragraph.direct.num_id = Some(list);
+                paragraph.direct.level = Some(if kind == 3 { 0 } else { level });
+            }
+        }
         if record.bytes.get(11).ok_or_else(malformed)? & 4 != 0 {
             paragraph.direct.page_break_before = Some(true);
         }
@@ -451,7 +610,10 @@ impl<'a> Importer<'a> {
             }
             let extended = matches!(code, 2 | 3 | 11 | 12 | 14..=18 | 21..=23);
             if extended && let Some(control) = control_indices.next() {
-                if records[control].bytes.starts_with(b" osg") {
+                let bytes = records[control].bytes;
+                if bytes.starts_with(b"onta") && dword(bytes, 4)? & 15 == 0 {
+                    add_run(&mut paragraph, FlowRunKind::PageNumber, &run_format);
+                } else if bytes.starts_with(b" osg") {
                     if let Some(kind) = self.picture(records, control)? {
                         add_run(&mut paragraph, kind, &run_format);
                     }
@@ -460,6 +622,8 @@ impl<'a> Importer<'a> {
                         let mut next = self.new_paragraph();
                         next.direct = paragraph.direct.clone();
                         next.direct.page_break_before = None;
+                        next.direct.num_id = None;
+                        next.direct.level = None;
                         flush_paragraph(blocks, std::mem::replace(&mut paragraph, next));
                     }
                     if paragraph.direct.page_break_before.take() == Some(true) {
@@ -815,6 +979,50 @@ fn append_text(paragraph: &mut FlowParagraph, text: &mut Vec<u16>, format: &RunF
     }
 }
 
+fn decoration(unit: u16) -> String {
+    char::from_u32(u32::from(unit))
+        .filter(|ch| !ch.is_control())
+        .map_or_else(String::new, String::from)
+}
+
+fn binary_numbering(bytes: &[u8], formats: &[RunFormat]) -> Result<Vec<ListLevel>, Error> {
+    let mut levels = Vec::with_capacity(7);
+    let mut offset = 0;
+    for level in 1..=7 {
+        let flags = dword(bytes, offset)?;
+        let style = dword(bytes, offset + 8)?;
+        let length = usize::from(word(bytes, offset + 12)?);
+        let start = offset + 14;
+        offset = start + 2 * length;
+        let pattern =
+            String::from_utf16_lossy(&utf16(bytes.get(start..offset).ok_or_else(malformed)?)?);
+        levels.push(ListLevel {
+            start: 1,
+            format: shared::number_format((flags >> 8) & 15).into(),
+            text: shared::list_text(&pattern, level),
+            suffix: ListSuffix::Space,
+            align: match flags & 3 {
+                1 => FlowAlign::Center,
+                2 => FlowAlign::Right,
+                _ => FlowAlign::Left,
+            },
+            run: formats.get(style as usize).cloned().unwrap_or_default(),
+            ..Default::default()
+        });
+    }
+    if let Ok(start) = word(bytes, offset) {
+        levels[0].start = u32::from(start).max(1);
+        for (index, level) in levels.iter_mut().enumerate() {
+            if let Ok(start) = dword(bytes, offset + 2 + index * 4)
+                && start != 0
+            {
+                level.start = start;
+            }
+        }
+    }
+    Ok(levels)
+}
+
 fn para_format(bytes: &[u8], version: u32) -> Result<ParaFormat, Error> {
     let flags = dword(bytes, 0)?;
     let (mode, spacing) = if version >= 0x05000205 && bytes.len() >= 54 {
@@ -1007,6 +1215,78 @@ mod tests {
             assert_eq!(last.line, LineHeight::Exact(units(1000)));
             assert_eq!(format!("{}{}", first.text(), last.text()), "AB");
         }
+    }
+
+    #[test]
+    fn binary_lists_and_section_stories_survive_docx() {
+        let mut info = Vec::new();
+        let mut definition = Vec::new();
+        for level in 1..=7 {
+            definition.extend([0; 8]);
+            definition.extend(u32::MAX.to_le_bytes());
+            let label: Vec<u8> = format!("^{level})")
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            definition.extend(((label.len() / 2) as u16).to_le_bytes());
+            definition.extend(label);
+        }
+        definition.extend(4u16.to_le_bytes());
+        record(&mut info, 23, 0, &definition);
+        let mut bullet = [0; 14];
+        bullet[12..14].copy_from_slice(&0xf06eu16.to_le_bytes());
+        record(&mut info, 24, 0, &bullet);
+        for kind in [0u32, 2, 3] {
+            let mut para = [0; 54];
+            para[..4].copy_from_slice(&(kind << 23).to_le_bytes());
+            para[30] = 1;
+            record(&mut info, 25, 0, &para);
+        }
+        let mut body = Vec::new();
+        let mut p = [0; 24];
+        p[8] = 1;
+        record(&mut body, PARA, 0, &p);
+        record(&mut body, TEXT, 1, b"A\0\r\0");
+        record(&mut body, CONTROL, 1, b"onwn\0\0\0\0\x07\0");
+        record(&mut body, CONTROL, 1, b"pngp\0\x05\0\0\0\0-\0-\0");
+        record(&mut body, CONTROL, 1, b"daeh\0\0\0\0");
+        record(&mut body, PARA, 2, &[0; 24]);
+        record(&mut body, TEXT, 3, b"H\0\r\0");
+        record(&mut body, CONTROL, 1, b"toof\0\0\0\0");
+        record(&mut body, PARA, 2, &[0; 24]);
+        record(&mut body, TEXT, 3, b"F\0\r\0");
+        p[8] = 2;
+        record(&mut body, PARA, 0, &p);
+        record(&mut body, TEXT, 1, b"B\0\r\0");
+        let mut header = vec![0; 256];
+        header[..SIGNATURE.len()].copy_from_slice(SIGNATURE);
+        header[35] = 5;
+        let data = cfb::write(&[
+            Item::stream("FileHeader", header),
+            Item::stream("DocInfo", info),
+            Item::storage("BodyText"),
+            Item::stream("BodyText/Section0", body),
+        ]);
+        let f = open(&data).unwrap().presentation.flow.unwrap();
+        let [Block::Paragraph(a), Block::Paragraph(b)] = f.body.as_slice() else {
+            panic!("expected two body paragraphs")
+        };
+        let a = a.list.as_ref().unwrap();
+        let b = b.list.as_ref().unwrap();
+        let number = f.styles.numbering.level(a.num_id, a.level).unwrap();
+        assert_eq!((number.start, number.text.as_str()), (4, "%1)"));
+        assert_eq!(f.styles.numbering.level(b.num_id, 0).unwrap().text, "■");
+        assert_eq!(f.page.first_page, 7);
+        let Block::Paragraph(header) = &f.header[0] else {
+            panic!("expected header")
+        };
+        assert_eq!(header.text(), "H");
+        let [Block::Paragraph(footer), Block::Paragraph(number)] = f.footer.as_slice() else {
+            panic!("expected footer and page number")
+        };
+        assert_eq!(footer.text(), "F");
+        assert_eq!(number.align, FlowAlign::Center);
+        assert!(matches!(number.runs[1].kind, FlowRunKind::PageNumber));
     }
 
     #[test]

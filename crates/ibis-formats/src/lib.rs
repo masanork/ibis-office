@@ -96,6 +96,7 @@ mod xlsb_formula;
 mod xls;
 mod msdoc;
 /// Read-only Ichitaro text import.
+mod hangul_structure;
 pub mod hwp;
 pub mod hwpx;
 pub mod jtd;
