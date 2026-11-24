@@ -96,26 +96,40 @@ fn table_rows<'a>(
     Ok(Rows { sheet: page.name.as_deref(), key_column, amount_column, entries })
 }
 
-fn report_rows<'a>(workbook: &'a Presentation, name: &str, metric: &str) -> Result<(Rows<'a>, &'a str), &'static str> {
-    use ibis_doc_model::sheet_calc::sheet_of_slide;
+pub(crate) fn report_comparison_definition<'a>(workbook: &'a Presentation, name: &str) -> Result<&'a Value, &'static str> {
     let book = workbook.workbook.as_ref().ok_or("no_report")?;
     let (_, report) = book.query_reports.iter().find(|(table, _)| table.eq_ignore_ascii_case(name)).ok_or("no_report")?;
-    let definition = &report["comparison"];
-    let key_column = definition["key_column"].as_str().ok_or("comparison_not_configured")?;
-    let metric_column = definition["metric_column"].as_str().filter(|column| *column == metric).ok_or("unknown_metric")?;
-    let unit = definition["unit"].as_str().ok_or("comparison_not_configured")?;
+    report.get("comparison").ok_or("comparison_not_configured")
+}
+
+pub(crate) fn report_table<'a>(
+    workbook: &'a Presentation, name: &str,
+) -> Result<(&'a ibis_doc_model::Slide, &'a ibis_doc_model::Sheet, &'a ibis_doc_model::SheetTable), &'static str> {
+    use ibis_doc_model::sheet_calc::sheet_of_slide;
     for page in &workbook.slides {
         let Some(sheet) = sheet_of_slide(page) else { continue };
         if let Some(table) = sheet.tables.iter().find(|table| table.name.eq_ignore_ascii_case(name)) {
-            return Ok((table_rows(page, sheet, table, key_column, metric_column)?, unit));
+            return Ok((page, sheet, table));
         }
     }
     Err("invalid_table")
 }
 
+fn report_rows<'a>(workbook: &'a Presentation, name: &str, metric: &str) -> Result<(Rows<'a>, &'a str), &'static str> {
+    let definition = report_comparison_definition(workbook, name)?;
+    let key_column = definition["key_column"].as_str().ok_or("comparison_not_configured")?;
+    let metric_column = definition["metric_column"].as_str().filter(|column| *column == metric).ok_or("unknown_metric")?;
+    let unit = definition["unit"].as_str().ok_or("comparison_not_configured")?;
+    let (page, sheet, table) = report_table(workbook, name)?;
+    Ok((table_rows(page, sheet, table, key_column, metric_column)?, unit))
+}
+
 pub(crate) fn compare_report(
     base: &Presentation, candidate: &Presentation, table: &str, metric: &str, key: Option<&str>,
 ) -> Value {
+    if report_comparison_definition(base, table).is_ok_and(|definition| definition["kind"] == "rate") {
+        return crate::report_rate::compare(base, candidate, table, metric, key);
+    }
     let (before, unit) = match report_rows(base, table, metric) {
         Ok(rows) => rows,
         Err(reason) => return json!({"state":reason,"side":"before"}),
@@ -132,6 +146,9 @@ pub(crate) fn compare_report(
 }
 
 pub(crate) fn applied_report_row(workbook: &Presentation, table: &str, metric: &str, key: &str) -> Value {
+    if report_comparison_definition(workbook, table).is_ok_and(|definition| definition["kind"] == "rate") {
+        return crate::report_rate::applied(workbook, table, metric, key);
+    }
     match report_rows(workbook, table, metric) {
         Ok((rows, unit)) => rows.entries.get(key).map_or_else(
             || json!({"state":"absent","key":key}),

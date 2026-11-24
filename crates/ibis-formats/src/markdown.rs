@@ -411,12 +411,13 @@ pub fn export_blocks_to_markdown(
     let mut out = String::new();
     let comments_by_id: HashMap<u32, &Comment> = doc.comments.iter().map(|c| (c.id, c)).collect();
     let mut prev_was_list = false;
-    for block in blocks {
+    for (index, block) in blocks.iter().enumerate() {
         let is_list = matches!(block, Block::Paragraph(p) if p.list.is_some() || p.runs.first().is_some_and(|r| matches!(r.kind, FlowRunKind::CheckBox { .. })));
         if prev_was_list && !is_list && !out.ends_with("\n\n") {
             out.push('\n');
         }
         serialize_block(block, doc, media, &comments_by_id, &mut out, &mut Vec::new());
+        finish_markdown_quote(block, blocks.get(index + 1), &mut out);
         prev_was_list = is_list;
     }
     out.trim_end().to_string()
@@ -3054,7 +3055,11 @@ fn parse_blocks(
             {
                 *first = alert;
             }
-            blocks.extend(build_blockquote_blocks(&quote_lines, ctx));
+            if let Some(quote) = parse_structured_quote(&quote_lines, ctx)? {
+                blocks.extend(quote);
+            } else {
+                blocks.extend(build_blockquote_blocks(&quote_lines, ctx));
+            }
             continue;
         }
 
@@ -3594,55 +3599,92 @@ fn build_display_math_block(latex: &str, bookmark: Option<&str>, ctx: &mut Parse
 
 const MARKDOWN_QUOTED_CODE_STYLE: &str = "IbisMarkdownQuotedCode";
 
-fn quoted_code(lines: &[&str]) -> Option<String> {
-    use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+const MARKDOWN_QUOTE_STYLE: &str = "IbisMarkdownQuoteBlock";
 
-    let source = lines.join("\n");
-    let mut events = Parser::new(&source);
-    match events.next()? {
-        Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)) => {}
-        Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) if info.is_empty() => {}
-        _ => return None,
+fn markdown_quote_style(style: Option<&str>) -> Option<(bool, Option<&str>)> {
+    let encoded = style?.strip_prefix(MARKDOWN_QUOTE_STYLE)?;
+    let (kind, base) = encoded.split_once('-')?;
+    match kind {
+        "First" => Some((false, (!base.is_empty()).then_some(base))),
+        "Next" => Some((true, (!base.is_empty()).then_some(base))),
+        _ => None,
     }
-    let mut code = String::new();
-    for event in events.by_ref() {
-        match event {
-            Event::Text(text) => code.push_str(&text),
-            Event::End(TagEnd::CodeBlock) => break,
-            _ => return None,
-        }
-    }
-    if events.next().is_some() {
-        return None;
-    }
-    if code.ends_with('\n') {
-        code.pop();
-    }
-    Some(code)
 }
 
-fn build_blockquote_blocks(lines: &[&str], ctx: &mut ParseContext<'_>) -> Vec<Block> {
-    if lines.iter().find(|line| !line.trim().is_empty()).is_some_and(|line| {
-        line.starts_with("    ") || line.contains('\t') || opening_fence(line.trim()).is_some()
-    }) && let Some(code) = quoted_code(lines)
+fn parse_structured_quote(
+    lines: &[&str],
+    ctx: &mut ParseContext<'_>,
+) -> Result<Option<Vec<Block>>, Error> {
+    use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
+
+    if lines.iter().find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.trim_start().starts_with("[!"))
     {
-        let id = MARKDOWN_QUOTED_CODE_STYLE.to_owned();
+        return Ok(None);
+    }
+    let source = lines.join("\n");
+    let mut count = 0;
+    let mut structured = false;
+    let mut depth = 0;
+    for event in Parser::new_ext(&source, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES) {
+        match event {
+            Event::Start(tag) => {
+                if depth == 0 {
+                    count += 1;
+                    match tag {
+                        Tag::Paragraph => {}
+                        Tag::Heading { .. } | Tag::CodeBlock(CodeBlockKind::Indented) => structured = true,
+                        Tag::CodeBlock(CodeBlockKind::Fenced(info)) if ordinary_code_fence(&info) => structured = true,
+                        _ => return Ok(None),
+                    }
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth -= 1,
+            _ => {}
+        }
+    }
+    if !structured && count < 2 {
+        return Ok(None);
+    }
+
+    let mut blocks = parse_blocks(&source, ctx, &mut HashMap::new())?;
+    if blocks.len() != count || blocks.iter().any(|block| !matches!(block, Block::Paragraph(p) if p.list.is_none())) {
+        return Ok(None);
+    }
+    for (index, block) in blocks.iter_mut().enumerate() {
+        let Block::Paragraph(paragraph) = block else { unreachable!() };
+        let kind = if index == 0 { "First" } else { "Next" };
+        let base = paragraph.style.clone();
+        let id = format!("{MARKDOWN_QUOTE_STYLE}{kind}-{}", base.as_deref().unwrap_or(""));
         ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
-            name: "Markdown quoted code".to_owned(),
+            name: format!("Markdown quote {kind} ({})", base.as_deref().unwrap_or("default")),
             kind: StyleKind::Paragraph,
-            based_on: ctx.styles.default_paragraph.clone(),
+            based_on: base,
             next: ctx.styles.default_paragraph.clone(),
             ..FlowStyle::default()
         });
-        let Block::Paragraph(mut paragraph) = build_code_block(&code, ctx) else {
-            unreachable!("code blocks are paragraphs");
-        };
         paragraph.style = Some(id);
-        paragraph.direct.left = Some(22 * EMU_PER_PT);
+        paragraph.direct.left = Some(paragraph.direct.left.unwrap_or(0) + 14 * EMU_PER_PT);
+        if paragraph.direct.borders[3].is_none() {
+            paragraph.direct.borders[3] = Some(Some(markdown_quote_border(Rgb(0xD0D7DE))));
+        }
         paragraph.resolve(&ctx.styles);
-        return vec![Block::Paragraph(paragraph)];
     }
+    Ok(Some(blocks))
+}
 
+fn markdown_quote_border(color: Rgb) -> FlowBorder {
+    FlowBorder {
+        width: 635 * 18,
+        color,
+        style: BorderStyle::Single,
+        space: 8 * EMU_PER_PT,
+        art: None,
+    }
+}
+
+fn build_blockquote_blocks(lines: &[&str], ctx: &mut ParseContext<'_>) -> Vec<Block> {
     let first = lines.first().map(|s| s.trim()).unwrap_or("");
     let alert = match first {
         "[!NOTE]" => Some(("NOTE", Rgb(0x0969DA), Rgb(0xEDF5FF))),
@@ -3658,19 +3700,12 @@ fn build_blockquote_blocks(lines: &[&str], ctx: &mut ParseContext<'_>) -> Vec<Bl
         None => (Rgb(0xD0D7DE), None, lines),
     };
 
-    let left_border = FlowBorder {
-        width: 635 * 18,
-        color: accent_color,
-        style: BorderStyle::Single,
-        space: 8 * EMU_PER_PT,
-        art: None,
-    };
     let para_direct = ParaFormat {
         left: Some(14 * EMU_PER_PT),
         before: Some(4 * EMU_PER_PT),
         after: Some(4 * EMU_PER_PT),
         shading: bg_color.map(Some),
-        borders: [None, None, None, Some(Some(left_border))],
+        borders: [None, None, None, Some(Some(markdown_quote_border(accent_color)))],
         ..ParaFormat::default()
     };
 
@@ -6068,6 +6103,7 @@ fn export_markdown_with_positions<'a>(
                 list_labels.as_ref().and_then(|labels| labels.get(&p.id)).map(String::as_str),
             ),
         }
+        finish_markdown_quote(block, doc.body.get(i + 1), &mut out);
         record(MarkdownSource::Body(i, block), start, out.len());
         prev_was_list = is_list;
         if let Block::Paragraph(paragraph) = block
@@ -6125,8 +6161,9 @@ fn export_markdown_with_positions<'a>(
 
             out.push_str(&format!("[^{label}]:\n"));
             let mut body = String::new();
-            for block in &blocks {
+            for (index, block) in blocks.iter().enumerate() {
                 serialize_block(block, doc, media, &comments_by_id, &mut body, source_diagnostics);
+                finish_markdown_quote(block, blocks.get(index + 1), &mut body);
             }
             for line in body.trim_end().lines() {
                 if !line.is_empty() {
@@ -7111,6 +7148,19 @@ fn paper_size_name(short: Emu, long: Emu) -> Option<&'static str> {
     }
 }
 
+fn finish_markdown_quote(block: &Block, next: Option<&Block>, out: &mut String) {
+    let quoted = |block: &Block| match block {
+        Block::Paragraph(p) => markdown_quote_style(p.style.as_deref()).map(|(continuation, _)| continuation),
+        _ => None,
+    };
+    if quoted(block).is_some() {
+        if next.and_then(quoted) == Some(true) {
+            out.push('>');
+        }
+        out.push('\n');
+    }
+}
+
 fn serialize_block(
     block: &Block,
     doc: &FlowDocument,
@@ -7135,6 +7185,25 @@ fn serialize_paragraph(
     source_diagnostics: &mut Vec<SourceDiagnostic>,
     list_label: Option<&str>,
 ) {
+    if let Some((_, base)) = markdown_quote_style(p.style.as_deref()) {
+        let mut paragraph = p.clone();
+        paragraph.style = base.map(str::to_owned);
+        if paragraph.direct.borders[0].is_none() {
+            paragraph.direct.borders[3] = None;
+        }
+        let mut fragment = String::new();
+        serialize_paragraph(&paragraph, doc, media, comments, &mut fragment, form_layout, source_diagnostics, list_label);
+        for line in fragment.trim_end_matches('\n').split('\n') {
+            out.push('>');
+            if !line.is_empty() {
+                out.push(' ');
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+        return;
+    }
+
     if let Some((indent, code_style)) = markdown_continuation_style(p.style.as_deref()) {
         let mut paragraph = p.clone();
         paragraph.style = code_style.filter(|style| markdown_code_language(Some(style)).is_some()).map(str::to_owned);
@@ -10381,6 +10450,18 @@ Front caption
         assert_eq!(saved, output);
         let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
         assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), output);
+    }
+
+    #[test]
+    fn markdown_retains_multiple_blocks_in_the_same_quote() {
+        let source = "Before.\n\n> ## Notes\n>\n> First *paragraph*.\n>\n> Second paragraph.\n>\n> ```sh\n> echo ready\n> ```\n\nOutside.\n\n> Separate quote.\n";
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert_eq!(saved, source);
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
+        let docx = import_markdown_to_docx_bytes(saved.as_bytes()).unwrap();
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
     }
 
     #[test]
