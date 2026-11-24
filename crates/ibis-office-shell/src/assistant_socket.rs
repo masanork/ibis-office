@@ -34,6 +34,9 @@ pub fn start(
                     if request["op"] == "analysis_context" {
                         return crate::format::with_format!(editor, live_analysis(editor, None, cx));
                     }
+                    if request["op"] == "analysis_preview_diff" {
+                        return crate::format::with_format!(editor, live_analysis_preview_diff(editor, &request));
+                    }
                     if request["op"] == "chart_drill_down" {
                         return crate::format::with_format!(editor, live_chart_drill_down(editor));
                     }

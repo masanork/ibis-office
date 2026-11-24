@@ -3181,5 +3181,6 @@ query.report-back	戻る
 query.report-limit	一度に選べるレポートは12件までです。
 query.report-parameter-choose	値を選択
 query.report-parameter-error	レポートの選択肢を取得できないか、設定が一致していません。
+query.report-chart-delta	{chart} · {category}（{series}） {before} → {after}（差 {delta}）
 query.report-chart-changed	変わるグラフ: {chart}
 query.report-chart-unchanged	変わらないグラフ: {chart}

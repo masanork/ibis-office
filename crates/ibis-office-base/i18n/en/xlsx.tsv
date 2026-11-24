@@ -3184,5 +3184,6 @@ query.report-back	Back
 query.report-limit	Select up to 12 reports at a time.
 query.report-parameter-choose	Choose a value
 query.report-parameter-error	Report parameter choices are unavailable or incompatible.
+query.report-chart-delta	{chart} · {category} ({series}) {before} → {after} (change {delta})
 query.report-chart-changed	Chart changes: {chart}
 query.report-chart-unchanged	Chart unchanged: {chart}

@@ -150,6 +150,8 @@ pub(crate) mod query_ops;
 pub(crate) mod query_editor;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod query_report_panel;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod chart_preview_diff;
 pub(crate) mod cells_dialog;
 pub(crate) mod consolidate;
 pub(crate) mod context_menu;
@@ -695,6 +697,16 @@ fn outer_contexts(state: &crate::shell::menu_context::ContextState) -> Vec<crate
 }
 
 impl FormatEditor for Workbook {
+    fn live_analysis_preview_diff(editor: &SlideEditor, args: &serde_json::Value) -> serde_json::Value {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        return crate::query_report_panel::QueryReportPanelExtCrate::live_report_preview_diff(editor, args);
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = (editor, args);
+            serde_json::json!({"error":"Analysis preview comparison is only available on desktop"})
+        }
+    }
+
     fn live_chart_drill_down(editor: &SlideEditor) -> serde_json::Value {
         event_hooks::EventHooksCrate::live_chart_drill_down(editor)
     }

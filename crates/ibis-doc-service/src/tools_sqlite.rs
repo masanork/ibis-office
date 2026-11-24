@@ -1640,7 +1640,7 @@ fn apply_batch_refresh(
     let id = args.str_arg("document_id")?;
     let preview = args.opt_bool("preview")?.unwrap_or(false);
     let open = crate::tools_xlsx::workbook_document(service, id)?;
-    let (summary, commands) =
+    let (summary, commands, _) =
         plan_batch_refresh(open.document.presentation(), args, results, preview)?;
     if !preview {
         crate::edit::execute(open, commands)?;
@@ -1653,7 +1653,7 @@ fn plan_batch_refresh(
     args: &Value,
     results: Vec<QueryReportResult>,
     preview: bool,
-) -> Result<(Value, Vec<ibis_doc_model::Command>), ToolError> {
+) -> Result<(Value, Vec<ibis_doc_model::Command>, ibis_doc_model::Document), ToolError> {
     let metrics = batch_metrics(args, &results)?;
     let mut scratch = ibis_doc_model::Document::new(workbook.clone());
     let mut reports = Vec::with_capacity(results.len());
@@ -1697,6 +1697,7 @@ fn plan_batch_refresh(
     Ok((
         json!({"preview":preview,"blocked":blocked,"reports":reports,"charts":charts}),
         commands,
+        scratch,
     ))
 }
 
@@ -1735,7 +1736,7 @@ fn refresh_query_reports(service: &mut Service, args: &Value) -> Result<Value, T
     let snapshot_id = service.new_document_id();
     let open = crate::tools_xlsx::workbook_document(service, id)?;
     let base = open.document.presentation();
-    let (mut summary, commands) = plan_batch_refresh(base, args, results, true)?;
+    let (mut summary, commands, _) = plan_batch_refresh(base, args, results, true)?;
     let reviewed = if summary["blocked"] != true {
         let reviewed = ReviewedReportRefresh {
             document_id: id.to_owned(), snapshot_id: snapshot_id.clone(),
@@ -1762,14 +1763,20 @@ impl SqliteReportBatch {
         self,
         workbook: &ibis_doc_model::Presentation,
     ) -> Result<(Value, Vec<ibis_doc_model::Command>), ToolError> {
-        let (summary, commands) =
+        self.review_with_candidate(workbook).map(|(summary, commands, _)| (summary, commands))
+    }
+
+    /// Retain the workbook produced by the exact commands used for review.
+    pub fn review_with_candidate(
+        self,
+        workbook: &ibis_doc_model::Presentation,
+    ) -> Result<(Value, Vec<ibis_doc_model::Command>, Option<ibis_doc_model::Presentation>), ToolError> {
+        let (summary, commands, candidate) =
             plan_batch_refresh(workbook, &self.arguments, self.results, true)?;
-        let commands = if summary["blocked"] == true {
-            Vec::new()
-        } else {
-            commands
-        };
-        Ok((summary, commands))
+        if summary["blocked"] == true {
+            return Ok((summary, Vec::new(), None));
+        }
+        Ok((summary, commands, Some(candidate.presentation().clone())))
     }
 
     pub fn stage(

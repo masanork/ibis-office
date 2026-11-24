@@ -71,6 +71,9 @@ struct ReviewedRefresh {
     base: Presentation,
     result: Value,
     commands: Vec<Command>,
+    candidate: Option<Presentation>,
+    chart_diffs: Vec<Value>,
+    chart_diffs_truncated: bool,
 }
 
 pub(crate) struct QueryReportPanel {
@@ -157,6 +160,32 @@ impl QueryReportPanel {
 
 #[ibis_office_macros::editor_ext(QueryReportPanelExt)]
 impl SlideEditor {
+    pub(crate) fn live_report_preview_diff(&self, args: &Value) -> Value {
+        let Some(panel) = self.wb().panels.queries.as_ref().and_then(|panel| panel.reports.as_ref()) else {
+            return json!({"state":"idle"});
+        };
+        if panel.busy {
+            return json!({"state":"previewing"});
+        }
+        let Some(review) = &panel.review else { return json!({"state":"idle"}) };
+        if self.presentation() != &review.base {
+            return json!({"state":"stale"});
+        }
+        let Some(candidate) = &review.candidate else { return json!({"state":"blocked"}) };
+        match (args.get("shape_id"), args.get("series"), args.get("category")) {
+            (None, None, None) => json!({
+                "state":"review","charts":review.chart_diffs,"truncated":review.chart_diffs_truncated
+            }),
+            (Some(shape), Some(series), Some(category)) => {
+                let (Some(shape), Some(series), Some(category)) = (shape.as_u64(), series.as_str(), category.as_str()) else {
+                    return json!({"error":"Supply a chart shape ID, series label and category label"});
+                };
+                crate::chart_preview_diff::detail(&review.base, candidate, ibis_doc_model::ShapeId(shape), (series, category))
+            }
+            _ => json!({"error":"Supply a chart shape ID, series label and category label together"}),
+        }
+    }
+
     pub(crate) fn live_report_analysis(&mut self, request: Option<&Value>, cx: &mut Context<Self>) -> Value {
         let Some(book) = self.presentation().workbook.as_ref() else {
             return json!({"error":"No workbook is open"});
@@ -458,8 +487,11 @@ impl SlideEditor {
                             let batch = ibis_doc_service::prepare_selected_report_batch(
                                 &paths, args, definitions,
                             )?;
-                            let (result, commands) = batch.review(&base)?;
-                            Ok(ReviewedRefresh { base, result, commands })
+                            let (result, commands, candidate) = batch.review_with_candidate(&base)?;
+                            let (chart_diffs, chart_diffs_truncated) = candidate.as_ref().map(|candidate| {
+                                crate::chart_preview_diff::summary(&base, candidate, &result["charts"])
+                            }).unwrap_or_default();
+                            Ok(ReviewedRefresh { base, result, commands, candidate, chart_diffs, chart_diffs_truncated })
                         })
                         .map_err(|error| ibis_doc_service::ToolError::new("internal", error.to_string()))?
                         .join()
@@ -780,6 +812,20 @@ impl SlideEditor {
                 body = body.child(div().text_sm().child(format(label, &[
                     ("chart", &chart["title"].as_str().unwrap_or_default()),
                 ])));
+            }
+            if self.presentation() == &review.base {
+                for chart in &review.chart_diffs {
+                    for change in chart["top"].as_array().into_iter().flatten() {
+                        body = body.child(div().text_sm().child(format("query.report-chart-delta", &[
+                            ("chart", &chart["title"].as_str().unwrap_or_default()),
+                            ("category", &change["category"].as_str().unwrap_or_default()),
+                            ("series", &change["series"].as_str().unwrap_or_default()),
+                            ("before", &change["amounts"]["before"]),
+                            ("after", &change["amounts"]["after"]),
+                            ("delta", &change["amounts"]["delta"]),
+                        ])));
+                    }
+                }
             }
             for report in review.result["reports"].as_array().into_iter().flatten() {
                 let name = report["table"].as_str().unwrap_or_default();

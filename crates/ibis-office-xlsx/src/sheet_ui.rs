@@ -3380,6 +3380,51 @@ pub(crate) const OPEN_END: u32 = u32::MAX;
 pub(crate) const MAX_COLUMNS: u32 = 16_384;
 pub(crate) const MAX_ROWS: u32 = 1_048_576;
 
+pub(crate) fn resolve_workbook_reference(
+    workbook: &ibis_doc_model::Presentation,
+    reference: &Reference,
+    default_sheet: SlideId,
+) -> Option<(SlideId, CellRange)> {
+    let slides = &workbook.slides;
+    let slide = match &reference.sheet {
+        Some(name) => {
+            let name = name.to_lowercase();
+            slides.iter().enumerate().find(|(index, slide)| {
+                let tab = slide.name.clone().unwrap_or_else(|| format!("Sheet{}", index + 1));
+                tab.to_lowercase() == name
+            })?.1
+        }
+        None => workbook.slide(default_sheet)?,
+    };
+    let (_, sheet) = sheet_of(slide)?;
+    let range = match &reference.target {
+        Target::Cells(range) => *range,
+        Target::Name(name) if is_print_area(name) => sheet.print_area?,
+        Target::Name(name) => {
+            // A defined name: the range it stands for (the sheet's own name first).
+            let index = workbook.workbook.as_ref().and_then(|w| w.sheets.iter().position(|s| s.slide == Some(slide.id)));
+            let names = &workbook.workbook.as_ref()?.names;
+            let defined = names.iter().find(|n| n.name.eq_ignore_ascii_case(name) && n.sheet.is_some() && n.sheet == index).or_else(|| names.iter().find(|n| n.name.eq_ignore_ascii_case(name) && n.sheet.is_none()))?;
+            let target = parse_reference(defined.formula.trim().trim_start_matches('='))?;
+            if matches!(target.target, Target::Name(_)) {
+                return None;
+            }
+            return resolve_workbook_reference(workbook, &target, default_sheet);
+        }
+    };
+    let last_column = MAX_SHEET_COLUMNS.saturating_sub(1);
+    let last_row = MAX_SHEET_ROWS.saturating_sub(1);
+    Some((
+        slide.id,
+        CellRange {
+            first_row: range.first_row.min(last_row),
+            first_column: range.first_column.min(last_column),
+            last_row: range.last_row.min(last_row),
+            last_column: range.last_column.min(last_column),
+        },
+    ))
+}
+
 /// Read a reference as Excel's name box does: `B12`, `$B$12`, `b12`,
 /// `A1:C5`, `A:C`, `3:5`, `Sheet2!A1`, `'Sheet name'!A1` (a `'` in the
 /// name doubled) or a name. `None` if it is none of these.
@@ -3818,44 +3863,7 @@ impl SlideEditor {
     }
 
     pub(crate) fn resolve_reference_from(&self, reference: &Reference, default_sheet: SlideId) -> Option<(SlideId, CellRange)> {
-        let slides = &self.presentation().slides;
-        let slide = match &reference.sheet {
-            Some(name) => {
-                let name = name.to_lowercase();
-                slides.iter().enumerate().find(|(index, slide)| {
-                    let tab = slide.name.clone().unwrap_or_else(|| format!("Sheet{}", index + 1));
-                    tab.to_lowercase() == name
-                })?.1
-            }
-            None => self.presentation().slide(default_sheet)?,
-        };
-        let (_, sheet) = sheet_of(slide)?;
-        let range = match &reference.target {
-            Target::Cells(range) => *range,
-            Target::Name(name) if is_print_area(name) => sheet.print_area?,
-            Target::Name(name) => {
-                // A defined name: the range it stands for (the sheet's own name first).
-                let index = self.presentation().workbook.as_ref().and_then(|w| w.sheets.iter().position(|s| s.slide == Some(slide.id)));
-                let names = &self.presentation().workbook.as_ref()?.names;
-                let defined = names.iter().find(|n| n.name.eq_ignore_ascii_case(name) && n.sheet.is_some() && n.sheet == index).or_else(|| names.iter().find(|n| n.name.eq_ignore_ascii_case(name) && n.sheet.is_none()))?;
-                let target = parse_reference(defined.formula.trim().trim_start_matches('='))?;
-                if matches!(target.target, Target::Name(_)) {
-                    return None;
-                }
-                return self.resolve_reference_from(&target, default_sheet);
-            }
-        };
-        let last_column = MAX_SHEET_COLUMNS.saturating_sub(1);
-        let last_row = MAX_SHEET_ROWS.saturating_sub(1);
-        Some((
-            slide.id,
-            CellRange {
-                first_row: range.first_row.min(last_row),
-                first_column: range.first_column.min(last_column),
-                last_row: range.last_row.min(last_row),
-                last_column: range.last_column.min(last_column),
-            },
-        ))
+        resolve_workbook_reference(self.presentation(), reference, default_sheet)
     }
 
     /// Select what `text` refers to, as the name box and ジャンプ do: the

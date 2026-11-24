@@ -345,6 +345,8 @@ fn respond(
     inbox: &mut Inbox,
     queue_operation: &str,
 ) -> io::Result<()> {
+    // The listener is nonblocking. Accepted sockets may inherit that mode.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     let mut bytes = Vec::new();
@@ -368,13 +370,40 @@ fn respond(
         }
         response
     };
-    serde_json::to_writer(&mut stream, &response)?;
-    stream.write_all(b"\n")
+    let mut bytes = serde_json::to_vec(&response)?;
+    bytes.push(b'\n');
+    stream.write_all(&bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonblocking_listener_can_return_a_large_analysis_response() {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        client.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+        let evidence = "集計根拠\n".repeat(12_000);
+        let expected = json!({"evidence":evidence});
+        let response = expected.clone();
+        let worker = thread::spawn(move || {
+            let (_output, events) = mpsc::channel();
+            let mut dispatch = |(_, _, answer): Request| {
+                answer.send(response.clone()).map_err(io::Error::other)
+            };
+            respond(
+                server, &mut dispatch, &mut Journal::default(), &events,
+                &mut Inbox::default(), "prompt",
+            ).unwrap();
+        });
+        client.write_all(b"{\"op\":\"analysis_preview_diff\"}\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(client).read_line(&mut line).unwrap();
+        assert!(line.ends_with('\n'));
+        assert_eq!(serde_json::from_str::<Value>(&line).unwrap(), expected);
+        worker.join().unwrap();
+    }
 
     #[test]
     fn pending_runs_survive_rollover_and_full_inbox_does_not_admit_more() {
