@@ -3903,6 +3903,7 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
             let active = editor.is_xlsx_theme_palette_active(pid);
             let menu_id = match pid {
                 "office" => "xlsx.theme-palette.office",
+                "office_2013_2022" => "xlsx.theme-palette.office_2013_2022",
                 "aspect" => "xlsx.theme-palette.aspect",
                 "apex" => "xlsx.theme-palette.apex",
                 "slate" => "xlsx.theme-palette.slate",
@@ -4051,6 +4052,7 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
         crate::shell::chrome::Submenu::tr("xlsx.chart-quick-layout", "dashboard_customize", quick_layout_items).into(),
     );
     menus.connect("xlsx.theme-palette.office", |this, _, cx| this.apply_xlsx_theme_palette("office", cx));
+    menus.connect("xlsx.theme-palette.office_2013_2022", |this, _, cx| this.apply_xlsx_theme_palette("office_2013_2022", cx));
     menus.connect("xlsx.theme-palette.aspect", |this, _, cx| this.apply_xlsx_theme_palette("aspect", cx));
     menus.connect("xlsx.theme-palette.apex", |this, _, cx| this.apply_xlsx_theme_palette("apex", cx));
     menus.connect("xlsx.theme-palette.slate", |this, _, cx| this.apply_xlsx_theme_palette("slate", cx));

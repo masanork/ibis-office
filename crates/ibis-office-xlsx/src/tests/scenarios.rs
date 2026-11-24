@@ -16769,9 +16769,14 @@ fn format016_theme_palette_and_colors() {
     let st_b1_redone = style(&mut s, 0, 1);
     assert_eq!(st_b1_redone.color, Rgb(0xA56110));
 
-    // 5. Office テーマパレットに切り替え
+    // Current Office and legacy Office are independent presets.
     s.menu("xlsx.theme-palette.office");
-    assert!(s.with(|e, _| e.is_xlsx_theme_palette_active("office")));
+    assert_eq!(style(&mut s, 0, 0).fill, Some(Rgb(0x156082)));
+    assert_eq!(style(&mut s, 0, 1).color, Rgb(0xE97132));
+
+    // 5. Office 2013–2022 テーマパレットに切り替え
+    s.menu("xlsx.theme-palette.office_2013_2022");
+    assert!(s.with(|e, _| e.is_xlsx_theme_palette_active("office_2013_2022")));
     assert!(!s.with(|e, _| e.is_xlsx_theme_palette_active("aspect")));
     let st_a1_office = style(&mut s, 0, 0);
     assert_eq!(st_a1_office.fill, Some(Rgb(0x4472C4)));

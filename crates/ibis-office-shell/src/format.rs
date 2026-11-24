@@ -1140,11 +1140,9 @@ pub trait FormatEditor {
         editor.apply_chart_panel(window, cx)
     }
 
-    /// The theme's ten colours the colour palettes show in their theme rows (`shell/chrome.rs`), in SpreadsheetML's order
-    /// (lt1, dk1, lt2, dk2, accent1–6). Office's own by default, as it was before the hook: only a workbook's theme
-    /// reaches the palettes (the file was asked for a workbook's theme part, which a presentation and a document lack).
-    fn palette_theme_colors(_editor: &SlideEditor) -> [ibis_doc_model::Rgb; 10] {
-        ibis_formats::workbook_theme_colors(None)
+    /// The current document's theme colours, in colour-picker order.
+    fn palette_theme_colors(editor: &SlideEditor) -> [ibis_doc_model::Rgb; 10] {
+        ibis_formats::workbook_theme_colors_from_slice(&editor.presentation().theme_colors)
     }
 
     /// The palettes the format offers: the id, the i18n key of the name, the colours by their scheme names (`dk1`, `accent1`, …).
