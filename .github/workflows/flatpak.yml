@@ -140,10 +140,10 @@ jobs:
           submodules: recursive
 
       - name: Install system build and Flatpak dependencies
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get install -y --no-install-recommends \
             build-essential \
             pkg-config \
             libssl-dev \
