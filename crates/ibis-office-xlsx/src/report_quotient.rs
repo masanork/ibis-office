@@ -23,16 +23,16 @@ impl Observation {
         }
     }
 
-    fn value(self) -> Value {
+    fn number(self) -> Option<f64> {
         match self {
-            Self::Number(value) => json!(value),
-            _ => Value::Null,
+            Self::Number(value) => Some(value),
+            _ => None,
         }
     }
 }
 
 #[derive(Clone, Copy)]
-enum Metric {
+pub(crate) enum Metric {
     Rate,
     Average,
 }
@@ -50,7 +50,7 @@ impl Metric {
         match self { Self::Rate => "rate", Self::Average => "average" }
     }
 
-    fn fields(self) -> (&'static str, &'static str, &'static str, &'static str) {
+    pub(crate) fn fields(self) -> (&'static str, &'static str, &'static str, &'static str) {
         match self {
             Self::Rate => ("numerator_column", "denominator_column", "numerator", "denominator"),
             Self::Average => ("sum_column", "count_column", "sum", "count"),
@@ -215,23 +215,44 @@ struct Side {
     totals: QuotientTotals,
     rows: BTreeMap<Arc<str>, ReportRow>,
     columns: [u32; 3],
-    source: Value,
+    sheet: Option<String>,
+    source_table: String,
+    source_columns: [String; 3],
+}
+
+pub(crate) struct EvidenceCell {
+    pub(crate) address: String,
+    pub(crate) value: Option<f64>,
+}
+
+pub(crate) struct Evidence {
+    state: &'static str,
+    pub(crate) sheet: Option<String>,
+    key_cell: String,
+    value: Option<f64>,
+    pub(crate) cells: [EvidenceCell; 2],
+}
+
+fn evidence_json(evidence: Option<&Evidence>, metric: Metric) -> Value {
+    let Some(evidence) = evidence else { return json!({"state":"absent"}); };
+    let (_, _, left, right) = metric.fields();
+    let cell = |cell: &EvidenceCell| json!({"cell":cell.address,"value":cell.value});
+    json!({"state":evidence.state,"sheet":evidence.sheet,"key_cell":evidence.key_cell,
+        (metric.name()):evidence.value,(left):cell(&evidence.cells[0]),(right):cell(&evidence.cells[1])})
 }
 
 impl Side {
-    fn evidence(&self, key: &str) -> Value {
-        let Some(row) = self.rows.get(key) else { return json!({"state":"absent"}); };
-        let [key_column, numerator_column, denominator_column] = self.columns;
-        let (_, _, left, right) = self.metric.fields();
+    fn evidence(&self, key: &str) -> Option<Evidence> {
+        let row = self.rows.get(key)?;
+        let [key_column, numerator, denominator] = self.columns;
         let value = row.group.and_then(|group| group.value.is_finite().then_some(group.value));
-        let cell = |column, observation: Observation| json!({
-            "cell":cell_name(column, row.index),
-            "value":observation.value(),
-        });
-        json!({
-            "state":if row.state == "ready" && value.is_none() {"non_finite"} else {row.state},
-            "sheet":self.source["sheet"], "key_cell":cell_name(key_column, row.index),
-            (self.metric.name()):value, (left):cell(numerator_column, row.observations[0]), (right):cell(denominator_column, row.observations[1]),
+        Some(Evidence {
+            state: if row.state == "ready" && value.is_none() { "non_finite" } else { row.state },
+            sheet: self.sheet.clone(),
+            key_cell: cell_name(key_column, row.index),
+            value,
+            cells: [(numerator, row.observations[0]), (denominator, row.observations[1])].map(|(column, observation)|
+                EvidenceCell { address: cell_name(column, row.index), value: observation.number() }),
         })
     }
 }
@@ -281,13 +302,9 @@ fn report_side(workbook: &Presentation, name: &str, metric: &str) -> Result<Side
             return Err("duplicate_key");
         }
     }
-    let source = json!({
-        "sheet":page.name,"table":table.name,
-        "key_column":definition["key_column"],
-        (left_column):definition[left_column],
-        (right_column):definition[right_column],
-    });
-    Ok(Side { metric: kind, totals, rows, columns: [key_column, numerator_column, denominator_column], source })
+    let source_columns = ["key_column", left_column, right_column].map(|key| definition[key].as_str().unwrap_or_default().to_owned());
+    Ok(Side { metric: kind, totals, rows, columns: [key_column, numerator_column, denominator_column],
+        sheet: page.name.clone(), source_table: table.name.clone(), source_columns })
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -358,6 +375,72 @@ pub(crate) enum RankingPage {
     Excluded(usize, Option<ExclusionReason>),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckState { Ready, Mismatch, NonFinite }
+
+impl CheckState {
+    fn check(tolerance: f64, residuals: &[f64]) -> Self {
+        if residuals.iter().any(|value| !value.is_finite()) { Self::NonFinite }
+        else if residuals.iter().any(|value| value.abs() > tolerance) { Self::Mismatch }
+        else { Self::Ready }
+    }
+
+    fn wire(self) -> &'static str {
+        match self { Self::Ready => "ready", Self::Mismatch => "totals_mismatch", Self::NonFinite => "non_finite" }
+    }
+}
+
+pub(crate) struct RankedRow {
+    pub(crate) key: String,
+    pub(crate) contribution: f64,
+    pub(crate) within_group: f64,
+    pub(crate) composition: f64,
+    before_share: f64,
+    after_share: f64,
+    pub(crate) before: Option<Evidence>,
+    pub(crate) after: Option<Evidence>,
+    pub(crate) reason: Option<ExclusionReason>,
+}
+
+pub(crate) struct RankPage {
+    pub(crate) offset: usize,
+    pub(crate) groups: Vec<RankedRow>,
+    pub(crate) page_size: usize,
+    pub(crate) next_offset: Option<usize>,
+    pub(crate) reason: Option<ExclusionReason>,
+}
+
+pub(crate) struct Subtotal {
+    pub(crate) count: usize,
+    pub(crate) contribution: f64,
+}
+
+pub(crate) struct Ranking {
+    pub(crate) groups: Vec<RankedRow>,
+    pub(crate) group_count: usize,
+    pub(crate) top_contribution: f64,
+    pub(crate) remainder: Subtotal,
+    pub(crate) page: Option<RankPage>,
+}
+
+pub(crate) struct FilteredRanking {
+    pub(crate) ranking: Ranking,
+    pub(crate) total_contribution: f64,
+    pub(crate) excluded: Subtotal,
+    pub(crate) by_reason: [Subtotal; 3],
+    pub(crate) excluded_page: Option<RankPage>,
+    pub(crate) state: CheckState,
+    residual: f64,
+    reason_residual: f64,
+}
+
+pub(crate) struct RankingResult {
+    pub(crate) ranking: Ranking,
+    pub(crate) filtered: Option<FilteredRanking>,
+    pub(crate) state: CheckState,
+    partition_residual: f64,
+}
+
 type RankedGroup<'a> = (&'a str, Effect, f64);
 
 fn compare_rank(left: &RankedGroup<'_>, right: &RankedGroup<'_>) -> std::cmp::Ordering {
@@ -365,8 +448,8 @@ fn compare_rank(left: &RankedGroup<'_>, right: &RankedGroup<'_>) -> std::cmp::Or
 }
 
 fn rank_page(
-    rows: &mut [RankedGroup<'_>], offset: usize, row: impl Fn(&RankedGroup<'_>) -> Value,
-) -> Value {
+    rows: &mut [RankedGroup<'_>], offset: usize, row: impl Fn(&RankedGroup<'_>) -> RankedRow,
+) -> RankPage {
     let offset = offset.min(rows.len());
     let end = offset.saturating_add(REMAINDER_PAGE_SIZE).min(rows.len());
     let groups = if offset == end {
@@ -383,17 +466,14 @@ fn rank_page(
         groups.sort_unstable_by(compare_rank);
         groups
     };
-    let entries: Vec<_> = groups.iter().map(&row).collect();
-    json!({
-        "offset":offset, "groups":entries, "page_size":REMAINDER_PAGE_SIZE,
-        "next_offset":(end < rows.len()).then_some(end),
-    })
+    RankPage { offset, groups: groups.iter().map(row).collect(), page_size: REMAINDER_PAGE_SIZE,
+        next_offset: (end < rows.len()).then_some(end), reason: None }
 }
 
 fn rank_groups(
     ranked: &mut [RankedGroup<'_>], remainder_offset: Option<usize>,
-    row: impl Fn(&RankedGroup<'_>) -> Value,
-) -> Value {
+    row: impl Fn(&RankedGroup<'_>) -> RankedRow,
+) -> Ranking {
     let group_count = ranked.len();
     if group_count > RANKED_LIMIT {
         ranked.select_nth_unstable_by(RANKED_LIMIT, compare_rank);
@@ -409,11 +489,9 @@ fn rank_groups(
     };
     let top_contribution = subtotal(top);
     let remainder_contribution = subtotal(remainder);
-    let mut other = json!({"count":remainder.len(),"contribution":remainder_contribution});
-    if let Some(offset) = remainder_offset {
-        other["page"] = rank_page(remainder, offset, row);
-    }
-    json!({"groups":groups,"group_count":group_count,"top_contribution":top_contribution,"remainder":other})
+    let other = Subtotal { count: remainder.len(), contribution: remainder_contribution };
+    let page = remainder_offset.map(|offset| rank_page(remainder, offset, row));
+    Ranking { groups, group_count, top_contribution, remainder: other, page }
 }
 
 struct Decomposition {
@@ -476,20 +554,14 @@ impl Decomposition {
             counts: [continued, entered, exited], ranked })
     }
 
-    fn response(&self, before: &Side, after: &Side, key: Option<&str>, page: Option<RankingPage>, filter: &RankingFilter) -> Value {
-        let Self { scale, delta, within, composition, total, residual, group_residual, tolerance, counts, .. } = *self;
-        let [continued, entered, exited] = counts;
+    fn rankings(&self, before: &Side, after: &Side, page: Option<RankingPage>, filter: &RankingFilter) -> RankingResult {
+        let Self { scale, delta, residual, group_residual, tolerance, .. } = *self;
         let mut ranked: Vec<_> = self.ranked.iter().map(|(key, effect, contribution)| (key.as_ref(), *effect, *contribution)).collect();
-        let contributor = key.and_then(|key| ranked.iter().find(|row| row.0 == key)).map(|(_, effect, _)| json!({
-            "within_group":effect.within * scale, "composition":effect.composition * scale,
-            "before_share":effect.before_share, "after_share":effect.after_share,
-        }));
-        let row = |&(key, ref effect, contribution): &RankedGroup<'_>| json!({
-            "key":key, "contribution":contribution, "within_group":effect.within * scale,
-            "composition":effect.composition * scale,
-            "before_share":effect.before_share, "after_share":effect.after_share,
-            "before":before.evidence(key), "after":after.evidence(key),
-        });
+        let row = |&(key, ref effect, contribution): &RankedGroup<'_>| RankedRow {
+            key: key.to_owned(), contribution, within_group: effect.within * scale,
+            composition: effect.composition * scale, before_share: effect.before_share, after_share: effect.after_share,
+            before: before.evidence(key), after: after.evidence(key), reason: None,
+        };
         let remainder_offset = match page {
             Some(RankingPage::Remainder(offset)) => Some(offset),
             _ => None,
@@ -529,108 +601,172 @@ impl Decomposition {
             }
             let residual = (matched.sum + excluded.sum) - delta;
             let excluded_count = ranked.len() - matches.len();
-            let mut result = rank_groups(&mut matches, remainder_offset, row);
-            result["total_contribution"] = json!(matched.sum);
-            result["excluded"] = json!({"count":excluded_count,"contribution":excluded.sum});
-            let mut by_reason = serde_json::Map::new();
+            let ranking = rank_groups(&mut matches, remainder_offset, row);
             let mut reason_total = CompensatedSum::default();
-            for reason in ExclusionReason::ALL {
-                let (count, subtotal) = &reasons[reason as usize];
+            let by_reason = reasons.map(|(count, subtotal)| {
                 reason_total.add(subtotal.sum);
-                by_reason.insert(reason.key().into(), json!({"count":count,"contribution":subtotal.sum}));
-            }
+                Subtotal { count, contribution: subtotal.sum }
+            });
             let reason_residual = reason_total.sum - excluded.sum;
-            result["excluded"]["by_reason"] = Value::Object(by_reason);
-            result["excluded"]["reason_residual"] = json!(reason_residual);
-            if let Some(RankingPage::Excluded(offset, reason)) = page {
-                result["excluded"]["page"] = rank_page(&mut excluded_groups, offset, |entry| {
+            let excluded_page = if let Some(RankingPage::Excluded(offset, reason)) = page {
+                let mut page = rank_page(&mut excluded_groups, offset, |entry| {
                     let (direction, name) = exclusion(entry.0, entry.2);
                     let mut value = row(entry);
-                    value["excluded_by"] = json!({"direction":direction,"name":name});
+                    value.reason = ExclusionReason::from_conditions(direction, name);
                     value
                 });
-                if let Some(reason) = reason {
-                    result["excluded"]["page"]["reason"] = json!(reason.key());
-                }
-            }
-            result["partition_residual"] = json!(residual);
-            result["state"] = json!(if !residual.is_finite() || !reason_residual.is_finite() { "non_finite" }
-                else if residual.abs() <= tolerance && reason_residual.abs() <= tolerance { "ready" }
-                else { "totals_mismatch" });
-            result
+                page.reason = reason;
+                Some(page)
+            } else { None };
+            FilteredRanking { ranking, total_contribution: matched.sum,
+                excluded: Subtotal { count: excluded_count, contribution: excluded.sum },
+                by_reason, excluded_page, state: CheckState::check(tolerance, &[residual, reason_residual]),
+                residual, reason_residual }
         });
-        let mut ranking = rank_groups(&mut ranked, remainder_offset.filter(|_| filtered.is_none()), row);
-        let partition_residual = (ranking["top_contribution"].as_f64().unwrap_or(f64::NAN)
-            + ranking["remainder"]["contribution"].as_f64().unwrap_or(f64::NAN)) - delta;
-        if !partition_residual.is_finite() {
-            return json!({"state":"non_finite"});
-        }
-        ranking["total_contribution"] = json!(total);
-        ranking["residual"] = json!(group_residual);
-        ranking["partition_residual"] = json!(partition_residual);
-        if let Some(filtered) = filtered {
-            ranking["filtered"] = filtered;
-        }
-        json!({
-            "state":if residual.abs() <= tolerance && group_residual.abs() <= tolerance && partition_residual.abs() <= tolerance {"ready"} else {"totals_mismatch"},
-            "within_group":within,"composition":composition,"residual":residual,"tolerance":tolerance,
-            "counts":{"continued":continued,"entered":entered,"exited":exited},
-            "contributor":contributor,
-            "ranking":ranking,
-        })
+        let ranking = rank_groups(&mut ranked, remainder_offset.filter(|_| filtered.is_none()), row);
+        let partition_residual = (ranking.top_contribution + ranking.remainder.contribution) - delta;
+        RankingResult { ranking, filtered, partition_residual,
+            state: CheckState::check(tolerance, &[residual, group_residual, partition_residual]) }
     }
 
+}
+
+pub(crate) struct AnalysisError {
+    pub(crate) state: &'static str,
+    side: Option<&'static str>,
+}
+
+impl AnalysisError {
+    pub(crate) fn wire(&self) -> Value {
+        match self.side {
+            Some(side) => json!({"state":self.state,"side":side}),
+            None => json!({"state":self.state}),
+        }
+    }
 }
 
 pub(crate) struct ReportAnalysis {
     before: Side,
     after: Side,
     decomposition: Result<Decomposition, &'static str>,
-    summary: Value,
+    pub(crate) kind: Metric,
+    pub(crate) delta: Option<f64>,
+    pub(crate) unit: Option<String>,
 }
 
 impl ReportAnalysis {
-    pub(crate) fn prepare(base: &Presentation, candidate: &Presentation, table: &str, metric: &str) -> Result<Self, Value> {
+    pub(crate) fn prepare(base: &Presentation, candidate: &Presentation, table: &str, metric: &str) -> Result<Self, AnalysisError> {
         if report_comparison_definition(base, table) != report_comparison_definition(candidate, table) {
-            return Err(json!({"state":"comparison_changed"}));
+            return Err(AnalysisError { state: "comparison_changed", side: None });
         }
-        let before = report_side(base, table, metric).map_err(|reason| json!({"state":reason,"side":"before"}))?;
-        let after = report_side(candidate, table, metric).map_err(|reason| json!({"state":reason,"side":"after"}))?;
+        let before = report_side(base, table, metric).map_err(|state| AnalysisError { state, side: Some("before") })?;
+        let after = report_side(candidate, table, metric).map_err(|state| AnalysisError { state, side: Some("after") })?;
         let kind = before.metric;
-        let (delta_key, delta) = kind.delta(before.totals.value(kind), after.totals.value(kind));
+        let (_, delta) = kind.delta(before.totals.value(kind), after.totals.value(kind));
         let decomposition = Decomposition::prepare(&before, &after, delta);
-        let mut summary = json!({"state":"review","table":table,"metric":metric,"kind":kind.name(),
-            "before":before.totals.details(kind),"after":after.totals.details(kind),(delta_key):delta,
-            "source":{"before":before.source,"after":after.source}});
-        if let Ok(definition) = report_comparison_definition(base, table)
-            && let Some(unit) = definition.get("unit")
-        {
-            summary["unit"] = unit.clone();
-        }
-        Ok(Self { before, after, decomposition, summary })
+        let unit = report_comparison_definition(base, table).ok().and_then(|definition| definition["unit"].as_str()).map(str::to_owned);
+        Ok(Self { before, after, decomposition, kind, delta, unit })
     }
 
-    pub(crate) fn response(&self, key: Option<&str>, page: Option<RankingPage>, filter: &RankingFilter) -> Value {
-        let mut result = self.summary.clone();
+    pub(crate) fn rankings(&self, page: Option<RankingPage>, filter: &RankingFilter) -> Option<RankingResult> {
+        self.decomposition.as_ref().ok().map(|data| data.rankings(&self.before, &self.after, page, filter))
+    }
+
+    pub(crate) fn response(&self, table: &str, metric: &str, key: Option<&str>, rankings: Option<&RankingResult>) -> Value {
+        let kind = self.kind;
+        let (delta_key, _) = kind.delta(None, None);
+        let source = |side: &Side| {
+            let (left, right, _, _) = kind.fields();
+            json!({"table":side.source_table,"sheet":side.sheet,"key_column":side.source_columns[0],
+                (left):side.source_columns[1],(right):side.source_columns[2]})
+        };
+        let mut result = json!({"state":"review","table":table,"metric":metric,"kind":kind.name(),(delta_key):self.delta,
+            "before":self.before.totals.details(kind),"after":self.after.totals.details(kind),
+            "source":{"before":source(&self.before),"after":source(&self.after)}});
+        if let Some(unit) = &self.unit { result["unit"] = json!(unit); }
         result["decomposition"] = match &self.decomposition {
-            Ok(decomposition) => decomposition.response(&self.before, &self.after, key, page, filter),
+            Ok(data) => data.wire(rankings.expect("prepared quotient ranking"), kind, key),
             Err(state) => json!({"state":state}),
         };
         if let Some(key) = key {
-            let kind = self.before.metric;
             let before = self.before.evidence(key);
             let after = self.after.evidence(key);
-            let (delta_key, delta) = kind.delta(before[kind.name()].as_f64(), after[kind.name()].as_f64());
-            result["contributor"] = json!({"key":key,"before":before,"after":after,(delta_key):delta});
+            let (_, delta) = kind.delta(before.as_ref().and_then(|row| row.value), after.as_ref().and_then(|row| row.value));
+            result["contributor"] = json!({"key":key,"before":evidence_json(before.as_ref(), kind),
+                "after":evidence_json(after.as_ref(), kind),(delta_key):delta});
         }
         result
+    }
+}
+
+fn ranking_json(ranking: &Ranking, kind: Metric) -> Value {
+    let groups: Vec<_> = ranking.groups.iter().map(|group| group.wire(kind)).collect();
+    let mut remainder = ranking.remainder.wire();
+    if let Some(page) = &ranking.page { remainder["page"] = page.wire(kind); }
+    json!({"groups":groups,"group_count":ranking.group_count,"top_contribution":ranking.top_contribution,"remainder":remainder})
+}
+
+impl Subtotal {
+    fn wire(&self) -> Value { json!({"count":self.count,"contribution":self.contribution}) }
+}
+
+impl RankPage {
+    fn wire(&self, kind: Metric) -> Value {
+        let groups: Vec<_> = self.groups.iter().map(|row| row.wire(kind)).collect();
+        let mut result = json!({"offset":self.offset,"groups":groups,"page_size":self.page_size,"next_offset":self.next_offset});
+        if let Some(reason) = self.reason { result["reason"] = json!(reason.key()); }
+        result
+    }
+}
+
+impl RankedRow {
+    fn wire(&self, kind: Metric) -> Value {
+        let mut row = json!({"key":self.key,"contribution":self.contribution,"within_group":self.within_group,
+            "composition":self.composition,"before_share":self.before_share,"after_share":self.after_share,
+            "before":evidence_json(self.before.as_ref(), kind),"after":evidence_json(self.after.as_ref(), kind)});
+        if let Some(reason) = self.reason {
+            row["excluded_by"] = json!({"direction":reason != ExclusionReason::Name,"name":reason != ExclusionReason::Direction});
+        }
+        row
+    }
+}
+
+impl Decomposition {
+    fn wire(&self, rankings: &RankingResult, kind: Metric, key: Option<&str>) -> Value {
+        if rankings.state == CheckState::NonFinite { return json!({"state":"non_finite"}); }
+        let mut ranking = ranking_json(&rankings.ranking, kind);
+        ranking["total_contribution"] = json!(self.total);
+        ranking["residual"] = json!(self.group_residual);
+        ranking["partition_residual"] = json!(rankings.partition_residual);
+        if let Some(filtered) = &rankings.filtered {
+            let mut result = ranking_json(&filtered.ranking, kind);
+            let mut excluded = filtered.excluded.wire();
+            let by_reason: serde_json::Map<_, _> = ExclusionReason::ALL.into_iter()
+                .map(|reason| (reason.key().to_owned(), filtered.by_reason[reason as usize].wire())).collect();
+            excluded["by_reason"] = Value::Object(by_reason);
+            excluded["reason_residual"] = json!(filtered.reason_residual);
+            if let Some(page) = &filtered.excluded_page { excluded["page"] = page.wire(kind); }
+            result["excluded"] = excluded;
+            result["total_contribution"] = json!(filtered.total_contribution);
+            result["partition_residual"] = json!(filtered.residual);
+            result["state"] = json!(filtered.state.wire());
+            ranking["filtered"] = result;
+        }
+        let contributor = key.and_then(|key| self.ranked.iter().find(|row| row.0.as_ref() == key)).map(|(_, effect, _)| json!({
+            "within_group":effect.within * self.scale,"composition":effect.composition * self.scale,
+            "before_share":effect.before_share,"after_share":effect.after_share,
+        }));
+        let [continued, entered, exited] = self.counts;
+        json!({"state":rankings.state.wire(),"within_group":self.within,"composition":self.composition,
+            "residual":self.residual,"tolerance":self.tolerance,
+            "counts":{"continued":continued,"entered":entered,"exited":exited},"contributor":contributor,"ranking":ranking})
     }
 }
 
 pub(crate) fn applied(workbook: &Presentation, table: &str, metric: &str, key: &str) -> Value {
     match report_side(workbook, table, metric) {
         Ok(side) => {
-            let evidence = side.evidence(key);
+            let evidence = evidence_json(side.evidence(key).as_ref(), side.metric);
             json!({"state":evidence["state"],"kind":side.metric.name(),"table":table,"metric":metric,"key":key,"evidence":evidence})
         }
         Err(reason) => json!({"state":reason}),

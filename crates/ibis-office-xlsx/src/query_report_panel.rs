@@ -15,7 +15,7 @@ use ibis_doc_service::{ReportParameterControl, ReportParameterKind, report_param
 use serde_json::{Value, json};
 
 use crate::ext::*;
-use crate::report_quotient::{ExclusionReason, RankingDirection, RankingFilter, RankingPage, ReportAnalysis};
+use crate::report_quotient::{ExclusionReason, RankingDirection, RankingFilter, RankingPage, ReportAnalysis, AnalysisError, FilteredRanking, RankPage, RankingResult};
 use crate::shell::chrome::{Dropdown, DropdownItem, SidebarPanel, action_button, panel_message};
 use crate::shell::editor::SlideEditor;
 use crate::shell::i18n::{format, text};
@@ -24,7 +24,7 @@ use crate::shell::i18n::{format, text};
 mod quotient_view;
 use quotient_view::quotient_preview;
 #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
-use quotient_view::signed_contribution;
+fn signed_contribution(value: &Value) -> String { quotient_view::signed_contribution(value.as_f64()) }
 
 fn saved_check_text(value: String) -> AnyElement {
     #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
@@ -78,7 +78,7 @@ struct ReportChoice {
 #[derive(Default)]
 struct QuotientFilterView {
     criteria: RankingFilter,
-    ranking: Option<Value>,
+    ranking: Option<FilteredRanking>,
     input: Option<Entity<InputState>>,
     _submit: Option<Subscription>,
 }
@@ -86,24 +86,19 @@ struct QuotientFilterView {
 struct QuotientPreview {
     table: String,
     metric: String,
-    summary: Value,
-    analysis: Result<ReportAnalysis, Value>,
+    summary: Option<RankingResult>,
+    analysis: Result<ReportAnalysis, AnalysisError>,
 }
 
 impl QuotientPreview {
     fn prepare(base: &Presentation, candidate: &Presentation, table: &str, metric: &str) -> Self {
         let analysis = ReportAnalysis::prepare(base, candidate, table, metric);
-        let mut summary = match &analysis {
-            Ok(analysis) => analysis.response(None, None, &RankingFilter::default()),
-            Err(error) => error.clone(),
-        };
-        summary["table"] = json!(table);
-        summary["metric"] = json!(metric);
+        let summary = analysis.as_ref().ok().and_then(|analysis| analysis.rankings(None, &RankingFilter::default()));
         Self { table: table.to_owned(), metric: metric.to_owned(), summary, analysis }
     }
 
     fn response(&self, table: &str, metric: &str, key: Option<&str>, page: Option<RankingPage>, filter: &RankingFilter) -> Value {
-        if self.analysis.as_ref().is_err_and(|error| error["state"] == "comparison_changed") {
+        if self.analysis.as_ref().is_err_and(|error| error.state == "comparison_changed") {
             return json!({"state":"comparison_changed"});
         }
         if metric != self.metric {
@@ -111,15 +106,14 @@ impl QuotientPreview {
         }
         match &self.analysis {
             Ok(analysis) => {
-                let mut response = if key.is_none() && page.is_none() && !filter.active() {
-                    self.summary.clone()
+                if page.is_none() && !filter.active() {
+                    analysis.response(table, metric, key, self.summary.as_ref())
                 } else {
-                    analysis.response(key, page, filter)
-                };
-                response["table"] = json!(table);
-                response
+                    let rankings = analysis.rankings(page, filter);
+                    analysis.response(table, metric, key, rankings.as_ref())
+                }
             }
-            Err(error) => error.clone(),
+            Err(error) => error.wire(),
         }
     }
 }
@@ -135,7 +129,7 @@ struct ReviewedRefresh {
     preview_bar: Option<(ibis_doc_model::SlideId, ibis_doc_model::ShapeId, usize, usize)>,
     preview_parameters: Value,
     quotient_selection: BTreeMap<usize, usize>,
-    quotient_pages: BTreeMap<usize, (RankingPage, Value)>,
+    quotient_pages: BTreeMap<usize, (RankingPage, RankPage)>,
 }
 
 impl ReviewedRefresh {
@@ -393,8 +387,9 @@ impl SlideEditor {
             criteria.query = input.read(cx).value().trim().to_owned();
         }
         let ranking = if criteria.active() {
-            let comparison = comparison.response(&comparison.table, &comparison.metric, None, None, &criteria);
-            comparison["decomposition"]["ranking"].get("filtered").cloned()
+            comparison.analysis.as_ref().ok()
+                .and_then(|analysis| analysis.rankings(None, &criteria))
+                .and_then(|rankings| rankings.filtered)
         } else {
             None
         };
@@ -417,10 +412,15 @@ impl SlideEditor {
             }
             let comparison = review.quotient_previews.get(index)?;
             let filter = panel.quotient_filters.get(&index).map(|view| view.criteria.clone()).unwrap_or_default();
-            let result = comparison.response(&comparison.table, &comparison.metric, None, Some(requested), &filter);
-            let ranking = &result["decomposition"]["ranking"];
-            let field = match requested { RankingPage::Remainder(_) => "remainder", RankingPage::Excluded(..) => "excluded" };
-            ranking.get("filtered").unwrap_or(ranking)[field].get("page").cloned().map(|page| (requested, page))
+            let result = comparison.analysis.as_ref().ok()?.rankings(Some(requested), &filter)?;
+            let page = match requested {
+                RankingPage::Remainder(_) => match result.filtered {
+                    Some(filtered) => filtered.ranking.page,
+                    None => result.ranking.page,
+                },
+                RankingPage::Excluded(..) => result.filtered?.excluded_page,
+            }?;
+            Some((requested, page))
         });
         if let Some(review) = self.query_reports_mut().filter(|panel| panel.preview.generation == generation)
             .and_then(|panel| panel.preview.review_mut())
@@ -1208,7 +1208,7 @@ impl SlideEditor {
             }
             if current_review.is_some() {
                 for (index, comparison) in review.quotient_previews.iter().enumerate() {
-                    body = body.child(quotient_preview(&comparison.summary, panel.quotient_filters.get(&index), review.quotient_pages.get(&index), index,
+                    body = body.child(quotient_preview(comparison, panel.quotient_filters.get(&index), review.quotient_pages.get(&index), index,
                         review.quotient_selection.get(&index).copied(), generation, cx));
                 }
                 for chart in &review.chart_diffs {
