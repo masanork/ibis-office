@@ -5900,11 +5900,75 @@ fn collect_markdown_links<'a>(
 
 const MARKDOWN_ESCAPED_PUNCTUATION_STYLE: &str = "IbisMarkdownEscapedPunctuation";
 
+const MARKDOWN_LINK_START_STYLE: &str = "IbisMarkdownLinkStart";
+
+fn markdown_link_start(style: Option<&str>) -> Option<u8> {
+    style?.strip_prefix(MARKDOWN_LINK_START_STYLE)?.parse::<u8>().ok().filter(|flags| *flags < 16)
+}
+
+fn apply_markdown_link(runs: &mut [FlowRun], link: Link, base: &RunFormat, previous: Option<&FlowRun>, ctx: &mut ParseContext<'_>) {
+    if let Some(first) = runs.first_mut() {
+        // Record emphasis inherited from outside the label separately.
+        let flags = u8::from(base.bold == Some(true))
+            | (u8::from(base.italic == Some(true)) << 1)
+            | (u8::from(first.char_style.as_deref() == Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE)) << 2);
+        // A distinct first run keeps two adjacent links to the same address separate.
+        let alternate = previous.and_then(|run| markdown_link_start(run.char_style.as_deref())) == Some(flags);
+        let id = format!("{MARKDOWN_LINK_START_STYLE}{}", flags | (u8::from(alternate) << 3));
+        ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
+            name: id.clone(),
+            kind: StyleKind::Character,
+            ..FlowStyle::default()
+        });
+        first.char_style = Some(id);
+    }
+    for run in runs {
+        run.link = Some(link.clone());
+    }
+}
+
+fn markdown_emphasis_ranges(text: &str) -> HashMap<usize, (usize, Option<usize>)> {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    let mut ranges = HashMap::new();
+    if !text.contains(['*', '_']) {
+        return ranges;
+    }
+    // Force inline context, even for a label starting with a block marker.
+    let inline = format!("x {text}");
+    let mut stack = Vec::new();
+    let mut outer = None;
+    for (event, span) in Parser::new(&inline).into_offset_iter() {
+        match event {
+            Event::Start(tag @ (Tag::Strong | Tag::Emphasis)) => {
+                let delimiter = if tag == Tag::Strong { 2 } else { 1 };
+                let native = inline.as_bytes()[span.start] == b'*' && !stack.contains(&delimiter);
+                if stack.is_empty() {
+                    outer = Some((span.start, span.end, native.then_some(delimiter)));
+                } else if !native && let Some((_, _, delimiter)) = &mut outer {
+                    // Word can express bold and italic together, but not two
+                    // nested layers of the same formatting. Preserve the markup.
+                    *delimiter = None;
+                }
+                stack.push(delimiter);
+            }
+            Event::End(TagEnd::Strong | TagEnd::Emphasis) => {
+                stack.pop();
+                if stack.is_empty() && let Some((start, end, delimiter)) = outer.take() {
+                    ranges.insert(start - 2, (end - 2, delimiter));
+                }
+            }
+            _ => {}
+        }
+    }
+    ranges
+}
+
 fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -> Vec<FlowRun> {
     let mut out = Vec::new();
     let mut plain = String::new();
     let mut i = 0;
     let bytes = text.as_bytes();
+    let emphasis = markdown_emphasis_ranges(text);
 
     let flush_plain = |plain: &mut String, out: &mut Vec<FlowRun>, fmt: &RunFormat| {
         if !plain.is_empty() {
@@ -6471,9 +6535,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                     let len = entry.source.len();
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut runs = parse_inlines(inner_text, ctx, &link_format(base_fmt));
-                    for run in &mut runs {
-                        run.link = Some(link.clone());
-                    }
+                    apply_markdown_link(&mut runs, link, base_fmt, out.last(), ctx);
                     out.extend(runs);
                     i += len;
                     continue;
@@ -6490,9 +6552,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                             Link::Url(target.to_string())
                         };
                         let mut runs = parse_inlines(inner_text, ctx, &link_format(base_fmt));
-                        for r in &mut runs {
-                            r.link = Some(link.clone());
-                        }
+                        apply_markdown_link(&mut runs, link, base_fmt, out.last(), ctx);
                         out.extend(runs);
                         i += 1 + close_bracket + 1 + 1 + close_paren + 1;
                         continue;
@@ -6590,33 +6650,21 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             }
         }
 
-        // Bold + Italic: `***text***`
-        if let Some(after) = rest.strip_prefix("***") {
-            if let Some(end) = find_unescaped_markdown_delimiter(after, "***") {
-                if end > 0 {
-                    flush_plain(&mut plain, &mut out, base_fmt);
-                    let mut fmt = base_fmt.clone();
+        if let Some(&(end, delimiter)) = emphasis.get(&i) {
+            if let Some(delimiter) = delimiter {
+                flush_plain(&mut plain, &mut out, base_fmt);
+                let mut fmt = base_fmt.clone();
+                if delimiter == 2 {
                     fmt.bold = Some(true);
+                } else {
                     fmt.italic = Some(true);
-                    out.extend(parse_inlines(&after[..end], ctx, &fmt));
-                    i += 3 + end + 3;
-                    continue;
                 }
+                out.extend(parse_inlines(&text[i + delimiter..end - delimiter], ctx, &fmt));
+            } else {
+                plain.push_str(&text[i..end]);
             }
-        }
-
-        // Bold: `**text**`
-        if let Some(after) = rest.strip_prefix("**") {
-            if let Some(end) = find_unescaped_markdown_delimiter(after, "**") {
-                if end > 0 {
-                    flush_plain(&mut plain, &mut out, base_fmt);
-                    let mut fmt = base_fmt.clone();
-                    fmt.bold = Some(true);
-                    out.extend(parse_inlines(&after[..end], ctx, &fmt));
-                    i += 2 + end + 2;
-                    continue;
-                }
-            }
+            i = end;
+            continue;
         }
 
         // Strikethrough: `~~text~~`
@@ -6657,22 +6705,6 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                     out.extend(parse_inlines(&after[..end], ctx, &fmt));
                     i += 2 + end + 2;
                     continue;
-                }
-            }
-        }
-
-        // Italic: `*text*`
-        if let Some(after) = rest.strip_prefix('*') {
-            if !after.starts_with('*') && !after.starts_with(' ') {
-                if let Some(end) = find_unescaped_markdown_delimiter(after, "*") {
-                    if end > 0 {
-                        flush_plain(&mut plain, &mut out, base_fmt);
-                        let mut fmt = base_fmt.clone();
-                        fmt.italic = Some(true);
-                        out.extend(parse_inlines(&after[..end], ctx, &fmt));
-                        i += 1 + end + 1;
-                        continue;
-                    }
                 }
             }
         }
@@ -9133,11 +9165,12 @@ fn serialize_runs(
 ) -> String {
     // Drop the escape-only style before joining text with the same formatting.
     let mut escaped_paragraph;
-    let runs = if runs.iter().any(|run| run.char_style.as_deref() == Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE)) {
+    let runs = if runs.iter().any(markdown_run_has_escape) {
         escaped_paragraph = FlowParagraph { runs: runs.to_vec(), ..FlowParagraph::default() };
         for run in &mut escaped_paragraph.runs {
-            if run.char_style.as_deref() == Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE) {
-                run.char_style = None;
+            if markdown_run_has_escape(run) {
+                run.char_style = markdown_link_start(run.char_style.as_deref())
+                    .map(|flags| format!("{MARKDOWN_LINK_START_STYLE}{flags}"));
                 if let FlowRunKind::Text(text) = &mut run.kind
                     && !(run.format.font.as_deref() == Some("Consolas") && run.format.highlight.is_some_and(|h| h.is_some()))
                 {
@@ -9157,134 +9190,192 @@ fn serialize_runs(
     } else {
         runs
     };
-    let mut out = String::new();
-    let mut titled_link: Option<(&Link, String)> = None;
-    for run in runs {
-        if titled_link.as_ref().is_some_and(|(link, _)| Some(*link) != run.link.as_ref() || run.revision.is_some())
-            && let Some((link, text)) = titled_link.take()
-        {
-            out.push_str(&format_markdown_link(&text, link));
-        }
-        let mut piece = match &run.kind {
-            FlowRunKind::Text(t) if t.contains("{{form:")
-                && !(run.format.font.as_deref() == Some("Consolas") && run.format.highlight.is_some_and(|h| h.is_some())) =>
-            {
-                format_text_run(&escape_literal_form_markers(t), &run.format, run.link.is_some())
-            }
-            FlowRunKind::Text(t) => format_text_run(t, &run.format, run.link.is_some()),
-            FlowRunKind::PlainText { .. }
-                if let Some(id) = form_field_id(run) =>
-            {
-                format_text_run(&format!("{{{{form:{id}}}}}"), &run.format, run.link.is_some())
-            }
-            FlowRunKind::Field { instruction, shown } => {
-                if run.field_locked {
-                    shown.clone()
-                } else {
-                    format_markdown_inline_field(instruction, shown)
-                }
-            }
-            FlowRunKind::LineBreak => "  \n".to_string(),
-            FlowRunKind::Tab => "\t".to_string(),
-            FlowRunKind::PageBreak => "\\newpage".to_string(),
-            FlowRunKind::ColumnBreak => "\\columnbreak".to_string(),
-            FlowRunKind::PageNumber => "{{field:page}}".to_string(),
-            FlowRunKind::PageRef { bookmark, shown } => format_markdown_page_ref(bookmark, shown, run.field_locked),
-            FlowRunKind::FileName(_) => "{filename}".to_string(),
-            FlowRunKind::Math { math, display } => {
-                let l = math.to_latex();
-                if *display {
-                    format!("$${l}$$")
-                } else {
-                    format!("${l}$")
-                }
-            }
-            FlowRunKind::Ruby { base, text, .. } => format!("{{{base}|{text}}}"),
-            FlowRunKind::NoteRef { id, endnote } => format!("[^{}]", markdown_note_label(*id, *endnote)),
-            FlowRunKind::CommentRef(cid) => {
-                if let Some(c) = comments.get(cid) {
-                    let body: String = c
-                        .blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            Block::Paragraph(p) => Some(p.text()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    if c.author.is_empty() || c.author == "Author" {
-                        format!("{{>>{body}<<}}")
-                    } else {
-                        format!("{{>>{}: {body}<<}}", c.author)
-                    }
-                } else {
-                    String::new()
-                }
-            }
-            FlowRunKind::Picture { media: mid, size, look } => picture_attributes(
-                serialize_picture(media, *mid, *size, &look.alt_text, look.decorative),
-                look, None,
-            ),
-            FlowRunKind::Shape(shape) => match &shape.kind {
-                ShapeKind::Picture(picture) => picture_attributes(
-                    serialize_picture(
-                        media, picture.media,
-                        EmuSize::new(shape.frame.width, shape.frame.height),
-                        &picture.alt_text, picture.decorative,
-                    ),
-                    &PictureLook {
-                        crop: picture.crop,
-                        rotation: shape.rotation,
-                        flip_h: shape.flip_h,
-                        flip_v: shape.flip_v,
-                        luminance: picture.luminance,
-                        duotone: picture.duotone,
-                        clear: picture.clear,
-                        effects: picture.effects,
-                        ..Default::default()
-                    },
-                    shape.floating.as_ref(),
-                ),
-                ShapeKind::Auto(auto) => auto.text_box_pictures.iter()
-                    .map(|picture| serialize_picture(media, picture.media, picture.size, &picture.alt_text, false))
-                    .filter(|image| !image.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        };
-
+    let mut pieces = Vec::new();
+    let mut index = 0;
+    while index < runs.len() {
+        let run = &runs[index];
+        let (mut end, mut flags) = (index + 1, markdown_emphasis_flags(run));
         if let Some(link) = &run.link
-            && !piece.is_empty()
+            && run.revision.is_none()
         {
-            if link.title().is_some() && run.revision.is_none() {
-                titled_link.get_or_insert_with(|| (link, String::new())).1.push_str(&piece);
-                continue;
+            while let Some(next) = runs.get(end)
+                && next.link.as_ref() == Some(link)
+                && next.revision.is_none()
+                && markdown_link_start(next.char_style.as_deref()).is_none()
+            {
+                end += 1;
             }
-            piece = format_markdown_link(&piece, link);
+            let common = runs[index..end].iter().fold(3, |flags, run| flags & markdown_emphasis_flags(run));
+            flags = markdown_link_start(run.char_style.as_deref()).unwrap_or(0) & common;
+            let label = write_markdown_emphasis(runs[index..end].iter().map(|run| {
+                (markdown_emphasis_flags(run) & !flags, serialize_run_piece(run, media, comments))
+            }).collect());
+            if !label.is_empty() {
+                pieces.push((flags, format_markdown_link(&label, link)));
+            }
+        } else {
+            let mut piece = serialize_run_piece(run, media, comments);
+            if let Some(link) = &run.link && !piece.is_empty() {
+                piece = format_markdown_link(&piece, link);
+            }
+            if let Some(rev) = &run.revision && !piece.is_empty() {
+                match rev.kind {
+                    RevisionKind::Insert | RevisionKind::MoveTo => piece = format!("{{++{piece}++}}"),
+                    RevisionKind::Delete | RevisionKind::MoveFrom => piece = format!("{{--{piece}--}}"),
+                    _ => {}
+                }
+            }
+            pieces.push((flags, piece));
         }
+        index = end;
+    }
+    write_markdown_emphasis(pieces)
+}
 
-        if let Some(rev) = &run.revision
-            && !piece.is_empty()
+fn markdown_run_has_escape(run: &FlowRun) -> bool {
+    run.char_style.as_deref() == Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE)
+        || markdown_link_start(run.char_style.as_deref()).is_some_and(|flags| flags & 4 != 0)
+}
+
+fn markdown_emphasis_flags(run: &FlowRun) -> u8 {
+    if run.revision.is_some() || !matches!(run.kind, FlowRunKind::Text(_)) {
+        return 0;
+    }
+    u8::from(run.format.bold == Some(true)) | (u8::from(run.format.italic == Some(true)) << 1)
+}
+
+fn write_markdown_emphasis(pieces: Vec<(u8, String)>) -> String {
+    let mut output = String::new();
+    let pieces: Vec<_> = pieces.into_iter().filter(|(_, text)| !text.is_empty()).collect();
+    let mut active: &[u8] = &[];
+    let marker = |flag| if flag == 1 { "**" } else { "*" };
+    for (index, (flags, text)) in pieces.iter().enumerate() {
+        let desired: &[u8] = match flags {
+            1 => &[1],
+            2 => &[2],
+            3 => {
+                let outer = active.first().copied().or_else(|| {
+                    pieces[index + 1..].iter().find(|(flags, _)| *flags != 3).map(|(flags, _)| *flags)
+                });
+                if outer == Some(1) { &[1, 2] } else { &[2, 1] }
+            }
+            _ => &[],
+        };
+        let shared = active.iter().zip(desired).take_while(|(left, right)| left == right).count();
+        for &flag in active[shared..].iter().rev() {
+            output.push_str(marker(flag));
+        }
+        for &flag in &desired[shared..] {
+            output.push_str(marker(flag));
+        }
+        output.push_str(text);
+        active = desired;
+    }
+    for &flag in active.iter().rev() {
+        output.push_str(marker(flag));
+    }
+    output
+}
+
+fn serialize_run_piece(
+    run: &FlowRun,
+    media: &[Media],
+    comments: &HashMap<u32, &Comment>,
+) -> String {
+    let mut format = run.format.clone();
+    if markdown_emphasis_flags(run) != 0 {
+        format.bold = None;
+        format.italic = None;
+    }
+    match &run.kind {
+        FlowRunKind::Text(t) if t.contains("{{form:")
+            && !(run.format.font.as_deref() == Some("Consolas") && run.format.highlight.is_some_and(|h| h.is_some())) =>
         {
-            match rev.kind {
-                RevisionKind::Insert | RevisionKind::MoveTo => {
-                    piece = format!("{{++{piece}++}}");
-                }
-                RevisionKind::Delete | RevisionKind::MoveFrom => {
-                    piece = format!("{{--{piece}--}}");
-                }
-                _ => {}
+            format_text_run(&escape_literal_form_markers(t), &format, run.link.is_some())
+        }
+        FlowRunKind::Text(t) => format_text_run(t, &format, run.link.is_some()),
+        FlowRunKind::PlainText { .. }
+            if let Some(id) = form_field_id(run) =>
+        {
+            format_text_run(&format!("{{{{form:{id}}}}}"), &format, run.link.is_some())
+        }
+        FlowRunKind::Field { instruction, shown } => {
+            if run.field_locked {
+                shown.clone()
+            } else {
+                format_markdown_inline_field(instruction, shown)
             }
         }
-
-        out.push_str(&piece);
+        FlowRunKind::LineBreak => "  \n".to_string(),
+        FlowRunKind::Tab => "\t".to_string(),
+        FlowRunKind::PageBreak => "\\newpage".to_string(),
+        FlowRunKind::ColumnBreak => "\\columnbreak".to_string(),
+        FlowRunKind::PageNumber => "{{field:page}}".to_string(),
+        FlowRunKind::PageRef { bookmark, shown } => format_markdown_page_ref(bookmark, shown, run.field_locked),
+        FlowRunKind::FileName(_) => "{filename}".to_string(),
+        FlowRunKind::Math { math, display } => {
+            let l = math.to_latex();
+            if *display {
+                format!("$${l}$$")
+            } else {
+                format!("${l}$")
+            }
+        }
+        FlowRunKind::Ruby { base, text, .. } => format!("{{{base}|{text}}}"),
+        FlowRunKind::NoteRef { id, endnote } => format!("[^{}]", markdown_note_label(*id, *endnote)),
+        FlowRunKind::CommentRef(cid) => {
+            if let Some(c) = comments.get(cid) {
+                let body: String = c
+                    .blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        Block::Paragraph(p) => Some(p.text()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if c.author.is_empty() || c.author == "Author" {
+                    format!("{{>>{body}<<}}")
+                } else {
+                    format!("{{>>{}: {body}<<}}", c.author)
+                }
+            } else {
+                String::new()
+            }
+        }
+        FlowRunKind::Picture { media: mid, size, look } => picture_attributes(
+            serialize_picture(media, *mid, *size, &look.alt_text, look.decorative),
+            look, None,
+        ),
+        FlowRunKind::Shape(shape) => match &shape.kind {
+            ShapeKind::Picture(picture) => picture_attributes(
+                serialize_picture(
+                    media, picture.media,
+                    EmuSize::new(shape.frame.width, shape.frame.height),
+                    &picture.alt_text, picture.decorative,
+                ),
+                &PictureLook {
+                    crop: picture.crop,
+                    rotation: shape.rotation,
+                    flip_h: shape.flip_h,
+                    flip_v: shape.flip_v,
+                    luminance: picture.luminance,
+                    duotone: picture.duotone,
+                    clear: picture.clear,
+                    effects: picture.effects,
+                    ..Default::default()
+                },
+                shape.floating.as_ref(),
+            ),
+            ShapeKind::Auto(auto) => auto.text_box_pictures.iter()
+                .map(|picture| serialize_picture(media, picture.media, picture.size, &picture.alt_text, false))
+                .filter(|image| !image.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => String::new(),
+        },
+        _ => String::new(),
     }
-    if let Some((link, text)) = titled_link {
-        out.push_str(&format_markdown_link(&text, link));
-    }
-    out
 }
 
 fn escape_literal_form_markers(text: &str) -> String {
@@ -10542,6 +10633,31 @@ mod tests {
         assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
         let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+    }
+
+    #[test]
+    fn markdown_keeps_emphasis_and_hyperlinks_across_run_boundaries() {
+        for (source, expected) in [
+            ("*foo **bar** baz*\n", "*foo **bar** baz*\n"),
+            ("**foo *bar* baz**\n", "**foo *bar* baz**\n"),
+            ("***foo* bar**\n", "***foo* bar**\n"),
+            ("*(*foo*)*\n", "*(*foo*)*\n"),
+            ("_*foo*_\n", "_*foo*_\n"),
+            ("*foo [*bar*](/url)*\n", "*foo [*bar*](/url)*\n"),
+            ("**foo [*bar*](/url)**\n", "**foo [*bar*](/url)**\n"),
+            ("[link *foo **bar** `#`*](/uri)\n", "[link *foo **bar** `#`*](/uri)\n"),
+            ("[link *foo **bar** `#`*][ref]\n\n[ref]: /uri\n", "[link *foo **bar** `#`*](/uri)\n"),
+            ("[one](/uri)[two](/uri)\n", "[one](/uri)[two](/uri)\n"),
+            ("[\\[label](/uri)\n", "[\\[label](/uri)\n"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, expected, "{source}");
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), expected, "{source}");
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), expected, "{source}");
+        }
     }
 
     #[test]
