@@ -48,8 +48,8 @@ fn read_only_preview(opened: ibis_formats::Opened) -> Loaded {
 }
 
 /// Identify municipal standard linkage files before the ordinary CSV importer infers cell types.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn linkage_csv(data: &[u8]) -> Option<(&str, bool)> {
+/// Shared between Desktop and Web builds so both choose the same tabular/tree path.
+pub(crate) fn linkage_csv(data: &[u8]) -> Option<(&str, bool)> {
     let text = std::str::from_utf8(data.strip_prefix(b"\xef\xbb\xbf").unwrap_or(data)).ok()?;
     let mut records = ibis_formats::csv::CsvRecordIter::new(text, ',');
     let header = records.next()?;
@@ -65,6 +65,104 @@ fn linkage_csv(data: &[u8]) -> Option<(&str, bool)> {
         })
         || records.enumerate().any(|(index, fields)| fields.len() != header.len() || index >= 1_048_575);
     Some((text, needs_tree))
+}
+
+/// Format-specific document open result shared by Desktop (`read_file_data`) and
+/// Web (`open_web_bytes`) so newly added importers never diverge between platforms.
+pub(crate) enum CommonOpen {
+    Standard {
+        opened: ibis_formats::Opened,
+        editable_import: Option<EditableImport>,
+        bom_format: Option<ibis_formats::sbom_review::ReportFormat>,
+        is_law: bool,
+    },
+    #[cfg(not(target_family = "wasm"))]
+    StructuredPreview(ibis_formats::Opened),
+}
+
+/// Dispatch specialized document formats (Lawtext, DICOM, FHIR, CycloneDX/OSV JSON,
+/// Markdown, Hancom/ODF editable imports, and DocxConvert formats) from raw bytes.
+/// Returns `Ok(None)` when the caller should fall through to the primary OOXML/CSV/image path.
+pub(crate) fn open_document_bytes(
+    name: &str,
+    base_dir: Option<&std::path::Path>,
+    data: &[u8],
+) -> Result<Option<CommonOpen>, String> {
+    use ibis_formats::docx_convert::DocxConvertFormat;
+    let virtual_path = std::path::Path::new(name);
+    let extension = virtual_path.extension().and_then(|ext| ext.to_str());
+    let external_document_format = DocxConvertFormat::from_path(virtual_path);
+    let editable_import = EditableImport::detect(extension, data).filter(|format| {
+        matches!(format, EditableImport::Hancom(_))
+            || matches!(external_document_format, None | Some(DocxConvertFormat::Odt))
+    });
+
+    if let Some(law_md) = ibis_formats::lawtext::path_input_to_markdown(virtual_path, data)
+        .map_err(|e| e.to_string())?
+    {
+        let opened = open_markdown_bytes(law_md.into_bytes(), base_dir, false)?;
+        return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: true }));
+    }
+    if let Some(dicom_md) = ibis_formats::dicom::input_to_markdown(data).map_err(|e| e.to_string())? {
+        let opened = open_markdown_bytes(dicom_md.into_bytes(), base_dir, false)?;
+        return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: false }));
+    }
+    if let Some(fhir_md) = ibis_formats::fhir::input_to_markdown(data).map_err(|e| e.to_string())? {
+        let opened = open_markdown_bytes(fhir_md.into_bytes(), base_dir, false)?;
+        return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: false }));
+    }
+    if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        && let Some((opened, format)) = ibis_formats::sbom_review::open_table_with_format((name, data))?
+    {
+        return Ok(Some(CommonOpen::Standard {
+            opened,
+            editable_import: None,
+            bom_format: Some(format),
+            is_law: false,
+        }));
+    }
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(ext) = extension.filter(|ext| ibis_formats::structured_preview::supports_extension(ext)) {
+        let opened = crate::structured_preview::open(ext, data)?;
+        return Ok(Some(CommonOpen::StructuredPreview(opened)));
+    }
+    if external_document_format == Some(DocxConvertFormat::Markdown) {
+        let is_pres = ibis_formats::markdown::is_presentation_markdown(data);
+        let opened = open_markdown_bytes(data.to_vec(), base_dir, is_pres)?;
+        return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: false }));
+    }
+    if let Some(format) = editable_import {
+        let opened = format.open(data).map_err(|e| e.to_string())?;
+        return Ok(Some(CommonOpen::Standard { opened, editable_import: Some(format), bom_format: None, is_law: false }));
+    }
+    if let Some(format) = external_document_format {
+        let opened = ibis_formats::docx_convert::import_docx_format(data, format).map_err(|e| e.to_string())?;
+        return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: false }));
+    }
+    Ok(None)
+}
+
+fn open_markdown_bytes(
+    bytes: Vec<u8>,
+    base_dir: Option<&std::path::Path>,
+    presentation: bool,
+) -> Result<ibis_formats::Opened, String> {
+    #[cfg(not(target_family = "wasm"))]
+    let result = if presentation {
+        ibis_formats::markdown::open_markdown_presentation_with_base_dir(bytes, base_dir)
+    } else {
+        ibis_formats::markdown::open_markdown_with_base_dir(bytes, base_dir)
+    };
+    #[cfg(target_family = "wasm")]
+    let result = {
+        let _ = base_dir;
+        if presentation {
+            ibis_formats::markdown::open_markdown_presentation(bytes)
+        } else {
+            ibis_formats::markdown::open_markdown(bytes)
+        }
+    };
+    result.map_err(|e| e.to_string())
 }
 
 /// What `read_file` says when the file is protected and needs its password.
@@ -459,66 +557,40 @@ fn read_file_data(
     let open_t0 = crate::clock::Instant::now();
     // An old binary file (.xls, .ppt, .doc): read by its content, not by its extension.
     let is_legacy_binary = ibis_formats::is_legacy_binary(&data);
-    use ibis_formats::docx_convert::DocxConvertFormat;
-    let external_document_format = DocxConvertFormat::from_path(path);
-    let editable_import = EditableImport::detect(extension, &data).filter(|format| {
-        matches!(format, EditableImport::Hancom(_))
-            || matches!(external_document_format, None | Some(DocxConvertFormat::Odt))
-    });
     let mut opened_import = None;
     let mut bom_source = None;
-    let open_result = if let Some(law_md) = ibis_formats::lawtext::path_input_to_markdown(path, &data).map_err(|e| {
+    let file_name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+    let common = ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || {
+        open_document_bytes(&file_name, path.parent(), &data)
+    }).map_err(|e| {
         note_open_failed(path);
-        e.to_string()
-    })? {
-        ibis_formats::markdown::open_markdown_with_base_dir(law_md.into_bytes(), path.parent()).map(|opened| (opened, None))
-    } else if let Some(dicom_md) = ibis_formats::dicom::input_to_markdown(&data).map_err(|e| {
-        note_open_failed(path);
-        e.to_string()
-    })? {
-        ibis_formats::markdown::open_markdown_with_base_dir(dicom_md.into_bytes(), path.parent()).map(|opened| (opened, None))
-    } else if let Some(fhir_md) = ibis_formats::fhir::input_to_markdown(&data).map_err(|e| {
-        note_open_failed(path);
-        e.to_string()
-    })? {
-        ibis_formats::markdown::open_markdown_with_base_dir(fhir_md.into_bytes(), path.parent()).map(|opened| (opened, None))
-    } else if let Some((opened, format)) = if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
-        let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
-        ibis_formats::sbom_review::open_table_with_format((&name, &data))?
-    } else {
-        None
-    } {
-        if format == ibis_formats::sbom_review::ReportFormat::CycloneDx {
-            use sha2::{Digest, Sha256};
-            bom_source = Some(BomSource { path: path.to_owned(), digest: Sha256::digest(&data).into(), has_crypto_assets: ibis_formats::sbom_review::is_cbom_inventory(&opened.presentation) });
-        }
-        Ok((opened, None))
-    } else if let Some(extension) = extension.filter(|ext| ibis_formats::structured_preview::supports_extension(ext)) {
-        let opened = crate::structured_preview::open(extension, &data)?;
-        return Ok(read_only_preview(opened));
-    } else if external_document_format == Some(DocxConvertFormat::Markdown) {
-        if ibis_formats::markdown::is_presentation_markdown(&data) {
-            ibis_formats::markdown::open_markdown_presentation_with_base_dir(data, path.parent()).map(|opened| (opened, None))
-        } else {
-            ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent()).map(|opened| (opened, None))
-        }
-    } else if let Some(format) = editable_import {
-        opened_import = Some(format);
-        ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || {
-            format.open(&data).map(|opened| (opened, None))
-        })
-    } else if let Some(format) = external_document_format {
-        ibis_formats::docx_convert::import_docx_format(&data, format).map(|opened| (opened, None))
-    } else {
-        // The volatile cells calculated again on open (CELL("filename") among them) need the file's path.
-        ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || {
-            ibis_formats::open_progressive_with_options(data, 100_000, crate::settings_dialog::csv_font().as_ref(), csv_encoding)
-        })
-    };
-    let (opened, csv_stream) = open_result.map_err(|e| {
-        note_open_failed(path);
-        e.to_string()
+        e
     })?;
+    let (opened, csv_stream) = match common {
+        Some(CommonOpen::StructuredPreview(opened)) => return Ok(read_only_preview(opened)),
+        Some(CommonOpen::Standard { opened, editable_import, bom_format, .. }) => {
+            opened_import = editable_import;
+            if bom_format == Some(ibis_formats::sbom_review::ReportFormat::CycloneDx) {
+                use sha2::{Digest, Sha256};
+                bom_source = Some(BomSource {
+                    path: path.to_owned(),
+                    digest: Sha256::digest(&data).into(),
+                    has_crypto_assets: ibis_formats::sbom_review::is_cbom_inventory(&opened.presentation),
+                });
+            }
+            (opened, None)
+        }
+        None => {
+            // The volatile cells calculated again on open (CELL("filename") among them) need the file's path.
+            ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || {
+                ibis_formats::open_progressive_with_options(data, 100_000, crate::settings_dialog::csv_font().as_ref(), csv_encoding)
+            })
+            .map_err(|e| {
+                note_open_failed(path);
+                e.to_string()
+            })?
+        }
+    };
     for (_, driver) in crate::format::drivers() {
         driver.note_opened(path);
     }

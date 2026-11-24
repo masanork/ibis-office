@@ -1666,34 +1666,53 @@ impl SlideEditor {
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
             let extension = name.rsplit_once('.').map(|(_, ext)| ext);
             if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
-                && crate::structured_view::is_linkage_csv(&data)
+                && let Some((text, needs_tree)) = crate::read_file::linkage_csv(&data)
             {
+                if needs_tree {
+                    this.update_in(cx, |this, window, cx| {
+                        if this.closed != closed || this.web_open_generation != generation {
+                            return;
+                        }
+                        match crate::structured_view::create_csv_view(name.clone(), data, window, cx) {
+                            Ok(view) => {
+                                this.loading = false;
+                                this.has_document = true;
+                                this.file_name = Some(name.clone());
+                                this.web_structured_view = Some(view);
+                                this.status = None;
+                                window.set_window_title(&format!("{name} — Docs"));
+                                cx.notify();
+                            }
+                            Err(err) => {
+                                this.fail_loading(
+                                    crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]),
+                                    cx,
+                                );
+                            }
+                        }
+                    })
+                    .ok();
+                    return;
+                }
+                let literal = ibis_formats::csv::workbook_from_literal_fields(text, "Sheet1", None)
+                    .and_then(ibis_formats::open)
+                    .map_err(|e| e.to_string());
+                let mut result = literal;
+                if let Ok(opened) = &result {
+                    if let Err(error) = crate::web::preload_document_fonts(&opened.presentation, &name).await {
+                        result = Err(crate::web::font_preload_error(error));
+                    }
+                }
                 this.update_in(cx, |this, window, cx| {
-                    if this.closed != closed || this.web_open_generation != generation {
-                        return;
+                    if this.closed != closed || this.web_open_generation != generation { return; }
+                    match result {
+                        Ok(opened) => this.load(opened.presentation, name, window, cx),
+                        Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
                     }
-                    match crate::structured_view::create_csv_view(name.clone(), data, window, cx) {
-                        Ok(view) => {
-                            this.loading = false;
-                            this.has_document = true;
-                            this.file_name = Some(name.clone());
-                            this.web_structured_view = Some(view);
-                            this.status = None;
-                            window.set_window_title(&format!("{name} — Docs"));
-                            cx.notify();
-                        }
-                        Err(err) => {
-                            this.fail_loading(
-                                crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]),
-                                cx,
-                            );
-                        }
-                    }
-                })
-                .ok();
+                }).ok();
                 return;
             }
-            use crate::read_file::{EditableImport, PreviewImport};
+            use crate::read_file::{CommonOpen, PreviewImport};
             let preview_import = PreviewImport::detect(extension, &data);
             if let Some(PreviewImport::FixedLayout(format)) = preview_import {
                 let result = format.read(data.into());
@@ -1722,86 +1741,66 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
-            let law_input =
-                ibis_formats::lawtext::path_input_to_markdown(std::path::Path::new(name.as_ref()), &data)
-                    .transpose();
-            // A download-enabled embed needs the original package to write
-            // edits back; ordinary initial previews keep the lighter read path.
+            // Shared format dispatch (Lawtext, DICOM, FHIR, CycloneDX/OSV JSON, Markdown, Hancom/ODF, DocxConvert).
             let production_image = extension.is_some_and(ibis_formats::production_image::supports_extension);
-            let editable_import = EditableImport::detect(extension, &data);
-            if initial && law_input.is_none() && !production_image && !crate::embed::show_download() {
-                let mut result = match editable_import {
-                    Some(format) => format.open(&data).map(|opened| opened.presentation),
-                    None => ibis_formats::read(&data),
-                }.map_err(|e| e.to_string());
-                if let Ok(presentation) = &result {
-                    if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
-                        result = Err(crate::web::font_preload_error(error));
-                    }
-                }
-                this.update_in(cx, |this, window, cx| {
-                    if this.closed != closed || this.web_open_generation != generation { return; }
-                    match result {
-                        Ok(presentation) => this.load(presentation, name, window, cx),
-                        Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
-                    }
-                }).ok();
-                return;
-            }
             let mut image_provenance = None;
             let mut law_source = None;
             let mut opened_import = None;
-            let mut result = if let Some(markdown) = law_input {
-                law_source = Some(std::sync::Arc::new(data));
-                markdown
-                    .and_then(|text| ibis_formats::markdown::open_markdown(text.into_bytes()))
-                    .map(|opened| (opened, None))
-                    .map_err(|e| e.to_string())
-            } else if let Some((opened, _)) = if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
-                match ibis_formats::sbom_review::open_table_with_format((name.as_ref(), &data)) {
-                    Ok(found) => found,
-                    Err(err) => {
-                        this.update(cx, |this, cx| {
-                            if this.closed != closed || this.web_open_generation != generation { return; }
-                            this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx);
-                        }).ok();
-                        return;
+            let common = crate::read_file::open_document_bytes(name.as_ref(), None, &data);
+            let mut result = match common {
+                Ok(Some(CommonOpen::Standard { opened, editable_import, is_law, .. })) => {
+                    opened_import = editable_import;
+                    if is_law {
+                        law_source = Some(std::sync::Arc::new(data));
                     }
+                    Ok((opened, None))
                 }
-            } else {
-                None
-            } {
-                Ok((opened, None))
-            } else if let Some(format) = editable_import {
-                opened_import = Some(format);
-                format.open(&data).map(|opened| (opened, None)).map_err(|e| e.to_string())
-            } else if extension.is_some_and(ibis_formats::production_image::is_heic_extension) {
-                crate::web::open_heic(&data).await.map(|opened| (opened, None))
-            } else {
-                let mut preview = ibis_formats::production_image::open_with_exposure(extension, &data);
-                if preview.as_ref().is_err_and(|error| error == DPX_NEEDS_COLOR) {
-                    let Ok(Some(receiver)) = this.update_in(cx, |this, window, cx| {
-                        (this.closed == closed && this.web_open_generation == generation)
-                            .then(|| prompt_dpx_color(window, cx))
-                    }) else { return; };
-                    let color = dpx_color_answer(receiver.await.ok());
-                    let still_opening = this.update(cx, |this, cx| {
-                        if this.closed != closed || this.web_open_generation != generation { return false; }
-                        if color.is_none() { this.fail_loading(String::new(), cx); }
-                        true
-                    }).unwrap_or(false);
-                    let Some(color) = color.filter(|_| still_opening) else { return; };
-                    preview = ibis_formats::production_image::open_with_dpx_color(extension, &data, Some(color));
-                }
-                match preview {
-                    Ok(Some(result)) => {
-                        if let Some(extension) = extension {
-                            image_provenance = crate::image_provenance::inspect(extension, &data).await;
+                Err(err) => Err(err),
+                Ok(None) if initial && !production_image && !crate::embed::show_download() => {
+                    let mut result = ibis_formats::read(&data).map_err(|e| e.to_string());
+                    if let Ok(presentation) = &result {
+                        if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
+                            result = Err(crate::web::font_preload_error(error));
                         }
-                        Ok(result)
                     }
-                    Ok(None) => ibis_formats::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
-                    Err(error) => Err(error),
+                    this.update_in(cx, |this, window, cx| {
+                        if this.closed != closed || this.web_open_generation != generation { return; }
+                        match result {
+                            Ok(presentation) => this.load(presentation, name, window, cx),
+                            Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                        }
+                    }).ok();
+                    return;
+                }
+                Ok(None) if extension.is_some_and(ibis_formats::production_image::is_heic_extension) => {
+                    crate::web::open_heic(&data).await.map(|opened| (opened, None))
+                }
+                Ok(None) => {
+                    let mut preview = ibis_formats::production_image::open_with_exposure(extension, &data);
+                    if preview.as_ref().is_err_and(|error| error == DPX_NEEDS_COLOR) {
+                        let Ok(Some(receiver)) = this.update_in(cx, |this, window, cx| {
+                            (this.closed == closed && this.web_open_generation == generation)
+                                .then(|| prompt_dpx_color(window, cx))
+                        }) else { return; };
+                        let color = dpx_color_answer(receiver.await.ok());
+                        let still_opening = this.update(cx, |this, cx| {
+                            if this.closed != closed || this.web_open_generation != generation { return false; }
+                            if color.is_none() { this.fail_loading(String::new(), cx); }
+                            true
+                        }).unwrap_or(false);
+                        let Some(color) = color.filter(|_| still_opening) else { return; };
+                        preview = ibis_formats::production_image::open_with_dpx_color(extension, &data, Some(color));
+                    }
+                    match preview {
+                        Ok(Some(result)) => {
+                            if let Some(extension) = extension {
+                                image_provenance = crate::image_provenance::inspect(extension, &data).await;
+                            }
+                            Ok(result)
+                        }
+                        Ok(None) => ibis_formats::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
+                        Err(error) => Err(error),
+                    }
                 }
             };
             if let Ok((opened, _)) = &result {
