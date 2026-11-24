@@ -3167,13 +3167,15 @@ impl SlideEditor {
             .filter(|claim| !claim.selective || selection.as_ref().map_or(claim.disclose, |paths| paths.contains(&claim.path_str)))
             .map(|claim| json!({"path":claim.path_str,"value":claim_value_to_json(&claim.value)}))
             .collect();
+        use sha2::{Digest, Sha256};
         let keys = vc_public_keys_json("all")?;
+        let fingerprint = Sha256::digest(keys.to_string());
         let options = json!({"format":arguments["format"],"issuer":arguments["iss"],
             "type":arguments["vct"],"namespace":arguments["name_space"],
-            "update_sheet":arguments["apply_to_sheet"] == true,"public_keys":keys});
+            "update_sheet":arguments["apply_to_sheet"] == true});
         let details = serde_json::to_string_pretty(&claims).map_err(|error| error.to_string())?;
-        let preview = format!("{heading}\nWorksheet: {}\nOptions: {options}\nClaims to disclose:\n{details}",
-            json!(worksheet));
+        let preview = format!("{heading}\nWorksheet: {}\nClaims to disclose:\n{details}\nOptions: {options}\nSigning keys: issuer {}, holder {}\nKey fingerprint: {fingerprint:x}",
+            json!(worksheet), keys["issuer_source"], keys["holder_source"]);
         if preview.len() > 12_000 {
             return Err("The credential request is too large for the confirmation view.".into());
         }
