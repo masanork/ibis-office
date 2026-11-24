@@ -102,3 +102,47 @@ fn reads_drawings_saved_by_microsoft_visio() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires the Apache POI VSDX corpus"]
+fn moves_a_shape_in_a_drawing_saved_by_microsoft_visio() {
+    use ibis_vsdx::geometry_edit::GeometryEdit;
+    let root = PathBuf::from(std::env::var_os("VSDX_VISIO_CORPUS_DIR").unwrap());
+    let original =
+        VsdxContainer::from_bytes(std::fs::read(root.join("test.vsdx")).unwrap().into()).unwrap();
+    let before = original.interpret_page_scene(0).unwrap();
+    let bytes = original
+        .edit_geometry(
+            0,
+            GeometryEdit::Move {
+                shape: 8,
+                dx: 0.25,
+                dy: 0.125,
+            },
+        )
+        .unwrap();
+    let reopened = VsdxContainer::from_bytes(bytes.into()).unwrap();
+    let after = reopened.interpret_page_scene(0).unwrap();
+    let star = |scene: &ibis_pdf::scene::PageScene| {
+        scene
+            .display_list
+            .iter()
+            .find_map(|cmd| match cmd {
+                DisplayCmd::DrawPath {
+                    bounds,
+                    fill_rgba: Some([91, 155, 213, 255]),
+                    ..
+                } => Some(*bounds),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let before_star = star(&before);
+    let after_star = star(&after);
+    assert!((after_star.x0 - before_star.x0 - 18.0).abs() < 0.01);
+    assert!((after_star.y0 - before_star.y0 + 9.0).abs() < 0.01);
+    assert_eq!(
+        before.text_index.plain_text(),
+        after.text_index.plain_text()
+    );
+}

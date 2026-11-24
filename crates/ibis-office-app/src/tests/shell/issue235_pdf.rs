@@ -18,6 +18,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::vsdx_new_diagram_exports_glued_shapes", vsdx_new_diagram),
         ("shell::vsdx_existing_diagram_updates_a_label_in_a_copy", vsdx_edit_label),
         ("shell::vsdx_label_edits_are_kept_when_switching_pages", vsdx_edit_multiple_pages),
+        ("shell::vsdx_existing_geometry_survives_reopening", vsdx_edit_geometry),
     ]
 }
 
@@ -329,4 +330,31 @@ fn vsdx_edit_multiple_pages() {
         let part = zip.read_bounded(&format!("visio/pages/{file}"), 100_000).unwrap().unwrap();
         assert!(String::from_utf8(part).unwrap().contains(label), "{file}");
     }
+}
+
+fn vsdx_edit_geometry() {
+    let mut s = Scenario::open("crates/ibis-vsdx/tests/fixtures/01-basic-flowchart.vsdx");
+    let path = s.with(|editor, _| editor.file_path().unwrap());
+    let original = std::fs::read(&path).unwrap();
+    s.menu("vsdx.edit-geometry");
+    s.type_text("move 2 0.25 0");
+    let moved = s.with(|editor, cx| ibis_office_pdf::editor::geometry_copy_bytes(editor, cx)).unwrap();
+    let dir = crate::shell::scenario::repo_root().join("target/scenario/vsdx-geometry-src");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("moved.vsdx"), moved).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), original);
+    drop(s);
+    let mut reopened = Scenario::open("target/scenario/vsdx-geometry-src/moved.vsdx");
+    reopened.menu("vsdx.edit-geometry");
+    reopened.type_text("connect 12 end 4");
+    let updated = reopened.with(|editor, cx| ibis_office_pdf::editor::geometry_copy_bytes(editor, cx)).unwrap();
+    std::fs::write(dir.join("reconnected.vsdx"), &updated).unwrap();
+    drop(reopened);
+    let zip = ibis_formats::zip::Archive::new(&updated).unwrap();
+    let page = zip.read_bounded("visio/pages/page1.xml", 100_000).unwrap().unwrap();
+    let xml = String::from_utf8(page).unwrap();
+    assert!(xml.contains(r#"N="PinX" V="1.322835""#));
+    assert!(xml.contains(r#"FromSheet="12" FromCell="EndX" ToSheet="4""#));
+    let mut final_view = Scenario::open("target/scenario/vsdx-geometry-src/reconnected.vsdx");
+    final_view.screenshot("vsdx-reconnected");
 }

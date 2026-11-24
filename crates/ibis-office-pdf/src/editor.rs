@@ -40,6 +40,8 @@ pub struct State {
     pub page_open: bool,
     #[cfg(not(target_family = "wasm"))]
     label_edit: Option<LabelEdit>,
+    #[cfg(not(target_family = "wasm"))]
+    geometry_edit: Option<GeometryEditor>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -356,6 +358,8 @@ impl FormatEditor for PdfDocument {
             page_open: false,
             #[cfg(not(target_family = "wasm"))]
             label_edit: None,
+            #[cfg(not(target_family = "wasm"))]
+            geometry_edit: None,
             _subscriptions: subscriptions,
         })
     }
@@ -411,6 +415,10 @@ impl FormatEditor for PdfDocument {
                 MenuItem::tr("vsdx.edit-label").icon("edit")
                     .on(|editor, window, cx| open_label_edit(editor, window, cx)).into()
             );
+            menus.items_mut(MenuId::Edit).push(
+                MenuItem::tr("vsdx.edit-geometry").icon("edit")
+                    .on(|editor, window, cx| open_geometry_edit(editor, window, cx)).into()
+            );
         }
         if let Some(item) = menus.find_mut("edit.copy") {
             item.disabled = !selected;
@@ -441,8 +449,10 @@ impl FormatEditor for PdfDocument {
     fn format_key(editor: &mut SlideEditor, keystroke: &gpui_kit::Keystroke, window: &mut Window, cx: &mut Context<SlideEditor>) -> bool {
         let in_field = editor.format_state::<State>().is_some_and(|s| s.find_input.read(cx).focus_handle(cx).is_focused(window) || s.page_input.read(cx).focus_handle(cx).is_focused(window));
         #[cfg(not(target_family = "wasm"))]
-        if editor.format_state::<State>().and_then(|s| s.label_edit.as_ref())
-            .is_some_and(|e| e.input.read(cx).focus_handle(cx).is_focused(window))
+        if editor.format_state::<State>().is_some_and(|s| {
+            s.label_edit.as_ref().is_some_and(|e| e.input.read(cx).focus_handle(cx).is_focused(window))
+                || s.geometry_edit.as_ref().is_some_and(|mode| mode.input.read(cx).focus_handle(cx).is_focused(window))
+        })
         {
             return false;
         }
@@ -596,8 +606,13 @@ impl FormatEditor for PdfDocument {
         let find_bar = find_open.then(|| find_bar(editor, &find_input, cx));
         let page_bar = page_open.then(|| page_bar(editor, &page_input, cx));
         #[cfg(not(target_family = "wasm"))]
-        let label_bar = editor.format_state::<State>().and_then(|s| s.label_edit.as_ref())
-            .map(|mode| label_edit_bar(mode, cx));
+        let label_bar = editor.format_state::<State>().and_then(|s| {
+            if let Some(input) = s.geometry_edit.as_ref() {
+                Some(geometry_edit_bar(input, cx))
+            } else {
+                s.label_edit.as_ref().map(|mode| label_edit_bar(mode, cx))
+            }
+        });
         #[cfg(target_family = "wasm")]
         let label_bar: Option<AnyElement> = None;
 
@@ -837,6 +852,9 @@ impl LabelEdit {
 #[cfg(not(target_family = "wasm"))]
 fn open_label_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
     use ibis_office_shell::i18n::text;
+    if let Some(state) = editor.format_state_mut::<State>() {
+        state.geometry_edit = None;
+    }
     let Some(viewer) = viewer_of(editor) else { return };
     let page = page_at_top(editor).unwrap_or(0);
     let document = {
@@ -908,12 +926,17 @@ pub fn label_copy_bytes(editor: &SlideEditor, cx: &gpui_kit::App) -> Result<Vec<
 
 #[cfg(not(target_family = "wasm"))]
 fn save_label_copy(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
-    use ibis_office_shell::{i18n::text, save};
     if !ibis_office_shell::host::export_allowed("vsdx") { return; }
     let bytes = match label_copy_bytes(editor, cx) {
         Ok(bytes) => bytes,
         Err(error) => return editor.report(Err(error), cx),
     };
+    save_vsdx_copy(editor, window, cx, bytes);
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn save_vsdx_copy(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>, bytes: Vec<u8>) {
+    use ibis_office_shell::{i18n::text, save};
     let original = editor.file_path();
     let (stem, _) = editor.name_parts();
     let suggested = format!("{stem}-edited.vsdx");
@@ -934,6 +957,90 @@ fn save_label_copy(editor: &mut SlideEditor, window: &mut Window, cx: &mut Conte
             editor.report(result, cx);
         }).ok();
     }).detach();
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct GeometryEditor {
+    page: usize,
+    input: Entity<InputState>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn open_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
+    let Some(page) = page_at_top(editor) else { return };
+    let input = editor.format_state::<State>().and_then(|s| s.geometry_edit.as_ref())
+        .filter(|mode| mode.page == page)
+        .map(|mode| mode.input.clone())
+        .unwrap_or_else(|| cx.new(|cx| InputState::new(window, cx).placeholder("move 2 0.25 0 / connect 12 end 4")));
+    if let Some(state) = editor.format_state_mut::<State>() {
+        state.geometry_edit = Some(GeometryEditor { page, input: input.clone() });
+        state.find_open = false;
+        state.page_open = false;
+    }
+    window.focus(&input.read(cx).focus_handle(cx), cx);
+    cx.notify();
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub fn geometry_copy_bytes(editor: &SlideEditor, cx: &gpui_kit::App) -> Result<Vec<u8>, String> {
+    use ibis_office_shell::i18n::text;
+    use ibis_vsdx::geometry_edit::{Endpoint, GeometryEdit};
+    let invalid = || text("vsdx.geometry-command-error").to_string();
+    let mode = editor.format_state::<State>().and_then(|s| s.geometry_edit.as_ref()).ok_or_else(invalid)?;
+    let value = mode.input.read(cx).value();
+    let fields: Vec<_> = value.split_whitespace().take(5).collect();
+    let edit = match fields.as_slice() {
+        ["move", shape, dx, dy] => GeometryEdit::Move {
+            shape: shape.parse().map_err(|_| invalid())?,
+            dx: dx.parse().map_err(|_| invalid())?,
+            dy: dy.parse().map_err(|_| invalid())?,
+        },
+        ["connect", connector, direction, target] => GeometryEdit::Reconnect {
+            connector: connector.parse().map_err(|_| invalid())?,
+            endpoint: match *direction {
+                "begin" => Endpoint::Begin,
+                "end" => Endpoint::End,
+                _ => return Err(invalid()),
+            },
+            target: target.parse().map_err(|_| invalid())?,
+        },
+        _ => return Err(invalid()),
+    };
+    let viewer = viewer_of(editor).ok_or_else(invalid)?;
+    let document = {
+        let viewer = viewer.lock().expect("pdf viewer lock");
+        let crate::ViewerSource::Vsdx(document) = &viewer.source else { return Err(invalid()); };
+        document.clone()
+    };
+    document.edit_geometry(mode.page, edit).map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn geometry_edit_bar(mode: &GeometryEditor, cx: &mut Context<SlideEditor>) -> AnyElement {
+    use ibis_office_shell::chrome::{action_button, text_field};
+    use ibis_office_shell::i18n::{format, text};
+    bar_style()
+        .id("vsdx-geometry-edit")
+        .absolute().top(px(12.0)).right(px(24.0))
+        .child(div().child(format("vsdx.geometry-command-help", &[("page", &(mode.page + 1))])))
+        .child(text_field(&mode.input).width(px(265.0)).select_on_focus())
+        .child(action_button("vsdx-geometry-save").small().label(text("vsdx.save-label-copy"))
+            .on_click(cx.listener(|editor, _, window, cx| {
+                if !ibis_office_shell::host::export_allowed("vsdx") { return; }
+                match geometry_copy_bytes(editor, cx) {
+                    Ok(bytes) => save_vsdx_copy(editor, window, cx, bytes),
+                    Err(error) => editor.report(Err(error), cx),
+                }
+            })))
+        .child(action_button("vsdx-geometry-close").small().label(text("_shell.close"))
+            .on_click(cx.listener(|editor, _, window, cx| {
+                if let Some(state) = editor.format_state_mut::<State>() {
+                    state.geometry_edit = None;
+                }
+                window.focus(&editor.focus_handle, cx);
+                cx.notify();
+            })))
+        .into_any_element()
 }
 
 #[cfg(not(target_family = "wasm"))]

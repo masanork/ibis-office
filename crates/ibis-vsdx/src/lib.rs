@@ -16,6 +16,7 @@ use roxmltree::{Document, Node};
 
 mod bitmap;
 pub mod edit;
+pub mod geometry_edit;
 mod geometry;
 mod gradient;
 mod theme;
