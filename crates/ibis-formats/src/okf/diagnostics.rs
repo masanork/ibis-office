@@ -98,7 +98,13 @@ pub fn inspect(path: &str, prefix: &str, exists: impl Fn(&str) -> bool) -> Vec<F
         if allows_descriptor && target.contains(char::is_whitespace) {
             return;
         }
-        if let Some(code) = path_problem(path, target, &exists) {
+        if let Some(code) = path_problem(path, target, |relative, _| {
+            if exists(relative) {
+                LinkTarget::Present
+            } else {
+                LinkTarget::MissingFile
+            }
+        }) {
             add(field, code, Some(target.into()));
         }
     };
@@ -127,14 +133,28 @@ pub fn inspect(path: &str, prefix: &str, exists: impl Fn(&str) -> bool) -> Vec<F
     findings
 }
 
-fn path_problem(path: &str, target: &str, exists: &impl Fn(&str) -> bool) -> Option<&'static str> {
+pub enum LinkTarget {
+    Present,
+    MissingFile,
+    MissingFragment,
+}
+
+fn path_problem(
+    path: &str,
+    target: &str,
+    check: impl FnOnce(&str, Option<&str>) -> LinkTarget,
+) -> Option<&'static str> {
     let first = target.split(['/', '?', '#']).next().unwrap_or_default();
     if target.starts_with("//") || first.contains(':') {
         return None;
     }
     match super::resolve_reference(path, target, true) {
-        Some((relative, _)) if relative.is_empty() || exists(&relative) => None,
-        Some(_) => Some("unresolved_local_target"),
+        Some((relative, fragment)) if !relative.is_empty() => match check(&relative, fragment) {
+            LinkTarget::Present => None,
+            LinkTarget::MissingFile => Some("unresolved_local_target"),
+            LinkTarget::MissingFragment => Some("unresolved_heading_fragment"),
+        },
+        Some(_) => None,
         None => Some("outside_or_invalid_path"),
     }
 }
@@ -144,7 +164,7 @@ pub fn inspect_body<'a>(
     path: &'a str,
     body: &'a str,
     first_line: usize,
-    exists: impl Fn(&str) -> bool + 'a,
+    mut check: impl FnMut(&str, Option<&str>) -> LinkTarget + 'a,
 ) -> impl Iterator<Item = Finding> + 'a {
     use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
 
@@ -165,7 +185,7 @@ pub fn inspect_body<'a>(
             }
             Some(Finding {
                 field: "body.link".into(),
-                code: path_problem(path, &dest_url, &exists)?,
+                code: path_problem(path, &dest_url, &mut check)?,
                 target: Some(dest_url.into_string()),
                 line: Some(first_line + newlines.partition_point(|offset| *offset < range.start)),
             })
@@ -199,8 +219,12 @@ mod tests {
 [Fragment](#heading)
 [Escape](../../elsewhere.md)
 "#;
-        let findings: Vec<_> = inspect_body("nested/note.md", body, 5, |path| {
-            matches!(path, "nested/note.md" | "assets/a b.png")
+        let findings: Vec<_> = inspect_body("nested/note.md", body, 5, |path, _| {
+            if matches!(path, "nested/note.md" | "assets/a b.png") {
+                LinkTarget::Present
+            } else {
+                LinkTarget::MissingFile
+            }
         })
         .map(|finding| (finding.line, finding.code, finding.target.unwrap()))
         .collect();

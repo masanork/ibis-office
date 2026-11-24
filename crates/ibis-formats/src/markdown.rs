@@ -222,55 +222,67 @@ pub fn is_presentation_markdown(data: &[u8]) -> bool {
     })
 }
 
-/// Resolve a Markdown heading fragment in the loaded document. Explicit
-/// bookmarks take priority over generated heading IDs.
+/// Resolve a Markdown heading fragment in the loaded document.
 pub fn heading_fragment(doc: &FlowDocument, fragment: &str) -> Option<u32> {
-    let fragment = percent_encoding::percent_decode_str(fragment).decode_utf8().ok()?;
-    if fragment.is_empty() {
-        return None;
-    }
-    let paragraphs = ibis_doc_model::flow_command::all_paragraphs(doc);
-    if let Some(paragraph) = paragraphs.iter()
-        .find(|paragraph| paragraph.bookmarks.iter().any(|bookmark| bookmark == fragment.as_ref()))
-    {
-        return Some(paragraph.id);
+    HeadingFragments::new(doc).resolve(fragment)
+}
+
+/// Bookmark and generated heading IDs in the same precedence as desktop navigation.
+pub struct HeadingFragments(HashMap<String, u32>);
+
+impl HeadingFragments {
+    pub fn new(doc: &FlowDocument) -> Self {
+        let paragraphs = ibis_doc_model::flow_command::all_paragraphs(doc);
+        let mut targets = HashMap::new();
+        for paragraph in &paragraphs {
+            for bookmark in &paragraph.bookmarks {
+                targets.entry(bookmark.clone()).or_insert(paragraph.id);
+            }
+        }
+
+        let mut used = std::collections::HashSet::new();
+        let mut next_suffix = HashMap::new();
+        let mut exact = Vec::new();
+        for paragraph in paragraphs {
+            if ibis_doc_model::flow_command::heading_level(&doc.styles, paragraph).is_none() {
+                continue;
+            }
+            let heading = paragraph.text();
+            let heading = heading.trim();
+            let slug: String = heading.chars()
+                .flat_map(char::to_lowercase)
+                .filter_map(|ch| match ch {
+                    ' ' | '\t' => Some('-'),
+                    '-' | '_' => Some(ch),
+                    ch if ch.is_alphanumeric() => Some(ch),
+                    _ => None,
+                })
+                .collect();
+            exact.push((heading.to_owned(), paragraph.id));
+            if slug.is_empty() {
+                continue;
+            }
+            let mut candidate = slug.clone();
+            let suffix = next_suffix.entry(slug.clone()).or_insert(1);
+            while !used.insert(candidate.clone()) {
+                candidate = format!("{slug}-{suffix}");
+                *suffix += 1;
+            }
+            targets.entry(candidate).or_insert(paragraph.id);
+        }
+        for (heading, id) in exact {
+            targets.entry(heading).or_insert(id);
+        }
+        Self(targets)
     }
 
-    let mut used = std::collections::HashSet::new();
-    let mut next_suffix = HashMap::new();
-    let mut exact_heading = None;
-    for paragraph in paragraphs {
-        if ibis_doc_model::flow_command::heading_level(&doc.styles, paragraph).is_none() {
-            continue;
+    pub fn resolve(&self, fragment: &str) -> Option<u32> {
+        let fragment = percent_encoding::percent_decode_str(fragment).decode_utf8().ok()?;
+        if fragment.is_empty() {
+            return None;
         }
-        let heading = paragraph.text();
-        let heading = heading.trim();
-        if heading == fragment {
-            exact_heading.get_or_insert(paragraph.id);
-        }
-        let slug: String = heading.chars()
-            .flat_map(char::to_lowercase)
-            .filter_map(|ch| match ch {
-                ' ' | '\t' => Some('-'),
-                '-' | '_' => Some(ch),
-                ch if ch.is_alphanumeric() => Some(ch),
-                _ => None,
-            })
-            .collect();
-        if slug.is_empty() {
-            continue;
-        }
-        let mut candidate = slug.clone();
-        let suffix = next_suffix.entry(slug.clone()).or_insert(1);
-        while !used.insert(candidate.clone()) {
-            candidate = format!("{slug}-{suffix}");
-            *suffix += 1;
-        }
-        if candidate == fragment {
-            return Some(paragraph.id);
-        }
+        self.0.get(fragment.as_ref()).copied()
     }
-    exact_heading
 }
 
 /// Read a Markdown document into a [`Presentation`] whose `flow` is the rich [`FlowDocument`].

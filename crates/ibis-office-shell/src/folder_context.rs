@@ -288,7 +288,7 @@ pub(crate) fn tools() -> [ToolDefinition; 8] {
     [
         tool(
             "folder_diagnose_okf",
-            "Inspect OKF YAML metadata and local references in YAML and Markdown bodies in the open folder. Findings are advisory and no files are changed. Pass next_offset to inspect more Markdown files.",
+            "Inspect OKF YAML metadata and local references in YAML and Markdown bodies, including Markdown heading fragments in the open folder. Findings are advisory and no files are changed. Pass next_offset to inspect more Markdown files.",
             json!({"offset":{"type":"integer","minimum":0}}),
             json!([]),
         ),
@@ -395,6 +395,7 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
             let mut files = folder.files.iter().filter(|path| path.ends_with(".md")).skip(offset);
             let mut examined = 0;
             let mut issues = Vec::new();
+            let mut headings = BTreeMap::new();
             let mut partial = folder.truncated || folder.skipped > 0;
             for path in files.by_ref().take(32) {
                 examined += 1;
@@ -420,7 +421,13 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
                     };
                     let first_line = 1 + prefix.bytes().filter(|byte| *byte == b'\n').count();
                     findings.extend(
-                        ibis_formats::okf::diagnostics::inspect_body(path, body, first_line, exists)
+                        ibis_formats::okf::diagnostics::inspect_body(path, body, first_line, |target, fragment| {
+                            let (status, unchecked) = check_okf_body_target(
+                                folder, &mut headings, path, &content, truncated, target, fragment,
+                            );
+                            partial |= unchecked;
+                            status
+                        })
                             .take(13usize.saturating_sub(findings.len()))
                     );
                 }
@@ -564,6 +571,57 @@ fn required_string<'a>(args: &'a Value, field: &str) -> Result<&'a str, String> 
         .as_str()
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| format!("Provide a non-empty {field}."))
+}
+
+fn check_okf_body_target(
+    folder: &Folder,
+    headings: &mut BTreeMap<String, Option<ibis_formats::markdown::HeadingFragments>>,
+    source_path: &str,
+    source_text: &str,
+    source_truncated: bool,
+    target: &str,
+    fragment: Option<&str>,
+) -> (ibis_formats::okf::diagnostics::LinkTarget, bool) {
+    use ibis_formats::okf::diagnostics::LinkTarget;
+
+    let Ok(resolved) = folder.resolve_entry(target) else {
+        return (LinkTarget::MissingFile, false);
+    };
+    let Some(fragment) = fragment.filter(|fragment| !fragment.is_empty()) else {
+        return (LinkTarget::Present, false);
+    };
+    if !resolved.is_file() || !matches!(extension(&resolved).as_str(), "md" | "markdown") {
+        return (LinkTarget::Present, false);
+    }
+    if !headings.contains_key(target) && headings.len() >= 32 {
+        return (LinkTarget::Present, true);
+    }
+    let entry = headings.entry(target.into()).or_insert_with(|| {
+        let owned;
+        let text = if target == source_path {
+            if source_truncated {
+                return None;
+            }
+            source_text
+        } else {
+            let (content, truncated) = read_text(&resolved).ok()?;
+            if truncated {
+                return None;
+            }
+            owned = content;
+            &owned
+        };
+        if ibis_formats::markdown::is_presentation_markdown(text.as_bytes()) {
+            return None;
+        }
+        let document = ibis_formats::markdown::read_markdown(text.as_bytes()).ok()?;
+        Some(ibis_formats::markdown::HeadingFragments::new(document.flow.as_deref()?))
+    });
+    match entry {
+        Some(index) if index.resolve(fragment).is_none() => (LinkTarget::MissingFragment, false),
+        Some(_) => (LinkTarget::Present, false),
+        None => (LinkTarget::Present, true),
+    }
 }
 
 fn excerpt(line: &str, limit: usize) -> String {
@@ -978,6 +1036,23 @@ mod tests {
         assert_eq!(body_issue["line"], 10);
         assert_eq!(body_issue["target"], "../body-absent.md");
         assert_eq!(std::fs::read_to_string(fixture.0.join("nested/metric.md")).unwrap(), concept);
+    }
+
+    #[test]
+    fn okf_heading_diagnostics_match_desktop_bookmarks_and_slugs() {
+        let fixture = Fixture::new();
+        fixture.write("note.md", "# Local heading\n\n[Local](#local-heading)\n[Missing local](#gone)\n[Duplicate](target.md#topic-1)\n[Explicit](target.md#explicit)\n[Encoded](target.md#%E6%97%A5%E6%9C%AC)\n[Missing remote](target.md#gone)\n[Asset](raw.bin#anything)\n");
+        fixture.write("target.md", "# Topic\n\n# Topic\n\n## 日本 {#explicit}\n\n```md\n# Gone\n```\n");
+        fixture.write("raw.bin", "data");
+        let folder = Folder::scan(&fixture.0).unwrap();
+        let result = call(&folder, "folder_diagnose_okf", json!({})).unwrap();
+        assert_eq!(result.value["partial"], false);
+        let findings = result.value["issues"].as_array().unwrap();
+        assert_eq!(findings.len(), 2, "{findings:?}");
+        for (finding, line) in findings.iter().zip([4, 8]) {
+            assert_eq!(finding["code"], "unresolved_heading_fragment");
+            assert_eq!(finding["line"], line);
+        }
     }
 
     #[test]
