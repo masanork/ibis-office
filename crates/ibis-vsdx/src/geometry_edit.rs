@@ -372,8 +372,16 @@ struct EditableRoute<'a, 'i> {
     links: [XmlNode<'a, 'i>; 2],
     points: [(f64, f64); 2],
     vertices: Vec<([Option<XmlNode<'a, 'i>>; 2], [f64; 2])>,
+    arcs: Vec<ArcControl<'a, 'i>>,
+    bows: Vec<(XmlNode<'a, 'i>, f64)>,
     signed: bool,
     size: [f64; 2],
+}
+
+struct ArcControl<'a, 'i> {
+    cells: [XmlNode<'a, 'i>; 2],
+    point: [f64; 2],
+    relative: bool,
 }
 
 fn fixed_row(link: XmlNode<'_, '_>) -> Option<u32> {
@@ -596,6 +604,8 @@ fn editable_route<'a, 'i>(
     }
 
     let mut vertices = Vec::new();
+    let mut arcs = Vec::new();
+    let mut bows = Vec::new();
     let mut first = None;
     let mut previous: Option<[f64; 2]> = None;
     let mut count = 0;
@@ -624,8 +634,9 @@ fn editable_route<'a, 'i>(
     let mut last_index = count;
     for row in geometry.children().filter(|&node| named(node, "Row")) {
         let kind = match (count, row.attribute("T")) {
-            (0, Some("MoveTo")) | (1.., Some("LineTo")) => false,
-            (0, Some("RelMoveTo")) | (1.., Some("RelLineTo" | "RelCubBezTo")) => true,
+            (0, Some("MoveTo")) | (1.., Some("LineTo" | "EllipticalArcTo" | "ArcTo")) => false,
+            (0, Some("RelMoveTo"))
+            | (1.., Some("RelLineTo" | "RelCubBezTo" | "RelEllipticalArcTo")) => true,
             _ => return Err(unsupported()),
         };
         let cells = [cell(row, "X").ok(), cell(row, "Y").ok()];
@@ -660,13 +671,46 @@ fn editable_route<'a, 'i>(
             raw
         };
         let cubic = row.attribute("T") == Some("RelCubBezTo");
-        if cubic {
+        let arc = matches!(
+            row.attribute("T"),
+            Some("EllipticalArcTo" | "RelEllipticalArcTo")
+        );
+        if cubic || arc {
             for key in ["A", "B", "C", "D"] {
                 if cell(row, key)?.attribute("F").is_some() {
                     return Err(unsupported());
                 }
                 value(row, key)?;
             }
+        }
+        if arc {
+            let control = [value(row, "A")?, value(row, "B")?];
+            let through = if kind {
+                [control[0] * width, control[1] * height]
+            } else {
+                control
+            };
+            let [x0, y0] = previous.ok_or_else(unsupported)?;
+            let [x1, y1] = point;
+            if !(0.001..=1000.0).contains(&value(row, "D")?)
+                || ((x1 - x0) * (through[1] - y0) - (y1 - y0) * (through[0] - x0)).abs() < 1e-8
+            {
+                return Err(unsupported());
+            }
+            arcs.push(ArcControl {
+                cells: [cell(row, "A")?, cell(row, "B")?],
+                point: control,
+                relative: kind,
+            });
+        }
+        let circular = row.attribute("T") == Some("ArcTo");
+        if circular {
+            let cell = cell(row, "A")?;
+            let bow = value(row, "A")?;
+            if cell.attribute("F").is_some() || previous.is_none_or(|p| p == point) {
+                return Err(unsupported());
+            }
+            bows.push((cell, bow));
         }
         if cells
             .iter()
@@ -677,6 +721,8 @@ fn editable_route<'a, 'i>(
                     || (flat[axis] && !close(point[axis], size[axis] / 2.0))
             })
             || (!cubic
+                && !arc
+                && !circular
                 && previous
                     .is_some_and(|last| !close(last[0], point[0]) && !close(last[1], point[1])))
         {
@@ -721,6 +767,8 @@ fn editable_route<'a, 'i>(
         links: [begin, end_link],
         points,
         vertices,
+        arcs,
+        bows,
         signed,
         size,
     })
@@ -748,6 +796,30 @@ impl EditableRoute<'_, '_> {
                     return Err(unsupported());
                 }
                 size[i] = if self.signed { new[i] } else { new[i].abs() };
+            }
+        }
+        if !self.arcs.is_empty() || !self.bows.is_empty() {
+            // Keep the axis angle, aspect ratio, and sweep by scaling the arc uniformly.
+            let axis = usize::from(close(old[0], 0.0));
+            let scale = size[axis] / self.size[axis];
+            if scale <= 0.0 {
+                return Err(unsupported());
+            }
+            let other = 1 - axis;
+            if close(old[other], 0.0) {
+                if !self.arcs.is_empty() {
+                    size[other] = self.size[other] * scale;
+                }
+            } else if (size[other] / self.size[other] - scale).abs() > 1e-8 * scale {
+                return Err(unsupported());
+            }
+            for &(cell, bow) in &self.bows {
+                number_patch(patches, cell, bow * scale)?;
+            }
+            for arc in self.arcs.iter().filter(|arc| !arc.relative) {
+                for (cell, value) in arc.cells.into_iter().zip(arc.point) {
+                    number_patch(patches, cell, value * scale)?;
+                }
             }
         }
         let [width, height] = size;

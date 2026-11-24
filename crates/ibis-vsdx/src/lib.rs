@@ -1076,7 +1076,7 @@ fn geometry_path(
 ) -> Vec<PathCmd> {
     let mut out = Vec::new();
     let mut start = None;
-    let mut previous = None;
+    let mut previous: Option<(f64, f64)> = None;
     for (base, local) in indexed_children(base, local, "Row", |_| true).into_values() {
         if local.or(base).and_then(|n| n.attribute("Del")) == Some("1") {
             continue;
@@ -1125,12 +1125,35 @@ fn geometry_path(
                     }
                 }
             }
-            "EllipticalArcTo" if start.is_some() => {
+            "ArcTo" if start.is_some() => {
+                let arc = previous.and_then(|(x, y)| {
+                    let bow = num("A", scales.0)?;
+                    let (dx, dy) = (end.0 - x, end.1 - y);
+                    let chord = dx.hypot(dy);
+                    if chord == 0.0 {
+                        return None;
+                    }
+                    let midpoint = ((x + end.0) / 2.0 + bow * dy / chord,
+                                    (y + end.1) / 2.0 - bow * dx / chord);
+                    elliptical_arc(m, (x, y), midpoint, end, 0.0, 1.0)
+                });
+                if let Some(arc) = arc {
+                    out.extend(arc);
+                } else {
+                    out.push(PathCmd::LineTo(p.0, p.1));
+                }
+                if start == Some(p) {
+                    out.push(PathCmd::Close);
+                }
+            }
+            "EllipticalArcTo" | "RelEllipticalArcTo" if start.is_some() => {
                 let arc = previous.and_then(|from| {
+                    let (x, y) = (num("A", scales.0)?, num("B", scales.1)?);
+                    let through = if relative { (x * size.0, y * size.1) } else { (x, y) };
                     elliptical_arc(
                         m,
                         from,
-                        (num("A", scales.0)?, num("B", scales.1)?),
+                        through,
                         end,
                         num("C", 1.0)?,
                         num("D", 1.0)?,

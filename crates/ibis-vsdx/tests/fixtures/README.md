@@ -48,3 +48,17 @@ cargo test --locked -p ibis-vsdx --test visio_native_glue -- --ignored
 ```
 
 Omit `VSDX_VISIO_GLUE_OUTPUT` to use and remove a temporary copy.
+
+## Circular line jumps
+
+The Aspose.Diagram examples include [modified.vsdx](https://github.com/aspose-diagram/Aspose.Diagram-for-Java/blob/4c46d5e3ab5ba8939b43d845633490794276a8e7/Examples/src/main/resources/com/aspose/diagram/examples/OLEObjectsinVisioDiagram/ManipulateEmbeddedOLEObjects/modified.vsdx),
+a Visio-origin drawing with two circular line jumps in one connector. The
+SHA-256 is `9c140154d9ff810cf72e5ced28d12072756cfccb004e9532b833b499182ad543`.
+The drawing has no explicit connection records for those endpoints, so this
+fixture tests rendering. The geometry edit suite uses a separate adapted
+flowchart to verify reconnection and save/reopen.
+
+```sh
+VSDX_VISIO_ARC_SAMPLE=/path/to/modified.vsdx \
+cargo test --locked -p ibis-vsdx --test visio_arc -- --ignored
+```

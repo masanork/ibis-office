@@ -440,3 +440,111 @@ fn moves_an_unconnected_child_in_group_coordinates() {
     assert!((cell_value(&xml, "1", "PinX") - 10.181102).abs() < 1e-6);
     assert_eq!(cell_value(&xml, "100", "PinX"), 0.0);
 }
+
+#[test]
+fn reconnects_circular_and_elliptical_arcs_at_uniform_scale() {
+    use ibis_pdf::{DisplayCmd, scene::PathCmd};
+
+    for arc_type in ["ArcTo", "EllipticalArcTo", "RelEllipticalArcTo"] {
+        let doc = rewrite_flowchart(|mut source| {
+            let xml = roxmltree::Document::parse(&source).unwrap();
+            let route = xml
+                .descendants()
+                .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some("12"))
+                .unwrap();
+            let geometry = route
+                .children()
+                .find(|n| n.attribute("N") == Some("Geometry"))
+                .unwrap()
+                .range();
+            let (move_type, middle, end, controls) = match arc_type {
+                "ArcTo" => ("MoveTo", 0.005, 0.629921, r#"<Cell N="A" V="-0.195"/>"#),
+                "RelEllipticalArcTo" => (
+                    "RelMoveTo",
+                    0.5,
+                    1.0,
+                    r#"<Cell N="A" V="0.5"/><Cell N="B" V="20"/><Cell N="C" V="0.2"/><Cell N="D" V="2"/>"#,
+                ),
+                _ => (
+                    "MoveTo",
+                    0.005,
+                    0.629921,
+                    r#"<Cell N="A" V="0.3149605"/><Cell N="B" V="0.2"/><Cell N="C" V="0.2"/><Cell N="D" V="2"/>"#,
+                ),
+            };
+            source.replace_range(geometry, &format!(concat!(
+                r#"<Section N="Geometry" IX="0"><Cell N="NoFill" V="1"/>"#,
+                r#"<Row T="{}" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="{}"/></Row>"#,
+                r#"<Row T="{}" IX="2"><Cell N="X" V="{}"/><Cell N="Y" V="{}"/>{}</Row></Section>"#),
+                move_type, middle, arc_type, end, middle, controls));
+            source
+        });
+        let curve = |page: &ibis_pdf::PageScene| {
+            page.display_list
+                .iter()
+                .find_map(|cmd| {
+                    let DisplayCmd::DrawPath { commands, .. } = cmd else {
+                        return None;
+                    };
+                    let Some(PathCmd::MoveTo(x, _)) = commands.first() else {
+                        return None;
+                    };
+                    if (*x - 1.909449 * 72.0).abs() > 0.01 {
+                        return None;
+                    }
+                    let values: Vec<_> = commands
+                        .iter()
+                        .filter_map(|path| match *path {
+                            PathCmd::CubicTo(a, b, c, d, x, y) => Some([a, b, c, d, x, y]),
+                            _ => None,
+                        })
+                        .collect();
+                    (!values.is_empty()).then_some(values)
+                })
+                .unwrap()
+        };
+        let before = curve(&doc.interpret_page_scene(0).unwrap());
+        let bytes = doc
+            .edit_geometry(
+                0,
+                GeometryEdit::Reconnect {
+                    connector: 12,
+                    endpoint: Endpoint::End,
+                    target: 4,
+                },
+            )
+            .unwrap();
+        let path =
+            std::env::temp_dir().join(format!("ibis-arc-{arc_type}-{}.vsdx", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let opened = VsdxContainer::from_bytes(bytes.clone().into()).unwrap();
+        let scene = opened.interpret_page_scene(0).unwrap();
+        let after = curve(&scene);
+        let origin = [
+            1.909449 * 72.0,
+            scene.info.crop_box.height() - 0.639764 * 72.0,
+        ];
+        let scale =
+            (after.last().unwrap()[4] - origin[0]) / (before.last().unwrap()[4] - origin[0]);
+        assert!(scale > 2.0);
+        assert_eq!(before.len(), after.len());
+        for (a, b) in before.into_iter().zip(after) {
+            for i in 0..6 {
+                assert!(
+                    (b[i] - (origin[i % 2] + (a[i] - origin[i % 2]) * scale)).abs() < 0.015,
+                    "{a:?} {b:?}"
+                );
+            }
+        }
+        let zip = Archive::new(bytes.into()).unwrap();
+        let page = zip
+            .entries()
+            .iter()
+            .find(|entry| entry.name == PAGE)
+            .unwrap();
+        let xml = String::from_utf8(zip.read(page).unwrap()).unwrap();
+        assert!(xml.contains(r#"FromSheet="12" FromCell="EndX" ToSheet="4""#));
+    }
+}
