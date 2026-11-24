@@ -479,6 +479,7 @@ pub enum EditableSourceKind {
     Mermaid,
 }
 
+#[derive(Clone)]
 pub struct EditableSource {
     pub target: String,
     pub text: String,
@@ -501,7 +502,7 @@ pub(crate) struct ReplaceSourceText {
     pub replacement: String,
 }
 
-fn source_tool_definitions(markdown: bool) -> Vec<ToolDefinition> {
+pub(crate) fn source_tool_definitions(markdown: bool) -> Vec<ToolDefinition> {
     let kinds = if markdown { vec!["markdown", "mermaid"] } else { vec!["mermaid"] };
     vec![
         ToolDefinition {
@@ -523,7 +524,7 @@ fn source_tool_definitions(markdown: bool) -> Vec<ToolDefinition> {
             kind: "function",
             function: ToolFunctionDef {
                 name: "replace_source_text",
-                description: "Replace one unique, exact fragment of editable source. First read it with read_editable_source and pass its target token. This applies one undoable edit immediately.",
+                description: "Replace one unique, exact fragment of editable source. First read it with read_editable_source and pass its target token. This stages an edit for review.",
                 parameters: json!({
                     "type": "object", "required": ["kind", "target", "expected", "replacement"], "additionalProperties": false,
                     "properties": {

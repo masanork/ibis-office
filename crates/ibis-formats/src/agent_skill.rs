@@ -10,6 +10,7 @@ pub struct Metadata {
     pub description: String,
 }
 
+#[derive(Clone)]
 pub struct Skill {
     pub metadata: Metadata,
     pub instructions: String,

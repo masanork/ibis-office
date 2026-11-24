@@ -79,9 +79,6 @@ pub fn start(
                         if request.get("harness").is_some_and(|value| !matches!(value.as_str(), Some("builtin" | "acp"))) {
                             return json!({"error":"unsupported Assistant harness"});
                         }
-                        if request["harness"] == "acp" && request.get("skill").is_some() {
-                            return json!({"error":"ACP turns do not yet support ibisOffice skill selection"});
-                        }
                         if request["queue_phase"] == "admit" {
                             return match editor.check_assistant_connection_document() {
                                 Ok(()) if !text.trim().is_empty() => json!({"accepted":true,
