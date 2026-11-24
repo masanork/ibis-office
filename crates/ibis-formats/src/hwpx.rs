@@ -244,6 +244,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn transformed_picture_and_curve_share_a_group_after_docx_conversion() {
+        let package = format!(
+            r#"<package xmlns="{OPF}"><manifest><item id="s" href="section0.xml"/><item id="photo" href="BinData/photo.png"/></manifest><spine><itemref idref="s"/></spine></package>"#
+        );
+        let matrix = r#"<hp:renderingInfo>
+            <hc:transMatrix e1="1" e2="0" e3="100" e4="0" e5="1" e6="0"/>
+            <hc:scaMatrix e1="2" e2="0" e3="0" e4="0" e5="3" e6="0"/>
+            <hc:rotMatrix e1="0" e2="-1" e3="900" e4="-1" e5="0" e6="1000"/>
+            </hp:renderingInfo>"#;
+        let section = format!(
+            r##"<hs:sec xmlns:hs="{SECTION}" xmlns:hp="{PARAGRAPH}" xmlns:hc="{CORE}">
+            <hp:p><hp:run><hp:container>
+            <hp:pos horzRelTo="PAPER" vertRelTo="PAPER"/>
+            <hp:pic><hp:orgSz width="400" height="200"/>{matrix}<hc:img binaryItemIDRef="photo"/></hp:pic>
+            <hp:curve><hp:orgSz width="400" height="200"/>
+              <hp:lineShape style="SOLID" width="33" color="#000000"/>
+              <hp:seg type="CURVE" x1="0" y1="0" x2="200" y2="200"/>
+              <hp:seg type="CURVE" x1="200" y1="200" x2="400" y2="0"/>
+            </hp:curve>
+            </hp:container></hp:run></hp:p></hs:sec>"##
+        );
+        let png = include_bytes!("../../../test/fixtures/markdown-desktop/images/revenue.png");
+        let mut writer = ibis_ooxml::zip::Writer::new();
+        for (name, bytes) in [
+            ("mimetype", MIME_TYPE),
+            (PACKAGE, package.as_bytes()),
+            ("Contents/section0.xml", section.as_bytes()),
+            ("BinData/photo.png", png.as_slice()),
+        ] {
+            writer.add(name, Default::default(), bytes).unwrap();
+        }
+        let presentation = open(&writer.finish().unwrap()).unwrap().presentation;
+        let flow = presentation.flow.as_ref().unwrap();
+        let Block::Paragraph(paragraph) = &flow.body[0] else {
+            panic!("paragraph")
+        };
+        let [image, curve] = paragraph.runs.as_slice() else {
+            panic!("two members")
+        };
+        let (FlowRunKind::Shape(image), FlowRunKind::Shape(curve)) = (&image.kind, &curve.kind)
+        else {
+            panic!("editable members")
+        };
+        assert_eq!(flow.shape_groups[0].leaf_shape_ids(), [image.id, curve.id]);
+        let ShapeKind::Picture(pic) = &image.kind else {
+            panic!("picture")
+        };
+        assert_eq!(presentation.media(pic.media).unwrap().data.as_ref(), png);
+        assert_eq!(
+            (image.frame.width, image.frame.height),
+            (units(800), units(600))
+        );
+        assert_eq!(image.rotation, 270 * 60_000);
+        assert!(image.flip_v);
+        let anchor = image.floating.as_ref().unwrap();
+        assert_eq!((anchor.offset_x, anchor.offset_y), (units(300), units(300)));
+        let ShapeKind::Auto(auto) = &curve.kind else {
+            panic!("curve")
+        };
+        let Geometry::Formula(geometry) = &auto.geometry else {
+            panic!("custom geometry")
+        };
+        assert!(matches!(
+            geometry.def.paths[0].ops[1],
+            ibis_doc_model::PathOp::CubicTo(_)
+        ));
+    }
+
+    #[test]
     fn nested_vector_group_survives_docx_roundtrip() {
         let package = format!(
             r#"<package xmlns="{OPF}"><manifest><item id="s" href="section0.xml"/></manifest><spine><itemref idref="s"/></spine></package>"#
@@ -998,7 +1067,9 @@ impl Importer<'_, '_> {
                         }
                     } else if item.has_tag_name((PARAGRAPH, "container")) {
                         let anchor = picture_anchor(item).unwrap_or_else(shared::group_anchor);
-                        if let Some(group) = self.group(item, &anchor, &mut paragraph.runs, 0) {
+                        if let Some(group) =
+                            self.group(item, &anchor, &anchor, &mut paragraph.runs, 0)?
+                        {
                             self.shape_groups.push(group);
                         }
                     } else if let Some(shape) = self.vector(item) {
@@ -1039,6 +1110,14 @@ impl Importer<'_, '_> {
     }
 
     fn picture(&mut self, node: Node<'_, '_>) -> Result<Option<FlowRunKind>, Error> {
+        self.picture_at(node, picture_anchor(node))
+    }
+
+    fn picture_at(
+        &mut self,
+        node: Node<'_, '_>,
+        anchor: Option<FloatingAnchor>,
+    ) -> Result<Option<FlowRunKind>, Error> {
         let Some(id) = node
             .children()
             .find(|n| n.has_tag_name((CORE, "img")))
@@ -1079,8 +1158,7 @@ impl Importer<'_, '_> {
         };
         let look = picture_look(node);
         Ok(media.map(|media| {
-            let floating =
-                picture_anchor(node).map(|anchor| (self.presentation.new_shape_id(), anchor));
+            let floating = anchor.map(|anchor| (self.presentation.new_shape_id(), anchor));
             shared::imported_picture(media, size, look, floating)
         }))
     }
@@ -1089,11 +1167,12 @@ impl Importer<'_, '_> {
         &mut self,
         node: Node<'_, '_>,
         anchor: &FloatingAnchor,
+        root: &FloatingAnchor,
         runs: &mut Vec<FlowRun>,
         depth: usize,
-    ) -> Option<ShapeGroup> {
-        if depth >= 32 {
-            return None;
+    ) -> Result<Option<ShapeGroup>, Error> {
+        if depth >= 16 {
+            return Ok(None);
         }
         let mut members = Vec::new();
         for child in node
@@ -1103,17 +1182,55 @@ impl Importer<'_, '_> {
             let offset = |name| part(child, "offset").map_or(0, |n| signed_offset(n, name));
             let child_anchor = shared::offset_anchor(anchor, offset("x"), offset("y"));
             if child.has_tag_name((PARAGRAPH, "container")) {
-                if let Some(group) = self.group(child, &child_anchor, runs, depth + 1) {
+                if let Some(group) = self.group(child, &child_anchor, root, runs, depth + 1)? {
                     members.push(GroupMember::Group(Box::new(group)));
                 }
-            } else if let Some(mut shape) = self.vector(child) {
+                continue;
+            }
+            let shape = if child.has_tag_name((PARAGRAPH, "pic")) {
+                match self.picture_at(child, Some(child_anchor.clone()))? {
+                    Some(FlowRunKind::Shape(shape)) => Some(shape),
+                    _ => None,
+                }
+            } else {
+                self.vector(child).map(Box::new)
+            };
+            if let Some(mut shape) = shape {
                 shape.floating = Some(child_anchor);
+                if let (Some(size), Some(info)) =
+                    (size_part(child, "orgSz"), part(child, "renderingInfo"))
+                {
+                    let matrices: Option<Vec<_>> = info
+                        .children()
+                        .filter(|n| n.tag_name().namespace() == Some(CORE))
+                        .filter(|n| {
+                            matches!(
+                                n.tag_name().name(),
+                                "transMatrix" | "scaMatrix" | "rotMatrix"
+                            )
+                        })
+                        .map(|n| {
+                            Some([
+                                number(n, "e1")?,
+                                number(n, "e2")?,
+                                number(n, "e3")?,
+                                number(n, "e4")?,
+                                number(n, "e5")?,
+                                number(n, "e6")?,
+                            ])
+                        })
+                        .collect();
+                    if let Some(matrices) = matrices
+                        .filter(|m| m.len() >= 3 && m.iter().flatten().all(|v: &f64| v.is_finite()))
+                    {
+                        shared::place_group_leaf(&mut shape, root, size, matrices);
+                    }
+                }
                 members.push(GroupMember::Shape(shape.id));
-                let kind = FlowRunKind::Shape(Box::new(shape));
-                runs.push(FlowRun::new(kind, Default::default()));
+                runs.push(FlowRun::new(FlowRunKind::Shape(shape), Default::default()));
             }
         }
-        (!members.is_empty()).then(|| shared::shape_group(members))
+        Ok((!members.is_empty()).then(|| shared::shape_group(members)))
     }
 
     fn vector(&mut self, node: Node<'_, '_>) -> Option<Shape> {
@@ -1135,6 +1252,35 @@ impl Importer<'_, '_> {
                     )
                 });
                 (ShapeKind::Line(shape_stroke(node)?), size, x1 > x2, y1 > y2)
+            }
+            "curve" => {
+                let size = object_size(node)?;
+                let mut points = Vec::new();
+                let mut curved = Vec::new();
+                for seg in node
+                    .children()
+                    .filter(|n| n.has_tag_name((PARAGRAPH, "seg")))
+                    .take(4097)
+                {
+                    let start = (signed_offset(seg, "x1"), signed_offset(seg, "y1"));
+                    if points.is_empty() {
+                        points.push(start);
+                    }
+                    if points.last() != Some(&start) {
+                        return None;
+                    }
+                    points.push((signed_offset(seg, "x2"), signed_offset(seg, "y2")));
+                    curved.push(seg.attribute("type") == Some("CURVE"));
+                }
+                if !(2..=4097).contains(&points.len()) {
+                    return None;
+                }
+                let geometry = shared::curve_geometry(
+                    &points,
+                    &curved,
+                    size_part(node, "orgSz").unwrap_or(size),
+                )?;
+                (self.basic_shape(node, geometry), size, false, false)
             }
             name @ ("rect" | "ellipse") => {
                 let geometry = if name == "rect" {
@@ -1397,12 +1543,16 @@ impl Importer<'_, '_> {
 // A merged cell provides the sum of its rows' heights. Use that information
 // to fill gaps, leaving rows with individual measurements untouched.
 fn object_size(node: Node<'_, '_>) -> Option<EmuSize> {
-    ["sz", "curSz", "orgSz"].into_iter().find_map(|name| {
-        let n = part(node, name)?;
-        let width = number::<i64>(n, "width")?;
-        let height = number::<i64>(n, "height")?;
-        (width > 0 && height > 0).then(|| EmuSize::new(units(width), units(height)))
-    })
+    ["sz", "curSz", "orgSz"]
+        .into_iter()
+        .find_map(|name| size_part(node, name))
+}
+
+fn size_part(node: Node<'_, '_>, name: &str) -> Option<EmuSize> {
+    let n = part(node, name)?;
+    let width = number::<i64>(n, "width")?;
+    let height = number::<i64>(n, "height")?;
+    (width > 0 && height > 0).then(|| EmuSize::new(units(width), units(height)))
 }
 
 fn shape_stroke(node: Node<'_, '_>) -> Option<Stroke> {

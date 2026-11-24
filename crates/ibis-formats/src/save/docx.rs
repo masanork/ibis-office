@@ -4429,6 +4429,20 @@ impl Writer<'_> {
     }
 
     /// A new group shape (`<wpg:wgp>` inside `<mc:AlternateContent>`), containing `shapes`.
+    fn group_picture_xml(&self, shape: &Shape, pic: &ibis_doc_model::Picture, id: u64, x: i64, y: i64) -> Option<String> {
+        let rid = self.added.get(&pic.media)?;
+        let (cx, cy) = (shape.frame.width, shape.frame.height);
+        let (rot, fh, fv) = (shape.rotation, u8::from(shape.flip_h), u8::from(shape.flip_v));
+        let name = crate::picture_name(id);
+        Some(format!(concat!(
+            r#"<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+            r#"<pic:nvPicPr><pic:cNvPr id="{id}" name="{name}"/><pic:cNvPicPr/></pic:nvPicPr>"#,
+            r#"<pic:blipFill><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>"#,
+            r#"<pic:spPr><a:xfrm rot="{rot}" flipH="{fh}" flipV="{fv}"><a:off x="{x}" y="{y}"/>"#,
+            r#"<a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>"#
+        ), id=id, name=name, rid=rid, rot=rot, fh=fh, fv=fv, x=x, y=y, cx=cx, cy=cy))
+    }
+
     fn new_group_shape(&mut self, group: &ibis_doc_model::ShapeGroup, shapes: &[&Shape]) -> NodeId {
         let root = self.doc.root_element().unwrap_or(XmlDocument::ROOT);
         let mut used_ids: std::collections::HashSet<u64> = self
@@ -4475,7 +4489,13 @@ impl Writer<'_> {
             let (sx, sy) = pos_of(s);
             let off_x = sx - min_x;
             let off_y = sy - min_y;
-            leaves.insert(s.id, self.wsp_xml(s, shape_body(s), child_id, off_x, off_y, true));
+            let xml = match &s.kind {
+                ShapeKind::Picture(pic) => self.group_picture_xml(s, pic, child_id, off_x, off_y),
+                _ => Some(self.wsp_xml(s, shape_body(s), child_id, off_x, off_y, true)),
+            };
+            if let Some(xml) = xml {
+                leaves.insert(s.id, xml);
+            }
         }
 
         // Imported leaves are already in document coordinates. The nested
