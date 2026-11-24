@@ -285,6 +285,7 @@ impl VsdxContainer {
             .filter(|&n| named(n, "StyleSheet"))
             .filter_map(|n| Some((n.attribute("ID")?, n)))
             .collect();
+        let colors = color_table(main.root_element());
         let mut render = Render {
             scene: PageScene {
                 info: page.info.clone(),
@@ -292,6 +293,7 @@ impl VsdxContainer {
                 text_index: Default::default(),
             },
             styles,
+            colors: &colors,
             shapes: 0,
             path_commands: 0,
             gradient_pixels: gradient::PAGE_PIXELS,
@@ -359,6 +361,7 @@ impl Matrix {
 struct Render<'a, 'i, 'package, 'bytes> {
     scene: PageScene,
     styles: HashMap<&'a str, Node<'a, 'i>>,
+    colors: &'package HashMap<u32, [u8; 4]>,
     shapes: usize,
     path_commands: usize,
     gradient_pixels: usize,
@@ -427,6 +430,8 @@ impl Render<'_, '_, '_, '_> {
                     None
                 })
             };
+            let colors = self.colors;
+            let color = |value, fallback| resolve_color(colors, value).unwrap_or(fallback);
             let resolve = |style, key, quick, default| {
                 let cached = paint(style, key);
                 if cached != Some("Themed") {
@@ -467,7 +472,7 @@ impl Render<'_, '_, '_, '_> {
                     base.unwrap_or(default)
                 }
             };
-            let fill = (paint("FillStyle", "FillPattern") != Some("0")).then(|| {
+            let mut fill = (paint("FillStyle", "FillPattern") != Some("0")).then(|| {
                 resolve(
                     "FillStyle",
                     "FillForegnd",
@@ -476,11 +481,14 @@ impl Render<'_, '_, '_, '_> {
                 )
             });
             let stroke = (paint("LineStyle", "LinePattern") != Some("0")).then(|| {
-                resolve(
-                    "LineStyle",
-                    "LineColor",
-                    "QuickStyleLineColor",
-                    [0, 0, 0, 255],
+                with_transparency(
+                    resolve(
+                        "LineStyle",
+                        "LineColor",
+                        "QuickStyleLineColor",
+                        [0, 0, 0, 255],
+                    ),
+                    paint("LineStyle", "LineColorTrans"),
                 )
             });
             let weight = number(paint("LineStyle", "LineWeight"))
@@ -535,6 +543,9 @@ impl Render<'_, '_, '_, '_> {
                         direction: gradient::direction(angle, rotates.then_some(m)),
                     });
                 }
+            }
+            if gradient.is_none() {
+                fill = fill.map(|rgba| with_transparency(rgba, fill_cell("FillForegndTrans")));
             }
             let scales = (
                 inherited_scale(w, master, "Width"),
@@ -653,13 +664,17 @@ impl Render<'_, '_, '_, '_> {
                     font_size: (number(character("Size")).unwrap_or(1.0 / 6.0) * 72.0)
                         .clamp(1.0, 400.0) as f32,
                     family: character("Font"),
-                    color: color(character("Color"), [0, 0, 0, 255]),
+                    color: with_transparency(
+                        color(character("Color"), [0, 0, 0, 255]),
+                        character("Transparency"),
+                    ),
                     flags: character("Style").and_then(|v| v.parse().ok()).unwrap_or(0),
                 };
                 if let Some(background) = get("TextBkgnd").filter(|v| v.starts_with('#')) {
-                    let mut rgba = color(Some(background), [255, 255, 255, 255]);
-                    let transparency = num("TextBkgndTrans").unwrap_or(0.0).clamp(0.0, 1.0);
-                    rgba[3] = ((1.0 - transparency) * 255.0).round() as u8;
+                    let rgba = with_transparency(
+                        color(Some(background), [255, 255, 255, 255]),
+                        get("TextBkgndTrans"),
+                    );
                     let right = left + txt_width.unwrap_or(w);
                     let top = bottom + height;
                     let a = text_matrix.point(left, top);
@@ -957,14 +972,55 @@ fn wrap_lines(text: &str, width: Option<f32>, font_size: f32) -> Vec<(&str, bool
     lines
 }
 
-fn color(value: Option<&str>, default: [u8; 4]) -> [u8; 4] {
-    match value {
-        Some("0") => [0, 0, 0, 255],
-        Some("1") => [255, 255, 255, 255],
-        Some(s) if s.len() == 7 && s.starts_with('#') => u32::from_str_radix(&s[1..], 16)
-            .map_or(default, |n| [(n >> 16) as u8, (n >> 8) as u8, n as u8, 255]),
-        _ => default,
+fn rgb(value: u32) -> [u8; 4] {
+    [(value >> 16) as u8, (value >> 8) as u8, value as u8, 255]
+}
+
+fn parse_rgb(value: &str) -> Option<[u8; 4]> {
+    let digits = value.strip_prefix('#')?;
+    if digits.len() != 6 {
+        return None;
     }
+    u32::from_str_radix(digits, 16).ok().map(rgb)
+}
+
+fn color_table(document: Node<'_, '_>) -> HashMap<u32, [u8; 4]> {
+    child(document, "Colors")
+        .into_iter()
+        .flat_map(|n| n.children())
+        .filter(|&n| named(n, "ColorEntry"))
+        .filter_map(|n| {
+            Some((
+                n.attribute("IX")?.parse().ok()?,
+                parse_rgb(n.attribute("RGB")?)?,
+            ))
+        })
+        .collect()
+}
+
+fn resolve_color(table: &HashMap<u32, [u8; 4]>, value: Option<&str>) -> Option<[u8; 4]> {
+    // Built-in palette from MS-VSDX 2.2.7.6. Custom entries begin at 24.
+    const BUILTIN: [u32; 24] = [
+        0x000000, 0xffffff, 0xff0000, 0x00ff00, 0x0000ff, 0xffff00, 0xff00ff, 0x00ffff, 0x800000,
+        0x008000, 0x000080, 0x808000, 0x800080, 0x008080, 0xc0c0c0, 0xe6e6e6, 0xcdcdcd, 0xb3b3b3,
+        0x9a9a9a, 0x808080, 0x666666, 0x4d4d4d, 0x333333, 0x1a1a1a,
+    ];
+    let value = value?;
+    if let Ok(index) = value.parse::<u32>() {
+        BUILTIN
+            .get(index as usize)
+            .copied()
+            .map(rgb)
+            .or_else(|| table.get(&index).copied())
+    } else {
+        parse_rgb(value)
+    }
+}
+
+fn with_transparency(mut rgba: [u8; 4], transparency: Option<&str>) -> [u8; 4] {
+    let opacity = 1.0 - number(transparency).unwrap_or_default().clamp(0.0, 1.0);
+    rgba[3] = (f64::from(rgba[3]) * opacity).round() as u8;
+    rgba
 }
 
 fn inherited_scale(size: f64, master: Option<Node<'_, '_>>, key: &str) -> f64 {

@@ -34,7 +34,9 @@ fn drawing(external_page: bool, fill: &str, gradient: &str) -> Arc<[u8]> {
     );
     add(
         "drawing/doc.xml",
-        &format!(r#"<VisioDocument xmlns="{VISIO}"/>"#),
+        &format!(
+            r##"<VisioDocument xmlns="{VISIO}"><Colors><ColorEntry IX="24" RGB="#345678"/></Colors></VisioDocument>"##
+        ),
     );
     add(
         "drawing/_rels/doc.xml.rels",
@@ -212,4 +214,19 @@ fn explicit_linear_gradient_preserves_stop_order_transparency_and_stroke() {
         right[0] < 10 && right[2] > 245 && (126..=130).contains(&right[3]),
         "{right:?}"
     );
+}
+
+#[test]
+fn solid_fill_and_outline_use_their_palette_and_transparency() {
+    let style = r#"<Cell N="FillForegndTrans" V="0.5"/><Cell N="LineColor" V="2"/><Cell N="LineColorTrans" V="0.25"/>"#;
+    let document = VsdxContainer::from_bytes(drawing(false, "24", style)).unwrap();
+    let scene = document.interpret_page_scene(0).unwrap();
+    assert!(matches!(
+        scene.display_list.first(),
+        Some(DisplayCmd::DrawPath {
+            fill_rgba: Some([52, 86, 120, 128]),
+            stroke_rgba: Some([255, 0, 0, 191]),
+            ..
+        })
+    ));
 }

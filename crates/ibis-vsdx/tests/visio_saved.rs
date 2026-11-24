@@ -44,6 +44,14 @@ fn reads_drawings_saved_by_microsoft_visio() {
             "{name}"
         );
         if name == "test.vsdx" {
+            // Visio's embedded thumbnail shows a white body and a blue title band.
+            assert!(
+                scene.display_list.iter().any(|cmd| matches!(cmd,
+                    DisplayCmd::DrawPath { bounds, fill_rgba: Some([255, 255, 255, 255]), .. }
+                    if bounds.width() > 350.0 && bounds.height() > 200.0
+                )),
+                "the large container keeps the white fill from Visio's thumbnail"
+            );
             assert!(
                 scene.display_list.iter().any(|cmd| matches!(
                     cmd,

@@ -25,3 +25,9 @@ SHA-256 digests at this revision are listed below.
 ```sh
 VSDX_VISIO_CORPUS_DIR=/path/to/samples cargo test --locked -p ibis-vsdx --test visio_saved -- --ignored
 ```
+
+
+The `test.vsdx` package's `docProps/thumbnail.emf` stores Visio's raster preview.
+It shows a white container body, with blue limited to the header and outline.
+Use this preview to verify which region is filled. Its low resolution limits
+comparisons of typefaces and thin outlines.

@@ -211,8 +211,8 @@ fn architecture_keeps_nested_containers_behind_their_diagram_objects() {
             })
             .unwrap()
     };
-    let (platform_order, platform) = painted_box([239, 246, 255, 255]);
-    let (storage_order, storage) = painted_box([240, 253, 244, 255]);
+    let (platform_order, platform) = painted_box([239, 246, 255, 115]);
+    let (storage_order, storage) = painted_box([240, 253, 244, 115]);
     let (store_order, store) = painted_box([225, 213, 231, 255]);
     assert!(platform_order < storage_order && storage_order < store_order);
     for (outer, inner) in [(platform, storage), (storage, store)] {
