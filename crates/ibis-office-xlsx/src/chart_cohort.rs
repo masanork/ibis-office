@@ -127,9 +127,6 @@ fn report_rows<'a>(workbook: &'a Presentation, name: &str, metric: &str) -> Resu
 pub(crate) fn compare_report(
     base: &Presentation, candidate: &Presentation, table: &str, metric: &str, key: Option<&str>,
 ) -> Value {
-    if report_comparison_definition(base, table).is_ok_and(|definition| crate::report_quotient::supports(definition)) {
-        return crate::report_quotient::compare(base, candidate, table, metric, key);
-    }
     let (before, unit) = match report_rows(base, table, metric) {
         Ok(rows) => rows,
         Err(reason) => return json!({"state":reason,"side":"before"}),

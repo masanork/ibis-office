@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use ibis_doc_model::{CellValue, Presentation, cell_name};
 use serde_json::{Value, json};
@@ -207,36 +207,36 @@ struct ReportRow {
     index: u32,
     state: &'static str,
     group: Option<Group>,
+    observations: [Observation; 2],
 }
 
-struct Side<'a> {
+struct Side {
     metric: Metric,
     totals: QuotientTotals,
-    rows: BTreeMap<&'a str, ReportRow>,
-    sheet: &'a ibis_doc_model::Sheet,
+    rows: BTreeMap<Arc<str>, ReportRow>,
     columns: [u32; 3],
     source: Value,
 }
 
-impl Side<'_> {
+impl Side {
     fn evidence(&self, key: &str) -> Value {
         let Some(row) = self.rows.get(key) else { return json!({"state":"absent"}); };
         let [key_column, numerator_column, denominator_column] = self.columns;
         let (_, _, left, right) = self.metric.fields();
         let value = row.group.and_then(|group| group.value.is_finite().then_some(group.value));
-        let cell = |column| json!({
+        let cell = |column, observation: Observation| json!({
             "cell":cell_name(column, row.index),
-            "value":Observation::read(self.sheet.cell(row.index, column)).value(),
+            "value":observation.value(),
         });
         json!({
             "state":if row.state == "ready" && value.is_none() {"non_finite"} else {row.state},
             "sheet":self.source["sheet"], "key_cell":cell_name(key_column, row.index),
-            (self.metric.name()):value, (left):cell(numerator_column), (right):cell(denominator_column),
+            (self.metric.name()):value, (left):cell(numerator_column, row.observations[0]), (right):cell(denominator_column, row.observations[1]),
         })
     }
 }
 
-fn report_side<'a>(workbook: &'a Presentation, name: &str, metric: &str) -> Result<Side<'a>, &'static str> {
+fn report_side(workbook: &Presentation, name: &str, metric: &str) -> Result<Side, &'static str> {
     let definition = report_comparison_definition(workbook, name)?;
     let kind = Metric::from_definition(definition).ok_or("unknown_metric")?;
     if definition["metric"].as_str() != Some(metric) {
@@ -277,7 +277,7 @@ fn report_side<'a>(workbook: &'a Presentation, name: &str, metric: &str) -> Resu
                 Some(Group { value: n / d, denominator: d }),
             _ => None,
         };
-        if rows.insert(label.as_str(), ReportRow { index: row, state, group }).is_some() {
+        if rows.insert(Arc::from(label.as_str()), ReportRow { index: row, state, group, observations: [numerator, denominator] }).is_some() {
             return Err("duplicate_key");
         }
     }
@@ -287,7 +287,7 @@ fn report_side<'a>(workbook: &'a Presentation, name: &str, metric: &str) -> Resu
         (left_column):definition[left_column],
         (right_column):definition[right_column],
     });
-    Ok(Side { metric: kind, totals, rows, sheet, columns: [key_column, numerator_column, denominator_column], source })
+    Ok(Side { metric: kind, totals, rows, columns: [key_column, numerator_column, denominator_column], source })
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -416,188 +416,215 @@ fn rank_groups(
     json!({"groups":groups,"group_count":group_count,"top_contribution":top_contribution,"remainder":other})
 }
 
-fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, key: Option<&str>, page: Option<RankingPage>, filter: &RankingFilter) -> Value {
-    let Some(delta) = delta else { return json!({"state":"unavailable"}); };
-    let scale = match before.metric { Metric::Rate => 100., Metric::Average => 1. };
-    let before_total = before.totals.denominator;
-    let after_total = after.totals.denominator;
-    let mut within = CompensatedSum::default();
-    let mut composition = CompensatedSum::default();
-    let mut total = CompensatedSum::default();
-    let mut ranked = Vec::new();
-    let mut magnitude = 0.;
-    let mut continued = 0;
-    let mut entered = 0;
-    let mut exited = 0;
-    let mut contributor = None;
-    let mut accumulate = |label: &'a str, before: Option<Group>, after: Option<Group>| {
-        match (before, after) {
-            (Some(_), Some(_)) => continued += 1,
-            (None, Some(_)) => entered += 1,
-            (Some(_), None) => exited += 1,
-            (None, None) => return,
-        }
-        let effect = group_effect(before, after, before_total, after_total);
-        within.add(effect.within);
-        composition.add(effect.composition);
-        let contribution = (effect.within + effect.composition) * scale;
-        total.add(contribution);
-        magnitude += effect.within.abs() + effect.composition.abs();
-        if key == Some(label) {
-            contributor = Some(json!({
-                "within_group":effect.within * scale, "composition":effect.composition * scale,
-                "before_share":effect.before_share, "after_share":effect.after_share,
-            }));
-        }
-        ranked.push((label, effect, contribution));
-    };
-    for (&label, row) in &before.rows {
-        accumulate(label, row.group, after.rows.get(label).and_then(|row| row.group));
-    }
-    for (&label, row) in &after.rows {
-        if !before.rows.contains_key(label) { accumulate(label, None, row.group); }
-    }
-    let within = within.sum * scale;
-    let composition = composition.sum * scale;
-    let residual = (within + composition) - delta;
-    let group_residual = total.sum - delta;
-    let tolerance = (8. * f64::EPSILON * magnitude).max(8. * f64::EPSILON * (delta.abs() / scale).max(1.)) * scale;
-    if !residual.is_finite() || !group_residual.is_finite() || !tolerance.is_finite() {
-        return json!({"state":"non_finite"});
-    }
-    let row = |&(key, ref effect, contribution): &RankedGroup<'_>| json!({
-        "key":key, "contribution":contribution, "within_group":effect.within * scale,
-        "composition":effect.composition * scale,
-        "before_share":effect.before_share, "after_share":effect.after_share,
-        "before":before.evidence(key), "after":after.evidence(key),
-    });
-    let remainder_offset = match page {
-        Some(RankingPage::Remainder(offset)) => Some(offset),
-        _ => None,
-    };
-    let filtered = filter.active().then(|| {
-        let query = filter.query.trim().to_lowercase();
-        let mut matches = Vec::new();
-        let mut matched = CompensatedSum::default();
-        let mut excluded = CompensatedSum::default();
-        let mut excluded_groups = Vec::new();
-        let mut reasons = [(0usize, CompensatedSum::default()), (0, CompensatedSum::default()), (0, CompensatedSum::default())];
-        let exclusion = |name: &str, contribution: f64| {
-            let direction = match filter.direction {
-                RankingDirection::All => false,
-                RankingDirection::Increase => contribution <= 0.,
-                RankingDirection::Decrease => contribution >= 0.,
-            };
-            let name = !query.is_empty() && !name.to_lowercase().contains(&query);
-            (direction, name)
+struct Decomposition {
+    scale: f64,
+    delta: f64,
+    within: f64,
+    composition: f64,
+    total: f64,
+    residual: f64,
+    group_residual: f64,
+    tolerance: f64,
+    counts: [usize; 3],
+    ranked: Vec<(Arc<str>, Effect, f64)>,
+}
+
+impl Decomposition {
+    fn prepare(before: &Side, after: &Side, delta: Option<f64>) -> Result<Self, &'static str> {
+        let delta = delta.ok_or("unavailable")?;
+        let scale = match before.metric { Metric::Rate => 100., Metric::Average => 1. };
+        let before_total = before.totals.denominator;
+        let after_total = after.totals.denominator;
+        let mut within = CompensatedSum::default();
+        let mut composition = CompensatedSum::default();
+        let mut total = CompensatedSum::default();
+        let mut ranked = Vec::new();
+        let mut magnitude = 0.;
+        let mut continued = 0;
+        let mut entered = 0;
+        let mut exited = 0;
+        let mut accumulate = |label: &Arc<str>, before: Option<Group>, after: Option<Group>| {
+            match (before, after) {
+                (Some(_), Some(_)) => continued += 1,
+                (None, Some(_)) => entered += 1,
+                (Some(_), None) => exited += 1,
+                (None, None) => return,
+            }
+            let effect = group_effect(before, after, before_total, after_total);
+            within.add(effect.within);
+            composition.add(effect.composition);
+            let contribution = (effect.within + effect.composition) * scale;
+            total.add(contribution);
+            magnitude += effect.within.abs() + effect.composition.abs();
+            ranked.push((label.clone(), effect, contribution));
         };
-        for &group @ (name, _, contribution) in &ranked {
-            let (direction, name) = exclusion(name, contribution);
-            if let Some(reason) = ExclusionReason::from_conditions(direction, name) {
-                excluded.add(contribution);
-                let (count, subtotal) = &mut reasons[reason as usize];
-                *count += 1;
-                subtotal.add(contribution);
-                if let Some(RankingPage::Excluded(_, requested)) = page
-                    && requested.is_none_or(|requested| requested == reason)
-                {
-                    excluded_groups.push(group);
+        for (label, row) in &before.rows {
+            accumulate(label, row.group, after.rows.get(label).and_then(|row| row.group));
+        }
+        for (label, row) in &after.rows {
+            if !before.rows.contains_key(label) { accumulate(label, None, row.group); }
+        }
+        let within = within.sum * scale;
+        let composition = composition.sum * scale;
+        let residual = (within + composition) - delta;
+        let group_residual = total.sum - delta;
+        let tolerance = (8. * f64::EPSILON * magnitude).max(8. * f64::EPSILON * (delta.abs() / scale).max(1.)) * scale;
+        if !residual.is_finite() || !group_residual.is_finite() || !tolerance.is_finite() {
+            return Err("non_finite");
+        }
+        Ok(Self { scale, delta, within, composition, total: total.sum, residual, group_residual, tolerance,
+            counts: [continued, entered, exited], ranked })
+    }
+
+    fn response(&self, before: &Side, after: &Side, key: Option<&str>, page: Option<RankingPage>, filter: &RankingFilter) -> Value {
+        let Self { scale, delta, within, composition, total, residual, group_residual, tolerance, counts, .. } = *self;
+        let [continued, entered, exited] = counts;
+        let mut ranked: Vec<_> = self.ranked.iter().map(|(key, effect, contribution)| (key.as_ref(), *effect, *contribution)).collect();
+        let contributor = key.and_then(|key| ranked.iter().find(|row| row.0 == key)).map(|(_, effect, _)| json!({
+            "within_group":effect.within * scale, "composition":effect.composition * scale,
+            "before_share":effect.before_share, "after_share":effect.after_share,
+        }));
+        let row = |&(key, ref effect, contribution): &RankedGroup<'_>| json!({
+            "key":key, "contribution":contribution, "within_group":effect.within * scale,
+            "composition":effect.composition * scale,
+            "before_share":effect.before_share, "after_share":effect.after_share,
+            "before":before.evidence(key), "after":after.evidence(key),
+        });
+        let remainder_offset = match page {
+            Some(RankingPage::Remainder(offset)) => Some(offset),
+            _ => None,
+        };
+        let filtered = filter.active().then(|| {
+            let query = filter.query.trim().to_lowercase();
+            let mut matches = Vec::new();
+            let mut matched = CompensatedSum::default();
+            let mut excluded = CompensatedSum::default();
+            let mut excluded_groups = Vec::new();
+            let mut reasons = [(0usize, CompensatedSum::default()), (0, CompensatedSum::default()), (0, CompensatedSum::default())];
+            let exclusion = |name: &str, contribution: f64| {
+                let direction = match filter.direction {
+                    RankingDirection::All => false,
+                    RankingDirection::Increase => contribution <= 0.,
+                    RankingDirection::Decrease => contribution >= 0.,
+                };
+                let name = !query.is_empty() && !name.to_lowercase().contains(&query);
+                (direction, name)
+            };
+            for &group @ (name, _, contribution) in &ranked {
+                let (direction, name) = exclusion(name, contribution);
+                if let Some(reason) = ExclusionReason::from_conditions(direction, name) {
+                    excluded.add(contribution);
+                    let (count, subtotal) = &mut reasons[reason as usize];
+                    *count += 1;
+                    subtotal.add(contribution);
+                    if let Some(RankingPage::Excluded(_, requested)) = page
+                        && requested.is_none_or(|requested| requested == reason)
+                    {
+                        excluded_groups.push(group);
+                    }
+                } else {
+                    matched.add(contribution);
+                    matches.push(group);
                 }
-            } else {
-                matched.add(contribution);
-                matches.push(group);
             }
-        }
-        let residual = (matched.sum + excluded.sum) - delta;
-        let excluded_count = ranked.len() - matches.len();
-        let mut result = rank_groups(&mut matches, remainder_offset, row);
-        result["total_contribution"] = json!(matched.sum);
-        result["excluded"] = json!({"count":excluded_count,"contribution":excluded.sum});
-        let mut by_reason = serde_json::Map::new();
-        let mut reason_total = CompensatedSum::default();
-        for reason in ExclusionReason::ALL {
-            let (count, subtotal) = &reasons[reason as usize];
-            reason_total.add(subtotal.sum);
-            by_reason.insert(reason.key().into(), json!({"count":count,"contribution":subtotal.sum}));
-        }
-        let reason_residual = reason_total.sum - excluded.sum;
-        result["excluded"]["by_reason"] = Value::Object(by_reason);
-        result["excluded"]["reason_residual"] = json!(reason_residual);
-        if let Some(RankingPage::Excluded(offset, reason)) = page {
-            result["excluded"]["page"] = rank_page(&mut excluded_groups, offset, |entry| {
-                let (direction, name) = exclusion(entry.0, entry.2);
-                let mut value = row(entry);
-                value["excluded_by"] = json!({"direction":direction,"name":name});
-                value
-            });
-            if let Some(reason) = reason {
-                result["excluded"]["page"]["reason"] = json!(reason.key());
+            let residual = (matched.sum + excluded.sum) - delta;
+            let excluded_count = ranked.len() - matches.len();
+            let mut result = rank_groups(&mut matches, remainder_offset, row);
+            result["total_contribution"] = json!(matched.sum);
+            result["excluded"] = json!({"count":excluded_count,"contribution":excluded.sum});
+            let mut by_reason = serde_json::Map::new();
+            let mut reason_total = CompensatedSum::default();
+            for reason in ExclusionReason::ALL {
+                let (count, subtotal) = &reasons[reason as usize];
+                reason_total.add(subtotal.sum);
+                by_reason.insert(reason.key().into(), json!({"count":count,"contribution":subtotal.sum}));
             }
+            let reason_residual = reason_total.sum - excluded.sum;
+            result["excluded"]["by_reason"] = Value::Object(by_reason);
+            result["excluded"]["reason_residual"] = json!(reason_residual);
+            if let Some(RankingPage::Excluded(offset, reason)) = page {
+                result["excluded"]["page"] = rank_page(&mut excluded_groups, offset, |entry| {
+                    let (direction, name) = exclusion(entry.0, entry.2);
+                    let mut value = row(entry);
+                    value["excluded_by"] = json!({"direction":direction,"name":name});
+                    value
+                });
+                if let Some(reason) = reason {
+                    result["excluded"]["page"]["reason"] = json!(reason.key());
+                }
+            }
+            result["partition_residual"] = json!(residual);
+            result["state"] = json!(if !residual.is_finite() || !reason_residual.is_finite() { "non_finite" }
+                else if residual.abs() <= tolerance && reason_residual.abs() <= tolerance { "ready" }
+                else { "totals_mismatch" });
+            result
+        });
+        let mut ranking = rank_groups(&mut ranked, remainder_offset.filter(|_| filtered.is_none()), row);
+        let partition_residual = (ranking["top_contribution"].as_f64().unwrap_or(f64::NAN)
+            + ranking["remainder"]["contribution"].as_f64().unwrap_or(f64::NAN)) - delta;
+        if !partition_residual.is_finite() {
+            return json!({"state":"non_finite"});
         }
-        result["partition_residual"] = json!(residual);
-        result["state"] = json!(if !residual.is_finite() || !reason_residual.is_finite() { "non_finite" }
-            else if residual.abs() <= tolerance && reason_residual.abs() <= tolerance { "ready" }
-            else { "totals_mismatch" });
+        ranking["total_contribution"] = json!(total);
+        ranking["residual"] = json!(group_residual);
+        ranking["partition_residual"] = json!(partition_residual);
+        if let Some(filtered) = filtered {
+            ranking["filtered"] = filtered;
+        }
+        json!({
+            "state":if residual.abs() <= tolerance && group_residual.abs() <= tolerance && partition_residual.abs() <= tolerance {"ready"} else {"totals_mismatch"},
+            "within_group":within,"composition":composition,"residual":residual,"tolerance":tolerance,
+            "counts":{"continued":continued,"entered":entered,"exited":exited},
+            "contributor":contributor,
+            "ranking":ranking,
+        })
+    }
+
+}
+
+pub(crate) struct ReportAnalysis {
+    before: Side,
+    after: Side,
+    decomposition: Result<Decomposition, &'static str>,
+    summary: Value,
+}
+
+impl ReportAnalysis {
+    pub(crate) fn prepare(base: &Presentation, candidate: &Presentation, table: &str, metric: &str) -> Result<Self, Value> {
+        if report_comparison_definition(base, table) != report_comparison_definition(candidate, table) {
+            return Err(json!({"state":"comparison_changed"}));
+        }
+        let before = report_side(base, table, metric).map_err(|reason| json!({"state":reason,"side":"before"}))?;
+        let after = report_side(candidate, table, metric).map_err(|reason| json!({"state":reason,"side":"after"}))?;
+        let kind = before.metric;
+        let (delta_key, delta) = kind.delta(before.totals.value(kind), after.totals.value(kind));
+        let decomposition = Decomposition::prepare(&before, &after, delta);
+        let mut summary = json!({"state":"review","table":table,"metric":metric,"kind":kind.name(),
+            "before":before.totals.details(kind),"after":after.totals.details(kind),(delta_key):delta,
+            "source":{"before":before.source,"after":after.source}});
+        if let Ok(definition) = report_comparison_definition(base, table)
+            && let Some(unit) = definition.get("unit")
+        {
+            summary["unit"] = unit.clone();
+        }
+        Ok(Self { before, after, decomposition, summary })
+    }
+
+    pub(crate) fn response(&self, key: Option<&str>, page: Option<RankingPage>, filter: &RankingFilter) -> Value {
+        let mut result = self.summary.clone();
+        result["decomposition"] = match &self.decomposition {
+            Ok(decomposition) => decomposition.response(&self.before, &self.after, key, page, filter),
+            Err(state) => json!({"state":state}),
+        };
+        if let Some(key) = key {
+            let kind = self.before.metric;
+            let before = self.before.evidence(key);
+            let after = self.after.evidence(key);
+            let (delta_key, delta) = kind.delta(before[kind.name()].as_f64(), after[kind.name()].as_f64());
+            result["contributor"] = json!({"key":key,"before":before,"after":after,(delta_key):delta});
+        }
         result
-    });
-    let mut ranking = rank_groups(&mut ranked, remainder_offset.filter(|_| filtered.is_none()), row);
-    let partition_residual = (ranking["top_contribution"].as_f64().unwrap_or(f64::NAN)
-        + ranking["remainder"]["contribution"].as_f64().unwrap_or(f64::NAN)) - delta;
-    if !partition_residual.is_finite() {
-        return json!({"state":"non_finite"});
     }
-    ranking["total_contribution"] = json!(total.sum);
-    ranking["residual"] = json!(group_residual);
-    ranking["partition_residual"] = json!(partition_residual);
-    if let Some(filtered) = filtered {
-        ranking["filtered"] = filtered;
-    }
-    json!({
-        "state":if residual.abs() <= tolerance && group_residual.abs() <= tolerance && partition_residual.abs() <= tolerance {"ready"} else {"totals_mismatch"},
-        "within_group":within,"composition":composition,"residual":residual,"tolerance":tolerance,
-        "counts":{"continued":continued,"entered":entered,"exited":exited},
-        "contributor":contributor,
-        "ranking":ranking,
-    })
-}
-
-pub(crate) fn compare(base: &Presentation, candidate: &Presentation, table: &str, metric: &str, key: Option<&str>) -> Value {
-    compare_ranking(base, candidate, table, metric, key, None, &RankingFilter::default())
-}
-
-pub(crate) fn compare_ranking(
-    base: &Presentation, candidate: &Presentation, table: &str, metric: &str,
-    key: Option<&str>, page: Option<RankingPage>, filter: &RankingFilter,
-) -> Value {
-    if report_comparison_definition(base, table) != report_comparison_definition(candidate, table) {
-        return json!({"state":"comparison_changed"});
-    }
-    let before = match report_side(base, table, metric) {
-        Ok(side) => side,
-        Err(reason) => return json!({"state":reason,"side":"before"}),
-    };
-    let after = match report_side(candidate, table, metric) {
-        Ok(side) => side,
-        Err(reason) => return json!({"state":reason,"side":"after"}),
-    };
-    let kind = before.metric;
-    let (delta_key, delta) = kind.delta(before.totals.value(kind), after.totals.value(kind));
-    let mut result = json!({"state":"review","table":table,"metric":metric,"kind":kind.name(),
-        "before":before.totals.details(kind),"after":after.totals.details(kind),(delta_key):delta,
-        "source":{"before":before.source,"after":after.source},
-        "decomposition":decomposition(&before, &after, delta, key, page, filter)});
-    if let Ok(definition) = report_comparison_definition(base, table)
-        && let Some(unit) = definition.get("unit")
-    {
-        result["unit"] = unit.clone();
-    }
-    if let Some(key) = key {
-        let before = before.evidence(key);
-        let after = after.evidence(key);
-        let (_, delta) = kind.delta(before[kind.name()].as_f64(), after[kind.name()].as_f64());
-        result["contributor"] = json!({"key":key,"before":before,"after":after,(delta_key):delta});
-    }
-    result
 }
 
 pub(crate) fn applied(workbook: &Presentation, table: &str, metric: &str, key: &str) -> Value {
