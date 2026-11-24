@@ -124,6 +124,7 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
         presentation,
         images: HashMap::new(),
         remaining_images: 64 * 1024 * 1024,
+        remaining_warp: 64 * 1024 * 1024,
         remaining_cells: 100_000,
         shape_groups: Vec::new(),
     };
@@ -310,6 +311,74 @@ mod tests {
             geometry.def.paths[0].ops[1],
             ibis_doc_model::PathOp::CubicTo(_)
         ));
+    }
+
+    #[test]
+    fn sheared_hwpx_group_retains_image_pixels_and_editable_text() {
+        use image::ImageEncoder;
+        let package = format!(
+            r#"<package xmlns="{OPF}"><manifest><item id="s" href="section0.xml"/><item id="photo" href="BinData/photo.png"/></manifest><spine><itemref idref="s"/></spine></package>"#
+        );
+        let drawing = r#"<hp:orgSz width="400" height="400"/><hp:renderingInfo>
+            <hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>
+            <hc:scaMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>
+            <hc:rotMatrix e1="1" e2="0.5" e3="0" e4="0" e5="1" e6="0"/>
+            </hp:renderingInfo>"#;
+        let section = format!(
+            r#"<hs:sec xmlns:hs="{SECTION}" xmlns:hp="{PARAGRAPH}" xmlns:hc="{CORE}">
+            <hp:p><hp:run><hp:container><hp:pos horzRelTo="PAPER" vertRelTo="PAPER"/>
+              <hp:pic>{drawing}<hc:img binaryItemIDRef="photo"/></hp:pic>
+              <hp:rect>{drawing}<hp:drawText>
+                <hp:subList><hp:p><hp:run><hp:t>한글</hp:t></hp:run></hp:p></hp:subList>
+                <hp:textMargin left="40" right="40" top="80" bottom="80"/>
+              </hp:drawText></hp:rect>
+            </hp:container></hp:run></hp:p></hs:sec>"#
+        );
+        let mut png = Vec::new();
+        let image = image::RgbaImage::from_pixel(16, 16, image::Rgba([220, 10, 20, 255]));
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(image.as_raw(), 16, 16, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let mut writer = ibis_ooxml::zip::Writer::new();
+        for (name, bytes) in [
+            ("mimetype", MIME_TYPE),
+            (PACKAGE, package.as_bytes()),
+            ("Contents/section0.xml", section.as_bytes()),
+            ("BinData/photo.png", png.as_slice()),
+        ] {
+            writer.add(name, Default::default(), bytes).unwrap();
+        }
+        let presentation = open(&writer.finish().unwrap()).unwrap().presentation;
+        let flow = presentation.flow.as_ref().unwrap();
+        let Block::Paragraph(paragraph) = &flow.body[0] else {
+            panic!("paragraph")
+        };
+        let [image, text] = paragraph.runs.as_slice() else {
+            panic!("two group members")
+        };
+        let (FlowRunKind::Shape(image), FlowRunKind::Shape(text)) = (&image.kind, &text.kind)
+        else {
+            panic!("shape members")
+        };
+        assert_eq!(flow.shape_groups[0].leaf_shape_ids(), [image.id, text.id]);
+        let ShapeKind::Picture(pic) = &image.kind else {
+            panic!("picture")
+        };
+        let raster = image::load_from_memory(&presentation.media(pic.media).unwrap().data)
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(raster.dimensions(), (24, 16));
+        assert_eq!(raster.get_pixel(0, 15).0, [0, 0, 0, 0]);
+        assert_eq!(raster.get_pixel(12, 8).0, [220, 10, 20, 255]);
+        assert_eq!(image.frame.width, units(600));
+        let ShapeKind::Auto(auto) = &text.kind else {
+            panic!("editable shape")
+        };
+        assert!(matches!(auto.geometry, Geometry::Formula(_)));
+        let body = auto.text.as_ref().unwrap();
+        assert_eq!(body.text(), "한글");
+        assert_eq!(body.insets.left, units(80));
+        assert_eq!(body.insets.top, units(80));
     }
 
     #[test]
@@ -729,6 +798,7 @@ struct Importer<'a, 'package> {
     presentation: &'a mut Presentation,
     images: HashMap<&'package str, Option<MediaId>>,
     remaining_images: usize,
+    remaining_warp: usize,
     remaining_cells: usize,
     shape_groups: Vec<ShapeGroup>,
 }
@@ -1223,7 +1293,22 @@ impl Importer<'_, '_> {
                     if let Some(matrices) = matrices
                         .filter(|m| m.len() >= 3 && m.iter().flatten().all(|v: &f64| v.is_finite()))
                     {
-                        shared::place_group_leaf(&mut shape, root, size, matrices);
+                        shared::place_group_leaf(
+                            &mut shape,
+                            root,
+                            size,
+                            matrices,
+                            |picture, original, frame, matrix| {
+                                shared::warp_group_picture(
+                                    self.presentation,
+                                    &mut self.remaining_warp,
+                                    picture,
+                                    original,
+                                    frame,
+                                    matrix,
+                                )
+                            },
+                        );
                     }
                 }
                 members.push(GroupMember::Shape(shape.id));

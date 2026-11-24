@@ -271,6 +271,7 @@ struct Importer<'a> {
     pictures: Vec<Option<EmbeddedPicture>>,
     media: HashMap<u16, MediaId>,
     remaining_media: usize,
+    remaining_warp: usize,
     remaining_cells: usize,
     shape_groups: Vec<ShapeGroup>,
 }
@@ -311,6 +312,7 @@ impl<'a> Importer<'a> {
             pictures: Vec::new(),
             media: HashMap::new(),
             remaining_media: BODY_LIMIT,
+            remaining_warp: BODY_LIMIT,
             remaining_cells: 100_000,
             shape_groups: Vec::new(),
         };
@@ -769,7 +771,7 @@ impl<'a> Importer<'a> {
         };
         let mut reverse_h = false;
         let mut reverse_v = false;
-        let shape_kind = match primitive_tag {
+        let mut shape_kind = match primitive_tag {
             78 => {
                 reverse_h = dimension(primitive, 0).ok()? > dimension(primitive, 8).ok()?;
                 reverse_v = dimension(primitive, 4).ok()? > dimension(primitive, 12).ok()?;
@@ -809,6 +811,11 @@ impl<'a> Importer<'a> {
             )),
             _ => unreachable!(),
         };
+        if root_size.is_none()
+            && let ShapeKind::Auto(auto) = &mut shape_kind
+        {
+            auto.text = grouped_shape_text(records, index);
+        }
         let id = self.presentation.new_shape_id();
         let mut shape = Shape::new(
             id,
@@ -838,7 +845,23 @@ impl<'a> Importer<'a> {
                 })
                 .collect();
             if let (Some(values), Some(w), Some(h)) = (values, coord(12), coord(16)) {
-                if shared::place_group_leaf(&mut shape, root, EmuSize::new(w, h), values).is_some()
+                if shared::place_group_leaf(
+                    &mut shape,
+                    root,
+                    EmuSize::new(w, h),
+                    values,
+                    |picture, original, frame, matrix| {
+                        shared::warp_group_picture(
+                            self.presentation,
+                            &mut self.remaining_warp,
+                            picture,
+                            original,
+                            frame,
+                            matrix,
+                        )
+                    },
+                )
+                .is_some()
                 {
                     shape.flip_h ^= reverse_h;
                     shape.flip_v ^= reverse_v;
@@ -1123,6 +1146,59 @@ fn measured_paragraph_height(bytes: &[u8], include_final_gap: bool) -> Option<Em
         }
     }
     Some(total)
+}
+
+fn grouped_shape_text(records: &[Record<'_>], index: usize) -> Option<ibis_doc_model::TextBody> {
+    let record = records[index];
+    let mut children = index + 1..record.end;
+    let list_index = children.find(|&i| {
+        records[i].tag == LIST
+            && records[i].level == record.level + 1
+            && records[i].bytes.len() == 20
+    })?;
+    let list = records[list_index];
+    let count = usize::from(word(list.bytes, 0).ok()?).min(256);
+    let mut lines = Vec::new();
+    let mut cursor = list_index + 1;
+    while cursor < record.end && lines.len() < count {
+        let paragraph = records[cursor];
+        if paragraph.tag != PARA || paragraph.level != list.level {
+            break;
+        }
+        let mut line = Vec::new();
+        for text in &records[cursor + 1..paragraph.end] {
+            if text.tag != TEXT || text.level != paragraph.level + 1 {
+                continue;
+            }
+            let words = utf16(text.bytes).ok()?;
+            let mut offset = 0;
+            while let Some(&code) = words.get(offset) {
+                match code {
+                    9 => line.push(9),
+                    10 => line.push(10),
+                    32.. => line.push(code),
+                    _ => {}
+                }
+                offset += if matches!(code, 2..=9 | 11 | 12 | 14..=23) {
+                    8
+                } else {
+                    1
+                };
+            }
+        }
+        lines.push(String::from_utf16_lossy(&line));
+        cursor = paragraph.end;
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let mut text = ibis_doc_model::TextBody::plain(&lines.join("\n"), Default::default());
+    let inset = |offset| word(list.bytes, offset).map_or(0, |n| units(i64::from(n)));
+    text.insets.left = inset(8);
+    text.insets.right = inset(10);
+    text.insets.top = inset(12);
+    text.insets.bottom = inset(14);
+    Some(text)
 }
 
 fn picture_anchor(bytes: &[u8]) -> Result<Option<FloatingAnchor>, Error> {
@@ -1516,6 +1592,14 @@ mod tests {
             style[17..20].copy_from_slice(&[0x66, 0xcc, 0xff]);
             style[25..29].fill(0xff);
             record(&mut body, COMPONENT, 3, &component);
+            if tag == 79 {
+                let mut list = [0; 20];
+                list[0] = 1;
+                list[8] = 40;
+                record(&mut body, LIST, 4, &list);
+                record(&mut body, PARA, 4, &[0; 24]);
+                record(&mut body, TEXT, 5, &[0xa9, 0xba, 13, 0]);
+            }
             record(&mut body, tag, 4, &primitive);
         }
         let data = cfb::write(&[
@@ -1552,6 +1636,12 @@ mod tests {
             assert_eq!(auto.fill, Fill::Solid(Color::opaque(Rgb(0x66_cc_ff))));
             assert_eq!(shape.floating.as_ref().unwrap().offset_x, units(1600 + dx));
         }
+        let ShapeKind::Auto(rect) = &shapes[0].kind else {
+            panic!("rectangle")
+        };
+        let text = rect.text.as_ref().unwrap();
+        assert_eq!(text.text(), "목");
+        assert_eq!(text.insets.left, units(40));
         assert!(matches!(shapes[2].kind, ShapeKind::Line(_)));
         assert!(shapes[2].flip_h);
         let curve = &shapes[3];

@@ -198,6 +198,7 @@ pub(super) fn place_group_leaf(
     anchor: &FloatingAnchor,
     original: EmuSize,
     matrices: impl IntoIterator<Item = [f64; 6]>,
+    warp: impl FnOnce(&Picture, EmuSize, EmuRect, [f64; 6]) -> Option<MediaId>,
 ) -> Option<()> {
     let mut matrices = matrices.into_iter();
     let translation = matrices.next()?;
@@ -223,18 +224,51 @@ pub(super) fn place_group_leaf(
     let tx = (x + translation[2]) * 127.0;
     let ty = (y + translation[5]) * 127.0;
     // DrawingML's rotation and scale cannot express nonorthogonal axes.
+    let matrix = [a, b, tx, c, d, ty];
     if (a * b + c * d).abs() > sx * sy * 1e-5
-        && let ShapeKind::Auto(auto) = &mut shape.kind
-        && let Some((geometry, frame)) =
-            shear_outline(&auto.geometry, original, [a, b, tx, c, d, ty])
+        && let Some(frame) = projected_frame([0.0, 0.0, width, height], matrix)
     {
-        auto.geometry = geometry;
-        shape.frame = EmuRect::new(0, 0, frame.width, frame.height);
-        shape.rotation = 0;
-        shape.flip_h = false;
-        shape.flip_v = false;
-        shape.floating = Some(offset_anchor(anchor, frame.x, frame.y));
-        return Some(());
+        let baked = match &mut shape.kind {
+            ShapeKind::Auto(auto) => {
+                if let Some(geometry) = shear_outline(&auto.geometry, original, frame, matrix) {
+                    auto.geometry = geometry;
+                    if let Some(text) = &mut auto.text {
+                        let i = &mut text.insets;
+                        if let Some(area) = projected_frame(
+                            [
+                                i.left as f64,
+                                i.top as f64,
+                                width - i.right as f64,
+                                height - i.bottom as f64,
+                            ],
+                            matrix,
+                        ) {
+                            i.left = (area.x - frame.x).max(0);
+                            i.top = (area.y - frame.y).max(0);
+                            i.right = (frame.right() - area.right()).max(0);
+                            i.bottom = (frame.bottom() - area.bottom()).max(0);
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            ShapeKind::Picture(pic) => warp(pic, original, frame, matrix).is_some_and(|media| {
+                pic.media = media;
+                pic.crop = Default::default();
+                true
+            }),
+            _ => false,
+        };
+        if baked {
+            shape.frame = EmuRect::new(0, 0, frame.width, frame.height);
+            shape.rotation = 0;
+            shape.flip_h = false;
+            shape.flip_v = false;
+            shape.floating = Some(offset_anchor(anchor, frame.x, frame.y));
+            return Some(());
+        }
     }
     let cx = (a * width + b * height) / 2.0 + (x + translation[2]) * 127.0;
     let cy = (c * width + d * height) / 2.0 + (y + translation[5]) * 127.0;
@@ -252,22 +286,16 @@ pub(super) fn place_group_leaf(
     Some(())
 }
 
-/// Bake a sheared vector into editable DrawingML paths. The Bézier control
-/// points undergo the same affine transform as the vertices.
-fn shear_outline(
-    geometry: &ibis_doc_model::Geometry,
-    size: EmuSize,
-    [a, b, tx, c, d, ty]: [f64; 6],
-) -> Option<(ibis_doc_model::Geometry, EmuRect)> {
-    use ibis_doc_model::{FormulaGeometry, Geometry, GeometryDef, GeometryPath, PathOp};
-    let w = size.width.max(1) as f64;
-    let h = size.height.max(1) as f64;
-    let project = |x, y| (a * x + b * y + tx, c * x + d * y + ty);
+fn projected_frame([x0, y0, x1, y1]: [f64; 4], [a, b, tx, c, d, ty]: [f64; 6]) -> Option<EmuRect> {
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let project = |x: f64, y: f64| (a * x + b * y + tx, c * x + d * y + ty);
     let corners = [
-        project(0.0, 0.0),
-        project(w, 0.0),
-        project(0.0, h),
-        project(w, h),
+        project(x0, y0),
+        project(x1, y0),
+        project(x0, y1),
+        project(x1, y1),
     ];
     let extrema = |axis: fn((f64, f64)) -> f64| {
         let mut values = corners.into_iter().map(axis);
@@ -284,13 +312,120 @@ fn shear_outline(
     }
     let left = left.floor();
     let top = top.floor();
-    let frame = EmuRect::new(
+    Some(EmuRect::new(
         left as i64,
         top as i64,
         ((right.ceil() - left) as i64).max(1),
         ((bottom.ceil() - top) as i64).max(1),
+    ))
+}
+
+pub(super) fn warp_group_picture(
+    presentation: &mut ibis_doc_model::Presentation,
+    remaining: &mut usize,
+    pic: &Picture,
+    original: EmuSize,
+    frame: EmuRect,
+    [a, b, tx, c, d, ty]: [f64; 6],
+) -> Option<MediaId> {
+    use image::{ImageEncoder, ImageReader, Rgba, RgbaImage};
+    let determinant = a * d - b * c;
+    if *remaining < 128 || determinant.abs() < 1e-9 || pic.crop != Default::default() {
+        return None;
+    }
+    let media = presentation.media(pic.media)?;
+    let format = match media.format {
+        ibis_doc_model::MediaFormat::Png => image::ImageFormat::Png,
+        ibis_doc_model::MediaFormat::Jpeg => image::ImageFormat::Jpeg,
+        ibis_doc_model::MediaFormat::Bmp => image::ImageFormat::Bmp,
+        _ => return None,
+    };
+    let reader = || ImageReader::with_format(std::io::Cursor::new(media.data.as_ref()), format);
+    let (input_w, input_h) = reader().into_dimensions().ok()?;
+    let input_cost: usize = (u64::from(input_w) * u64::from(input_h) * 4)
+        .try_into()
+        .ok()?;
+    if input_w > 4096 || input_h > 4096 || input_cost > *remaining / 2 {
+        return None;
+    }
+    *remaining -= input_cost;
+    let mut reader = reader();
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(32 * 1024 * 1024);
+    reader.limits(limits);
+    let source = reader.decode().ok()?.to_rgba8();
+    let (sw, sh) = (f64::from(source.width()), f64::from(source.height()));
+    let (fw, fh) = (frame.width as f64, frame.height as f64);
+    let (ow, oh) = (original.width as f64, original.height as f64);
+    let density = (sw / (ow * a.hypot(c))).max(sh / (oh * b.hypot(d)));
+    let budget = ((*remaining / 4).min(4 * 1024 * 1024)) as f64;
+    let density = density
+        .min(4096.0 / fw.max(fh))
+        .min((budget / (fw * fh)).sqrt());
+    let (w, h) = (
+        (fw * density).floor().max(1.0) as u32,
+        (fh * density).floor().max(1.0) as u32,
     );
-    let point = |x, y| {
+    let output_cost = (w as usize * h as usize * 4).min(*remaining);
+    *remaining -= output_cost;
+    let mut output = RgbaImage::new(w, h);
+    for (px, py, out) in output.enumerate_pixels_mut() {
+        let x = frame.x as f64 + (f64::from(px) + 0.5) * fw / f64::from(w) - tx;
+        let y = frame.y as f64 + (f64::from(py) + 0.5) * fh / f64::from(h) - ty;
+        let u = (d * x - b * y) / (determinant * ow);
+        let v = (a * y - c * x) / (determinant * oh);
+        if (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v) {
+            // Interpolate in premultiplied alpha to keep transparent edges clean.
+            let sx = (u * sw - 0.5).clamp(0.0, sw - 1.0);
+            let sy = (v * sh - 0.5).clamp(0.0, sh - 1.0);
+            let mut color = [0.0; 4];
+            for (ix, wx) in [(sx.floor(), 1.0 - sx.fract()), (sx.ceil(), sx.fract())] {
+                for (iy, wy) in [(sy.floor(), 1.0 - sy.fract()), (sy.ceil(), sy.fract())] {
+                    let rgba = source.get_pixel(ix as u32, iy as u32).0;
+                    let weight = f64::from(rgba[3]) * wx * wy;
+                    for i in 0..3 {
+                        color[i] += f64::from(rgba[i]) * weight;
+                    }
+                    color[3] += weight;
+                }
+            }
+            if color[3] > 0.0 {
+                *out = Rgba([
+                    (color[0] / color[3]).round() as u8,
+                    (color[1] / color[3]).round() as u8,
+                    (color[2] / color[3]).round() as u8,
+                    color[3].round() as u8,
+                ]);
+            }
+        }
+    }
+    let mut encoded = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut encoded)
+        .write_image(output.as_raw(), w, h, image::ExtendedColorType::Rgba8)
+        .ok()?;
+    if encoded.len() > *remaining {
+        return None;
+    }
+    *remaining -= encoded.len();
+    Some(presentation.add_media(ibis_doc_model::MediaFormat::Png, encoded))
+}
+
+/// Bake a sheared vector into editable DrawingML paths.
+fn shear_outline(
+    geometry: &ibis_doc_model::Geometry,
+    size: EmuSize,
+    frame: EmuRect,
+    [a, b, tx, c, d, ty]: [f64; 6],
+) -> Option<ibis_doc_model::Geometry> {
+    use ibis_doc_model::{FormulaGeometry, Geometry, GeometryDef, GeometryPath, PathOp};
+    let w = size.width as f64;
+    let h = size.height as f64;
+    let left = frame.x as f64;
+    let top = frame.y as f64;
+    let project = |x: f64, y: f64| (a * x + b * y + tx, c * x + d * y + ty);
+    let point = |x: f64, y: f64| {
         let (x, y) = project(x, y);
         [
             (x - left).round().to_string(),
@@ -376,17 +511,14 @@ fn shear_outline(
         }
         _ => return None,
     };
-    Some((
-        Geometry::Formula(FormulaGeometry {
-            preset: None,
-            adjust: Vec::new(),
-            def: std::sync::Arc::new(GeometryDef {
-                paths,
-                ..Default::default()
-            }),
+    Some(Geometry::Formula(FormulaGeometry {
+        preset: None,
+        adjust: Vec::new(),
+        def: std::sync::Arc::new(GeometryDef {
+            paths,
+            ..Default::default()
         }),
-        frame,
-    ))
+    }))
 }
 
 pub(super) fn curve_geometry(
@@ -485,6 +617,7 @@ mod tests {
             &anchor,
             size,
             [[1., 0., 7., 0., 1., 11.], [1., -0.5, 0., 0.25, 1., 0.]],
+            |_, _, _, _| None,
         )
         .unwrap();
         assert_eq!(shape.frame, EmuRect::new(0, 0, 31750, 19050));
