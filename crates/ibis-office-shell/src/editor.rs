@@ -592,6 +592,7 @@ pub struct SlideEditor {
     pub ask: Option<crate::dialog::PendingAsk>,
     /// The About dialog inside the window, while it is open (shell/about.rs `render_modal`, on every platform).
     pub(crate) about_open: bool,
+    pub(crate) about_third_party: bool,
     /// A comment's delete waiting for the answer (shell/comments.rs).
     pub comment_delete: Option<crate::comments::PendingDelete>,
     /// 表示 > 印刷の色で表示: the screen shows the colours as the press prints them (a file with the CMYK mode on; on by default).
@@ -964,6 +965,7 @@ impl SlideEditor {
             alert: None,
             ask: None,
             about_open: false,
+            about_third_party: false,
             comment_delete: None,
             cmyk_notice: None,
             signature: Default::default(),
@@ -5133,6 +5135,7 @@ impl SlideEditor {
                 alert: _,
                 ask: _,
                 about_open: _,
+                about_third_party: _,
                 comment_delete: _,
                 // The CMYK display and the print panel's undo point are settings, not what a touch changes.
                 soft_proof: _,

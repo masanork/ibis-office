@@ -37,6 +37,8 @@ if [[ "${1:-}" == "--release" ]]; then
 fi
 
 echo "1. Building libibis_office_app.so (arm64-v8a, $TARGET_PROFILE)..."
+export IBIS_THIRD_PARTY_NOTICES="$PWD/target/third-party-android.md"
+python3 scripts/gen-web-licenses.py android
 cargo ndk -t arm64-v8a build --locked -p ibis-office-app --no-default-features --lib ${PROFILE_FLAG[@]+"${PROFILE_FLAG[@]}"}
 
 SO_PATH="target/aarch64-linux-android/$TARGET_PROFILE/libibis_office_app.so"
@@ -62,7 +64,10 @@ echo "4. Packaging APK with aapt2..."
   -o "$OUT_DIR/unaligned.apk"
 
 cp "$OUT_DIR/dex/classes.dex" "$OUT_DIR/classes.dex"
-(cd "$OUT_DIR" && zip -q -r unaligned.apk lib classes.dex)
+mkdir -p "$OUT_DIR/assets/licenses"
+cp "$IBIS_THIRD_PARTY_NOTICES" "$OUT_DIR/assets/licenses/third-party-licenses.md"
+cp crates/ibis-office-app/fonts/OFL.txt "$OUT_DIR/assets/licenses/IBM-Plex-OFL.txt"
+(cd "$OUT_DIR" && zip -q -r unaligned.apk lib classes.dex assets/licenses)
 
 "$BUILD_TOOLS/zipalign" -f 4 "$OUT_DIR/unaligned.apk" "$OUT_DIR/aligned.apk"
 

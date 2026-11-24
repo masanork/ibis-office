@@ -31,6 +31,8 @@ for arg in "$@"; do
 done
 
 echo "1. Building libibis_office_app.a ($TARGET, $PROFILE)..."
+export IBIS_THIRD_PARTY_NOTICES="$PWD/target/third-party-ios.md"
+IBIS_IOS_TARGET="$TARGET" python3 scripts/gen-web-licenses.py ios
 IPHONEOS_DEPLOYMENT_TARGET=16.0 cargo rustc --locked -p ibis-office-app --no-default-features --lib --crate-type staticlib --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
 
 LIB_PATH="target/$TARGET/$PROFILE/libibis_office_app.a"
@@ -65,6 +67,9 @@ xcrun actool apps/ios/Assets.xcassets \
   --output-partial-info-plist "$PARTIAL_PLIST" >/dev/null
 /usr/libexec/PlistBuddy -c "Merge $PARTIAL_PLIST" "$APP_DIR/Info.plist"
 rm -f "$PARTIAL_PLIST"
+mkdir -p "$APP_DIR/Licenses"
+cp "$IBIS_THIRD_PARTY_NOTICES" "$APP_DIR/Licenses/third-party-licenses.md"
+cp crates/ibis-office-app/fonts/OFL.txt "$APP_DIR/Licenses/IBM-Plex-OFL.txt"
 codesign --force --sign - "$APP_DIR"
 
 echo "Built: $APP_DIR"

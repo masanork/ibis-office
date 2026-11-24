@@ -51,8 +51,12 @@ fi
 # The paths of this machine are not to go into the wasm (see bundle-macos.sh):
 # rewritten, in a target directory of its own.
 REMAP="--remap-path-prefix=$HOME/.cargo/registry/src=crates.io --remap-path-prefix=$HOME/.cargo/git/checkouts=git --remap-path-prefix=$HOME/.rustup=rustup --remap-path-prefix=$(pwd)=."
+export IBIS_THIRD_PARTY_NOTICES="$PWD/target/third-party-web.md"
+python3 scripts/gen-web-licenses.py web
 RUSTFLAGS="$REMAP" CARGO_TARGET_DIR=target/dist cargo rustc --locked -p ibis-office-app --lib --crate-type cdylib --target wasm32-unknown-unknown ${FLAGS[@]+"${FLAGS[@]}"} -- \
   -C link-arg=-zstack-size=8388608
+
+cp "$IBIS_THIRD_PARTY_NOTICES" www/license.md
 
 WASM="target/dist/wasm32-unknown-unknown/$PROFILE/ibis_office_app.wasm"
 wasm-bindgen "$WASM" --out-dir www/pkg --target web

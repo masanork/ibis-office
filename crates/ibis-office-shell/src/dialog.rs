@@ -204,15 +204,28 @@ impl SlideEditor {
     /// Show the About screen as a modal dialog inside the window (every platform: shell/about.rs).
     pub(crate) fn show_about(&mut self, cx: &mut Context<Self>) {
         self.about_open = true;
+        self.about_third_party = false;
         self.dialog.drag = None;
         cx.notify();
     }
     pub(crate) fn dismiss_about(&mut self, cx: &mut Context<Self>) {
-        self.about_open = false;
+        if self.about_third_party {
+            self.about_third_party = false;
+        } else {
+            self.about_open = false;
+        }
         cx.notify();
     }
     pub(crate) fn render_about(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        super::about::render_modal(cx.listener(|this, _, _, cx| this.dismiss_about(cx)), cx)
+        super::about::render_modal(
+            self.about_third_party,
+            cx.listener(|this, _, _, cx| {
+                this.about_third_party = true;
+                cx.notify();
+            }),
+            cx.listener(|this, _, _, cx| this.dismiss_about(cx)),
+            cx,
+        )
     }
     pub fn show_panel_message(&mut self, text: SharedString, cx: &mut Context<Self>) {
         with_format!(self, panel_message_shown(self));

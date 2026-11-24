@@ -77,7 +77,7 @@ pub fn version_line() -> String {
 
 /// The About content (logo, version, the update button, "Powered by ibisOffice" with its link, copyright, license),
 /// the dialog's content.
-fn about_body(cx: &App) -> Div {
+fn about_body(on_notices: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static, cx: &App) -> Div {
     let theme = cx.theme().clone();
     v_flex()
         .items_center()
@@ -92,32 +92,59 @@ fn about_body(cx: &App) -> Div {
         .child(div().id("about-powered").mt_3().text_color(theme.link).underline().cursor_pointer().child(POWERED_BY).on_click(|_, _, cx| crate::external::open_url(PROJECT_URL, cx)))
         .child(div().id("about-url").text_size(px(12.)).text_color(theme.link).cursor_pointer().child(PROJECT_URL).on_click(|_, _, cx| crate::external::open_url(PROJECT_URL, cx)))
         .child(div().mt_3().text_size(px(12.)).text_color(theme.muted_foreground).child("Copyright (c) ibis inc."))
+        .child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(i18n::text("about.license")))
+        .child(
+            div()
+                .id("about-third-party")
+                .text_size(px(12.))
+                .text_color(theme.link)
+                .underline()
+                .cursor_pointer()
+                .child(i18n::text("about.third-party"))
+                .on_click(on_notices),
+        )
+}
+
+fn third_party_body(cx: &App) -> Div {
+    let theme = cx.theme();
+    let notices = include_str!(concat!(env!("OUT_DIR"), "/third-party-notices.md"));
+    v_flex()
+        .p_4()
+        .gap_3()
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(i18n::text("about.third-party")))
         .child(
             v_flex()
-                .items_center()
                 .text_size(px(12.))
                 .text_color(theme.muted_foreground)
-                .child(div().child(i18n::text("about.license")))
-                .child(
-                    v_flex()
-                        .mt_2()
-                        .items_center()
-                        .text_center()
-                        .child(div().child(i18n::text("about.hwp-spec-credit")))
-                        .child(div().child(ibis_formats::hwp::SPEC_CREDIT)),
-                ),
+                .child(div().child(i18n::text("about.hwp-spec-credit")))
+                .child(div().child(ibis_formats::hwp::SPEC_CREDIT)),
+        )
+        .child(
+            v_flex()
+                .id("third-party-notices-scroll")
+                .max_h(px(320.))
+                .overflow_y_scroll()
+                .text_size(px(12.))
+                .gap_2()
+                .when(notices.is_empty(), |view| view.child(i18n::text("about.third-party-unavailable")))
+                .children(notices.split("\n\n").filter(|section| !section.is_empty()).map(|section| div().child(section))),
         )
 }
 
 /// The About screen: a modal dialog inside the window (shell/dialog.rs `InteractionLayer::About`), over the window's
 /// confirmation surface, the same on every platform; 閉じる, Esc and Enter close it.
-pub(crate) fn render_modal(on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static, cx: &App) -> Stateful<Div> {
+pub(crate) fn render_modal(
+    third_party: bool,
+    on_notices: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> Stateful<Div> {
     let theme = cx.theme();
-    let footer = crate::chrome::action_bar().action(crate::chrome::ActionDefinition::new("about-close", i18n::text("_shell.close"), crate::chrome::ActionButtonKind::Normal).on_click(on_close));
+    let footer = crate::chrome::action_bar().action(crate::chrome::ActionDefinition::new("about-close", i18n::text(if third_party { "about.third-party-back" } else { "_shell.close" }), crate::chrome::ActionButtonKind::Normal).on_click(on_close));
     crate::dialog::confirmation_surface("about-dialog", false).child(
         v_flex()
             .id("about-dialog-box")
-            .w(px(420.))
+            .w(px(if third_party { 620. } else { 420. }))
             .max_w_full()
             .rounded_lg()
             .overflow_hidden()
@@ -126,7 +153,7 @@ pub(crate) fn render_modal(on_close: impl Fn(&ClickEvent, &mut Window, &mut App)
             .border_1()
             .border_color(theme.border)
             .shadow_xl()
-            .child(about_body(cx).py_6())
+            .child(if third_party { third_party_body(cx) } else { about_body(on_notices, cx).py_6() })
             .child(crate::chrome::action_bar_host(footer.access_scope(crate::access_key::Scope::MessageBox))),
     )
 }

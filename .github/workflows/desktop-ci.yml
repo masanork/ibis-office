@@ -115,20 +115,24 @@ jobs:
           python3 scripts/check-bundled-variant-dictionary.py \
             "$verified_app/Contents/MacOS/ibisOffice" \
             "$verified_app/Contents/Resources/Licenses/license.md"
+          python3 scripts/check-third-party-notices.py --desktop \
+            "$verified_app/Contents/MacOS/ibisOffice" "$verified_app/Contents/Resources/Licenses/license.md"
       - name: Build and verify Windows package
         if: matrix.platform == 'windows-x64'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo build --release --locked -p ibis-office-app -p ibis-office-updater
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:IBIS_THIRD_PARTY_NOTICES = Join-Path (Get-Location) 'target/third-party-windows.md'
           python scripts/gen-web-licenses.py windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --release --locked -p ibis-office-app -p ibis-office-updater
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $dir = 'ci-package/ibisOffice'
           New-Item -ItemType Directory -Force "$dir/Resources/artborders", "$dir/Resources/Licenses" | Out-Null
           Copy-Item target/release/ibisOffice.exe,target/release/ibisOfficeUpdater.exe $dir
           Copy-Item crates/ibis-formats/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip,crates/ibis-formats/data/artborders/ECMA-NOTICE.txt "$dir/Resources/artborders"
-          Copy-Item LICENSE,NOTICE,COMMERCIAL-LICENSE.md,crates/ibis-office-app/windows/license.md,crates/ibis-office-render/fonts/carlito/OFL.txt "$dir/Resources/Licenses"
+          Copy-Item LICENSE,NOTICE,COMMERCIAL-LICENSE.md,crates/ibis-office-render/fonts/carlito/OFL.txt "$dir/Resources/Licenses"
+          Copy-Item $env:IBIS_THIRD_PARTY_NOTICES "$dir/Resources/Licenses/license.md"
           if (Get-ChildItem $dir -Recurse -Filter "*onnx*") { throw 'unexpected ONNX package content' }
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path "$dir/ibisOffice.exe"))
           $offset = [BitConverter]::ToInt32($bytes, 0x3c)
@@ -139,6 +143,8 @@ jobs:
           Expand-Archive ci-artifact/desktop-windows-x64-ci.zip "$env:RUNNER_TEMP/verify-windows"
           $verifiedApp = "$env:RUNNER_TEMP/verify-windows/ibisOffice"
           python scripts/check-bundled-variant-dictionary.py "$verifiedApp/ibisOffice.exe" "$verifiedApp/Resources/Licenses/license.md"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/check-third-party-notices.py --desktop "$verifiedApp/ibisOffice.exe" "$verifiedApp/Resources/Licenses/license.md"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Generate and open desktop SBOM and CBOM
         shell: bash
@@ -274,6 +280,9 @@ jobs:
           unzip -l "$APK" | grep -q "lib/arm64-v8a/libibis_office_app.so"
           unzip -l "$APK" | grep -q "classes.dex"
           unzip -l "$APK" | grep -q "AndroidManifest.xml"
+          python3 scripts/check-third-party-notices.py --archive "$APK" \
+            lib/arm64-v8a/libibis_office_app.so assets/licenses/third-party-licenses.md \
+            --plex assets/licenses/IBM-Plex-OFL.txt
           cp "$APK" ci-artifact/desktop-android-arm64-ci.apk
       - name: Generate Android SBOM and CBOM
         run: python3 scripts/build-bom.py android-arm64 ci-artifact/desktop-android-arm64-ci.apk ci-artifact
@@ -312,6 +321,9 @@ jobs:
           test -x target/ios-app/IbisOffice.app/IbisOffice
           test -f target/ios-app/IbisOffice.app/Info.plist
           (cd target/ios-app && ditto -c -k --keepParent IbisOffice.app ../../ci-artifact/desktop-ios-arm64-ci.zip)
+          python3 scripts/check-third-party-notices.py --archive ci-artifact/desktop-ios-arm64-ci.zip \
+            IbisOffice.app/IbisOffice IbisOffice.app/Licenses/third-party-licenses.md \
+            --plex IbisOffice.app/Licenses/IBM-Plex-OFL.txt
       - name: Generate iOS SBOM and CBOM
         run: python3 scripts/build-bom.py ios-arm64 ci-artifact/desktop-ios-arm64-ci.zip ci-artifact
       - name: Hash deliverables

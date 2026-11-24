@@ -30,7 +30,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILDS = {
     "web": (os.path.join(ROOT, "www", "license.md"), "wasm32-unknown-unknown", "Web 版"),
     "macos": (os.path.join(ROOT, "crates", "ibis-office-app", "macos", "license.md"), "aarch64-apple-darwin", "macOS 版"),
-    "linux": (os.path.join(ROOT, "crates", "ibis-office-app", "linux", "license.md"), "x86_64-unknown-linux-gnu", "Linux 版"),
+    "linux": (os.path.join(ROOT, "crates", "ibis-office-app", "linux", "license.md"), os.environ.get("IBIS_LINUX_TARGET", "x86_64-unknown-linux-gnu"), "Linux 版"),
+    "android": (os.path.join(ROOT, "target", "third-party-android.md"), "aarch64-linux-android", "Android 版"),
+    "ios": (os.path.join(ROOT, "target", "third-party-ios.md"), os.environ.get("IBIS_IOS_TARGET", "aarch64-apple-ios"), "iOS 版"),
     "windows": (os.path.join(ROOT, "crates", "ibis-office-app", "windows", "license.md"), "x86_64-pc-windows-msvc", "Windows 版"),
 }
 # What each build ships besides the app: the AppImage's runtime is in the Linux one.
@@ -42,11 +44,12 @@ def run(*args):
     return subprocess.run(args, cwd=ROOT, check=True, capture_output=True, text=True, encoding="utf-8").stdout
 
 
-def crates(target, extra=()):
+def crates(target, extra=(), mobile=False):
     tree = ""
     for package in ["ibis-office-app", *extra]:
         tree += run("cargo", "tree", "--locked", "-p", package, "--target", target,
-                    "-e", "normal", "--prefix", "none", "-f", "{p}")
+                    "-e", "normal", "--prefix", "none", "-f", "{p}",
+                    *(["--no-default-features"] if mobile else []))
     names = set()
     for line in tree.splitlines():
         m = re.match(r"(\S+) v(\S+)", line.strip())
@@ -105,6 +108,8 @@ def find_license_file(package, pattern):
 
 def main():
     builds = sys.argv[1:] or list(BUILDS)
+    if len(builds) != 1 and os.environ.get("IBIS_THIRD_PARTY_NOTICES"):
+        sys.exit("IBIS_THIRD_PARTY_NOTICES requires exactly one build")
     for build in builds:
         if build not in BUILDS:
             sys.exit(f"unknown build {build}: one of {', '.join(BUILDS)}")
@@ -113,7 +118,10 @@ def main():
 
 def write(build):
     out_path, target, label = BUILDS[build]
-    packages = crates(target, EXTRA_PACKAGES.get(build, ()))
+    out_path = os.environ.get("IBIS_THIRD_PARTY_NOTICES", out_path)
+    mobile = build in ("android", "ios")
+    plex_bundled = build == "web" or mobile
+    packages = crates(target, EXTRA_PACKAGES.get(build, ()), mobile)
     licences = {}
     rows = []
     notices = []
@@ -193,6 +201,29 @@ def write(build):
                 own_texts.append((f"{p['name']} {p['version']}（{lic}）", open(path, encoding="utf-8", errors="replace").read().strip()))
                 break
 
+    # Preserve the upstream wording, including attribution that is not a copyright line.
+    upstream_notices = {}
+    for package in packages:
+        name = package["name"]
+        folder = os.path.dirname(package["manifest_path"])
+        filenames = []
+        if name == "apache-avro" or name == "subsetter":
+            filenames = ["NOTICE"]
+        elif re.fullmatch(r"(arrow-.+|parquet)", name) and os.path.isfile(os.path.join(folder, "NOTICE.txt")):
+            filenames = ["NOTICE.txt"]
+        elif name == "ring":
+            filenames = ["LICENSE", "LICENSE-BoringSSL", "LICENSE-other-bits"]
+        for filename in filenames:
+            with open(os.path.join(folder, filename), encoding="utf-8") as source:
+                notice = source.read().strip()
+            if name == "subsetter":
+                # The font fixtures are development inputs, not part of the crate's library.
+                notice, separator, _ = notice.partition("\n# Fonts\n")
+                if not separator:
+                    raise ValueError("subsetter NOTICE changed; review the font attribution boundary")
+                notice = notice.rstrip()
+            upstream_notices.setdefault(notice, []).append(f"{name} {package['version']} / {filename}")
+
     ecma = open(os.path.join(ROOT, "crates", "ibis-formats", "data", "ECMA-NOTICE.txt"), encoding="utf-8").read().strip()
     # The art page borders' pictures: the desktop app reads them from the zip
     # in its Resources; the web version serves its PNG files one by one.
@@ -212,9 +243,9 @@ def write(build):
                ("ECMA-376 presetTableStyles.xml", "Excel の組み込みテーブル スタイルの定義", "Ecma テキスト著作権ポリシー"),
                ("ECMA-376 presetCellStyles.xml", "Excel の組み込みセルのスタイルの定義", "Ecma テキスト著作権ポリシー")]
     bundled.append(("ECMA-376 OfficeOpenXML-WordprocessingMLArtBorders.zip", "Word のページの絵柄罫線の絵" + ("（`assets/artborders/` に PNG を 1 枚ずつ、改変せずに）" if build == "web" else ""), "Ecma テキスト著作権ポリシー"))
-    if build == "web":
-        bundled.append(("IBM Plex Sans", "UI の文字（Web 版）", "SIL Open Font License 1.1"))
-    else:
+    if plex_bundled:
+        bundled.append(("IBM Plex Sans", "UI の文字", "SIL Open Font License 1.1"))
+    if build != "web":
         bundled.append(("Carlito", "Calibri が入っていないときの代わりの文字", "SIL Open Font License 1.1"))
     if build != "web":
         # The transition sounds (crates/ibis-formats/sounds/): CC0 sounds of Kenney and of OpenGameArt's authors, and five of ibis inc.'s own; the web version carries none (it fetches them).
@@ -227,7 +258,7 @@ def write(build):
     bundled.append(("gjs 異体字クラスターマップ", "異体字照合。調製・提供 Masanori Kusunoki (gjs)", "ibisOffice への提供データ。[元データの表示](https://github.com/digital-go-jp/gjs/blob/main/NOTICE.md)"))
     material_readme = open(os.path.join(ROOT, "crates", "ibis-office-shell", "icons", "material", "README.md"), encoding="utf-8").read()
     material_source = next((l[2:] for l in material_readme.splitlines() if l.startswith("- 出典")), "")
-    where = {"web": " Web 版（`www/`）", "macos": " macOS 版（`ibisOffice.app`）", "linux": " Linux 版（AppImage）", "windows": " Windows 版"}[build]
+    where = {"web": " Web 版（`www/`）", "macos": " macOS 版（`ibisOffice.app`）", "linux": " Linux 版（AppImage）", "windows": " Windows 版", "android": " Android 版", "ios": " iOS 版"}[build]
     md = [f"# サードパーティのライセンス（{label}）",
           "",
           *(["ibis.sorane.dev の追加フォントは [フォントのライセンス](./font-notices.html) を参照してください。", ""] if build == "web" else []),
@@ -257,8 +288,8 @@ def write(build):
           "",
           "```text", ecma_art, "```",
           "",
-          *(["### IBM Plex Sans", "", "```text", plex, "```", ""] if build == "web" else
-            ["### Carlito", "", "```text", carlito, "```", ""]),
+          *(["### IBM Plex Sans", "", "```text", plex, "```", ""] if plex_bundled else []),
+          *(["### Carlito", "", "```text", carlito, "```", ""] if build != "web" else []),
           "### Harunobu",
           "",
           "```text", harunobu, "```",
@@ -292,9 +323,14 @@ def write(build):
     md += ["", "## 単一のライセンス（MIT・Apache-2.0 以外）の部品のライセンス本文", ""]
     for name, text in own_texts:
         md += [f"### {name}", "", "```text", text, "```", ""]
-    md += ["", "## ライセンス本文", "", "複数のライセンスから選べる部品は、MIT または Apache-2.0 を選んでいます。", ""]
+    md += ["", "## 依存元の帰属表示と個別ライセンス", ""]
+    for notice, sources in upstream_notices.items():
+        md += ["### " + ", ".join(sources), "", "```text", notice, "```", ""]
+    md += ["", "## ライセンス本文", "",
+           "選択可能な場合は MIT または Apache-2.0 を使用します。AND で結ばれた条件は併せて適用します。", ""]
     for ident, text in texts:
         md += [f"### {ident}", "", "```text", text, "```", ""]
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(md) + "\n")
     print(f"wrote {os.path.relpath(out_path, ROOT)}: {len(rows)} crates, {len(texts)} licence texts")

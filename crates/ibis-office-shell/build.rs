@@ -15,6 +15,7 @@ use std::path::Path;
 fn main() {
     app_version();
     build_identity();
+    third_party_notices();
     let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("icons");
     let dir = resources.join("material");
     println!("cargo:rerun-if-changed={}", dir.display());
@@ -113,3 +114,17 @@ fn build_identity() {
     println!("cargo:rustc-env=IBIS_BUILD_IDENTITY={branch} · {commit}{state}");
 }
 
+
+/// Embed the same notices that the packaging scripts ship as a readable file.
+fn third_party_notices() {
+    let key = "IBIS_THIRD_PARTY_NOTICES";
+    println!("cargo:rerun-if-env-changed={key}");
+    let dest = Path::new(&std::env::var("OUT_DIR").unwrap()).join("third-party-notices.md");
+    if let Some(source) = std::env::var_os(key) {
+        let source = Path::new(&source);
+        println!("cargo:rerun-if-changed={}", source.display());
+        std::fs::copy(source, dest).expect("copy packaged third-party notices");
+    } else {
+        std::fs::write(dest, "").expect("write development notice placeholder");
+    }
+}
