@@ -23,11 +23,12 @@ pub(super) struct GeometryDrag {
     current: (f32, f32),
 }
 
-fn shape_at(targets: &GeometryTargets, x: f32, y: f32) -> Option<u32> {
-    targets
-        .shapes
-        .iter()
-        .rev()
+fn shape_at<'a>(
+    shapes: impl Iterator<Item = &'a (u32, ibis_pdf::PdfRect)>,
+    x: f32,
+    y: f32,
+) -> Option<u32> {
+    shapes
         .filter(|(_, r)| r.x0 <= x && x <= r.x1 && r.y0 <= y && y <= r.y1)
         .min_by(|(_, a), (_, b)| (a.width() * a.height()).total_cmp(&(b.width() * b.height())))
         .map(|(id, _)| *id)
@@ -70,7 +71,18 @@ pub(super) fn press(
         .filter(|&(distance, _, _)| distance <= radius)
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, id, end)| Object::Connector(id, end))
-        .or_else(|| shape_at(&targets, x, y).map(Object::Shape));
+        .or_else(|| {
+            shape_at(
+                targets
+                    .group_children
+                    .iter()
+                    .rev()
+                    .chain(targets.shapes.iter().rev()),
+                x,
+                y,
+            )
+            .map(Object::Shape)
+        });
     let mode = editor
         .format_state_mut::<State>()
         .unwrap()
@@ -106,7 +118,11 @@ pub(super) fn update(editor: &mut SlideEditor, at: Point<Pixels>, cx: &mut Conte
 pub(super) fn ghost(drag: &GeometryDrag, targets: &GeometryTargets) -> ibis_pdf::PdfRect {
     let (x, y) = drag.current;
     if let Object::Shape(id) = drag.object
-        && let Some((_, rect)) = targets.shapes.iter().find(|(shape, _)| *shape == id)
+        && let Some((_, rect)) = targets
+            .shapes
+            .iter()
+            .chain(&targets.group_children)
+            .find(|(shape, _)| *shape == id)
     {
         let (dx, dy) = (x - drag.start.0, y - drag.start.1);
         return ibis_pdf::PdfRect {
@@ -157,7 +173,7 @@ pub(super) fn release(
             dy: -f64::from(dy) / 72.0,
         },
         Object::Connector(connector, endpoint) => {
-            let Some(target) = shape_at(&mode.targets, x, y) else {
+            let Some(target) = shape_at(mode.targets.shapes.iter().rev(), x, y) else {
                 editor.report(
                     Err(ibis_office_shell::i18n::text("vsdx.geometry-drop-target").to_string()),
                     cx,

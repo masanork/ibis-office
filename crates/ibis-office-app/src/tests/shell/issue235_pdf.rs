@@ -22,6 +22,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     ];
     if std::env::var_os("VSDX_VISIO_GLUED_ARC_SAMPLE").is_some() {
         scenarios.push(("shell::vsdx_visio_authored_drawing_edit_mode", vsdx_visio_authored_edit_mode));
+        scenarios.push(("shell::vsdx_visio_authored_group_drag", vsdx_visio_authored_group_drag));
     }
     scenarios
 }
@@ -424,6 +425,84 @@ fn vsdx_visio_authored_edit_mode() {
         "visio-native-edited.vsdx",
         &["250", "614"],
     );
+}
+
+fn vsdx_visio_authored_group_drag() {
+    use ibis_office_pdf::editor::{geometry_screen_point, staged_geometry_bytes, write_vsdx_copy};
+
+    let input = std::env::var("VSDX_VISIO_GLUED_ARC_SAMPLE").unwrap();
+    let mut s = Scenario::open(&input);
+    let path = s.with(|editor, _| editor.file_path().unwrap());
+    let original = std::fs::read(&path).unwrap();
+    s.menu("vsdx.resume-edit");
+    s.size(1500.0, 1200.0);
+    s.update(|editor, _, cx| {
+        editor.zoom = Some(0.65);
+        cx.notify();
+    });
+    // CSV shape 537 sits inside group 536. Move its center by +0.25, +0.125 inches.
+    let mut screen = |x: f32, y: f32| {
+        s.with(|editor, _| {
+            geometry_screen_point(editor, 0, x * 72.0, (16.035433 - y) * 72.0).unwrap()
+        })
+    };
+    let start = screen(1.7143403, 9.852173);
+    let end = screen(1.9643403, 9.977173);
+    s.drag(start, end);
+    let edited = s.with(|editor, _| staged_geometry_bytes(editor))
+        .unwrap_or_else(|| panic!("group drag failed: {:?}", s.status_texts()));
+
+    let output = "target/scenario/vsdx-geometry-src/visio-group-child-edited.vsdx";
+    let copy = crate::shell::scenario::repo_root().join(output);
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    write_vsdx_copy(Some(&path), &copy, &edited).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), original);
+    drop(s);
+    let reopened = Scenario::open(output)
+        .with(|editor, _| editor.presentation().pdf_bytes.clone()).unwrap();
+    let before = ibis_formats::zip::Archive::new(&original).unwrap();
+    let after = ibis_formats::zip::Archive::new(&reopened).unwrap();
+    assert_eq!(before.names().len(), after.names().len());
+    for name in before.names() {
+        let old = before.read(&name).unwrap();
+        let new = after.read(&name).unwrap();
+        if name != "visio/pages/page1.xml" {
+            assert_eq!(old, new, "{name}");
+            continue;
+        }
+        let old = String::from_utf8(old.unwrap()).unwrap();
+        let new = String::from_utf8(new.unwrap()).unwrap();
+        let redact_pins = |source: &str, expected: [f64; 2]| {
+            let doc = roxmltree::Document::parse(source).unwrap();
+            let shape = doc.descendants()
+                .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some("537"))
+                .unwrap();
+            let parent = shape.parent().unwrap().parent().unwrap();
+            assert_eq!(parent.attribute("ID"), Some("536"));
+            let mut ranges = Vec::new();
+            for ((pin, dimension), expected) in [("PinX", "Width"), ("PinY", "Height")].into_iter().zip(expected) {
+                let pin = shape.children().find(|n| n.attribute("N") == Some(pin)).unwrap();
+                let pos: f64 = pin.attribute("V").unwrap().parse().unwrap();
+                let extent: f64 = parent.children().find(|n| n.attribute("N") == Some(dimension))
+                    .unwrap().attribute("V").unwrap().parse().unwrap();
+                let formula = pin.attribute("F").unwrap();
+                let fraction: f64 = formula.strip_prefix(&format!("Sheet.536!{dimension}*"))
+                    .unwrap().parse().unwrap();
+                assert!((pos - expected).abs() < 0.01, "{pin:?}: {pos}");
+                assert!((pos - extent * fraction).abs() < 1e-9, "{formula}");
+                ranges.push(pin.range());
+            }
+            let mut unchanged = source.to_owned();
+            ranges.sort_unstable_by_key(|r| std::cmp::Reverse(r.start));
+            for range in ranges {
+                unchanged.replace_range(range, "");
+            }
+            unchanged
+        };
+        assert!(redact_pins(&old, [0.280673746, 0.780542173])
+            == redact_pins(&new, [0.530673746, 0.905542173]),
+            "only the child position cells should differ");
+    }
 }
 
 fn geometry_mode_roundtrip(input: &str, move_command: &str, reconnect_command: &str, pin: &str, link: &str, filename: &str, edited_shapes: &[&str]) {

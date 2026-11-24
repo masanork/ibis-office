@@ -82,26 +82,7 @@ fn patch_page(
                 if dx == 0.0 && dy == 0.0 {
                     return Ok(None);
                 }
-                if links
-                    .iter()
-                    .any(|&link| id(link, "FromSheet") == Some(shape))
-                {
-                    return Err(unsupported());
-                }
-                if nested || is_group(node) {
-                    let subtree: BTreeSet<_> = node
-                        .descendants()
-                        .filter(|&item| named(item, "Shape"))
-                        .filter_map(|item| id(item, "ID"))
-                        .collect();
-                    if links.iter().any(|&link| {
-                        let from = id(link, "FromSheet").is_some_and(|id| subtree.contains(&id));
-                        let to = id(link, "ToSheet").is_some_and(|id| subtree.contains(&id));
-                        from != to
-                    }) {
-                        return Err(unsupported());
-                    }
-                }
+                check_move_links(node, shape, nested, &links)?;
                 patch_pin(&mut patches, node, x + dx, y + dy)?;
                 let mut connectors = BTreeSet::new();
                 for &link in &links {
@@ -308,7 +289,7 @@ fn movable_pin(node: XmlNode<'_, '_>, master: Option<XmlNode<'_, '_>>) -> Result
             match cell(node, key).ok().and_then(|c| c.attribute("F")) {
                 None => false,
                 Some("Inh") => master.is_none(),
-                Some(_) => true,
+                Some(_) => parent_pin_scale(node, key).is_none(),
             }
         })
         || ["LockMoveX", "LockMoveY"]
@@ -323,13 +304,61 @@ fn movable_pin(node: XmlNode<'_, '_>, master: Option<XmlNode<'_, '_>>) -> Result
     ))
 }
 
+// Visio commonly anchors a grouped shape to a fraction of its parent's size.
+fn parent_pin_scale(shape: XmlNode<'_, '_>, key: &str) -> Option<(String, f64)> {
+    let parent = shape.parent()?.parent()?;
+    if !named(parent, "Shape") {
+        return None;
+    }
+    let dimension = if key == "PinX" { "Width" } else { "Height" };
+    let prefix = format!("Sheet.{}!{dimension}*", id(parent, "ID")?);
+    let formula = cell(shape, key).ok()?.attribute("F")?;
+    let fraction: f64 = formula.strip_prefix(&prefix)?.parse().ok()?;
+    let extent = value(parent, dimension).ok().filter(|&extent| extent > 0.0)?;
+    close(value(shape, key).ok()?, fraction * extent).then_some((prefix, extent))
+}
+
+fn check_move_links(
+    node: XmlNode<'_, '_>,
+    shape: u32,
+    nested: bool,
+    links: &[XmlNode<'_, '_>],
+) -> Result<()> {
+    if links.iter().any(|&link| id(link, "FromSheet") == Some(shape)) {
+        return Err(unsupported());
+    }
+    if nested || is_group(node) {
+        let subtree: BTreeSet<_> = node
+            .descendants()
+            .filter(|&item| named(item, "Shape"))
+            .filter_map(|item| id(item, "ID"))
+            .collect();
+        if links.iter().any(|&link| {
+            let from = id(link, "FromSheet").is_some_and(|id| subtree.contains(&id));
+            let to = id(link, "ToSheet").is_some_and(|id| subtree.contains(&id));
+            from != to
+        }) {
+            return Err(unsupported());
+        }
+    }
+    Ok(())
+}
+
 fn patch_pin(patches: &mut Vec<Patch>, shape: XmlNode<'_, '_>, x: f64, y: f64) -> Result<()> {
     let mut added = String::new();
     for (key, position) in [("PinX", x), ("PinY", y)] {
         if let Ok(node) = cell(shape, key) {
             number_patch(patches, node, position)?;
             if let Some(formula) = node.attribute_node("F") {
-                patches.push((formula.range(), String::new()));
+                if let Some((prefix, extent)) = parent_pin_scale(shape, key) {
+                    let fraction = position / extent;
+                    if !fraction.is_finite() {
+                        return Err(unsupported());
+                    }
+                    patches.push((formula.range_value(), format!("{prefix}{fraction}")));
+                } else {
+                    patches.push((formula.range(), String::new()));
+                }
             }
         } else {
             if !position.is_finite() || position.abs() > 1_000_000.0 {
@@ -879,6 +908,7 @@ impl EditableRoute<'_, '_> {
 #[derive(Default)]
 pub struct GeometryTargets {
     pub shapes: Vec<(u32, ibis_pdf::PdfRect)>,
+    pub group_children: Vec<(u32, ibis_pdf::PdfRect)>,
     pub endpoints: Vec<(u32, Endpoint, (f32, f32))>,
 }
 
@@ -903,20 +933,7 @@ impl VsdxContainer {
         let height = page.info.crop_box.height();
         let point = |x: f64, y: f64| ((x * 72.0) as f32, height - (y * 72.0) as f32);
         let mut targets = GeometryTargets::default();
-        for shape in shapes.children().filter(|&node| named(node, "Shape")) {
-            let Some(shape_id) = id(shape, "ID") else {
-                continue;
-            };
-            let master = master_for(shape, &masters, 0);
-            let Some((center, extent)) = target_bounds(shape, master) else {
-                continue;
-            };
-            let (x0, y0) = point(center.0, center.1 + extent.1);
-            let (x1, y1) = point(center.0 + extent.0, center.1);
-            targets
-                .shapes
-                .push((shape_id, ibis_pdf::PdfRect { x0, y0, x1, y1 }));
-        }
+        collect_shape_targets(shapes, &masters, &links, height, (0.0, 0.0), 0, &mut targets);
         let connectors: BTreeSet<_> = links
             .iter()
             .filter_map(|&link| id(link, "FromSheet"))
@@ -935,6 +952,52 @@ impl VsdxContainer {
     }
 }
 
+fn collect_shape_targets(
+    shapes: XmlNode<'_, '_>,
+    masters: &HashMap<&str, roxmltree::Document<'_>>,
+    links: &[XmlNode<'_, '_>],
+    height: f32,
+    offset: (f64, f64),
+    depth: usize,
+    targets: &mut GeometryTargets,
+) {
+    if depth >= 64 {
+        return;
+    }
+    for shape in shapes.children().filter(|&node| named(node, "Shape")) {
+        let Some(shape_id) = id(shape, "ID") else {
+            continue;
+        };
+        let master = master_for(shape, masters, 0);
+        let Some(((left, bottom), (width, shape_height))) = target_bounds(shape, master) else {
+            continue;
+        };
+        let left = left + offset.0;
+        let bottom = bottom + offset.1;
+        if movable_pin(shape, master).is_ok() {
+            let rect = ibis_pdf::PdfRect {
+                x0: (left * 72.0) as f32,
+                x1: ((left + width) * 72.0) as f32,
+                y0: height - ((bottom + shape_height) * 72.0) as f32,
+                y1: height - (bottom * 72.0) as f32,
+            };
+            if depth == 0 {
+                targets.shapes.push((shape_id, rect));
+            } else if ["PinX", "PinY"].into_iter().all(|key| {
+                cell(shape, key).is_ok_and(|cell| cell.attribute("F").is_none())
+                    || parent_pin_scale(shape, key).is_some()
+            }) && check_move_links(shape, shape_id, true, links).is_ok()
+            {
+                targets.group_children.push((shape_id, rect));
+            }
+        }
+        if let Some(children) = child(shape, "Shapes") {
+            // For an unrotated, unflipped group the local origin is just translated.
+            collect_shape_targets(children, masters, links, height, (left, bottom), depth + 1, targets);
+        }
+    }
+}
+
 fn target_bounds(
     shape: XmlNode<'_, '_>,
     master: Option<XmlNode<'_, '_>>,
@@ -945,7 +1008,8 @@ fn target_bounds(
     {
         return None;
     }
-    let (x, y) = movable_pin(shape, master).ok()?;
+    let x = inherited_value(shape, master, "PinX").ok()?;
+    let y = inherited_value(shape, master, "PinY").ok()?;
     let w = inherited_value(shape, master, "Width").ok()?;
     let h = inherited_value(shape, master, "Height").ok()?;
     if w <= 0.0 || h <= 0.0 {

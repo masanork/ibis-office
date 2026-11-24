@@ -414,9 +414,13 @@ fn moves_an_unconnected_child_in_group_coordinates() {
             .unwrap()
             .range();
         source.insert_str(shape.end, "</Shapes></Shape>");
-        source.insert_str(shape.start, r#"<Shape ID="100" Type="Group"><Cell N="PinX" V="0"/><Cell N="PinY" V="0"/><Cell N="LocPinX" V="0"/><Cell N="LocPinY" V="0"/><Cell N="Width" V="20"/><Cell N="Height" V="3"/><Shapes>"#);
+        source.insert_str(shape.start, r#"<Shape ID="100" Type="Group"><Cell N="PinX" V="1"/><Cell N="PinY" V="0.5"/><Cell N="LocPinX" V="0"/><Cell N="LocPinY" V="0"/><Cell N="Width" V="20"/><Cell N="Height" V="3"/><Shapes>"#);
         source
     });
+    let targets = doc.geometry_targets(0).unwrap();
+    let (_, child) = targets.group_children.iter().find(|(id, _)| *id == 1).unwrap();
+    assert!(!targets.shapes.iter().any(|(id, _)| *id == 1));
+    assert!(((child.x0 + child.x1) / 2.0 - (9.931102 + 1.0) * 72.0).abs() < 0.01);
     let bytes = doc
         .edit_geometry(
             0,
@@ -438,7 +442,7 @@ fn moves_an_unconnected_child_in_group_coordinates() {
     let page = String::from_utf8(zip.read(page).unwrap()).unwrap();
     let xml = roxmltree::Document::parse(&page).unwrap();
     assert!((cell_value(&xml, "1", "PinX") - 10.181102).abs() < 1e-6);
-    assert_eq!(cell_value(&xml, "100", "PinX"), 0.0);
+    assert_eq!(cell_value(&xml, "100", "PinX"), 1.0);
 }
 
 #[test]
