@@ -386,6 +386,7 @@ pub fn parse_markdown_fragment_blocks(
         bullet_num_id: None,
         ordered_num_id: None,
         markdown_links: HashMap::new(),
+        callout_definitions: serde_json::Value::Null,
         reference_images: HashMap::new(),
         footnote_ids: HashMap::new(),
         footnote_order: Vec::new(),
@@ -415,7 +416,8 @@ pub fn export_blocks_to_markdown(
     let comments_by_id: HashMap<u32, &Comment> = doc.comments.iter().map(|c| (c.id, c)).collect();
     let mut prev_was_list = false;
     for (index, block) in blocks.iter().enumerate() {
-        let is_list = is_markdown_list_item(block);
+        let is_list = is_markdown_list_item(block)
+            && !matches!(block, Block::Paragraph(p) if markdown_quote_style(p.style.as_deref()).is_some());
         if prev_was_list && !is_list && !out.ends_with("\n\n") {
             out.push('\n');
         }
@@ -1359,6 +1361,7 @@ struct ParseContext<'a> {
     bullet_num_id: Option<u32>,
     ordered_num_id: Option<u32>,
     markdown_links: HashMap<String, Vec<MarkdownLink>>,
+    callout_definitions: serde_json::Value,
     reference_images: HashMap<String, Vec<MarkdownReferenceImage>>,
     footnote_ids: HashMap<String, u32>,
     footnote_order: Vec<(String, u32)>,
@@ -1587,6 +1590,7 @@ fn parse_markdown_into(
         bullet_num_id: None,
         ordered_num_id: None,
         markdown_links: HashMap::new(),
+        callout_definitions: serde_json::Value::Null,
         reference_images: HashMap::new(),
         footnote_ids: HashMap::new(),
         footnote_order: Vec::new(),
@@ -1933,11 +1937,13 @@ fn frontmatter_entries(source: &str) -> impl Iterator<Item = (&str, &str)> {
         *offset += line.len();
         Some((start, line))
     }).filter_map(|(start, line)| {
-        if line.starts_with(char::is_whitespace) || line.starts_with(['#', '-']) {
+        if line.starts_with(char::is_whitespace) || line.starts_with('#')
+            || line.strip_prefix('-').is_some_and(|rest| rest.starts_with(char::is_whitespace))
+        {
             return None;
         }
         let (key, _) = line.split_once(':')?;
-        Some((start, key.trim_end().trim_matches(['"', '\''])))
+        Some((start, key.trim_end()))
     });
     let mut starts = starts.peekable();
     std::iter::from_fn(move || {
@@ -1949,7 +1955,7 @@ fn frontmatter_entries(source: &str) -> impl Iterator<Item = (&str, &str)> {
 
 fn is_document_frontmatter_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase().replace('-', "_");
-    key.starts_with("page.") || key.starts_with("margins.") || matches!(
+    matches!(
         key.as_str(),
         "title" | "subtitle" | "subject" | "author" | "creator" | "keywords" | "tags" |
         "description" | "summary" | "category" | "company" | "size" | "paper" | "page" |
@@ -1958,11 +1964,20 @@ fn is_document_frontmatter_key(key: &str) -> bool {
         "columns" | "column_separator" | "direction" | "text_direction" | "line_numbers" |
         "font" | "font_family" | "east_asian_font" | "font_size" | "style_set" |
         "paragraph_spacing" | "even_and_odd_headers" | "header" | "footer" | "watermark" |
-        "page_color" | "track_changes"
+        "page_color" | "track_changes" |
+        "page.size" | "page.paper" | "page.orientation" | "page.margins" |
+        "page.margins.top" | "page.margins.bottom" | "page.margins.left" | "page.margins.right" |
+        "margins.top" | "margins.bottom" | "margins.left" | "margins.right" |
+        "page.columns" | "page.column_separator" | "page.direction" | "page.line_numbers"
     )
 }
 
 fn apply_frontmatter(fm: &str, doc: &mut FlowDocument, ctx: &mut ParseContext<'_>) {
+    ctx.callout_definitions = frontmatter_entries(fm)
+        .find(|(key, _)| key.trim_matches(['"', '\'']) == "x-ibis-blocks")
+        .and_then(|(_, source)| serde_saphyr::from_str::<serde_json::Value>(source).ok())
+        .and_then(|mut yaml| yaml.as_object_mut()?.remove("x-ibis-blocks"))
+        .unwrap_or_default();
     let mut okf_source = false;
     let law_profile = crate::lawtext::markdown_profile(fm);
     if let Some(profile) = law_profile.as_ref() {
@@ -3132,7 +3147,7 @@ fn parse_blocks_at_quote_depth(
             match directive {
                 myst::Directive::Alert(alert, body) => {
                     let quote: Vec<_> = std::iter::once(alert).chain(body.iter().copied()).collect();
-                    blocks.extend(build_blockquote_blocks(&quote, ctx));
+                    blocks.extend(build_blockquote_blocks(&quote, ctx, quote_depth)?);
                 }
                 myst::Directive::Equation { label, latex } => {
                     blocks.push(build_display_math_block(&latex, Some(label), ctx));
@@ -3172,10 +3187,10 @@ fn parse_blocks_at_quote_depth(
             let closed = i < lines.len();
             i += usize::from(closed);
             if closed
-                && let Some(alert) = myst::admonition(fence_info.trim(), content_lines)
+                && let Some(alert) = myst::alert_kind(fence_info.trim())
             {
                 let quote: Vec<_> = std::iter::once(alert).chain(content_lines.iter().copied()).collect();
-                blocks.extend(build_blockquote_blocks(&quote, ctx));
+                blocks.extend(build_blockquote_blocks(&quote, ctx, quote_depth)?);
                 continue;
             }
             if closed
@@ -3306,16 +3321,7 @@ fn parse_blocks_at_quote_depth(
                 quote_lines.push(stripped);
                 i += 1;
             }
-            if let Some(first) = quote_lines.first_mut()
-                && let Some(alert) = obsidian::callout(first.trim())
-            {
-                *first = alert;
-            }
-            if let Some(quote) = parse_structured_quote(&quote_lines, ctx, quote_depth)? {
-                blocks.extend(quote);
-            } else {
-                blocks.extend(build_blockquote_blocks(&quote_lines, ctx));
-            }
+            blocks.extend(build_blockquote_blocks(&quote_lines, ctx, quote_depth)?);
             continue;
         }
 
@@ -3926,18 +3932,17 @@ fn parse_structured_quote(
     lines: &[&str],
     ctx: &mut ParseContext<'_>,
     quote_depth: usize,
+    callout_style: Option<(Rgb, Rgb)>,
 ) -> Result<Option<Vec<Block>>, Error> {
     use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
     // Bound nested style IDs so they fit Word's paragraph style identifiers.
-    if quote_depth >= 8 || lines.iter().find(|line| !line.trim().is_empty())
-        .is_some_and(|line| line.trim_start().starts_with("[!"))
-    {
+    if quote_depth >= 8 {
         return Ok(None);
     }
     let source = lines.join("\n");
     let mut count = 0;
-    let mut structured = quote_depth > 0;
+    let mut structured = quote_depth > 0 || callout_style.is_some();
     let mut has_nested = false;
     let mut depth = 0;
     let mut list_depth = 0;
@@ -3986,7 +3991,7 @@ fn parse_structured_quote(
     {
         return Ok(None);
     }
-    if blocks.is_empty() && quote_depth > 0 {
+    if blocks.is_empty() && quote_depth > 0 && callout_style.is_none() {
         blocks.push(Block::Paragraph(FlowParagraph {
             id: ctx.fresh_id(),
             style: ctx.styles.default_paragraph.clone(),
@@ -3995,25 +4000,38 @@ fn parse_structured_quote(
     }
     for (index, block) in blocks.iter_mut().enumerate() {
         let Block::Paragraph(paragraph) = block else { unreachable!() };
-        let kind = if index == 0 { "First" } else { "Next" };
-        let base = paragraph.style.clone();
-        let id = format!("{MARKDOWN_QUOTE_STYLE}{kind}-{}", base.as_deref().unwrap_or(""));
-        ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
-            name: format!("Markdown quote {kind} ({})", base.as_deref().unwrap_or("default")),
-            kind: StyleKind::Paragraph,
-            based_on: base,
-            next: ctx.styles.default_paragraph.clone(),
-            ..FlowStyle::default()
-        });
-        paragraph.style = Some(id);
-        let left = if paragraph.list.is_some() { paragraph.left } else { paragraph.direct.left.unwrap_or(0) };
-        paragraph.direct.left = Some(left + 14 * EMU_PER_PT);
-        if paragraph.direct.borders[3].is_none() {
-            paragraph.direct.borders[3] = Some(Some(markdown_quote_border(Rgb(0xD0D7DE))));
-        }
-        paragraph.resolve(&ctx.styles);
+        let kind = if index == 0 && callout_style.is_none() { "First" } else { "Next" };
+        apply_quote_paragraph_style(paragraph, kind, callout_style, ctx);
     }
     Ok(Some(blocks))
+}
+
+fn apply_quote_paragraph_style(
+    paragraph: &mut FlowParagraph,
+    kind: &str,
+    callout_style: Option<(Rgb, Rgb)>,
+    ctx: &mut ParseContext<'_>,
+) {
+    let base = paragraph.style.clone();
+    let id = format!("{MARKDOWN_QUOTE_STYLE}{kind}-{}", base.as_deref().unwrap_or(""));
+    ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
+        name: format!("Markdown quote {kind} ({})", base.as_deref().unwrap_or("default")),
+        kind: StyleKind::Paragraph,
+        based_on: base,
+        next: ctx.styles.default_paragraph.clone(),
+        ..FlowStyle::default()
+    });
+    paragraph.style = Some(id);
+    let left = if paragraph.list.is_some() { paragraph.left } else { paragraph.direct.left.unwrap_or(0) };
+    paragraph.direct.left = Some(left + 14 * EMU_PER_PT);
+    if paragraph.direct.borders[3].is_none() || (callout_style.is_some() && paragraph.direct.borders[0].is_none()) {
+        let accent = callout_style.map_or(Rgb(0xD0D7DE), |(accent, _)| accent);
+        paragraph.direct.borders[3] = Some(Some(markdown_quote_border(accent)));
+    }
+    if let Some((_, background)) = callout_style {
+        paragraph.direct.shading.get_or_insert(Some(background));
+    }
+    paragraph.resolve(&ctx.styles);
 }
 
 fn markdown_quote_border(color: Rgb) -> FlowBorder {
@@ -4026,91 +4044,121 @@ fn markdown_quote_border(color: Rgb) -> FlowBorder {
     }
 }
 
-fn build_blockquote_blocks(lines: &[&str], ctx: &mut ParseContext<'_>) -> Vec<Block> {
-    let first = lines.first().map(|s| s.trim()).unwrap_or("");
-    let alert = match first {
-        "[!NOTE]" => Some(("NOTE", Rgb(0x0969DA), Rgb(0xEDF5FF))),
-        "[!TIP]" => Some(("TIP", Rgb(0x1A7F37), Rgb(0xEEFAF2))),
-        "[!IMPORTANT]" => Some(("IMPORTANT", Rgb(0x8250DF), Rgb(0xF6F0FF))),
-        "[!WARNING]" => Some(("WARNING", Rgb(0x9A6700), Rgb(0xFFF8E6))),
-        "[!CAUTION]" => Some(("CAUTION", Rgb(0xCF222E), Rgb(0xFFECEB))),
-        _ => None,
-    };
+const MARKDOWN_CALLOUT_TITLE_STYLE: &str = "IbisMarkdownCalloutTitle-";
 
-    let (accent_color, bg_color, content_lines) = match alert {
-        Some((_, accent, bg)) => (accent, Some(bg), &lines[1..]),
-        None => (Rgb(0xD0D7DE), None, lines),
+// Three flags encode folding, an explicit title, and a blank before the body.
+// Keep the kind last so it can contain hyphens.
+fn markdown_callout_title(style: Option<&str>) -> Option<(&str, &str, bool, bool)> {
+    let encoded = style?.strip_prefix(MARKDOWN_CALLOUT_TITLE_STYLE)?;
+    let (flags, kind) = encoded.split_once('-')?;
+    let [fold, title, blank] = *flags.as_bytes() else { return None };
+    let fold = match fold {
+        b'o' => "+",
+        b'c' => "-",
+        b'n' => "",
+        _ => return None,
     };
+    Some((kind, fold, title == b'1', blank == b'1'))
+}
 
-    let para_direct = ParaFormat {
-        left: Some(14 * EMU_PER_PT),
-        before: Some(4 * EMU_PER_PT),
-        after: Some(4 * EMU_PER_PT),
-        shading: bg_color.map(Some),
-        borders: [None, None, None, Some(Some(markdown_quote_border(accent_color)))],
-        ..ParaFormat::default()
-    };
-
-    let mut out = Vec::new();
-    if let Some((label, accent, _)) = alert {
-        let mut runs = vec![FlowRun {
-            kind: FlowRunKind::Text(label.to_string()),
-            style: FlowRunStyle::default(),
-            format: RunFormat {
-                bold: Some(true),
-                color: Some(accent),
-                ..RunFormat::default()
-            },
-            char_style: None,
-            link: None,
-            revision: None,
-            show_field_code: false,
-            field_locked: false,
-            control: None,
-        }];
-        let joined = content_lines
-            .iter()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !joined.is_empty() {
-            runs.push(FlowRun::new(
-                FlowRunKind::LineBreak,
-                FlowRunStyle::default(),
-            ));
-            runs.extend(parse_inlines(&joined, ctx, &RunFormat::default()));
-        }
-        let mut p = FlowParagraph {
-            id: ctx.fresh_id(),
-            style: ctx.styles.default_paragraph.clone(),
-            direct: para_direct,
-            runs,
-            ..FlowParagraph::default()
-        };
-        p.resolve(&ctx.styles);
-        p.normalize();
-        out.push(Block::Paragraph(p));
-        return out;
+fn callout_colors(tone: &str) -> (Rgb, Rgb) {
+    match tone {
+        "TIP" => (Rgb(0x1A7F37), Rgb(0xEEFAF2)),
+        "IMPORTANT" => (Rgb(0x8250DF), Rgb(0xF6F0FF)),
+        "WARNING" => (Rgb(0x9A6700), Rgb(0xFFF8E6)),
+        "CAUTION" => (Rgb(0xCF222E), Rgb(0xFFECEB)),
+        _ => (Rgb(0x0969DA), Rgb(0xEDF5FF)),
     }
+}
 
-    let joined = content_lines
-        .iter()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let mut p = FlowParagraph {
+fn build_blockquote_blocks(
+    lines: &[&str],
+    ctx: &mut ParseContext<'_>,
+    quote_depth: usize,
+) -> Result<Vec<Block>, Error> {
+    let Some((authored_kind, fold, title)) = lines.first()
+        .and_then(|line| obsidian::callout(line))
+    else {
+        if let Some(blocks) = parse_structured_quote(lines, ctx, quote_depth, None)? {
+            return Ok(blocks);
+        }
+        return Ok(vec![Block::Paragraph(plain_quote_paragraph(lines, ctx))]);
+    };
+    let canonical = obsidian::canonical_callout_kind(authored_kind);
+    let kind = canonical.unwrap_or(authored_kind);
+    let definition = canonical.is_none().then(|| ctx.callout_definitions.get(authored_kind)).flatten();
+    let displayed_title = title.or_else(|| definition?.get("title")?.as_str()).unwrap_or(kind);
+    let tone = canonical.or_else(|| {
+        obsidian::canonical_callout_kind(definition?.get("tone")?.as_str()?)
+    }).unwrap_or("NOTE");
+    let (accent, background) = callout_colors(tone);
+    let body = &lines[1..];
+    let blank_before_body = body.first().is_some_and(|line| line.trim().is_empty());
+    let fold_flag = match fold { "+" => 'o', "-" => 'c', _ => 'n' };
+    let id = format!("{MARKDOWN_CALLOUT_TITLE_STYLE}{fold_flag}{}{}-{kind}",
+        u8::from(title.is_some()), u8::from(blank_before_body));
+    ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
+        name: id.clone(),
+        kind: StyleKind::Paragraph,
+        based_on: ctx.styles.default_paragraph.clone(),
+        next: ctx.styles.default_paragraph.clone(),
+        run: RunFormat { bold: Some(true), color: Some(accent), ..RunFormat::default() },
+        ..FlowStyle::default()
+    });
+    let displayed_title = displayed_title.to_owned();
+    let mut heading = FlowParagraph {
+        id: ctx.fresh_id(),
+        style: Some(id),
+        direct: ParaFormat {
+            left: Some(14 * EMU_PER_PT),
+            before: Some(4 * EMU_PER_PT),
+            after: Some(4 * EMU_PER_PT),
+            shading: Some(Some(background)),
+            borders: [None, None, None, Some(Some(markdown_quote_border(accent)))],
+            ..ParaFormat::default()
+        },
+        runs: if title.is_some() {
+            parse_inlines(&displayed_title, ctx, &RunFormat::default())
+        } else {
+            vec![FlowRun::new(FlowRunKind::Text(displayed_title), FlowRunStyle::default())]
+        },
+        ..FlowParagraph::default()
+    };
+    heading.resolve(&ctx.styles);
+    heading.normalize();
+    let mut blocks = vec![Block::Paragraph(heading)];
+    if body.iter().any(|line| !line.trim().is_empty()) {
+        if let Some(body) = parse_structured_quote(body, ctx, quote_depth, Some((accent, background)))? {
+            blocks.extend(body);
+        } else {
+            let mut paragraph = plain_quote_paragraph(body, ctx);
+            paragraph.direct.left = None;
+            apply_quote_paragraph_style(&mut paragraph, "Next", Some((accent, background)), ctx);
+            blocks.push(Block::Paragraph(paragraph));
+        }
+    }
+    Ok(blocks)
+}
+
+fn plain_quote_paragraph(lines: &[&str], ctx: &mut ParseContext<'_>) -> FlowParagraph {
+    let joined = lines.iter().map(|line| line.trim()).filter(|line| !line.is_empty())
+        .collect::<Vec<_>>().join(" ");
+    let mut paragraph = FlowParagraph {
         id: ctx.fresh_id(),
         style: ctx.styles.default_paragraph.clone(),
-        direct: para_direct,
+        direct: ParaFormat {
+            left: Some(14 * EMU_PER_PT),
+            before: Some(4 * EMU_PER_PT),
+            after: Some(4 * EMU_PER_PT),
+            borders: [None, None, None, Some(Some(markdown_quote_border(Rgb(0xD0D7DE))))],
+            ..ParaFormat::default()
+        },
         runs: parse_inlines(&joined, ctx, &RunFormat::default()),
         ..FlowParagraph::default()
     };
-    p.resolve(&ctx.styles);
-    p.normalize();
-    out.push(Block::Paragraph(p));
-    out
+    paragraph.resolve(&ctx.styles);
+    paragraph.normalize();
+    paragraph
 }
 
 // ============================================================================
@@ -6647,7 +6695,8 @@ fn export_markdown_with_positions<'a>(
             }
         }
 
-        let is_list = is_markdown_list_item(block);
+        let is_list = is_markdown_list_item(block)
+            && !matches!(block, Block::Paragraph(p) if markdown_quote_style(p.style.as_deref()).is_some());
         if prev_was_list && !is_list && !out.ends_with("\n\n") {
             out.push('\n');
         }
@@ -7715,7 +7764,7 @@ fn finish_markdown_quote(block: &Block, next: Option<&Block>, out: &mut String) 
     }
 
     let mut current_base = quote_style(block);
-    if markdown_quote_style(current_base).is_none() {
+    if markdown_quote_style(current_base).is_none() && markdown_callout_title(current_base).is_none() {
         return;
     }
     let mut next_base = next.and_then(quote_style);
@@ -7726,6 +7775,14 @@ fn finish_markdown_quote(block: &Block, next: Option<&Block>, out: &mut String) 
         depth += 1;
         current_base = current_inner;
         next_base = next_inner;
+    }
+    if let Some((_, _, _, blank)) = markdown_callout_title(current_base)
+        && matches!(markdown_quote_style(next_base), Some((true, _)))
+    {
+        if !blank {
+            return;
+        }
+        depth += 1;
     }
     if depth > 0 && markdown_quoted_list_style(current_base).is_some()
         && matches!(markdown_quoted_list_style(next_base), Some((_, _, false)))
@@ -7781,6 +7838,16 @@ fn serialize_paragraph(
             }
             out.push('\n');
         }
+        return;
+    }
+
+    if let Some((kind, fold, explicit, _)) = markdown_callout_title(p.style.as_deref()) {
+        out.push_str(&format!("> [!{kind}]{fold}"));
+        if explicit {
+            out.push(' ');
+            out.push_str(&serialize_runs(&p.runs, media, comments));
+        }
+        out.push('\n');
         return;
     }
 
@@ -10331,6 +10398,54 @@ Table {{seq:table}} {#tbl_results}
         let exported = export_docx_to_markdown(&updated).unwrap();
         assert!(exported.starts_with(&format!("---\n{metadata}---\n")), "{exported}");
         assert!(exported.contains("Edited text."), "{exported}");
+    }
+
+    #[test]
+    fn markdown_callouts_and_unknown_frontmatter_round_trip() {
+        for (source, expected, title) in [
+            ("> [!IMPORTANT] 実装必須機能\n> 最初の段落。\n>\n> - 箇条一\n> - 箇条二\n>\n> 最後の段落。\n", None, Some(("実装必須機能", "IMPORTANT"))),
+            ("---\nx-ibis-blocks: { must: { title: 実装必須機能, tone: important } }\n---\n\n> [!must]\n> 本文。\n", None, Some(("実装必須機能", "IMPORTANT"))),
+            ("---\nx-ibis-blocks:\n  City-Rule_2: { title: '条文: 詳細', tone: warning }\n---\n\n> [!City-Rule_2]+\n>\n> 本文。\n", None, Some(("条文: 詳細", "WARNING"))),
+            ("> [!memo]\n> 本文。\n", None, Some(("memo", "NOTE"))),
+            ("> [!tip]- 折りたたみ\n> 本文。\n", Some("> [!TIP]- 折りたたみ\n> 本文。\n"), Some(("折りたたみ", "TIP"))),
+            ("> 段落。\n>\n> - 箇条一\n> - 箇条二\n", None, None),
+            ("---\nlang: ja\nclass: spec\nvfm:\n  hardLineBreaks: true\n  nested:\n    - name: 日本語\n---\n\n本文。\n", None, None),
+            ("> [!NOTE] 題名\n> ## 見出し\n>\n> ```sh\n> echo ready\n> ```\n", None, Some(("題名", "NOTE"))),
+            (":::{important}\n段落。\n\n- 箇条一\n- 箇条二\n:::\n", Some("> [!IMPORTANT]\n> 段落。\n>\n> - 箇条一\n> - 箇条二\n"), Some(("IMPORTANT", "IMPORTANT"))),
+        ] {
+            let expected = expected.unwrap_or(source);
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let markdown = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(markdown, expected, "{source}");
+            let reopened = open_markdown(markdown.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), expected);
+
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            let reopened_docx = crate::read_docx(&docx).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened_docx).unwrap(), expected, "{source}");
+            if let Some((title, tone)) = title {
+                for presentation in [&opened.presentation, &reopened_docx] {
+                    let flow = presentation.flow.as_ref().unwrap();
+                    let Block::Paragraph(heading) = &flow.body[0] else { panic!("expected a callout title") };
+                    assert_eq!(heading.text(), title);
+                    let (accent, background) = callout_colors(tone);
+                    assert_eq!(heading.direct.borders[3].flatten().unwrap().color, accent);
+                    assert_eq!(heading.direct.shading, Some(Some(background)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn markdown_exports_legacy_docx_alerts() {
+        let opened = open_markdown(b"NOTE  \nOld callout.\n".to_vec()).unwrap();
+        let mut presentation = opened.presentation;
+        let flow = Arc::make_mut(presentation.flow.as_mut().unwrap());
+        let Block::Paragraph(paragraph) = &mut flow.body[0] else { panic!("expected legacy paragraph") };
+        paragraph.runs[0].format.bold = Some(true);
+        paragraph.direct.borders[3] = Some(Some(markdown_quote_border(Rgb(0x0969DA))));
+        let docx = opened.source.save(&presentation, SaveOptions::default()).unwrap();
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), "> [!NOTE]\n> Old callout.\n");
     }
 
     #[test]
