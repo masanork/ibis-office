@@ -905,6 +905,11 @@ start.recent.remove	解除
 shell.row.actions	その他の操作
 
 color.palette.more	その他の色...
+color.tokens.import	色トークンを取り込む…
+color.tokens.swatches	取り込んだ色
+color.tokens.loaded	{count} 色を取り込みました
+color.tokens.partial	{count} 色を取り込みました（{skipped} 件は対象外）
+color.tokens.error	色トークンを取り込めませんでした。2 MB 以内で不透明な sRGB 色を含む JSON を選んでください。
 color.dialog.title	色選択
 color.dialog.invalid	色は6桁の16進数で指定してください
 

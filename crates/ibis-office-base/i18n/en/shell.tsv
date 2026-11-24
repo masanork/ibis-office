@@ -907,6 +907,11 @@ start.recent.remove	Remove from list
 shell.row.actions	More actions
 
 color.palette.more	More Colors...
+color.tokens.import	Import Color Tokens…
+color.tokens.swatches	Imported Colors
+color.tokens.loaded	Imported {count} colors
+color.tokens.partial	Imported {count} colors ({skipped} skipped)
+color.tokens.error	Could not import color tokens. Choose a JSON file up to 2 MB containing opaque sRGB colors.
 color.dialog.title	Color Picker
 color.dialog.invalid	Enter a six-digit hexadecimal color.
 

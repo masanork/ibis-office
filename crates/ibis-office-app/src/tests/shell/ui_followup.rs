@@ -15,6 +15,7 @@ pub(crate) fn all()->Vec<(&'static str,fn())>{vec![
  ("shell::dialog_action_bar_uniform_insets",action_bar_insets),
  ("shell::color_palette_wraps_within_popup",palette_wrap),
  ("shell::shared_theme_palette_editor",theme_palette),
+ ("shell::office_theme_color_picker_tracks_preset",office_theme_color_picker_tracks_preset),
  ("shell::submenu_outside_parent_and_explicit_narrow",submenu_cascade_review::run),
 ]}
 pub(crate) fn ignored()->Vec<(&'static str,fn())>{vec![]}
@@ -170,6 +171,30 @@ fn palette_wrap(){
  assert!(wrapped,"a long palette wraps rather than extending in one row");
  FORCED_SIDEBAR.with(|v|v.set(None));
 }
+fn office_theme_color_picker_tracks_preset() {
+    use crate::shell::chrome::MenuEntry;
+    for (file, action_prefix) in [
+        ("test/editing/docx-report.docx", "docx.design.theme-colors"),
+        ("test/editing/pptx-plan.pptx", "pptx.theme.palette"),
+    ] {
+        let mut scenario = Scenario::open(file);
+        for (preset, expected_accent) in [("office", 0x156082), ("office_2013_2022", 0x4472c4)] {
+            if action_prefix.starts_with("docx") {
+                scenario.menu(&format!("{action_prefix}.{preset}"));
+            } else {
+                scenario.update(|e, w, cx| e.apply_theme_palette(preset, w, cx));
+            }
+            let button = scenario.tool_button("text-color").expect("Font Color toolbar button");
+            let palette = button.menu.unwrap().into_iter().find_map(|entry| match entry {
+                MenuEntry::Palette(palette) => Some(palette),
+                _ => None,
+            }).expect("Font Color palette");
+            assert_eq!(palette.theme[0][4].rgb.0, expected_accent, "{file} {preset}");
+            assert_eq!(palette.theme[1][4].rgb, ibis_formats::tinted(palette.theme[0][4].rgb, 800_000));
+        }
+    }
+}
+
 fn theme_palette(){
  let _probe=buttons::Probe::new();
  for file in ["test/editing/docx-report.docx","test/editing/xlsx-sales.xlsx","test/editing/pptx-plan.pptx"]{

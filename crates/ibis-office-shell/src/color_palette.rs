@@ -162,11 +162,43 @@ pub(crate) fn fill_palette(mut menu: gpui_kit::component::menu::PopupMenu, palet
             section(Some(title.clone()), vec![row(swatches, &editor, "palette-recent", button).into_any_element()]).into_any_element()
         }).hoverable(false));
     }
+    if let Some(pick) = palette.pick.clone() {
+        let editor = editor.clone();
+        let current = palette.current;
+        let title = t("color.tokens.swatches");
+        let can_pick = palette.theme.iter().flatten().chain(&palette.standard).any(|s| !s.item.disabled);
+        if can_pick {
+            menu = menu.item(PopupMenuItem::element(move |_, cx| {
+                let Some(editor_entity) = editor.upgrade() else { return div().into_any_element() };
+                let colors = &editor_entity.read(cx).design_token_colors;
+                if colors.is_empty() {
+                    return div().into_any_element();
+                }
+                let swatches = colors.iter().map(|(name, rgb)| {
+                    let pick = pick.clone();
+                    let pick: PickColor = Rc::new(move |e, color, w, cx| {
+                        if let (Some(id), Some(rgb)) = (button, color) {
+                            e.last_colors.insert(id, rgb);
+                        }
+                        pick(e, color, w, cx);
+                    });
+                    Swatch::new(*rgb, format!("{name} · #{:06X}", rgb.0), current == Some(*rgb), &pick)
+                }).collect();
+                section(Some(title.clone()), vec![
+                    div().id("design-token-swatches-scroll").max_h(px(126.)).overflow_y_scroll()
+                        .child(row(swatches, &editor, "palette-design-tokens", button)).into_any_element(),
+                ]).into_any_element()
+            }).hoverable(false));
+        }
+    }
     // 5. More colours.
     if let Some(pick)=palette.pick.clone() {
         let color=palette.current.or_else(||palette.theme.iter().flatten().chain(palette.standard.iter()).find(|s|s.item.checked).map(|s|s.rgb)).unwrap_or(Rgb(0));
         let more=crate::chrome::MenuItem::tr("color.palette.more").on(move|e,w,cx|e.open_color_picker_dialog(color,pick.clone(),w,cx));
-        menu=menu.separator().item(crate::chrome::menu_item_row(&more,editor));
+        let import = MenuItem::tr("color.tokens.import").on(|e, w, cx| e.choose_design_tokens(w, cx));
+        menu = menu.separator()
+            .item(crate::chrome::menu_item_row(&more, editor))
+            .item(crate::chrome::menu_item_row(&import, editor));
     } else if let Some(more)=&palette.more {
         menu=menu.separator().item(crate::chrome::menu_item_row(more,editor));
     }
