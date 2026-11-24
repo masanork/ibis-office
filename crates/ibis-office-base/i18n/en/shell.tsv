@@ -1575,6 +1575,7 @@ window.minimize	Minimize
 app.services	Services
 app.hide	Hide ibisOffice
 file.copy-download	Save a Copy (Download)
+structured-preview.xml-retry	Retry
 structured-preview.xml-definition-conflict	Shared XML view definitions conflict ({files}). Remove the extra definitions from the shared folder, then reopen the XML.
 structured-preview.title	Structured data preview
 structured-preview.read-only	Read-only preview

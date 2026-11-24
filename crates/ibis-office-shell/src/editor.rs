@@ -615,7 +615,7 @@ pub struct SlideEditor {
     /// A message box with OK only (title, message), over the dimmed window: an error the user must see, such as a save
     /// dialog that could not open (shell/dialog.rs `show_alert`).
     pub alert: Option<(SharedString, SharedString)>,
-    pub(crate) alert_open_xml_views: bool,
+    pub(crate) alert_xml_conflict_path: Option<std::path::PathBuf>,
     /// A question with OK and キャンセル (title, message, what OK does), over the window (shell/dialog.rs `ask`).
     pub ask: Option<crate::dialog::PendingAsk>,
     /// The About dialog inside the window, while it is open (shell/about.rs `render_modal`, on every platform).
@@ -983,7 +983,7 @@ impl SlideEditor {
             msgbox: Default::default(),
             panel_message: None,
             alert: None,
-            alert_open_xml_views: false,
+            alert_xml_conflict_path: None,
             ask: None,
             about_open: false,
             about_third_party: false,
@@ -2248,7 +2248,7 @@ impl SlideEditor {
                     let message = crate::i18n::format("file.open-failed", &[("name", &name), ("error", &error)]);
                     // A file that cannot be opened is reported in a message box.
                     this.show_alert(crate::i18n::text("shell.open-failed.title"), message.clone().into(), cx);
-                    this.alert_open_xml_views = conflict.is_some();
+                    this.alert_xml_conflict_path = conflict.map(|_| path.clone());
                     this.fail_loading(message, cx)
                 }
             }})
@@ -5282,7 +5282,7 @@ impl SlideEditor {
                 msgbox: _,
                 panel_message: _,
                 alert: _,
-                alert_open_xml_views: _,
+                alert_xml_conflict_path: _,
                 ask: _,
                 about_open: _,
                 about_third_party: _,

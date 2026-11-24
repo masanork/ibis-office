@@ -153,24 +153,27 @@ impl SlideEditor {
     /// Show `message` under `title` in a message box with OK, over the dimmed window (the backdrop).
     pub fn show_alert(&mut self, title: SharedString, message: SharedString, cx: &mut Context<Self>) {
         self.alert = Some((title, message));
-        self.alert_open_xml_views = false;
+        self.alert_xml_conflict_path = None;
         self.dialog.drag = None;
         cx.notify();
     }
     pub fn dismiss_alert(&mut self, cx: &mut Context<Self>) {
         self.alert = None;
-        self.alert_open_xml_views = false;
+        self.alert_xml_conflict_path = None;
         cx.notify();
     }
-    /// The message box of `show_alert`: OK (or Enter, Escape) closes it.
+    /// The message box of `show_alert`: OK or Escape closes it.
     pub(crate) fn render_alert(&self, cx: &mut Context<Self>) -> impl IntoElement {
         use super::chrome::{ActionButtonKind, ActionDefinition, action_bar};
         let (title, message) = self.alert.clone().unwrap_or_default();
-        let ok = ActionDefinition::new("alert-ok", super::i18n::text("shell.action.ok"), ActionButtonKind::Primary)
+        let retry_xml = cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux"))
+            && self.alert_xml_conflict_path.is_some();
+        let ok_kind = if retry_xml { ActionButtonKind::Normal } else { ActionButtonKind::Primary };
+        let ok = ActionDefinition::new("alert-ok", super::i18n::text("shell.action.ok"), ok_kind)
             .on_click(cx.listener(|this, _, _, cx| this.dismiss_alert(cx)));
         let actions = action_bar();
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        let actions = if self.alert_open_xml_views {
+        let actions = if retry_xml {
             actions.action(ActionDefinition::new(
                 "alert-open-xml-views",
                 super::i18n::text("settings.xml-views.open"),
@@ -179,6 +182,15 @@ impl SlideEditor {
                 if let Err(error) = crate::structured_preview::open_shared_directory(cx) {
                     let failure = crate::i18n::format("settings.xml-views.failure", &[("error", &error)]);
                     this.show_alert(crate::i18n::text("shell.open-failed.title"), failure.into(), cx);
+                }
+            }))).action(ActionDefinition::new(
+                "alert-retry-xml",
+                super::i18n::text("structured-preview.xml-retry"),
+                ActionButtonKind::Primary,
+            ).on_click(cx.listener(|this, _, window, cx| {
+                if let Some(path) = this.alert_xml_conflict_path.take() {
+                    this.dismiss_alert(cx);
+                    this.open_path(path, None, window, cx);
                 }
             })))
         } else {
