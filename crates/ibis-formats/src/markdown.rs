@@ -2542,12 +2542,63 @@ fn append_myst_figure(
     true
 }
 
+// Use CommonMark's block boundaries so a list continuation or an indented
+// line inside a paragraph is not promoted to a standalone code block.
+fn indented_code_blocks(text: &str, lines: &[&str]) -> HashMap<usize, (usize, String)> {
+    use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+
+    let mut blocks = HashMap::new();
+    if !lines.iter().any(|line| {
+        line.starts_with("    ") || line.bytes().take(4)
+            .take_while(|byte| matches!(byte, b' ' | b'\t')).any(|byte| byte == b'\t')
+    }) {
+        return blocks;
+    }
+
+    let line_starts: Vec<_> = std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(offset, _)| offset + 1))
+        .collect();
+    let mut depth = 0;
+    let mut code = None;
+    for (event, span) in Parser::new_ext(text, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES)
+        .into_offset_iter()
+    {
+        match event {
+            Event::Start(tag) => {
+                if depth == 0 && matches!(tag, Tag::CodeBlock(CodeBlockKind::Indented)) {
+                    let first = line_starts.partition_point(|&start| start <= span.start) - 1;
+                    let next = line_starts.partition_point(|&start| start < span.end);
+                    code = Some((first, next, String::new()));
+                }
+                depth += 1;
+            }
+            Event::Text(text) => {
+                if let Some((_, _, content)) = &mut code {
+                    content.push_str(&text);
+                }
+            }
+            Event::End(tag) => {
+                depth -= 1;
+                if tag == TagEnd::CodeBlock && let Some((first, next, mut content)) = code.take() {
+                    if content.ends_with('\n') {
+                        content.pop();
+                    }
+                    blocks.insert(first, (next, content));
+                }
+            }
+            _ => {}
+        }
+    }
+    blocks
+}
+
 fn parse_blocks(
     body_text: &str,
     ctx: &mut ParseContext<'_>,
     footnote_defs: &mut HashMap<String, String>,
 ) -> Result<Vec<Block>, Error> {
     let lines: Vec<&str> = body_text.lines().collect();
+    let mut indented_code = indented_code_blocks(body_text, &lines);
     let mut blocks: Vec<Block> = Vec::new();
     let mut i = 0;
 
@@ -2558,6 +2609,12 @@ fn parse_blocks(
         // Skip empty lines
         if trimmed.is_empty() {
             i += 1;
+            continue;
+        }
+
+        if let Some((next, code)) = indented_code.remove(&i) {
+            blocks.push(build_code_block(&code, ctx));
+            i = next;
             continue;
         }
 
@@ -2977,6 +3034,7 @@ fn parse_blocks(
             let l_raw = lines[i];
             let l_trim = l_raw.trim();
             if l_trim.is_empty()
+                || indented_code.contains_key(&i)
                 || l_trim.starts_with("```")
                 || l_trim.starts_with("~~~")
                 || l_trim.starts_with("$$")
@@ -10093,6 +10151,16 @@ Front caption
         assert!(output.contains("[[#^block]]"), "{output}");
         assert!(output.contains("![[#Details]]"), "{output}");
         assert!(output.contains("[参照](#%E6"), "{output}");
+    }
+
+    #[test]
+    fn markdown_preserves_indented_code_through_docx() {
+        let source = b"# Heading\n\t*literal*  \n      \n        deeper\n    ```\n\nParagraph\n    continues\n\n1.  Item\n\n    - Nested\n";
+        let docx = import_markdown_to_docx_bytes(source).unwrap();
+        let output = export_docx_to_markdown(&docx).unwrap();
+        assert!(output.contains("````\n*literal*  \n  \n    deeper\n```\n````"), "{output}");
+        assert!(output.contains("Paragraph continues"), "{output}");
+        assert!(output.contains("1.  Item\n    - Nested"), "{output}");
     }
 
     #[test]
