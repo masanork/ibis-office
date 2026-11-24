@@ -90,6 +90,15 @@ jobs:
       - name: Verify Visio previews in the macOS viewer
         if: matrix.platform == 'macos-arm64'
         run: cargo test --locked -p ibis-office-app --test scenarios -- shell::vsdx_
+      - name: Test linkage CSV reading and validation
+        if: matrix.platform == 'macos-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in structured_view::csv::tests structured_view::hed::tests read_file::stack_tests::linkage_csv; do
+            cargo test --locked -p ibis-office-shell --lib --no-default-features "$suite" -- --list | grep -q ': test$'
+            cargo test --locked -p ibis-office-shell --lib --no-default-features "$suite"
+          done
       - name: Test offline image Content Credentials
         run: cargo test --locked -p ibis-office-shell --lib --no-default-features image_provenance
       - name: Test image provenance in the native editor
