@@ -223,12 +223,17 @@ fn page_setup(bytes: &[u8]) -> Result<PageSetup, Error> {
     if width <= 0 || height <= 0 {
         return Err(malformed());
     }
+    let size = if dword(bytes, 36)? & 1 == 0 {
+        EmuSize::new(width, height)
+    } else {
+        EmuSize::new(height, width)
+    };
     let left = dimension(bytes, 8)?.max(0);
     let right = dimension(bytes, 12)?.max(0);
     let header = dimension(bytes, 24)?.max(0);
     let footer = dimension(bytes, 28)?.max(0);
     Ok(PageSetup {
-        size: EmuSize::new(width, height),
+        size,
         left,
         right,
         header,
@@ -672,12 +677,15 @@ impl<'a> Importer<'a> {
             }
         }
         let mut output = Vec::with_capacity(rows);
-        let repeat = dword(table.bytes, 0)? & 4 != 0;
+        let flags = dword(table.bytes, 0)?;
+        let repeat = flags & 4 != 0;
+        let cant_split = matches!(flags & 3, 0 | 2);
         for (index, (mut cells, height)) in grid.into_iter().zip(heights).enumerate() {
             cells.sort_unstable_by_key(|(column, _)| *column);
             let mut row = FlowRow {
                 id: self.next_id(),
                 header: repeat && index == 0,
+                cant_split,
                 height: if height == 0 {
                     RowHeight::Auto
                 } else if measured[index] {
@@ -914,6 +922,7 @@ mod tests {
         control[..4].copy_from_slice(b" lbt");
         record(&mut body, CONTROL, 1, &control);
         let mut table = [0; 22];
+        table[0] = 6;
         table[4] = 2;
         table[6] = 1;
         record(&mut body, TABLE, 2, &table);
@@ -984,6 +993,9 @@ mod tests {
         let Block::Table(table) = &flow.body[1] else {
             panic!("table expected")
         };
+        assert!(table.rows[0].header);
+        assert!(!table.rows[1].header);
+        assert!(table.rows.iter().all(|row| row.cant_split));
         assert_eq!(table.rows[0].height, RowHeight::Exact(units(2500)));
         assert_eq!(table.rows[1].height, RowHeight::AtLeast(units(1700)));
         for row in &table.rows {
@@ -995,6 +1007,22 @@ mod tests {
             assert_eq!(last.line, LineHeight::Exact(units(1000)));
             assert_eq!(format!("{}{}", first.text(), last.text()), "AB");
         }
+    }
+
+    #[test]
+    fn page_orientation_rotates_paper_but_preserves_edge_margins() {
+        let mut page = [0; 40];
+        page[..4].copy_from_slice(&59_528u32.to_le_bytes());
+        page[4..8].copy_from_slice(&84_188u32.to_le_bytes());
+        page[8..12].copy_from_slice(&2_834u32.to_le_bytes());
+        page[16..20].copy_from_slice(&4_252u32.to_le_bytes());
+        let portrait = page_setup(&page).unwrap();
+        page[36] = 1;
+        let landscape = page_setup(&page).unwrap();
+        assert_eq!(landscape.size.width, portrait.size.height);
+        assert_eq!(landscape.size.height, portrait.size.width);
+        assert_eq!(landscape.left, portrait.left);
+        assert_eq!(landscape.top, portrait.top);
     }
 
     #[test]

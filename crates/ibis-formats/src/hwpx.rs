@@ -298,8 +298,8 @@ mod tests {
               <hp:secPr><hp:pagePr width="50000" height="70000"><hp:margin left="4300"/></hp:pagePr></hp:secPr>
               <hp:t>안내</hp:t><hp:pic><hp:sz width="3600" height="2400"/><hc:img binaryItemIDRef="logo"/></hp:pic>
             </hp:run></hp:p>
-            <hp:p><hp:run><hp:tbl rowCnt="2" colCnt="3">
-              <hp:tr><hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="2" rowSpan="2"/>
+            <hp:p><hp:run><hp:tbl rowCnt="3" colCnt="3" pageBreak="TABLE" repeatHeader="1" cellSpacing="100">
+              <hp:tr><hp:tc header="1"><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="2" rowSpan="2"/>
                 <hp:cellSz width="12000" height="3000"/>
                 <hp:subList vertAlign="CENTER">
                   <hp:p><hp:run><hp:t>신청</hp:t></hp:run>
@@ -309,12 +309,16 @@ mod tests {
                     <hp:linesegarray><hp:lineseg vertsize="1000" spacing="500"/></hp:linesegarray>
                   </hp:p>
                 </hp:subList>
-              </hp:tc><hp:tc><hp:cellAddr colAddr="2" rowAddr="0"/></hp:tc></hp:tr>
+              </hp:tc><hp:tc><hp:cellAddr colAddr="2" rowAddr="0"/><hp:cellSz width="1000" height="1200"/></hp:tc></hp:tr>
               <hp:tr><hp:tc><hp:cellAddr colAddr="2" rowAddr="1"/>
                 <hp:subList vertAlign="BOTTOM"><hp:p><hp:run><hp:t>A<hp:lineBreak/>B</hp:t></hp:run>
                   <hp:linesegarray><hp:lineseg vertsize="1000" spacing="500"/><hp:lineseg vertsize="1000" spacing="500"/></hp:linesegarray>
                 </hp:p></hp:subList>
               </hp:tc></hp:tr>
+              <hp:tr><hp:tc header="1"><hp:cellAddr colAddr="0" rowAddr="2"/><hp:cellSpan colSpan="3" rowSpan="1"/></hp:tc></hp:tr>
+            </hp:tbl></hp:run></hp:p>
+            <hp:p><hp:run><hp:tbl rowCnt="1" colCnt="1" pageBreak="CELL" repeatHeader="0">
+              <hp:tr><hp:tc header="1"><hp:cellAddr colAddr="0" rowAddr="0"/></hp:tc></hp:tr>
             </hp:tbl></hp:run></hp:p>
             </hs:sec>"#
         );
@@ -348,6 +352,13 @@ mod tests {
         let Block::Table(table) = &flow.body[1] else {
             panic!("expected table")
         };
+        assert!(table.rows[0].header);
+        assert!(!table.rows[1].header);
+        assert!(!table.rows[2].header);
+        assert!(table.rows.iter().all(|row| row.cant_split));
+        assert_eq!(table.cell_spacing, Some(units(100)));
+        assert_eq!(table.rows[0].height, RowHeight::AtLeast(units(1200)));
+        assert_eq!(table.rows[1].height, RowHeight::AtLeast(units(1800)));
         assert_eq!(table.rows[0].cells[0].span, 2);
         assert_eq!(table.rows[0].cells[0].merge, VerticalMerge::Start);
         assert_eq!(table.rows[1].cells[0].span, 2);
@@ -369,6 +380,11 @@ mod tests {
         assert_eq!(p.text(), "A\u{b}B");
         assert!(matches!(p.runs[1].kind, FlowRunKind::LineBreak));
         assert_eq!(p.line, LineHeight::Exact(units(1500)));
+        let Block::Table(splittable) = &flow.body[2] else {
+            panic!("expected a second table")
+        };
+        assert!(!splittable.rows[0].cant_split);
+        assert!(!splittable.rows[0].header);
     }
 }
 
@@ -704,6 +720,9 @@ impl Importer<'_, '_> {
         let mut grid = vec![Vec::new(); rows];
         let mut widths = vec![0; cols];
         let mut heights = vec![0; rows];
+        let mut spanning_heights = Vec::new();
+        let mut headers = vec![false; rows];
+        let cant_split = matches!(table.attribute("pageBreak"), Some("TABLE" | "NONE"));
         let mut constraints = Vec::new();
         for cell in table
             .children()
@@ -738,13 +757,18 @@ impl Importer<'_, '_> {
             {
                 constraints.push((across, col, units(width)));
             }
-            if down == 1
-                && let Some(height) = size
-                    .and_then(|n| number::<i64>(n, "height"))
-                    .filter(|&n| n > 0)
+            if let Some(height) = size
+                .and_then(|n| number::<i64>(n, "height"))
+                .filter(|&n| n > 0)
             {
-                heights[row] = heights[row].max(units(height));
+                let height = units(height);
+                if down == 1 {
+                    heights[row] = heights[row].max(height);
+                } else {
+                    spanning_heights.push((down, row, height));
+                }
             }
+            headers[row] |= matches!(cell.attribute("header"), Some("1" | "true"));
             let content = part(cell, "subList");
             let anchor = match content.and_then(|content| content.attribute("vertAlign")) {
                 Some("CENTER") => CellAnchor::Center,
@@ -802,11 +826,16 @@ impl Importer<'_, '_> {
             .into_iter()
             .map(|n| if n == 0 { units(7200) } else { n })
             .collect();
+        fill_merged_row_heights(&mut heights, &mut spanning_heights);
+        let mut header = matches!(table.attribute("repeatHeader"), Some("1" | "true"));
         let mut table_rows = Vec::with_capacity(rows);
-        for (mut cells, height) in grid.into_iter().zip(heights) {
+        for ((mut cells, height), marked_header) in grid.into_iter().zip(heights).zip(headers) {
+            header &= marked_header;
             cells.sort_unstable_by_key(|(col, _)| *col);
             let mut row = FlowRow {
                 id: self.next_id(),
+                cant_split,
+                header,
                 height: if height == 0 {
                     RowHeight::Auto
                 } else {
@@ -841,11 +870,32 @@ impl Importer<'_, '_> {
             id: self.next_id(),
             columns,
             rows: table_rows,
+            cell_spacing: number::<i64>(table, "cellSpacing")
+                .filter(|&n| n > 0)
+                .map(units),
             indent: part(table, "outMargin")
                 .and_then(|m| number::<i64>(m, "left"))
                 .map_or(0, units),
             ..Default::default()
         })
+    }
+}
+
+// A merged cell provides the sum of its rows' heights. Use that information
+// to fill gaps, leaving rows with individual measurements untouched.
+fn fill_merged_row_heights(heights: &mut [Emu], spans: &mut [(usize, usize, Emu)]) {
+    spans.sort_unstable();
+    for &(span, start, height) in spans.iter() {
+        let rows = &mut heights[start..start + span];
+        let missing = rows.iter().filter(|&&row| row == 0).count() as Emu;
+        let remaining = height - rows.iter().sum::<Emu>();
+        if missing > 0 && remaining > 0 {
+            let (per_row, mut extra) = (remaining / missing, remaining % missing);
+            for row in rows.iter_mut().filter(|row| **row == 0) {
+                *row = per_row + Emu::from(extra > 0);
+                extra = extra.saturating_sub(1).max(0);
+            }
+        }
     }
 }
 
