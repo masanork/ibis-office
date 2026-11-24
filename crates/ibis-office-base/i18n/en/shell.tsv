@@ -1821,3 +1821,7 @@ structured.row-schema-object	The row must be a JSON object
 structured.row-schema-malformed	The line is not valid JSON
 structured.row-schema-issue	Line {line} · {field} · {message}
 structured.row-schema-summary	JSON Schema · {rows} lines checked · {issues} issues
+structured.document-schema-summary	JSON Schema · {issues} issues
+structured.document-schema-issue	{field} · {message}
+structured.row-schema-contains-few	Too few array items match the condition
+structured.row-schema-contains-many	Too many array items match the condition

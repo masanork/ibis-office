@@ -1819,3 +1819,7 @@ structured.row-schema-object	行がJSONオブジェクトではありません
 structured.row-schema-malformed	行をJSONとして読み取れません
 structured.row-schema-issue	{line}行目 · {field} · {message}
 structured.row-schema-summary	JSON Schema · {rows}行を検査 · 指摘{issues}件
+structured.document-schema-summary	JSON Schema · 指摘{issues}件
+structured.document-schema-issue	{field} · {message}
+structured.row-schema-contains-few	条件を満たす配列の要素が不足しています
+structured.row-schema-contains-many	条件を満たす配列の要素が多すぎます

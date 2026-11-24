@@ -42,6 +42,21 @@ JSON Schemaを、同じフォルダーの `data.jsonl` に対して `data.schema
 評価できない条件を記した `$comment` も表示します。
 プレビューは128 MiB以下のファイルを先頭100万行まで検査し、指摘は先頭20件を表示します。
 
+## ネストしたJSONをスキーマで検査する
+
+デスクトップで `data.json` と同じフォルダーに `data.schema.json` を置きます。
+JSONLと同じ検査処理で、JSON文書全体を1件として確認します。指摘の位置はJSON Pointerで表示し、
+選択すると該当するオブジェクトのフィールドや配列まで展開します。
+
+たとえば `/team/contacts` の各要素に `items` で名前と主連絡先フラグを要求し、
+`contains` で `primary` が `true` の要素を選び、`minContains` と `maxContains` を
+ともに1にすると、主連絡先がちょうど1件か確認できます。
+名前が空なら `/team/contacts/0/name`、件数が合わなければ `/team/contacts` に指摘します。
+
+対応範囲は、前項のキーワードと、ネストした `properties`、`items`、
+`contains` / `minContains` / `maxContains`、型 `array` / `boolean`、
+文字列・真偽値・nullの `const` / `enum` です。未対応キーワードを含むスキーマは読み込み時にエラーを表示します。
+
 ## 修了記録で試す
 
 [test/fixtures/structured-preview](../test/fixtures/structured-preview) の

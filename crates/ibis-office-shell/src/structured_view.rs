@@ -192,7 +192,7 @@ impl Source {
                         .find(|(name, _)| name == key)
                         .and_then(|(_, value)| serde_json::from_str::<String>(value.get()).ok())
                 });
-                if let Some(label) = label {
+                if let Some(label) = label.filter(|label| !label.is_empty()) {
                     name.push(' ');
                     name.push_str(&excerpt(&label, 120));
                 }
@@ -362,6 +362,71 @@ impl Tree {
         self.nodes[id].expanded = !self.nodes[id].expanded;
     }
 
+    fn select_schema_path(
+        &mut self,
+        mut parent: usize,
+        path: &[row_schema::Segment],
+        source: &Source,
+    ) -> usize {
+        for segment in path {
+            self.nodes[parent].expanded = true;
+            if self.nodes[parent].children.is_none() {
+                self.load_children(parent, source);
+            }
+            let bytes = &source.bytes[self.nodes[parent].span.clone()];
+            let (name, raw) = match segment {
+                row_schema::Segment::Key(key) => {
+                    let raw =
+                        serde_json::from_slice::<std::collections::HashMap<String, &RawValue>>(
+                            bytes,
+                        )
+                        .ok()
+                        .and_then(|fields| fields.get(key).copied());
+                    (key.clone(), raw)
+                }
+                row_schema::Segment::Index(index) => {
+                    let raw = serde_json::from_slice::<Vec<&RawValue>>(bytes)
+                        .ok()
+                        .and_then(|fields| fields.get(*index).copied());
+                    (format!("[{index}]"), raw)
+                }
+            };
+            let found = self.nodes[parent]
+                .children
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .copied()
+                .find(|&id| raw.is_some_and(|raw| self.nodes[id].span == source.span(raw)));
+            parent = found.unwrap_or_else(|| {
+                let mut node = if let Some(raw) = raw {
+                    source.node(raw, name)
+                } else {
+                    Node {
+                        name,
+                        detail: crate::i18n::text("structured.row-schema-required").to_string(),
+                        span: 0..0,
+                        children: Some(Vec::new()),
+                        expanded: false,
+                        paragraph: None,
+                        parent: None,
+                        more: false,
+                    }
+                };
+                node.parent = Some(parent);
+                let id = self.push(node);
+                if !self.nodes[parent].more {
+                    self.nodes[parent]
+                        .children
+                        .get_or_insert_with(Vec::new)
+                        .push(id);
+                }
+                id
+            });
+        }
+        parent
+    }
+
     fn breadcrumb(&self, mut id: usize) -> String {
         let mut labels = Vec::new();
         loop {
@@ -528,7 +593,7 @@ impl View {
     fn select_row_issue(
         &mut self,
         record: usize,
-        field: Option<&str>,
+        path: &[row_schema::Segment],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -539,49 +604,12 @@ impl View {
         let Some(&root) = self.tree.roots.first() else {
             return;
         };
-        self.selected = Some(root);
         if let Ok(position) = self.matching.binary_search(&record) {
             self.record_scroll
                 .scroll_to_item(position, ScrollStrategy::Nearest);
         }
-        if let Some(field) = field {
-            let source = self.source.as_ref().unwrap();
-            let raw: Option<std::collections::HashMap<String, &RawValue>> =
-                serde_json::from_slice(&source.bytes[source.records[record].clone()]).ok();
-            let raw = raw.as_ref().and_then(|fields| fields.get(field));
-            let existing = self.tree.nodes[root]
-                .children
-                .as_ref()
-                .into_iter()
-                .flatten()
-                .copied()
-                .find(|&id| raw.is_some_and(|raw| self.tree.nodes[id].span == source.span(raw)));
-            let selected = existing.unwrap_or_else(|| {
-                let mut node = raw.map_or_else(
-                    || Node {
-                        name: field.into(),
-                        detail: crate::i18n::text("structured.row-schema-required").to_string(),
-                        span: 0..0,
-                        children: Some(Vec::new()),
-                        expanded: false,
-                        paragraph: None,
-                        parent: None,
-                        more: false,
-                    },
-                    |raw| source.node(raw, field.into()),
-                );
-                node.parent = Some(root);
-                let id = self.tree.push(node);
-                if !self.tree.nodes[root].more {
-                    self.tree.nodes[root]
-                        .children
-                        .get_or_insert_with(Vec::new)
-                        .push(id);
-                }
-                id
-            });
-            self.selected = Some(selected);
-        }
+        let source = self.source.as_ref().unwrap();
+        self.selected = Some(self.tree.select_schema_path(root, path, source));
         if let Some(position) = self
             .tree
             .visible("")
@@ -986,12 +1014,21 @@ impl Render for View {
                         .overflow_y_scroll();
                     for (index, issue) in review.issues.iter().enumerate() {
                         let record = issue.record;
-                        let field = issue.field.clone();
+                        let path = issue.path.clone();
+                        let field = if path.is_empty() {
+                            "$".into()
+                        } else {
+                            row_schema::pointer(&path)
+                        };
                         let label = crate::i18n::format(
-                            "structured.row-schema-issue",
+                            if source.lines {
+                                "structured.row-schema-issue"
+                            } else {
+                                "structured.document-schema-issue"
+                            },
                             &[
                                 ("line", &(record + 1)),
-                                ("field", &issue.field.as_deref().unwrap_or("$")),
+                                ("field", &field),
                                 ("message", &crate::i18n::text(issue.message)),
                             ],
                         );
@@ -1001,7 +1038,7 @@ impl Render for View {
                                 .xsmall()
                                 .label(label)
                                 .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.select_row_issue(record, field.as_deref(), window, cx)
+                                    view.select_row_issue(record, &path, window, cx)
                                 })),
                         );
                     }
@@ -1015,7 +1052,11 @@ impl Render for View {
                     panel
                         .child(div().truncate().child(review.title.clone()))
                         .child(crate::i18n::format(
-                            "structured.row-schema-summary",
+                            if source.lines {
+                                "structured.row-schema-summary"
+                            } else {
+                                "structured.document-schema-summary"
+                            },
                             &[
                                 ("rows", &source.records.len()),
                                 ("issues", &review.issue_count),
@@ -1573,6 +1614,34 @@ impl crate::editor::SlideEditor {
 #[cfg(test)]
 mod tests {
     use super::{PAGE_SIZE, Source, Tree};
+
+    #[test]
+    fn schema_path_expands_nested_arrays_to_the_selected_field() {
+        use super::row_schema::Segment::{Index, Key};
+        let source = Source::new(br#"{"team":{"contacts":[{"name":""}]}}"#.to_vec(), false);
+        let mut tree = Tree::default();
+        let root = tree.push(source.record(0));
+        tree.roots.push(root);
+        let contacts = [Key("team".into()), Key("contacts".into())];
+        let array = tree.select_schema_path(root, &contacts, &source);
+        assert_eq!(
+            &source.bytes[tree.nodes[array].span.clone()],
+            br#"[{"name":""}]"#
+        );
+        let field = tree.select_schema_path(
+            root,
+            &[
+                contacts[0].clone(),
+                contacts[1].clone(),
+                Index(0),
+                Key("name".into()),
+            ],
+            &source,
+        );
+        assert_eq!(tree.breadcrumb(field), "$ / team / contacts / [0] / name");
+        assert_eq!(&source.bytes[tree.nodes[field].span.clone()], br#""""#);
+        assert!(tree.visible("").iter().any(|(id, _)| *id == field));
+    }
 
     #[test]
     fn searches_nested_fields_without_loading_tree_pages() {

@@ -1912,10 +1912,10 @@ impl SlideEditor {
             {
                 // Specialized JSON imports have already been selected by the reader.
                 let json_tree = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-                    && match &result {
+                    && (crate::structured_view::has_row_schema(&path) || match &result {
                         Ok(loaded) => loaded.structured_preview,
                         Err(error) => error == ibis_formats::structured_preview::SIZE_LIMIT_ERROR,
-                    };
+                    });
                 let csv_tree = result.as_ref().is_err_and(|error| error == crate::read_file::LINKAGE_CSV_NEEDS_TREE);
                 if json_tree || csv_tree {
                     this.fail_loading(String::new(), cx);
