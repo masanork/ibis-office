@@ -2647,7 +2647,7 @@ fn markdown_continuations<'a>(
                     Tag::BlockQuote(_) if parents.is_empty() => {
                         blocks.insert(first, (next, MarkdownContinuation::Quote));
                     }
-                    Tag::BlockQuote(_) if let Some((item_line, _)) = item
+                    Tag::BlockQuote(_) if let Some((item_line, _)) = item_start
                         && let Some(marker) = parse_list_marker(lines[item_line])
                         && marker.task_checked.is_none() =>
                     {
@@ -2961,9 +2961,7 @@ fn parse_blocks_at_quote_depth(
             let first = strip_quote_marker(&raw[start_column..]);
             let mut quote_lines = vec![first];
             quote_lines.extend(lines[i + 1..next].iter().map(|line| strip_quote_marker(strip_list_item_indent(line, indent))));
-            if let Some(mut quoted) = parse_structured_quote(&quote_lines, ctx, quote_depth.max(1))?
-                && quoted.iter().all(|block| matches!(block, Block::Paragraph(_)))
-            {
+            if let Some(mut quoted) = parse_structured_quote(&quote_lines, ctx, quote_depth.max(1))? {
                 let list = if starts_item && let Some(item) = parse_list_marker(raw) {
                     if let Some(spec) = quoted_items.get(&i) {
                         let num_id = *quoted_numbering.entry(spec.offset).or_insert_with(|| ctx.new_quoted_list(*spec));
@@ -2975,18 +2973,43 @@ fn parse_blocks_at_quote_depth(
                 } else {
                     None
                 };
+                let table_first = matches!(quoted.first(), Some(Block::Table(_)));
+                if table_first && let Some(list) = list {
+                    let mut paragraph = FlowParagraph {
+                        id: ctx.fresh_id(),
+                        style: ctx.styles.default_paragraph.clone(),
+                        direct: ParaFormat {
+                            num_id: Some(list.num_id),
+                            level: Some(list.level),
+                            ..ParaFormat::default()
+                        },
+                        ..FlowParagraph::default()
+                    };
+                    paragraph.resolve(&ctx.styles);
+                    blocks.push(Block::Paragraph(paragraph));
+                }
                 for (index, block) in quoted.iter_mut().enumerate() {
-                    let Block::Paragraph(paragraph) = block else { unreachable!() };
-                    let base = paragraph.style.clone().unwrap_or_default();
-                    let flags = u8::from(index == 0 && starts_item) | (u8::from(index == 0 && blank_before) << 1);
+                    let kind = if matches!(block, Block::Table(_)) { StyleKind::Table } else { StyleKind::Paragraph };
+                    let base = block_markdown_style(block).unwrap_or_default().to_owned();
+                    let flags = u8::from(index == 0 && starts_item && !table_first)
+                        | (u8::from(index == 0 && blank_before && !(starts_item && table_first)) << 1);
                     let id = format!("{MARKDOWN_ITEM_QUOTE_STYLE}{indent}-{flags}-{base}");
                     ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
                         name: format!("Markdown list item quote ({indent}, {flags}, {base})"),
-                        kind: StyleKind::Paragraph,
+                        kind,
                         based_on: Some(base),
-                        next: ctx.styles.default_paragraph.clone(),
+                        next: (kind == StyleKind::Paragraph).then(|| ctx.styles.default_paragraph.clone()).flatten(),
                         ..FlowStyle::default()
                     });
+                    let Block::Paragraph(paragraph) = block else {
+                        if let Block::Table(table) = block
+                            && let Some(style) = &mut table.style
+                        {
+                            style.id = id;
+                            table.indent += indent as i64 * 9 * EMU_PER_PT;
+                        }
+                        continue;
+                    };
                     paragraph.style = Some(id);
                     if index == 0 && let Some(list) = list {
                         paragraph.direct.num_id = Some(list.num_id);
@@ -8329,11 +8352,22 @@ fn serialize_table<'a>(
 
     let mut base = t.style.as_ref().map(|style| style.id.as_str());
     let mut prefix = String::new();
-    while let Some((_, inner)) = markdown_quote_style(base) {
-        prefix.push_str("> ");
-        base = inner;
+    let mut quoted = false;
+    loop {
+        if let Some((_, inner)) = markdown_quote_style(base) {
+            prefix.push_str("> ");
+            quoted = true;
+            base = inner;
+        } else if let Some((indent, _, blank_before, inner)) = markdown_item_quote_style(base) {
+            if blank_before && !quoted && !out.is_empty() && !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            prefix.extend(std::iter::repeat_n(' ', indent));
+            base = Some(inner);
+        } else {
+            break;
+        }
     }
-    let quoted = !prefix.is_empty();
     if let Some(indent) = base.and_then(markdown_item_table_style_id).map(|(indent, _)| indent) {
         prefix.extend(std::iter::repeat_n(' ', indent));
     }
@@ -9989,6 +10023,59 @@ mod tests {
             assert_eq!(media.data.as_ref(), original);
             assert_eq!(size, EmuSize::new(width, height));
         }
+    }
+
+    #[test]
+    fn gfm_table_stays_in_a_nested_quote_within_its_list_item() {
+        let source = concat!(
+            "10. Evidence\n\n    > Review.\n    >\n",
+            "    > > | Label | Status | Count |\n    > > | :--- | :---: | ---: |\n",
+            "    > > | A \\| B | **Ready** | 42 |\n    > >\n    > > Still inside.\n",
+            "    >\n    > Outer quote again.\n\n11. Publish\n\nOutside.\n",
+        );
+        let check = |presentation: &Presentation| {
+            let flow = presentation.flow.as_deref().unwrap();
+            let table = flow.body.iter().find_map(|block| match block {
+                Block::Table(table) => Some(table),
+                _ => None,
+            }).unwrap();
+            let (indent, _, _, base) = markdown_item_quote_style(table.style.as_ref().map(|style| style.id.as_str())).unwrap();
+            assert_eq!(indent, 4);
+            assert!(markdown_quote_style(markdown_quote_style(Some(base)).unwrap().1).is_some());
+            assert!(table.rows[0].header && !table.rows[1].header);
+            for (row, expected) in table.rows.iter().zip([["Label", "Status", "Count"], ["A | B", "Ready", "42"]]) {
+                for ((cell, text), align) in row.cells.iter().zip(expected).zip([FlowAlign::Left, FlowAlign::Center, FlowAlign::Right]) {
+                    let Block::Paragraph(p) = &cell.blocks[0] else { panic!() };
+                    assert_eq!(p.direct.align, Some(align));
+                    let actual: String = p.runs.iter().filter_map(|run| match &run.kind {
+                        FlowRunKind::Text(text) => Some(text.as_str()),
+                        _ => None,
+                    }).collect();
+                    assert_eq!(actual, text);
+                }
+            }
+        };
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        check(&opened.presentation);
+        let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert!(saved.contains("    > > | **Label** | **Status** | **Count** |\n    > > | :--- | :---: | ---: |\n    > > | A \\| B | **Ready** | 42 |\n    > >\n    > > Still inside."), "{saved}");
+        assert!(saved.ends_with("    > Outer quote again.\n\n11. Publish\n\nOutside.\n"), "{saved}");
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        check(&reopened.presentation);
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), saved);
+        let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+        check(&crate::read(&docx).unwrap());
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), saved);
+    }
+
+    #[test]
+    fn a_list_item_can_start_with_a_quoted_gfm_table() {
+        let source = "- > | Name | Count |\n  > | :--- | ---: |\n  > | A | 42 |\n\n- Next.\n";
+        let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+        let saved = export_docx_to_markdown(&docx).unwrap();
+        assert!(saved.starts_with("- \n  > | **Name** | **Count** |\n  > | :--- | ---: |"), "{saved}");
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), saved);
     }
 
     #[test]
