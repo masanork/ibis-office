@@ -1765,3 +1765,12 @@ structured.bom-depends-on	Depends on
 structured.bom-used-by	Used by
 structured.bom-provides	Provides
 structured.bom-provided-by	Provided by
+structured.hed-missing	No matching .hed notification file
+structured.hed-unreadable	Could not read the .hed notification file
+structured.hed-invalid	Invalid .hed notification file
+structured.hed-matched	.hed matches the CSV
+structured.hed-mismatch	.hed differs from the CSV
+structured.hed-filename	File name
+structured.hed-bytes	Byte size
+structured.hed-records	Data records
+structured.hed-difference	{field} · .hed {declared} · CSV {actual}

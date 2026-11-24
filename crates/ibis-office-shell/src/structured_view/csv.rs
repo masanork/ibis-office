@@ -10,6 +10,7 @@ pub(super) struct Csv {
     columns: Vec<Column>,
     pub records: Vec<Range<usize>>,
     pub truncated: bool,
+    pub data_count: usize,
 }
 
 struct Column {
@@ -42,7 +43,7 @@ impl Csv {
         } else {
             OriginalEncoding::Utf8
         };
-        let mut records = raw_csv_record_ranges(bytes, encoding, ',', MAX_RECORDS + 2)
+        let (mut records, count) = raw_csv_record_ranges(bytes, encoding, ',', MAX_RECORDS + 1)
             .map_err(|error| error.to_string())?;
         let Some(header) = records.first().cloned() else {
             return Err(crate::i18n::text("structured.csv-header-required").to_string());
@@ -68,13 +69,14 @@ impl Csv {
                     .map(|(name, _)| name.to_owned()),
             })
             .collect();
-        let truncated = records.len() > MAX_RECORDS + 1;
+        let data_count = count - 1;
+        let truncated = data_count > MAX_RECORDS;
         records.remove(0);
-        records.truncate(MAX_RECORDS);
         Ok(Self {
             columns,
             records,
             truncated,
+            data_count,
         })
     }
 
@@ -158,6 +160,7 @@ mod tests {
         );
         let csv = Csv::read(data.as_bytes()).unwrap();
         assert_eq!(csv.records.len(), 1);
+        assert_eq!(csv.data_count, 1);
         let tree = csv.tree(data.as_bytes(), 0, csv.records[0].clone());
         let group = &tree.nodes[1];
         assert_eq!(group.name, "項目");

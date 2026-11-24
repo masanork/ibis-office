@@ -229,24 +229,27 @@ pub fn raw_utf8_csv_record_fields(data: &[u8]) -> Result<Vec<std::ops::Range<usi
     Ok(fields)
 }
 
-/// Index up to `limit` logical CSV records, including their terminators.
+/// Index up to `limit` logical CSV records, including their terminators, and
+/// return the total count even when the index is capped.
 pub fn raw_csv_record_ranges(
     data: &[u8],
     encoding: OriginalEncoding,
     delimiter: char,
     limit: usize,
-) -> Result<Vec<std::ops::Range<usize>>, Error> {
+) -> Result<(Vec<std::ops::Range<usize>>, usize), Error> {
     let mut records = Vec::new();
     let mut start = csv_bom_len(encoding);
+    let mut count = 0;
     scan_raw_csv(data, encoding, delimiter, |event| {
         if let RawCsvEvent::End(terminator) = event {
             if records.len() < limit {
                 records.push(start..terminator.end);
             }
             start = terminator.end;
+            count += 1;
         }
     })?;
-    Ok(records)
+    Ok((records, count))
 }
 
 fn csv_bom_len(encoding: OriginalEncoding) -> usize {

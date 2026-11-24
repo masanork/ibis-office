@@ -1763,3 +1763,12 @@ structured.bom-depends-on	依存先
 structured.bom-used-by	依存元
 structured.bom-provides	提供する項目
 structured.bom-provided-by	提供元
+structured.hed-missing	対応する格納完了通知ファイル（.hed）がありません
+structured.hed-unreadable	格納完了通知ファイル（.hed）を読み込めませんでした
+structured.hed-invalid	格納完了通知ファイル（.hed）の形式が正しくありません
+structured.hed-matched	格納完了通知ファイル（.hed）とCSVが一致
+structured.hed-mismatch	格納完了通知ファイル（.hed）とCSVに不一致
+structured.hed-filename	ファイル名
+structured.hed-bytes	バイト数
+structured.hed-records	データ件数
+structured.hed-difference	{field}・.hed の値 {declared}・CSV の値 {actual}

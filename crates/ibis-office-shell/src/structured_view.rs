@@ -14,6 +14,7 @@ use serde_json::value::RawValue;
 
 mod csv;
 mod cyclonedx;
+mod hed;
 
 const MAX_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_RECORDS: usize = 1_000_000;
@@ -83,6 +84,7 @@ struct Source {
     truncated: bool,
     inventory: Option<cyclonedx::Inventory>,
     csv: Option<csv::Csv>,
+    notice: Option<hed::Check>,
 }
 
 impl Source {
@@ -94,7 +96,7 @@ impl Source {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("csv"));
         let mut bytes = Vec::new();
-        std::fs::File::open(path)
+        std::fs::File::open(&path)
             .and_then(|file| file.take(MAX_BYTES + 1).read_to_end(&mut bytes))
             .map_err(|error| error.to_string())?;
         if bytes.len() as u64 > MAX_BYTES {
@@ -102,6 +104,7 @@ impl Source {
         }
         if is_csv {
             let mut csv = csv::Csv::read(&bytes)?;
+            let notice = hed::Check::read(&path, bytes.len(), csv.data_count);
             return Ok(Self {
                 bytes,
                 records: std::mem::take(&mut csv.records),
@@ -109,6 +112,7 @@ impl Source {
                 truncated: csv.truncated,
                 inventory: None,
                 csv: Some(csv),
+                notice: Some(notice),
             });
         }
         let mut source = Self::new(bytes, lines);
@@ -140,6 +144,7 @@ impl Source {
             records,
             inventory: None,
             csv: None,
+            notice: None,
             lines,
         }
     }
@@ -615,6 +620,32 @@ impl Render for View {
                     .text_color(theme.muted_foreground)
                     .child(crate::i18n::text("structured.csv-mode"))
             }))
+            .children(
+                self.source
+                    .as_ref()
+                    .and_then(|source| source.notice.as_ref())
+                    .map(|notice| {
+                        let mut panel = v_flex()
+                            .px_4()
+                            .pb_2()
+                            .gap_1()
+                            .text_sm()
+                            .child(div().child(crate::i18n::text(notice.label())));
+                        if let hed::Check::Compared(differences) = notice {
+                            for difference in differences {
+                                panel = panel.child(div().truncate().child(crate::i18n::format(
+                                    "structured.hed-difference",
+                                    &[
+                                        ("field", &crate::i18n::text(difference.field)),
+                                        ("declared", &difference.declared),
+                                        ("actual", &difference.actual),
+                                    ],
+                                )));
+                            }
+                        }
+                        panel
+                    }),
+            )
             .children(inventory.map(|inventory| {
                 let caption = format!("CycloneDX {}", inventory.version);
                 v_flex()
