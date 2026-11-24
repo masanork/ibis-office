@@ -7,9 +7,10 @@
 use std::collections::HashMap;
 
 use ibis_doc_model::{
-    Block, BorderStyle, Emu, EmuSize, FlowAlign, FlowBorder, FlowCell, FlowDocument, FlowParagraph,
-    FlowRow, FlowRun, FlowRunKind, FlowTable, LineHeight, MediaFormat, MediaId, PageSetup,
-    ParaFormat, Presentation, Rgb, RowHeight, RunFormat, SectionBreak, SectionSetup, VerticalMerge,
+    Block, BorderStyle, CellAnchor, Emu, EmuSize, FlowAlign, FlowBorder, FlowCell, FlowDocument,
+    FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowTable, LineHeight, MediaFormat, MediaId,
+    PageSetup, ParaFormat, Presentation, Rgb, RowHeight, RunFormat, SectionBreak, SectionSetup,
+    VerticalMerge,
 };
 use roxmltree::{Document, Node};
 
@@ -269,6 +270,11 @@ mod tests {
             })
             .collect();
         assert_eq!(paragraphs, ["신청\t서", "본문"]);
+        let Block::Paragraph(first) = &document.body[0] else {
+            panic!("expected paragraph")
+        };
+        assert_eq!(first.section_break, SectionBreak::NextPage);
+        assert!(first.section.is_some());
     }
     #[test]
     fn preserves_merged_cells_styles_page_and_picture_in_docx() {
@@ -295,9 +301,20 @@ mod tests {
             <hp:p><hp:run><hp:tbl rowCnt="2" colCnt="3">
               <hp:tr><hp:tc><hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="2" rowSpan="2"/>
                 <hp:cellSz width="12000" height="3000"/>
-                <hp:subList><hp:p><hp:run><hp:t>서식</hp:t></hp:run></hp:p></hp:subList>
+                <hp:subList vertAlign="CENTER">
+                  <hp:p><hp:run><hp:t>신청</hp:t></hp:run>
+                    <hp:linesegarray><hp:lineseg vertsize="900" spacing="400"/></hp:linesegarray>
+                  </hp:p>
+                  <hp:p><hp:run><hp:t>서식</hp:t></hp:run>
+                    <hp:linesegarray><hp:lineseg vertsize="1000" spacing="500"/></hp:linesegarray>
+                  </hp:p>
+                </hp:subList>
               </hp:tc><hp:tc><hp:cellAddr colAddr="2" rowAddr="0"/></hp:tc></hp:tr>
-              <hp:tr><hp:tc><hp:cellAddr colAddr="2" rowAddr="1"/></hp:tc></hp:tr>
+              <hp:tr><hp:tc><hp:cellAddr colAddr="2" rowAddr="1"/>
+                <hp:subList vertAlign="BOTTOM"><hp:p><hp:run><hp:t>A<hp:lineBreak/>B</hp:t></hp:run>
+                  <hp:linesegarray><hp:lineseg vertsize="1000" spacing="500"/><hp:lineseg vertsize="1000" spacing="500"/></hp:linesegarray>
+                </hp:p></hp:subList>
+              </hp:tc></hp:tr>
             </hp:tbl></hp:run></hp:p>
             </hs:sec>"#
         );
@@ -335,10 +352,23 @@ mod tests {
         assert_eq!(table.rows[0].cells[0].merge, VerticalMerge::Start);
         assert_eq!(table.rows[1].cells[0].span, 2);
         assert_eq!(table.rows[1].cells[0].merge, VerticalMerge::Continue);
-        let Block::Paragraph(p) = &table.rows[0].cells[0].blocks[0] else {
+        let cell = &table.rows[0].cells[0];
+        assert_eq!(cell.anchor, CellAnchor::Center);
+        let [Block::Paragraph(first), Block::Paragraph(last)] = cell.blocks.as_slice() else {
+            panic!("expected two paragraphs");
+        };
+        assert_eq!(first.text(), "신청");
+        assert_eq!(first.line, LineHeight::Exact(units(1300)));
+        assert_eq!(last.text(), "서식");
+        assert_eq!(last.line, LineHeight::Exact(units(1000)));
+        let multiline = &table.rows[1].cells[1];
+        assert_eq!(multiline.anchor, CellAnchor::Bottom);
+        let [Block::Paragraph(p)] = multiline.blocks.as_slice() else {
             panic!("expected paragraph")
         };
-        assert_eq!(p.text(), "서식");
+        assert_eq!(p.text(), "A\u{b}B");
+        assert!(matches!(p.runs[1].kind, FlowRunKind::LineBreak));
+        assert_eq!(p.line, LineHeight::Exact(units(1500)));
     }
 }
 
@@ -510,7 +540,12 @@ impl Importer<'_, '_> {
             return Err(Error::new("HWPX の表の入れ子が深すぎます"));
         }
         let mut blocks = Vec::new();
-        for source in node.children().filter(|n| n.has_tag_name((PARAGRAPH, "p"))) {
+        let mut paragraphs = node
+            .children()
+            .filter(|n| n.has_tag_name((PARAGRAPH, "p")))
+            .peekable();
+        while let Some(source) = paragraphs.next() {
+            let last_in_cell = depth != 0 && paragraphs.peek().is_none();
             let mut paragraph = self.paragraph();
             paragraph.direct = number(source, "paraPrIDRef")
                 .and_then(|id| self.paragraphs.get(&id))
@@ -524,14 +559,26 @@ impl Importer<'_, '_> {
                     .children()
                     .filter(|n| n.has_tag_name((PARAGRAPH, "lineseg")))
                     .map(|line| {
-                        let height = number::<i64>(line, "vertsize")?;
-                        let extra = number::<i64>(line, "spacing")?;
-                        line_pitch(height, extra)
-                    });
-                if let Some(Some(pitch)) = pitches.next()
-                    && pitches.all(|candidate| candidate == Some(pitch))
-                {
-                    paragraph.direct.line = Some(pitch);
+                        Some((
+                            number::<i64>(line, "vertsize")?,
+                            number::<i64>(line, "spacing")?,
+                        ))
+                    })
+                    .peekable();
+                if let Some(Some((height, gap))) = pitches.next() {
+                    // A final single line in a cell has no next line to separate.
+                    let gap = if last_in_cell && pitches.peek().is_none() {
+                        0
+                    } else {
+                        gap
+                    };
+                    if let Some(pitch) = line_pitch(height, gap)
+                        && pitches.all(|candidate| {
+                            candidate.and_then(|(h, g)| line_pitch(h, g)) == Some(pitch)
+                        })
+                    {
+                        paragraph.direct.line = Some(pitch);
+                    }
                 }
             }
             let mut had_table = false;
@@ -698,7 +745,13 @@ impl Importer<'_, '_> {
             {
                 heights[row] = heights[row].max(units(height));
             }
-            let mut blocks = match part(cell, "subList") {
+            let content = part(cell, "subList");
+            let anchor = match content.and_then(|content| content.attribute("vertAlign")) {
+                Some("CENTER") => CellAnchor::Center,
+                Some("BOTTOM") => CellAnchor::Bottom,
+                _ => CellAnchor::Top,
+            };
+            let mut blocks = match content {
                 Some(content) => self.blocks(content, depth + 1)?,
                 None => Vec::new(),
             };
@@ -725,6 +778,7 @@ impl Importer<'_, '_> {
                         span: across as u32,
                         merge,
                         margins,
+                        anchor,
                         borders,
                         own_borders: borders.map(Some),
                         blocks: std::mem::take(&mut blocks),

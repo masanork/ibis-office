@@ -192,7 +192,7 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
         while cursor < section.len() {
             let record = section[cursor];
             if record.tag == PARA {
-                importer.paragraph(&section, cursor, &mut body, 0)?;
+                importer.paragraph(&section, cursor, &mut body, 0, false)?;
             }
             cursor = record.end;
         }
@@ -354,6 +354,7 @@ impl<'a> Importer<'a> {
         start: usize,
         blocks: &mut Vec<Block>,
         depth: usize,
+        last_in_cell: bool,
     ) -> Result<(), Error> {
         if depth > 16 {
             return Err(malformed());
@@ -381,7 +382,11 @@ impl<'a> Importer<'a> {
                     let mut pitches = child.bytes.chunks_exact(36).map(|line| {
                         line_pitch(
                             i64::from(dword(line, 8).ok()? as i32),
-                            i64::from(dword(line, 20).ok()? as i32),
+                            if last_in_cell && child.bytes.len() == 36 {
+                                0
+                            } else {
+                                i64::from(dword(line, 20).ok()? as i32)
+                            },
                         )
                     });
                     if let Some(Some(pitch)) = pitches.next()
@@ -599,16 +604,24 @@ impl<'a> Importer<'a> {
             while cursor < end {
                 let record = records[cursor];
                 if record.tag == PARA {
-                    self.paragraph(records, cursor, &mut blocks, depth)?;
+                    self.paragraph(records, cursor, &mut blocks, depth, record.end == end)?;
                     let lines = records[cursor + 1..record.end]
                         .iter()
                         .find(|r| r.level == record.level + 1 && r.tag == 69);
-                    match lines.and_then(|r| measured_paragraph_height(r.bytes)) {
+                    match lines.and_then(|r| measured_paragraph_height(r.bytes, record.end != end))
+                    {
                         Some(height) => required = required.saturating_add(height),
                         None => have_measurement = false,
                     }
                 }
                 cursor = record.end;
+            }
+            for block in &blocks {
+                if let Block::Paragraph(p) = block {
+                    required = required
+                        .saturating_add(p.space_before.max(0))
+                        .saturating_add(p.space_after.max(0));
+                }
             }
             if down == 1 {
                 measured[row] &= have_measurement
@@ -711,19 +724,19 @@ impl<'a> Importer<'a> {
     }
 }
 
-fn measured_paragraph_height(bytes: &[u8]) -> Option<Emu> {
+fn measured_paragraph_height(bytes: &[u8], include_final_gap: bool) -> Option<Emu> {
     if bytes.is_empty() || bytes.len() % 36 != 0 {
         return None;
     }
     let mut total: Emu = 0;
-    let mut lines = bytes.chunks_exact(36).peekable();
-    while let Some(line) = lines.next() {
+    let include_gap = include_final_gap || bytes.len() > 36;
+    for line in bytes.chunks_exact(36) {
         let height = dimension(line, 8).ok()?;
         if height <= 0 {
             return None;
         }
         total = total.saturating_add(height);
-        if lines.peek().is_some() {
+        if include_gap {
             total = total.saturating_add(dimension(line, 20).ok()?.max(0));
         }
     }
@@ -896,6 +909,32 @@ mod tests {
         let mut picture = [0; 78];
         picture[71] = 1;
         record(&mut body, PICTURE, 2, &picture);
+        record(&mut body, PARA, 0, &[0; 24]);
+        record(&mut body, TEXT, 1, b"\x0b\0 lbt\0\0\0\0\0\0\0\0\x0b\0\r\0");
+        control[..4].copy_from_slice(b" lbt");
+        record(&mut body, CONTROL, 1, &control);
+        let mut table = [0; 22];
+        table[4] = 2;
+        table[6] = 1;
+        record(&mut body, TABLE, 2, &table);
+        for (row, height) in [(0_u8, 2500_u32), (1, 1700)] {
+            let mut cell = [0; 34];
+            cell[0] = 2;
+            cell[10] = row;
+            cell[12] = 1;
+            cell[14] = 1;
+            cell[16..20].copy_from_slice(&7200_u32.to_le_bytes());
+            cell[20..24].copy_from_slice(&height.to_le_bytes());
+            record(&mut body, LIST, 2, &cell);
+            for (text, height, gap) in [(b"A\0\r\0", 900_u32, 400_u32), (b"B\0\r\0", 1000, 500)] {
+                record(&mut body, PARA, 2, &[0; 24]);
+                record(&mut body, TEXT, 3, text);
+                let mut line = [0; 36];
+                line[8..12].copy_from_slice(&height.to_le_bytes());
+                line[20..24].copy_from_slice(&gap.to_le_bytes());
+                record(&mut body, 69, 3, &line);
+            }
+        }
         let mut doc_info = Vec::new();
         record(&mut doc_info, 16, 0, &[0; 26]);
         record(
@@ -935,6 +974,26 @@ mod tests {
             assert!(p.text().starts_with("신청서"));
             assert!(matches!(p.runs[1].kind, FlowRunKind::Picture { .. }));
             assert_eq!(opened.presentation.media[0].format, MediaFormat::Png);
+        }
+    }
+
+    #[test]
+    fn cell_line_gaps_survive_between_paragraphs_and_rows_can_grow() {
+        let opened = open(&sample(1)).unwrap();
+        let flow = opened.presentation.flow.unwrap();
+        let Block::Table(table) = &flow.body[1] else {
+            panic!("table expected")
+        };
+        assert_eq!(table.rows[0].height, RowHeight::Exact(units(2500)));
+        assert_eq!(table.rows[1].height, RowHeight::AtLeast(units(1700)));
+        for row in &table.rows {
+            let [Block::Paragraph(first), Block::Paragraph(last)] = row.cells[0].blocks.as_slice()
+            else {
+                panic!("two cell paragraphs expected");
+            };
+            assert_eq!(first.line, LineHeight::Exact(units(1300)));
+            assert_eq!(last.line, LineHeight::Exact(units(1000)));
+            assert_eq!(format!("{}{}", first.text(), last.text()), "AB");
         }
     }
 
