@@ -260,7 +260,7 @@ def write(build):
     # embedded in the binary on both builds.
     bundled.append(("Material Symbols（Google）", "タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み）", "Apache-2.0"))
     bundled.append(("Unicode 15.0", "文字の表示可否データ", "Unicode-3.0"))
-    bundled.append(("異体字クラスターマップ", "異体字照合", "調製・提供 Masanori Kusunoki"))
+    bundled.append(("異体字クラスターマップ", "異体字照合", "調製・提供 楠 正憲"))
     material_readme = open(os.path.join(ROOT, "crates", "ibis-office-shell", "icons", "material", "README.md"), encoding="utf-8").read()
     material_source = next((l[2:] for l in material_readme.splitlines() if l.startswith("- 出典")), "")
     where = {"web": " Web 版（`www/`）", "macos": " macOS 版（`ibisOffice.app`）", "linux": " Linux 版（AppImage）", "windows": " Windows 版", "android": " Android 版", "ios": " iOS 版"}[build]
