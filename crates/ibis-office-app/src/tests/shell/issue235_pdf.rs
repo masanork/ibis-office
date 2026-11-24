@@ -13,6 +13,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::issue235_all_the_text_is_selected_and_copied_page_by_page", select_all_and_copy),
         ("shell::issue235_the_text_is_searched_on_all_the_pages", search),
         ("shell::issue235_a_page_is_gone_to_by_its_number", go_to_page),
+        ("shell::vsdx_search_highlights_a_wrapped_label", vsdx_search),
     ]
 }
 
@@ -229,4 +230,17 @@ fn go_to_page() {
     // The page before it, by the page keys.
     s.key("pageup");
     assert!(s.status_texts()[0].contains("1 / 2"), "{:?}", s.status_texts());
+}
+
+fn vsdx_search() {
+    let mut s = Scenario::open("crates/ibis-vsdx/tests/fixtures/07-zh-flowchart.vsdx");
+    assert!(s.with(|e, _| e.is_read_only()));
+    let p = position(&mut s, 0, 0);
+    s.click(p);
+    s.key("cmd-f");
+    s.type_text("转正答辩通过？");
+    assert_eq!(s.with(|e, _| ibis_office_pdf::editor::find_status(e)), Some((1, None)));
+    s.key("enter");
+    assert_eq!(s.with(|e, _| ibis_office_pdf::editor::find_status(e)), Some((1, Some(0))));
+    s.screenshot("vsdx-cjk-search");
 }

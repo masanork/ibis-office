@@ -5,6 +5,7 @@ provides these clean-room VSDX drawings under [CC BY 4.0](https://creativecommon
 The copies are unmodified.
 
 - `01-basic-flowchart.vsdx` — Customer Refund Process
+- `06-grouped-architecture.vsdx` — Event Analytics Architecture
 - `07-zh-flowchart.vsdx` — Employee onboarding and access provisioning
 - `08-multi-page-handbook.vsdx` — Architecture Handbook
 

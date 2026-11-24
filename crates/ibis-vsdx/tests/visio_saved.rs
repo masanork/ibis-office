@@ -48,6 +48,13 @@ fn reads_drawings_saved_by_microsoft_visio() {
                 matches!(cmd, DisplayCmd::DrawPath { bounds, commands, .. }
                     if bounds.y1 < 130.0 && commands.iter().any(|cmd| matches!(cmd, PathCmd::CubicTo(..))))
             }), "missing inherited curved outline of the router");
+            assert!(
+                scene.display_list.iter().any(|cmd| matches!(cmd,
+                    DisplayCmd::DrawStyledGlyphRun { text, font_size, rgba: [77, 30, 26, 255], .. }
+                    if text == "Router here" && (*font_size - 10.0).abs() < 0.05
+                )),
+                "router's inherited label must fit on one line"
+            );
         }
         let text = scene.text_index.plain_text();
         for label in labels {

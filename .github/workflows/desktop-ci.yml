@@ -87,6 +87,9 @@ jobs:
       - name: Test Visio viewer search
         if: matrix.platform == 'macos-arm64'
         run: cargo test --locked -p ibis-office-pdf vsdx_search_tests
+      - name: Verify Visio search in the macOS viewer
+        if: matrix.platform == 'macos-arm64'
+        run: cargo test --locked -p ibis-office-app --test scenarios -- vsdx_search_highlights_a_wrapped_label
       - name: Test offline image Content Credentials
         run: cargo test --locked -p ibis-office-shell --lib --no-default-features image_provenance
       - name: Test image provenance in the native editor

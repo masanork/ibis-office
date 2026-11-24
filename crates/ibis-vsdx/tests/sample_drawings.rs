@@ -183,3 +183,40 @@ fn chinese_flowchart_wraps_at_a_legal_boundary_and_keeps_search_positions() {
         assert!(line.last().unwrap().rect_pt.x1 - line[0].rect_pt.x0 <= max_width.unwrap() + 0.05);
     }
 }
+
+#[test]
+fn architecture_keeps_nested_containers_behind_their_diagram_objects() {
+    let document = open(include_bytes!("fixtures/06-grouped-architecture.vsdx"));
+    let scene = document.interpret_page_scene(0).unwrap();
+    for label in [
+        "Streaming Platform",
+        "Analytical Storage",
+        "Stream Workers",
+        "Session Enricher",
+    ] {
+        assert_label(&scene, label);
+    }
+    let painted_box = |color| {
+        scene
+            .display_list
+            .iter()
+            .enumerate()
+            .find_map(|(index, cmd)| match cmd {
+                DisplayCmd::DrawPath {
+                    bounds,
+                    fill_rgba: Some(fill),
+                    ..
+                } if *fill == color => Some((index, *bounds)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (platform_order, platform) = painted_box([239, 246, 255, 255]);
+    let (storage_order, storage) = painted_box([240, 253, 244, 255]);
+    let (store_order, store) = painted_box([225, 213, 231, 255]);
+    assert!(platform_order < storage_order && storage_order < store_order);
+    for (outer, inner) in [(platform, storage), (storage, store)] {
+        assert!(inner.x0 > outer.x0 && inner.x1 < outer.x1);
+        assert!(inner.y0 > outer.y0 && inner.y1 < outer.y1);
+    }
+}

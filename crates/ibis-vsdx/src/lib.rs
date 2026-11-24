@@ -282,6 +282,13 @@ fn value<'a>(n: Option<Node<'a, '_>>, key: &str) -> Option<&'a str> {
         .attribute("V")
 }
 
+fn first_row_cell<'a>(node: Option<Node<'a, '_>>, section: &str, key: &str) -> Option<&'a str> {
+    let section = node?
+        .children()
+        .find(|&n| named(n, "Section") && n.attribute("N") == Some(section))?;
+    value(child(section, "Row"), key).filter(|v| *v != "Themed")
+}
+
 fn number(s: Option<&str>) -> Option<f64> {
     s?.parse::<f64>()
         .ok()
@@ -436,14 +443,28 @@ impl Render<'_, '_> {
                     .filter_map(|n| n.text())
                     .any(|text| !text.trim().is_empty())
             {
-                let row = |section| {
-                    shape
-                        .children()
-                        .find(|&n| named(n, "Section") && n.attribute("N") == Some(section))
-                        .and_then(|sec| child(sec, "Row"))
+                let text_style = shape
+                    .attribute("TextStyle")
+                    .or_else(|| master?.attribute("TextStyle"));
+                let styles = &self.styles;
+                let run_cell = |section, key| {
+                    [Some(shape), master]
+                        .into_iter()
+                        .find_map(|node| first_row_cell(node, section, key))
+                        .or_else(|| {
+                            let mut next = text_style;
+                            for _ in 0..32 {
+                                let style = styles.get(next?).copied()?;
+                                if let Some(cell) = first_row_cell(Some(style), section, key) {
+                                    return Some(cell);
+                                }
+                                next = style.attribute("TextStyle");
+                            }
+                            None
+                        })
                 };
-                let character = row("Character");
-                let paragraph = row("Paragraph");
+                let character = |key| run_cell("Character", key);
+                let paragraph = |key| run_cell("Paragraph", key);
                 let txt_width = num("TxtWidth");
                 let left_margin = num("LeftMargin").unwrap_or(0.0);
                 let right_margin = num("RightMargin").unwrap_or(0.0);
@@ -458,6 +479,22 @@ impl Render<'_, '_> {
                 let bottom = -num("TxtLocPinY").unwrap_or(height / 2.0);
                 let top_margin = num("TopMargin").unwrap_or(0.0);
                 let bottom_margin = num("BottomMargin").unwrap_or(0.0);
+                let style = LabelStyle {
+                    top: bottom + height - top_margin,
+                    bottom: bottom + bottom_margin,
+                    vertical_alignment: get("VerticalAlign").unwrap_or("1"),
+                    left: (left + left_margin) as f32 * 72.0,
+                    width: (txt_width.unwrap_or(w) - left_margin - right_margin).max(0.0) as f32
+                        * 72.0,
+                    wrap: txt_width.is_some(),
+                    alignment: paragraph("HorzAlign").unwrap_or("1"),
+                    spacing: number(paragraph("SpLine")).unwrap_or(-1.2),
+                    font_size: (number(character("Size")).unwrap_or(1.0 / 6.0) * 72.0)
+                        .clamp(1.0, 400.0) as f32,
+                    family: character("Font"),
+                    color: color(character("Color"), [0, 0, 0, 255]),
+                    flags: character("Style").and_then(|v| v.parse().ok()).unwrap_or(0),
+                };
                 if let Some(background) = get("TextBkgnd").filter(|v| v.starts_with('#')) {
                     let mut rgba = color(Some(background), [255, 255, 255, 255]);
                     let transparency = num("TextBkgndTrans").unwrap_or(0.0).clamp(0.0, 1.0);
@@ -481,29 +518,7 @@ impl Render<'_, '_> {
                         0.0,
                     )?;
                 }
-                self.label(
-                    label,
-                    text_matrix,
-                    LabelStyle {
-                        top: bottom + height - top_margin,
-                        bottom: bottom + bottom_margin,
-                        vertical_alignment: get("VerticalAlign").unwrap_or("1"),
-                        left: (left + left_margin) as f32 * 72.0,
-                        width: (txt_width.unwrap_or(w) - left_margin - right_margin).max(0.0)
-                            as f32
-                            * 72.0,
-                        wrap: txt_width.is_some(),
-                        alignment: value(paragraph, "HorzAlign").unwrap_or("1"),
-                        spacing: number(value(paragraph, "SpLine")).unwrap_or(-1.2),
-                        font_size: (number(value(character, "Size")).unwrap_or(1.0 / 6.0) * 72.0)
-                            .clamp(1.0, 400.0) as f32,
-                        family: value(character, "Font"),
-                        color: color(value(character, "Color"), [0, 0, 0, 255]),
-                        flags: value(character, "Style")
-                            .and_then(|v| v.parse().ok())
-                            .unwrap_or(0),
-                    },
-                )?;
+                self.label(label, text_matrix, style)?;
             }
         }
         Ok(())
@@ -682,7 +697,7 @@ impl Render<'_, '_> {
                 });
             let mut cursor = x;
             for ch in line.chars() {
-                let end = cursor + estimated_advance_em(ch) * font_size * index_scale;
+                let end = cursor + label_advance_em(ch) * font_size * index_scale;
                 let pt = |x: f32, y: f32| {
                     matrix.point(f64::from(x) / 72.0, center_y - f64::from(y) / 72.0)
                 };
@@ -731,8 +746,16 @@ struct LabelStyle<'a> {
     flags: u32,
 }
 
+fn label_advance_em(ch: char) -> f32 {
+    if ch == ' ' {
+        0.28
+    } else {
+        estimated_advance_em(ch)
+    }
+}
+
 fn text_width(text: &str, font_size: f32) -> f32 {
-    text.chars().map(estimated_advance_em).sum::<f32>() * font_size
+    text.chars().map(label_advance_em).sum::<f32>() * font_size
 }
 
 // The boolean marks a visual continuation of the same source line for search.
