@@ -6089,6 +6089,7 @@ dependencies = [
  "ibis-formats",
  "ibis-ooxml",
  "ibis-pdf",
+ "image",
  "roxmltree 0.21.1",
  "unicode-linebreak",
 ]

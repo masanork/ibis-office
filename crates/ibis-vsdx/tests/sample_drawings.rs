@@ -220,3 +220,38 @@ fn architecture_keeps_nested_containers_behind_their_diagram_objects() {
         assert!(inner.y0 > outer.y0 && inner.y1 < outer.y1);
     }
 }
+
+#[test]
+fn embedded_icons_keep_their_pixels_positions_and_reused_relationship() {
+    let document = open(include_bytes!("fixtures/09-embedded-media-icons.vsdx"));
+    let scene = document.interpret_page_scene(0).unwrap();
+    let icons: Vec<_> = scene
+        .display_list
+        .iter()
+        .filter_map(|cmd| match cmd {
+            DisplayCmd::DrawImage {
+                bounds,
+                width,
+                height,
+                rgba,
+            } => {
+                assert_eq!((*width, *height), (112, 112));
+                assert_eq!(rgba.len(), 112 * 112 * 4);
+                assert!(rgba.chunks_exact(4).any(|pixel| pixel[3] > 0));
+                assert!(near(bounds.width(), 0.551181 * 72.0));
+                assert!(near(bounds.height(), 0.551181 * 72.0));
+                Some((bounds, rgba))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(icons.len(), 5);
+    assert!(near(icons[0].0.x0, (0.718504 - 0.275591) * 72.0));
+    assert!(near(
+        icons[0].0.y0,
+        scene.info.crop_box.height() - (1.043307 + 0.275591) * 72.0
+    ));
+    assert_eq!(icons[2].1, icons[3].1);
+    assert_ne!(icons[2].0, icons[3].0);
+    assert_ne!(icons[0].1, icons[1].1);
+}

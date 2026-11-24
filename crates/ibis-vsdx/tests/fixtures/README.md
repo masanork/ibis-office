@@ -8,6 +8,7 @@ The copies are unmodified.
 - `06-grouped-architecture.vsdx` — Event Analytics Architecture
 - `07-zh-flowchart.vsdx` — Employee onboarding and access provisioning
 - `08-multi-page-handbook.vsdx` — Architecture Handbook
+- `09-embedded-media-icons.vsdx` — Architecture diagram with embedded PNG icons
 
 ## Microsoft Visio files for local testing
 

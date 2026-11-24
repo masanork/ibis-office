@@ -14,6 +14,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::issue235_the_text_is_searched_on_all_the_pages", search),
         ("shell::issue235_a_page_is_gone_to_by_its_number", go_to_page),
         ("shell::vsdx_search_highlights_a_wrapped_label", vsdx_search),
+        ("shell::vsdx_opens_a_diagram_with_embedded_images", vsdx_embedded_images),
     ]
 }
 
@@ -243,4 +244,11 @@ fn vsdx_search() {
     s.key("enter");
     assert_eq!(s.with(|e, _| ibis_office_pdf::editor::find_status(e)), Some((1, Some(0))));
     s.screenshot("vsdx-cjk-search");
+}
+
+fn vsdx_embedded_images() {
+    let mut s = Scenario::open("crates/ibis-vsdx/tests/fixtures/09-embedded-media-icons.vsdx");
+    assert!(s.with(|e, _| e.is_read_only()));
+    assert_eq!(s.with(|e, _| e.presentation().slides.len()), 1);
+    s.screenshot("vsdx-embedded-images");
 }

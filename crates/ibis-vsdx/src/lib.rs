@@ -14,6 +14,7 @@ use ibis_pdf::scene::{CharBox, FillRule, PathCmd, TextAnchor, estimated_advance_
 use ibis_pdf::{DisplayCmd, Error, ObjectId, PageInfo, PageScene, PdfRect, Result};
 use roxmltree::{Document, Node};
 
+mod bitmap;
 mod geometry;
 
 use geometry::{dashed_line, elliptical_arc, rounded_polygon, straight_vertices, triangle_arrow};
@@ -266,6 +267,7 @@ impl VsdxContainer {
             styles,
             shapes: 0,
             path_commands: 0,
+            bitmaps: bitmap::Bitmaps::new(&zip, &page.name),
         };
         let page_height = f64::from(page.info.crop_box.height());
         let to_points = Matrix([72.0, 0.0, 0.0, -72.0, 0.0, page_height]);
@@ -318,14 +320,15 @@ impl Matrix {
     }
 }
 
-struct Render<'a, 'i> {
+struct Render<'a, 'i, 'package, 'bytes> {
     scene: PageScene,
     styles: HashMap<&'a str, Node<'a, 'i>>,
     shapes: usize,
     path_commands: usize,
+    bitmaps: bitmap::Bitmaps<'package, 'bytes>,
 }
 
-impl Render<'_, '_> {
+impl Render<'_, '_, '_, '_> {
     fn shapes(
         &mut self,
         shapes: Node<'_, '_>,
@@ -432,6 +435,20 @@ impl Render<'_, '_> {
                     (dash, arrows),
                     0.0,
                 )?;
+            }
+            if let Some(foreign) = child(shape, "ForeignData")
+                && let Some(image) = self.bitmaps.draw(
+                    foreign,
+                    m,
+                    (
+                        num("ImgOffsetX").unwrap_or_default(),
+                        num("ImgOffsetY").unwrap_or_default(),
+                        num("ImgWidth").unwrap_or(w),
+                        num("ImgHeight").unwrap_or(h),
+                    ),
+                )
+            {
+                self.scene.display_list.push(image);
             }
             if let Some(sub) = child(shape, "Shapes") {
                 self.shapes(sub, m, masters, master, depth + 1)?;
