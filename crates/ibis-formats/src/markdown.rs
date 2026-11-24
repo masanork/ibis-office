@@ -3088,6 +3088,20 @@ fn strip_quote_marker(line: &str) -> &str {
     marked.strip_prefix("> ").or_else(|| marked.strip_prefix('>')).unwrap_or(line)
 }
 
+fn markdown_quote_line(line: &str) -> std::borrow::Cow<'_, str> {
+    if line.trim_start().starts_with('>') {
+        return strip_quote_marker(line).into();
+    }
+    if parse_setext_underline(line).is_some() {
+        // The container parser admitted this as a lazy continuation. Once we
+        // add the quote marker back, it must stay literal paragraph text.
+        let text = line.trim_start_matches(' ');
+        let indent = &line[..line.len() - text.len()];
+        return format!("{indent}\\{text}").into();
+    }
+    line.into()
+}
+
 fn parse_blocks(
     body_text: &str,
     ctx: &mut ParseContext<'_>,
@@ -3130,9 +3144,9 @@ fn parse_blocks_at_quote_depth(
             continuations.remove(&i);
             let starts_item = i == item_line;
             let blank_before = i > 0 && lines[i - 1].trim().is_empty();
-            let first = strip_quote_marker(&raw[start_column..]);
-            let mut quote_lines = vec![first];
-            quote_lines.extend(lines[i + 1..next].iter().map(|line| strip_quote_marker(strip_list_item_indent(line, indent))));
+            let mut quote_lines = vec![markdown_quote_line(&raw[start_column..])];
+            quote_lines.extend(lines[i + 1..next].iter().map(|line| markdown_quote_line(strip_list_item_indent(line, indent))));
+            let quote_lines = quote_lines.iter().map(|line| line.as_ref()).collect::<Vec<_>>();
             if let Some(mut quoted) = parse_structured_quote(&quote_lines, ctx, quote_depth.max(1), None)? {
                 let list = if starts_item && let Some(item) = parse_list_marker(raw) {
                     if let Some(spec) = quoted_items.get(&i) {
@@ -3681,9 +3695,10 @@ fn parse_blocks_at_quote_depth(
             while i < lines.len()
                 && quote_end.map_or_else(|| lines[i].trim_start().starts_with('>'), |end| i < end)
             {
-                quote_lines.push(strip_quote_marker(lines[i]));
+                quote_lines.push(markdown_quote_line(lines[i]));
                 i += 1;
             }
+            let quote_lines = quote_lines.iter().map(|line| line.as_ref()).collect::<Vec<_>>();
             blocks.extend(build_blockquote_blocks(&quote_lines, ctx, quote_depth)?);
             continue;
         }
@@ -3866,8 +3881,7 @@ fn starts_markdown_block(lines: &[&str], i: usize) -> bool {
         || document_block_field(l_trim).is_some()
         || myst_heading_target(lines, i).is_some()
         || myst::colon_directive(&lines[i..]).is_some()
-        || is_horizontal_rule(l_trim)
-        || parse_atx_heading(l_trim).is_some()
+        || (markdown_indent(l_raw) <= 3 && (is_horizontal_rule(l_trim) || parse_atx_heading(l_trim).is_some()))
         || list_interrupts_paragraph(l_raw)
         || (is_table_row(l_trim)
             && i + 1 < lines.len()
@@ -10801,6 +10815,30 @@ mod tests {
         assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
         let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+    }
+
+    #[test]
+    fn markdown_headings_and_rules_keep_their_boundaries_through_docx() {
+        for (source, canonical) in [
+            ("Foo\n    ***\n", "Foo ***\n"),
+            ("foo\n    # bar\n", "foo # bar\n"),
+            ("Foo\n    ---\n", "Foo ---\n"),
+            ("> foo\nbar\n===\n", "> foo bar \\===\n"),
+            ("---\nFoo\n---\nBar\n---\nBaz\n", "---\n\n## Foo\n\n## Bar\n\nBaz\n"),
+            ("---\n---\n", "---\n\n---\n"),
+            ("---\ntitle: Document\nlang: ja\nvfm:\n  theme: print\n---\n\n# Body\n",
+             "---\ntitle: Document\nlang: ja\nvfm:\n  theme: print\n---\n\n# Body\n"),
+            ("---\ntype: Metric\ntitle: Sample\ntags: [one, two]\nmetadata:\n  value: 42\n---\n\nBody.\n",
+             "---\ntype: Metric\ntitle: Sample\ntags: [one, two]\nmetadata:\n  value: 42\n---\n\nBody.\n"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, canonical, "{source}");
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), canonical, "{source}");
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), canonical, "{source}");
+        }
     }
 
     #[test]

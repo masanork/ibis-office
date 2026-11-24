@@ -10,7 +10,11 @@ pub(crate) fn frontmatter(text: &str) -> Option<(&str, &str)> {
     let content = text
         .strip_prefix("---\n")
         .or_else(|| text.strip_prefix("---\r\n"))?;
-    split_frontmatter_body(content)
+    let (metadata, body) = split_frontmatter_body(content)?;
+    // A thematic break can also open a Markdown document. Only a YAML
+    // mapping between the delimiters supplies document metadata.
+    let yaml = serde_saphyr::from_str::<serde_json::Value>(metadata).ok()?;
+    yaml.is_object().then_some((metadata, body))
 }
 
 pub(crate) fn has_document_type(text: &str, expected: &str) -> bool {
