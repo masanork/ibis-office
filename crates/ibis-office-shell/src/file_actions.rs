@@ -386,7 +386,7 @@ impl SlideEditor {
     pub fn current_bytes(&self) -> Result<Vec<u8>, String> {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         if self.is_jtd_read_only() {
-            if self.jtd_gallery { return Err(crate::i18n::text("jtd.gallery-export-disabled").to_string()); }
+            if self.jtd.gallery { return Err(crate::i18n::text("jtd.gallery-export-disabled").to_string()); }
             return ibis_formats::jtd::export_docx(self.presentation()).map_err(|e| e.to_string());
         }
         if let Some(why) = crate::format::with_format!(self, save_refused(self)) {
@@ -415,7 +415,7 @@ impl SlideEditor {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());
         }
         if self.is_jtd_read_only() { return Err(crate::i18n::text("jtd.read-only").to_string()); }
-        if self.jtd_source_path.as_deref().is_some_and(|original| crate::save::same_file(original, path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::jtd::is_native_extension)) {
+        if self.jtd.source_path.as_deref().is_some_and(|original| crate::save::same_file(original, path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::jtd::is_native_extension)) {
             return Err(crate::i18n::text("jtd.source-protected").to_string());
         }
         if let Some(why) = crate::format::with_format!(self, save_refused(self)) {
@@ -443,7 +443,7 @@ impl SlideEditor {
     /// Export the recognized JTD content as a separate, editable DOCX.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn export_jtd_docx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.is_jtd_read_only() || self.jtd_gallery { return; }
+        if !self.is_jtd_read_only() || self.jtd.gallery { return; }
         let (stem, _) = self.name_parts();
         self.ask_path(format!("{stem}.docx"), window, cx, |this, path, _, cx| {
             let result = this.export_jtd_docx_to(&path)
@@ -455,7 +455,7 @@ impl SlideEditor {
 
     #[cfg(not(target_family = "wasm"))]
     pub fn export_jtd_docx_to(&self, path: &std::path::Path) -> Result<(), String> {
-        if !self.is_jtd_read_only() || self.jtd_gallery || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("docx"))
+        if !self.is_jtd_read_only() || self.jtd.gallery || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("docx"))
             || self.path.as_deref().is_some_and(|original| crate::save::same_file(original, path)) {
             return Err(crate::i18n::text("jtd.read-only").to_string());
         }
@@ -648,14 +648,14 @@ impl SlideEditor {
         if self.standard_source_path.as_deref().is_some_and(|original| crate::save::same_file(original, &pdf)) {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());
         }
-        if self.jtd_source_path.as_deref().is_some_and(|original| crate::save::same_file(original, &pdf)) {
+        if self.jtd.source_path.as_deref().is_some_and(|original| crate::save::same_file(original, &pdf)) {
             return Err(crate::i18n::text("jtd.source-protected").to_string());
         }
         if self.is_jtd_read_only() && self.path.as_deref().is_some_and(|p| crate::save::same_file(p, &pdf)) {
             return Err(crate::i18n::text("jtd.read-only").to_string());
         }
         let standard_original_path = self.standard_source_path.clone();
-        let jtd_original_path = self.jtd_source_path.clone().or_else(|| self.is_jtd_read_only().then(|| self.path.clone()).flatten());
+        let jtd_original_path = self.jtd.source_path.clone().or_else(|| self.is_jtd_read_only().then(|| self.path.clone()).flatten());
         // A PDF (or an XPS or OFD file) that is looked at is the PDF to write: its file as it is (made again through the export it would have no pages).
         if self.kind() == ibis_formats::Kind::Pdf
             && let Some(original) = self.presentation().pdf_bytes.clone()
@@ -733,13 +733,13 @@ impl SlideEditor {
         if self.standard_source_path.as_deref().is_some_and(|original| crate::save::same_file(original, &png)) {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());
         }
-        if self.jtd_source_path.as_deref().is_some_and(|original| crate::save::same_file(original, &png)) {
+        if self.jtd.source_path.as_deref().is_some_and(|original| crate::save::same_file(original, &png)) {
             return Err(crate::i18n::text("jtd.source-protected").to_string());
         }
         if self.is_jtd_read_only() && self.path.as_deref().is_some_and(|p| crate::save::same_file(p, &png)) {
             return Err(crate::i18n::text("jtd.read-only").to_string());
         }
-        let jtd_original_path = self.jtd_source_path.clone().or_else(|| self.is_jtd_read_only().then(|| self.path.clone()).flatten());
+        let jtd_original_path = self.jtd.source_path.clone().or_else(|| self.is_jtd_read_only().then(|| self.path.clone()).flatten());
         let standard_original_path = self.standard_source_path.clone();
         let bytes = self.current_bytes()?;
         let (stem, mut ext) = self.name_parts();
@@ -800,7 +800,7 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub fn write_gif(&self, gif_path: std::path::PathBuf, seconds_per_slide: Option<f32>) -> Result<Box<dyn FnOnce() -> Result<std::path::PathBuf, String> + Send + 'static>, String> {
         self.check_standard_output(&gif_path).map_err(|e| e.to_string())?;
-        if self.jtd_source_path.as_deref().is_some_and(|original| crate::save::same_file(original, &gif_path))
+        if self.jtd.source_path.as_deref().is_some_and(|original| crate::save::same_file(original, &gif_path))
             || (self.is_jtd_read_only() && self.path.as_deref().is_some_and(|original| crate::save::same_file(original, &gif_path))) {
             return Err(crate::i18n::text("jtd.source-protected").to_string());
         }

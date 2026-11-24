@@ -185,7 +185,7 @@ impl SlideEditor {
 
     /// Download only the content currently recognized from the read-only JTD.
     pub(crate) fn export_jtd_docx(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if !self.is_jtd_read_only() || self.jtd_gallery { return; }
+        if !self.is_jtd_read_only() || self.jtd.gallery { return; }
         match ibis_formats::jtd::export_docx(self.presentation()) {
             Ok(bytes) => {
                 let name = self.file_name.as_deref().unwrap_or("document.jtd");
@@ -214,7 +214,7 @@ impl SlideEditor {
     /// The download button: the document as it is now, in its own format, goes to the embedding page.
     pub(crate) fn embed_download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_pending_edit(window, cx);
-        if let Some(bytes) = self.jtd_original.as_ref() {
+        if let Some(bytes) = self.jtd.original.as_ref() {
             embed_action_js("download", self.file_name.as_deref().unwrap_or(""), Some(bytes.to_vec()));
             return;
         }

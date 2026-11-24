@@ -335,6 +335,36 @@ impl SlideEditor {
     }
 }
 
+/// Web-only session state grouped out of [`SlideEditor`] to minimize `#[cfg]` scatter.
+#[cfg(target_family = "wasm")]
+#[derive(Default)]
+pub(crate) struct WebEditorState {
+    pub(crate) open_generation: u64,
+    /// Exact input for comparison while this law has no edits.
+    pub(crate) law_source: Option<std::sync::Arc<Vec<u8>>>,
+    /// In-window structured tree view for complex linkage CSVs in the Web build.
+    pub(crate) structured_view: Option<Entity<crate::structured_view::View>>,
+}
+
+/// JTD read-only preview, image-gallery, and thumbnail state grouped out of [`SlideEditor`].
+#[derive(Default)]
+pub struct JtdState {
+    /// Original JTD bytes: presence makes this document permanently read-only.
+    pub original: Option<std::sync::Arc<[u8]>>,
+    /// An auxiliary preview, not a reconstruction of the source document.
+    pub gallery: bool,
+    /// Body preview retained while its unplaced image list is open.
+    pub gallery_body: Option<Presentation>,
+    /// Embedded snapshot and the immediately preceding body or image-list view.
+    pub thumbnail: bool,
+    pub thumbnail_previous: Option<(Presentation, bool, Option<Presentation>)>,
+    /// Invalidates image-list work when the document or open request changes.
+    pub(crate) gallery_generation: u64,
+    /// Source path to protect after converting a JTD to an editable document.
+    #[cfg(not(target_family = "wasm"))]
+    pub source_path: Option<std::path::PathBuf>,
+}
+
 pub struct SlideEditor {
     /// Focus of the workspace; key presses reach the editor through it.
     pub focus_handle: FocusHandle,
@@ -509,13 +539,7 @@ pub struct SlideEditor {
     /// read when the count changes is not opened.
     pub(crate) closed: u32,
     #[cfg(target_family = "wasm")]
-    web_open_generation: u64,
-    /// Exact input for comparison while this law has no edits.
-    #[cfg(target_family = "wasm")]
-    pub(crate) web_law_source: Option<std::sync::Arc<Vec<u8>>>,
-    /// In-window structured tree view for complex linkage CSVs in the Web build.
-    #[cfg(target_family = "wasm")]
-    pub(crate) web_structured_view: Option<Entity<crate::structured_view::View>>,
+    pub(crate) web: WebEditorState,
     /// An empty document stands in for the file being read (`begin_loading`).
     pub loading: bool,
     /// What only the open document's format has (see `shell/format.rs`).
@@ -662,20 +686,8 @@ pub struct SlideEditor {
     pub(crate) image_provenance: Option<crate::image_provenance::Report>,
     #[cfg(not(target_family = "wasm"))]
     pub(crate) image_sequence: Option<crate::image_sequence::ImageSequence>,
-    /// Original JTD bytes: presence makes this document permanently read-only.
-    pub jtd_original: Option<std::sync::Arc<[u8]>>,
-    /// An auxiliary preview, not a reconstruction of the source document.
-    pub jtd_gallery: bool,
-    /// Body preview retained while its unplaced image list is open.
-    pub jtd_gallery_body: Option<Presentation>,
-    /// Embedded snapshot and the immediately preceding body or image-list view.
-    pub jtd_thumbnail: bool,
-    pub jtd_thumbnail_previous: Option<(Presentation, bool, Option<Presentation>)>,
-    /// Invalidates image-list work when the document or open request changes.
-    jtd_gallery_generation: u64,
-    /// Source path to protect after converting a JTD to an editable document.
-    #[cfg(not(target_family = "wasm"))]
-    pub jtd_source_path: Option<std::path::PathBuf>,
+    /// JTD preview, image gallery, thumbnail, and source-protection state.
+    pub jtd: JtdState,
     /// The password to modify the file (書き込みパスワード) was given, or set here; until then a file that has one is read-only.
     pub(crate) modify_unlocked: bool,
     /// Whether the menu bar is shown (false by default when ?view=1 unless ?menuBar=1).
@@ -919,11 +931,7 @@ impl SlideEditor {
             has_document: false,
             closed: 0,
             #[cfg(target_family = "wasm")]
-            web_open_generation: 0,
-            #[cfg(target_family = "wasm")]
-            web_law_source: None,
-            #[cfg(target_family = "wasm")]
-            web_structured_view: None,
+            web: WebEditorState::default(),
             loading: false,
             format,
             format_prefs: crate::format::drivers().iter().map(|(_, driver)| driver.new_prefs()).collect(),
@@ -1009,18 +1017,11 @@ impl SlideEditor {
             bom_source: None,
             #[cfg(not(target_family = "wasm"))]
             standard_source_path: None,
-            jtd_original: None,
             production_image_view: None,
             image_provenance: None,
             #[cfg(not(target_family = "wasm"))]
             image_sequence: None,
-            jtd_gallery: false,
-            jtd_gallery_body: None,
-            jtd_thumbnail: false,
-            jtd_thumbnail_previous: None,
-            jtd_gallery_generation: 0,
-            #[cfg(not(target_family = "wasm"))]
-            jtd_source_path: None,
+            jtd: JtdState::default(),
             modify_unlocked: false,
             #[cfg(target_arch = "wasm32")]
             show_menu_bar: crate::embed::show_menu_bar(),
@@ -1108,7 +1109,7 @@ impl SlideEditor {
     }
 
     pub fn is_jtd_read_only(&self) -> bool {
-        self.jtd_original.is_some()
+        self.jtd.original.is_some()
     }
 
     fn jtd_omission_notice(notice: &mut String, omissions: Option<ibis_formats::jtd::OmittedContent>) {
@@ -1126,8 +1127,8 @@ impl SlideEditor {
         let bytes = bytes.into();
         let omissions = (!gallery).then(|| ibis_formats::jtd::omitted_content(&bytes).ok()).flatten();
         self.load(presentation, name, window, cx);
-        self.jtd_original = Some(bytes);
-        self.jtd_gallery = gallery;
+        self.jtd.original = Some(bytes);
+        self.jtd.gallery = gallery;
         self.document.set_read_only(true);
         self.sidebar_open = false;
         let mut notice = crate::i18n::text(if gallery { "jtd.gallery-notice" } else { "jtd.read-only-notice" }).to_string();
@@ -1137,18 +1138,18 @@ impl SlideEditor {
 
     /// Inspect unplaced images without treating them as part of the body layout.
     pub fn show_jtd_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.jtd_gallery { return; }
-        let Some(original) = self.jtd_original.clone() else { return; };
-        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
-        let generation = self.jtd_gallery_generation;
+        if self.jtd.gallery { return; }
+        let Some(original) = self.jtd.original.clone() else { return; };
+        self.jtd.gallery_generation = self.jtd.gallery_generation.wrapping_add(1);
+        let generation = self.jtd.gallery_generation;
         #[cfg(target_family = "wasm")]
         let name = self.file_name.clone().unwrap_or_else(|| "document.jtd".into());
         self.set_status(crate::i18n::text("jtd.gallery-loading").to_string(), cx);
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
             let current = this.update(cx, |this, _| {
-                this.jtd_gallery_generation == generation && !this.jtd_gallery
-                    && this.jtd_original.as_ref().is_some_and(|value| std::sync::Arc::ptr_eq(value, &original))
+                this.jtd.gallery_generation == generation && !this.jtd.gallery
+                    && this.jtd.original.as_ref().is_some_and(|value| std::sync::Arc::ptr_eq(value, &original))
             }).unwrap_or(false);
             if !current { return; }
             let source = original.clone();
@@ -1157,7 +1158,7 @@ impl SlideEditor {
             #[cfg(target_family = "wasm")]
             let mut result = crate::jtd_preview::images(&source);
             #[cfg(target_family = "wasm")]
-            if !this.update(cx, |this, _| this.jtd_gallery_generation == generation).unwrap_or(false) { return; }
+            if !this.update(cx, |this, _| this.jtd.gallery_generation == generation).unwrap_or(false) { return; }
             #[cfg(target_family = "wasm")]
             if let Ok(presentation) = &result {
                 if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
@@ -1165,12 +1166,12 @@ impl SlideEditor {
                 }
             }
             this.update_in(cx, |this, window, cx| {
-                if this.jtd_gallery_generation != generation || this.jtd_gallery || !this.jtd_original.as_ref().is_some_and(|current| std::sync::Arc::ptr_eq(current, &original)) { return; }
+                if this.jtd.gallery_generation != generation || this.jtd.gallery || !this.jtd.original.as_ref().is_some_and(|current| std::sync::Arc::ptr_eq(current, &original)) { return; }
                 match result {
                     Ok(presentation) => {
                         let body = this.presentation().clone();
                         this.replace_jtd_preview(presentation, original.clone(), true, window, cx);
-                        this.jtd_gallery_body = Some(body);
+                        this.jtd.gallery_body = Some(body);
                     }
                     Err(error) => this.set_status(error, cx),
                 }
@@ -1179,24 +1180,24 @@ impl SlideEditor {
     }
 
     pub fn show_jtd_body(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.jtd_gallery || self.jtd_thumbnail { return; }
-        let (Some(body), Some(original)) = (self.jtd_gallery_body.take(), self.jtd_original.clone()) else { return; };
+        if !self.jtd.gallery || self.jtd.thumbnail { return; }
+        let (Some(body), Some(original)) = (self.jtd.gallery_body.take(), self.jtd.original.clone()) else { return; };
         self.replace_jtd_preview(body, original, false, window, cx);
     }
 
     /// Open a stored snapshot separately; it may be stale or incomplete.
     pub fn show_jtd_thumbnail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.jtd_thumbnail { return; }
-        let Some(original) = self.jtd_original.clone() else { return; };
-        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
-        let generation = self.jtd_gallery_generation;
+        if self.jtd.thumbnail { return; }
+        let Some(original) = self.jtd.original.clone() else { return; };
+        self.jtd.gallery_generation = self.jtd.gallery_generation.wrapping_add(1);
+        let generation = self.jtd.gallery_generation;
         #[cfg(target_family = "wasm")]
         let name = self.file_name.clone().unwrap_or_else(|| "document.jtd".into());
         self.set_status(crate::i18n::text("jtd.thumbnail-loading").to_string(), cx);
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
-            let current = this.update(cx, |this, _| this.jtd_gallery_generation == generation && !this.jtd_thumbnail
-                && this.jtd_original.as_ref().is_some_and(|value| std::sync::Arc::ptr_eq(value, &original))).unwrap_or(false);
+            let current = this.update(cx, |this, _| this.jtd.gallery_generation == generation && !this.jtd.thumbnail
+                && this.jtd.original.as_ref().is_some_and(|value| std::sync::Arc::ptr_eq(value, &original))).unwrap_or(false);
             if !current { return; }
             let source = original.clone();
             #[cfg(not(target_family = "wasm"))]
@@ -1204,7 +1205,7 @@ impl SlideEditor {
             #[cfg(target_family = "wasm")]
             let mut result = crate::jtd_preview::thumbnail(&source);
             #[cfg(target_family = "wasm")]
-            if !this.update(cx, |this, _| this.jtd_gallery_generation == generation).unwrap_or(false) { return; }
+            if !this.update(cx, |this, _| this.jtd.gallery_generation == generation).unwrap_or(false) { return; }
             #[cfg(target_family = "wasm")]
             if let Ok(presentation) = &result {
                 if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
@@ -1212,13 +1213,13 @@ impl SlideEditor {
                 }
             }
             this.update_in(cx, |this, window, cx| {
-                if this.jtd_gallery_generation != generation || this.jtd_thumbnail || !this.jtd_original.as_ref().is_some_and(|current| std::sync::Arc::ptr_eq(current, &original)) { return; }
+                if this.jtd.gallery_generation != generation || this.jtd.thumbnail || !this.jtd.original.as_ref().is_some_and(|current| std::sync::Arc::ptr_eq(current, &original)) { return; }
                 match result {
                     Ok(presentation) => {
-                        let previous = (this.presentation().clone(), this.jtd_gallery, this.jtd_gallery_body.take());
+                        let previous = (this.presentation().clone(), this.jtd.gallery, this.jtd.gallery_body.take());
                         this.replace_jtd_preview(presentation, original.clone(), true, window, cx);
-                        this.jtd_thumbnail = true;
-                        this.jtd_thumbnail_previous = Some(previous);
+                        this.jtd.thumbnail = true;
+                        this.jtd.thumbnail_previous = Some(previous);
                         this.set_status(crate::i18n::text("jtd.thumbnail-notice").to_string(), cx);
                     }
                     Err(error) => this.set_status(error, cx),
@@ -1228,10 +1229,10 @@ impl SlideEditor {
     }
 
     pub fn return_from_jtd_thumbnail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.jtd_thumbnail { return; }
-        let (Some((previous, gallery, body)), Some(original)) = (self.jtd_thumbnail_previous.take(), self.jtd_original.clone()) else { return; };
+        if !self.jtd.thumbnail { return; }
+        let (Some((previous, gallery, body)), Some(original)) = (self.jtd.thumbnail_previous.take(), self.jtd.original.clone()) else { return; };
         self.replace_jtd_preview(previous, original, gallery, window, cx);
-        self.jtd_gallery_body = body;
+        self.jtd.gallery_body = body;
     }
 
     fn replace_jtd_preview(&mut self, presentation: Presentation, bytes: std::sync::Arc<[u8]>, gallery: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -1244,13 +1245,13 @@ impl SlideEditor {
     }
 
     pub(crate) fn can_edit_jtd_as_docx(&self) -> bool {
-        self.is_jtd_read_only() && !self.jtd_gallery && !self.read_only && self.host.read_only.is_none()
+        self.is_jtd_read_only() && !self.jtd.gallery && !self.read_only && self.host.read_only.is_none()
     }
 
     /// Convert the recognized preview into a separate editable Word document.
     pub fn edit_jtd_as_docx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_edit_jtd_as_docx() { return; }
-        let omissions = self.jtd_original.as_deref().and_then(|bytes| ibis_formats::jtd::omitted_content(bytes).ok());
+        let omissions = self.jtd.original.as_deref().and_then(|bytes| ibis_formats::jtd::omitted_content(bytes).ok());
         let result = ibis_formats::jtd::export_docx(self.presentation()).and_then(ibis_formats::open);
         match result {
             Ok(opened) => {
@@ -1262,7 +1263,7 @@ impl SlideEditor {
                 self.load(opened.presentation, name, window, cx);
                 self.set_loaded_source(std::sync::Arc::new(opened.source));
                 #[cfg(not(target_family = "wasm"))]
-                { self.jtd_source_path = original_path; self.document.set_file(None); }
+                { self.jtd.source_path = original_path; self.document.set_file(None); }
                 #[cfg(any(target_os = "android", target_family = "wasm"))]
                 {
                     self.phone_editing = true;
@@ -1368,7 +1369,7 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         { self.bom_source = None; }
         #[cfg(target_family = "wasm")]
-        { self.web_law_source = None; }
+        { self.web.law_source = None; }
         #[cfg(any(target_os = "android", target_family = "wasm"))]
         {
             self.phone_editing = false;
@@ -1376,22 +1377,22 @@ impl SlideEditor {
         }
         #[cfg(not(target_family = "wasm"))]
         { self.standard_source_path = None; }
-        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
+        self.jtd.gallery_generation = self.jtd.gallery_generation.wrapping_add(1);
         with_format!(self, show_end(self, window, cx));
         self.opened_from_legacy = presentation.opened_from_legacy;
-        self.jtd_original = None;
+        self.jtd.original = None;
         self.production_image_view = None;
         #[cfg(not(target_family = "wasm"))]
         {
             self.image_sequence = None;
         }
         self.image_provenance = None;
-        self.jtd_gallery = false;
-        self.jtd_gallery_body = None;
-        self.jtd_thumbnail = false;
-        self.jtd_thumbnail_previous = None;
+        self.jtd.gallery = false;
+        self.jtd.gallery_body = None;
+        self.jtd.thumbnail = false;
+        self.jtd.thumbnail_previous = None;
         #[cfg(not(target_family = "wasm"))]
-        { self.jtd_source_path = None; }
+        { self.jtd.source_path = None; }
         self.signature = Default::default();
         self.modify_unlocked = false;
         self.zoom_menu_open = false;
@@ -1609,8 +1610,8 @@ impl SlideEditor {
     /// running WASM window without reloading the page.
     #[cfg(target_family = "wasm")]
     pub fn open_web_url(&mut self, url: String, fallback_name: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.web_open_generation = self.web_open_generation.wrapping_add(1);
-        let generation = self.web_open_generation;
+        self.web.open_generation = self.web.open_generation.wrapping_add(1);
+        let generation = self.web.open_generation;
         let closed = self.closed;
         self.set_status(crate::i18n::format("file.opening", &[("name", &fallback_name)]), cx);
         cx.spawn_in(window, async move |this, cx| {
@@ -1618,7 +1619,7 @@ impl SlideEditor {
                 Ok((fetched_name, data)) => {
                     let name = if fetched_name.is_empty() { fallback_name } else { fetched_name };
                     this.update_in(cx, |this, window, cx| {
-                        if this.closed != closed || this.web_open_generation != generation {
+                        if this.closed != closed || this.web.open_generation != generation {
                             return;
                         }
                         this.open_web_bytes(name, data, false, window, cx);
@@ -1627,7 +1628,7 @@ impl SlideEditor {
                 }
                 Err(err) => {
                     this.update(cx, |this, cx| {
-                        if this.closed != closed || this.web_open_generation != generation {
+                        if this.closed != closed || this.web.open_generation != generation {
                             return;
                         }
                         this.set_status(
@@ -1646,15 +1647,15 @@ impl SlideEditor {
     /// document. Initial links and the file picker use the same safe path.
     #[cfg(target_family = "wasm")]
     pub fn open_web_bytes(&mut self, name: String, data: Vec<u8>, initial: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
-        self.web_open_generation = self.web_open_generation.wrapping_add(1);
-        let generation = self.web_open_generation;
+        self.jtd.gallery_generation = self.jtd.gallery_generation.wrapping_add(1);
+        self.web.open_generation = self.web.open_generation.wrapping_add(1);
+        let generation = self.web.open_generation;
         let closed = self.closed;
         cx.spawn_in(window, async move |this, cx| {
             let name: SharedString = name.into();
             let kind = name.rsplit_once('.').and_then(|(_, e)| ibis_formats::Kind::from_extension(e));
             let Ok(true) = this.update_in(cx, |this, window, cx| {
-                if this.closed != closed || this.web_open_generation != generation { return false; }
+                if this.closed != closed || this.web.open_generation != generation { return false; }
                 match kind {
                     Some(kind) if !this.has_document => this.begin_loading(kind, name.clone(), window, cx),
                     _ => this.set_status(crate::i18n::format("file.opening", &[("name", &name)]), cx),
@@ -1670,7 +1671,7 @@ impl SlideEditor {
             {
                 if needs_tree {
                     this.update_in(cx, |this, window, cx| {
-                        if this.closed != closed || this.web_open_generation != generation {
+                        if this.closed != closed || this.web.open_generation != generation {
                             return;
                         }
                         match crate::structured_view::create_csv_view(name.clone(), data, window, cx) {
@@ -1678,7 +1679,7 @@ impl SlideEditor {
                                 this.loading = false;
                                 this.has_document = true;
                                 this.file_name = Some(name.clone());
-                                this.web_structured_view = Some(view);
+                                this.web.structured_view = Some(view);
                                 this.status = None;
                                 window.set_window_title(&format!("{name} — Docs"));
                                 cx.notify();
@@ -1704,7 +1705,7 @@ impl SlideEditor {
                     }
                 }
                 this.update_in(cx, |this, window, cx| {
-                    if this.closed != closed || this.web_open_generation != generation { return; }
+                    if this.closed != closed || this.web.open_generation != generation { return; }
                     match result {
                         Ok(opened) => this.load(opened.presentation, name, window, cx),
                         Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
@@ -1717,7 +1718,7 @@ impl SlideEditor {
             if let Some(PreviewImport::FixedLayout(format)) = preview_import {
                 let result = format.read(data.into());
                 this.update_in(cx, |this, window, cx| {
-                    if this.closed != closed || this.web_open_generation != generation { return; }
+                    if this.closed != closed || this.web.open_generation != generation { return; }
                     match result {
                         Ok(presentation) => this.load(presentation, name, window, cx),
                         Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
@@ -1733,7 +1734,7 @@ impl SlideEditor {
                     }
                 }
                 this.update_in(cx, |this, window, cx| {
-                    if this.closed != closed || this.web_open_generation != generation { return; }
+                    if this.closed != closed || this.web.open_generation != generation { return; }
                     match result {
                         Ok((presentation, gallery)) => this.load_jtd(presentation, name, data, gallery, window, cx),
                         Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
@@ -1764,7 +1765,7 @@ impl SlideEditor {
                         }
                     }
                     this.update_in(cx, |this, window, cx| {
-                        if this.closed != closed || this.web_open_generation != generation { return; }
+                        if this.closed != closed || this.web.open_generation != generation { return; }
                         match result {
                             Ok(presentation) => this.load(presentation, name, window, cx),
                             Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
@@ -1779,12 +1780,12 @@ impl SlideEditor {
                     let mut preview = ibis_formats::production_image::open_with_exposure(extension, &data);
                     if preview.as_ref().is_err_and(|error| error == DPX_NEEDS_COLOR) {
                         let Ok(Some(receiver)) = this.update_in(cx, |this, window, cx| {
-                            (this.closed == closed && this.web_open_generation == generation)
+                            (this.closed == closed && this.web.open_generation == generation)
                                 .then(|| prompt_dpx_color(window, cx))
                         }) else { return; };
                         let color = dpx_color_answer(receiver.await.ok());
                         let still_opening = this.update(cx, |this, cx| {
-                            if this.closed != closed || this.web_open_generation != generation { return false; }
+                            if this.closed != closed || this.web.open_generation != generation { return false; }
                             if color.is_none() { this.fail_loading(String::new(), cx); }
                             true
                         }).unwrap_or(false);
@@ -1810,7 +1811,7 @@ impl SlideEditor {
             }
             this.update_in(cx, |this, window, cx| match result {
                 // Closed (ファイル > 閉じる) while it was read.
-                _ if this.closed != closed || this.web_open_generation != generation => {}
+                _ if this.closed != closed || this.web.open_generation != generation => {}
                 Ok((opened, exposure)) => {
                     let is_ppsx = name.rsplit_once('.').is_some_and(|(_, e)| ibis_formats::is_slideshow(e));
                     let is_tmpl = name.rsplit_once('.').is_some_and(|(_, e)| ibis_formats::is_template(e));
@@ -1823,7 +1824,7 @@ impl SlideEditor {
                         name
                     };
                     this.load(opened.presentation, doc_name, window, cx);
-                    this.web_law_source = law_source;
+                    this.web.law_source = law_source;
                     this.set_production_image_view(production_image, exposure);
                     this.image_provenance = image_provenance;
                     this.set_opened_source(std::sync::Arc::new(opened.source), production_image);
@@ -1903,7 +1904,7 @@ impl SlideEditor {
         cx: &mut Context<Self>,
         opened: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
     ) {
-        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
+        self.jtd.gallery_generation = self.jtd.gallery_generation.wrapping_add(1);
         self.commit_edit(window, cx);
         let name: SharedString = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default().into();
         let kind = path.extension().and_then(|e| e.to_str()).and_then(ibis_formats::Kind::from_extension);
@@ -2271,7 +2272,7 @@ impl SlideEditor {
             self.has_document = false;
         #[cfg(target_family = "wasm")]
         {
-            self.web_structured_view = None;
+            self.web.structured_view = None;
         }
         crate::app::track_start_window(cx.entity_id(),None,true,cx);
         self.document_memory = Default::default();
@@ -2283,7 +2284,7 @@ impl SlideEditor {
     /// ファイル > 閉じる: close the open file and show the start view
     /// (スタート画面) in the window, as Office does.
     pub fn close_file(&mut self, _: &CloseFile, window: &mut Window, cx: &mut Context<Self>) {
-        self.jtd_gallery_generation = self.jtd_gallery_generation.wrapping_add(1);
+        self.jtd.gallery_generation = self.jtd.gallery_generation.wrapping_add(1);
         if !self.has_document {
             // The start window closes too (⌘W / Ctrl+W), so the windows can be closed one after
             // another; the app ends with its last window, as with the window's red button. Not in
@@ -2438,7 +2439,7 @@ impl SlideEditor {
         self.has_document = false;
         #[cfg(target_family = "wasm")]
         {
-            self.web_structured_view = None;
+            self.web.structured_view = None;
         }
         crate::app::track_start_window(cx.entity_id(),None,true,cx);
         self.document_memory = Default::default();
@@ -2790,13 +2791,13 @@ impl SlideEditor {
         let standard_source_path = self.standard_source_path.clone();
         #[cfg(not(target_family = "wasm"))]
         let protection_password = self.protection_password.clone();
-        let jtd_original = self.jtd_original.clone();
-        let jtd_gallery = self.jtd_gallery;
-        let jtd_gallery_body = self.jtd_gallery_body.clone();
-        let jtd_thumbnail = self.jtd_thumbnail;
-        let jtd_thumbnail_previous = self.jtd_thumbnail_previous.clone();
+        let jtd_original = self.jtd.original.clone();
+        let jtd_gallery = self.jtd.gallery;
+        let jtd_gallery_body = self.jtd.gallery_body.clone();
+        let jtd_thumbnail = self.jtd.thumbnail;
+        let jtd_thumbnail_previous = self.jtd.thumbnail_previous.clone();
         #[cfg(not(target_family = "wasm"))]
-        let jtd_source_path = self.jtd_source_path.clone();
+        let jtd_source_path = self.jtd.source_path.clone();
         if self.format_info().several_windows.is_some() {
             // The same file in another window: the two share the document and the file's id.
             let file_id = if self.file_id == 0 {
@@ -2834,13 +2835,13 @@ impl SlideEditor {
                 editor.structured_preview = structured_preview;
                 #[cfg(not(target_family = "wasm"))]
                 { editor.standard_source_path = standard_source_path; editor.protection_password = protection_password; editor.bom_source = bom_source; }
-                editor.jtd_original = jtd_original;
-                editor.jtd_gallery = jtd_gallery;
-                editor.jtd_gallery_body = jtd_gallery_body;
-                editor.jtd_thumbnail = jtd_thumbnail;
-                editor.jtd_thumbnail_previous = jtd_thumbnail_previous;
+                editor.jtd.original = jtd_original;
+                editor.jtd.gallery = jtd_gallery;
+                editor.jtd.gallery_body = jtd_gallery_body;
+                editor.jtd.thumbnail = jtd_thumbnail;
+                editor.jtd.thumbnail_previous = jtd_thumbnail_previous;
                 #[cfg(not(target_family = "wasm"))]
-                { editor.jtd_source_path = jtd_source_path; }
+                { editor.jtd.source_path = jtd_source_path; }
                 editor.file_id = file_id;
                 editor.window_number = Some(new_num);
                 editor.current_slide = current;
@@ -4667,7 +4668,7 @@ impl SlideEditor {
             return d.child(self.render_start_view(narrow_phone, cx));
         }
         #[cfg(target_family = "wasm")]
-        if let Some(view) = self.web_structured_view.clone() {
+        if let Some(view) = self.web.structured_view.clone() {
             return d
                 .child(self.render_title_row(window, cx))
                 .when(self.show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))

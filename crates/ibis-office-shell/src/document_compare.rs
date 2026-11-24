@@ -209,7 +209,7 @@ impl SlideEditor {
         {
             return;
         }
-        let Some(active) = self.web_law_source.clone() else {
+        let Some(active) = self.web.law_source.clone() else {
             self.show_alert(text("compare.failed"), text("compare.open-law-first"), cx);
             return;
         };
