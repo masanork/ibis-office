@@ -94,6 +94,32 @@ Linux AppImage、macOS、Windows の Desktop CI はパッケージから取り�
 配布経路ごとの対象と SLSA Build L3 に向けた差分は
 [配布物のサプライチェーン検証](supply-chain-fit-gap.md)を参照。
 
+### Linux AppImage の署名付きビルド来歴
+
+`masanork` の push、対象タグ、手動実行では、AppImage をビルドしたジョブから
+別の GitHub ホストランナーに成果物を渡し、GitHub Artifact Attestations で署名する。
+署名権限は署名ジョブに付与し、PR 実行では署名ジョブを起動しない。
+署名した証跡は `desktop-ci-linux-x64-provenance` に収録し、
+マイルストーン Release では AppImage と同じ場所に置く。
+手動で Linux だけを検証する場合は Desktop build CI の `appimage_only` を選ぶ。
+
+検証時は、信頼するコミットと Git ref を指定する。タグ付き Release の場合は
+`refs/tags/sorane-v…`、統合ブランチのビルドでは `refs/heads/masanork` を使う。
+
+```bash
+gh attestation verify desktop-linux-x64-ci.AppImage \
+  --bundle desktop-linux-x64-ci.AppImage.intoto.jsonl \
+  --repo masanork/ibis-office \
+  --signer-workflow masanork/ibis-office/.github/workflows/desktop-ci.yml \
+  --source-digest "$EXPECTED_SOURCE_SHA" --source-ref "$EXPECTED_REF" \
+  --deny-self-hosted-runners
+```
+
+CI はさらに別のランナーへ AppImage と bundle をダウンロードし、署名、digest、
+出所を検証する。改変した AppImage と異なる ref が拒否されることも確認する。
+この段階で検証するのは GitHub ホストランナー上の署名付き来歴と AppImage の結び付きである。
+[SLSA Build L3 の評価項目](supply-chain-fit-gap.md)として、信頼境界と実行間の隔離の確認を続ける。
+
 ## マイルストーン Release
 
 `masanork` の履歴にある検証済みコミットに `sorane-v1.2.3` のようなタグを
