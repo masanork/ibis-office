@@ -173,18 +173,14 @@ fn palette_wrap(){
 }
 fn office_theme_color_picker_tracks_preset() {
     use crate::shell::chrome::MenuEntry;
-    for (file, action_prefix) in [
-        ("test/editing/docx-report.docx", "docx.design.theme-colors"),
-        ("test/editing/pptx-plan.pptx", "pptx.theme.palette"),
+    for (file, action_prefix, toolbar_id) in [
+        ("test/editing/docx-report.docx", "docx.design.theme-colors", "text-color"),
+        ("test/editing/pptx-plan.pptx", "pptx.theme.palette", "background"),
     ] {
         let mut scenario = Scenario::open(file);
         for (preset, expected_accent) in [("office", 0x156082), ("office_2013_2022", 0x4472c4)] {
-            if action_prefix.starts_with("docx") {
-                scenario.menu(&format!("{action_prefix}.{preset}"));
-            } else {
-                scenario.update(|e, w, cx| e.apply_theme_palette(preset, w, cx));
-            }
-            let button = scenario.tool_button("text-color").expect("Font Color toolbar button");
+            scenario.menu(&format!("{action_prefix}.{preset}"));
+            let button = scenario.tool_button(toolbar_id).expect("toolbar color picker");
             let palette = button.menu.unwrap().into_iter().find_map(|entry| match entry {
                 MenuEntry::Palette(palette) => Some(palette),
                 _ => None,
