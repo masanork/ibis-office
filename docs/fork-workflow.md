@@ -100,7 +100,7 @@ Linux AppImage、macOS、Windows の Desktop CI はパッケージから取り�
 別の GitHub ホストランナーに成果物を渡し、GitHub Artifact Attestations で署名する。
 Linux のビルドと署名は、コミットを固定した再利用ワークフローが実行する。
 署名権限はその中の署名ジョブに付与し、PR 実行は読み取り専用の呼び出しを使う。
-署名ジョブはコードを checkout せず、同じ実行の AppImage をダウンロードしてハッシュする。
+署名ジョブはコードを checkout せず、ビルドが返した不変の artifact ID で同じ実行の AppImage を取得してハッシュする。
 署名した証跡は `desktop-ci-linux-x64-provenance` に収録し、
 マイルストーン Release では AppImage と同じ場所に置く。
 手動で Linux だけを検証する場合は Desktop build CI の `appimage_only` を選ぶ。
@@ -113,7 +113,7 @@ gh attestation verify desktop-linux-x64-ci.AppImage \
   --bundle desktop-linux-x64-ci.AppImage.intoto.jsonl \
   --repo masanork/ibis-office \
   --signer-workflow masanork/ibis-office/.github/workflows/linux-appimage-builder.yml \
-  --signer-digest 4ece3e9e7bcb6c57466f9dcd8a3b52599441fe61 \
+  --signer-digest 3536557e9432b8702bfbc82a905fa749fb472225 \
   --source-digest "$EXPECTED_SOURCE_SHA" --source-ref "$EXPECTED_REF" \
   --deny-self-hosted-runners
 ```

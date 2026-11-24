@@ -24,7 +24,7 @@ env:
   EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   IBIS_BUILD_BRANCH: ${{ github.head_ref || github.ref_name }}
   CARGO_TERM_COLOR: never
-  APPIMAGE_BUILDER_SHA: 4ece3e9e7bcb6c57466f9dcd8a3b52599441fe61
+  APPIMAGE_BUILDER_SHA: 3536557e9432b8702bfbc82a905fa749fb472225
 
 jobs:
   validate-source:
@@ -167,7 +167,7 @@ jobs:
     needs: validate-source
     permissions:
       contents: read
-    uses: masanork/ibis-office/.github/workflows/linux-appimage-compile.yml@4ece3e9e7bcb6c57466f9dcd8a3b52599441fe61
+    uses: masanork/ibis-office/.github/workflows/linux-appimage-compile.yml@3536557e9432b8702bfbc82a905fa749fb472225
 
   linux:
     name: Linux AppImage trusted build
@@ -177,7 +177,7 @@ jobs:
       attestations: write
       contents: read
       id-token: write
-    uses: masanork/ibis-office/.github/workflows/linux-appimage-builder.yml@4ece3e9e7bcb6c57466f9dcd8a3b52599441fe61
+    uses: masanork/ibis-office/.github/workflows/linux-appimage-builder.yml@3536557e9432b8702bfbc82a905fa749fb472225
 
   verify-linux-provenance:
     name: Verify downloaded Linux AppImage provenance
@@ -189,13 +189,18 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Require the signed builder's artifact IDs
+        env:
+          APPIMAGE_ID: ${{ needs.linux.outputs.appimage_artifact_id }}
+          PROVENANCE_ID: ${{ needs.linux.outputs.provenance_artifact_id }}
+        run: '[[ "$APPIMAGE_ID" =~ ^[0-9]+$ && "$PROVENANCE_ID" =~ ^[0-9]+$ ]]'
       - uses: actions/download-artifact@v4
         with:
-          name: desktop-ci-linux-x64
+          artifact-ids: ${{ needs.linux.outputs.appimage_artifact_id }}
           path: linux
       - uses: actions/download-artifact@v4
         with:
-          name: desktop-ci-linux-x64-provenance
+          artifact-ids: ${{ needs.linux.outputs.provenance_artifact_id }}
           path: provenance
       - name: Verify signature, source and AppImage digest
         run: |
@@ -323,6 +328,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      attestations: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -358,6 +364,11 @@ jobs:
             cp "$dir/build-info.json" "release/build-info-$platform.json"
           done
           cp artifacts/desktop-ci-linux-x64-provenance/desktop-linux-x64-ci.AppImage.intoto.jsonl release/
+          gh attestation verify release/desktop-linux-x64-ci.AppImage \
+            --bundle release/desktop-linux-x64-ci.AppImage.intoto.jsonl --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/linux-appimage-builder.yml" \
+            --signer-digest "$APPIMAGE_BUILDER_SHA" --source-digest "$EXPECTED_SOURCE_SHA" \
+            --source-ref "$GITHUB_REF" --deny-self-hosted-runners
           (cd release && sha256sum * > SHA256SUMS)
           release_flags=()
           [[ "$TAG" == *-*.*.*-* ]] && release_flags+=(--prerelease)
