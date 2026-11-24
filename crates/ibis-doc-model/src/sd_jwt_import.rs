@@ -23,6 +23,8 @@ pub enum ParsedCredentialFormat {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedClaim {
     pub mdoc_element: Option<(String, String)>,
+    /// SD-JWT object member names, before joining them for worksheet display.
+    pub sd_jwt_path: Option<Vec<String>>,
     pub path: String,
     pub value: ClaimValue,
     pub selective: bool,
@@ -560,6 +562,7 @@ fn collect_sd_jwt_object(
                 out.push(ParsedClaim {
                     mdoc_element: None,
                     path: path.join("."),
+                    sd_jwt_path: Some(path),
                     value: ClaimValue::Array(resolved),
                     selective: false,
                     disclose: true,
@@ -570,6 +573,7 @@ fn collect_sd_jwt_object(
                 out.push(ParsedClaim {
                     mdoc_element: None,
                     path: path.join("."),
+                    sd_jwt_path: Some(path),
                     value: other.clone(),
                     selective: false,
                     disclose: true,
@@ -611,6 +615,7 @@ fn collect_sd_jwt_object(
                         out.push(ParsedClaim {
                             mdoc_element: None,
                             path: path.join("."),
+                            sd_jwt_path: Some(path),
                             value: ClaimValue::Array(resolved),
                             selective: true,
                             disclose: true,
@@ -621,6 +626,7 @@ fn collect_sd_jwt_object(
                         out.push(ParsedClaim {
                             mdoc_element: None,
                             path: path.join("."),
+                            sd_jwt_path: Some(path),
                             value: other.clone(),
                             selective: true,
                             disclose: true,
@@ -1191,6 +1197,7 @@ fn parse_mdoc_document(
 
             claims.push(ParsedClaim {
                 mdoc_element: Some((ns_name.to_string(), elem_id.to_string())),
+                sd_jwt_path: None,
                 path,
                 value: elem_val.to_claim_value(),
                 selective: true,

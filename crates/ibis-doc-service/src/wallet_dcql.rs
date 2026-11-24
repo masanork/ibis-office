@@ -34,6 +34,15 @@ fn mdoc_path(namespace: &str, element: &str) -> String {
     format!("/{}/{}", escape(namespace), escape(element))
 }
 
+fn sd_jwt_path(segments: impl IntoIterator<Item = impl AsRef<str>>) -> String {
+    // Keep familiar dotted output for ordinary names, but distinguish literal dots.
+    segments
+        .into_iter()
+        .map(|segment| segment.as_ref().replace('\\', "\\\\").replace('.', "\\."))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 pub(crate) fn single_credential(query: &Value) -> Result<(&Value, &str), ToolError> {
     object(query, &["credentials"])?;
     let credentials = query["credentials"]
@@ -41,7 +50,24 @@ pub(crate) fn single_credential(query: &Value) -> Result<(&Value, &str), ToolErr
         .filter(|list| list.len() == 1)
         .ok_or_else(|| ToolError::invalid("DCQL requires one credential query"))?;
     let credential = &credentials[0];
-    object(credential, &["id", "format", "meta", "claims"])?;
+    object(
+        credential,
+        &[
+            "id",
+            "format",
+            "meta",
+            "claims",
+            "require_cryptographic_holder_binding",
+        ],
+    )?;
+    if credential
+        .get("require_cryptographic_holder_binding")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(ToolError::invalid(
+            "DCQL holder binding requirement must be a boolean",
+        ));
+    }
     let id = nonempty(&credential["id"])
         .filter(|id| {
             id.bytes()
@@ -87,10 +113,15 @@ pub(crate) fn compare(
     for claim in claims {
         let path = if let Some((namespace, element)) = &claim.mdoc_element {
             mdoc_path(namespace, element)
-        } else if matches!(claim.path.as_str(), "iss" | "vct") {
-            continue;
         } else {
-            claim.path.clone()
+            let segments = claim
+                .sd_jwt_path
+                .as_deref()
+                .ok_or_else(|| ToolError::invalid("missing structured SD-JWT claim path"))?;
+            if matches!(segments, [field] if matches!(field.as_str(), "iss" | "vct")) {
+                continue;
+            }
+            sd_jwt_path(segments)
         };
         if actual.insert(path, &claim.value).is_some() {
             return Err(ToolError::invalid("ambiguous disclosed claim path"));
@@ -103,7 +134,19 @@ pub(crate) fn compare(
     let mut expected = BTreeSet::new();
     let mut value_mismatches = BTreeSet::new();
     for request in requests {
-        object(request, &["path", "values"])?;
+        if mdoc {
+            object(request, &["path", "values", "intent_to_retain"])?;
+            if request
+                .get("intent_to_retain")
+                .is_some_and(|value| !value.is_boolean())
+            {
+                return Err(ToolError::invalid(
+                    "DCQL mdoc intent_to_retain must be a boolean",
+                ));
+            }
+        } else {
+            object(request, &["path", "values"])?;
+        }
         let path = match request["path"].as_array().map(Vec::as_slice) {
             Some([namespace, element]) if mdoc => match (nonempty(namespace), nonempty(element)) {
                 (Some(namespace), Some(element)) => mdoc_path(namespace, element),
@@ -113,10 +156,16 @@ pub(crate) fn compare(
                     ));
                 }
             },
-            Some([field]) if !mdoc => nonempty(field)
-                .filter(|field| !field.contains('.'))
-                .ok_or_else(|| ToolError::invalid("DCQL supports flat SD-JWT claim paths"))?
-                .to_owned(),
+            Some(segments) if !mdoc && !segments.is_empty() => {
+                let segments = segments
+                    .iter()
+                    .map(nonempty)
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| {
+                        ToolError::invalid("DCQL SD-JWT paths require object member names")
+                    })?;
+                sd_jwt_path(segments)
+            }
             _ => return Err(ToolError::invalid("unsupported DCQL claim path")),
         };
         if !expected.insert(path.clone()) {

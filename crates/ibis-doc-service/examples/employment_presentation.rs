@@ -47,7 +47,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             disclosures: Default::default(),
         };
         assert_eq!(query["require_cryptographic_holder_binding"], true);
-        let (token, full_token, namespace) = if format == "sd-jwt" {
+        let mut incomplete = bindings.clone();
+        incomplete.claims[1].disclose = false;
+        let (token, incomplete_token, full_token, namespace) = if format == "sd-jwt" {
             assert_eq!(query["format"], "dc+sd-jwt");
             assert_eq!(
                 query["claims"],
@@ -69,6 +71,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let output = issue_sd_jwt(&bindings, &options, &issuer);
             (
                 output
+                    .attach_key_binding(AUDIENCE, NONCE, 1_700_000_000, &holder)
+                    .vp_token,
+                issue_sd_jwt(&incomplete, &options, &issuer)
                     .attach_key_binding(AUDIENCE, NONCE, 1_700_000_000, &holder)
                     .vp_token,
                 output.sd_jwt_all,
@@ -96,6 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let output = issue_mdoc(&bindings, &options, &issuer);
             (
                 output.base64url_presentation,
+                issue_mdoc(&incomplete, &options, &issuer).base64url_presentation,
                 output.base64url_all,
                 Some(namespace),
             )
@@ -146,21 +152,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(actual[expected[0]], record["certification_date"]);
         assert_eq!(actual[expected[1]], record["work_schedule"]["total"]);
 
-        // The diagnostics API's expected-path mode supports these objects. Its
-        // DCQL subset does not consume the generated OpenID4VP query directly.
-        let report = |audience, nonce| {
+        let id = query["id"].as_str().ok_or("missing DCQL credential ID")?;
+        let report = |token: &str, dcql: &Value, audience, nonce| {
             ibis_doc_service::compare_presentation(&json!({
                 "format": format, "issuer_jwk": serde_json::from_str::<Value>(&issuer_jwk).unwrap(),
-                "token": token, "expected_paths": expected, "audience": audience, "nonce": nonce,
+                "vp_token": {(id): [token]}, "dcql_query": dcql, "audience": audience, "nonce": nonce,
             }))
         };
-        let matched = report(AUDIENCE, NONCE)?;
+        let dcql = &input[format];
+        let matched = report(&token, dcql, AUDIENCE, NONCE)?;
+        assert_eq!(matched["dcql"]["credential_type_matches"], true);
+        assert_eq!(matched["vp_token_credential_id"], id);
+        let missing = report(&incomplete_token, dcql, AUDIENCE, NONCE)?;
+        let extra = report(&full_token, dcql, AUDIENCE, NONCE)?;
+        let rendered_path = |element| match namespace {
+            Some(namespace) => format!("/{namespace}/{element}"),
+            None => element,
+        };
+        assert_eq!(
+            missing["missing_paths"],
+            json!([rendered_path(total_path.to_owned())])
+        );
+        assert_eq!(missing["unexpected_paths"], json!([]));
+        assert_eq!(extra["missing_paths"], json!([]));
+        assert_eq!(
+            extra["unexpected_paths"],
+            json!([
+                rendered_path("employment_type".to_owned()),
+                rendered_path(days_path.to_owned())
+            ])
+        );
+        if format == "sd-jwt" {
+            let mut literal_dot = dcql.clone();
+            literal_dot["credentials"][0]["claims"][1]["path"] = json!(["work_schedule.total"]);
+            let result = report(&token, &literal_dot, AUDIENCE, NONCE)?;
+            assert_eq!(result["missing_paths"], json!([r"work_schedule\.total"]));
+            assert_eq!(result["unexpected_paths"], json!(["work_schedule.total"]));
+        }
         assert_eq!(matched["issuer_signature_valid"], true);
         assert_eq!(matched["supplied_disclosure_digests_match"], true);
         assert_eq!(matched["missing_paths"], json!([]));
         assert_eq!(matched["unexpected_paths"], json!([]));
-        let other_recipient = report("https://other-verifier.example", NONCE)?;
-        let other_application = report(AUDIENCE, "childcare-application-2")?;
+        let other_recipient = report(&token, dcql, "https://other-verifier.example", NONCE)?;
+        let other_application = report(&token, dcql, AUDIENCE, "childcare-application-2")?;
         if format == "sd-jwt" {
             for key in [
                 "holder_signature_valid",
@@ -183,6 +217,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "format": format, "certification_date": actual[expected[0]], "total": actual[expected[1]],
             "issuer_signature_valid": matched["issuer_signature_valid"],
             "disclosure_digests_verified": matched["disclosure_digests_verified"],
+            "missing_when_omitted": missing["missing_paths"],
+            "unexpected_when_fully_disclosed": extra["unexpected_paths"],
             "other_recipient_matches": other_recipient["audience_matches"],
             "other_application_matches": other_application["nonce_matches"],
             "device_authentication": matched["device_authentication"],
