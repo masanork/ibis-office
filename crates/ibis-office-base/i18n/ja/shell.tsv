@@ -1693,6 +1693,9 @@ xlsx.sbom-refresh-failed	脆弱性レビューを更新できませんでした�
 xlsx.sbom-actions	脆弱性レビューの要対応を表示…
 xlsx.sbom-actions-failed	脆弱性レビューの要対応を開けませんでした（{error}）
 file.open-folder	フォルダーを開く…
+folder.backlinks	参照しているファイル
+folder.backlinks-empty	索引内に参照はありません
+folder.backlinks-partial	Markdown 索引は一部のみです
 folder.filter	ファイル名、パス、type:Metric、tag:finance
 folder.okf.unverified	未検証
 folder.okf.machine-confirmed	機械確認済み

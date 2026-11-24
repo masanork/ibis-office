@@ -215,6 +215,10 @@ impl Folder {
 
     fn reference_path(&self, from: &str, reference: &str) -> Result<String, String> {
         self.resolve(from)?;
+        self.indexed_reference_path(from, reference)
+    }
+
+    fn indexed_reference_path(&self, from: &str, reference: &str) -> Result<String, String> {
         if let Some(wiki) = reference.strip_prefix("[[").and_then(|text| text.strip_suffix("]]")) {
             let target = wiki.split(['|', '#']).next().unwrap_or("").trim();
             if target.is_empty() {
@@ -879,12 +883,15 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+            let fixture_id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
             let nonce = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
             let path =
-                std::env::temp_dir().join(format!("ibis-folder-{}-{nonce}", std::process::id()));
+                std::env::temp_dir().join(format!("ibis-folder-{}-{nonce}-{fixture_id}", std::process::id()));
             std::fs::create_dir_all(path.join("資料")).unwrap();
             Self(path)
         }
@@ -1018,6 +1025,50 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn folder_backlinks_resolve_markdown_and_wiki_links_from_the_index() {
+        let fixture = Fixture::new();
+        fixture.write("資料/共通要件.md", "# 認証\n");
+        fixture.write("資料/予算.xlsx", "attachment");
+        fixture.write("relative.md", r#"---
+example: "[ignored](/資料/共通要件.md)"
+---
+
+# 手続
+
+[共通要件](/資料/共通要件.md#認証) と [再掲](/資料/共通要件.md)。
+"#);
+        fixture.write("資料/wiki.markdown", "# 手順\n\n[[共通要件#認証|認証を見る]]\n\n[予算][sheet]\n\n[sheet]: 予算.xlsx\n");
+        fixture.write("ignored.md", r#"`[[共通要件]]`
+
+~~~markdown
+[example](/資料/共通要件.md)
+~~~
+
+![[資料/共通要件]]
+[external](https://example.org/資料/共通要件.md)
+"#);
+        let folder = Folder::scan(&fixture.0).unwrap();
+        let backlinks = folder.markdown_index.backlinks("資料/共通要件.md");
+        assert_eq!(backlinks.len(), 2);
+        assert_eq!((backlinks[0].source.path.as_str(), backlinks[0].line), ("relative.md", 7));
+        assert_eq!((backlinks[1].source.path.as_str(), backlinks[1].line), ("資料/wiki.markdown", 3));
+        assert!(matches!(&backlinks[0].source.position, Some(ReferencePosition::Heading(heading)) if heading == "手続"));
+        assert!(backlinks[0].excerpt.contains("共通要件"));
+        assert_eq!(folder.markdown_index.backlinks("資料/予算.xlsx")[0].line, 5);
+        assert!(!folder.markdown_index.partial);
+
+        fixture.write("共通要件.md", "# Same name outside the subfolder\n");
+        let refreshed = Folder::scan(&fixture.0).unwrap();
+        assert_eq!(refreshed.markdown_index.backlinks("資料/共通要件.md").len(), 1);
+        assert!(refreshed.markdown_index.backlinks("共通要件.md").is_empty());
+
+        fixture.write("thematic.md", "---\n[Still visible](/資料/共通要件.md)\n---\n");
+        let refreshed = Folder::scan(&fixture.0).unwrap();
+        let backlinks = refreshed.markdown_index.backlinks("資料/共通要件.md");
+        assert_eq!((backlinks[1].source.path.as_str(), backlinks[1].line), ("thematic.md", 2));
     }
 
     #[test]

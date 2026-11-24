@@ -315,6 +315,38 @@ impl SlideEditor {
             .min_h_0()
             .flex_1()
             .overflow_y_scroll();
+        if let Some(relative) = self.file_path().as_deref()
+            .and_then(|file| file.strip_prefix(&pane.folder.root).ok())
+            .and_then(|path| path.to_str())
+            .filter(|path| pane.folder.files.binary_search_by(|file| file.as_str().cmp(path)).is_ok())
+        {
+            let backlinks = pane.folder.markdown_index.backlinks(relative);
+            rows = rows
+                .child(div().px_1().text_sm().child(text("folder.backlinks")))
+                .when(pane.folder.markdown_index.partial, |rows| {
+                    rows.child(div().px_1().text_xs().child(text("folder.backlinks-partial")))
+                })
+                .when(backlinks.is_empty(), |rows| {
+                    rows.child(div().px_1().text_xs().child(text("folder.backlinks-empty")))
+                });
+            for backlink in backlinks {
+                let source = backlink.source.clone();
+                rows = rows.child(
+                    div()
+                        .id(SharedString::from(format!("folder-backlink:{}", source.path)))
+                        .cursor_pointer()
+                        .px_1()
+                        .py_1()
+                        .hover(|row| row.bg(cx.theme().accent))
+                        .child(div().text_sm().truncate().child(format!("{} · {}", source.path, backlink.line)))
+                        .child(div().text_xs().truncate().child(backlink.excerpt.clone()))
+                        .on_click(cx.listener(move |editor, _, window, cx| {
+                            editor.open_folder_reference(&source, window, cx)
+                        })),
+                );
+            }
+            rows = rows.child(div().my_1().h(px(1.)).bg(cx.theme().border));
+        }
         let mut matches = pane.folder.files.iter().filter(|path| {
             if query.is_empty() {
                 *path != "index.md"
