@@ -272,19 +272,21 @@ fn report_side<'a>(workbook: &'a Presentation, name: &str, metric: &str, key: Op
     Ok(Side { metric: kind, totals, groups, evidence, source })
 }
 
-fn decomposition(before: &Side<'_>, after: &Side<'_>, delta: Option<f64>, key: Option<&str>) -> Value {
+fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, key: Option<&str>) -> Value {
     let Some(delta) = delta else { return json!({"state":"unavailable"}); };
     let scale = match before.metric { Metric::Rate => 100., Metric::Average => 1. };
     let before_total = before.totals.denominator;
     let after_total = after.totals.denominator;
     let mut within = CompensatedSum::default();
     let mut composition = CompensatedSum::default();
+    let mut total = CompensatedSum::default();
+    let mut ranked = Vec::new();
     let mut magnitude = 0.;
     let mut continued = 0;
     let mut entered = 0;
     let mut exited = 0;
     let mut contributor = None;
-    let mut accumulate = |label: &str, before: Option<Group>, after: Option<Group>| {
+    let mut accumulate = |label: &'a str, before: Option<Group>, after: Option<Group>| {
         match (before, after) {
             (Some(_), Some(_)) => continued += 1,
             (None, Some(_)) => entered += 1,
@@ -294,6 +296,8 @@ fn decomposition(before: &Side<'_>, after: &Side<'_>, delta: Option<f64>, key: O
         let effect = group_effect(before, after, before_total, after_total);
         within.add(effect.within);
         composition.add(effect.composition);
+        let contribution = (effect.within + effect.composition) * scale;
+        total.add(contribution);
         magnitude += effect.within.abs() + effect.composition.abs();
         if key == Some(label) {
             contributor = Some(json!({
@@ -301,6 +305,7 @@ fn decomposition(before: &Side<'_>, after: &Side<'_>, delta: Option<f64>, key: O
                 "before_share":effect.before_share, "after_share":effect.after_share,
             }));
         }
+        ranked.push((label, effect, contribution));
     };
     for (&label, &group) in &before.groups {
         accumulate(label, group, after.groups.get(label).copied().flatten());
@@ -311,15 +316,33 @@ fn decomposition(before: &Side<'_>, after: &Side<'_>, delta: Option<f64>, key: O
     let within = within.sum * scale;
     let composition = composition.sum * scale;
     let residual = (within + composition) - delta;
+    let group_residual = total.sum - delta;
     let tolerance = (8. * f64::EPSILON * magnitude).max(8. * f64::EPSILON * (delta.abs() / scale).max(1.)) * scale;
-    if !residual.is_finite() || !tolerance.is_finite() {
+    if !residual.is_finite() || !group_residual.is_finite() || !tolerance.is_finite() {
         return json!({"state":"non_finite"});
     }
+    let group_count = ranked.len();
+    const RANKED_LIMIT: usize = 10;
+    let rank = |left: &(&str, Effect, f64), right: &(&str, Effect, f64)| {
+        right.2.abs().total_cmp(&left.2.abs()).then_with(|| left.0.cmp(right.0))
+    };
+    if group_count > RANKED_LIMIT {
+        ranked.select_nth_unstable_by(RANKED_LIMIT, rank);
+        ranked.truncate(RANKED_LIMIT);
+    }
+    ranked.sort_unstable_by(rank);
+    let groups: Vec<_> = ranked.into_iter().map(|(key, effect, contribution)| json!({
+        "key":key, "contribution":contribution, "within_group":effect.within * scale,
+        "composition":effect.composition * scale,
+        "before_share":effect.before_share, "after_share":effect.after_share,
+    })).collect();
     json!({
-        "state":if residual.abs() <= tolerance {"ready"} else {"totals_mismatch"},
+        "state":if residual.abs() <= tolerance && group_residual.abs() <= tolerance {"ready"} else {"totals_mismatch"},
         "within_group":within,"composition":composition,"residual":residual,"tolerance":tolerance,
         "counts":{"continued":continued,"entered":entered,"exited":exited},
         "contributor":contributor,
+        "ranking":{"groups":groups,"group_count":group_count,"total_contribution":total.sum,
+            "residual":group_residual},
     })
 }
 

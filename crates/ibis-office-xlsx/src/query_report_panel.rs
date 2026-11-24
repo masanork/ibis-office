@@ -1921,6 +1921,17 @@ fn assert_quotient_effects(summary: &Value, delta_key: &str, effects: [f64; 2], 
     let breakdown = &summary["decomposition"];
     assert_eq!(breakdown["state"], "ready");
     assert_eq!(breakdown["counts"], json!({"continued":2,"entered":0,"exited":0}));
+    let ranking = &breakdown["ranking"];
+    let groups = ranking["groups"].as_array().unwrap();
+    assert_eq!(ranking["group_count"], 2);
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0]["key"], "B");
+    assert_eq!(groups[1]["key"], "A");
+    let sum: f64 = groups.iter().map(|row| row["contribution"].as_f64().unwrap()).sum();
+    let tolerance = breakdown["tolerance"].as_f64().unwrap();
+    assert!((sum - ranking["total_contribution"].as_f64().unwrap()).abs() <= tolerance);
+    assert!((sum - summary[delta_key].as_f64().unwrap()).abs() <= tolerance);
+    assert!(ranking["residual"].as_f64().unwrap().abs() <= tolerance);
     let within = breakdown["within_group"].as_f64().unwrap();
     let composition = breakdown["composition"].as_f64().unwrap();
     assert!((within - effects[0]).abs() < 1e-12);
