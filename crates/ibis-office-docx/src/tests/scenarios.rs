@@ -50,6 +50,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("docx::edit007_cut_and_copy", edit007_cut_and_copy),
         ("docx::edit016_word_shortcuts", edit016_word_shortcuts),
         ("docx::fcode_document_info_fields", fcode_document_info_fields),
+        ("docx::top_bottom_group_stays_on_one_page", top_bottom_group_stays_on_one_page),
         ("docx::float003_wrap_tight_through_top_bottom", float003_wrap_tight_through_top_bottom),
         ("docx::view007_scroll_pages_vertically", view007_scroll_pages_vertically),
         ("docx::edit010_paste_plain", edit010_paste_plain),
@@ -7927,6 +7928,66 @@ fn view007_scroll_pages_vertically() {
 
 /// DOCX-FLOAT-003/004: a picture's wrap switched to tight, through and top-and-bottom from the menu (one step of undo each),
 /// kept in the file (`wp:wrapTight`, `wp:wrapThrough`, `wp:wrapTopAndBottom`).
+fn top_bottom_group_stays_on_one_page() {
+    use crate::flow_layout::{Item, pages};
+    use ibis_doc_model::{AutoShape, EmuRect, EmuSize, Fill, FloatingAnchor, FlowRun, Geometry, GroupMember, Shape, ShapeGroup, ShapeId, ShapeKind};
+    use std::sync::Arc;
+
+    let mut scenario = Scenario::new_document(ibis_formats::Kind::Document);
+    scenario.with(|editor, _| {
+        let mut flow = (**editor.flow().unwrap()).clone();
+        let emu = |pt: i64| pt * 12_700;
+        flow.page.size = EmuSize::new(emu(200), emu(200));
+        flow.page.top = emu(10);
+        flow.page.bottom = emu(10);
+        flow.page.left = emu(10);
+        flow.page.right = emu(10);
+
+        let label = |id, x, y, width, height, text| {
+            let mut auto = AutoShape::new(Geometry::Rect, Fill::None, None);
+            auto.text = Some(ibis_doc_model::TextBody::plain(text, Default::default()));
+            let mut shape = Shape::new(
+                ShapeId(id), EmuRect::new(0, 0, emu(width), emu(height)), ShapeKind::Auto(auto),
+            );
+            shape.floating = Some(FloatingAnchor {
+                relative_h: "page".into(),
+                relative_v: "paragraph".into(),
+                offset_x: emu(x),
+                offset_y: emu(y),
+                wrap: "topAndBottom".into(),
+                ..Default::default()
+            });
+            FlowRun::new(FlowRunKind::Shape(Box::new(shape)), Default::default())
+        };
+        let first = label(101, 160, 20, 25, 110, "목");
+        let second = label(102, 180, 29, 25, 115, "차");
+        let mut outer = ShapeGroup::from_shape_ids("100", "", &[ShapeId(101)]);
+        outer.children.push(GroupMember::Group(Box::new(ShapeGroup::from_shape_ids("103", "", &[ShapeId(102)]))));
+        flow.shape_groups = vec![outer];
+        flow.body = vec![Block::Paragraph(FlowParagraph {
+            id: flow.new_id(),
+            runs: vec![first, second],
+            ..Default::default()
+        })];
+
+        let mut ungrouped = flow.clone();
+        ungrouped.shape_groups.clear();
+        assert_eq!(pages(&Arc::new(ungrouped), &editor.resources).pages.len(), 2);
+
+        let layout = pages(&Arc::new(flow), &editor.resources);
+        assert_eq!(layout.pages.len(), 1);
+        let positions: Vec<_> = layout.pages[0].items.iter().filter_map(|item| match item {
+            Item::Shape { shape, x, y, .. } => Some((shape.id, *x, *y)),
+            _ => None,
+        }).collect();
+        let [(first_id, first_x, first_y), (second_id, second_x, second_y)] = positions.as_slice()
+            else { panic!("group members: {positions:?}") };
+        assert_eq!((*first_id, *second_id), (ShapeId(101), ShapeId(102)));
+        assert!((second_x - first_x - 20.0).abs() < 0.01);
+        assert!((second_y - first_y - 9.0).abs() < 0.01);
+    });
+}
+
 fn float003_wrap_tight_through_top_bottom() {
     use ibis_doc_model::PictureWrapType as W;
     let mut s = Scenario::open(REPORT);

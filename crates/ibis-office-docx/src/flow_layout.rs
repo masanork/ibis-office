@@ -5880,6 +5880,48 @@ struct Piece {
     anchored: Vec<Arc<AnchoredCell>>,
 }
 
+fn has_top_bottom_shapes(block: &Block) -> bool {
+    match block {
+        Block::Paragraph(p) => p.runs.iter().any(|run| {
+            matches!(&run.kind, FlowRunKind::Shape(s)
+                if s.floating.as_ref().is_some_and(|f| f.wrap == "topAndBottom"))
+        }),
+        Block::Table(table) => table.rows.iter().flat_map(|row| &row.cells)
+            .flat_map(|cell| &cell.blocks).any(has_top_bottom_shapes),
+    }
+}
+
+/// Top-and-bottom wrapping reserves one band for the outer group. Keep the
+/// members in drawing order even if a text box precedes the tallest member.
+fn top_bottom_shape_bands<'a>(
+    shapes: &[&'a ibis_doc_model::Shape],
+    groups: &[ibis_doc_model::ShapeGroup],
+) -> Vec<Vec<&'a ibis_doc_model::Shape>> {
+    if shapes.len() < 2 || groups.is_empty() {
+        return shapes.iter().map(|&shape| vec![shape]).collect();
+    }
+    let mut membership = std::collections::HashMap::new();
+    for (group_index, group) in groups.iter().enumerate() {
+        for id in group.leaf_shape_ids() {
+            membership.entry(id).or_insert(group_index);
+        }
+    }
+    let mut band_index = std::collections::HashMap::new();
+    let mut bands: Vec<Vec<_>> = Vec::new();
+    for &shape in shapes {
+        if let Some(&group) = membership.get(&shape.id) {
+            let index = *band_index.entry(group).or_insert_with(|| {
+                bands.push(Vec::new());
+                bands.len() - 1
+            });
+            bands[index].push(shape);
+        } else {
+            bands.push(vec![shape]);
+        }
+    }
+    bands
+}
+
 /// The text of the cells merged down of a table that is on one page (in a cell, a header, a floating table), placed in the rows they cover.
 fn place_anchored_on_one_page(pieces: &mut [Piece]) {
     for i in 0..pieces.len() {
@@ -6187,7 +6229,8 @@ impl<'r> Layouter<'r> {
     /// page-number field) changed since it was laid out last: an edit lays
     /// out only the blocks it changed.
     fn pieces(&self, block: &Block, width: f32, page_number: u32, obstacles: &[WrapObstacleInPara], in_table: bool) -> Vec<Piece> {
-        if !obstacles.is_empty() {
+        // Group membership can change without changing the paragraph's runs.
+        if !obstacles.is_empty() || has_top_bottom_shapes(block) {
             return self.lay_out_block(block, width, page_number, obstacles, in_table);
         }
         let id = match block {
@@ -6298,8 +6341,8 @@ impl<'r> Layouter<'r> {
                 let text_right = width - pt(p.right);
                 let inner_left = text_left - left.map_or(0.0, |b| pt(b.space));
                 let inner_right = text_right + right.map_or(0.0, |b| pt(b.space));
-                let top_shapes: Vec<&Box<ibis_doc_model::Shape>> = p.runs.iter().filter_map(|r| match &r.kind {
-                    FlowRunKind::Shape(shape) if shape.floating.as_ref().is_some_and(|f| f.wrap == "topAndBottom") => Some(shape),
+                let top_shapes: Vec<&ibis_doc_model::Shape> = p.runs.iter().filter_map(|r| match &r.kind {
+                    FlowRunKind::Shape(shape) if shape.floating.as_ref().is_some_and(|f| f.wrap == "topAndBottom") => Some(shape.as_ref()),
                     _ => None,
                 }).collect();
                 if top_shapes.is_empty() {
@@ -6398,10 +6441,13 @@ impl<'r> Layouter<'r> {
                 let margin_l = pt(self.doc.page.left);
                 let margin_r = pt(self.doc.page.right);
                 let is_even = page_number % 2 == 0;
-                for (si, shape) in top_shapes.iter().enumerate() {
-                    let sw = pt(shape.frame.width);
-                    let sh = self.fitted_shape_height(shape);
-                    let f = shape.floating.as_ref().unwrap();
+                let bands = top_bottom_shape_bands(&top_shapes, &self.doc.shape_groups);
+                for (si, band) in bands.iter().enumerate() {
+                    let f = band[0].floating.as_ref().unwrap();
+                    let first_x = band.iter().map(|s| s.floating.as_ref().unwrap().offset_x).min().unwrap_or(f.offset_x);
+                    let first_y = band.iter().map(|s| s.floating.as_ref().unwrap().offset_y).min().unwrap_or(f.offset_y);
+                    let last_x = band.iter().map(|s| s.floating.as_ref().unwrap().offset_x.saturating_add(s.frame.width)).max().unwrap_or(first_x);
+                    let sw = pt(last_x.saturating_sub(first_x));
                     let (base_x0, base_w) = match f.relative_h.as_str() {
                         "page" => (0.0, page_w),
                         "leftMargin" => (0.0, margin_l),
@@ -6418,29 +6464,37 @@ impl<'r> Layouter<'r> {
                         Some("right") => base_x0 + base_w - sw,
                         Some("inside") => if is_even { base_x0 + base_w - sw } else { base_x0 },
                         Some("outside") => if is_even { base_x0 } else { base_x0 + base_w - sw },
-                        _ => base_x0 + pt(f.offset_x),
+                        _ => base_x0 + pt(first_x),
                     };
                     let abs_x = abs_x.clamp(0.0, (page_w - sw).max(0.0));
                     let sx = abs_x - margin_l;
                     let before = if si == 0 { self.space_before(p) } else { 0.0 };
                     let above = if si == 0 { pad_top } else { 0.0 };
-                    let after = if !has_lines && si + 1 == top_shapes.len() { self.space_after(p) } else { 0.0 };
-                    let below = if !has_lines && si + 1 == top_shapes.len() { pad_bottom } else { 0.0 };
+                    let after = if !has_lines && si + 1 == bands.len() { self.space_after(p) } else { 0.0 };
+                    let below = if !has_lines && si + 1 == bands.len() { pad_bottom } else { 0.0 };
                     let dt = pt(f.dist_t);
                     let db = pt(f.dist_b);
-                    let items = vec![Item::Shape {
-                        shape: (*shape).clone(),
-                        x: sx,
-                        y: before + above + dt,
-                        w: sw,
-                        h: sh,
-                    }];
+                    let mut band_height = 0.0f32;
+                    let items = band.iter().map(|shape| {
+                        let f = shape.floating.as_ref().unwrap();
+                        let x = pt(f.offset_x.saturating_sub(first_x));
+                        let y = pt(f.offset_y.saturating_sub(first_y));
+                        let h = self.fitted_shape_height(shape);
+                        band_height = band_height.max(y + h);
+                        Item::Shape {
+                            shape: Box::new((**shape).clone()),
+                            x: sx + x,
+                            y: before + above + dt + y,
+                            w: pt(shape.frame.width),
+                            h,
+                        }
+                    }).collect();
                     shape_pieces.push(Piece {
-                        height: before + above + dt + sh + db + below + after,
+                        height: before + above + dt + band_height + db + below + after,
                         items,
-                        page_break: !has_lines && si + 1 == top_shapes.len() && matches!(p.section_break, SectionBreak::NextPage | SectionBreak::OddPage | SectionBreak::EvenPage),
-                        column_break: !has_lines && si + 1 == top_shapes.len() && p.section_break == SectionBreak::NextColumn,
-                        keep_with_next: !has_lines && si + 1 == top_shapes.len() && p.keep_with_next,
+                        page_break: !has_lines && si + 1 == bands.len() && matches!(p.section_break, SectionBreak::NextPage | SectionBreak::OddPage | SectionBreak::EvenPage),
+                        column_break: !has_lines && si + 1 == bands.len() && p.section_break == SectionBreak::NextColumn,
+                        keep_with_next: !has_lines && si + 1 == bands.len() && p.keep_with_next,
                         header: false,
                         split: None,
                         ..Default::default()
@@ -6506,12 +6560,17 @@ impl<'r> Layouter<'r> {
                 // A box that wraps text above and below and is placed from the paragraph's top
                 // (`posOffset`): Word puts it that far down, the lines that end above it stay
                 // over it, the rest go below.
-                let from_top = (top_shapes.len() == 1 && shape_pieces.len() == 1 && has_lines)
-                    .then(|| top_shapes[0].floating.as_ref())
-                    .flatten()
-                    .filter(|f| f.relative_v == "paragraph" && f.align_v.is_none() && f.offset_y > 0)
-                    .map(|f| pt(f.offset_y));
-                if let Some(offset_y) = from_top {
+                let from_top = (bands.len() == 1 && has_lines)
+                    .then(|| &bands[0])
+                    .and_then(|band| {
+                        let anchor = band[0].floating.as_ref()?;
+                        if anchor.relative_v != "paragraph" || anchor.align_v.is_some() {
+                            return None;
+                        }
+                        let y = band.iter().filter_map(|shape| shape.floating.as_ref().map(|f| f.offset_y)).min()?;
+                        (y > 0).then(|| (pt(y), pt(anchor.dist_t)))
+                    });
+                if let Some((offset_y, dist_t)) = from_top {
                     // The room above the first line (the spacing before, the border's).
                     let pre = self.space_before(p) + pad_top;
                     let mut lead = Vec::new();
@@ -6533,11 +6592,10 @@ impl<'r> Layouter<'r> {
                         gap += pre;
                     }
                     let mut shape_piece = shape_pieces.remove(0);
-                    let dist_t = pt(top_shapes[0].floating.as_ref().map_or(0, |f| f.dist_t));
                     let old_top = pre + dist_t;
                     for it in &mut shape_piece.items {
                         if let Item::Shape { y, .. } = it {
-                            *y = gap;
+                            *y += gap - old_top;
                         }
                     }
                     shape_piece.height += gap - old_top;
