@@ -1121,6 +1121,10 @@ impl SlideEditor {
     pub(crate) fn open_selected_analysis_source(
         &mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>,
     ) {
+        if crate::structured_view::has_row_schema(&path) {
+            self.open_structured_data(path, None, window, cx);
+            return;
+        }
         match std::fs::metadata(&path) {
             Ok(metadata) if metadata.is_file() && metadata.len() <= ibis_doc_service::DESKTOP_TEXT_DATASET_LIMIT => {}
             _ => {

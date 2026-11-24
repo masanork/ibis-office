@@ -28,6 +28,20 @@ JSON の文字列は引用符で囲み、数値は元の精度で表示します
 定式化できない場合は「判定不能」に表示します。日付や、ファイルをまたぐ整合性は対象外です。
 `mrlgss describe <連携ID> --row-schema` で同じ条件をJSON Schemaとして出力できます。
 
+## JSONLを行スキーマで検査する
+
+`mrlgss` の `node src/linkage-csv-cli.ts describe <連携ID> --row-schema` で出力する
+JSON Schemaを、同じフォルダーの `data.jsonl` に対して `data.schema.json` として置きます。
+デスクトップでJSONLを開くと、各物理行を独立したJSONオブジェクトとして検査します。
+指摘を選ぶと該当行とフィールドを表示します。欠落したフィールドは名前と欠落理由を表示します。
+壊れた行も行番号付きで記録し、後続の行の検査を続けます。
+
+このプレビューは、生成されるDraft 2020-12の行スキーマに対応します。
+利用するキーワードは `type`（object、string、null）、`properties`、`allOf`、
+`if` / `then`、`required`、文字列の `enum` / `minLength` です。
+評価できない条件を記した `$comment` も表示します。
+プレビューは128 MiB以下のファイルを先頭100万行まで検査し、指摘は先頭20件を表示します。
+
 ## 修了記録で試す
 
 [test/fixtures/structured-preview](../test/fixtures/structured-preview) の
