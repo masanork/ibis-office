@@ -395,6 +395,7 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
             let mut files = folder.files.iter().filter(|path| path.ends_with(".md")).skip(offset);
             let mut examined = 0;
             let mut issues = Vec::new();
+            let mut references = Vec::new();
             let mut headings = BTreeMap::new();
             let mut partial = folder.truncated || folder.skipped > 0;
             for path in files.by_ref().take(32) {
@@ -437,6 +438,9 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
                     );
                 }
                 partial |= findings.len() > 12;
+                if !findings.is_empty() && references.len() < 8 {
+                    references.push(FolderReference { path: path.clone(), position: None });
+                }
                 for finding in findings.into_iter().take(12) {
                     if issues.len() >= 16 {
                         partial = true;
@@ -456,7 +460,7 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
                 }
             }
             let next = files.next().map(|_| offset.saturating_add(examined));
-            (json!({"issues":issues,"examined":examined,"next_offset":next,"partial":partial}), Vec::new())
+            (json!({"issues":issues,"examined":examined,"next_offset":next,"partial":partial}), references)
         }
         "folder_list" => {
             let query = args["query"].as_str().unwrap_or_default().to_lowercase();
@@ -1052,6 +1056,12 @@ mod tests {
         fixture.write("log.md", "# History\n\n## 2025-02-29\n\n- Added entry\n");
         let folder = Folder::scan(&fixture.0).unwrap();
         let result = call(&folder, "folder_diagnose_okf", json!({})).unwrap();
+        assert_eq!(
+            result.references.iter().map(FolderReference::label).collect::<Vec<_>>(),
+            ["index.md", "log.md"],
+        );
+        let line = call(&folder, "folder_read", json!({"path":result.references[0].path, "offset": 5, "limit": 1})).unwrap();
+        assert_eq!(line.value["content"]["lines"][0]["text"], "- [Entry](entry.md)");
         assert_eq!(result.value["issues"], json!([
             {"path":"index.md","field":"body.index","line":6,"code":"index_entry_without_description","severity":"warning","target":null},
             {"path":"log.md","field":"body.log","line":3,"code":"log_invalid_date","severity":"error","target":null},
