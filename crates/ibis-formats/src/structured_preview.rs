@@ -8,6 +8,8 @@ use ibis_doc_model::sd_jwt_import::{
 };
 use serde_json::Value;
 
+pub mod xml_view;
+
 const MAX_BYTES: usize = 1024 * 1024;
 pub const SIZE_LIMIT_ERROR: &str = "Structured preview accepts files up to 1 MiB";
 const MAX_FIELDS: usize = 1_000;
@@ -52,12 +54,7 @@ pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
             "JSON"
         }
         "xml" => {
-            let options = roxmltree::ParsingOptions {
-                nodes_limit: 8_000,
-                ..Default::default()
-            };
-            let doc = roxmltree::Document::parse_with_options(text()?, options)
-                .map_err(|_| "Invalid or unsupported XML")?;
+            let doc = parse_xml(bytes)?;
             let root = doc.root_element();
             xml_fields(
                 root,
@@ -199,6 +196,17 @@ fn json_fields(
         value => push(fields, path, name, value.to_string())?,
     }
     Ok(())
+}
+
+fn parse_xml(bytes: &[u8]) -> Result<roxmltree::Document<'_>, String> {
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    let text = std::str::from_utf8(bytes).map_err(|_| "The preview requires UTF-8 text")?;
+    let options = roxmltree::ParsingOptions {
+        nodes_limit: 8_000,
+        ..Default::default()
+    };
+    roxmltree::Document::parse_with_options(text, options)
+        .map_err(|_| "Invalid or unsupported XML".into())
 }
 
 fn xml_name(namespace: Option<&str>, local: &str) -> String {

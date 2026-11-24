@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "title": "生命保険料控除証明書（合成サンプル）",
+  "root": {
+    "namespace": "http://xml.e-tax.nta.go.jp/XSD/kyotsu",
+    "name": "TEG800",
+    "attributes": {"VR": "1.1"}
+  },
+  "namespaces": {"g": "http://xml.e-tax.nta.go.jp/XSD/general"},
+  "entries": [
+    {"kind": "field", "path": ["WCA00000"], "label": "保険会社名"},
+    {"kind": "field", "path": ["WCD00000"], "label": "契約者"},
+    {
+      "kind": "group", "path": ["WCE00000"], "label": "明細",
+      "entries": [
+        {"kind": "field", "path": ["WCE00040"], "label": "証券番号"},
+        {"kind": "field", "path": ["WCE00050"], "label": "保険種類"},
+        {"kind": "field", "path": ["WCE00010", "g:yyyy"], "label": "証明年"},
+        {"kind": "field", "path": ["WCE00190", "WCE00310", "WCE00320", "WCE00330"], "label": "保険料", "unit": "円", "group_digits": true},
+        {"kind": "field", "path": ["WCE00190", "WCE00310", "WCE00320", "WCE00350"], "label": "差引保険料等合計額", "unit": "円", "group_digits": true}
+      ]
+    }
+  ]
+}

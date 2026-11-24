@@ -123,7 +123,9 @@ pub(crate) fn open_document_bytes(
     }
     #[cfg(not(target_family = "wasm"))]
     if let Some(ext) = extension.filter(|ext| ibis_formats::structured_preview::supports_extension(ext)) {
-        let opened = crate::structured_preview::open(ext, data)?;
+        let definition = base_dir.zip(virtual_path.file_name())
+            .map(|(directory, file_name)| directory.join(file_name).with_extension("view.json"));
+        let opened = crate::structured_preview::open(ext, data, definition.as_deref())?;
         return Ok(Some(CommonOpen::StructuredPreview(opened)));
     }
     if external_document_format == Some(DocxConvertFormat::Markdown) {

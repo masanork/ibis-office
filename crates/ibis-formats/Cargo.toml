@@ -25,6 +25,7 @@ delharc = { version = "0.8", default-features = false }
 dicom-object = { version = "0.10.1", default-features = false, features = ["deflate"] }
 pure_jpegls = "2.1"
 jxl-oxide = { version = "0.12", default-features = false }
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 percent-encoding = "2"
 sha2 = "0.10"

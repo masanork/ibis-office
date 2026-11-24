@@ -5706,6 +5706,7 @@ dependencies = [
  "pure_jpegls",
  "roxmltree 0.21.1",
  "rustybuzz",
+ "serde",
  "serde-saphyr",
  "serde_json",
  "sha2 0.10.9",
