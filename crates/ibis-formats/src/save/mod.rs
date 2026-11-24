@@ -184,6 +184,11 @@ pub fn open_progressive_with_options(
 ) -> Result<(Opened, Option<std::sync::mpsc::Receiver<CsvProgressiveChunk>>), Error> {
     let mut data: Arc<[u8]> = data.into();
     crate::progress::reset();
+    if crate::uot::is_uot(&data) {
+        let opened = crate::uot::open(&data)?;
+        crate::progress::fraction(1.0);
+        return Ok((opened, None));
+    }
     if crate::is_opendocument(&data) {
         return Err(Error::new(crate::ODF_MESSAGE));
     }

@@ -93,7 +93,7 @@ pub(crate) fn open_document_bytes(
     let extension = virtual_path.extension().and_then(|ext| ext.to_str());
     let external_document_format = DocxConvertFormat::from_path(virtual_path);
     let editable_import = EditableImport::detect(extension, data).filter(|format| {
-        matches!(format, EditableImport::Hancom(_))
+        matches!(format, EditableImport::Hancom(_) | EditableImport::Uot)
             || matches!(external_document_format, None | Some(DocxConvertFormat::Odt))
     });
 
@@ -265,6 +265,8 @@ mod stack_tests {
         assert_eq!(PreviewImport::detect(Some("JTT"), b""), Some(PreviewImport::Jtd));
         assert_eq!(EditableImport::detect(Some("HWPX"), b""), Some(EditableImport::Hancom(ibis_formats::hwp::Format::Hwpx)));
         assert_eq!(EditableImport::detect(Some("HWP"), b"").unwrap().save_extension(), "docx");
+        assert_eq!(EditableImport::detect(Some("UOT"), b""), Some(EditableImport::Uot));
+        assert_eq!(EditableImport::Uot.save_extension(), "docx");
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -346,12 +348,16 @@ mod stack_tests {
 pub(crate) enum EditableImport {
     Hancom(ibis_formats::hwp::Format),
     OpenDocument(ibis_odf::Format),
+    Uot,
 }
 
 impl EditableImport {
     pub(crate) fn detect(extension: Option<&str>, data: &[u8]) -> Option<Self> {
         if let Some(format) = ibis_formats::hwp::Format::detect(extension, data) {
             return Some(Self::Hancom(format));
+        }
+        if extension.is_some_and(ibis_formats::uot::is_extension) || ibis_formats::uot::is_uot(data) {
+            return Some(Self::Uot);
         }
         // A text-document extension also routes malformed input to its importer.
         if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("odt") || ext.eq_ignore_ascii_case("ott")) {
@@ -363,13 +369,14 @@ impl EditableImport {
     pub(crate) fn open(self, data: &[u8]) -> Result<ibis_formats::Opened, ibis_formats::Error> {
         match self {
             Self::Hancom(format) => format.open(data),
+            Self::Uot => ibis_formats::uot::open(data),
             Self::OpenDocument(format) => ibis_formats::open(format.to_ooxml(data)?),
         }
     }
 
     pub(crate) fn save_extension(self) -> &'static str {
         match self {
-            Self::Hancom(_) | Self::OpenDocument(ibis_odf::Format::Text) => "docx",
+            Self::Hancom(_) | Self::Uot | Self::OpenDocument(ibis_odf::Format::Text) => "docx",
             Self::OpenDocument(ibis_odf::Format::Spreadsheet) => "xlsx",
             Self::OpenDocument(ibis_odf::Format::Presentation) => "pptx",
         }
