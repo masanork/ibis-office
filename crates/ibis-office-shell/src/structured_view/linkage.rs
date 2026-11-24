@@ -196,6 +196,16 @@ impl Definition {
         Some((source, target))
     }
 
+    pub fn issue_reason(&self, issue: &Issue) -> String {
+        let message = crate::i18n::text(issue.message);
+        issue
+            .condition
+            .and_then(|index| self.conditions.get(index))
+            .and_then(|condition| condition.note.as_deref())
+            .and_then(|note| note.lines().next())
+            .map_or_else(|| message.to_string(), |note| format!("{message} · {note}"))
+    }
+
     pub fn review(&self) -> Review {
         Review {
             label: format!("{} · {}", self.layout.id, self.layout.name),

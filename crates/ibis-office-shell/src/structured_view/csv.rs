@@ -35,6 +35,24 @@ fn cell_text(bytes: &[u8]) -> Cow<'_, str> {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
+fn write_report_row(out: &mut String, fields: impl IntoIterator<Item = impl AsRef<str>>) {
+    for (index, field) in fields.into_iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        for ch in field.as_ref().chars() {
+            if ch == '"' {
+                out.push('"');
+            }
+            out.push(ch);
+        }
+        out.push('"');
+    }
+    out.push_str("\r\n");
+}
+
 fn repeated_name(column: &str) -> Option<(&str, usize)> {
     let (name, index) = column.rsplit_once('_')?;
     let index = index.parse::<usize>().ok()?;
@@ -111,6 +129,25 @@ impl Csv {
         bytes: &[u8],
         definition: &linkage::Definition,
     ) -> Result<linkage::Review, &'static str> {
+        let mut review = definition.review();
+        review.unavailable = self.scan(bytes, &self.records, definition, |issue, _, _| {
+            review.issue_count += 1;
+            if review.issues.len() < linkage::DISPLAY_LIMIT {
+                review.issues.push(issue);
+            }
+            Ok(())
+        })?;
+        review.checked = self.records.len();
+        Ok(review)
+    }
+
+    fn scan(
+        &self,
+        bytes: &[u8],
+        records: &[Range<usize>],
+        definition: &linkage::Definition,
+        mut emit: impl FnMut(linkage::Issue, &[u8], &[Range<usize>]) -> Result<(), &'static str>,
+    ) -> Result<Vec<usize>, &'static str> {
         if !self
             .columns
             .iter()
@@ -120,41 +157,41 @@ impl Csv {
             return Err("structured.linkage-header-mismatch");
         }
         let columns: Vec<_> = definition.columns().collect();
-        let mut review = definition.review();
+        let mut unavailable = Vec::new();
         let conditions: Vec<_> = definition
             .conditions
             .iter()
             .enumerate()
             .filter_map(|(index, condition)| {
                 let Some((source, target)) = definition.condition_columns(condition) else {
-                    review.unavailable.push(index);
+                    unavailable.push(index);
                     return None;
                 };
                 Some((index, source, target, condition.predicate.as_ref()?))
             })
             .collect();
-        let mut add = |record, column, message, condition| {
-            review.issue_count += 1;
-            if review.issues.len() < linkage::DISPLAY_LIMIT {
-                review.issues.push(linkage::Issue {
-                    record,
-                    column,
-                    message,
-                    condition,
-                });
-            }
-        };
-        for (record, span) in self.records.iter().enumerate() {
+        for (record, span) in records.iter().enumerate() {
             let raw = &bytes[span.clone()];
             let fields =
                 raw_utf8_csv_record_fields(raw).map_err(|_| "structured.linkage-csv-invalid")?;
+            let mut add = |column, message, condition| {
+                emit(
+                    linkage::Issue {
+                        record,
+                        column,
+                        message,
+                        condition,
+                    },
+                    raw,
+                    &fields,
+                )
+            };
             if fields.len() != columns.len() {
                 add(
-                    record,
                     fields.len().min(columns.len()),
                     "structured.linkage-column-count",
                     None,
-                );
+                )?;
                 continue;
             }
             for &(index, source, target, predicate) in &conditions {
@@ -162,23 +199,86 @@ impl Csv {
                     && cell_text(&raw[fields[target].clone()]).is_empty()
                 {
                     add(
-                        record,
                         target,
                         "structured.linkage-conditional-required",
                         Some(index),
-                    );
+                    )?;
                 }
             }
-            for (column, (field, definition_column)) in fields.into_iter().zip(&columns).enumerate()
-            {
-                if let Some(message) = definition.check(definition_column, &cell_text(&raw[field]))
+            for (column, (field, definition_column)) in fields.iter().zip(&columns).enumerate() {
+                if let Some(message) =
+                    definition.check(definition_column, &cell_text(&raw[field.clone()]))
                 {
-                    add(record, column, message, None);
+                    add(column, message, None)?;
                 }
             }
         }
-        review.checked = self.records.len();
-        Ok(review)
+        Ok(unavailable)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub fn issue_workbook(
+        &self,
+        bytes: &[u8],
+        records: &[Range<usize>],
+    ) -> Result<Vec<u8>, String> {
+        let definition = self.definition.as_ref().ok_or_else(|| {
+            crate::i18n::text("structured.linkage-definition-invalid").to_string()
+        })?;
+        let header = [
+            "structured.linkage-export-record",
+            "structured.linkage-export-id",
+            "structured.linkage-export-field",
+            "structured.linkage-export-value",
+            "structured.linkage-export-reason",
+        ]
+        .map(crate::i18n::text);
+        let mut table = String::new();
+        write_report_row(&mut table, header.iter().map(|heading| heading.as_ref()));
+        let mut rows = 1;
+        self.scan(bytes, records, definition, |issue, raw, fields| {
+            if rows >= 1_048_576 {
+                return Err("structured.linkage-export-limit");
+            }
+            let cell = |column| {
+                fields
+                    .get(column)
+                    .map_or(Cow::Borrowed(""), |range: &Range<usize>| {
+                        cell_text(&raw[range.clone()])
+                    })
+            };
+            let id = self.addressee.map_or(Cow::Borrowed(""), cell);
+            let value = cell(issue.column);
+            let name = self
+                .columns
+                .get(issue.column)
+                .map_or("", |column| column.name.as_str());
+            let reason = definition.issue_reason(&issue);
+            if [&id[..], &value[..], name, &reason]
+                .iter()
+                .any(|text| text.encode_utf16().count() > 32_767)
+            {
+                return Err("structured.linkage-export-cell-limit");
+            }
+            write_report_row(
+                &mut table,
+                [
+                    (issue.record + 1).to_string().as_str(),
+                    &id,
+                    name,
+                    &value,
+                    &reason,
+                ],
+            );
+            rows += 1;
+            if table.len() as u64 > super::MAX_BYTES {
+                return Err("structured.linkage-export-limit");
+            }
+            Ok(())
+        })
+        .map_err(|key| crate::i18n::text(key).to_string())?;
+        ibis_formats::csv::workbook_from_literal_fields(&table, "Issues", None)
+            .map_err(|error| error.to_string())
     }
 
     pub fn tree(&self, bytes: &[u8], index: usize, span: Range<usize>) -> Tree {
@@ -257,6 +357,52 @@ fn branch(name: String, span: Range<usize>, expanded: bool, parent: Option<usize
 #[cfg(test)]
 mod tests {
     use super::{Csv, linkage};
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn issue_workbook_preserves_literal_cells_and_includes_all_findings() {
+        use ibis_doc_model::{CellValue, sheet_calc::sheet_of_slide};
+        let mut data = String::from("宛名番号,項目\r\n");
+        for _ in 0..25 {
+            data.push_str("000042,=1+2\r\n");
+        }
+        let mut csv = Csv::read(data.as_bytes()).unwrap();
+        csv.definition = Some(
+            linkage::Definition::parse(
+                r#"{
+            "format":"mrlgss-linkage-csv","version":1,"header":["宛名番号","項目"],"codeValues":{},
+            "layout":{"id":"example","name":"Example","repeat_header":"{name}_{n}",
+              "columns":[{"name":"宛名番号","type":"X(6)"},{"name":"項目","type":"X(1)"}]}
+        }"#
+                .as_bytes(),
+            )
+            .unwrap(),
+        );
+        let review = csv
+            .review(data.as_bytes(), csv.definition.as_ref().unwrap())
+            .unwrap();
+        assert_eq!(review.issues.len(), linkage::DISPLAY_LIMIT);
+        assert_eq!(review.issue_count, 25);
+        let bytes = csv.issue_workbook(data.as_bytes(), &csv.records).unwrap();
+        let presentation = ibis_formats::read_xlsx(&bytes).unwrap();
+        let sheet = sheet_of_slide(&presentation.slides[0]).unwrap();
+        for (row, number) in [(1, "1"), (25, "25")] {
+            for (column, expected) in [(0, number), (1, "000042"), (2, "項目"), (3, "=1+2")] {
+                let cell = sheet.cell(row, column).unwrap();
+                assert_eq!(cell.value, CellValue::Text(expected.into()));
+                assert!(cell.formula.is_none());
+            }
+            let reason = sheet.cell(row, 4).unwrap();
+            assert_eq!(
+                reason.value,
+                CellValue::Text(
+                    crate::i18n::text("structured.linkage-length")
+                        .to_string()
+                        .into()
+                )
+            );
+        }
+    }
 
     #[test]
     fn csv_record_heading_preserves_literal_id_and_decodes_the_name() {
