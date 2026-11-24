@@ -93,6 +93,7 @@ fn about_body(cx: &App) -> Div {
         .child(div().id("about-url").text_size(px(12.)).text_color(theme.link).cursor_pointer().child(PROJECT_URL).on_click(|_, _, cx| crate::external::open_url(PROJECT_URL, cx)))
         .child(div().mt_3().text_size(px(12.)).text_color(theme.muted_foreground).child("Copyright (c) ibis inc."))
         .child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(i18n::text("about.license")))
+        .child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(ibis_formats::hwp::SPEC_CREDIT))
 }
 
 /// The About screen: a modal dialog inside the window (shell/dialog.rs `InteractionLayer::About`), over the window's

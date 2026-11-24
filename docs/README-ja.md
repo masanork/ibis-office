@@ -200,6 +200,7 @@ cargo build --release
 - ブラウザ版は `scripts/build-web.sh --release` でビルドし、`www/` を配信します（WebGPU に対応したブラウザ：Chrome・Edge・Safari 26 以降）。
 
   デスクトップ版とブラウザー版では `.jtd`・`.jtt` と一部の圧縮 `.jttc` も実験的な読み取り専用プレビューとして開けます。画像主体の文書など、開けない場合があります。認識できた内容は別の DOCX に書き出せます。詳細は [一太郎プレビュー](docs/jtd-preview.md) を参照してください。
+  韓国 Hancom の HWP 5.0 と HWPX は、[Word 文書として取り込めます](hangul-import.md)。
 
   ビルドには Python 3 が必要です。Wasm は20 MiB以下のハッシュ付きファイルに分割され、ブラウザで検証・結合されます。HTTPS または localhost で配信してください。Cloudflare Workers Static Assets で配信する場合は `python3 scripts/check-web-assets.py` と `npx wrangler deploy --dry-run` で確認し、`wrangler.jsonc` の Worker 名とアカウントを確認してから `npx wrangler deploy` を実行してください。配信対象はエディターで、playground は含みません。
 

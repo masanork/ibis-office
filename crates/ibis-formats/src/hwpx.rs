@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use ibis_doc_model::{
     Block, BorderStyle, Emu, EmuSize, FlowAlign, FlowBorder, FlowCell, FlowDocument, FlowParagraph,
-    FlowRow, FlowRun, FlowRunKind, FlowTable, MediaFormat, MediaId, PageSetup, Presentation, Rgb,
-    RowHeight, RunFormat, SectionBreak, SectionSetup, VerticalMerge,
+    FlowRow, FlowRun, FlowRunKind, FlowTable, LineHeight, MediaFormat, MediaId, PageSetup,
+    ParaFormat, Presentation, Rgb, RowHeight, RunFormat, SectionBreak, SectionSetup, VerticalMerge,
 };
 use roxmltree::{Document, Node};
 
@@ -20,6 +20,7 @@ const MIME_TYPE: &[u8] = b"application/hwp+zip";
 const OPF: &str = "http://www.idpf.org/2007/opf";
 const OPF_WITH_SLASH: &str = "http://www.idpf.org/2007/opf/";
 const SECTION: &str = "http://www.hancom.co.kr/hwpml/2011/section";
+const CORE: &str = "http://www.hancom.co.kr/hwpml/2011/core";
 const PARAGRAPH: &str = "http://www.hancom.co.kr/hwpml/2011/paragraph";
 const XML_BYTES: usize = 16 * 1024 * 1024;
 const TOTAL_SECTION_BYTES: usize = 64 * 1024 * 1024;
@@ -31,8 +32,14 @@ pub fn open(data: &[u8]) -> Result<Opened, Error> {
 
 /// Converts an HWPX document into an OOXML package using the shared document writer.
 pub fn to_docx(data: &[u8]) -> Result<Vec<u8>, Error> {
+    document_to_docx(|presentation| read_document(data, presentation))
+}
+
+pub(super) fn document_to_docx(
+    read: impl FnOnce(&mut Presentation) -> Result<FlowDocument, Error>,
+) -> Result<Vec<u8>, Error> {
     let mut blank = crate::open(crate::blank_file(Kind::Document)?)?;
-    let mut document = read_document(data, &mut blank.presentation)?;
+    let mut document = read(&mut blank.presentation)?;
     // The incremental DOCX writer uses the blank document's paragraph as
     // the existing body node around which it inserts new blocks.
     if let Some(baseline) = &blank.presentation.flow {
@@ -101,7 +108,7 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
     let mut importer = Importer {
         id: 10,
         runs: HashMap::new(),
-        aligns: HashMap::new(),
+        paragraphs: HashMap::new(),
         borders: HashMap::new(),
         archive: &archive,
         items: &items,
@@ -345,8 +352,16 @@ fn number<T: std::str::FromStr>(node: Node<'_, '_>, key: &str) -> Option<T> {
     node.attribute(key)?.parse().ok()
 }
 
-fn units(value: i64) -> Emu {
+pub(super) fn units(value: i64) -> Emu {
     value.clamp(-1_000_000, 1_000_000) * 127
+}
+
+// The two formats store line height and the interline gap in HWP units.
+pub(super) fn line_pitch(height: i64, gap: i64) -> Option<LineHeight> {
+    if !(1..=72_000).contains(&height) || !(-72_000..=72_000).contains(&gap) {
+        return None;
+    }
+    Some(LineHeight::Exact(units(height + gap.max(0))))
 }
 
 fn color(value: &str) -> Option<Rgb> {
@@ -396,7 +411,7 @@ fn read_page(root: Node<'_, '_>) -> PageSetup {
 struct Importer<'a, 'package> {
     id: u32,
     runs: HashMap<u32, RunFormat>,
-    aligns: HashMap<u32, FlowAlign>,
+    paragraphs: HashMap<u32, ParaFormat>,
     borders: HashMap<u32, [Option<FlowBorder>; 4]>,
     archive: &'a Archive<'a>,
     items: &'a HashMap<&'package str, &'package str>,
@@ -449,13 +464,23 @@ impl Importer<'_, '_> {
                         let id = number(field("fontRef")?, attribute)?;
                         fonts.get(&(language, id)).map(|font| (*font).to_owned())
                     };
+                    let size =
+                        number::<u32>(style, "height").filter(|v| (100..=163_800).contains(v));
+                    let scale = field("ratio")
+                        .and_then(|n| number::<u32>(n, "hangul"))
+                        .filter(|v| (50..=200).contains(v));
+                    let spacing = field("spacing")
+                        .and_then(|n| number::<i64>(n, "hangul"))
+                        .filter(|v| (-50..=50).contains(v))
+                        .map(|v| units(v * i64::from(size.unwrap_or(1000))) / 100);
                     self.runs.insert(
                         id,
                         RunFormat {
                             font: font("latin", "LATIN"),
                             east_asian_font: font("hangul", "HANGUL"),
-                            size: number::<u32>(style, "height")
-                                .filter(|v| (100..=163_800).contains(v)),
+                            size,
+                            scale,
+                            spacing,
                             color: style.attribute("textColor").and_then(color),
                             bold: field("bold").map(|_| true),
                             italic: field("italic").map(|_| true),
@@ -466,18 +491,7 @@ impl Importer<'_, '_> {
                     );
                 }
                 "paraPr" => {
-                    if let Some(align) = field("align").and_then(|n| n.attribute("horizontal")) {
-                        self.aligns.insert(
-                            id,
-                            match align {
-                                "CENTER" => FlowAlign::Center,
-                                "RIGHT" => FlowAlign::Right,
-                                "JUSTIFY" => FlowAlign::Justify,
-                                "DISTRIBUTE" | "DISTRIBUTE_SPACE" => FlowAlign::Distribute,
-                                _ => FlowAlign::Left,
-                            },
-                        );
-                    }
+                    self.paragraphs.insert(id, read_para_format(style));
                 }
                 "borderFill" => {
                     self.borders.insert(
@@ -498,22 +512,48 @@ impl Importer<'_, '_> {
         let mut blocks = Vec::new();
         for source in node.children().filter(|n| n.has_tag_name((PARAGRAPH, "p"))) {
             let mut paragraph = self.paragraph();
-            paragraph.direct.align =
-                number(source, "paraPrIDRef").and_then(|id| self.aligns.get(&id).copied());
-            paragraph.direct.page_break_before =
-                (source.attribute("pageBreak") == Some("1")).then_some(true);
+            paragraph.direct = number(source, "paraPrIDRef")
+                .and_then(|id| self.paragraphs.get(&id))
+                .cloned()
+                .unwrap_or_default();
+            if source.attribute("pageBreak") == Some("1") {
+                paragraph.direct.page_break_before = Some(true);
+            }
+            if let Some(lines) = part(source, "linesegarray") {
+                let mut pitches = lines
+                    .children()
+                    .filter(|n| n.has_tag_name((PARAGRAPH, "lineseg")))
+                    .map(|line| {
+                        let height = number::<i64>(line, "vertsize")?;
+                        let extra = number::<i64>(line, "spacing")?;
+                        line_pitch(height, extra)
+                    });
+                if let Some(Some(pitch)) = pitches.next()
+                    && pitches.all(|candidate| candidate == Some(pitch))
+                {
+                    paragraph.direct.line = Some(pitch);
+                }
+            }
             let mut had_table = false;
             for run in source
                 .children()
                 .filter(|n| n.has_tag_name((PARAGRAPH, "run")))
             {
+                let format = number(run, "charPrIDRef")
+                    .and_then(|id| self.runs.get(&id))
+                    .cloned()
+                    .unwrap_or_default();
+                if paragraph.runs.is_empty() {
+                    paragraph.mark_format = format.clone();
+                }
                 for item in run.children() {
                     if item.has_tag_name((PARAGRAPH, "tbl")) {
                         if !paragraph.runs.is_empty()
                             || paragraph.direct.page_break_before == Some(true)
                         {
                             let mut next = self.paragraph();
-                            next.direct.align = paragraph.direct.align;
+                            next.direct = paragraph.direct.clone();
+                            next.direct.page_break_before = None;
                             paragraph.resolve(&Default::default());
                             blocks.push(Block::Paragraph(std::mem::replace(&mut paragraph, next)));
                         }
@@ -524,10 +564,6 @@ impl Importer<'_, '_> {
                             paragraph.runs.push(FlowRun::new(kind, Default::default()));
                         }
                     } else if item.has_tag_name((PARAGRAPH, "t")) {
-                        let format = number(run, "charPrIDRef")
-                            .and_then(|id| self.runs.get(&id))
-                            .cloned()
-                            .unwrap_or_default();
                         for child in item.children() {
                             let kind = if let Some(text) = child.text().filter(|_| child.is_text())
                             {
@@ -555,7 +591,6 @@ impl Importer<'_, '_> {
     }
 
     fn picture(&mut self, node: Node<'_, '_>) -> Result<Option<FlowRunKind>, Error> {
-        const CORE: &str = "http://www.hancom.co.kr/hwpml/2011/core";
         let Some(id) = node
             .children()
             .find(|n| n.has_tag_name((CORE, "img")))
@@ -752,8 +787,72 @@ impl Importer<'_, '_> {
             id: self.next_id(),
             columns,
             rows: table_rows,
+            indent: part(table, "outMargin")
+                .and_then(|m| number::<i64>(m, "left"))
+                .map_or(0, units),
             ..Default::default()
         })
+    }
+}
+
+fn read_para_format(style: Node<'_, '_>) -> ParaFormat {
+    let field = |name| style.children().find(|n| n.has_tag_name((HEAD, name)));
+    let alternative = part(style, "switch").and_then(|switch| {
+        switch.children().find(|n| {
+            n.has_tag_name((PARAGRAPH, "case"))
+                && n.attribute((PARAGRAPH, "required-namespace"))
+                    == Some("http://www.hancom.co.kr/hwpml/2016/HwpUnitChar")
+        })
+    });
+    let measurement = |name| {
+        field(name).or_else(|| {
+            alternative?
+                .children()
+                .find(|n| n.has_tag_name((HEAD, name)))
+        })
+    };
+    let margin = |name| {
+        let margin = measurement("margin")?
+            .children()
+            .find(|n| n.has_tag_name((CORE, name)))?;
+        (margin.attribute("unit") == Some("HWPUNIT")).then_some(())?;
+        number::<i64>(margin, "value").map(units)
+    };
+    let line = measurement("lineSpacing").and_then(|line| {
+        let value = number::<u32>(line, "value")?;
+        match line.attribute("type")? {
+            "PERCENT" if (50..=500).contains(&value) => Some(LineHeight::Auto(value * 240 / 100)),
+            "FIXED" if value <= 72_000 => Some(LineHeight::Exact(units(i64::from(value)))),
+            "AT_LEAST" if value <= 72_000 => Some(LineHeight::AtLeast(units(i64::from(value)))),
+            _ => None,
+        }
+    });
+    let align = field("align")
+        .and_then(|n| n.attribute("horizontal"))
+        .map(|align| match align {
+            "CENTER" => FlowAlign::Center,
+            "RIGHT" => FlowAlign::Right,
+            "JUSTIFY" => FlowAlign::Justify,
+            "DISTRIBUTE" | "DISTRIBUTE_SPACE" => FlowAlign::Distribute,
+            _ => FlowAlign::Left,
+        });
+    let flag = |name| {
+        field("breakSetting")?
+            .attribute(name)
+            .map(|value| value == "1")
+    };
+    ParaFormat {
+        align,
+        left: margin("left"),
+        right: margin("right"),
+        first_line: margin("intent"),
+        before: margin("prev"),
+        after: margin("next"),
+        line,
+        keep_next: flag("keepWithNext"),
+        keep_lines: flag("keepLines"),
+        page_break_before: flag("pageBreakBefore"),
+        ..Default::default()
     }
 }
 
