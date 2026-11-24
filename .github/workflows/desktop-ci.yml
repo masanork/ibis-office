@@ -24,7 +24,7 @@ env:
   EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   IBIS_BUILD_BRANCH: ${{ github.head_ref || github.ref_name }}
   CARGO_TERM_COLOR: never
-  APPIMAGE_BUILDER_SHA: 3536557e9432b8702bfbc82a905fa749fb472225
+  APPIMAGE_BUILDER_SHA: 0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93
 
 jobs:
   validate-source:
@@ -167,7 +167,7 @@ jobs:
     needs: validate-source
     permissions:
       contents: read
-    uses: masanork/ibis-office/.github/workflows/linux-appimage-compile.yml@3536557e9432b8702bfbc82a905fa749fb472225
+    uses: masanork/ibis-office/.github/workflows/linux-appimage-compile.yml@0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93
 
   linux:
     name: Linux AppImage trusted build
@@ -177,7 +177,7 @@ jobs:
       attestations: write
       contents: read
       id-token: write
-    uses: masanork/ibis-office/.github/workflows/linux-appimage-builder.yml@3536557e9432b8702bfbc82a905fa749fb472225
+    uses: masanork/ibis-office/.github/workflows/linux-appimage-builder.yml@0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93
 
   verify-linux-provenance:
     name: Verify downloaded Linux AppImage provenance
@@ -197,10 +197,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ needs.linux.outputs.appimage_artifact_id }}
+          merge-multiple: true
           path: linux
       - uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ needs.linux.outputs.provenance_artifact_id }}
+          merge-multiple: true
           path: provenance
       - name: Verify signature, source and AppImage digest
         run: |
