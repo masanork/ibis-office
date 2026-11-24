@@ -16,6 +16,7 @@ use roxmltree::{Document, Node};
 
 mod bitmap;
 mod geometry;
+mod gradient;
 mod theme;
 
 use geometry::{dashed_line, elliptical_arc, rounded_polygon, straight_vertices, triangle_arrow};
@@ -293,6 +294,7 @@ impl VsdxContainer {
             styles,
             shapes: 0,
             path_commands: 0,
+            gradient_pixels: gradient::PAGE_PIXELS,
             themes: &self.themes,
             page,
             bitmaps: bitmap::Bitmaps::new(&zip, &page.name),
@@ -310,6 +312,12 @@ fn value<'a>(n: Option<Node<'a, '_>>, key: &str) -> Option<&'a str> {
     n?.children()
         .find(|&c| named(c, "Cell") && c.attribute("N") == Some(key))?
         .attribute("V")
+}
+
+fn gradient_section<'a, 'i>(node: Option<Node<'a, 'i>>) -> Option<Node<'a, 'i>> {
+    node?
+        .children()
+        .find(|&s| named(s, "Section") && s.attribute("N") == Some("FillGradient"))
 }
 
 fn first_row_cell<'a>(node: Option<Node<'a, '_>>, section: &str, key: &str) -> Option<&'a str> {
@@ -353,6 +361,7 @@ struct Render<'a, 'i, 'package, 'bytes> {
     styles: HashMap<&'a str, Node<'a, 'i>>,
     shapes: usize,
     path_commands: usize,
+    gradient_pixels: usize,
     themes: &'package [theme::Theme],
     page: &'package Page,
     bitmaps: bitmap::Bitmaps<'package, 'bytes>,
@@ -488,6 +497,45 @@ impl Render<'_, '_, '_, '_> {
             let geometry = indexed_children(master, Some(shape), "Section", |node| {
                 node.attribute("N") == Some("Geometry")
             });
+            let fill_cell = |key| paint("FillStyle", key);
+            let mut gradient = None;
+            if fill_cell("FillGradientEnabled") == Some("1")
+                && matches!(fill_cell("FillGradientDir"), None | Some("0"))
+                && fill_cell("UseGroupGradient") != Some("1")
+            {
+                let stops: Vec<_> = indexed_children(
+                    gradient_section(master),
+                    gradient_section(Some(shape)),
+                    "Row",
+                    |_| true,
+                )
+                .into_values()
+                .take(32)
+                .filter_map(|(base, local)| {
+                    if local.and_then(|n| n.attribute("Del")) == Some("1") {
+                        return None;
+                    }
+                    let cell = |key| value(local, key).or_else(|| value(base, key));
+                    let position =
+                        number(cell("GradientStopPosition")).filter(|v| (0.0..=1.0).contains(v))?;
+                    let mut rgba = color(cell("GradientStopColor"), fill?);
+                    let opacity = 1.0
+                        - number(cell("GradientStopColorTrans"))
+                            .unwrap_or_default()
+                            .clamp(0.0, 1.0);
+                    rgba[3] = (opacity * 255.0).round() as u8;
+                    Some(gradient::stop(position, rgba))
+                })
+                .collect();
+                if stops.len() >= 2 {
+                    let angle = number(fill_cell("FillGradientAngle")).unwrap_or_default();
+                    let rotates = fill_cell("RotateGradientWithShape") != Some("0");
+                    gradient = Some(gradient::Gradient {
+                        stops,
+                        direction: gradient::direction(angle, rotates.then_some(m)),
+                    });
+                }
+            }
             let scales = (
                 inherited_scale(w, master, "Width"),
                 inherited_scale(h, master, "Height"),
@@ -505,7 +553,15 @@ impl Render<'_, '_, '_, '_> {
                 let fill = fill.filter(|_| get("NoFill") != Some("1"));
                 let stroke = stroke.filter(|_| get("NoLine") != Some("1"));
                 drew_geometry |= commands.len() >= 2;
-                self.draw_geometry(commands, fill, stroke, weight, (dash, arrows), rounding)?;
+                self.draw_geometry(
+                    commands,
+                    fill,
+                    stroke,
+                    weight,
+                    (dash, arrows),
+                    rounding,
+                    gradient.as_ref(),
+                )?;
             }
             if !drew_geometry
                 && !hidden_geometry
@@ -521,6 +577,7 @@ impl Render<'_, '_, '_, '_> {
                     weight,
                     (dash, arrows),
                     0.0,
+                    None,
                 )?;
             }
             if let Some(foreign) = child(shape, "ForeignData")
@@ -631,13 +688,14 @@ impl Render<'_, '_, '_, '_> {
     fn draw_geometry(
         &mut self,
         mut commands: Vec<PathCmd>,
-        fill: Option<[u8; 4]>,
+        mut fill: Option<[u8; 4]>,
         stroke: Option<[u8; 4]>,
         weight: f32,
         (dash, arrows): (bool, (bool, bool)),
         rounding: f32,
+        gradient: Option<&gradient::Gradient>,
     ) -> Result<()> {
-        if !dash && !arrows.0 && !arrows.1 && rounding <= 0.0 {
+        if !dash && !arrows.0 && !arrows.1 && rounding <= 0.0 && gradient.is_none() {
             return self.path(commands, fill, stroke, weight);
         }
         let points = straight_vertices(&commands);
@@ -647,6 +705,18 @@ impl Render<'_, '_, '_, '_> {
             && points.len() >= 4
         {
             commands = rounded_polygon(&points[..points.len() - 1], rounding);
+        }
+        if fill.is_some()
+            && let Some(gradient) = gradient
+        {
+            if self.path_commands + commands.len() > MAX_PAGE_PATH_COMMANDS {
+                return Err(invalid());
+            }
+            if let Some(image) = gradient.raster(&commands, &mut self.gradient_pixels) {
+                self.path_commands += commands.len();
+                self.scene.display_list.push(image);
+                fill = None;
+            }
         }
         if dash && let (Some(points), Some(stroke)) = (&points, stroke) {
             if fill.is_some() {
