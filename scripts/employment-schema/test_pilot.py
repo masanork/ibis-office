@@ -7,6 +7,7 @@ import unittest
 from jsonschema import Draft202012Validator
 
 from pilot import extract, schema
+from okf import load_concept
 from review import load_approved, reviewed_mapping
 
 COMMON = {"Z4": "架空事業所", "I19": "架空従業員", "AA3": 2026, "AF3": 11, "AI3": 23}
@@ -41,10 +42,29 @@ class EmploymentSchemaTest(unittest.TestCase):
             mapping = load_approved(file)
             self.assertEqual(schema(mapping), schema())
             self.assertEqual(extract(VARIABLE, mapping), extract(VARIABLE))
+            concept = file.with_suffix(".md")
+            example = Path(__file__).with_name("employment.example.md").read_text(encoding="utf-8")
+            example = example.replace("approved.json", file.name)
+            concept.write_bytes(example.replace("\n", "\r\n").encode("utf-8"))
+            self.assertEqual(schema(load_concept(concept)), schema())
+            for cells in (FIXED, {**VARIABLE, "I52": "架空児童"}):
+                self.assertEqual(extract(cells, load_concept(concept)), extract(cells))
+            for invalid, message in (
+                (example.replace("version: 1", "version: 2"), "Unsupported"),
+                (example.replace("version: 1", "version: 1\n  version: 1"), "unique string keys"),
+                (example.replace(file.name, f"../{file.name}"), "local relative"),
+            ):
+                concept.write_text(invalid, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    load_concept(concept)
+            concept.write_text(example, encoding="utf-8")
+            file.write_text(json.dumps(draft), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "An approved mapping is required"):
+                load_concept(concept)
             approved["mapping"]["common"]["employee_name"]["text"] = "I18"
             file.write_text(json.dumps(approved), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "changed after approval"):
-                load_approved(file)
+                load_concept(concept)
 
     def test_schema_is_reproducible(self):
         checked_in = Path(__file__).with_name("employment.schema.json").read_text(encoding="utf-8")

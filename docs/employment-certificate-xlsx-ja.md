@@ -83,3 +83,19 @@ python3 "$tools/pilot.py" schema --approved-mapping "$review_dir/approved.json"
 ```
 
 承認済み対応表を抽出にも使う場合は、`pilot.py extract cells.json --approved-mapping "$review_dir/approved.json"` を実行する。承認待ちの項目群、重複するセル、会社記載範囲外のセル、承認後に変更された対応表を検出すると処理を止める。承認ファイルは担当者名と判断の記録であり、本人確認や電子署名は別の仕組みで扱う。
+
+## OKF原稿から承認済みの対応表を使う
+
+[就労証明書のOKF原稿例](../scripts/employment-schema/employment.example.md)を、前節で作成した `approved.json` と同じディレクトリに置く。PythonにPyYAMLが必要。
+
+```sh
+cp "$tools/employment.example.md" "$review_dir/employment.md"
+python3 "$tools/pilot.py" schema --okf "$review_dir/employment.md"
+python3 "$tools/pilot.py" extract cells.json --okf "$review_dir/employment.md"
+```
+
+試作仕様では、フロントマターの `type` を `credential-definition` とし、拡張キー `x-ibis-credential` に整数の `version: 1` と `approved_mapping` を書く。この版は拡張キーの読み方を示す。対応表自体の版は承認ファイルで管理する。Markdown本文は説明と根拠の参照に使う。
+
+参照先は原稿のディレクトリを起点とするローカルの相対JSONパス。サブディレクトリも使える。親ディレクトリ参照、原稿のディレクトリ外に出るシンボリックリンク、URL、重複するYAMLキーはエラーにする。承認の有無と対応表の変更は既存の承認検査で確認する。
+
+固定勤務・変則勤務のスキーマや抽出結果は、承認済みJSONを直接指定した場合と同じになる。提示要求で使う論理項目ID、SD-JWT VCとmdocへの割り当て、DCQLの生成規則は、提示要求を試作する段階で検討する。

@@ -111,7 +111,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("schema", "extract"))
     parser.add_argument("cells", type=Path, nargs="?")
-    parser.add_argument("--approved-mapping", type=Path)
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--approved-mapping", type=Path)
+    source.add_argument("--okf", type=Path)
     args = parser.parse_args()
     if (args.command == "extract") != (args.cells is not None):
         parser.error("extract requires a JSON cell map, schema takes no input file")
@@ -121,6 +123,10 @@ def main():
             from review import load_approved
 
             mapping = load_approved(args.approved_mapping)
+        elif args.okf is not None:
+            from okf import load_concept
+
+            mapping = load_concept(args.okf)
         result = (
             schema(mapping) if args.cells is None
             else extract(json.loads(args.cells.read_text(encoding="utf-8")), mapping)
