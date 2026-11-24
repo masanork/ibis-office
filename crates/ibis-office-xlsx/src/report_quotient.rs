@@ -432,15 +432,32 @@ fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, ke
     });
     let filtered = filter.active().then(|| {
         let query = filter.query.trim().to_lowercase();
-        let mut matches: Vec<_> = ranked.iter().copied().filter(|&(name, _, contribution)| {
+        let mut matches = Vec::new();
+        let mut matched = CompensatedSum::default();
+        let mut excluded = CompensatedSum::default();
+        for &group @ (name, _, contribution) in &ranked {
             let sign_matches = match filter.direction {
                 RankingDirection::All => true,
                 RankingDirection::Increase => contribution > 0.,
                 RankingDirection::Decrease => contribution < 0.,
             };
-            sign_matches && (query.is_empty() || name.to_lowercase().contains(&query))
-        }).collect();
-        rank_groups(&mut matches, remainder_offset, row)
+            if sign_matches && (query.is_empty() || name.to_lowercase().contains(&query)) {
+                matched.add(contribution);
+                matches.push(group);
+            } else {
+                excluded.add(contribution);
+            }
+        }
+        let residual = (matched.sum + excluded.sum) - delta;
+        let excluded_count = ranked.len() - matches.len();
+        let mut result = rank_groups(&mut matches, remainder_offset, row);
+        result["total_contribution"] = json!(matched.sum);
+        result["excluded"] = json!({"count":excluded_count,"contribution":excluded.sum});
+        result["partition_residual"] = json!(residual);
+        result["state"] = json!(if !residual.is_finite() { "non_finite" }
+            else if residual.abs() <= tolerance { "ready" }
+            else { "totals_mismatch" });
+        result
     });
     let mut ranking = rank_groups(&mut ranked, remainder_offset.filter(|_| filtered.is_none()), row);
     let partition_residual = (ranking["top_contribution"].as_f64().unwrap_or(f64::NAN)

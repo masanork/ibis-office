@@ -3219,3 +3219,6 @@ query.report-quotient-decrease	Decrease
 query.report-quotient-search	Search group names
 query.report-quotient-search-submit	Search
 query.report-quotient-no-matches	No matching groups
+query.report-quotient-matched	Matching {count} groups: {total} {unit}
+query.report-quotient-excluded	Excluded {count} groups: {total} {unit}
+query.report-quotient-filter-reconciled	Subtotals reconcile before rounding.

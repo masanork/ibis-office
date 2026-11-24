@@ -89,7 +89,25 @@ fn quotient_preview(
             .small().label(text("query.report-quotient-search"))
             .on_click(cx.listener(move |editor, _, window, cx| editor.open_quotient_group_search(index, generation, window, cx))));
     }
-    let ranking = filter.and_then(|filter| filter.ranking.as_ref()).unwrap_or(ranking);
+    let ranking = if let Some(filtered) = filter.and_then(|filter| filter.ranking.as_ref()) {
+        if filtered["state"] != "ready" && decomposition["state"] == "ready" {
+            section = section.child(div().text_sm().child(text("query.report-quotient-mismatch")));
+        }
+        for (label, count, contribution) in [
+            ("query.report-quotient-matched", &filtered["group_count"], &filtered["total_contribution"]),
+            ("query.report-quotient-excluded", &filtered["excluded"]["count"], &filtered["excluded"]["contribution"]),
+        ] {
+            section = section.child(div().text_sm().child(saved_check_text(format(label, &[
+                ("count", count), ("total", &signed_contribution(contribution)), ("unit", &unit),
+            ]))));
+        }
+        if filtered["state"] == "ready" {
+            section = section.child(div().text_sm().child(text("query.report-quotient-filter-reconciled")));
+        }
+        filtered
+    } else {
+        ranking
+    };
     let groups = ranking["groups"].as_array().expect("quotient ranking groups");
     if groups.is_empty() {
         return section.child(div().text_sm().child(text("query.report-quotient-no-matches")));
@@ -2424,7 +2442,7 @@ pub(crate) fn report_quotient_remainder_scenario(rate: bool) {
     let filtered = |direction, query| json!({
         "table":"QueryResult1","metric":metric,"contribution_direction":direction,"group_query":query,
     });
-    let check_total = |comparison: &Value| {
+    let check_total = |comparison: &Value, count: u64, matched_numerator: f64| {
         let label = format("query.report-quotient-total", &[
             ("count", &23), ("total", &signed_contribution(&comparison[if rate { "percentage_point_delta" } else { "delta" }])), ("unit", &unit),
         ]);
@@ -2432,11 +2450,28 @@ pub(crate) fn report_quotient_remainder_scenario(rate: bool) {
         let ranking = &comparison["decomposition"]["ranking"];
         assert_eq!(ranking["group_count"], 23);
         assert!((ranking["total_contribution"].as_f64().unwrap() - delta).abs() <= tolerance);
+        let filtered = &ranking["filtered"];
+        assert_eq!(filtered["state"], "ready");
+        assert_eq!(filtered["group_count"], count);
+        assert_eq!(filtered["excluded"]["count"], 23 - count);
+        let matched = filtered["total_contribution"].as_f64().unwrap();
+        let excluded = filtered["excluded"]["contribution"].as_f64().unwrap();
+        assert!((matched - matched_numerator / 46. * scale).abs() <= tolerance);
+        assert!((excluded - (-12. - matched_numerator) / 46. * scale).abs() <= tolerance);
+        assert!((matched + excluded - delta).abs() <= tolerance);
+        assert!(filtered["partition_residual"].as_f64().unwrap().abs() <= tolerance);
+        for (label, count, contribution) in [
+            ("query.report-quotient-matched", count, &filtered["total_contribution"]),
+            ("query.report-quotient-excluded", 23 - count, &filtered["excluded"]["contribution"]),
+        ] {
+            let label = format(label, &[("count", &count), ("total", &signed_contribution(contribution)), ("unit", &unit)]);
+            assert!(button_probe::bounds(&format!("query-report-check-text:{label}")).is_some(), "{label}");
+        }
     };
-    for (direction, count, key) in [("increase", 11, "G22"), ("decrease", 12, "G23")] {
+    for (direction, count, key, matched) in [("increase", 11, "G22", 132.), ("decrease", 12, "G23", -144.)] {
         button_probe::click(&mut scene, &format!("query-report-quotient-{direction}-0"));
         let result = scene.with(|editor, _| editor.live_report_preview_diff(&filtered(direction, "")));
-        check_total(&result);
+        check_total(&result, count, matched);
         let matched = &result["decomposition"]["ranking"]["filtered"];
         assert_eq!(matched["group_count"], count);
         let label = format("query.report-quotient-row", &[
@@ -2448,7 +2483,7 @@ pub(crate) fn report_quotient_remainder_scenario(rate: bool) {
     scene.type_text("g03");
     button_probe::click(&mut scene, "query-report-quotient-search-submit-0");
     let result = scene.with(|editor, _| editor.live_report_preview_diff(&filtered("decrease", "g03")));
-    check_total(&result);
+    check_total(&result, 1, -3.);
     let matched = &result["decomposition"]["ranking"]["filtered"];
     assert_eq!(matched["group_count"], 1);
     let group = &matched["groups"][0];
@@ -2470,5 +2505,14 @@ pub(crate) fn report_quotient_remainder_scenario(rate: bool) {
     button_probe::click(&mut scene, "query-report-quotient-increase-0");
     let result = scene.with(|editor, _| editor.live_report_preview_diff(&filtered("increase", "g03")));
     assert_eq!(result["decomposition"]["ranking"]["filtered"]["group_count"], 0);
-    check_total(&result);
+    check_total(&result, 0, 0.);
+    scene.update(|editor, window, cx| {
+        let input = editor.query_reports_mut().unwrap().quotient_filters[&0].input.clone().unwrap();
+        input.update(cx, |input, cx| {
+            input.set_value("g0", window, cx);
+        });
+    });
+    button_probe::click(&mut scene, "query-report-quotient-search-submit-0");
+    let result = scene.with(|editor, _| editor.live_report_preview_diff(&filtered("increase", "g0")));
+    check_total(&result, 4, 20.);
 }
