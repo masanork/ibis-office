@@ -717,6 +717,8 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         ("xlsx::query_report_refresh_ui", crate::query_report_panel::refresh_report_scenario),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
+        ("xlsx::report_comparison", crate::query_report_panel::report_comparison_scenario),
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         ("xlsx::query_report_arrow_snapshot", crate::query_report_panel::arrow_report_snapshot_scenario),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         ("xlsx::query_report_json_avro_snapshot", crate::query_report_panel::json_avro_report_snapshot_scenario),

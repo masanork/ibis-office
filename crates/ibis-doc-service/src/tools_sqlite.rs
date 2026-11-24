@@ -2061,6 +2061,61 @@ fn set_query_report_checks(service: &mut Service, args: &Value) -> Result<Value,
     Ok(crate::edit::edited(id, open, summary, Vec::new()))
 }
 
+pub(crate) const SET_QUERY_REPORT_COMPARISON: Tool = Tool {
+    name: "xlsx_set_query_report_comparison",
+    description: "Save or remove the comparison columns and unit on an existing query report. The key must be unique text and the metric must be additive.",
+    access: Access::Edit,
+    returns_content: false,
+    schema: || object(&[
+        document_id(),
+        ("table", string("Name of an existing query report.")),
+        ("comparison", json!({"oneOf":[{"type":"null"},object(&[
+            ("key_column", string("Column containing unique string keys.")),
+            ("metric_column", string("Column containing an additive numeric metric.")),
+            ("unit", string("Unit of the metric, such as USD or items.")),
+        ], &["key_column","metric_column","unit"])]})),
+    ], &["document_id", "table", "comparison"]),
+    run: set_query_report_comparison,
+};
+
+fn set_query_report_comparison(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    use ibis_doc_model::{Command, SheetCommand};
+    crate::edit::only_known(args, &["document_id", "table", "comparison"])?;
+    let comparison = args.get("comparison").ok_or_else(|| ToolError::invalid("Supply comparison or null."))?;
+    let id = args.str_arg("document_id")?;
+    let open = crate::tools_xlsx::workbook_document(service, id)?;
+    let workbook = open.document.presentation();
+    let name = args.str_arg("table")?;
+    let mut definition = query_report_definition(workbook, args)?;
+    let table = crate::tools_xlsx::workbook_sheets(workbook).iter()
+        .flat_map(|(_, _, sheet)| &sheet.tables)
+        .find(|table| table.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| ToolError::invalid("The report table is missing."))?;
+    let properties = definition.as_object_mut().ok_or_else(|| ToolError::invalid("Invalid report definition"))?;
+    if comparison.is_null() {
+        properties.remove("comparison");
+    } else {
+        crate::edit::only_known(comparison, &["key_column", "metric_column", "unit"])?;
+        let key = comparison.str_arg("key_column")?;
+        let metric = comparison.str_arg("metric_column")?;
+        let unit = comparison.str_arg("unit")?;
+        if key == metric || [key, metric].into_iter().any(|column| {
+            column.trim().is_empty() || table.columns.iter().filter(|name| name.as_str() == column).count() != 1
+        }) || unit.trim().is_empty() || unit.len() > 128 {
+            return Err(ToolError::invalid("Supply two distinct, uniquely named report columns and a nonempty unit of at most 128 bytes."));
+        }
+        properties.insert("comparison".into(), comparison.clone());
+    }
+    if definition.to_string().len() > REPORT_DEFINITION_BYTES {
+        return Err(ToolError::invalid("The saved report definition exceeds 32 KiB"));
+    }
+    check_report_budget(workbook, Some(&table.name), &definition)?;
+    let table = table.name.clone();
+    let summary = json!({"table":table,"comparison":comparison});
+    crate::edit::execute(open, vec![Command::Sheet(SheetCommand::SetQueryReport { table, definition })])?;
+    Ok(crate::edit::edited(id, open, summary, Vec::new()))
+}
+
 fn changed_report_params(definition: &Value, query: &Value) -> Result<Option<Value>, ToolError> {
     if definition["params"] == query["params"] {
         return Ok(None);

@@ -161,6 +161,39 @@ impl QueryReportPanel {
 #[ibis_office_macros::editor_ext(QueryReportPanelExt)]
 impl SlideEditor {
     pub(crate) fn live_report_preview_diff(&self, args: &Value) -> Value {
+        let contributor_key = match args.get("contributor_key") {
+            None => None,
+            Some(key) => match key.as_str().filter(|key| !key.trim().is_empty()) {
+                Some(key) => Some(key),
+                None => return json!({"error":"Supply a nonempty contributor key"}),
+            },
+        };
+        let report = match (args.get("table"), args.get("metric")) {
+            (None, None) => None,
+            (Some(table), Some(metric)) => {
+                let (Some(table), Some(metric)) = (table.as_str(), metric.as_str()) else {
+                    return json!({"error":"Supply a report table and metric"});
+                };
+                if [table, metric].iter().any(|value| value.trim().is_empty())
+                    || ["shape_id", "series", "category"].iter().any(|key| args.get(key).is_some())
+                {
+                    return json!({"error":"Supply a report table and metric without chart arguments"});
+                }
+                Some((table, metric))
+            }
+            _ => return json!({"error":"Supply a report table and metric together"}),
+        };
+        if let Some(applied) = args.get("applied") {
+            let (Some(applied), Some((table, metric))) = (applied.as_bool(), report) else {
+                return json!({"error":"applied must be a boolean and requires a report table and metric"});
+            };
+            if applied {
+                let Some(key) = contributor_key else {
+                    return json!({"error":"Applied report lookup requires a contributor key"});
+                };
+                return crate::chart_cohort::applied_report_row(self.presentation(), table, metric, key);
+            }
+        }
         let Some(panel) = self.wb().panels.queries.as_ref().and_then(|panel| panel.reports.as_ref()) else {
             return json!({"state":"idle"});
         };
@@ -172,13 +205,14 @@ impl SlideEditor {
             return json!({"state":"stale"});
         }
         let Some(candidate) = &review.candidate else { return json!({"state":"blocked"}) };
-        let contributor_key = match args.get("contributor_key") {
-            None => None,
-            Some(key) => match key.as_str().filter(|key| !key.trim().is_empty()) {
-                Some(key) => Some(key),
-                None => return json!({"error":"Supply a nonempty contributor key"}),
-            },
-        };
+        if let Some((table, metric)) = report {
+            if !review.result["reports"].as_array().into_iter().flatten().any(|report| {
+                report["table"].as_str().is_some_and(|name| name.eq_ignore_ascii_case(table))
+            }) {
+                return json!({"state":"report_not_in_preview"});
+            }
+            return crate::chart_cohort::compare_report(&review.base, candidate, table, metric, contributor_key);
+        }
         match (args.get("shape_id"), args.get("series"), args.get("category")) {
             (None, None, None) if contributor_key.is_none() => json!({
                 "state":"review","charts":review.chart_diffs,"truncated":review.chart_diffs_truncated
@@ -283,7 +317,8 @@ impl SlideEditor {
                         "state":if review.result["blocked"] == true {"blocked"} else {"review"},
                         "charts":review.result["charts"],
                         "reports":review.result["reports"].as_array().into_iter().flatten().map(|r| {
-                            json!({"table":r["table"],"sheet":r["sheet"],"previous_rows":r["previous_rows"],"rows":r["rows"]})
+                            let comparison = r["table"].as_str().and_then(|table| book.query_reports.get(table)).and_then(|definition| definition.get("comparison"));
+                            json!({"table":r["table"],"sheet":r["sheet"],"previous_rows":r["previous_rows"],"rows":r["rows"],"comparison":comparison})
                         }).collect::<Vec<_>>(),
                     })
                 }
@@ -1541,4 +1576,78 @@ pub(crate) fn json_avro_report_snapshot_scenario() {
     scene.key(&format!("{}-z", crate::shell::app::secondary_modifier()));
     assert_eq!(values(&mut scene), [CellValue::Number(2.), CellValue::Number(5.)]);
     scene.screenshot("json-avro-undone");
+}
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn report_comparison_scenario() {
+    use crate::shell::scenario::{Scenario, button_probe};
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("sales.csv");
+    let new = dir.path().join("next.csv");
+    let blank = dir.path().join("blank.xlsx");
+    let workbook = dir.path().join("products.xlsx");
+    std::fs::write(&old, "sku,label,revenue\nP01,Notebook,10\nP02,Pen,10\nP03,Paper,0\nP04,Folder,9\n").unwrap();
+    std::fs::write(&new, "sku,label,revenue\nP01,Notebook,19\nP02,Pen,19\nP03,Paper,0\nP05,Stapler,5\n").unwrap();
+    std::fs::write(&blank, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+
+    let mut service = ibis_doc_service::Service::new(&[dir.path().to_owned()], false, ibis_doc_service::Limits::default());
+    let id = service.call("app_open_document", &json!({"path":blank})).unwrap()["document_id"].clone();
+    let sheet = service.call("xlsx_list_sheets", &json!({"document_id":id})).unwrap()["sheets"][0]["name"].clone();
+    service.call("sqlite_query_to_table", &json!({
+        "document_id":id,"destination_sheet":sheet,"anchor":"C4",
+        "sql":"SELECT sku, label, CAST(revenue AS INTEGER) AS revenue FROM sales ORDER BY sku",
+        "datasets":[{"source":old,"alias":"sales"}],
+    })).unwrap();
+    service.call("xlsx_set_query_report_comparison", &json!({
+        "document_id":id,"table":"QueryResult1",
+        "comparison":{"key_column":"sku","metric_column":"revenue","unit":"USD"},
+    })).unwrap();
+    service.call("app_save_document", &json!({"document_id":id,"path":workbook})).unwrap();
+    let mut scene = Scenario::open(workbook.to_str().unwrap());
+    let _probe = button_probe::Probe::new();
+    scene.update(|editor, _, cx| {
+        editor.open_queries_panel(cx);
+        editor.open_query_report_panel(cx);
+        editor.query_reports_mut().unwrap().files.insert("sales.csv".into(), new.clone());
+        cx.notify();
+    });
+    button_probe::click(&mut scene, "query-reports-preview");
+    let args = json!({"table":"QueryResult1","metric":"revenue","contributor_key":"P05"});
+    let mut result = Value::Null;
+    for _ in 0..250 {
+        result = scene.with(|editor, _| editor.live_report_preview_diff(&args));
+        if result["state"] == "review" { break; }
+        assert_eq!(result["state"], "previewing");
+        std::thread::sleep(Duration::from_millis(20));
+        scene.wait(20);
+    }
+    assert_eq!(result["state"], "review");
+    assert_eq!(result["unit"], "USD");
+    assert_eq!(result["before"], 29.0);
+    assert_eq!(result["after"], 43.0);
+    let comparison = &result["comparison"];
+    assert_eq!(comparison["state"], "ready");
+    assert_eq!(comparison["delta"], 14.0);
+    assert_eq!(comparison["retained"]["count"], 3);
+    assert_eq!(comparison["increases"][0]["key"], "P01");
+    assert_eq!(comparison["increases"][1]["key"], "P02");
+    assert_eq!(comparison["decreases"][0]["key"], "P04");
+    assert_eq!(comparison["remainder"]["count"], 1);
+    assert_eq!(comparison["remainder"]["delta"], 0.0);
+    assert!(comparison["contributor"]["before"].is_null());
+    assert_eq!(scene.with(|editor, _| editor.live_report_preview_diff(&json!({
+        "table":"OtherReport","metric":"revenue"
+    })))["state"], "report_not_in_preview");
+    let expected = &comparison["contributor"]["after"];
+    assert_eq!(expected["key_cell"], "C8");
+    assert_eq!(expected["amount_cell"], "E8");
+    assert_eq!(expected["amount"], 5.0);
+    let applied_args = json!({"table":"QueryResult1","metric":"revenue","contributor_key":"P05","applied":true});
+    assert_eq!(scene.with(|editor, _| editor.live_report_preview_diff(&applied_args))["state"], "absent");
+    button_probe::click(&mut scene, "query-reports-apply");
+    let applied = scene.with(|editor, _| editor.live_report_preview_diff(&applied_args));
+    assert_eq!(applied["state"], "ready");
+    assert_eq!(&applied["evidence"], expected);
 }

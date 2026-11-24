@@ -16,7 +16,8 @@ struct Row {
 
 struct Rows<'a> {
     sheet: Option<&'a str>,
-    column: u32,
+    key_column: u32,
+    amount_column: u32,
     entries: BTreeMap<&'a str, Row>,
 }
 
@@ -24,8 +25,8 @@ impl Rows<'_> {
     fn evidence(&self, row: Row) -> Value {
         json!({
             "sheet":self.sheet,
-            "key_cell":ibis_doc_model::cell_name(self.column, row.index),
-            "amount_cell":ibis_doc_model::cell_name(self.column + 1, row.index),
+            "key_cell":ibis_doc_model::cell_name(self.key_column, row.index),
+            "amount_cell":ibis_doc_model::cell_name(self.amount_column, row.index),
             "amount":row.amount,
         })
     }
@@ -54,26 +55,90 @@ fn rows(workbook: &Presentation, (slide, column, row): SourceCell) -> Option<Res
             table.range.first_column == anchor.first_column && table.range.first_row == anchor.first_row
                 && table.columns == ["key", "amount"] && table.header_rows == 1
         }).ok_or("invalid_table")?;
-        let range = table.range;
-        if range.last_row.saturating_sub(range.first_row) > 100_000 {
-            return Err("too_many_rows");
-        }
-        let mut result = BTreeMap::new();
-        for row in range.first_row + 1..=range.last_row.saturating_sub(table.totals_rows) {
-            let key = sheet.cell(row, range.first_column).map(|cell| &cell.value);
-            let amount = sheet.cell(row, range.first_column + 1).map(|cell| &cell.value);
-            let (Some(CellValue::Text(key)), Some(CellValue::Number(amount))) = (key, amount) else {
-                return Err("invalid_row");
-            };
-            if key.trim().is_empty() || !amount.is_finite() {
-                return Err("invalid_row");
-            }
-            if result.insert(key.as_str(), Row { amount: *amount, index: row }).is_some() {
-                return Err("duplicate_key");
-            }
-        }
-        Ok(Rows { sheet: page.name.as_deref(), column: range.first_column, entries: result })
+        table_rows(page, sheet, table, "key", "amount")
     })())
+}
+
+fn table_rows<'a>(
+    page: &'a ibis_doc_model::Slide, sheet: &'a ibis_doc_model::Sheet,
+    table: &ibis_doc_model::SheetTable, key: &str, metric: &str,
+) -> Result<Rows<'a>, &'static str> {
+    let range = table.range;
+    if table.header_rows != 1 || key == metric {
+        return Err("invalid_table");
+    }
+    let column = |name: &str| {
+        let mut matches = table.columns.iter().enumerate().filter(|(_, column)| column.as_str() == name);
+        let (index, _) = matches.next().ok_or("invalid_table")?;
+        let column = range.first_column + index as u32;
+        if column > range.last_column || matches.next().is_some() { return Err("invalid_table"); }
+        Ok(column)
+    };
+    let key_column = column(key)?;
+    let amount_column = column(metric)?;
+    if range.last_row.saturating_sub(range.first_row) > 100_000 {
+        return Err("too_many_rows");
+    }
+    let mut entries = BTreeMap::new();
+    for row in range.first_row + 1..=range.last_row.saturating_sub(table.totals_rows) {
+        let key = sheet.cell(row, key_column).map(|cell| &cell.value);
+        let amount = sheet.cell(row, amount_column).map(|cell| &cell.value);
+        let (Some(CellValue::Text(key)), Some(CellValue::Number(amount))) = (key, amount) else {
+            return Err("invalid_row");
+        };
+        if key.trim().is_empty() || !amount.is_finite() {
+            return Err("invalid_row");
+        }
+        if entries.insert(key.as_str(), Row { amount: *amount, index: row }).is_some() {
+            return Err("duplicate_key");
+        }
+    }
+    Ok(Rows { sheet: page.name.as_deref(), key_column, amount_column, entries })
+}
+
+fn report_rows<'a>(workbook: &'a Presentation, name: &str, metric: &str) -> Result<(Rows<'a>, &'a str), &'static str> {
+    use ibis_doc_model::sheet_calc::sheet_of_slide;
+    let book = workbook.workbook.as_ref().ok_or("no_report")?;
+    let (_, report) = book.query_reports.iter().find(|(table, _)| table.eq_ignore_ascii_case(name)).ok_or("no_report")?;
+    let definition = &report["comparison"];
+    let key_column = definition["key_column"].as_str().ok_or("comparison_not_configured")?;
+    let metric_column = definition["metric_column"].as_str().filter(|column| *column == metric).ok_or("unknown_metric")?;
+    let unit = definition["unit"].as_str().ok_or("comparison_not_configured")?;
+    for page in &workbook.slides {
+        let Some(sheet) = sheet_of_slide(page) else { continue };
+        if let Some(table) = sheet.tables.iter().find(|table| table.name.eq_ignore_ascii_case(name)) {
+            return Ok((table_rows(page, sheet, table, key_column, metric_column)?, unit));
+        }
+    }
+    Err("invalid_table")
+}
+
+pub(crate) fn compare_report(
+    base: &Presentation, candidate: &Presentation, table: &str, metric: &str, key: Option<&str>,
+) -> Value {
+    let (before, unit) = match report_rows(base, table, metric) {
+        Ok(rows) => rows,
+        Err(reason) => return json!({"state":reason,"side":"before"}),
+    };
+    let (after, candidate_unit) = match report_rows(candidate, table, metric) {
+        Ok(rows) => rows,
+        Err(reason) => return json!({"state":reason,"side":"after"}),
+    };
+    if unit != candidate_unit { return json!({"state":"comparison_changed"}); }
+    let total = |rows: &Rows<'_>| rows.entries.values().map(|row| row.amount).sum::<f64>();
+    let (old, new) = (total(&before), total(&after));
+    json!({"state":"review","table":table,"metric":metric,"unit":unit,
+        "before":old,"after":new,"comparison":decompose(before, after, old, new, key)})
+}
+
+pub(crate) fn applied_report_row(workbook: &Presentation, table: &str, metric: &str, key: &str) -> Value {
+    match report_rows(workbook, table, metric) {
+        Ok((rows, unit)) => rows.entries.get(key).map_or_else(
+            || json!({"state":"absent","key":key}),
+            |row| json!({"state":"ready","table":table,"metric":metric,"unit":unit,"key":key,"evidence":rows.evidence(*row)}),
+        ),
+        Err(state) => json!({"state":state}),
+    }
 }
 
 #[derive(Default)]
@@ -213,7 +278,8 @@ mod tests {
     fn cohort_counts_and_signed_contributions_reconcile() {
         let rows = |items: [(&'static str, f64); 3]| Rows {
             sheet: Some("Evidence"),
-            column: 0,
+            key_column: 0,
+            amount_column: 1,
             entries: items.into_iter().enumerate().map(|(index, (key, amount))| {
                 (key, Row { amount, index: index as u32 + 1 })
             }).collect(),
@@ -238,7 +304,8 @@ mod tests {
         let keys = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14"];
         let rows = |amounts: [f64; 14]| Rows {
             sheet: None,
-            column: 0,
+            key_column: 0,
+            amount_column: 1,
             entries: keys.into_iter().zip(amounts).enumerate().map(|(index, (key, amount))| {
                 (key, Row { amount, index: index as u32 + 1 })
             }).collect(),

@@ -1850,3 +1850,37 @@ fn json_lines_range_reports_refresh_distinct_ranges_from_one_source() {
     assert_eq!(sheet.cell(1, 2).unwrap().value, CellValue::Number(11.0));
     assert_eq!(sheet.cell(5, 2).unwrap().value, CellValue::Number(22.0));
 }
+
+#[test]
+fn saved_report_comparison_persists_with_generic_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("sales.csv");
+    let blank = dir.path().join("blank.xlsx");
+    let saved = dir.path().join("saved.xlsx");
+    std::fs::write(&source, "sku,caption,revenue\nP001,Notebook,10\nP002,Pen,0\n").unwrap();
+    std::fs::write(&blank, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut service = Service::new(&[dir.path().to_owned()], false, Limits::default());
+    let id = service.call("app_open_document", &json!({"path":blank})).unwrap()["document_id"].clone();
+    let sheet = service.call("xlsx_list_sheets", &json!({"document_id":id})).unwrap()["sheets"][0]["name"].clone();
+    service.call("sqlite_query_to_table", &json!({
+        "document_id":id,"destination_sheet":sheet,"anchor":"C4",
+        "sql":"SELECT sku, caption, CAST(revenue AS INTEGER) AS revenue FROM sales ORDER BY sku",
+        "datasets":[{"source":source,"alias":"sales"}],
+    })).unwrap();
+    let comparison = json!({"key_column":"sku","metric_column":"revenue","unit":"USD"});
+    let set = |service: &mut Service, id: &serde_json::Value, definition| {
+        service.call("xlsx_set_query_report_comparison", &json!({
+            "document_id":id,"table":"QueryResult1","comparison":definition
+        }))
+    };
+    assert!(set(&mut service, &id, json!({"key_column":"sku","metric_column":"missing","unit":"USD"})).is_err());
+    set(&mut service, &id, comparison.clone()).unwrap();
+    service.call("app_save_document", &json!({"document_id":id,"path":saved})).unwrap();
+    let reopened = service.call("app_open_document", &json!({"path":saved})).unwrap()["document_id"].clone();
+    let read = |service: &mut Service| service.call("xlsx_list_query_reports", &json!({
+        "document_id":reopened,"table":"QueryResult1",
+    })).unwrap()["definition"]["comparison"].clone();
+    assert_eq!(read(&mut service), comparison);
+    set(&mut service, &reopened, serde_json::Value::Null).unwrap();
+    assert!(read(&mut service).is_null());
+}
