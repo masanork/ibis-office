@@ -68,6 +68,8 @@ jobs:
       # version.txt on GitHub's main is pushed only after the release is out (the
       # installed apps update from it), so a release build takes its version
       # from the tag (v0.8.5 -> 0.8.5).
+      - run: python3 scripts/docs_build.py prepare-history
+
       - name: Use the release tag's version
         if: inputs.release_tag != ''
         env:
@@ -102,6 +104,7 @@ jobs:
             target/dist/ibisOffice-*-Linux.AppImage
             target/dist/ibisOffice-*-Linux.AppImage.sha256
             target/dist/linux-x64-appimage.*.cdx.json
+            target/dist/docs-*.json
 
       - name: Attach AppImage to GitHub Release
         timeout-minutes: 10

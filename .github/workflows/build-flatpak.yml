@@ -75,6 +75,8 @@ jobs:
       # version.txt on GitHub's main is pushed only after the release is out (the
       # installed apps update from it), so a release build takes its version
       # from the tag (v0.8.5 -> 0.8.5).
+      - run: python3 scripts/docs_build.py prepare-history
+
       - name: Use the release tag's version
         if: inputs.release_tag != ''
         env:
@@ -97,7 +99,7 @@ jobs:
           case "$ARCH" in x86_64) platform=flatpak-x64 ;; aarch64) platform=flatpak-arm64 ;; esac
           bundle=$(realpath target/dist/ibisOffice-*-Linux-"$ARCH".flatpak)
           python3 scripts/build-bom.py "$platform" "$bundle" target/dist --appdir target/dist/flatpak/build-dir/files
-          (cd target/dist && sha256sum -- "$(basename "$bundle")" "$platform".*.cdx.json > SHA256SUMS)
+          (cd target/dist && sha256sum -- "$(basename "$bundle")" "$platform".*.cdx.json docs-*.json > SHA256SUMS)
 
       - name: Verify the packaged Flatpak and both BOMs
         timeout-minutes: 10
@@ -123,4 +125,5 @@ jobs:
             target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak
             target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak.sha256
             target/dist/flatpak-*.*.cdx.json
+            target/dist/docs-*.json
             target/dist/SHA256SUMS

@@ -5,7 +5,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import platform
 import sys
+
+from docs_build import describe, prepare_history
+
+BUILD_PLATFORMS = {"Darwin": "macOS", "Windows": "Windows", "Linux": "Linux"}
 
 
 def run(*args):
@@ -13,8 +18,8 @@ def run(*args):
 
 
 def main():
-    if len(sys.argv) != 3 or sys.argv[1] not in {"source", "artifacts"}:
-        sys.exit("usage: desktop-ci-info.py source|artifacts OUTDIR")
+    if len(sys.argv) not in (3, 4) or sys.argv[1] not in {"source", "artifacts"}:
+        sys.exit("usage: desktop-ci-info.py source|artifacts OUTDIR [VERSION_PLATFORM]")
     mode, out = sys.argv[1], Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
     if mode == "source":
@@ -22,6 +27,7 @@ def main():
         expected = os.environ["EXPECTED_SOURCE_SHA"]
         if head != expected:
             sys.exit(f"checkout {head} does not match expected source {expected}")
+        prepare_history()
         status = run("git", "status", "--porcelain", "--untracked-files=no")
         submodules = run("git", "submodule", "status", "--recursive").splitlines()
         if status or any(not line.startswith(" ") for line in submodules):
@@ -36,6 +42,8 @@ def main():
                 "run_id": os.environ.get("GITHUB_RUN_ID"), "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
                 "repository": os.environ.get("GITHUB_REPOSITORY"),
                 "note": "CI build record; not signed provenance."}
+        target = sys.argv[3] if len(sys.argv) == 4 else BUILD_PLATFORMS[platform.system()]
+        info.update(describe(target))
         (out / "build-info.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     else:
         files = sorted(p for p in out.iterdir() if p.is_file() and p.name != "SHA256SUMS")

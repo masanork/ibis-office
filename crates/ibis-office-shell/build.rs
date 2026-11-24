@@ -89,9 +89,11 @@ fn build_identity() {
         .or_else(|| git(&["symbolic-ref", "--quiet", "--short", "HEAD"]))
         .unwrap_or_else(|| "detached".into());
     // Git metadata may live outside the worktree (including linked worktrees).
-    for name in ["HEAD", "index"] {
+    for name in ["HEAD", "index", "shallow"] {
         if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", name]) {
-            println!("cargo:rerun-if-changed={path}");
+            if Path::new(&path).exists() {
+                println!("cargo:rerun-if-changed={path}");
+            }
         }
     }
     if let Some(reference) = git(&["symbolic-ref", "--quiet", "HEAD"]) {
@@ -110,6 +112,11 @@ fn build_identity() {
         Some(_) => " · dirty",
         None => " · status unknown",
     };
+    if git(&["rev-parse", "--is-shallow-repository"]).as_deref() == Some("false") {
+        if let Some(number) = git(&["rev-list", "--first-parent", "--count", "HEAD"]).and_then(|n| n.parse::<u64>().ok()) {
+            println!("cargo:rustc-env=IBIS_BUILD_NUMBER={number}");
+        }
+    }
     let branch = branch.replace(['\r', '\n'], " ");
     println!("cargo:rustc-env=IBIS_BUILD_IDENTITY={branch} · {commit}{state}");
 }

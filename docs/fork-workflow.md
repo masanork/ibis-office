@@ -152,3 +152,16 @@ Desktop builds use the Docs name and the document D mark in `crates/ibis-office-
 Automatic and manual in-app update checks are disabled in this fork: the inherited updater points at upstream ibisOffice releases, not Docs builds. Do not re-enable it until a separate fork release feed and verification policy are in place. Desktop CI artifacts are validation builds, not an update feed. Windows automatic Open With registration is also disabled until the fork has a distinct executable name; this avoids overwriting an upstream installation’s registration.
 
 Signed update metadata preparation and the remaining production activation gates are documented in [Docs desktop updates](sorane-desktop-updates.md).
+
+## Docs のビルド番号
+
+Docs のビルド名は `docs-v0.8.9-build862` の形式を使う。
+番号は対象コミットの `git rev-list --first-parent --count HEAD` で、
+同じコミットの再実行や各プラットフォームのビルドで共通になる。
+序列として使う範囲は `masanork` の first-parent 履歴。
+他のブランチでは同じ番号になることがあるため、成果物の照合には
+完全なソースコミットと SHA-256 を使う。
+
+Help のバージョン情報は `0.8.9 (build 862)` のように表示する。
+CI の BOM とビルド記録にも番号と名前を保存する。Git 履歴を取得できない
+手元のビルドではビルド番号を省略し、CI は完全な履歴を取得してからビルドする。

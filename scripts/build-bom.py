@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 from bom_payload import file_components, sha256, zip_components
+from docs_build import describe, version_for
 
 PLATFORMS = {
     "linux-x64-appimage": ("Linux", "x86_64-unknown-linux-gnu", ("ibis-office-app", "ibis-office-updater", "ibis-appimage"), False),
@@ -73,8 +74,8 @@ def cargo_graph(target, packages, no_default_features, app_ref):
 def inventory(platform, image, components, edges, scope, app_ref):
     label, target, _, _ = PLATFORMS[platform]
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    version = next(line.split("\t", 1)[1] for line in Path("version.txt").read_text().splitlines()
-                   if line.startswith(f"{label}\t"))
+    version = version_for(label)
+    build = describe(label)
     return {
         "bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
         "metadata": {
@@ -84,6 +85,9 @@ def inventory(platform, image, components, edges, scope, app_ref):
             },
             "properties": [
                 {"name": "ibisOffice:sourceCommit", "value": revision},
+                *[{"name": f"ibisOffice:{name}", "value": str(build[key])}
+                  for name, key in (("buildNumber", "build_number"), ("buildName", "build_name"))
+                  if key in build],
                 {"name": "ibisOffice:cargoTarget", "value": target},
                 {"name": "ibisOffice:inventoryScope", "value": scope},
             ],
@@ -285,6 +289,22 @@ def main():
                      " Reviewed OOXML/PDF encryption, OOXML/OFD signatures, and desktop updater crypto when present"
                      " in the Cargo graph. Updater evidence describes source capabilities, not release activation.", app_ref)
     args.output.mkdir(parents=True, exist_ok=True)
+    build = describe(PLATFORMS[args.platform][0])
+    if build:
+        name = build["build_name"]
+        properties = {p["name"]: p["value"] for p in sbom["metadata"]["properties"]}
+        record = {
+            **build,
+            "platform": args.platform,
+            "source_sha": properties["ibisOffice:sourceCommit"],
+            "package": args.image.name,
+            "sha256": sbom["metadata"]["component"]["hashes"][0]["content"],
+        }
+        path = args.output / f"{name}-{args.platform}.json"
+        path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+            with Path(summary).open("a", encoding="utf-8") as output:
+                output.write(f"**{name}** · {args.platform} · `{record['source_sha']}`\n")
     for kind, data in (("sbom", sbom), ("cbom", cbom)):
         path = args.output / f"{args.platform}.{kind}.cdx.json"
         path.write_text(

@@ -71,7 +71,11 @@ fn offer_update_again(_cx: &mut App) {
 
 /// The version line, as shown.
 pub fn version_line() -> String {
-    let version = i18n::format("about.version", &[("version", &env!("IBIS_VERSION"))]);
+    let version = option_env!("IBIS_BUILD_NUMBER").map_or_else(
+        || crate::VERSION.to_owned(),
+        |number| format!("{} (build {number})", crate::VERSION),
+    );
+    let version = i18n::format("about.version", &[("version", &version)]);
     option_env!("IBIS_BUILD_IDENTITY").map_or_else(|| version.clone(), |identity| format!("{version} · {identity}"))
 }
 

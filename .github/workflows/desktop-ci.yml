@@ -281,7 +281,7 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
       - name: Record clean source and toolchain
-        run: python3 scripts/desktop-ci-info.py source ci-artifact
+        run: python3 scripts/desktop-ci-info.py source ci-artifact Android
       - name: Build Android release APK
         run: scripts/build-android.sh --release
       - name: Verify APK structure
@@ -324,7 +324,7 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal --target aarch64-apple-ios
           rustup default 1.98.1
       - name: Record clean source and toolchain
-        run: python3 scripts/desktop-ci-info.py source ci-artifact
+        run: python3 scripts/desktop-ci-info.py source ci-artifact iOS
       - name: Build iOS device app bundle
         run: scripts/build-ios.sh --device
       - name: Verify and package IbisOffice.app
