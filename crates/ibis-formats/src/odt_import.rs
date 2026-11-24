@@ -7,10 +7,16 @@
 
 use std::collections::HashMap;
 
-use ibis_formats::zip::Archive;
-use ibis_formats::Error;
+use crate::zip::Archive;
+use crate::Error;
 use ibis_ooxml::zip::{EntryMeta, Writer};
 use roxmltree::{Document, Node};
+
+use crate::odf::{TABLE, TEXT, row_hidden, table_columns, table_rows, visible_section};
+
+const OFFICE: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
+const MAX_TABLE_COLUMNS: usize = 256;
+const MAX_TABLE_ROWS: usize = 100_000;
 
 const W_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const R_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -746,6 +752,7 @@ struct Image {
 }
 
 struct Ctx<'a> {
+    table_widths: HashMap<Node<'a, 'a>, usize>,
     styles: &'a Styles,
     archive: &'a Archive<'a>,
     list_styles: HashMap<String, usize>,
@@ -1135,8 +1142,8 @@ fn anchored(ctx: &mut Ctx, node: Node, g: &Props, x: i64, y: i64, cx: i64, cy: i
 /// `translate(-w/2 -h/2) rotate(a) translate(cx cy)` for a turned shape and takes `svg:x`/`svg:y` off).
 fn transformed(node: Node, x: i64, y: i64, cx: i64, cy: i64) -> (i64, i64, String) {
     let Some(t) = attr(node, "transform") else { return (x, y, String::new()) };
-    let (mx, my, angle) = crate::odp_shape::placed_box(t, cx as f64, cy as f64, emu);
-    let rot = crate::odp_shape::ooxml_rotation(angle);
+    let (mx, my, angle) = crate::odf::placed_box(t, cx as f64, cy as f64, emu);
+    let rot = crate::odf::ooxml_rotation(angle);
     (((mx - cx as f64 / 2.0).round()) as i64, ((my - cy as f64 / 2.0).round()) as i64, if rot != 0 { format!(r#" rot="{rot}""#) } else { String::new() })
 }
 
@@ -1162,7 +1169,7 @@ fn drawing<'a>(node: Node<'a, 'a>, ctx: &mut Ctx<'a>, rb: &mut RunBuilder) {
                 let src_rect = {
                     let inner = g.get("clip").and_then(|c| c.trim().strip_prefix("rect(")?.strip_suffix(')'));
                     let sides: Vec<i64> = inner.map(|i| i.split(|c: char| c == ',' || c.is_whitespace()).filter(|t| !t.is_empty()).filter_map(emu).collect()).unwrap_or_default();
-                    let size = ctx.images.last().and_then(|i| crate::odp_shape::picture_size(&i.bytes));
+                    let size = ctx.images.last().and_then(|i| crate::odf::picture_size(&i.bytes));
                     match (size, sides.len()) {
                         (Some((pw, ph)), 4) => {
                             let frac = |v: i64, total: f64| ((v as f64 / (total * 12_700.0)) * 100_000.0).round().clamp(0.0, 99_000.0) as i64;
@@ -1213,7 +1220,7 @@ fn drawing<'a>(node: Node<'a, 'a>, ctx: &mut Ctx<'a>, rb: &mut RunBuilder) {
             let (x, y, rot) = transformed(node, x, y, cx, cy);
             let eg = node.children().find(|c| is(*c, "enhanced-geometry"));
             // The geometry as the equations and the path of the file give it for the shape's size (in 1/100 mm).
-            let geometry = eg.and_then(|eg| crate::enhanced_geometry::evaluate_in(eg, (cx as f64 / 360.0, cy as f64 / 360.0), true));
+            let geometry = eg.and_then(|eg| crate::odf::enhanced_geometry::evaluate_in(eg, (cx as f64 / 360.0, cy as f64 / 360.0), true));
             let (geom_xml, text_rect) = match &geometry {
                 Some(geo) => {
                     let rect = geo.text_area.map(|(l, t, r, b)| {
@@ -1406,13 +1413,24 @@ fn paragraph<'a>(node: Node<'a, 'a>, ctx: &mut Ctx<'a>, list: Option<(usize, usi
     out.push_str("</w:p>");
 }
 
+// Restrict structural dispatch to the ODF text and table namespaces.
+fn block_name<'i>(node: Node<'_, 'i>) -> &'i str {
+    let name = node.tag_name();
+    match name.namespace() {
+        Some(TEXT) => name.name(),
+        Some(TABLE) if name.name() == "table" => "table",
+        _ => "",
+    }
+}
+
 fn blocks<'a>(parent: Node<'a, 'a>, ctx: &mut Ctx<'a>, list: Option<(usize, usize)>, out: &mut String) {
     for child in parent.children().filter(|c| c.is_element()) {
-        match child.tag_name().name() {
+        match block_name(child) {
             "p" | "h" => paragraph(child, ctx, list, out),
             "list" => list_block(child, ctx, list, out),
             "table" => table(child, ctx, out),
-            "section" | "index-body" | "table-of-content" | "alphabetical-index" | "illustration-index" | "table-index" | "user-index" | "bibliography" | "index-title" => blocks(child, ctx, list, out),
+            "section" if visible_section(child) => blocks(child, ctx, list, out),
+            "numbered-paragraph" | "index-body" | "table-of-content" | "alphabetical-index" | "illustration-index" | "table-index" | "user-index" | "bibliography" | "index-title" => blocks(child, ctx, list, out),
             _ => {}
         }
     }
@@ -1428,12 +1446,12 @@ fn list_block<'a>(node: Node<'a, 'a>, ctx: &mut Ctx<'a>, outer: Option<(usize, u
         }
     };
     let Some(num) = num else {
-        for item in node.children().filter(|c| is(*c, "list-item") || is(*c, "list-header")) {
+        for item in node.children().filter(|c| c.has_tag_name((TEXT, "list-item")) || c.has_tag_name((TEXT, "list-header"))) {
             blocks(item, ctx, None, out);
         }
         return;
     };
-    for item in node.children().filter(|c| is(*c, "list-item") || is(*c, "list-header")) {
+    for item in node.children().filter(|c| c.has_tag_name((TEXT, "list-item")) || c.has_tag_name((TEXT, "list-header"))) {
         let header = is(item, "list-header");
         blocks(item, ctx, if header { None } else { Some((depth, num)) }, out);
     }
@@ -1442,7 +1460,66 @@ fn list_block<'a>(node: Node<'a, 'a>, ctx: &mut Ctx<'a>, outer: Option<(usize, u
 // ---------------------------------------------------------------------------------------------------------------------------------
 // tables
 
+fn table_count(node: Node, name: &str) -> Result<usize, Error> {
+    match node.attribute((TABLE, name)) {
+        None => Ok(1),
+        Some(value) => value.trim().parse::<usize>().ok().filter(|&n| n > 0)
+            .ok_or_else(|| Error::new("ODT の表の結合または繰り返しが正しくありません")),
+    }
+}
+
+fn table_cells<'a, 'i>(row: Node<'a, 'i>) -> impl Iterator<Item = Node<'a, 'i>> {
+    row.children().filter(|c| c.has_tag_name((TABLE, "table-cell")) || c.has_tag_name((TABLE, "covered-table-cell")))
+}
+
+// Check expansion before generating XML. Repeated covered cells occupy grid
+// positions just like ordinary cells, including under a vertical merge.
+fn table_grid<'a>(table: Node<'a, 'a>, nested_costs: &HashMap<Node<'a, 'a>, usize>) -> Result<(usize, usize), Error> {
+    const MAX_EXPANSION: usize = 16 * 1024 * 1024;
+    let mut budget = MAX_EXPANSION;
+    let too_large = || Error::new("ODT の表を展開すると大きすぎます");
+    let mut columns = 0;
+    for column in table_columns(table) {
+        let count = table_count(column, "number-columns-repeated")?;
+        if count > MAX_TABLE_COLUMNS - columns { return Err(too_large()); }
+        columns += count;
+    }
+    let mut rows = 0;
+    for row in table_rows(table) {
+        let repeat = table_count(row, "number-rows-repeated")?;
+        if repeat > MAX_TABLE_ROWS - rows { return Err(too_large()); }
+        rows += repeat;
+        let mut slots = 0;
+        for cell in table_cells(row) {
+            let count = table_count(cell, "number-columns-repeated")?;
+            let span = table_count(cell, "number-columns-spanned")?;
+            if count > MAX_TABLE_COLUMNS - slots || span > MAX_TABLE_COLUMNS - slots
+                || table_count(cell, "number-rows-spanned")? > MAX_TABLE_ROWS
+            {
+                return Err(too_large());
+            }
+            columns = columns.max(slots + span);
+            slots += count;
+            let mut size = cell.range().len() + 64;
+            for space in cell.descendants().filter(|n| n.has_tag_name((TEXT, "s"))) {
+                let width = attr(space, "c").and_then(|n| n.parse::<usize>().ok()).unwrap_or(1);
+                size = size.checked_add(width).ok_or_else(too_large)?;
+            }
+            for nested in cell.descendants().filter(|n| n.has_tag_name((TABLE, "table"))) {
+                if nested.ancestors().skip(1).find(|n| n.has_tag_name((TABLE, "table"))) == Some(table) {
+                    size = size.checked_add(nested_costs[&nested]).ok_or_else(too_large)?;
+                }
+            }
+            budget = budget.checked_sub(size.saturating_mul(count).saturating_mul(repeat)).ok_or_else(too_large)?;
+        }
+        columns = columns.max(slots);
+    }
+    budget = budget.checked_sub(rows * columns.max(1) * 32).ok_or_else(too_large)?;
+    Ok((columns.max(1), MAX_EXPANSION - budget))
+}
+
 fn table<'a>(node: Node<'a, 'a>, ctx: &mut Ctx<'a>, out: &mut String) {
+    if table_rows(node).all(row_hidden) { return; }
     let tstyle = attr(node, "style-name").and_then(|n| ctx.styles.get("table", n));
     if tstyle.is_some_and(|t| t.table.get("break-before").map(String::as_str) == Some("page")) {
         ctx.pending_break = true;
@@ -1451,33 +1528,18 @@ fn table<'a>(node: Node<'a, 'a>, ctx: &mut Ctx<'a>, out: &mut String) {
     let mut cols: Vec<i64> = Vec::new();
     // Whether each column has `style:use-optimal-column-width` (its own style, else the default style of the family, else false).
     let mut optimal: Vec<bool> = Vec::new();
-    fn collect_cols<'a>(n: Node<'a, 'a>, ctx: &Ctx<'a>, cols: &mut Vec<i64>, optimal: &mut Vec<bool>) {
-        for c in n.children().filter(|c| c.is_element()) {
-            match c.tag_name().name() {
-                "table-column" => {
-                    let repeat = attr(c, "number-columns-repeated").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).min(1024);
-                    let w = attr(c, "style-name").and_then(|s| ctx.styles.get("table-column", s)).and_then(|s| s.column.get("column-width")).and_then(|w| twips(w)).unwrap_or(2000);
-                    let opt = attr(c, "style-name")
-                        .and_then(|s| ctx.styles.get("table-column", s))
-                        .and_then(|s| s.column.get("use-optimal-column-width"))
-                        .map(|v| v == "true")
-                        .or(ctx.styles.default_optimal_column)
-                        .unwrap_or(false);
-                    for _ in 0..repeat {
-                        cols.push(w);
-                        optimal.push(opt);
-                    }
-                }
-                "table-columns" | "table-header-columns" => collect_cols(c, ctx, cols, optimal),
-                _ => {}
-            }
-        }
+    for column in table_columns(node) {
+        let repeat = table_count(column, "number-columns-repeated").unwrap_or(1);
+        let style = attr(column, "style-name").and_then(|s| ctx.styles.get("table-column", s));
+        let w = style.and_then(|s| s.column.get("column-width")).and_then(|w| twips(w)).unwrap_or(2000);
+        let opt = style.and_then(|s| s.column.get("use-optimal-column-width"))
+            .map(|v| v == "true").or(ctx.styles.default_optimal_column).unwrap_or(false);
+        cols.extend(std::iter::repeat_n(w, repeat));
+        optimal.extend(std::iter::repeat_n(opt, repeat));
     }
-    collect_cols(node, ctx, &mut cols, &mut optimal);
-    if cols.is_empty() {
-        cols.push(2000);
-        optimal.push(false);
-    }
+    let width = ctx.table_widths[&node];
+    cols.resize(width, 2000);
+    optimal.resize(width, false);
     let total: i64 = cols.iter().sum();
     out.push_str("<w:tbl><w:tblPr>");
     let width = tstyle.and_then(|t| t.table.get("width")).and_then(|w| twips(w)).unwrap_or(total);
@@ -1505,20 +1567,6 @@ fn table<'a>(node: Node<'a, 'a>, ctx: &mut Ctx<'a>, out: &mut String) {
     out.push_str("</w:tblGrid>");
     // vertical spans still running: per column (rows left, width in columns).
     let mut vspan: Vec<(usize, usize, String)> = vec![(0, 1, String::new()); cols.len() + 1];
-    fn rows<'a>(n: Node<'a, 'a>, ctx: &mut Ctx<'a>, cols: &[i64], vspan: &mut Vec<(usize, usize, String)>, header: bool, out: &mut String) {
-        for r in n.children().filter(|c| c.is_element()) {
-            match r.tag_name().name() {
-                "table-header-rows" | "table-rows" | "table-row-group" => rows(r, ctx, cols, vspan, header || r.tag_name().name() == "table-header-rows", out),
-                "table-row" => {
-                    let repeat = attr(r, "number-rows-repeated").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).min(256);
-                    for _ in 0..repeat {
-                        row(r, ctx, cols, vspan, header, out);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
     fn row<'a>(r: Node<'a, 'a>, ctx: &mut Ctx<'a>, cols: &[i64], vspan: &mut Vec<(usize, usize, String)>, header: bool, out: &mut String) {
         out.push_str("<w:tr><w:trPr>");
         if let Some(s) = attr(r, "style-name").and_then(|s| ctx.styles.get("table-row", s)) {
@@ -1536,11 +1584,12 @@ fn table<'a>(node: Node<'a, 'a>, ctx: &mut Ctx<'a>, out: &mut String) {
         }
         out.push_str("</w:trPr>");
         let mut col = 0usize;
-        let mut skip = 0usize;
-        let mut cells = r.children().filter(|c| is(*c, "table-cell") || is(*c, "covered-table-cell")).collect::<Vec<_>>().into_iter();
+        let mut cells = table_cells(r).flat_map(|cell| {
+            std::iter::repeat_n(cell, table_count(cell, "number-columns-repeated").unwrap_or(1))
+        }).peekable();
         while col < cols.len() {
             // A cell below a vertical span: continue it.
-            if vspan[col].0 > 0 && skip == 0 {
+            if vspan[col].0 > 0 {
                 let (left, w, props) = vspan[col].clone();
                 let width: i64 = cols[col..(col + w).min(cols.len())].iter().sum();
                 // Word writes the borders, margins and vertical alignment of the span's first cell into each cell below it as well
@@ -1553,25 +1602,23 @@ fn table<'a>(node: Node<'a, 'a>, ctx: &mut Ctx<'a>, out: &mut String) {
                 }
                 // The covered cells of this span in the row are in the file; take them.
                 for _ in 0..w {
-                    cells.next();
+                    if cells.next_if(|cell| cell.has_tag_name((TABLE, "covered-table-cell"))).is_none() { break; }
                 }
                 col += w;
                 continue;
             }
             let Some(cell) = cells.next() else { break };
-            if is(cell, "covered-table-cell") {
-                // The columns of a horizontal span are already counted with its cell; a covered cell outside one is a column.
-                if skip > 0 {
-                    skip -= 1;
-                } else {
-                    col += 1;
-                }
+            if cell.has_tag_name((TABLE, "covered-table-cell")) {
+                // A covered cell with no visible anchor (such as one in a
+                // hidden row) still occupies its column in the DOCX grid.
+                let width = cols[col];
+                out.push_str(&format!(r#"<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr><w:p/></w:tc>"#));
+                col += 1;
                 continue;
             }
-            let cs = attr(cell, "number-columns-spanned").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
-            let rs = attr(cell, "number-rows-spanned").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
-            let repeat = attr(cell, "number-columns-repeated").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).clamp(1, 1024);
-            for _ in 0..repeat {
+            let cs = table_count(cell, "number-columns-spanned").unwrap_or(1);
+            let rs = table_count(cell, "number-rows-spanned").unwrap_or(1);
+            {
                 if col >= cols.len() {
                     break;
                 }
@@ -1633,12 +1680,27 @@ fn table<'a>(node: Node<'a, 'a>, ctx: &mut Ctx<'a>, out: &mut String) {
                 out.push_str(&body);
                 out.push_str("</w:tc>");
                 col += span;
+                for _ in 1..span {
+                    if cells.next_if(|cell| cell.has_tag_name((TABLE, "covered-table-cell"))).is_none() { break; }
+                }
             }
-            skip = cs - 1;
         }
         out.push_str("</w:tr>");
     }
-    rows(node, ctx, &cols, &mut vspan, false, out);
+    for r in table_rows(node) {
+        let repeat = table_count(r, "number-rows-repeated").unwrap_or(1);
+        if row_hidden(r) {
+            for (left, _, _) in &mut vspan {
+                *left = left.saturating_sub(repeat);
+            }
+            continue;
+        }
+        let header = r.ancestors().skip(1).take_while(|n| *n != node)
+            .any(|n| n.has_tag_name((TABLE, "table-header-rows")));
+        for _ in 0..repeat {
+            row(r, ctx, &cols, &mut vspan, header, out);
+        }
+    }
     out.push_str("</w:tbl>");
     // Two tables one after the other would be one table in the .docx: a paragraph keeps them apart.
     if node.next_siblings().skip(1).find(|n| n.is_element()).is_some_and(|n| is(n, "table")) {
@@ -1829,8 +1891,9 @@ struct SecProps {
 
 fn body_blocks<'a>(parent: Node<'a, 'a>, ctx: &mut Ctx<'a>, out: &mut String, st: &mut Sections) {
     for child in parent.children().filter(|c| c.is_element()) {
-        let name = child.tag_name().name();
+        let name = block_name(child);
         if name == "section" {
+            if !visible_section(child) { continue; }
             let sec = attr(child, "style-name").and_then(|n| ctx.styles.get("section", n));
             let props = sec.and_then(|s| {
                 let tw = |k: &str| s.section.get(k).and_then(|v| twips(v)).unwrap_or(0);
@@ -1851,7 +1914,7 @@ fn body_blocks<'a>(parent: Node<'a, 'a>, ctx: &mut Ctx<'a>, out: &mut String, st
             }
             continue;
         }
-        if matches!(name, "index-body" | "table-of-content" | "alphabetical-index" | "illustration-index" | "table-index" | "user-index" | "bibliography" | "index-title") {
+        if matches!(name, "numbered-paragraph" | "index-body" | "table-of-content" | "alphabetical-index" | "illustration-index" | "table-index" | "user-index" | "bibliography" | "index-title") {
             body_blocks(child, ctx, out, st);
             continue;
         }
@@ -1919,7 +1982,36 @@ pub fn import(data: &[u8]) -> Result<Vec<u8>, Error> {
     docs.push(&content);
     let styles = load_styles(&docs);
 
+    let root = content.root_element();
+    if !root.has_tag_name((OFFICE, "document-content")) {
+        return Err(Error::new("ODT の content.xml が office:document-content ではありません"));
+    }
+    let body = root.children().find(|n| n.has_tag_name((OFFICE, "body")))
+        .and_then(|body| body.children().find(|n| n.has_tag_name((OFFICE, "text"))))
+        .ok_or_else(|| Error::new("ODT に本文 (office:body/office:text) がありません"))?;
+    let mut budget: usize = 16 * 1024 * 1024;
+    let too_large = || Error::new("ODT の表を展開すると大きすぎます");
+    let mut table_widths = HashMap::new();
+    let mut costs = HashMap::new();
+    for doc in &docs {
+        let tables: Vec<_> = doc.descendants().filter(|n| n.has_tag_name((TABLE, "table"))).collect();
+        for table in tables.into_iter().rev() {
+            let (width, cost) = table_grid(table, &costs)?;
+            table_widths.insert(table, width);
+            costs.insert(table, cost);
+            if !table.ancestors().skip(1).any(|n| n.has_tag_name((TABLE, "table"))) {
+                budget = budget.checked_sub(cost).ok_or_else(too_large)?;
+            }
+        }
+        for space in doc.descendants().filter(|n| n.has_tag_name((TEXT, "s"))) {
+            if !space.ancestors().skip(1).any(|n| n.has_tag_name((TABLE, "table"))) {
+                let width = attr(space, "c").and_then(|n| n.parse::<usize>().ok()).unwrap_or(1);
+                budget = budget.checked_sub(width).ok_or_else(too_large)?;
+            }
+        }
+    }
     let mut ctx = Ctx {
+        table_widths,
         styles: &styles,
         archive: &archive,
         list_styles: HashMap::new(),
@@ -1945,12 +2037,9 @@ pub fn import(data: &[u8]) -> Result<Vec<u8>, Error> {
     }
 
     // The sections and their pages: one page layout, header and footer per master page in use.
-    let body = content.descendants().find(|n| is(*n, "text") && n.parent().is_some_and(|p| is(p, "body")));
     let mut body_xml = String::new();
     let mut sections = Sections { list: Vec::new(), pending: false };
-    if let Some(b) = body {
-        body_blocks(b, &mut ctx, &mut body_xml, &mut sections);
-    }
+    body_blocks(body, &mut ctx, &mut body_xml, &mut sections);
     if sections.list.is_empty() {
         sections.list.push((None, 0, None, None));
     }

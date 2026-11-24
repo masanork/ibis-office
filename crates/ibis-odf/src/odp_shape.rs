@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use roxmltree::Node;
 
 use crate::odp::Cx;
+use crate::odf::{numbers, ooxml_rotation, picture_size, placed_box};
 use crate::odp_style::{DRAW, FO, LOEXT, PRESENTATION, STYLE, SVG, TABLE, XLINK, attr, children, color, emu, is, percent};
 use crate::odp_text::{Body, esc, has_text, paragraphs};
 
@@ -23,47 +24,6 @@ pub(crate) struct Geom {
     pub(crate) rot: i64,
     pub(crate) flip_h: bool,
     pub(crate) flip_v: bool,
-}
-
-/// The value of a number list "a b c" in a transform.
-fn numbers(s: &str) -> Vec<f64> {
-    s.split(|c: char| c == ',' || c.is_whitespace()).filter(|t| !t.is_empty()).filter_map(|t| t.trim_end_matches(|c: char| c.is_ascii_alphabetic()).parse::<f64>().ok()).collect()
-}
-
-/// Where the `draw:transform` puts a box of `w` x `h` (EMU) that is drawn with its top-left corner at the origin: the centre of the
-/// box and the angle it is turned by (radians, counterclockwise). The operations apply in the order they are listed, to the box in turn:
-/// `rotate(a)` turns about the origin, `translate(x y)` moves (LibreOffice writes `rotate(a) translate(x y)`, Word `translate(-w/2 -h/2)
-/// rotate(a) translate(cx cy)`, which both put the centre where the last translation says; measured with `-SaveAs todocx`, where the
-/// shape's offset is that centre minus half the size).
-pub(crate) fn placed_box(text: &str, w: f64, h: f64, emu: fn(&str) -> Option<i64>) -> (f64, f64, f64) {
-    let (mut angle, mut cx, mut cy) = (0.0f64, w / 2.0, h / 2.0);
-    let mut rest = text;
-    while let Some(open) = rest.find('(') {
-        let name = rest[..open].trim().to_string();
-        let Some(close) = rest[open..].find(')') else { break };
-        let args = &rest[open + 1..open + close];
-        match name.as_str() {
-            "rotate" => {
-                let a = numbers(args).first().copied().unwrap_or(0.0);
-                let (cos, sin) = (a.cos(), a.sin());
-                (cx, cy) = (cx * cos + cy * sin, -cx * sin + cy * cos);
-                angle += a;
-            }
-            "translate" => {
-                let parts: Vec<&str> = args.split(|c: char| c == ',' || c.is_whitespace()).filter(|t| !t.is_empty()).collect();
-                cx += parts.first().and_then(|p| emu(p)).unwrap_or(0) as f64;
-                cy += parts.get(1).and_then(|p| emu(p)).unwrap_or(0) as f64;
-            }
-            _ => {}
-        }
-        rest = &rest[open + close + 1..];
-    }
-    (cx, cy, angle)
-}
-
-/// `rot` of an `a:xfrm` (1/60000 degree, clockwise) for an angle of a `draw:transform` (radians, counterclockwise).
-pub(crate) fn ooxml_rotation(angle: f64) -> i64 {
-    ((-angle.to_degrees()).rem_euclid(360.0) * 60_000.0).round() as i64 % 21_600_000
 }
 
 pub(crate) fn geom_of(n: Node) -> Option<Geom> {
@@ -897,58 +857,6 @@ fn text_frame(cx: &mut Cx, frame: Node, text_box: Node, g: Geom, class: &str, ch
     let _ = write!(out, r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="{name}"/>{c_nv_sp_pr}<p:nvPr>{ph}</p:nvPr></p:nvSpPr><p:spPr>{sp_pr}</p:spPr><p:txBody>{body_pr}<a:lstStyle/>{paragraphs}</p:txBody></p:sp>"#);
 }
 
-/// The pixel size of a picture file (PNG and JPEG), and the density if it says one, as the picture's size in points.
-pub(crate) fn picture_size(data: &[u8]) -> Option<(f64, f64)> {
-    if data.starts_with(b"\x89PNG") {
-        let w = u32::from_be_bytes(data.get(16..20)?.try_into().ok()?) as f64;
-        let h = u32::from_be_bytes(data.get(20..24)?.try_into().ok()?) as f64;
-        // The physical size, when given (pHYs: pixels per metre).
-        let mut at = 8;
-        while at + 12 <= data.len() {
-            let len = u32::from_be_bytes(data.get(at..at + 4)?.try_into().ok()?) as usize;
-            if data.get(at + 4..at + 8)? == b"pHYs" {
-                let ppx = u32::from_be_bytes(data.get(at + 8..at + 12)?.try_into().ok()?) as f64;
-                let ppy = u32::from_be_bytes(data.get(at + 12..at + 16)?.try_into().ok()?) as f64;
-                let unit = *data.get(at + 16)?;
-                if unit == 1 && ppx > 0.0 && ppy > 0.0 {
-                    return Some((w / ppx * 72.0 / 0.0254, h / ppy * 72.0 / 0.0254));
-                }
-            }
-            at += 12 + len;
-        }
-        return Some((w * 0.75, h * 0.75));
-    }
-    if data.starts_with(&[0xFF, 0xD8]) {
-        let mut at = 2;
-        let mut density: Option<(f64, f64)> = None;
-        while at + 9 < data.len() {
-            if data[at] != 0xFF {
-                at += 1;
-                continue;
-            }
-            let marker = data[at + 1];
-            let len = usize::from(u16::from_be_bytes([data[at + 2], data[at + 3]]));
-            if marker == 0xE0 && data.get(at + 4..at + 9) == Some(b"JFIF\0") {
-                let unit = *data.get(at + 11)?;
-                let dx = f64::from(u16::from_be_bytes([*data.get(at + 12)?, *data.get(at + 13)?]));
-                let dy = f64::from(u16::from_be_bytes([*data.get(at + 14)?, *data.get(at + 15)?]));
-                density = match unit {
-                    1 if dx > 0.0 && dy > 0.0 => Some((72.0 / dx, 72.0 / dy)),
-                    2 if dx > 0.0 && dy > 0.0 => Some((72.0 / 2.54 / dx, 72.0 / 2.54 / dy)),
-                    _ => None,
-                };
-            }
-            if (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
-                let h = f64::from(u16::from_be_bytes([data[at + 5], data[at + 6]]));
-                let w = f64::from(u16::from_be_bytes([data[at + 7], data[at + 8]]));
-                let (px, py) = density.unwrap_or((0.75, 0.75));
-                return Some((w * px, h * py));
-            }
-            at += 2 + len;
-        }
-    }
-    None
-}
 
 fn picture(cx: &mut Cx, frame: Node, image: Node, g: Geom, chain: &[(&'static str, String)], out: &mut String) {
     let Some(href) = attr(image, XLINK, "href") else { return };

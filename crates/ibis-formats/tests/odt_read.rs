@@ -3,8 +3,8 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
 use ibis_doc_model::{Block, Presentation};
-// This suite covers the legacy ODT conversion API in ibis-formats.
-use ibis_formats::docx_convert::import_odt;
+use ibis_formats::docx_convert::import_odt as import_formats_odt;
+use ibis_odf::import_odt;
 use ibis_ooxml::zip::{EntryMeta, STORED, Writer, crc32};
 
 const MIME: &[u8] = b"application/vnd.oasis.opendocument.text";
@@ -103,6 +103,7 @@ fn preserves_list_and_section_paragraphs_in_order() {
             </tbl:table-row></tbl:table>
             <t:p>後</t:p>
         </o:text>"#);
+    check_body(&import_formats_odt(&data).unwrap().presentation);
     let opened = import_odt(&data).unwrap();
     check_body(&opened.presentation);
     let saved = opened
@@ -161,6 +162,7 @@ fn preserves_merged_and_repeated_table_cells_in_their_grid_positions() {
             );
         }
     };
+    check(&import_formats_odt(&data).unwrap().presentation);
     let opened = import_odt(&data).unwrap();
     check(&opened.presentation);
     let saved = opened
@@ -176,6 +178,9 @@ fn rejects_table_expansion_that_exceeds_the_import_limit() {
         r#"<tbl:table-row tbl:number-rows-repeated="100001"><tbl:table-cell/></tbl:table-row>"#,
         r#"<tbl:table-row><tbl:table-cell tbl:number-columns-repeated="257"/></tbl:table-row>"#,
         r#"<tbl:table-row><tbl:table-cell><t:p><t:s t:c="999999999"/></t:p></tbl:table-cell></tbl:table-row>"#,
+        r#"<tbl:table-row tbl:number-rows-repeated="1000"><tbl:table-cell><tbl:table>
+          <tbl:table-row tbl:number-rows-repeated="1000"><tbl:table-cell/></tbl:table-row>
+        </tbl:table></tbl:table-cell></tbl:table-row>"#,
     ] {
         let data = odt(&format!("<o:text><tbl:table>{table}</tbl:table></o:text>"));
         let error = import_odt(&data).err().unwrap();

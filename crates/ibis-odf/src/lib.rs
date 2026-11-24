@@ -8,8 +8,7 @@
 //! `ibis_formats::read` and `ibis_formats::open` do not read OpenDocument, [`read`] and [`open`] here do (and read every other
 //! format as `ibis-formats` does).
 
-mod enhanced_geometry;
-mod odf;
+use ibis_formats::odf::{self, enhanced_geometry};
 mod ods;
 mod ods_write;
 pub mod odp;
@@ -20,7 +19,6 @@ mod odp_style;
 mod odp_text;
 mod odp_write;
 pub mod odt;
-mod odt_import;
 
 use std::sync::Arc;
 

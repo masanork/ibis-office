@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn bracket_pair_corners_are_quarter_arcs() {
-        let text = include_str!("../tests/data/bracket_pair.xml");
+        let text = include_str!("../../tests/data/bracket_pair.xml");
         let doc = roxmltree::Document::parse(text).unwrap();
         let eg = doc.descendants().find(|n| n.tag_name().name() == "enhanced-geometry").unwrap();
         let g = evaluate_in(eg, (4000.0, 800.0), false).unwrap();

@@ -90,7 +90,9 @@ pub mod svg_convert;
 pub mod theme_effects;
 mod theme;
 mod drawing_props;
-mod odf;
+#[doc(hidden)]
+pub mod odf;
+mod odt_import;
 mod xlsb;
 mod xlsb_formula;
 mod xls;
