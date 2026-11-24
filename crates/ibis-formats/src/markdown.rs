@@ -2658,6 +2658,11 @@ fn markdown_continuations<'a>(
                             }));
                         }
                     }
+                    Tag::Table(_) if parents.is_empty() && quoted_lists.is_some() => {
+                        blocks.insert(first, (next, MarkdownContinuation::ItemTable {
+                            indent: 0, first_content: false, first_column: 0,
+                        }));
+                    }
                     Tag::Table(_) if let Some((item_line, _)) = item_start
                         && let Some(marker) = parse_list_marker(lines[item_line]) =>
                     {
@@ -2876,7 +2881,11 @@ fn markdown_item_content_indent(raw: &str, marker: &ListMarker<'_>) -> usize {
 const MARKDOWN_ITEM_TABLE_STYLE: &str = "IbisMarkdownListTable";
 
 fn markdown_item_table_style(table: &FlowTable) -> Option<(usize, bool)> {
-    let id = table.style.as_ref()?.id.strip_prefix(MARKDOWN_ITEM_TABLE_STYLE)?;
+    markdown_item_table_style_id(&table.style.as_ref()?.id)
+}
+
+fn markdown_item_table_style_id(style: &str) -> Option<(usize, bool)> {
+    let id = style.strip_prefix(MARKDOWN_ITEM_TABLE_STYLE)?;
     let (indent, first) = id.strip_suffix("First").map_or((id, false), |indent| (indent, true));
     let indent = indent.parse().ok()?;
     (2..=64).contains(&indent).then_some((indent, first))
@@ -2952,7 +2961,9 @@ fn parse_blocks_at_quote_depth(
             let first = strip_quote_marker(&raw[start_column..]);
             let mut quote_lines = vec![first];
             quote_lines.extend(lines[i + 1..next].iter().map(|line| strip_quote_marker(strip_list_item_indent(line, indent))));
-            if let Some(mut quoted) = parse_structured_quote(&quote_lines, ctx, quote_depth.max(1))? {
+            if let Some(mut quoted) = parse_structured_quote(&quote_lines, ctx, quote_depth.max(1))?
+                && quoted.iter().all(|block| matches!(block, Block::Paragraph(_)))
+            {
                 let list = if starts_item && let Some(item) = parse_list_marker(raw) {
                     if let Some(spec) = quoted_items.get(&i) {
                         let num_id = *quoted_numbering.entry(spec.offset).or_insert_with(|| ctx.new_quoted_list(*spec));
@@ -3022,7 +3033,8 @@ fn parse_blocks_at_quote_depth(
                         split_table_row(rows[0]), parse_table_alignments(rows[1]),
                         rows[2..].iter().map(|row| split_table_row(row)).collect(), ctx, 0,
                     );
-                    if let Block::Table(table) = &mut block
+                    if indent != 0
+                        && let Block::Table(table) = &mut block
                         && let Some(style) = &mut table.style
                     {
                         let suffix = if first_content { "First" } else { "" };
@@ -4075,7 +4087,7 @@ fn parse_structured_quote(
                             structured = true;
                             has_nested = true;
                         }
-                        Tag::Heading { .. } | Tag::CodeBlock(CodeBlockKind::Indented) => structured = true,
+                        Tag::Heading { .. } | Tag::CodeBlock(CodeBlockKind::Indented) | Tag::Table(_) => structured = true,
                         Tag::HtmlBlock if is_preserved_html_block(&source[span]) => structured = true,
                         Tag::CodeBlock(CodeBlockKind::Fenced(info)) if ordinary_code_fence(&info) => structured = true,
                         _ => return Ok(None),
@@ -4092,9 +4104,7 @@ fn parse_structured_quote(
     }
 
     let mut blocks = parse_blocks_at_quote_depth(&source, ctx, &mut HashMap::new(), quote_depth + 1)?;
-    if (!has_nested && blocks.len() != count)
-        || blocks.iter().any(|block| !matches!(block, Block::Paragraph(_)))
-    {
+    if !has_nested && blocks.len() != count {
         return Ok(None);
     }
     if blocks.is_empty() && quote_depth > 0 {
@@ -4105,17 +4115,26 @@ fn parse_structured_quote(
         }));
     }
     for (index, block) in blocks.iter_mut().enumerate() {
-        let Block::Paragraph(paragraph) = block else { unreachable!() };
         let kind = if index == 0 { "First" } else { "Next" };
-        let base = paragraph.style.clone();
+        let base = block_markdown_style(block).map(str::to_owned);
+        let style_kind = if matches!(block, Block::Table(_)) { StyleKind::Table } else { StyleKind::Paragraph };
         let id = format!("{MARKDOWN_QUOTE_STYLE}{kind}-{}", base.as_deref().unwrap_or(""));
         ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
             name: format!("Markdown quote {kind} ({})", base.as_deref().unwrap_or("default")),
-            kind: StyleKind::Paragraph,
+            kind: style_kind,
             based_on: base,
             next: ctx.styles.default_paragraph.clone(),
             ..FlowStyle::default()
         });
+        let Block::Paragraph(paragraph) = block else {
+            if let Block::Table(table) = block {
+                if let Some(style) = &mut table.style {
+                    style.id = id;
+                }
+                table.indent += 14 * EMU_PER_PT;
+            }
+            continue;
+        };
         paragraph.style = Some(id);
         let left = if paragraph.list.is_some() { paragraph.left } else { paragraph.direct.left.unwrap_or(0) };
         paragraph.direct.left = Some(left + 14 * EMU_PER_PT);
@@ -7816,8 +7835,10 @@ fn paper_size_name(short: Emu, long: Emu) -> Option<&'static str> {
 }
 
 fn block_markdown_style(block: &Block) -> Option<&str> {
-    let Block::Paragraph(paragraph) = block else { return None };
-    paragraph.style.as_deref()
+    match block {
+        Block::Paragraph(paragraph) => paragraph.style.as_deref(),
+        Block::Table(table) => table.style.as_ref().map(|style| style.id.as_str()),
+    }
 }
 
 fn is_markdown_item_quote(block: &Block) -> bool {
@@ -8306,9 +8327,18 @@ fn serialize_table<'a>(
     let anchor = t.rows.iter().flat_map(|row| &row.cells).next()
         .map_or(ibis_doc_model::CellAnchor::Top, |cell| cell.anchor);
 
-    let list_indent = " ".repeat(markdown_item_table_style(t).map_or(0, |(indent, _)| indent));
+    let mut base = t.style.as_ref().map(|style| style.id.as_str());
+    let mut prefix = String::new();
+    while let Some((_, inner)) = markdown_quote_style(base) {
+        prefix.push_str("> ");
+        base = inner;
+    }
+    let quoted = !prefix.is_empty();
+    if let Some(indent) = base.and_then(markdown_item_table_style_id).map(|(indent, _)| indent) {
+        prefix.extend(std::iter::repeat_n(' ', indent));
+    }
     let mut write_row = |row_index: usize, row: &'a FlowRow, out: &mut String| {
-        out.push_str(&list_indent);
+        out.push_str(&prefix);
         out.push_str("| ");
         if form_layout {
             use std::fmt::Write;
@@ -8414,12 +8444,14 @@ fn serialize_table<'a>(
         sep_cells.resize(sep_cells.len() + span - 1, "---");
     }
     sep_cells.resize(col_count, "---");
-    out.push_str(&format!("{list_indent}| {} |\n", sep_cells.join(" | ")));
+    out.push_str(&format!("{prefix}| {} |\n", sep_cells.join(" | ")));
 
     for (index, row) in t.rows.iter().enumerate().skip(1) {
         write_row(index + 1, row, out);
     }
-    out.push('\n');
+    if !quoted {
+        out.push('\n');
+    }
 }
 
 /// The Mermaid fence still describes `chart`: same title, categories, values, and chart kind.
@@ -9957,6 +9989,51 @@ mod tests {
             assert_eq!(media.data.as_ref(), original);
             assert_eq!(size, EmuSize::new(width, height));
         }
+    }
+
+    #[test]
+    fn gfm_tables_keep_their_quote_depth_and_alignment_through_docx() {
+        let source = concat!(
+            "> Outer.\n>\n> > Inner.\n> >\n",
+            "> > Name | Status | Count\n> > :--- | :---: | ---:\n",
+            "> > A \\| B | **Ready** | 42\n> >\n> > After the table.\n",
+            ">\n> Back outside the inner quote.\n\nOutside every quote.\n",
+        );
+        let check = |presentation: &Presentation| {
+            let flow = presentation.flow.as_deref().unwrap();
+            let tables: Vec<_> = flow.body.iter().filter_map(|block| match block {
+                Block::Table(table) => Some(table),
+                _ => None,
+            }).collect();
+            let [table] = tables.as_slice() else { panic!("expected one native table"); };
+            let (_, base) = markdown_quote_style(table.style.as_ref().map(|style| style.id.as_str())).unwrap();
+            assert!(markdown_quote_style(base).is_some());
+            assert!(table.rows[0].header && !table.rows[1].header);
+            for (row, expected) in table.rows.iter().zip([["Name", "Status", "Count"], ["A | B", "Ready", "42"]]) {
+                for ((cell, text), align) in row.cells.iter().zip(expected)
+                    .zip([FlowAlign::Left, FlowAlign::Center, FlowAlign::Right])
+                {
+                    let Block::Paragraph(p) = &cell.blocks[0] else { panic!() };
+                    assert_eq!(p.direct.align, Some(align));
+                    let text_runs: String = p.runs.iter().filter_map(|run| match &run.kind {
+                        FlowRunKind::Text(text) => Some(text.as_str()),
+                        _ => None,
+                    }).collect();
+                    assert_eq!(text_runs, text);
+                }
+            }
+        };
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        check(&opened.presentation);
+        let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert!(saved.contains("> > | **Name** | **Status** | **Count** |\n> > | :--- | :---: | ---: |\n> > | A \\| B | **Ready** | 42 |\n> >\n> > After the table."), "{saved}");
+        assert!(saved.ends_with("> Back outside the inner quote.\n\nOutside every quote.\n"), "{saved}");
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        check(&reopened.presentation);
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), saved);
+        let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+        check(&crate::read(&docx).unwrap());
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), saved);
     }
 
     #[test]
