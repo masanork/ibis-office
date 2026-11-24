@@ -5720,7 +5720,7 @@ impl SlideEditor {
         use gpui_kit::component::input::InputState;
         let p = self.presentation();
         let have = p.theme_colors.clone();
-        let default_colors = DOCX_THEME_COLORS_PRESETS[0].colors;
+        let default_colors = crate::shell::theme_panel::OFFICE_2013_2022_COLORS;
         let colors = crate::shell::theme_panel::COLORS
             .iter()
             .map(|(name, label)| {
@@ -5969,19 +5969,18 @@ pub(crate) struct DocxThemeColorsPreset {
     pub(crate) colors: [(&'static str, ibis_doc_model::Rgb); 12],
 }
 
-pub(crate) const DOCX_THEME_COLORS_PRESETS: [DocxThemeColorsPreset; 12] = [
+pub(crate) const DOCX_THEME_COLORS_PRESETS: [DocxThemeColorsPreset; 13] = [
     DocxThemeColorsPreset {
         id: "office",
         action_id: "docx.design.theme-colors.office",
         label_key: "docx.design.theme-colors.office",
-        colors: [
-            ("dk1", ibis_doc_model::Rgb(0x000000)), ("lt1", ibis_doc_model::Rgb(0xffffff)),
-            ("dk2", ibis_doc_model::Rgb(0x44546a)), ("lt2", ibis_doc_model::Rgb(0xe7e6e6)),
-            ("accent1", ibis_doc_model::Rgb(0x4472c4)), ("accent2", ibis_doc_model::Rgb(0xed7d31)),
-            ("accent3", ibis_doc_model::Rgb(0xa5a5a5)), ("accent4", ibis_doc_model::Rgb(0xffc000)),
-            ("accent5", ibis_doc_model::Rgb(0x5b9bd5)), ("accent6", ibis_doc_model::Rgb(0x70ad47)),
-            ("hlink", ibis_doc_model::Rgb(0x0563c1)), ("folHlink", ibis_doc_model::Rgb(0x954f72)),
-        ],
+        colors: crate::shell::theme_panel::OFFICE_CURRENT_COLORS,
+    },
+    DocxThemeColorsPreset {
+        id: "office_2013_2022",
+        action_id: "docx.design.theme-colors.office_2013_2022",
+        label_key: "docx.design.theme-colors.office_2013_2022",
+        colors: crate::shell::theme_panel::OFFICE_2013_2022_COLORS,
     },
     DocxThemeColorsPreset {
         id: "office_2007_2010",
@@ -6140,7 +6139,7 @@ pub(crate) struct DocxDocumentThemePreset {
 
 pub(crate) const DOCX_DOCUMENT_THEME_PRESETS: [DocxDocumentThemePreset; 10] = [
     DocxDocumentThemePreset { id: "office", action_id: "docx.design.themes.office", label_key: "docx.design.themes.office", color_id: "office", font_id: "office", effect_id: "office" },
-    DocxDocumentThemePreset { id: "office_2013_2022", action_id: "docx.design.themes.office_2013_2022", label_key: "docx.design.themes.office_2013_2022", color_id: "office", font_id: "calibri", effect_id: "office" },
+    DocxDocumentThemePreset { id: "office_2013_2022", action_id: "docx.design.themes.office_2013_2022", label_key: "docx.design.themes.office_2013_2022", color_id: "office_2013_2022", font_id: "calibri", effect_id: "office" },
     DocxDocumentThemePreset { id: "office_2007_2010", action_id: "docx.design.themes.office_2007_2010", label_key: "docx.design.themes.office_2007_2010", color_id: "office_2007_2010", font_id: "calibri", effect_id: "office_2007_2010" },
     DocxDocumentThemePreset { id: "facet", action_id: "docx.design.themes.facet", label_key: "docx.design.themes.facet", color_id: "green", font_id: "century-gothic", effect_id: "metro" },
     DocxDocumentThemePreset { id: "gallery", action_id: "docx.design.themes.gallery", label_key: "docx.design.themes.gallery", color_id: "violet", font_id: "arial", effect_id: "glossy" },

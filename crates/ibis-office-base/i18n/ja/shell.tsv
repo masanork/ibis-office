@@ -1831,7 +1831,7 @@ structured.row-schema-contains-few	条件を満たす配列の要素が不足し
 structured.row-schema-contains-many	条件を満たす配列の要素が多すぎます
 file.new.visio-draft	新規図面（Visio用）
 file.export.vsdx	Visio 図面（.vsdx）
-vsdx.draft-filename	図面.pptx
+vsdx.draft-filename	図面.vsdx
 vsdx.draft-unsupported	Visio 書き出しは、1ページの長方形・楕円・ひし形と、両端が図形に接続された直線に対応しています。
 vsdx.export-extension	ファイル名の拡張子に .vsdx を指定してください。
 vsdx.exported	Visio 図面を書き出しました。
@@ -1869,3 +1869,4 @@ structured.schema-edit-output	編集したスキーマの保存先に別の .jso
 structured.schema-edit-saved	スキーマのコピーを保存しました。
 structured.schema-edit-save-error	スキーマを保存できませんでした。{error}
 structured.schema-choose	JSON Schemaを選択…
+file.save-format.vsdx	Visio 図面 (.vsdx)
