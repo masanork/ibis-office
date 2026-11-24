@@ -46,13 +46,17 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.linux.outputs.appimage_artifact_id }}
+          merge-multiple: true
           path: linux
       - name: Check the same-run AppImage subject
+        env:
+          EXPECTED_APPIMAGE_SHA: ${{ needs.linux.outputs.appimage_sha256 }}
         run: |
           set -euo pipefail
           image=linux/desktop-linux-x64-ci.AppImage
           test -f "$image" && test ! -L "$image" && test -s "$image"
-          sha256sum "$image"
+          [[ "$EXPECTED_APPIMAGE_SHA" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' "$EXPECTED_APPIMAGE_SHA" "$image" | sha256sum -c -
       - name: Attest Linux AppImage build provenance
         id: provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
