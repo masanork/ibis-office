@@ -534,9 +534,13 @@ fn query(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 
 fn prepare_export(service: &Service, args: &Value) -> Result<(SqliteRows, Value), ToolError> {
     let session = query_session(service, args)?;
-    let rows = require_complete(run_session_query(&session, args, 10_000, 4 * 1024 * 1024)?)?;
+    prepare_session_export(&session, args)
+}
+
+fn prepare_session_export(session: &SqliteQuerySession, args: &Value) -> Result<(SqliteRows, Value), ToolError> {
+    let rows = require_complete(run_session_query(session, args, 10_000, 4 * 1024 * 1024)?)?;
     let mut definition = saved_definition(args)?;
-    if let Some(schema) = report_input_schema(&session)? {
+    if let Some(schema) = report_input_schema(session)? {
         set_input_schema(&mut definition, &schema);
     }
     Ok((rows, definition))
@@ -606,6 +610,36 @@ pub fn prepare_selected_datasets_export(
         definition,
         refresh: None,
     })
+}
+
+/// Open a bounded JSON Lines preview and return its logical position in the file.
+pub fn prepare_selected_json_lines_preview(
+    path: PathBuf,
+    destination_sheet: String,
+) -> Result<(SqliteTableExport, ibis_doc_model::query::JsonLinesSamplePosition), ToolError> {
+    const PREVIEW_LINES: usize = 200;
+    let mut args = json!({
+        "destination_sheet": destination_sheet,
+        "anchor": "A1",
+        "sql": "SELECT * FROM input ORDER BY _jsonl_line",
+        "datasets": [{"source":"1","alias":"input","sample_lines":PREVIEW_LINES}],
+    });
+    let service = selected_sources(std::slice::from_ref(&path), &mut args)?;
+    let spec = &args["datasets"][0];
+    let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
+    if source_kind(&path) != "json_lines" {
+        return Err(ToolError::invalid("Select a JSON Lines file"));
+    }
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() || metadata.len() > dataset_file_limit(&service.limits, "json_lines") {
+        return Err(ToolError::invalid("Dataset exceeds the file size limit"));
+    }
+    let (table, position) =
+        DiskDataset::collect_json_lines_sample(&path, PREVIEW_LINES, 100_000, 8 * 1024 * 1024)
+            .map_err(sqlite_error)?;
+    let session = SqliteQuerySession::from_datasets(&[("input".into(), table)]).map_err(sqlite_error)?;
+    let (rows, definition) = prepare_session_export(&session, &args)?;
+    Ok((SqliteTableExport { arguments: args, rows, definition, refresh: None }, position))
 }
 
 fn parquet_filter_value(value: &Value) -> Result<ibis_doc_model::CellValue, ToolError> {

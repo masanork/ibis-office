@@ -1721,7 +1721,7 @@ fn json_lines_errors_only_range_survives_save_and_refresh() {
 fn json_lines_preview_samples_physical_lines_and_persists_the_bound() {
     use ibis_doc_model::{Document, sheet_calc::sheet_of_slide};
     use ibis_doc_service::{
-        DraftToolContext, prepare_selected_datasets_export, prepare_selected_query_refresh,
+        DraftToolContext, prepare_selected_json_lines_preview, prepare_selected_query_refresh,
         query_report_definition,
     };
 
@@ -1744,11 +1744,12 @@ fn json_lines_preview_samples_physical_lines_and_persists_the_bound() {
     let source = std::sync::Arc::new(opened.source);
     let mut draft = Document::new(opened.presentation);
     let name = draft.presentation().workbook.as_ref().unwrap().sheets[0].name.clone();
-    let prepared = prepare_selected_datasets_export(&files, json!({
-        "destination_sheet":name, "anchor":"A1",
-        "sql":"SELECT * FROM input ORDER BY _jsonl_line",
-        "datasets":[{"source":"1","alias":"input","sample_lines":200}],
-    })).unwrap();
+    let (prepared, position) = prepare_selected_json_lines_preview(files[0].clone(), name).unwrap();
+    assert_eq!(position.lines, 200);
+    assert_eq!(position.bytes, input("200").lines().take(200).map(|line| line.len() + 1).sum::<usize>());
+    assert_eq!(position.file_bytes, 34 * 1024 * 1024);
+    assert!(!position.at_end());
+    assert!(position.estimated_lines() > position.lines);
     prepared.stage(&mut draft, DraftToolContext {
         source: Some(source.clone()), workbook: Default::default(),
     }).unwrap();

@@ -1731,7 +1731,8 @@ editor.jsonl.extracting	選んだフィールドを取り出しています…
 editor.jsonl.retry	取り込み中にブックが変更されました。もう一度実行してください。
 editor.jsonl.exported	選んだフィールドを新しいシートに取り込みました。
 editor.jsonl.preview-loading	JSONLのプレビューを作成しています…
-editor.jsonl.preview-ready	先頭最大200行のプレビューを表示しました。フィールド一覧ではファイル全体の項目を確認できます。
+editor.jsonl.preview-exact	全{total}行（末尾まで確認）
+editor.jsonl.preview-estimated	先頭{lines}行を表示中・全体約{total}行（先頭のデータから推定）
 editor.jsonl.export-small	最大25行を表にする
 editor.jsonl.first-line	開始行（既定は1）
 editor.jsonl.last-line	終了行（省略可）

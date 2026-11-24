@@ -70,13 +70,38 @@ fn visit_raw_lines(
     })
 }
 
+/// Logical byte position after reading a bounded JSON Lines prefix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JsonLinesSamplePosition {
+    pub lines: usize,
+    pub bytes: usize,
+    pub file_bytes: usize,
+}
+
+impl JsonLinesSamplePosition {
+    pub fn at_end(self) -> bool {
+        self.bytes == self.file_bytes
+    }
+
+    /// Round an extrapolation to about two significant digits.
+    pub fn estimated_lines(self) -> usize {
+        if self.at_end() || self.bytes == 0 {
+            return self.lines;
+        }
+        let estimate = ((self.lines as u128 * self.file_bytes as u128) / self.bytes as u128)
+            .min(usize::MAX as u128) as usize;
+        let unit = 10usize.pow(estimate.checked_ilog10().unwrap_or(0).saturating_sub(1));
+        (estimate.saturating_add(unit / 2) / unit * unit).max(self.lines)
+    }
+}
+
 fn scan_lines(
     reader: impl BufRead,
     max_bytes: usize,
     recover: bool,
     visit: impl FnMut(Option<&[u8]>, usize) -> Result<(), String>,
 ) -> Result<(), String> {
-    scan_lines_up_to(reader, max_bytes, recover, usize::MAX, visit)
+    scan_lines_up_to(reader, max_bytes, recover, usize::MAX, visit).map(|_| ())
 }
 
 fn scan_lines_up_to(
@@ -85,10 +110,11 @@ fn scan_lines_up_to(
     recover: bool,
     max_lines: usize,
     mut visit: impl FnMut(Option<&[u8]>, usize) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<JsonLinesSamplePosition, String> {
     let mut reader = reader.take((max_bytes as u64).saturating_add(1));
     let mut line = Vec::new();
     let mut bytes = 0usize;
+    let mut lines = 0;
     for number in 1..=max_lines {
         line.clear();
         let read = reader
@@ -113,8 +139,13 @@ fn scan_lines_up_to(
             ));
         }
         visit((!oversized).then_some(line.as_slice()), number)?;
+        lines = number;
     }
-    Ok(())
+    Ok(JsonLinesSamplePosition {
+        lines,
+        bytes,
+        file_bytes: max_bytes,
+    })
 }
 
 fn merge_type(previous: Option<QType>, next: QType) -> QType {
@@ -335,7 +366,7 @@ pub(super) fn visit_recoverable_json_lines(
     max_lines: usize,
     schema_only: bool,
     mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<JsonLinesSamplePosition, String> {
     const LINE: &str = "_jsonl_line";
     const ERROR: &str = "_jsonl_error";
     let mut input = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
@@ -398,7 +429,7 @@ pub(super) fn visit_recoverable_json_lines(
                 .map(|(name, value)| Ok((name, recover_cell(value)?)))
                 .collect()
         };
-    scan_lines_up_to(&mut input, max_bytes, true, max_lines, |line, _| {
+    let position = scan_lines_up_to(&mut input, max_bytes, true, max_lines, |line, _| {
         if let Ok(fields) = parse(line) {
             for (name, (_, ty)) in fields {
                 if reserved(&name) {
@@ -423,24 +454,28 @@ pub(super) fn visit_recoverable_json_lines(
     visit(&columns, None)?;
     if !schema_only {
         input.rewind().map_err(|error| error.to_string())?;
-        scan_lines_up_to(&mut input, max_bytes, true, max_lines, |line, number| {
-            let mut row = vec![CellValue::Empty; columns.len()];
-            row[0] = CellValue::Number(number as f64);
-            match parse(line) {
-                Ok(fields) => {
-                    for (name, (value, _)) in fields {
-                        let index = indices
-                            .get(&name)
-                            .copied()
-                            .filter(|index| *index >= 2)
-                            .ok_or("JSON Lines schema changed during import")?;
-                        row[index] = value;
+        let read_position =
+            scan_lines_up_to(&mut input, max_bytes, true, max_lines, |line, number| {
+                let mut row = vec![CellValue::Empty; columns.len()];
+                row[0] = CellValue::Number(number as f64);
+                match parse(line) {
+                    Ok(fields) => {
+                        for (name, (value, _)) in fields {
+                            let index = indices
+                                .get(&name)
+                                .copied()
+                                .filter(|index| *index >= 2)
+                                .ok_or("JSON Lines schema changed during import")?;
+                            row[index] = value;
+                        }
                     }
+                    Err(error) => row[1] = CellValue::Text(error),
                 }
-                Err(error) => row[1] = CellValue::Text(error),
-            }
-            visit(&columns, Some(row))
-        })?;
+                visit(&columns, Some(row))
+            })?;
+        if read_position != position {
+            return Err("JSON Lines file changed during import".into());
+        }
     }
     let after = input
         .get_ref()
@@ -449,7 +484,7 @@ pub(super) fn visit_recoverable_json_lines(
     if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
         return Err("JSON Lines file changed during import".into());
     }
-    Ok(())
+    Ok(position)
 }
 
 fn infer_type(
@@ -751,6 +786,35 @@ fn exceeds_text_limit(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sample_position_distinguishes_estimates_from_exact_end() {
+        let input = b"{}\r\n{invalid\n{}";
+        let scan =
+            |limit| scan_lines_up_to(&input[..], input.len(), true, limit, |_, _| Ok(())).unwrap();
+        let prefix = scan(1);
+        assert_eq!(
+            (prefix.lines, prefix.bytes, prefix.file_bytes),
+            (1, 4, input.len())
+        );
+        assert!(!prefix.at_end());
+        assert_eq!(prefix.estimated_lines(), input.len() / 4);
+        let exact = scan(3);
+        assert!(exact.at_end());
+        assert_eq!(
+            (exact.lines, exact.bytes, exact.estimated_lines()),
+            (3, input.len(), 3)
+        );
+        let empty = scan_lines_up_to(&[][..], 0, true, 200, |_, _| Ok(())).unwrap();
+        assert!(empty.at_end());
+        assert_eq!(empty.estimated_lines(), 0);
+        let estimate = JsonLinesSamplePosition {
+            lines: 200,
+            bytes: 40 * 1024,
+            file_bytes: 20 * 1024 * 1024,
+        };
+        assert_eq!(estimate.estimated_lines(), 100_000);
+    }
 
     #[test]
     fn imports_sparse_records_with_new_fields_and_mixed_types() {

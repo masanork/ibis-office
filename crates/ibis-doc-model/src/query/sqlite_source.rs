@@ -713,13 +713,13 @@ impl DiskDataset {
                 super::json_lines_source::visit_json_lines(path, selected, schema_only, visit)
             }
             Self::RecoverableJsonLines(path, selected) => {
-                super::json_lines_source::visit_recoverable_json_lines(path, selected, false, usize::MAX, schema_only, visit)
+                super::json_lines_source::visit_recoverable_json_lines(path, selected, false, usize::MAX, schema_only, visit).map(|_| ())
             }
             Self::JsonLinesSample(path, selected, max_lines) => {
-                super::json_lines_source::visit_recoverable_json_lines(path, selected, false, *max_lines, schema_only, visit)
+                super::json_lines_source::visit_recoverable_json_lines(path, selected, false, *max_lines, schema_only, visit).map(|_| ())
             }
             Self::JsonLinesPaths(path, selected) => {
-                super::json_lines_source::visit_recoverable_json_lines(path, selected, true, usize::MAX, schema_only, visit)
+                super::json_lines_source::visit_recoverable_json_lines(path, selected, true, usize::MAX, schema_only, visit).map(|_| ())
             }
             Self::Avro(path, selected) => super::avro_source::visit_avro(path, selected, schema_only, visit),
             Self::Parquet(path, selected, filters) => {
@@ -742,21 +742,42 @@ impl DiskDataset {
         }
     }
 
-    pub fn collect_bounded(&self, max_cells: usize, mut max_text: usize) -> Result<QTable, String> {
+    pub fn collect_bounded(&self, max_cells: usize, max_text: usize) -> Result<QTable, String> {
         let mut table = QTable::default();
-        self.visit(false, |columns, row| {
-            if let Some(row) = row {
-                if columns.len().saturating_mul(table.rows.len() + 1) > max_cells {
-                    return Err(DATASET_MEMORY_LIMIT.into());
-                }
-                charge_dataset_text(&row, &mut max_text)?;
-                table.rows.push(row);
-            } else {
-                table.columns = columns.to_vec();
-            }
-            Ok(())
-        })?;
+        self.visit(false, bounded_rows(&mut table, max_cells, max_text))?;
         Ok(table)
+    }
+
+    pub fn collect_json_lines_sample(
+        path: &Path,
+        max_lines: usize,
+        max_cells: usize,
+        max_text: usize,
+    ) -> Result<(QTable, super::JsonLinesSamplePosition), String> {
+        let mut table = QTable::default();
+        let position = super::json_lines_source::visit_recoverable_json_lines(
+            path, &[], false, max_lines, false, bounded_rows(&mut table, max_cells, max_text),
+        )?;
+        Ok((table, position))
+    }
+}
+
+fn bounded_rows(
+    table: &mut QTable,
+    max_cells: usize,
+    mut max_text: usize,
+) -> impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String> + '_ {
+    move |columns, row| {
+        if let Some(row) = row {
+            if columns.len().saturating_mul(table.rows.len() + 1) > max_cells {
+                return Err(DATASET_MEMORY_LIMIT.into());
+            }
+            charge_dataset_text(&row, &mut max_text)?;
+            table.rows.push(row);
+        } else {
+            table.columns = columns.to_vec();
+        }
+        Ok(())
     }
 }
 

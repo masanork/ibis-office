@@ -1135,34 +1135,50 @@ impl SlideEditor {
         let json_lines = path.extension().is_some_and(|ext| {
             ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson")
         });
-        let mut args = serde_json::json!({
+        let args = serde_json::json!({
             "destination_sheet": sheet.name,
             "anchor": "A1",
             "sql": "SELECT count(*) AS records FROM input",
             "datasets": [{"source":"1","alias":"input"}],
         });
-        if json_lines {
-            args["sql"] = serde_json::json!("SELECT * FROM input ORDER BY _jsonl_line");
-            args["datasets"][0]["sample_lines"] = serde_json::json!(200);
-        }
+        let destination_sheet = sheet.name.clone();
         self.set_status(crate::i18n::text(if json_lines { "editor.jsonl.preview-loading" } else { "editor.analysis.loading" }).to_string(), cx);
         cx.spawn_in(window, async move |this, cx| {
             let prepared = cx.background_executor().spawn(async move {
-                ibis_doc_service::prepare_selected_datasets_export(&[path], args)
+                if json_lines {
+                    ibis_doc_service::prepare_selected_json_lines_preview(path, destination_sheet)
+                        .map(|(prepared, position)| (prepared, Some(position)))
+                } else {
+                    ibis_doc_service::prepare_selected_datasets_export(&[path], args)
+                        .map(|prepared| (prepared, None))
+                }
             }).await;
             let _ = this.update(cx, |this, cx| {
                 if this.file_id != file_id || this.document.presentation() != &baseline {
                     return;
                 }
                 let context = this.assistant_turn().tool_context();
-                let result = prepared.and_then(|prepared| {
+                let result = prepared.and_then(|(prepared, position)| {
+                    if position.is_some_and(|position| position.lines == 0) {
+                        return Ok((Vec::new(), position));
+                    }
                     let mut draft = ibis_doc_model::Document::new(baseline);
-                    prepared.stage(&mut draft, context)
+                    prepared.stage(&mut draft, context).map(|(_, commands)| (commands, position))
                 });
                 match result {
-                    Ok((_, commands)) => {
-                        this.execute(commands, cx);
-                        this.set_status(crate::i18n::text(if json_lines { "editor.jsonl.preview-ready" } else { "editor.analysis.ready" }).to_string(), cx);
+                    Ok((commands, position)) => {
+                        if !commands.is_empty() {
+                            this.execute(commands, cx);
+                        }
+                        let status = if let Some(position) = position {
+                            crate::i18n::format(
+                                if position.at_end() { "editor.jsonl.preview-exact" } else { "editor.jsonl.preview-estimated" },
+                                &[("lines", &position.lines.to_string()), ("total", &position.estimated_lines().to_string())],
+                            ).to_string()
+                        } else {
+                            crate::i18n::text("editor.analysis.ready").to_string()
+                        };
+                        this.set_status(status, cx);
                     }
                     Err(error) => this.set_status(error.message, cx),
                 }

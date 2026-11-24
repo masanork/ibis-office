@@ -1733,7 +1733,8 @@ editor.jsonl.extracting	Reading the selected fields…
 editor.jsonl.retry	The workbook changed during import. Try again.
 editor.jsonl.exported	The selected fields were imported into a new worksheet.
 editor.jsonl.preview-loading	Preparing the JSONL preview…
-editor.jsonl.preview-ready	Previewing up to the first 200 lines. Open JSONL fields to discover fields across the file.
+editor.jsonl.preview-exact	{total} lines (end of file reached)
+editor.jsonl.preview-estimated	Showing the first {lines} lines · About {total} total (estimated from the preview)
 editor.jsonl.export-small	Create a table with up to 25 rows
 editor.jsonl.first-line	Start line (default 1)
 editor.jsonl.last-line	End line (optional)
