@@ -216,6 +216,15 @@ impl SlideEditor {
         chart_drill_target(self.presentation(), slide, chart, series, index)
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    pub(crate) fn live_chart_contributor(&self, key: &str) -> serde_json::Value {
+        let source = self.selection.and_then(|id| self.chart_drill_target(id)).and_then(|target| target.value);
+        source.map_or_else(
+            || serde_json::json!({"state":"no_target"}),
+            |source| crate::chart_cohort::applied_row(self.presentation(), source, key),
+        )
+    }
+
     pub(crate) fn live_chart_drill_down(&self) -> serde_json::Value {
         use serde_json::json;
 

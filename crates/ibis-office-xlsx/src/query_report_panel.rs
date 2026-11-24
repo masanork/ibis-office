@@ -172,15 +172,22 @@ impl SlideEditor {
             return json!({"state":"stale"});
         }
         let Some(candidate) = &review.candidate else { return json!({"state":"blocked"}) };
+        let contributor_key = match args.get("contributor_key") {
+            None => None,
+            Some(key) => match key.as_str().filter(|key| !key.trim().is_empty()) {
+                Some(key) => Some(key),
+                None => return json!({"error":"Supply a nonempty contributor key"}),
+            },
+        };
         match (args.get("shape_id"), args.get("series"), args.get("category")) {
-            (None, None, None) => json!({
+            (None, None, None) if contributor_key.is_none() => json!({
                 "state":"review","charts":review.chart_diffs,"truncated":review.chart_diffs_truncated
             }),
             (Some(shape), Some(series), Some(category)) => {
                 let (Some(shape), Some(series), Some(category)) = (shape.as_u64(), series.as_str(), category.as_str()) else {
                     return json!({"error":"Supply a chart shape ID, series label and category label"});
                 };
-                crate::chart_preview_diff::detail(&review.base, candidate, ibis_doc_model::ShapeId(shape), (series, category))
+                crate::chart_preview_diff::detail(&review.base, candidate, ibis_doc_model::ShapeId(shape), (series, category), contributor_key)
             }
             _ => json!({"error":"Supply a chart shape ID, series label and category label together"}),
         }
@@ -833,6 +840,29 @@ impl SlideEditor {
                                 ("added_delta", &cohort["added"]["delta"]),
                                 ("removed_count", &cohort["removed"]["count"]),
                                 ("removed_delta", &cohort["removed"]["delta"]),
+                            ])));
+                            for (key, label) in [
+                                ("increases", "query.report-contributors-increase"),
+                                ("decreases", "query.report-contributors-decrease"),
+                            ] {
+                                let Some(entries) = cohort[key].as_array().filter(|entries| !entries.is_empty()) else { continue };
+                                body = body.child(div().text_sm().font_weight(FontWeight::BOLD).child(text(label)));
+                                for entry in entries {
+                                    let shown = |side: &str| {
+                                        let evidence = &entry[side];
+                                        evidence["amount_cell"].as_str().map_or_else(|| "—".to_owned(), |cell| {
+                                            format!("{} ({}!{cell})", evidence["amount"], evidence["sheet"].as_str().unwrap_or_default())
+                                        })
+                                    };
+                                    body = body.child(div().text_sm().child(format("query.report-contributor", &[
+                                        ("key", &entry["key"].as_str().unwrap_or_default()),
+                                        ("before", &shown("before")), ("after", &shown("after")),
+                                        ("delta", &entry["delta"]),
+                                    ])));
+                                }
+                            }
+                            body = body.child(div().text_sm().child(format("query.report-contributors-remainder", &[
+                                ("count", &cohort["remainder"]["count"]), ("delta", &cohort["remainder"]["delta"]),
                             ])));
                         } else if change.get("cohort").is_some() {
                             body = body.child(div().text_sm().child(text("query.report-cohort-unavailable")));

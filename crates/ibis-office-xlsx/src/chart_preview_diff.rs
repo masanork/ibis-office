@@ -131,7 +131,7 @@ pub(crate) fn summary(base: &Presentation, candidate: &Presentation, charts: &Va
             .map(|(key @ (series, category), old, new)| {
                 let mut change = json!({"series":series,"category":category,"amounts":amounts(old,new)});
                 if let Some(cohort) = crate::chart_cohort::compare(base, candidate,
-                    before[&key].and_then(|point| point.source), after[&key].and_then(|point| point.source), old, new)
+                    before[&key].and_then(|point| point.source), after[&key].and_then(|point| point.source), old, new, None)
                 {
                     change["cohort"] = cohort;
                 }
@@ -149,7 +149,7 @@ pub(crate) fn summary(base: &Presentation, candidate: &Presentation, charts: &Va
     (output, false)
 }
 
-pub(crate) fn detail(base: &Presentation, candidate: &Presentation, shape: ShapeId, key: Key<'_>) -> Value {
+pub(crate) fn detail(base: &Presentation, candidate: &Presentation, shape: ShapeId, key: Key<'_>, contributor_key: Option<&str>) -> Value {
     let Some(slide) = base.slides.iter().find(|slide| slide.shape(shape).is_some()) else {
         return json!({"state":"no_target"});
     };
@@ -172,7 +172,7 @@ pub(crate) fn detail(base: &Presentation, candidate: &Presentation, shape: Shape
     let mut result = json!({"state":"review","shape_id":shape.0,"series":key.0,"category":key.1,"amounts":values,
         "before":{"point":before,"drill":before_drill},"after":{"point":after,"drill":after_drill}});
     if let Some((old, new)) = before["value"].as_f64().zip(after["value"].as_f64())
-        && let Some(cohort) = crate::chart_cohort::compare(base, candidate, before_source, after_source, old, new)
+        && let Some(cohort) = crate::chart_cohort::compare(base, candidate, before_source, after_source, old, new, contributor_key)
     {
         result["cohort"] = cohort;
     }

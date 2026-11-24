@@ -20,8 +20,8 @@ pub(crate) struct LiveAssistant {
 }
 
 const TOOLS: &[(&str, &str, &str, bool)] = &[
-    ("assistant_analysis_preview_diff", "analysis_preview_diff", "Read the three largest comparable category changes per chart in the live report preview. Pass a chart shape ID, series label and category label together to read the applied and proposed drill-down for that point.", true),
-    ("assistant_chart_drill_down", "chart_drill_down", "Read the selected chart bar’s value, its workbook drill-down destination, and directly linked evidence. Requires selecting a bar in the shared live workbook.", true),
+    ("assistant_analysis_preview_diff", "analysis_preview_diff", "Read the three largest comparable category changes per chart in the live report preview. Pass a chart shape ID, series label and category label together to read the applied and proposed drill-down for that point. Optionally specify contributor_key for both evidence rows.", true),
+    ("assistant_chart_drill_down", "chart_drill_down", "Read the selected chart bar’s value, its workbook drill-down destination, and directly linked evidence. Select a bar in the shared live workbook. Optionally specify contributor_key for its applied evidence row.", true),
     ("assistant_analysis_context", "analysis_context", "Read the live workbook's selected chart bar, applied parameters, and current report preview status.", true),
     ("assistant_preview_analysis", "preview_analysis", "Preview report parameter changes in the live workbook using its open SQL Report Refresh panel and files assigned by the user. Does not apply; the user reviews and applies in the GUI.", false),
     (
@@ -73,7 +73,8 @@ impl LiveAssistant {
         }));
         discovery.into_iter().chain(TOOLS.iter().filter(move |tool| (!self.read_only || tool.3) && (workspace || tool.1 != "inspect_workbook")).map(move |(name, op, description, read)| {
             let (mut properties, mut required) = match *op {
-                "analysis_preview_diff" => (json!({"shape_id":{"type":"integer","minimum":0},"series":{"type":"string"},"category":{"type":"string"}}), json!([])),
+                "analysis_preview_diff" => (json!({"shape_id":{"type":"integer","minimum":0},"series":{"type":"string"},"category":{"type":"string"},"contributor_key":{"type":"string","minLength":1}}), json!([])),
+                "chart_drill_down" => (json!({"contributor_key":{"type":"string","minLength":1}}), json!([])),
                 "preview_analysis" => (json!({"parameter_values":{"type":"object","minProperties":1,"maxProperties":12,"additionalProperties":{"type":["string","number"]}}}), json!(["parameter_values"])),
                 "prompt" => (json!({"text":{"type":"string","minLength":1},"skill":{"type":"string","minLength":1,"maxLength":64}}), json!(["text"])),
                 "result" => (json!({"run_id":{"type":"integer","minimum":0},"after":{"type":"integer","minimum":0}}), json!(["run_id"])),
@@ -126,7 +127,8 @@ impl LiveAssistant {
             }
         };
         let keys: &[&str] = match op {
-            "analysis_preview_diff" => &["shape_id", "series", "category"],
+            "analysis_preview_diff" => &["shape_id", "series", "category", "contributor_key"],
+            "chart_drill_down" => &["contributor_key"],
             "preview_analysis" => &["parameter_values"],
             "prompt" => &["text", "skill"],
             "result" => &["run_id", "after"],

@@ -3181,6 +3181,10 @@ query.report-back	戻る
 query.report-limit	一度に選べるレポートは12件までです。
 query.report-parameter-choose	値を選択
 query.report-parameter-error	レポートの選択肢を取得できないか、設定が一致していません。
+query.report-contributors-increase	増額の上位5件
+query.report-contributors-decrease	減額の上位5件
+query.report-contributor	{key} · {before} → {after}（差 {delta}）
+query.report-contributors-remainder	残り {count} 件（差額合計 {delta}）
 query.report-cohort-delta	継続 {retained_count}件（差 {retained_delta}） · 追加 {added_count}件（差 {added_delta}） · 除外 {removed_count}件（差 {removed_delta}）
 query.report-cohort-unavailable	比較対象別の寄与を照合できませんでした
 query.report-chart-delta	{chart} · {category}（{series}） {before} → {after}（差 {delta}）

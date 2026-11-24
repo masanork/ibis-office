@@ -378,7 +378,7 @@ pub trait FormatEditor {
     fn live_analysis_preview_diff(_editor: &SlideEditor, _args: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({"error":"Analysis preview comparison is only available for desktop spreadsheets"})
     }
-    fn live_chart_drill_down(_editor: &SlideEditor) -> serde_json::Value {
+    fn live_chart_drill_down(_editor: &SlideEditor, _args: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({"error":"Chart drill-down is only available for spreadsheets"})
     }
     fn live_analysis(_editor: &mut SlideEditor, _values: Option<&serde_json::Value>, _cx: &mut Context<SlideEditor>) -> serde_json::Value {
@@ -1412,7 +1412,7 @@ pub trait FormatDriver: Sync {
     fn apply_ai_source(&self, editor: &mut SlideEditor, kind: crate::ai_tools::EditableSourceKind, source: String, cx: &mut Context<SlideEditor>) -> Result<(), String>;
     fn apply_ai_commands(&self, editor: &mut SlideEditor, commands: Vec<ibis_doc_model::Command>, cx: &mut Context<SlideEditor>) -> bool;
     fn live_analysis_preview_diff(&self, editor: &SlideEditor, args: &serde_json::Value) -> serde_json::Value;
-    fn live_chart_drill_down(&self, editor: &SlideEditor) -> serde_json::Value;
+    fn live_chart_drill_down(&self, editor: &SlideEditor, args: &serde_json::Value) -> serde_json::Value;
     fn live_analysis(&self, editor: &mut SlideEditor, values: Option<&serde_json::Value>, cx: &mut Context<SlideEditor>) -> serde_json::Value;
     fn preview_assistant_report_refresh(&self, editor: &mut SlideEditor, table: &str, files: std::collections::BTreeMap<String, std::path::PathBuf>, cx: &mut Context<SlideEditor>);
     fn ai_replacement_target(&self, editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget>;
@@ -1705,8 +1705,8 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn live_analysis_preview_diff(&self, editor: &SlideEditor, args: &serde_json::Value) -> serde_json::Value {
         F::live_analysis_preview_diff(editor, args)
     }
-    fn live_chart_drill_down(&self, editor: &SlideEditor) -> serde_json::Value {
-        F::live_chart_drill_down(editor)
+    fn live_chart_drill_down(&self, editor: &SlideEditor, args: &serde_json::Value) -> serde_json::Value {
+        F::live_chart_drill_down(editor, args)
     }
     fn live_analysis(&self, editor: &mut SlideEditor, values: Option<&serde_json::Value>, cx: &mut Context<SlideEditor>) -> serde_json::Value {
         F::live_analysis(editor, values, cx)

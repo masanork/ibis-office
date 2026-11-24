@@ -38,7 +38,7 @@ pub fn start(
                         return crate::format::with_format!(editor, live_analysis_preview_diff(editor, &request));
                     }
                     if request["op"] == "chart_drill_down" {
-                        return crate::format::with_format!(editor, live_chart_drill_down(editor));
+                        return crate::format::with_format!(editor, live_chart_drill_down(editor, &request));
                     }
                     if request["op"] == "preview_analysis" {
                         let Some(values) = request.get("parameter_values") else {

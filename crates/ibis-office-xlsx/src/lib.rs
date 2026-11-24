@@ -709,7 +709,19 @@ impl FormatEditor for Workbook {
         }
     }
 
-    fn live_chart_drill_down(editor: &SlideEditor) -> serde_json::Value {
+    fn live_chart_drill_down(editor: &SlideEditor, args: &serde_json::Value) -> serde_json::Value {
+        if let Some(key) = args.get("contributor_key") {
+            let Some(key) = key.as_str().filter(|key| !key.trim().is_empty()) else {
+                return serde_json::json!({"error":"Supply a nonempty contributor key"});
+            };
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            return event_hooks::EventHooksCrate::live_chart_contributor(editor, key);
+            #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+            {
+                let _ = key;
+                return serde_json::json!({"error":"Contributor lookup is only available on desktop"});
+            }
+        }
         event_hooks::EventHooksCrate::live_chart_drill_down(editor)
     }
 

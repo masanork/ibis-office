@@ -3184,6 +3184,10 @@ query.report-back	Back
 query.report-limit	Select up to 12 reports at a time.
 query.report-parameter-choose	Choose a value
 query.report-parameter-error	Report parameter choices are unavailable or incompatible.
+query.report-contributors-increase	Top five increases
+query.report-contributors-decrease	Top five decreases
+query.report-contributor	{key} · {before} → {after} (change {delta})
+query.report-contributors-remainder	Remaining {count} (net change {delta})
 query.report-cohort-delta	Retained {retained_count} (change {retained_delta}) · Added {added_count} (change {added_delta}) · Removed {removed_count} (change {removed_delta})
 query.report-cohort-unavailable	The contributions by membership could not be reconciled
 query.report-chart-delta	{chart} · {category} ({series}) {before} → {after} (change {delta})
