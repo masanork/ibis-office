@@ -324,21 +324,54 @@ impl RankingFilter {
 const RANKED_LIMIT: usize = 10;
 const REMAINDER_PAGE_SIZE: usize = 10;
 
+#[derive(Clone, Copy)]
+pub(crate) enum RankingPage {
+    Remainder(usize),
+    Excluded(usize),
+}
+
 type RankedGroup<'a> = (&'a str, Effect, f64);
+
+fn compare_rank(left: &RankedGroup<'_>, right: &RankedGroup<'_>) -> std::cmp::Ordering {
+    right.2.abs().total_cmp(&left.2.abs()).then_with(|| left.0.cmp(right.0))
+}
+
+fn rank_page(
+    rows: &mut [RankedGroup<'_>], offset: usize, row: impl Fn(&RankedGroup<'_>) -> Value,
+) -> Value {
+    let offset = offset.min(rows.len());
+    let end = offset.saturating_add(REMAINDER_PAGE_SIZE).min(rows.len());
+    let groups = if offset == end {
+        &mut rows[..0]
+    } else {
+        if end < rows.len() {
+            rows.select_nth_unstable_by(end, compare_rank);
+        }
+        let prefix = &mut rows[..end];
+        if offset > 0 {
+            prefix.select_nth_unstable_by(offset, compare_rank);
+        }
+        let groups = &mut prefix[offset..];
+        groups.sort_unstable_by(compare_rank);
+        groups
+    };
+    let entries: Vec<_> = groups.iter().map(&row).collect();
+    json!({
+        "offset":offset, "groups":entries, "page_size":REMAINDER_PAGE_SIZE,
+        "next_offset":(end < rows.len()).then_some(end),
+    })
+}
 
 fn rank_groups(
     ranked: &mut [RankedGroup<'_>], remainder_offset: Option<usize>,
     row: impl Fn(&RankedGroup<'_>) -> Value,
 ) -> Value {
     let group_count = ranked.len();
-    let rank = |left: &(&str, Effect, f64), right: &(&str, Effect, f64)| {
-        right.2.abs().total_cmp(&left.2.abs()).then_with(|| left.0.cmp(right.0))
-    };
     if group_count > RANKED_LIMIT {
-        ranked.select_nth_unstable_by(RANKED_LIMIT, rank);
+        ranked.select_nth_unstable_by(RANKED_LIMIT, compare_rank);
     }
     let (top, remainder) = ranked.split_at_mut(group_count.min(RANKED_LIMIT));
-    top.sort_unstable_by(rank);
+    top.sort_unstable_by(compare_rank);
     let groups: Vec<_> = top.iter().map(&row).collect();
     // Sum both partitions before sorting the optional page.
     let subtotal = |rows: &[(&str, Effect, f64)]| {
@@ -350,32 +383,12 @@ fn rank_groups(
     let remainder_contribution = subtotal(remainder);
     let mut other = json!({"count":remainder.len(),"contribution":remainder_contribution});
     if let Some(offset) = remainder_offset {
-        let offset = offset.min(remainder.len());
-        let end = offset.saturating_add(REMAINDER_PAGE_SIZE).min(remainder.len());
-        let groups = if offset == end {
-            &mut remainder[..0]
-        } else {
-            if end < remainder.len() {
-                remainder.select_nth_unstable_by(end, rank);
-            }
-            let prefix = &mut remainder[..end];
-            if offset > 0 {
-                prefix.select_nth_unstable_by(offset, rank);
-            }
-            let groups = &mut prefix[offset..];
-            groups.sort_unstable_by(rank);
-            groups
-        };
-        let entries: Vec<_> = groups.iter().map(&row).collect();
-        other["page"] = json!({
-            "offset":offset, "groups":entries, "page_size":REMAINDER_PAGE_SIZE,
-            "next_offset":(end < remainder.len()).then_some(end),
-        });
+        other["page"] = rank_page(remainder, offset, row);
     }
     json!({"groups":groups,"group_count":group_count,"top_contribution":top_contribution,"remainder":other})
 }
 
-fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, key: Option<&str>, remainder_offset: Option<usize>, filter: &RankingFilter) -> Value {
+fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, key: Option<&str>, page: Option<RankingPage>, filter: &RankingFilter) -> Value {
     let Some(delta) = delta else { return json!({"state":"unavailable"}); };
     let scale = match before.metric { Metric::Rate => 100., Metric::Average => 1. };
     let before_total = before.totals.denominator;
@@ -430,22 +443,34 @@ fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, ke
         "before_share":effect.before_share, "after_share":effect.after_share,
         "before":before.evidence(key), "after":after.evidence(key),
     });
+    let remainder_offset = match page {
+        Some(RankingPage::Remainder(offset)) => Some(offset),
+        _ => None,
+    };
     let filtered = filter.active().then(|| {
         let query = filter.query.trim().to_lowercase();
         let mut matches = Vec::new();
         let mut matched = CompensatedSum::default();
         let mut excluded = CompensatedSum::default();
-        for &group @ (name, _, contribution) in &ranked {
-            let sign_matches = match filter.direction {
-                RankingDirection::All => true,
-                RankingDirection::Increase => contribution > 0.,
-                RankingDirection::Decrease => contribution < 0.,
+        let mut excluded_groups = Vec::new();
+        let exclusion = |name: &str, contribution: f64| {
+            let direction = match filter.direction {
+                RankingDirection::All => false,
+                RankingDirection::Increase => contribution <= 0.,
+                RankingDirection::Decrease => contribution >= 0.,
             };
-            if sign_matches && (query.is_empty() || name.to_lowercase().contains(&query)) {
+            let name = !query.is_empty() && !name.to_lowercase().contains(&query);
+            (direction, name)
+        };
+        for &group @ (name, _, contribution) in &ranked {
+            if exclusion(name, contribution) == (false, false) {
                 matched.add(contribution);
                 matches.push(group);
             } else {
                 excluded.add(contribution);
+                if matches!(page, Some(RankingPage::Excluded(_))) {
+                    excluded_groups.push(group);
+                }
             }
         }
         let residual = (matched.sum + excluded.sum) - delta;
@@ -453,6 +478,14 @@ fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, ke
         let mut result = rank_groups(&mut matches, remainder_offset, row);
         result["total_contribution"] = json!(matched.sum);
         result["excluded"] = json!({"count":excluded_count,"contribution":excluded.sum});
+        if let Some(RankingPage::Excluded(offset)) = page {
+            result["excluded"]["page"] = rank_page(&mut excluded_groups, offset, |entry| {
+                let (direction, name) = exclusion(entry.0, entry.2);
+                let mut value = row(entry);
+                value["excluded_by"] = json!({"direction":direction,"name":name});
+                value
+            });
+        }
         result["partition_residual"] = json!(residual);
         result["state"] = json!(if !residual.is_finite() { "non_finite" }
             else if residual.abs() <= tolerance { "ready" }
@@ -486,7 +519,7 @@ pub(crate) fn compare(base: &Presentation, candidate: &Presentation, table: &str
 
 pub(crate) fn compare_ranking(
     base: &Presentation, candidate: &Presentation, table: &str, metric: &str,
-    key: Option<&str>, remainder_offset: Option<usize>, filter: &RankingFilter,
+    key: Option<&str>, page: Option<RankingPage>, filter: &RankingFilter,
 ) -> Value {
     if report_comparison_definition(base, table) != report_comparison_definition(candidate, table) {
         return json!({"state":"comparison_changed"});
@@ -504,7 +537,7 @@ pub(crate) fn compare_ranking(
     let mut result = json!({"state":"review","table":table,"metric":metric,"kind":kind.name(),
         "before":before.totals.details(kind),"after":after.totals.details(kind),(delta_key):delta,
         "source":{"before":before.source,"after":after.source},
-        "decomposition":decomposition(&before, &after, delta, key, remainder_offset, filter)});
+        "decomposition":decomposition(&before, &after, delta, key, page, filter)});
     if let Ok(definition) = report_comparison_definition(base, table)
         && let Some(unit) = definition.get("unit")
     {

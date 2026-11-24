@@ -3222,3 +3222,6 @@ query.report-quotient-no-matches	No matching groups
 query.report-quotient-matched	Matching {count} groups: {total} {unit}
 query.report-quotient-excluded	Excluded {count} groups: {total} {unit}
 query.report-quotient-filter-reconciled	Subtotals reconcile before rounding.
+query.report-quotient-excluded-direction	Excluded by contribution direction
+query.report-quotient-excluded-name	Excluded by group name
+query.report-quotient-excluded-both	Excluded by contribution direction and group name

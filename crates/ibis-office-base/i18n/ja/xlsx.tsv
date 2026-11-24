@@ -3219,3 +3219,6 @@ query.report-quotient-no-matches	該当するグループがありません
 query.report-quotient-matched	一致（{count}グループ）の小計 {total} {unit}
 query.report-quotient-excluded	対象外（{count}グループ）の小計 {total} {unit}
 query.report-quotient-filter-reconciled	丸め前の小計で全体の増減と照合済み
+query.report-quotient-excluded-direction	対象外の理由：増減の符号
+query.report-quotient-excluded-name	対象外の理由：グループ名
+query.report-quotient-excluded-both	対象外の理由：増減の符号とグループ名
