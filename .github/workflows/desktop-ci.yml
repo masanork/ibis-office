@@ -17,7 +17,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: desktop-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Keep an explicit verification run alive when a newer branch build starts.
+  group: desktop-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && '-manual' || '' }}
   cancel-in-progress: true
 
 env:
