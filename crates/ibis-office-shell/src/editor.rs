@@ -643,6 +643,7 @@ pub struct SlideEditor {
     pub opened_from_legacy: bool,
     /// Whether this document is opened in read-only / viewing mode (--read-only or ?view=1).
     pub read_only: bool,
+    vsdx_viewer: bool,
     #[cfg(any(target_os = "android", target_family = "wasm"))]
     pub(crate) phone_editing: bool,
     #[cfg(any(target_os = "android", target_family = "wasm"))]
@@ -687,6 +688,7 @@ static NEXT_FILE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 
 impl SlideEditor {
     pub fn new(mut presentation: Presentation, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let vsdx_viewer = presentation.pdf_bytes.as_deref().is_some_and(ibis_vsdx::is_vsdx);
         crate::app::track_start_window(cx.entity_id(),Some(window.window_handle()),true,cx);
         #[cfg(target_os = "macos")]
         cx.observe_window_activation(window, |_, window, cx| {
@@ -997,6 +999,7 @@ impl SlideEditor {
             phone_editing: false,
             #[cfg(any(target_os = "android", target_family = "wasm"))]
             phone_view_only: false,
+            vsdx_viewer,
             standard_read_only: false,
             structured_preview: false,
             #[cfg(not(target_family = "wasm"))]
@@ -1061,11 +1064,13 @@ impl SlideEditor {
         #[cfg(target_family = "wasm")]
         { self.presentation().pdf_bytes.is_some() }
         #[cfg(not(target_family = "wasm"))]
-        { self.is_xdw() }
+        { self.is_read_only_fixed_layout() }
     }
 
-    pub(crate) fn is_xdw(&self) -> bool {
-        self.presentation().pdf_bytes.as_deref().is_some_and(ibis_xdw::is_xdw)
+    pub(crate) fn is_read_only_fixed_layout(&self) -> bool {
+        self.presentation().pdf_bytes.as_deref().is_some_and(|bytes| {
+            self.vsdx_viewer || ibis_xdw::is_xdw(bytes)
+        })
     }
 
     pub(crate) fn phone_view_only(&self) -> bool {
@@ -1355,6 +1360,7 @@ impl SlideEditor {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         { self.git_preview = None; }
         self.standard_read_only = false;
+        self.vsdx_viewer = presentation.pdf_bytes.as_deref().is_some_and(ibis_vsdx::is_vsdx);
         self.structured_preview = false;
         #[cfg(not(target_family = "wasm"))]
         { self.bom_source = None; }

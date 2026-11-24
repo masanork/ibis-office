@@ -969,6 +969,9 @@ jtd.no-embedded-images	No displayable embedded images were found. The body previ
 jtd.omitted-sheets	 {count} additional sheet(s) omitted.
 jtd.omitted-objects	 {count} embedded-object storage(s) omitted.
 jtd.read-only	Ichitaro documents are read-only
+vsdx.read-only	Visio drawings are read-only.
+vsdx.preview	Visio preview · Read-only
+vsdx.page-error	This Visio page could not be displayed.
 xdw.read-only	DocuWorks documents are read-only.
 xdw.preview	DocuWorks preview · Read-only
 xdw.page-error	This DocuWorks page could not be displayed.

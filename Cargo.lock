@@ -5905,6 +5905,7 @@ dependencies = [
  "ibis-office-docx",
  "ibis-office-shell",
  "ibis-pdf",
+ "ibis-vsdx",
  "ibis-xdw",
  "ibis-xps",
  "image",
@@ -5991,6 +5992,7 @@ dependencies = [
  "ibis-office-render",
  "ibis-office-updater",
  "ibis-pdf",
+ "ibis-vsdx",
  "ibis-xdw",
  "ibis-xps",
  "image",
@@ -6078,6 +6080,16 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "roxmltree 0.21.1",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "ibis-vsdx"
+version = "0.8.0"
+dependencies = [
+ "ibis-formats",
+ "ibis-ooxml",
+ "ibis-pdf",
+ "roxmltree 0.21.1",
 ]
 
 [[package]]

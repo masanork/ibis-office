@@ -26,6 +26,7 @@ enum ViewerSource {
     Ofd(Arc<OfdContainer>),
     Xps(Arc<XpsContainer>),
     Xdw(Arc<ibis_xdw::XdwContainer>),
+    Vsdx(Arc<ibis_vsdx::VsdxContainer>),
 }
 
 /// A character of the document: the page and its place in the page's text (the order the text is in the file).
@@ -150,6 +151,14 @@ impl PdfViewerState {
             text_found: None,
             });
         }
+        if ibis_vsdx::is_vsdx(&raw) {
+            let visio = ibis_vsdx::VsdxContainer::from_bytes(raw)?;
+            return Ok(Self {
+                pages: visio.page_infos(),
+                source: ViewerSource::Vsdx(Arc::new(visio)),
+                ..Self::empty()
+            });
+        }
         let mut container = PdfContainer::from_bytes(raw)?;
         let pages = collect_pages(&mut container)?;
         let signatures = inspect_signatures(&mut container)?;
@@ -172,6 +181,10 @@ impl PdfViewerState {
 
     pub fn is_xdw(&self) -> bool {
         matches!(self.source, ViewerSource::Xdw(_))
+    }
+
+    pub fn is_vsdx(&self) -> bool {
+        matches!(self.source, ViewerSource::Vsdx(_))
     }
 
     pub fn page_count(&self) -> usize {
@@ -289,31 +302,50 @@ impl PdfViewerState {
                 ofd.interpret_page_scene(page_index)
                     .map_err(|e| ibis_pdf::Error::new(e.to_string()))?,
             ),
-            ViewerSource::Xdw(xdw) => match xdw.interpret_page_scene(page_index) {
-                Ok(scene) => Arc::new(scene),
-                Err(error) => {
-                    let info = self.pages.get(page_index).cloned().ok_or_else(|| error.clone())?;
-                    let title = ibis_office_shell::i18n::text("xdw.page-error").to_string();
-                    let display_list = [(title, 40.0), (error.to_string(), 60.0)]
-                        .into_iter()
-                        .map(|(text, y)| ibis_pdf::DisplayCmd::DrawGlyphRun {
-                            text, origin: (24.0, y), font_size: 12.0, rgba: [80, 80, 80, 255],
-                        }).collect();
-                    Arc::new(PageScene { info, display_list, text_index: Default::default() })
-                }
-            },
+            ViewerSource::Vsdx(visio) => {
+                self.scene_or_error(visio.interpret_page_scene(page_index), page_index, "vsdx.page-error")?
+            }
+            ViewerSource::Xdw(xdw) => {
+                self.scene_or_error(xdw.interpret_page_scene(page_index), page_index, "xdw.page-error")?
+            }
             ViewerSource::Xps(xps) => Arc::new(
                 xps.interpret_page_scene(page_index)
                     .map_err(|e| ibis_pdf::Error::new(e.to_string()))?,
             ),
         };
-        if self.is_xdw() && self.scene_cache.len() >= 4 {
-            // Scanned pages may retain large decoded images in both caches.
+        if (self.is_xdw() || self.is_vsdx()) && self.scene_cache.len() >= 4 {
+            // Bound retained page scenes and decoded images in long documents.
             self.scene_cache.clear();
             self.image_cache.clear();
         }
         self.scene_cache.insert(page_index, scene.clone());
         Ok(scene)
+    }
+
+    fn scene_or_error(
+        &self,
+        scene: Result<PageScene>,
+        page_index: usize,
+        error_key: &str,
+    ) -> Result<Arc<PageScene>> {
+        let error = match scene {
+            Ok(scene) => return Ok(Arc::new(scene)),
+            Err(error) => error,
+        };
+        let Some(info) = self.pages.get(page_index).cloned() else {
+            return Err(error);
+        };
+        let title = ibis_office_shell::i18n::text(error_key).to_string();
+        let display_list = [(title, 40.0), (error.to_string(), 60.0)]
+            .into_iter()
+            .map(|(text, y)| ibis_pdf::DisplayCmd::DrawGlyphRun {
+                text,
+                origin: (24.0, y),
+                font_size: 12.0,
+                rgba: [80, 80, 80, 255],
+            })
+            .collect();
+        Ok(Arc::new(PageScene { info, display_list, text_index: Default::default() }))
     }
 
     /// The page's text with the place of each character (empty when a page cannot be read).

@@ -304,6 +304,7 @@ pub(crate) enum FixedLayoutFormat {
     Ofd,
     Xps,
     Xdw,
+    Vsdx,
 }
 
 impl FixedLayoutFormat {
@@ -321,7 +322,11 @@ impl FixedLayoutFormat {
         if ibis_xps::is_xps(data) {
             return Some(Self::Xps);
         }
+        if ibis_vsdx::is_vsdx(data) {
+            return Some(Self::Vsdx);
+        }
         match extension.as_deref() {
+            Some("vsdx") => Some(Self::Vsdx),
             Some("pdf") => Some(Self::Pdf),
             Some("ofd") => Some(Self::Ofd),
             Some("xps" | "oxps") => Some(Self::Xps),
@@ -338,6 +343,7 @@ impl FixedLayoutFormat {
             Self::Ofd => ibis_ofd::OfdContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?.page_infos(),
             Self::Xps => ibis_xps::XpsContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?.page_infos(),
             Self::Xdw => ibis_xdw::XdwContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?.page_infos(),
+            Self::Vsdx => ibis_vsdx::VsdxContainer::from_bytes(raw.clone()).map_err(|e| e.to_string())?.page_infos(),
         };
         let page_boxes: Vec<_> = pages.iter().map(|page| (page.crop_box.width(), page.crop_box.height())).collect();
         Ok(fixed_layout(raw, &page_boxes))

@@ -265,13 +265,13 @@ impl Kind {
             "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "pps" | "pot" | "odp" | "otp" => Some(Kind::Presentation),
             "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" | "ots" | "csv" | "tsv" | "tab" | "xltx" | "xltm" | "xlk" => Some(Kind::Workbook),
             "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "hwp" | "hwpx" | "jtd" | "jtt" | "jttc" | "md" | "markdown" | "cin" | "dpx" | "exr" | "psd" | "tga" | "tif" | "tiff" | "jp2" | "j2k" | "j2c" => Some(Kind::Document),
-            "pdf" | "ofd" | "xps" | "oxps" | "xdw" => Some(Kind::Pdf),
+            "pdf" | "ofd" | "xps" | "oxps" | "xdw" | "vsdx" => Some(Kind::Pdf),
             _ => None,
         }
     }
 
     /// The extensions of the files that can be opened (what `from_extension` knows), for the file dialog.
-    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "hwp", "hwpx", "jtd", "jtt", "jttc", "json", "xml", "sd-jwt", "mdoc", "md", "markdown", "pdf", "ofd", "xps", "oxps", "xdw", "cin", "dpx", "exr", "psd", "tga", "tif", "tiff", "jp2", "j2k", "j2c"];
+    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "hwp", "hwpx", "jtd", "jtt", "jttc", "json", "xml", "sd-jwt", "mdoc", "md", "markdown", "pdf", "ofd", "xps", "oxps", "xdw", "vsdx", "cin", "dpx", "exr", "psd", "tga", "tif", "tiff", "jp2", "j2k", "j2c"];
 
     /// The kind of document contained in `presentation`.
     pub fn of(presentation: &Presentation) -> Self {

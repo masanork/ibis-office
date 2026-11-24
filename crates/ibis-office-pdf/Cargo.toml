@@ -10,6 +10,7 @@ publish.workspace = true
 ibis-pdf = { path = "../ibis-pdf", features = ["interpret"] }
 ibis-ofd.workspace = true
 ibis-xps.workspace = true
+ibis-vsdx.workspace = true
 ibis-office-base.workspace = true
 ibis-office-shell.workspace = true
 ibis-office-docx.workspace = true

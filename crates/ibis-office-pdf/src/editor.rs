@@ -507,12 +507,15 @@ impl FormatEditor for PdfDocument {
 
     #[cfg(not(target_family = "wasm"))]
     fn save_refused(editor: &SlideEditor) -> Option<String> {
-        editor
-            .presentation()
-            .pdf_bytes
-            .as_deref()
-            .filter(|bytes| ibis_xdw::is_xdw(bytes))
-            .map(|_| ibis_office_shell::i18n::text("xdw.read-only").to_string())
+        let bytes = editor.presentation().pdf_bytes.as_deref()?;
+        let key = if ibis_xdw::is_xdw(bytes) {
+            "xdw.read-only"
+        } else if ibis_vsdx::is_vsdx(bytes) {
+            "vsdx.read-only"
+        } else {
+            return None;
+        };
+        Some(ibis_office_shell::i18n::text(key).to_string())
     }
 
     /// The bar that says the file is signed (a viewer changes nothing, so its words differ from the document's: no "editing removes them").
@@ -542,6 +545,9 @@ impl FormatEditor for PdfDocument {
         let guard = state.viewer.lock().expect("pdf viewer lock");
         if guard.is_xdw() {
             return vec![ibis_office_shell::i18n::text("xdw.preview")];
+        }
+        if guard.is_vsdx() {
+            return vec![ibis_office_shell::i18n::text("vsdx.preview")];
         }
         guard
             .signature_status_text()

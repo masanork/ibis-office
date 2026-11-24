@@ -967,6 +967,9 @@ jtd.no-embedded-images	表示できる埋め込み画像がありません。本
 jtd.omitted-sheets	 追加シート{count}件は対象外。
 jtd.omitted-objects	 埋め込み領域{count}件は対象外。
 jtd.read-only	一太郎文書は読み取り専用です
+vsdx.read-only	Visio 図面は読み取り専用です。
+vsdx.preview	Visio プレビュー（読み取り専用）
+vsdx.page-error	この Visio のページは表示できません。
 xdw.read-only	DocuWorks 文書は読み取り専用です。
 xdw.preview	DocuWorks プレビュー（読み取り専用）
 xdw.page-error	この DocuWorks のページは表示できません。

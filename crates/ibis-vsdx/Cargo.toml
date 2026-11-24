@@ -1,0 +1,13 @@
+[package]
+name = "ibis-vsdx"
+description = "Read-only Visio VSDX page adapter"
+license = "AGPL-3.0-only"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+ibis-formats.workspace = true
+ibis-ooxml.workspace = true
+ibis-pdf.workspace = true
+roxmltree = "0.21"
