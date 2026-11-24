@@ -412,7 +412,7 @@ pub fn export_blocks_to_markdown(
     let comments_by_id: HashMap<u32, &Comment> = doc.comments.iter().map(|c| (c.id, c)).collect();
     let mut prev_was_list = false;
     for (index, block) in blocks.iter().enumerate() {
-        let is_list = matches!(block, Block::Paragraph(p) if p.list.is_some() || p.runs.first().is_some_and(|r| matches!(r.kind, FlowRunKind::CheckBox { .. })));
+        let is_list = is_markdown_list_item(block);
         if prev_was_list && !is_list && !out.ends_with("\n\n") {
             out.push('\n');
         }
@@ -3087,9 +3087,21 @@ fn parse_blocks(
                 ));
             }
             runs.extend(parse_inlines(clean_text, ctx, &RunFormat::default()));
+            let mut style = ctx.styles.default_paragraph.clone();
+            if i > 0 && lines[i - 1].trim().is_empty() && blocks.last().is_some_and(is_markdown_list_item) {
+                let id = MARKDOWN_LIST_BLANK_STYLE.to_owned();
+                ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
+                    name: "Markdown list item after a blank line".to_owned(),
+                    kind: StyleKind::Paragraph,
+                    based_on: style.clone(),
+                    next: style.clone(),
+                    ..FlowStyle::default()
+                });
+                style = Some(id);
+            }
             let mut p = FlowParagraph {
                 id: ctx.fresh_id(),
-                style: ctx.styles.default_paragraph.clone(),
+                style,
                 direct: ParaFormat {
                     align: attrs.align,
                     num_id: if item.task_checked.is_some() { None } else { Some(num_id) },
@@ -3152,7 +3164,7 @@ fn parse_blocks(
                 || myst::colon_directive(&lines[i..]).is_some()
                 || is_horizontal_rule(l_trim)
                 || parse_atx_heading(l_trim).is_some()
-                || parse_list_marker(l_raw).is_some()
+                || list_interrupts_paragraph(l_raw)
                 || (is_table_row(l_trim)
                     && i + 1 < lines.len()
                     && is_table_separator(lines[i + 1].trim()))
@@ -3380,6 +3392,29 @@ struct ListMarker<'a> {
     level: u8,
     task_checked: Option<bool>,
     text: &'a str,
+}
+
+const MARKDOWN_LIST_BLANK_STYLE: &str = "IbisMarkdownListBlankBefore";
+
+fn is_markdown_list_item(block: &Block) -> bool {
+    matches!(block, Block::Paragraph(p) if p.list.is_some()
+        || p.runs.first().is_some_and(|run| matches!(run.kind, FlowRunKind::CheckBox { .. })))
+}
+
+fn list_interrupts_paragraph(line: &str) -> bool {
+    let Some(item) = parse_list_marker(line) else {
+        return false;
+    };
+    if item.text.trim().is_empty() {
+        return false;
+    }
+    if !item.ordered {
+        return true;
+    }
+
+    // CommonMark only allows a list starting at 1 to interrupt prose.
+    let digits = line.trim_start().split(['.', ')']).next().unwrap_or_default();
+    digits.len() <= 9 && digits.parse::<u32>() == Ok(1)
 }
 
 fn parse_list_marker(raw_line: &str) -> Option<ListMarker<'_>> {
@@ -6088,7 +6123,7 @@ fn export_markdown_with_positions<'a>(
             }
         }
 
-        let is_list = matches!(block, Block::Paragraph(p) if p.list.is_some() || p.runs.first().is_some_and(|r| matches!(r.kind, FlowRunKind::CheckBox { .. })));
+        let is_list = is_markdown_list_item(block);
         if prev_was_list && !is_list && !out.ends_with("\n\n") {
             out.push('\n');
         }
@@ -7391,6 +7426,13 @@ fn serialize_paragraph(
         let text = serialize_text();
         out.push_str(&format!("{hashes} {text}{attr_suffix}\n\n"));
         return;
+    }
+
+    if p.style.as_deref() == Some(MARKDOWN_LIST_BLANK_STYLE)
+        && (p.list.is_some() || p.runs.first().is_some_and(|run| matches!(run.kind, FlowRunKind::CheckBox { .. })))
+        && !out.is_empty() && !out.ends_with("\n\n")
+    {
+        out.push('\n');
     }
 
     // 6. Task list item (`FlowRunKind::CheckBox` at start of paragraph)
@@ -10427,6 +10469,21 @@ Front caption
     }
 
     #[test]
+    fn markdown_retains_list_boundaries_through_markdown_and_docx() {
+        let source = b"The number of windows is\n14. The number of doors is 6.\n\n14. Real first step\n\n15. Real second step\n16. Real third step\n\n- First bullet\n\n- Second bullet\n- Third bullet\n";
+        let expected = "The number of windows is 14. The number of doors is 6.\n\n14. Real first step\n\n15. Real second step\n16. Real third step\n\n- First bullet\n\n- Second bullet\n- Third bullet\n";
+        let opened = open_markdown(source.to_vec()).unwrap();
+        let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert_eq!(saved, expected);
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        let flow = reopened.presentation.flow.as_deref().unwrap();
+        assert!(matches!(&flow.body[0], Block::Paragraph(p) if p.list.is_none()));
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), expected);
+        let docx = import_markdown_to_docx_bytes(source).unwrap();
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), expected);
+    }
+
+    #[test]
     fn markdown_retains_language_fence_under_the_same_list_item() {
         let source = "1. Prepare\n\n   Keep this note in step one.\n\n   ```sh\n   echo ready\n   ```\n\n2. Publish\n";
         let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
@@ -10481,7 +10538,7 @@ Front caption
         let output = export_docx_to_markdown(&docx).unwrap();
         assert!(output.contains("````\n*literal*  \n  \n    deeper\n```\n````"), "{output}");
         assert!(output.contains("Paragraph continues"), "{output}");
-        assert!(output.contains("1.  Item\n    - Nested"), "{output}");
+        assert!(output.contains("1.  Item\n\n    - Nested"), "{output}");
     }
 
     #[test]
