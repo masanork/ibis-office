@@ -203,7 +203,7 @@ jobs:
     needs: validate-source
     permissions:
       contents: read
-    uses: masanork/ibis-office/.github/workflows/linux-appimage-compile.yml@0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93
+    uses: sorane-dev/docs/.github/workflows/linux-appimage-compile.yml@0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93
 
   linux:
     name: Linux AppImage trusted build
@@ -213,7 +213,7 @@ jobs:
       attestations: write
       contents: read
       id-token: write
-    uses: masanork/ibis-office/.github/workflows/linux-appimage-builder.yml@0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93
+    uses: sorane-dev/docs/.github/workflows/linux-appimage-builder.yml@0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93
 
   verify-linux-provenance:
     name: Verify downloaded Linux AppImage provenance
