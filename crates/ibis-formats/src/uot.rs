@@ -527,6 +527,87 @@ mod tests {
         }
     }
 
+    fn contour_example(mode: &str, points: &str) -> String {
+        image_example(&format!("<uof:数据>{IMAGE}</uof:数据>"))
+            .replace("<w:锚点>", r#"<w:锚点 w:类型="normal">"#)
+            .replace(
+                "</w:锚点属性>",
+                &format!(r#"<w:绕排 w:绕排方式="{mode}" w:绕排顶点="{points}"/></w:锚点属性>"#),
+            )
+    }
+
+    fn first_image_anchor(presentation: &Presentation) -> &ibis_doc_model::FloatingAnchor {
+        let [Block::Paragraph(paragraph)] = presentation.flow.as_ref().unwrap().body.as_slice()
+        else {
+            panic!("expected one paragraph");
+        };
+        let FlowRunKind::Shape(shape) = &paragraph.runs[1].kind else {
+            panic!("expected a floating image");
+        };
+        shape.floating.as_ref().unwrap()
+    }
+
+    #[test]
+    fn preserves_concave_wrap_vertices_through_docx_and_markdown() {
+        use ibis_doc_model::{WrapPoint, WrapPolygon};
+
+        let points = "0 0 50.8 0 50.8 6.35 12.7 6.35 12.7 19.05 50.8 19.05 50.8 25.4 0 25.4";
+        let expected = [
+            (0, 0),
+            (21_600, 0),
+            (21_600, 5_400),
+            (5_400, 5_400),
+            (5_400, 16_200),
+            (21_600, 16_200),
+            (21_600, 21_600),
+            (0, 21_600),
+            (0, 0),
+        ]
+        .map(|(x, y)| WrapPoint::new(x, y));
+        let expected = WrapPolygon::from_points(&expected, true).unwrap();
+
+        for mode in ["tight", "through"] {
+            let source = contour_example(mode, points);
+            let bytes = to_docx(source.as_bytes()).unwrap();
+            let docx = crate::read(&bytes).unwrap();
+            let markdown = crate::markdown::export_presentation_to_markdown(&docx).unwrap();
+            let reopened = crate::markdown::read_markdown(markdown.as_bytes()).unwrap();
+            let rebuilt =
+                crate::markdown::import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+
+            for presentation in [docx, reopened, crate::read(&rebuilt).unwrap()] {
+                let anchor = first_image_anchor(&presentation);
+                assert_eq!(anchor.wrap, mode);
+                assert_eq!(anchor.wrap_polygon.as_ref(), Some(&expected));
+                assert_eq!(
+                    anchor
+                        .wrap_polygon
+                        .as_ref()
+                        .unwrap()
+                        .x_span_for_y_band(0.0, 0.0, 100.0, 100.0, 35.0, 65.0),
+                    Some((0.0, 25.0)),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn retains_default_wrapping_when_contour_is_invalid_or_inapplicable() {
+        for (mode, points) in [
+            ("tight", "0 0 10 20 20 40"),
+            ("tight", "0 0 10 20 20"),
+            ("tight", "0 0 10 NaN 20 40"),
+            ("square", "0 0 10 0 10 10"),
+        ] {
+            let manuscript = contour_example(mode, points);
+            let opened = open(manuscript.as_bytes()).unwrap();
+            let anchor = first_image_anchor(&opened.presentation);
+            assert_eq!(anchor.wrap, mode);
+            let expected = (mode == "tight").then(ibis_doc_model::WrapPolygon::default_rect_21600);
+            assert_eq!(anchor.wrap_polygon, expected);
+        }
+    }
+
     #[test]
     fn preserves_relative_alignment_for_paragraph_level_float() {
         let manuscript = image_example(&format!("<uof:数据>{IMAGE}</uof:数据>"))

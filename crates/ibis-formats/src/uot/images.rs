@@ -6,7 +6,7 @@ use std::path::Path;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ibis_doc_model::{
     Emu, EmuRect, EmuSize, FloatingAnchor, FlowRunKind, MediaFormat, MediaId, Picture,
-    Presentation, Shape, ShapeKind,
+    Presentation, Shape, ShapeKind, WrapPoint, WrapPolygon,
 };
 use roxmltree::Node;
 
@@ -101,7 +101,7 @@ impl<'xml, 'input, 'path> Images<'xml, 'input, 'path> {
             media
         }?;
         if anchor.attribute((WORD, "类型")) == Some("normal") {
-            let floating = self.floating_anchor(properties);
+            let floating = self.floating_anchor(properties, size);
             let mut shape = Shape::new(
                 presentation.new_shape_id(),
                 EmuRect::new(
@@ -129,7 +129,7 @@ impl<'xml, 'input, 'path> Images<'xml, 'input, 'path> {
             .then_some(emu as Emu)
     }
 
-    fn floating_anchor(&self, properties: Node<'_, '_>) -> FloatingAnchor {
+    fn floating_anchor(&self, properties: Node<'_, '_>, size: EmuSize) -> FloatingAnchor {
         let position = word_child(properties, "位置");
         let h = position.and_then(|node| word_child(node, "水平"));
         let v = position.and_then(|node| word_child(node, "垂直"));
@@ -181,6 +181,10 @@ impl<'xml, 'input, 'path> Images<'xml, 'input, 'path> {
             ),
             _ => None,
         };
+        let wrap_polygon = wrapping
+            .filter(|_| matches!(wrap, "tight" | "through"))
+            .and_then(|node| node.attribute((WORD, "绕排顶点")))
+            .and_then(|vertices| self.wrap_polygon(vertices, size));
         let margins = word_child(properties, "边距");
         let distance = |side| {
             margins
@@ -205,6 +209,7 @@ impl<'xml, 'input, 'path> Images<'xml, 'input, 'path> {
             relative_v: relative_v.to_owned(),
             wrap: wrap.to_owned(),
             wrap_text,
+            wrap_polygon,
             behind_doc: mode == Some("behindtext"),
             locked: flag("锁定").unwrap_or(false),
             allow_overlap: flag("允许重叠").unwrap_or(true),
@@ -214,6 +219,47 @@ impl<'xml, 'input, 'path> Images<'xml, 'input, 'path> {
             dist_r: distance("右"),
             ..Default::default()
         }
+    }
+
+    /// GB/T 20916-2007 §5.2.318 stores alternating X and Y in a string.
+    /// Interpret the values in the anchor's local document units and scale each
+    /// axis to DrawingML's 21600 × 21600 wrap coordinate space.
+    fn wrap_polygon(&self, vertices: &str, size: EmuSize) -> Option<WrapPolygon> {
+        const MAX_VERTICES: usize = 1024;
+
+        let normalize = |value: &str, extent: Emu| {
+            let value = value.parse::<f64>().ok()?;
+            let coordinate = (value * self.emu_per_unit * 21_600.0 / extent as f64).round();
+            (f64::from(i32::MIN)..=f64::from(i32::MAX))
+                .contains(&coordinate)
+                .then_some(coordinate as i64)
+        };
+        let mut values = vertices.split_ascii_whitespace();
+        let mut points = Vec::new();
+        while let Some(x) = values.next() {
+            if points.len() == MAX_VERTICES {
+                return None;
+            }
+            points.push(WrapPoint::new(
+                normalize(x, size.width)?,
+                normalize(values.next()?, size.height)?,
+            ));
+        }
+        let first = *points.first()?;
+        if points.last() != Some(&first) {
+            points.push(first);
+        }
+        let area: i128 = points
+            .windows(2)
+            .map(|edge| {
+                let [from, to] = [edge[0], edge[1]];
+                i128::from(from.x) * i128::from(to.y) - i128::from(to.x) * i128::from(from.y)
+            })
+            .sum();
+        if area == 0 {
+            return None;
+        }
+        WrapPolygon::from_points(&points, true)
     }
 
     fn read(&self, object: Node<'_, '_>) -> Option<(MediaFormat, Vec<u8>)> {
