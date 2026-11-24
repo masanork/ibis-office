@@ -6091,6 +6091,7 @@ dependencies = [
  "ibis-pdf",
  "image",
  "roxmltree 0.21.1",
+ "tiny-skia",
  "unicode-linebreak",
 ]
 

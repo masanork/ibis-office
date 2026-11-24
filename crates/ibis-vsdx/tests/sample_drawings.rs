@@ -255,3 +255,66 @@ fn embedded_icons_keep_their_pixels_positions_and_reused_relationship() {
     assert_ne!(icons[2].0, icons[3].0);
     assert_ne!(icons[0].1, icons[1].1);
 }
+
+#[test]
+fn rotated_embedded_icon_keeps_its_center_and_transparent_corners() {
+    use ibis_ooxml::zip::{Archive, EntryMeta, Writer};
+
+    let input = Archive::new(
+        include_bytes!("fixtures/09-embedded-media-icons.vsdx")
+            .as_slice()
+            .into(),
+    )
+    .unwrap();
+    let mut zip = Writer::new();
+    for entry in input
+        .entries()
+        .iter()
+        .filter(|entry| !entry.name.ends_with('/'))
+    {
+        let mut bytes = input.read(entry).unwrap();
+        if entry.name == "visio/pages/page1.xml" {
+            let marker = r#"<Shape ID="3" NameU="Shape3" LineStyle="0" FillStyle="0" TextStyle="0" Type="Foreign">"#;
+            let page = String::from_utf8(bytes).unwrap();
+            assert!(page.contains(marker));
+            bytes = page
+                .replacen(
+                    marker,
+                    &format!(
+                        r#"{marker}<Cell N="Angle" V="{}"/>"#,
+                        std::f64::consts::FRAC_PI_4
+                    ),
+                    1,
+                )
+                .into_bytes();
+        }
+        zip.add(&entry.name, EntryMeta::new(), &bytes).unwrap();
+    }
+    let document = VsdxContainer::from_bytes(zip.finish().unwrap().into()).unwrap();
+    let scene = document.interpret_page_scene(0).unwrap();
+    let icon = scene
+        .display_list
+        .iter()
+        .find(|cmd| matches!(cmd, DisplayCmd::DrawImage { .. }));
+    let Some(DisplayCmd::DrawImage {
+        bounds,
+        width,
+        height,
+        rgba,
+    }) = icon
+    else {
+        panic!("the rotated image must still appear on the page");
+    };
+    assert_eq!((*width, *height), (159, 159));
+    assert!(near((bounds.x0 + bounds.x1) / 2.0, 0.718504 * 72.0));
+    assert!(near(
+        (bounds.y0 + bounds.y1) / 2.0,
+        scene.info.crop_box.height() - 1.043307 * 72.0
+    ));
+    assert!(near(
+        bounds.width(),
+        0.551181 * 72.0 * std::f32::consts::SQRT_2
+    ));
+    assert_eq!(rgba[3], 0);
+    assert!(rgba.chunks_exact(4).any(|pixel| pixel[3] == 255));
+}
