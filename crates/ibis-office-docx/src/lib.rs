@@ -886,6 +886,9 @@ impl FormatEditor for Document {
         if extension.eq_ignore_ascii_case("hwp") || extension.eq_ignore_ascii_case("hwpx") {
             return Some(Err("HWP・HWPX の編集結果は .docx 形式で保存してください".into()));
         }
+        if extension.to_str().is_some_and(ibis_formats::wpd::is_extension) {
+            return Some(Err("WordPerfect 文書の編集結果は .docx 形式で保存してください".into()));
+        }
         if extension.eq_ignore_ascii_case("odt") {
             // Saved, the file's password encrypts it; a copy is left as it is (as the shell did before the formats were cut apart).
             return Some(ibis_odf::export_docx_to_odt(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));

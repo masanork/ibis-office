@@ -93,7 +93,7 @@ pub(crate) fn open_document_bytes(
     let extension = virtual_path.extension().and_then(|ext| ext.to_str());
     let external_document_format = DocxConvertFormat::from_path(virtual_path);
     let editable_import = EditableImport::detect(extension, data).filter(|format| {
-        matches!(format, EditableImport::Hancom(_) | EditableImport::Uot)
+        matches!(format, EditableImport::Hancom(_) | EditableImport::Uot | EditableImport::WordPerfect)
             || matches!(external_document_format, None | Some(DocxConvertFormat::Odt))
     });
 
@@ -349,6 +349,7 @@ pub(crate) enum EditableImport {
     Hancom(ibis_formats::hwp::Format),
     OpenDocument(ibis_odf::Format),
     Uot,
+    WordPerfect,
 }
 
 impl EditableImport {
@@ -358,6 +359,9 @@ impl EditableImport {
         }
         if extension.is_some_and(ibis_formats::uot::is_extension) || ibis_formats::uot::is_uot(data) {
             return Some(Self::Uot);
+        }
+        if extension.is_some_and(ibis_formats::wpd::is_extension) || ibis_formats::wpd::is_wpd(data) {
+            return Some(Self::WordPerfect);
         }
         // A text-document extension also routes malformed input to its importer.
         if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("odt") || ext.eq_ignore_ascii_case("ott")) {
@@ -370,13 +374,14 @@ impl EditableImport {
         match self {
             Self::Hancom(format) => format.open(data),
             Self::Uot => ibis_formats::uot::open(data),
+            Self::WordPerfect => ibis_formats::wpd::open(data),
             Self::OpenDocument(format) => ibis_formats::open(format.to_ooxml(data)?),
         }
     }
 
     pub(crate) fn save_extension(self) -> &'static str {
         match self {
-            Self::Hancom(_) | Self::Uot | Self::OpenDocument(ibis_odf::Format::Text) => "docx",
+            Self::Hancom(_) | Self::Uot | Self::WordPerfect | Self::OpenDocument(ibis_odf::Format::Text) => "docx",
             Self::OpenDocument(ibis_odf::Format::Spreadsheet) => "xlsx",
             Self::OpenDocument(ibis_odf::Format::Presentation) => "pptx",
         }

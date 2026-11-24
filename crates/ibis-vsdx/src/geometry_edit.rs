@@ -542,10 +542,24 @@ fn editable_route<'a, 'i>(
     let master = master_for(shape, masters, 0);
     let signed = cell(shape, "Width")?.attribute("F") == Some("GUARD(EndX-BeginX)")
         && cell(shape, "Height")?.attribute("F") == Some("GUARD(EndY-BeginY)");
-    let inherited_geometry = if signed {
-        if ![begin, end_link]
-            .into_iter()
-            .all(|link| fixed_row(link).is_some())
+    let guarded_horizontal = flat[1]
+        && !flat[0]
+        && cell(shape, "Width")?.attribute("F") == Some("GUARD(EndX-BeginX)")
+        && cell(shape, "Height")?
+            .attribute("F")
+            .and_then(|formula| {
+                formula
+                    .strip_prefix("GUARD(")?
+                    .strip_suffix("DL)")?
+                    .parse::<f64>()
+                    .ok()
+            })
+            .is_some_and(|constant| close(constant, height));
+    let inherited_geometry = if signed || guarded_horizontal {
+        if signed
+            && ![begin, end_link]
+                .into_iter()
+                .all(|link| fixed_row(link).is_some())
         {
             return Err(unsupported());
         }
@@ -595,7 +609,7 @@ fn editable_route<'a, 'i>(
             cell(shape, key)
                 .is_ok_and(|c| c.attribute("F").is_some() || value(shape, key).ok() != Some(0.0))
         })
-        || !signed
+        || inherited_geometry.is_none()
             && ["PinX", "PinY", "Width", "Height", "LocPinX", "LocPinY"]
                 .into_iter()
                 .any(|key| cell(shape, key).is_ok_and(|c| c.attribute("F").is_some()))
@@ -640,7 +654,7 @@ fn editable_route<'a, 'i>(
             _ => return Err(unsupported()),
         };
         let cells = [cell(row, "X").ok(), cell(row, "Y").ok()];
-        if signed {
+        if inherited_geometry.is_some() {
             let index = id(row, "IX").ok_or_else(unsupported)? as usize;
             if index != last_index + 1 || kind {
                 return Err(unsupported());
@@ -753,6 +767,9 @@ fn editable_route<'a, 'i>(
             }
         })
     };
+    if guarded_horizontal && (!arcs.is_empty() || bows.is_empty()) {
+        return Err(unsupported());
+    }
     let first = first.ok_or_else(unsupported)?;
     let last = previous.ok_or_else(unsupported)?;
     let expected_first = if signed { [0.0, 0.0] } else { locally(start) };
@@ -838,6 +855,13 @@ impl EditableRoute<'_, '_> {
             ("LocPinY", height / 2.0),
         ] {
             number_patch(patches, cell(self.shape, name)?, value)?;
+        }
+        if !self.bows.is_empty()
+            && let Ok(pin) = cell(self.shape, "TxtPinX")
+            && matches!(pin.attribute("F"), None | Some("Inh"))
+            && close(value(self.shape, "TxtPinX")?, self.size[0] / 2.0)
+        {
+            number_patch(patches, pin, width / 2.0)?;
         }
         for &([x, y], [local_x, local_y]) in &self.vertices {
             if let Some(x) = x {

@@ -62,3 +62,20 @@ flowchart to verify reconnection and save/reopen.
 VSDX_VISIO_ARC_SAMPLE=/path/to/modified.vsdx \
 cargo test --locked -p ibis-vsdx --test visio_arc -- --ignored
 ```
+
+## Glued circular line jump saved by Microsoft Visio
+
+The [Data Warehouse & Analytics Platform drawing](https://github.com/bhdicaire/visioStencils/blob/f87f1f5b12f867149de92894778c9c056eb68340/Documents/IT%20Vendors/Data%20Warehouse%20%26%20Analytics%20Platform.vsdx)
+reports Microsoft Visio 16 in its application properties. Its SHA-256 is
+`b634396dc794d1e797f882e8e8429317b6f050fb499cfa0bb668fb14a05e2bf0`.
+Connector 614 has an `ArcTo` row and glue records for both endpoints. The
+test attaches its end to shape 253 without preparing or modifying the input,
+saves a copy, and verifies the arc, endpoints, and glue on reopening.
+
+```sh
+VSDX_VISIO_GLUED_ARC_SAMPLE=/path/to/original.vsdx \
+VSDX_VISIO_GLUED_ARC_OUTPUT=/path/to/reconnected.vsdx \
+cargo test --locked -p ibis-vsdx --test visio_arc reconnects_a_circular -- --ignored
+```
+
+Omit `VSDX_VISIO_GLUED_ARC_OUTPUT` to use and remove a temporary copy.
