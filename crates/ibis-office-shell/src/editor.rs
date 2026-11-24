@@ -646,6 +646,8 @@ pub struct SlideEditor {
     /// Whether this document is opened in read-only / viewing mode (--read-only or ?view=1).
     pub read_only: bool,
     vsdx_viewer: bool,
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) visio_draft: bool,
     #[cfg(any(target_os = "android", target_family = "wasm"))]
     pub(crate) phone_editing: bool,
     #[cfg(any(target_os = "android", target_family = "wasm"))]
@@ -1003,6 +1005,8 @@ impl SlideEditor {
             #[cfg(any(target_os = "android", target_family = "wasm"))]
             phone_view_only: false,
             vsdx_viewer,
+            #[cfg(not(target_family = "wasm"))]
+            visio_draft: false,
             standard_read_only: false,
             structured_preview: false,
             #[cfg(not(target_family = "wasm"))]
@@ -1366,7 +1370,7 @@ impl SlideEditor {
         self.vsdx_viewer = presentation.pdf_bytes.as_deref().is_some_and(ibis_vsdx::is_vsdx);
         self.structured_preview = false;
         #[cfg(not(target_family = "wasm"))]
-        { self.bom_source = None; }
+        { self.bom_source = None; self.visio_draft = false; }
         #[cfg(target_family = "wasm")]
         { self.web_law_source = None; }
         #[cfg(any(target_os = "android", target_family = "wasm"))]

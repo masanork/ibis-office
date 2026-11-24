@@ -1833,7 +1833,7 @@ structured.row-schema-contains-few	Too few array items match the condition
 structured.row-schema-contains-many	Too many array items match the condition
 file.new.visio-draft	New Diagram (for Visio)
 file.export.vsdx	Visio Drawing (.vsdx)
-vsdx.draft-filename	Drawing.pptx
+vsdx.draft-filename	Drawing.vsdx
 vsdx.draft-unsupported	Visio export supports one page of rectangles, ellipses, diamonds, and straight connectors attached at both ends.
 vsdx.export-extension	Use the .vsdx file extension.
 vsdx.exported	Exported the Visio drawing.
@@ -1871,3 +1871,4 @@ structured.schema-edit-output	Choose a different .json file for the edited schem
 structured.schema-edit-saved	Saved the schema copy.
 structured.schema-edit-save-error	Could not save the schema copy. {error}
 structured.schema-choose	Choose JSON Schema…
+file.save-format.vsdx	Visio Drawing (.vsdx)
