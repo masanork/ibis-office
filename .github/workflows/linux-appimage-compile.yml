@@ -4,6 +4,10 @@
 name: Linux AppImage compilation
 on:
   workflow_call:
+    outputs:
+      appimage_artifact_id:
+        description: Immutable artifact ID of this run's Linux AppImage
+        value: ${{ jobs.linux.outputs.appimage_artifact_id }}
 
 permissions:
   contents: read
@@ -18,6 +22,8 @@ jobs:
     name: Linux x64 AppImage
     permissions:
       contents: read
+    outputs:
+      appimage_artifact_id: ${{ steps.upload.outputs.artifact-id }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     container:
@@ -186,7 +192,8 @@ jobs:
           done
       - name: Hash deliverables
         run: python3 scripts/desktop-ci-info.py artifacts ci-artifact
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-ci-linux-x64
           path: ci-artifact/

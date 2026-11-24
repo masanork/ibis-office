@@ -4,6 +4,13 @@
 name: Isolated Linux AppImage builder
 on:
   workflow_call:
+    outputs:
+      appimage_artifact_id:
+        description: Immutable artifact ID of this run's Linux AppImage
+        value: ${{ jobs.linux.outputs.appimage_artifact_id }}
+      provenance_artifact_id:
+        description: Immutable artifact ID of this run's provenance bundle
+        value: ${{ jobs.attest-linux.outputs.provenance_artifact_id }}
 
 permissions:
   contents: read
@@ -29,10 +36,16 @@ jobs:
       attestations: write
       contents: read
       id-token: write
+    outputs:
+      provenance_artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
+      - name: Require the build's immutable artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.linux.outputs.appimage_artifact_id }}
+        run: '[[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: desktop-ci-linux-x64
+          artifact-ids: ${{ needs.linux.outputs.appimage_artifact_id }}
           path: linux
       - name: Check the same-run AppImage subject
         run: |
@@ -49,7 +62,8 @@ jobs:
         env:
           ATTESTATION_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
         run: cp "$ATTESTATION_BUNDLE" desktop-linux-x64-ci.AppImage.intoto.jsonl
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-ci-linux-x64-provenance
           path: desktop-linux-x64-ci.AppImage.intoto.jsonl
