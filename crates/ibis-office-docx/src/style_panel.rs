@@ -203,7 +203,7 @@ impl SlideEditor {
             cx.notify();
         });
         let standard_colors: Vec<_> = super::toolbar::COLORS.iter().map(|&(id, label, rgb)| (crate::shell::i18n::text(label), ibis_doc_model::Rgb(rgb), id)).collect();
-        let color_entries = crate::shell::color_palette::simple_palette(None, Some(&super::toolbar::THEME_10), &standard_colors, current_color, pick);
+        let color_entries = crate::shell::color_palette::simple_palette(None, Some(&ibis_formats::workbook_theme_colors_from_slice(&self.presentation().theme_colors)), &standard_colors, current_color, pick);
         let weak = cx.weak_entity();
         // Size and spacing (pt): applied by 適用 only (Enter does not apply them), so ▲▼ only change the number.
         const FONT_STEPS: &[f32] = &[8.0, 9.0, 10.0, 10.5, 11.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 36.0, 48.0, 72.0];

@@ -42,20 +42,6 @@ pub(super) const COLORS: &[(&str, &str, u32)] = &[
     ("docx.color.purple", "_shell.purple", 0x7030a0),
 ];
 
-/// Office theme base 10 colors (background 1, text 1, background 2, text 2, accents 1–6).
-pub(super) const THEME_10: [Rgb; 10] = [
-    Rgb(0xffffff),
-    Rgb(0x000000),
-    Rgb(0xe7e6e6),
-    Rgb(0x44546a),
-    Rgb(0x4472c4),
-    Rgb(0xed7d31),
-    Rgb(0xa5a5a5),
-    Rgb(0xffc000),
-    Rgb(0x5b9bd5),
-    Rgb(0x70ad47),
-];
-
 /// Office theme colors: (id, label, RGB, theme_color_name, theme_tint, theme_shade).
 pub(super) const THEME_COLORS: &[(&str, &str, u32, &str, Option<&str>, Option<&str>)] = &[
     ("docx.theme-color.text1", "docx.toolbar.text-1-black", 0x000000, "text1", None, None),
@@ -454,10 +440,12 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
         // Word's order: background 1, text 1, background 2, text 2, accents 1 to 6.
         let order = ["docx.theme-color.bg1", "docx.theme-color.text1", "docx.theme-color.bg2", "docx.theme-color.text2", "docx.theme-color.accent1", "docx.theme-color.accent2", "docx.theme-color.accent3", "docx.theme-color.accent4", "docx.theme-color.accent5", "docx.theme-color.accent6"];
         let base: Vec<&(&str, &str, u32, &str, Option<&str>, Option<&str>)> = order.iter().filter_map(|id| THEME_COLORS.iter().find(|t| t.0 == *id)).collect();
+        let theme_colors = ibis_formats::workbook_theme_colors_from_slice(&editor.presentation().theme_colors);
         let mut theme: Vec<Vec<Swatch>> = Vec::new();
         theme.push(
             base.iter()
-                .map(|&&(item_id, label, rgb_val, theme_name, tint, shade)| {
+                .enumerate().map(|(index, &&(item_id, label, _, theme_name, tint, shade))| {
+                    let rgb_val = theme_colors[index].0;
                     let checked = cur_theme_color.as_ref().is_some_and(|tc| tc.name == theme_name && tc.tint.as_deref() == tint && tc.shade.as_deref() == shade);
                     let tc = ibis_doc_model::FlowThemeColor::new(theme_name, tint, shade);
                     Swatch { rgb: Rgb(rgb_val), item: MenuItem::new(item_id, crate::shell::i18n::text(label)).checked(checked).on(move |this, _, cx| this.set_theme_color(Rgb(rgb_val), tc.clone(), cx)) }
@@ -467,7 +455,7 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
         if base.len() == 10 {
             for row in 1..6 {
                 theme.push((0..10).map(|i| {
-                    let rgb = ibis_formats::tinted(Rgb(base[i].2), THEME_TINTS[i][row]);
+                    let rgb = ibis_formats::tinted(theme_colors[i], THEME_TINTS[i][row]);
                     Swatch::new(rgb, format!("#{:06X}", rgb.0), current == Some(rgb), &pick)
                 }).collect());
             }
@@ -661,7 +649,7 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
                 .on(move |this, window, cx| {
                     this.apply_selected_shapes_fill(None, window, cx);
                 });
-            let fill_menu = crate::shell::color_palette::simple_palette(Some(fill_none), Some(&THEME_10), &std_colors, cur_fill, fill_pick);
+            let fill_menu = crate::shell::color_palette::simple_palette(Some(fill_none), Some(&ibis_formats::workbook_theme_colors_from_slice(&editor.presentation().theme_colors)), &std_colors, cur_fill, fill_pick);
 
             let line_pick: crate::shell::color_palette::PickColor = std::rc::Rc::new(move |this, chosen, window, cx| {
                 if let Some(c) = chosen {
@@ -674,7 +662,7 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
                 .on(move |this, window, cx| {
                     this.apply_selected_shapes_line_color(None, window, cx);
                 });
-            let line_menu = crate::shell::color_palette::simple_palette(Some(line_none), Some(&THEME_10), &std_colors, cur_line, line_pick);
+            let line_menu = crate::shell::color_palette::simple_palette(Some(line_none), Some(&ibis_formats::workbook_theme_colors_from_slice(&editor.presentation().theme_colors)), &std_colors, cur_line, line_pick);
             let mut items = vec![sep()];
             if !is_line {
                 items.push(
@@ -734,7 +722,7 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
         let fill_none = MenuItem::tr("docx.fill.none")
             .icon("format_color_reset")
             .on(|this, _, cx| this.edit_table(|r, c, _| ibis_doc_model::TableEdit::Shading { cells: vec![(r, c)], color: None }, cx));
-        let fills = crate::shell::color_palette::simple_palette(Some(fill_none), Some(&THEME_10), &fill_swatches, None, fill_pick);
+        let fills = crate::shell::color_palette::simple_palette(Some(fill_none), Some(&ibis_formats::workbook_theme_colors_from_slice(&editor.presentation().theme_colors)), &fill_swatches, None, fill_pick);
         let anchor = editor.caret_cell_anchor().unwrap_or(ibis_doc_model::CellAnchor::Top);
         let valigns = vec![
             MenuItem::tr("docx.cell.valign-top")
@@ -2038,7 +2026,7 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
             }
         });
         let current = pic_stroke.as_ref().map(|s| s.color.rgb);
-        let mut theme = theme_rows(&THEME_10, &pick, current);
+        let mut theme = theme_rows(&ibis_formats::workbook_theme_colors_from_slice(&_editor.presentation().theme_colors), &pick, current);
         if !has_pic {
             for s in theme.iter_mut().flatten() {
                 s.item = s.item.clone().disabled(true);
@@ -2373,7 +2361,7 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
                 use crate::shell::color_palette::{Palette, PickColor, Swatch, theme_rows};
                 let pick: PickColor = std::rc::Rc::new(|this, c, _, cx| this.set_underline_color(c, cx));
                 let cur_u = text_style.as_ref().and_then(|s| s.underline_color);
-                let mut theme = theme_rows(&THEME_10, &pick, cur_u);
+                let mut theme = theme_rows(&ibis_formats::workbook_theme_colors_from_slice(&_editor.presentation().theme_colors), &pick, cur_u);
                 if !editing {
                     for s in theme.iter_mut().flatten() {
                         s.item = s.item.clone().disabled(true);
@@ -2430,10 +2418,12 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
                 ];
                 let base: Vec<&(&str, &str, u32, &str, Option<&str>, Option<&str>)> =
                     order.iter().filter_map(|id| THEME_COLORS.iter().find(|t| t.0 == *id)).collect();
+                let theme_colors = ibis_formats::workbook_theme_colors_from_slice(&_editor.presentation().theme_colors);
                 let mut theme: Vec<Vec<Swatch>> = Vec::new();
                 theme.push(
                     base.iter()
-                        .map(|&&(item_id, label, rgb_val, theme_name, tint, shade)| {
+                        .enumerate().map(|(index, &&(item_id, label, _, theme_name, tint, shade))| {
+                            let rgb_val = theme_colors[index].0;
                             let checked = cur_theme_color
                                 .as_ref()
                                 .is_some_and(|tc| tc.name == theme_name && tc.tint.as_deref() == tint && tc.shade.as_deref() == shade);
@@ -2453,7 +2443,7 @@ pub(crate) fn menus(_editor: &SlideEditor, menus: &mut Menus) {
                         theme.push(
                             (0..10)
                                 .map(|i| {
-                                    let rgb = ibis_formats::tinted(Rgb(base[i].2), THEME_TINTS[i][row]);
+                                    let rgb = ibis_formats::tinted(theme_colors[i], THEME_TINTS[i][row]);
                                     let mut sw = Swatch::new(rgb, format!("#{:06X}", rgb.0), current == Some(rgb), &pick);
                                     sw.item = sw.item.disabled(!editing);
                                     sw

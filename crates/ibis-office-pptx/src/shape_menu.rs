@@ -402,7 +402,7 @@ impl SlideEditor {
                 Submenu::tr("_shell.border-color", "border_color", crate::chrome::shape_stroke_color_items(self, false)).into(),
                 Submenu::tr("pptx.chrome.border-weight", "line_weight", crate::chrome::shape_stroke_width_items(self)).into(),
                 Submenu::tr("pptx.chrome.border-style", "line_style", crate::chrome::shape_stroke_style_items(self)).into(),
-                Submenu::tr("table.borders", "border_all", crate::chrome::table_borders_menu_items(true)).into(),
+                Submenu::tr("table.borders", "border_all", crate::chrome::table_borders_menu_items(self, true)).into(),
                 Submenu::tr("pptx.table-style", "grid_view", crate::chrome::table_style_items(self, true)).into(),
                 Submenu::tr("pptx.table-style-options", "table", crate::chrome::table_style_option_items(self, true)).into(),
             ]);
