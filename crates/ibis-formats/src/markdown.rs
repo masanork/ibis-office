@@ -1446,6 +1446,34 @@ impl<'a> ParseContext<'a> {
         id
     }
 
+    fn code_language_style(&mut self, info: &str) -> Option<String> {
+        let mut token = info.split_whitespace().next()?.chars().peekable();
+        let mut language = String::new();
+        while let Some(ch) = token.next() {
+            if ch == '\\' && token.peek().is_some_and(char::is_ascii_punctuation) {
+                language.extend(token.next());
+            } else {
+                language.push(ch);
+            }
+        }
+        if !is_code_language(&language) {
+            return None;
+        }
+        use std::fmt::Write;
+        let mut id = MARKDOWN_CODE_STYLE_PREFIX.to_owned();
+        for byte in language.bytes() {
+            let _ = write!(id, "{byte:02x}");
+        }
+        self.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
+            name: format!("Markdown code ({language})"),
+            kind: StyleKind::Paragraph,
+            based_on: self.styles.default_paragraph.clone(),
+            next: self.styles.default_paragraph.clone(),
+            ..FlowStyle::default()
+        });
+        Some(id)
+    }
+
     fn ensure_bullet_list(&mut self) -> u32 {
         if let Some(id) = self.bullet_num_id {
             return id;
@@ -1464,6 +1492,28 @@ impl<'a> ParseContext<'a> {
         self.styles.numbering = numbering;
         self.ordered_num_id = Some(num_id);
         num_id
+    }
+
+    fn ordered_list_for(&mut self, item: &ListMarker<'_>, blocks: &[Block]) -> u32 {
+        let default = self.ensure_ordered_list();
+        if item.level != 0 {
+            return default;
+        }
+        let previous = blocks.iter().rev().map_while(|block| match block {
+            Block::Paragraph(paragraph) => paragraph.list,
+            _ => None,
+        }).find(|list| list.level == 0);
+        if let Some(list) = previous.filter(|list| {
+            self.styles.numbering.level(list.num_id, 0).is_some_and(|level| level.format != "bullet")
+        }) {
+            return list.num_id;
+        }
+        let instances = &mut self.styles.numbering.nums;
+        let mut list = instances[&default].clone();
+        list.start_overrides.insert(0, item.start);
+        let id = instances.keys().next_back().copied().unwrap_or(0) + 1;
+        instances.insert(id, list);
+        id
     }
 
     fn footnote_id_for(&mut self, label: &str) -> u32 {
@@ -2689,9 +2739,23 @@ fn parse_blocks(
         // Fenced code / math / chart block: ```lang ... ```
         if let Some((fence_marker, fence_info)) = opening_fence(trimmed) {
             let lang = fence_info.trim().to_ascii_lowercase();
+            let ordinary = !lang.starts_with('{')
+                && !matches!(lang.split_whitespace().next(), Some("math" | "latex" | "tex" | "chart" | "mermaid"));
+            let indent = raw.bytes().take_while(|&byte| byte == b' ').count();
+            let commonmark_indent = ordinary && indent <= 3 && !raw[indent..].starts_with('\t');
             i += 1;
             let start = i;
-            while i < lines.len() && !closes_fence(lines[i].trim(), fence_marker) {
+            while i < lines.len() {
+                let line = lines[i];
+                let candidate = if commonmark_indent {
+                    let unindented = line.trim_start_matches(' ');
+                    if line.len() - unindented.len() <= 3 { unindented } else { line }
+                } else {
+                    line.trim()
+                };
+                if closes_fence(candidate, fence_marker) {
+                    break;
+                }
                 i += 1;
             }
             let content_lines = &lines[start..i];
@@ -2716,7 +2780,14 @@ fn parse_blocks(
                 blocks.push(build_display_math_block(&latex, Some(label), ctx));
                 continue;
             }
-            let content = content_lines.join("\n");
+            let content = if commonmark_indent && indent != 0 {
+                content_lines.iter().map(|line| {
+                    let spaces = line.bytes().take(indent).take_while(|&byte| byte == b' ').count();
+                    &line[spaces..]
+                }).collect::<Vec<_>>().join("\n")
+            } else {
+                content_lines.join("\n")
+            };
             match lang.split_whitespace().next().unwrap_or("") {
                 "math" | "latex" | "tex" => {
                     blocks.push(build_display_math_block(&content, None, ctx));
@@ -2728,7 +2799,14 @@ fn parse_blocks(
                     blocks.push(build_mermaid_block(&content, ctx)?);
                 }
                 _ => {
-                    blocks.push(build_code_block(&content, ctx));
+                    let mut block = build_code_block(&content, ctx);
+                    if let Block::Paragraph(paragraph) = &mut block
+                        && let Some(style) = ctx.code_language_style(fence_info)
+                    {
+                        paragraph.style = Some(style);
+                        paragraph.resolve(&ctx.styles);
+                    }
+                    blocks.push(block);
                 }
             }
             continue;
@@ -2827,7 +2905,7 @@ fn parse_blocks(
         // Bullet / Ordered / Task List item
         if let Some(item) = parse_list_marker(raw) {
             let num_id = if item.ordered {
-                ctx.ensure_ordered_list()
+                ctx.ordered_list_for(&item, &blocks)
             } else {
                 ctx.ensure_bullet_list()
             };
@@ -2914,11 +2992,12 @@ fn parse_blocks(
             let mut runs = Vec::new();
             let mut para_attrs = BlockAttrs::default();
             for (li, pline) in para_lines.iter().enumerate() {
-                let hard_break = pline.ends_with("  ") || pline.ends_with('\\');
-                let mut content = pline.trim_end();
-                if content.ends_with('\\') {
-                    content = &content[..content.len() - 1];
-                }
+                let has_next_line = li + 1 < para_lines.len();
+                let content = if has_next_line && ends_with_markdown_break_escape(pline) {
+                    &pline[..pline.len() - 1]
+                } else {
+                    pline.trim_end()
+                };
                 let content = content.trim();
                 let content = if li + 1 == para_lines.len() {
                     let (c, a) = strip_trailing_block_attrs(content);
@@ -2929,7 +3008,7 @@ fn parse_blocks(
                 };
                 if li > 0 && !runs.is_empty() {
                     let prev_hard = para_lines[li - 1].ends_with("  ")
-                        || para_lines[li - 1].trim_end().ends_with('\\');
+                        || ends_with_markdown_break_escape(para_lines[li - 1]);
                     if prev_hard {
                         runs.push(FlowRun::new(
                             FlowRunKind::LineBreak,
@@ -2942,7 +3021,6 @@ fn parse_blocks(
                         ));
                     }
                 }
-                let _ = hard_break;
                 runs.extend(parse_inlines(content, ctx, &RunFormat::default()));
             }
             let mut p = FlowParagraph {
@@ -2960,6 +3038,10 @@ fn parse_blocks(
     }
 
     Ok(blocks)
+}
+
+fn ends_with_markdown_break_escape(line: &str) -> bool {
+    line.bytes().rev().take_while(|&byte| byte == b'\\').count() % 2 == 1
 }
 
 #[derive(Default)]
@@ -3044,7 +3126,7 @@ fn is_horizontal_rule(s: &str) -> bool {
     if s.len() < 3 {
         return false;
     }
-    let chars: Vec<char> = s.chars().filter(|&c| c != ' ').collect();
+    let chars: Vec<char> = s.chars().filter(|&c| !matches!(c, ' ' | '\t')).collect();
     if chars.len() < 3 {
         return false;
     }
@@ -3059,9 +3141,15 @@ fn parse_atx_heading(s: &str) -> Option<(u8, &str)> {
         if rest.is_empty() {
             return Some((hashes as u8, ""));
         }
-        if let Some(stripped) = rest.strip_prefix(' ') {
-            let trimmed = stripped.trim().trim_end_matches('#').trim();
-            return Some((hashes as u8, trimmed));
+        if let Some(stripped) = rest.strip_prefix([' ', '\t']) {
+            let trimmed = stripped.trim();
+            let before_hashes = trimmed.trim_end_matches('#');
+            let text = if before_hashes.is_empty() || before_hashes.ends_with([' ', '\t']) {
+                before_hashes.trim_end()
+            } else {
+                trimmed
+            };
+            return Some((hashes as u8, text));
         }
     }
     None
@@ -3069,6 +3157,7 @@ fn parse_atx_heading(s: &str) -> Option<(u8, &str)> {
 
 struct ListMarker<'a> {
     ordered: bool,
+    start: u32,
     level: u8,
     task_checked: Option<bool>,
     text: &'a str,
@@ -3102,6 +3191,7 @@ fn parse_list_marker(raw_line: &str) -> Option<ListMarker<'_>> {
         if let Some(task_rest) = after_bullet.strip_prefix("[ ] ") {
             return Some(ListMarker {
                 ordered: false,
+                start: 1,
                 level,
                 task_checked: Some(false),
                 text: task_rest,
@@ -3113,6 +3203,7 @@ fn parse_list_marker(raw_line: &str) -> Option<ListMarker<'_>> {
         {
             return Some(ListMarker {
                 ordered: false,
+                start: 1,
                 level,
                 task_checked: Some(true),
                 text: task_rest,
@@ -3120,6 +3211,7 @@ fn parse_list_marker(raw_line: &str) -> Option<ListMarker<'_>> {
         }
         return Some(ListMarker {
             ordered: false,
+            start: 1,
             level,
             task_checked: None,
             text: after_bullet,
@@ -3136,6 +3228,7 @@ fn parse_list_marker(raw_line: &str) -> Option<ListMarker<'_>> {
         {
             return Some(ListMarker {
                 ordered: true,
+                start: rest[..digits].parse().ok().filter(|n| (1..=999_999_999).contains(n)).unwrap_or(1),
                 level,
                 task_checked: None,
                 text: after_dot,
@@ -3144,6 +3237,24 @@ fn parse_list_marker(raw_line: &str) -> Option<ListMarker<'_>> {
     }
 
     None
+}
+
+const MARKDOWN_CODE_STYLE_PREFIX: &str = "IbisMarkdownCode";
+
+fn is_code_language(language: &str) -> bool {
+    !language.is_empty() && language.len() <= 32
+        && language.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'+' | b'#' | b';'))
+}
+
+fn markdown_code_language(style: Option<&str>) -> Option<String> {
+    let encoded = style?.strip_prefix(MARKDOWN_CODE_STYLE_PREFIX)?;
+    if encoded.is_empty() || encoded.len() > 64 || !encoded.is_ascii() || encoded.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..encoded.len()).step_by(2)
+        .map(|i| u8::from_str_radix(&encoded[i..i + 2], 16).ok()).collect::<Option<Vec<_>>>()?;
+    let language = String::from_utf8(bytes).ok()?;
+    is_code_language(&language).then_some(language)
 }
 
 fn build_code_block(code: &str, ctx: &mut ParseContext<'_>) -> Block {
@@ -6816,9 +6927,11 @@ fn serialize_paragraph(
             out.push_str(&code);
             out.push_str("\n\n");
         } else {
-            out.push_str("```\n");
-            out.push_str(&code);
-            out.push_str("\n```\n\n");
+            if !p.runs.is_empty() {
+                code.push('\n');
+            }
+            let language = markdown_code_language(p.style.as_deref()).unwrap_or_default();
+            write_named_fence(&language, &code, out);
         }
         return;
     }
@@ -6915,7 +7028,13 @@ fn serialize_paragraph(
             .numbering
             .level(num_id, level)
             .is_some_and(|lvl| lvl.format != "bullet");
-        let marker = if is_ordered { "1." } else { "-" };
+        let marker = if is_ordered {
+            let start = doc.styles.numbering.nums.get(&num_id)
+                .and_then(|list| list.start_overrides.get(&level)).copied().unwrap_or(1);
+            format!("{start}.")
+        } else {
+            "-".to_owned()
+        };
         let text = serialize_text();
         out.push_str(&format!("{indent}{marker} {text}{attr_suffix}\n"));
         return;
@@ -7183,7 +7302,7 @@ fn write_named_fence(language: &str, source: &str, out: &mut String) {
     out.push_str(language);
     out.push('\n');
     out.push_str(source);
-    if !source.ends_with('\n') {
+    if !source.is_empty() && !source.ends_with('\n') {
         out.push('\n');
     }
     out.push_str(&marker);
@@ -9913,6 +10032,38 @@ Front caption
         assert!(output.contains("[[#^block]]"), "{output}");
         assert!(output.contains("![[#Details]]"), "{output}");
         assert!(output.contains("[参照](#%E6"), "{output}");
+    }
+
+    #[test]
+    fn markdown_preserves_nondefault_list_start_through_docx() {
+        let source = b"3. Approve\n4. Publish\n\nA break.\n\n7. Review\n8. Archive\n\nAnother break.\n\n1. Reopen\n";
+        let docx = import_markdown_to_docx_bytes(source).unwrap();
+        let opened = crate::read_docx(&docx).unwrap();
+        let doc = opened.flow.as_deref().unwrap();
+        let numbers = ibis_doc_model::flow::list_labels(doc);
+        let labels: Vec<_> = ibis_doc_model::flow_command::all_paragraphs(doc).iter()
+            .filter_map(|paragraph| numbers.get(&paragraph.id).map(String::as_str)).collect();
+        assert_eq!(labels, ["3.", "4.", "7.", "8.", "1."]);
+        let markdown = export_presentation_to_markdown(&opened).unwrap();
+        assert!(markdown.contains("3. Approve"));
+        assert!(markdown.contains("7. Review"));
+    }
+
+    #[test]
+    fn markdown_preserves_literal_heading_hashes_and_fence_contents() {
+        assert_eq!(parse_atx_heading("#\tC#"), Some((1, "C#")));
+        assert_eq!(parse_atx_heading("## Heading ###"), Some((2, "Heading")));
+        assert!(is_horizontal_rule("*\t*\t*"));
+        let source = b"~~~~\n```\n\n~~~~\n";
+        let opened = open_markdown(source.to_vec()).unwrap();
+        let output = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert_eq!(output, "````\n```\n\n````\n");
+        let docx = import_markdown_to_docx_bytes(b"```C++\nreturn 0;\n```\n").unwrap();
+        let reopened = crate::read_docx(&docx).unwrap();
+        assert_eq!(export_presentation_to_markdown(&reopened).unwrap(), "```C++\nreturn 0;\n```\n");
+        let source = b"  ~~~ foo\\+bar\n x\n   y\n    ~~~\n  ~~~\n";
+        let opened = open_markdown(source.to_vec()).unwrap();
+        assert_eq!(export_presentation_to_markdown(&opened.presentation).unwrap(), "```foo+bar\nx\n y\n  ~~~\n```\n");
     }
 
     #[test]

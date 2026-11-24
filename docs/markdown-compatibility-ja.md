@@ -6,7 +6,7 @@ ibisOfficeが受け付ける構文、通常の入出力での挙動、制限と�
 
 | 仕様・実装 | 対応している範囲 | 変換で注意する点 |
 | --- | --- | --- |
-| [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/) | ATX見出し、段落、リスト、引用、強調、リンク、画像、コードなどの基本構文 | 上流テスト一式に対する適合は未検証。入れ子、HTML、参照リンクなどは個々の対応範囲を確認する。 |
+| [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/) | ATX見出し、段落、リスト、引用、強調、リンク、画像、コードなどの基本構文 | 公式例を Markdown の読み込みと書き戻しの回帰検証に使う。入れ子、HTML、参照リンクには既知の差がある。 |
 | [GFM 0.29](https://github.github.com/gfm/) と [GitHubの書式ガイド](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax) | パイプ表、タスクリスト、取り消し線、基本アラート | 表のセル結合やOfficeフィールドはibisOffice拡張。脚注とアラートはGFM形式仕様とは別にGitHubの書式ガイドを参照する。 |
 | [MyST Markdown](https://mystmd.org/guide/syntax-overview) | Word互換の見出し・数式ラベル、表示名付き `{ref}` の同一文書内リンク、コードフェンス・コロンフェンス内の単一段落の基本admonition | コードフェンスとコロンフェンスの図は画像・代替テキスト・単一段落のキャプション・Word互換ラベルを取り込む。自動参照番号、引用、プロジェクトの参照解決は未対応。 |
 | [Obsidian内部リンク](https://obsidian.md/help/links) と [callouts](https://obsidian.md/help/callouts) | 文書内Wikiリンク、開いたフォルダー内の別ファイル・見出しへのWikiリンク、基本callout、原稿からの相対パスで指定した画像埋め込み | Assistantのフォルダー参照は別ノートを名前またはルート基準のパスで引ける。ノート埋め込み、折りたたみは未対応。 |
@@ -35,6 +35,10 @@ Gitワークツリー内のフォルダーでは、Assistantの `git_read` に `
 文書経路で読み込んだ `type` のあるMarkdownでは、YAMLブロックをDOCXのカスタムプロパティに保存します。DOCXのタイトル・説明・キーワードを編集してMarkdownへ戻すと、元の `title`・`description`・`tags` のうち変更した値を反映します。キーワードはカンマ区切りで入力します。未知の入れ子キーとコメントは保持します。複数行にまたがる値やカンマを含む既存タグなど、安全に更新できない値は原稿に残し、Markdown出力の診断にキーを記録します。以前のビルドのDOCXに保存されたYAMLは、従来どおり取り込み時の値を保持します。
 
 ## 検証
+
+CommonMark の公式例と比較する場合は、ibisOffice で読み込んだ文書を Markdown に書き戻し、参照実装の cmark の描画結果を比較する。この比較には読み込みと書き戻しの両方が含まれる。たとえば参照リンクの構文が文字列として残っている場合、cmark が書き戻し後に解決できても、Office の画面でリンクを操作できることは確認できない。
+
+通常の番号付きリストでは先頭項目の番号を保持する。通常のコードフェンスでは、短い言語名（`python` や `C++` など）と本文を保持する。リスト項目内の複数ブロックや引用内の見出しの保持には制限がある。
 
 - `cargo test -p ibis-formats --lib markdown::tests` で構文とOffice変換の回帰を確認する。
 - `cargo test -p ibis-formats --lib okf::tests` で概念の判定とOKFパス規則を確認する。
