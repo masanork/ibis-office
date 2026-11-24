@@ -469,6 +469,7 @@ pub(crate) fn edit_tools() -> Vec<Tool> {
     vec![
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         crate::tools_sqlite::SET_QUERY_REPORT_CHECKS,
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         crate::tools_sqlite::SET_QUERY_REPORT_COMPARISON,
         SET_CELLS, CLEAR_CELLS, SET_FORMAT, crate::tools_chart::tool(), crate::tools_pivot::CREATE_PIVOT, crate::tools_pivot::REFRESH_PIVOT,
         Tool {
