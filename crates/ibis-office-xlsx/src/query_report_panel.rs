@@ -1651,3 +1651,93 @@ pub(crate) fn report_comparison_scenario() {
     assert_eq!(applied["state"], "ready");
     assert_eq!(&applied["evidence"], expected);
 }
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn report_precision_scenario() {
+    use crate::shell::scenario::{Scenario, button_probe};
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("values.csv");
+    let new = dir.path().join("next.csv");
+    let blank = dir.path().join("blank.xlsx");
+    let workbook = dir.path().join("precision.xlsx");
+    std::fs::write(&old, "id,currency,metric,reference,offset\na,0.05,0.125,0.25,0.25\nb,0.15,0.125,0.25,0.25\n").unwrap();
+    std::fs::write(&new, "id,currency,metric,reference,offset\na,0.10,0.1,0.3,0.31\nb,0.20,0.2,0.3,0.31\n").unwrap();
+    std::fs::write(&blank, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut service = ibis_doc_service::Service::new(&[dir.path().to_owned()], false, ibis_doc_service::Limits::default());
+    let id = service.call("app_open_document", &json!({"path":blank})).unwrap()["document_id"].clone();
+    let sheet = service.call("xlsx_list_sheets", &json!({"document_id":id})).unwrap()["sheets"][0]["name"].clone();
+    for (anchor, sql) in [
+        ("A1", "SELECT 'All' AS category, SUM(CAST(ROUND(currency * 100) AS INTEGER)) AS minor, MAX(CAST(reference AS REAL)) AS reference, MAX(CAST(offset AS REAL)) AS offset FROM src"),
+        ("F1", "SELECT id AS key, CAST(ROUND(currency * 100) AS INTEGER) AS amount FROM src ORDER BY id"),
+        ("I1", "SELECT id AS key, CAST(metric AS REAL) AS amount FROM src ORDER BY id"),
+    ] {
+        service.call("sqlite_query_to_table", &json!({
+            "document_id":id,"destination_sheet":sheet,"anchor":anchor,"sql":sql,
+            "datasets":[{"source":old,"alias":"src"}],
+        })).unwrap();
+    }
+    for (column, anchor, title) in [("B", "A6", "Minor units"), ("C", "H6", "Fractional"), ("D", "A22", "Mismatch")] {
+        service.call("xlsx_create_chart", &json!({
+            "document_id":id,"sheet":sheet,"destination_sheet":sheet,"anchor":anchor,"kind":"column","title":title,
+            "domain_range":"A2:A2","series":[{"values_range":format!("{column}2:{column}2"),"name_cell":format!("{column}1")}],
+        })).unwrap();
+    }
+    service.call("app_save_document", &json!({"document_id":id,"path":workbook})).unwrap();
+    let mut scene = Scenario::open(workbook.to_str().unwrap());
+    let _probe = button_probe::Probe::new();
+    scene.update(|editor, _, cx| {
+        for (column, anchor) in [(1, "#F1"), (2, "#I1"), (3, "#I1")] {
+            editor.set_cell(column, 1);
+            editor.insert_cell_link_full(anchor, None, Some(crate::event_hooks::COHORT_LINK_MARKER), cx);
+        }
+        editor.open_queries_panel(cx);
+        editor.open_query_report_panel(cx);
+        editor.query_reports_mut().unwrap().files.insert("values.csv".into(), new.clone());
+        cx.notify();
+    });
+    button_probe::click(&mut scene, "query-reports-preview");
+    let mut summary = Value::Null;
+    for _ in 0..250 {
+        summary = scene.with(|editor, _| editor.live_report_preview_diff(&json!({})));
+        if summary["state"] == "review" { break; }
+        assert_eq!(summary["state"], "previewing");
+        std::thread::sleep(Duration::from_millis(20));
+        scene.wait(20);
+    }
+    assert_eq!(summary["state"], "review");
+    assert_report_precision(&summary);
+}
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+fn assert_report_precision(summary: &Value) {
+    let point = |title: &str| {
+        &summary["charts"].as_array().unwrap().iter().find(|chart| chart["title"] == title).unwrap()["top"][0]
+    };
+    let minor = point("Minor units");
+    assert_eq!(minor["amounts"]["before"], 20.);
+    assert_eq!(minor["amounts"]["after"], 30.);
+    let cohort = &minor["cohort"];
+    assert_eq!(cohort["state"], "ready");
+    assert_eq!(cohort["precision"]["mode"], "exact_integer");
+    for check in cohort["precision"]["checks"].as_object().unwrap().values() {
+        assert_eq!(check["residual"], 0.);
+        assert_eq!(check["tolerance"], 0.);
+        assert_eq!(check["relative_to_total"], 0.);
+    }
+    let close = &point("Fractional")["cohort"];
+    let mismatch = &point("Mismatch")["cohort"];
+    assert_eq!(close["state"], "ready");
+    assert_eq!(mismatch["state"], "totals_mismatch");
+    for (comparison, total, accepted) in [(close, 0.3, true), (mismatch, 0.31, false)] {
+        assert_eq!(comparison["precision"]["mode"], "binary64");
+        let check = &comparison["precision"]["checks"]["after_total"];
+        let residual = check["residual"].as_f64().unwrap().abs();
+        let tolerance = check["tolerance"].as_f64().unwrap();
+        let relative = check["relative_to_total"].as_f64().unwrap();
+        assert!(residual > 0. && tolerance > 0.);
+        assert_eq!(residual <= tolerance, accepted);
+        assert!((relative - residual / total).abs() < 1e-17);
+    }
+}
