@@ -126,8 +126,9 @@ CI はさらに別のランナーへ AppImage と bundle をダウンロード�
 ## マイルストーン Release
 
 `masanork` の履歴にある検証済みコミットに `sorane-v1.2.3` のようなタグを
-push すると、Desktop build CI が同じコミットの Linux x64 AppImage、macOS arm64、
-Windows x64 をビルド・検証し、全ジョブ成功後に GitHub Release を作成する。
+push すると、Desktop build CI が同じコミットの Linux x64 AppImage、Flatpak x86_64／arm64、
+macOS arm64、Windows x64、Android arm64、iOS arm64 をビルド・検証し、
+全ジョブ成功後に GitHub Release を作成する。
 `-rc.1` のようなハイフン付き接尾辞は prerelease として公開される。
 上流タグと区別するため `sorane-v` を使う。
 
@@ -137,7 +138,8 @@ git tag -a sorane-v1.2.3 origin/masanork -m 'Docs milestone 1.2.3'
 git push origin sorane-v1.2.3
 ```
 
-Release には各パッケージ、ビルド情報、SHA256SUMS を添付する。タグが指すコミットが
+Release には各パッケージ、対応する SBOM／CBOM、ビルド情報、SHA256SUMS を添付する。
+Flatpak はパッケージと BOM を同じタグのビルドで生成する。タグが指すコミットが
 公開時にも `masanork` の履歴にあることを確認し、既存 Release は上書きしない。
 タグを付け替えて再利用せず、修正には新しいタグを使う。Release は自動公開される。
 macOS は公証されず Windows は未署名であり、自動更新フィードではない。

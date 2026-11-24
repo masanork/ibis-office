@@ -121,117 +121,35 @@ jobs:
             --clobber
 
   flatpak:
-    name: Flatpak (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-24.04
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
+    uses: ./.github/workflows/build-flatpak.yml
+    permissions:
+      contents: read
+    with:
+      source: ${{ github.sha }}
+      artifact_prefix: ibisOffice-Flatpak-
+      release_tag: ${{ inputs.release_tag }}
 
+  attach-flatpak:
+    name: Attach checked Flatpak packages to the requested release
+    needs: flatpak
+    if: inputs.release_tag != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - name: Checkout repository and submodules
-        timeout-minutes: 10
-        uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          submodules: recursive
-
-      - name: Install system build and Flatpak dependencies
-        timeout-minutes: 20
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            pkg-config \
-            libssl-dev \
-            libfontconfig1-dev \
-            libfreetype-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libxcb1-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            flatpak \
-            flatpak-builder ostree python3-venv
-
-      - name: Install Flathub runtime and SDK
-        timeout-minutes: 15
-        run: |
-          sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install -y --system flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
-
-      # Only GitHub's own actions are allowed in this repository: Rust comes from
-      # the official rustup installer, and the build is not cached.
-      - name: Install Rust toolchain
-        timeout-minutes: 10
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      # version.txt on GitHub's main is pushed only after the release is out (the
-      # installed apps update from it), so a release build takes its version
-      # from the tag (v0.8.5 -> 0.8.5).
-      - name: Use the release tag's version
-        if: inputs.release_tag != ''
-        env:
-          TAG: ${{ inputs.release_tag }}
-        run: |
-          v="${TAG#v}"
-          printf 'Windows\t%s\nmacOS\t%s\nwasm\t%s\nLinux\t%s\n' "$v" "$v" "$v" "$v" > version.txt
-          cat version.txt
-
-      - name: Build Flatpak bundle
-        timeout-minutes: 60
-        run: scripts/bundle-flatpak.sh --release
-
-      - name: Generate Flatpak SBOM and CBOM
-        shell: bash
-        env:
-          ARCH: ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
-          case "$ARCH" in x86_64) platform=flatpak-x64 ;; aarch64) platform=flatpak-arm64 ;; esac
-          bundle=$(realpath target/dist/ibisOffice-*-Linux-"$ARCH".flatpak)
-          python3 scripts/build-bom.py "$platform" "$bundle" target/dist --appdir target/dist/flatpak/build-dir/files
-
-      - name: Verify the packaged Flatpak and both BOMs
-        timeout-minutes: 10
-        shell: bash
-        env:
-          ARCH: ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
-          case "$ARCH" in x86_64) platform=flatpak-x64 ;; aarch64) platform=flatpak-arm64 ;; esac
-          (cd target/dist && sha256sum -c ./*-Linux-"$ARCH".flatpak.sha256)
-          python3 -m venv "$RUNNER_TEMP/bom-validator"
-          python="$RUNNER_TEMP/bom-validator/bin/python"
-          "$python" -m pip install 'jsonschema==4.23.0'
-          "$python" scripts/verify-build-boms.py "$platform" target/dist "$(git rev-parse HEAD)"
-
-      - name: Upload Flatpak artifact
-        timeout-minutes: 10
-        uses: actions/upload-artifact@v4
-        with:
-          name: ibisOffice-Flatpak-${{ matrix.arch }}
-          path: |
-            target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak
-            target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak.sha256
-            target/dist/flatpak-*.*.cdx.json
-
-      - name: Attach Flatpak to GitHub Release
-        timeout-minutes: 10
-        if: inputs.release_tag != ''
+          pattern: ibisOffice-Flatpak-*
+          path: artifacts
+      - name: Attach Flatpak and both BOMs
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release_tag }}
         run: |
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
-            target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak \
-            target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak.sha256 \
-            target/dist/flatpak-*.*.cdx.json \
-            --clobber
+          set -euo pipefail
+          for arch in x86_64 aarch64; do
+            dir="artifacts/ibisOffice-Flatpak-$arch"
+            (cd "$dir" && sha256sum -c SHA256SUMS)
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
+              "$dir/"*.flatpak "$dir/"*.flatpak.sha256 "$dir/"*.cdx.json --clobber
+          done

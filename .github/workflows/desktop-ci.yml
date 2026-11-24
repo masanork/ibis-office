@@ -361,10 +361,19 @@ jobs:
       artifact: desktop-ci-${{ matrix.platform }}
       source: ${{ github.event.pull_request.head.sha || github.sha }}
 
+  milestone-flatpak:
+    name: Build milestone Flatpak packages
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: validate-source
+    uses: ./.github/workflows/build-flatpak.yml
+    with:
+      source: ${{ github.sha }}
+      artifact_prefix: desktop-ci-flatpak-
+
   release:
     name: Publish milestone release
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [validate-source, desktop, linux, android, ios, verify-linux-provenance, verify-package-boms]
+    needs: [validate-source, desktop, linux, android, ios, verify-linux-provenance, verify-package-boms, milestone-flatpak]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -402,6 +411,20 @@ jobs:
             esac
             cp "$dir/$package" "$dir/"*.cdx.json release/
             cp "$dir/build-info.json" "release/build-info-$platform.json"
+          done
+          for arch in x86_64 aarch64; do
+            dir="artifacts/desktop-ci-flatpak-$arch"
+            (cd "$dir" && sha256sum -c SHA256SUMS)
+            case "$arch" in x86_64) platform=flatpak-x64 ;; aarch64) platform=flatpak-arm64 ;; esac
+            packages=("$dir/"ibisOffice-*-Linux-"$arch".flatpak)
+            test "${#packages[@]}" -eq 1
+            for kind in sbom cbom; do
+              bom="$dir/$platform.$kind.cdx.json"
+              jq -e --arg sha "$EXPECTED_SOURCE_SHA" \
+                '[.metadata.properties[] | select(.name == "ibisOffice:sourceCommit") | .value] == [$sha]' "$bom" >/dev/null
+              cp "$bom" release/
+            done
+            cp "${packages[0]}" release/
           done
           cp artifacts/desktop-ci-linux-x64-provenance/desktop-linux-x64-ci.AppImage.intoto.jsonl release/
           gh attestation verify release/desktop-linux-x64-ci.AppImage \
