@@ -3194,7 +3194,7 @@ query.report-quotient-heading	{table} · {metric} の寄与ランキング
 query.report-quotient-pp	ポイント
 query.report-quotient-unavailable	寄与ランキングを計算できません。
 query.report-quotient-mismatch	寄与の合計が全体の増減と一致しません。
-query.report-quotient-total	全{count}グループの寄与合計 {total} {unit}
+query.report-quotient-total	全体の増減（{count}グループ） {total} {unit}
 query.report-quotient-row	{rank}. {key} · {total} {unit}
 query.report-quotient-parts	グループ内 {within} · 構成比 {composition}
 query.report-quotient-before	適用済みの値
@@ -3210,3 +3210,9 @@ query.report-quotient-remainder-expanded	▾ その他（{count}件）· {total}
 query.report-quotient-previous	前のグループ
 query.report-quotient-next	次のグループ
 query.report-quotient-top	上位{count}グループの寄与合計 {total} {unit}
+query.report-quotient-all	すべて
+query.report-quotient-increase	増加
+query.report-quotient-decrease	減少
+query.report-quotient-search	グループ名で検索
+query.report-quotient-search-submit	検索
+query.report-quotient-no-matches	該当するグループがありません

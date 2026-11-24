@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
 use ibis_doc_model::{CellValue, Command, Presentation};
@@ -14,6 +16,7 @@ use ibis_doc_service::{ReportParameterControl, ReportParameterKind, report_param
 use serde_json::{Value, json};
 
 use crate::ext::*;
+use crate::report_quotient::{RankingDirection, RankingFilter};
 use crate::shell::chrome::{Dropdown, DropdownItem, SidebarPanel, action_button, panel_message};
 use crate::shell::editor::SlideEditor;
 use crate::shell::i18n::{format, text};
@@ -42,7 +45,7 @@ fn signed_contribution(value: &Value) -> String {
 }
 
 fn quotient_preview(
-    comparison: &Value, page: Option<&Value>, index: usize, selected: Option<usize>, generation: u64, cx: &mut Context<SlideEditor>,
+    comparison: &Value, filter: Option<&QuotientFilterView>, page: Option<&Value>, index: usize, selected: Option<usize>, generation: u64, cx: &mut Context<SlideEditor>,
 ) -> impl IntoElement {
     let rate = comparison["kind"] == "rate";
     let unit = if rate { text("query.report-quotient-pp").to_string() }
@@ -54,15 +57,43 @@ fn quotient_preview(
     let mut section = v_flex().gap_1().child(div().text_sm().font_weight(FontWeight::BOLD).child(heading));
     let decomposition = &comparison["decomposition"];
     let ranking = &decomposition["ranking"];
-    let Some(groups) = ranking["groups"].as_array() else {
+    let Some(_) = ranking["groups"].as_array() else {
         return section.child(div().text_sm().child(text("query.report-quotient-unavailable")));
     };
     if decomposition["state"] == "totals_mismatch" {
         section = section.child(div().text_sm().child(text("query.report-quotient-mismatch")));
     }
-    section = section.child(div().text_sm().child(format("query.report-quotient-total", &[
-        ("count", &ranking["group_count"]), ("total", &signed_contribution(&ranking["total_contribution"])), ("unit", &unit),
-    ])));
+    let delta = &comparison[if rate { "percentage_point_delta" } else { "delta" }];
+    section = section.child(div().text_sm().child(saved_check_text(format("query.report-quotient-total", &[
+        ("count", &ranking["group_count"]), ("total", &signed_contribution(delta)), ("unit", &unit),
+    ]))));
+    let mut controls = h_flex().gap_1();
+    let direction = filter.map_or(RankingDirection::All, |filter| filter.criteria.direction);
+    for (id, choice) in [("all", RankingDirection::All), ("increase", RankingDirection::Increase), ("decrease", RankingDirection::Decrease)] {
+        let button = action_button(SharedString::from(format!("query-report-quotient-{id}-{index}")))
+            .small().label(text(&format!("query.report-quotient-{id}")))
+            .on_click(cx.listener(move |editor, _, _, cx| {
+                editor.filter_quotient_ranking(index, generation, Some(choice), cx);
+            }));
+        controls = controls.child(if choice == direction { button.primary() } else { button });
+    }
+    section = section.child(controls);
+    if let Some(input) = filter.and_then(|filter| filter.input.as_ref()) {
+        section = section.child(h_flex().gap_1()
+            .child(div().flex_1().min_w_0().child(Input::new(input).small()))
+            .child(action_button(SharedString::from(format!("query-report-quotient-search-submit-{index}")))
+                .small().label(text("query.report-quotient-search-submit"))
+                .on_click(cx.listener(move |editor, _, _, cx| editor.filter_quotient_ranking(index, generation, None, cx)))));
+    } else {
+        section = section.child(action_button(SharedString::from(format!("query-report-quotient-search-{index}")))
+            .small().label(text("query.report-quotient-search"))
+            .on_click(cx.listener(move |editor, _, window, cx| editor.open_quotient_group_search(index, generation, window, cx))));
+    }
+    let ranking = filter.and_then(|filter| filter.ranking.as_ref()).unwrap_or(ranking);
+    let groups = ranking["groups"].as_array().expect("quotient ranking groups");
+    if groups.is_empty() {
+        return section.child(div().text_sm().child(text("query.report-quotient-no-matches")));
+    }
     let remainder = &ranking["remainder"];
     let page_groups = page.and_then(|page| page["groups"].as_array()).into_iter().flatten();
     let remainder_count = remainder["count"].as_u64().unwrap_or_default();
@@ -209,6 +240,14 @@ struct ReportChoice {
     controls: Option<Vec<(ReportParameterControl, Value)>>,
 }
 
+#[derive(Default)]
+struct QuotientFilterView {
+    criteria: RankingFilter,
+    ranking: Option<Value>,
+    input: Option<Entity<InputState>>,
+    _submit: Option<Subscription>,
+}
+
 struct ReviewedRefresh {
     base: Presentation,
     result: Value,
@@ -222,6 +261,7 @@ struct ReviewedRefresh {
 }
 
 pub(crate) struct QueryReportPanel {
+    quotient_filters: BTreeMap<usize, QuotientFilterView>,
     reports: Vec<ReportChoice>,
     files: BTreeMap<String, PathBuf>,
     parameter_values: BTreeMap<String, Value>,
@@ -299,12 +339,55 @@ impl QueryReportPanel {
 
     fn invalidate(&mut self) {
         self.review = None;
+        self.quotient_filters.clear();
         self.message.clear();
     }
 }
 
 #[ibis_office_macros::editor_ext(QueryReportPanelExt)]
 impl SlideEditor {
+    fn open_quotient_group_search(&mut self, index: usize, generation: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = self.query_reports_mut().filter(|panel| panel.generation == generation && panel.review.is_some()) else { return };
+        let filter = panel.quotient_filters.entry(index).or_default();
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(text("query.report-quotient-search")));
+        input.update(cx, |input, cx| input.focus(window, cx));
+        filter._submit = Some(cx.subscribe_in(&input, window, move |editor, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                editor.filter_quotient_ranking(index, generation, None, cx);
+            }
+        }));
+        filter.input = Some(input);
+        cx.notify();
+    }
+
+    fn filter_quotient_ranking(&mut self, index: usize, generation: u64, direction: Option<RankingDirection>, cx: &mut Context<Self>) {
+        let Some(panel) = self.wb().panels.queries.as_ref().and_then(|panels| panels.reports.as_ref())
+            .filter(|panel| panel.generation == generation) else { return };
+        let Some(review) = panel.review.as_ref().filter(|review| self.presentation() == &review.base) else { return };
+        let Some(comparison) = review.quotient_previews.get(index) else { return };
+        let view = panel.quotient_filters.get(&index);
+        let mut criteria = view.map_or_else(RankingFilter::default, |view| view.criteria.clone());
+        if let Some(direction) = direction { criteria.direction = direction; }
+        if let Some(input) = view.and_then(|view| view.input.as_ref()) {
+            criteria.query = input.read(cx).value().trim().to_owned();
+        }
+        let ranking = if criteria.active() {
+            let (Some(candidate), Some(table), Some(metric)) = (&review.candidate, comparison["table"].as_str(), comparison["metric"].as_str()) else { return };
+            let comparison = crate::report_quotient::compare_ranking(&review.base, candidate, table, metric, None, None, &criteria);
+            comparison["decomposition"]["ranking"].get("filtered").cloned()
+        } else {
+            None
+        };
+        let Some(panel) = self.query_reports_mut() else { return };
+        let Some(review) = panel.review.as_mut() else { return };
+        let view = panel.quotient_filters.entry(index).or_default();
+        view.criteria = criteria;
+        view.ranking = ranking;
+        review.quotient_selection.remove(&index);
+        review.quotient_pages.remove(&index);
+        cx.notify();
+    }
+
     fn set_quotient_remainder_page(&mut self, index: usize, generation: u64, offset: Option<usize>, cx: &mut Context<Self>) {
         let page = offset.and_then(|offset| {
             let panel = self.wb().panels.queries.as_ref()?.reports.as_ref()?;
@@ -316,8 +399,10 @@ impl SlideEditor {
             let table = comparison["table"].as_str()?;
             let metric = comparison["metric"].as_str()?;
             let candidate = review.candidate.as_ref()?;
-            let result = crate::report_quotient::compare_with_remainder(&review.base, candidate, table, metric, None, Some(offset));
-            result["decomposition"]["ranking"]["remainder"].get("page").cloned()
+            let filter = panel.quotient_filters.get(&index).map(|view| view.criteria.clone()).unwrap_or_default();
+            let result = crate::report_quotient::compare_ranking(&review.base, candidate, table, metric, None, Some(offset), &filter);
+            let ranking = &result["decomposition"]["ranking"];
+            ranking.get("filtered").unwrap_or(ranking)["remainder"].get("page").cloned()
         });
         if let Some(review) = self.query_reports_mut().filter(|panel| panel.generation == generation)
             .and_then(|panel| panel.review.as_mut())
@@ -367,6 +452,22 @@ impl SlideEditor {
                 Some(offset)
             }
         };
+        let mut filter = RankingFilter::default();
+        if args.get("contribution_direction").is_some() || args.get("group_query").is_some() {
+            if report.is_none() || args["applied"] == true {
+                return json!({"error":"Contribution filters require a rate or average report preview"});
+            }
+            if let Some(value) = args.get("contribution_direction") {
+                let Some(direction) = value.as_str().and_then(RankingDirection::parse) else {
+                    return json!({"error":"Use all, increase, or decrease for contribution_direction"});
+                };
+                filter.direction = direction;
+            }
+            if let Some(value) = args.get("group_query") {
+                let Some(query) = value.as_str() else { return json!({"error":"Supply a string group_query"}); };
+                filter.query = query.to_owned();
+            }
+        }
         if let Some(applied) = args.get("applied") {
             let (Some(applied), Some((table, metric))) = (applied.as_bool(), report) else {
                 return json!({"error":"applied must be a boolean and requires a report table and metric"});
@@ -395,11 +496,11 @@ impl SlideEditor {
             }) {
                 return json!({"state":"report_not_in_preview"});
             }
-            if remainder_offset.is_some() {
+            if remainder_offset.is_some() || filter.active() {
                 if !crate::chart_cohort::report_comparison_definition(&review.base, table).is_ok_and(crate::report_quotient::supports) {
-                    return json!({"error":"remainder_offset requires a rate or average report preview"});
+                    return json!({"error":"Contribution ranking options require a rate or average report preview"});
                 }
-                return crate::report_quotient::compare_with_remainder(&review.base, candidate, table, metric, contributor_key, remainder_offset);
+                return crate::report_quotient::compare_ranking(&review.base, candidate, table, metric, contributor_key, remainder_offset, &filter);
             }
             return crate::chart_cohort::compare_report(&review.base, candidate, table, metric, contributor_key);
         }
@@ -601,6 +702,7 @@ impl SlideEditor {
                 files: BTreeMap::new(),
                 parameter_values: BTreeMap::new(),
                 review: None,
+                quotient_filters: BTreeMap::new(),
                 message: String::new(),
                 busy: false,
                 generation: NEXT.fetch_add(1, Ordering::Relaxed),
@@ -1062,7 +1164,7 @@ impl SlideEditor {
             }
             if self.presentation() == &review.base {
                 for (index, comparison) in review.quotient_previews.iter().enumerate() {
-                    body = body.child(quotient_preview(comparison, review.quotient_pages.get(&index), index,
+                    body = body.child(quotient_preview(comparison, panel.quotient_filters.get(&index), review.quotient_pages.get(&index), index,
                         review.quotient_selection.get(&index).copied(), generation, cx));
                 }
                 for chart in &review.chart_diffs {
@@ -2318,4 +2420,55 @@ pub(crate) fn report_quotient_remainder_scenario(rate: bool) {
     let review = scene.with(|editor, _| editor.wb().panels.queries.as_ref().unwrap().reports.as_ref()
         .unwrap().review.as_ref().unwrap().quotient_pages.is_empty());
     assert!(review);
+
+    let filtered = |direction, query| json!({
+        "table":"QueryResult1","metric":metric,"contribution_direction":direction,"group_query":query,
+    });
+    let check_total = |comparison: &Value| {
+        let label = format("query.report-quotient-total", &[
+            ("count", &23), ("total", &signed_contribution(&comparison[if rate { "percentage_point_delta" } else { "delta" }])), ("unit", &unit),
+        ]);
+        assert!(button_probe::bounds(&format!("query-report-check-text:{label}")).is_some());
+        let ranking = &comparison["decomposition"]["ranking"];
+        assert_eq!(ranking["group_count"], 23);
+        assert!((ranking["total_contribution"].as_f64().unwrap() - delta).abs() <= tolerance);
+    };
+    for (direction, count, key) in [("increase", 11, "G22"), ("decrease", 12, "G23")] {
+        button_probe::click(&mut scene, &format!("query-report-quotient-{direction}-0"));
+        let result = scene.with(|editor, _| editor.live_report_preview_diff(&filtered(direction, "")));
+        check_total(&result);
+        let matched = &result["decomposition"]["ranking"]["filtered"];
+        assert_eq!(matched["group_count"], count);
+        let label = format("query.report-quotient-row", &[
+            ("rank", &1), ("key", &key), ("total", &signed_contribution(&matched["groups"][0]["contribution"])), ("unit", &unit),
+        ]);
+        assert!(button_probe::bounds(&format!("query-report-quotient-row:{label}")).is_some());
+    }
+    button_probe::click(&mut scene, "query-report-quotient-search-0");
+    scene.type_text("g03");
+    button_probe::click(&mut scene, "query-report-quotient-search-submit-0");
+    let result = scene.with(|editor, _| editor.live_report_preview_diff(&filtered("decrease", "g03")));
+    check_total(&result);
+    let matched = &result["decomposition"]["ranking"]["filtered"];
+    assert_eq!(matched["group_count"], 1);
+    let group = &matched["groups"][0];
+    assert_eq!(group["key"], "G03");
+    let label = format("query.report-quotient-row", &[
+        ("rank", &1), ("key", &"G03"), ("total", &signed_contribution(&group["contribution"])), ("unit", &unit),
+    ]);
+    assert!(button_probe::bounds(&format!("query-report-quotient-row:{label}")).is_some());
+    button_probe::click(&mut scene, "query-report-quotient-0-0");
+    let evidence = &group["before"];
+    assert_eq!(evidence[field]["cell"], "D7");
+    let label = format("query.report-quotient-evidence", &[
+        ("field", &text(&format!("query.report-quotient-{field}"))),
+        ("sheet", &evidence["sheet"].as_str().unwrap()), ("cell", &"D7"), ("value", &evidence[field]["value"]),
+    ]);
+    assert!(button_probe::bounds(&format!("query-report-quotient-evidence:{label}")).is_some());
+    button_probe::click(&mut scene, &format!("query-report-quotient-cell-0-{field}"));
+    assert_eq!(scene.with(|editor, _| editor.current_cell()), Some((3, 6)));
+    button_probe::click(&mut scene, "query-report-quotient-increase-0");
+    let result = scene.with(|editor, _| editor.live_report_preview_diff(&filtered("increase", "g03")));
+    assert_eq!(result["decomposition"]["ranking"]["filtered"]["group_count"], 0);
+    check_total(&result);
 }

@@ -3197,7 +3197,7 @@ query.report-quotient-heading	{table} · {metric} contribution ranking
 query.report-quotient-pp	pp
 query.report-quotient-unavailable	Contribution ranking unavailable.
 query.report-quotient-mismatch	The sum of contributions differs from the overall change.
-query.report-quotient-total	All {count} groups: {total} {unit}
+query.report-quotient-total	Overall change ({count} groups): {total} {unit}
 query.report-quotient-row	{rank}. {key} · {total} {unit}
 query.report-quotient-parts	Within group {within} · Composition {composition}
 query.report-quotient-before	Applied values
@@ -3213,3 +3213,9 @@ query.report-quotient-remainder-expanded	▾ Other ({count}) · {total} {unit}
 query.report-quotient-previous	Previous groups
 query.report-quotient-next	Next groups
 query.report-quotient-top	Top {count} groups: {total} {unit}
+query.report-quotient-all	All
+query.report-quotient-increase	Increase
+query.report-quotient-decrease	Decrease
+query.report-quotient-search	Search group names
+query.report-quotient-search-submit	Search
+query.report-quotient-no-matches	No matching groups
