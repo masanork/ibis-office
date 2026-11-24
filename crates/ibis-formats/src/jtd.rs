@@ -1641,6 +1641,11 @@ fn extract_decoded(
                     }
                     let row_alignment = format.align;
                     if format != ibis_doc_model::ParaFormat::default() {
+                        // The preview's paragraph layout keeps at least two
+                        // lines together at a page boundary. Record this
+                        // explicitly: the blank DOCX's Normal style turns
+                        // widow/orphan control off.
+                        format.widow_control = Some(true);
                         out.push(Segment::ParagraphFormat(format));
                     }
                     for (tag, range) in items {
@@ -2080,7 +2085,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_feed_without_alignment_keeps_jtd_start_alignment_after_conversion() {
+    fn fixed_feed_keeps_jtd_alignment_and_widow_control_after_conversion() {
         use ibis_doc_model::{FlowAlign, LineHeight};
 
         let payload = [0, 0x20, 4, 8, 599, 0, 0, 0xffff, 0];
@@ -2102,6 +2107,7 @@ mod tests {
             assert_eq!(paragraph.align, FlowAlign::Left);
             assert_eq!(paragraph.line, LineHeight::Exact(feed));
             assert!(!paragraph.snap_to_grid);
+            assert!(paragraph.widow_control);
         }
     }
 
