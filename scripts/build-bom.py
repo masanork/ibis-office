@@ -30,7 +30,7 @@ PACKAGE = re.compile(r"(\d+)\s*(\S+) v(\S+)(?: \((.*)\))?")
 
 
 def cargo_graph(target, packages, no_default_features, app_ref):
-    command = ["cargo", "tree", "--locked", "--target", target,
+    command = ["cargo", "tree", "--locked", "--color", "never", "--target", target,
                "--edges", "normal,no-proc-macro", "--prefix", "depth", "--format", "{p}"]
     if no_default_features:
         command.append("--no-default-features")
