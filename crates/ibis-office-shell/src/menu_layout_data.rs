@@ -882,6 +882,8 @@ pub(super) const SHEET: &[MenuSpec] = &[
         LayoutItem::Cmd("xlsx.remove-arrows"),
         LayoutItem::Cmd("xlsx.show-formulas"),
         LayoutItem::Cmd("xlsx.evaluate-formula"),
+        LayoutItem::Cmd("xlsx.ai-explain-formula"),
+        LayoutItem::Cmd("xlsx.acp-explain-formula"),
         LayoutItem::Sep,
         LayoutItem::Cmd("xlsx.calculate-now"),
         LayoutItem::Cmd("xlsx.calculate-sheet"),
