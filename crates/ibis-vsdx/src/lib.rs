@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-//! Read-only Visio VSDX pages, using cached ShapeSheet values from the package.
+//! Visio VSDX previews and creation of new drawings.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -18,6 +18,7 @@ mod bitmap;
 mod geometry;
 mod gradient;
 mod theme;
+pub mod write;
 
 use geometry::{dashed_line, elliptical_arc, rounded_polygon, straight_vertices, triangle_arrow};
 
