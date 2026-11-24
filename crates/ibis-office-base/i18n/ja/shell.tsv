@@ -1798,10 +1798,15 @@ structured.linkage-definition-invalid	連携CSV定義を読めないか、未対
 structured.linkage-header-mismatch	CSVの列名か列順が定義と異なるため、値の検査を中止しました。
 structured.linkage-csv-invalid	CSVのレコードを検査できませんでした。
 structured.linkage-summary	全{total}件のうち{checked}件を検査 · 指摘{issues}件
-structured.linkage-scope	繰り返しのない必須項目、X・N・整数の型と桁数、取得可能なコード値を検査します。指摘は先頭20件を表示します。
+structured.linkage-scope	繰り返しのない必須項目、X・N・整数の型と桁数、取得可能なコード値、対応する条件付き必須を検査します。指摘は先頭20件を表示します。
 structured.linkage-issue	データ{record}件目・{column}列目 · {message}
 structured.linkage-required	必須項目が空です
 structured.linkage-type	項目の型に合っていません
 structured.linkage-length	定義の最大桁数を超えています
 structured.linkage-code	コード表にない値です
 structured.linkage-column-count	ヘッダと列数が異なります
+structured.linkage-conditional-required	条件付き必須の項目が空です
+structured.linkage-unavailable-count	判定不能の条件付き必須 {count}件
+structured.linkage-unavailable-reference	判定不能 · {target} · 参照列を一意に特定できません · {note}
+structured.linkage-unavailable-rule	判定不能 · {target} · {note}
+structured.linkage-missing-reference	判定不能 · {target} · 参照列がありません · {note}

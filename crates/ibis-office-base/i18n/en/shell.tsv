@@ -1800,10 +1800,15 @@ structured.linkage-definition-invalid	The linkage CSV definition could not be re
 structured.linkage-header-mismatch	The CSV headers or their order differ from the linkage definition. Values were not checked.
 structured.linkage-csv-invalid	The CSV records could not be checked.
 structured.linkage-summary	Checked {checked} of {total} records · {issues} issues
-structured.linkage-scope	Checks required single fields, X/N and integer types and widths, and available codes. Up to 20 issues are shown.
+structured.linkage-scope	Checks required single fields, X/N and integer types and widths, available codes, and supported conditional rules. Up to 20 issues are shown.
 structured.linkage-issue	Record {record}, column {column} · {message}
 structured.linkage-required	Required value is missing
 structured.linkage-type	Value does not match the field type
 structured.linkage-length	Value exceeds the maximum length
 structured.linkage-code	Value is absent from the code list
 structured.linkage-column-count	The record has a different number of fields than the header
+structured.linkage-conditional-required	A condition requires this value
+structured.linkage-unavailable-count	{count} conditional rules could not be checked
+structured.linkage-unavailable-reference	Not checked · {target} · No single reference column · {note}
+structured.linkage-unavailable-rule	Not checked · {target} · {note}
+structured.linkage-missing-reference	Not checked · {target} · Reference column is absent · {note}

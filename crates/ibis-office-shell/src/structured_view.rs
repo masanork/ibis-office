@@ -923,8 +923,27 @@ impl Render for View {
                         .id("linkage-issues")
                         .max_h(px(130.))
                         .overflow_y_scroll();
+                    let definition = source.csv.as_ref().and_then(|csv| csv.definition.as_ref());
+                    let conditions =
+                        definition.map_or(&[][..], |definition| definition.conditions.as_slice());
+                    if !review.unavailable.is_empty() {
+                        panel = panel.child(crate::i18n::format(
+                            "structured.linkage-unavailable-count",
+                            &[("count", &review.unavailable.len())],
+                        ));
+                    }
                     for (index, issue) in review.issues.iter().enumerate() {
                         let (record, column) = (issue.record, issue.column);
+                        let message = crate::i18n::text(issue.message);
+                        let message = issue
+                            .condition
+                            .and_then(|index| conditions.get(index))
+                            .and_then(|condition| condition.note.as_deref())
+                            .and_then(|note| note.lines().next())
+                            .map_or_else(
+                                || message.to_string(),
+                                |note| format!("{message} · {}", excerpt(note, 150)),
+                            );
                         issues = issues.child(
                             Button::new(("linkage-issue", index))
                                 .outline()
@@ -934,13 +953,36 @@ impl Render for View {
                                     &[
                                         ("record", &(record + 1).to_string()),
                                         ("column", &(column + 1).to_string()),
-                                        ("message", &crate::i18n::text(issue.message)),
+                                        ("message", &message),
                                     ],
                                 ))
                                 .on_click(cx.listener(move |view, _, window, cx| {
                                     view.select_csv_issue(record, column, window, cx)
                                 })),
                         );
+                    }
+                    for &index in review.unavailable.iter().take(linkage::DISPLAY_LIMIT) {
+                        let condition = &conditions[index];
+                        let note = condition
+                            .note
+                            .as_deref()
+                            .and_then(|note| note.lines().next())
+                            .unwrap_or_default();
+                        let key = match condition.predicate.as_ref() {
+                            Some(predicate)
+                                if definition.is_some_and(|definition| {
+                                    !definition.has_field(&predicate.field)
+                                }) =>
+                            {
+                                "structured.linkage-missing-reference"
+                            }
+                            Some(_) => "structured.linkage-unavailable-reference",
+                            None => "structured.linkage-unavailable-rule",
+                        };
+                        issues = issues.child(div().truncate().child(crate::i18n::format(
+                            key,
+                            &[("target", &condition.target), ("note", &excerpt(note, 150))],
+                        )));
                     }
                     panel.child(issues)
                 })

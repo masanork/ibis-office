@@ -17,6 +17,8 @@ pub(super) struct Definition {
     layout: Layout,
     pub header: Vec<String>,
     code_values: HashMap<String, HashSet<String>>,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
 }
 
 #[derive(Deserialize)]
@@ -30,6 +32,7 @@ struct Layout {
 #[derive(Deserialize)]
 pub(super) struct Column {
     name: String,
+    field: Option<String>,
     #[serde(rename = "type")]
     pub kind: Option<String>,
     required: Option<Required>,
@@ -51,10 +54,32 @@ enum References {
     Many(Vec<String>),
 }
 
+#[derive(Deserialize)]
+pub(super) struct Condition {
+    pub target: String,
+    pub note: Option<String>,
+    pub predicate: Option<Predicate>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct Predicate {
+    pub field: String,
+    values: Option<HashSet<String>>,
+}
+
+impl Predicate {
+    pub fn matches(&self, value: &str) -> bool {
+        self.values
+            .as_ref()
+            .map_or(!value.is_empty(), |values| values.contains(value))
+    }
+}
+
 pub(super) struct Issue {
     pub record: usize,
     pub column: usize,
     pub message: &'static str,
+    pub condition: Option<usize>,
 }
 
 pub(super) const DISPLAY_LIMIT: usize = 20;
@@ -64,6 +89,7 @@ pub(super) struct Review {
     pub checked: usize,
     pub issue_count: usize,
     pub issues: Vec<Issue>,
+    pub unavailable: Vec<usize>,
 }
 
 impl Definition {
@@ -118,14 +144,56 @@ impl Definition {
                 }
             }
         }
+        let mut conditional: HashSet<_> = definition
+            .layout
+            .columns
+            .iter()
+            .filter(|column| matches!(&column.required, Some(Required::Conditional(_))))
+            .map(|column| column.name.as_str())
+            .collect();
+        if definition.conditions.iter().any(|condition| {
+            !conditional.remove(condition.target.as_str())
+                || condition.predicate.as_ref().is_some_and(|predicate| {
+                    predicate
+                        .values
+                        .as_ref()
+                        .is_some_and(|values| values.is_empty() || values.contains(""))
+                })
+        }) {
+            return None;
+        }
         headers.next().is_none().then_some(definition)
     }
 
-    pub fn columns(&self) -> impl Iterator<Item = &Column> {
+    pub fn columns(&self) -> impl Iterator<Item = &Column> + Clone {
         self.layout
             .columns
             .iter()
             .flat_map(|column| std::iter::repeat_n(column, column.repeat.unwrap_or(1)))
+    }
+
+    pub fn has_field(&self, field: &str) -> bool {
+        self.layout
+            .columns
+            .iter()
+            .any(|column| column.field.as_deref() == Some(field))
+    }
+
+    pub fn condition_columns(&self, condition: &Condition) -> Option<(usize, usize)> {
+        let predicate = condition.predicate.as_ref()?;
+        let columns = self.columns();
+        let mut sources = columns
+            .clone()
+            .enumerate()
+            .filter(|(_, column)| column.field.as_deref() == Some(&predicate.field));
+        let (source, column) = sources.next()?;
+        if column.repeat.unwrap_or(1) != 1 || sources.next().is_some() {
+            return None;
+        }
+        let (target, _) = columns.enumerate().find(|(_, column)| {
+            column.name == condition.target && column.repeat.unwrap_or(1) == 1
+        })?;
+        Some((source, target))
     }
 
     pub fn review(&self) -> Review {
@@ -134,6 +202,7 @@ impl Definition {
             checked: 0,
             issue_count: 0,
             issues: Vec::new(),
+            unavailable: Vec::new(),
         }
     }
 

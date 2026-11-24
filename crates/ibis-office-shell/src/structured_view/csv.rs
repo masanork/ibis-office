@@ -97,13 +97,26 @@ impl Csv {
         }
         let columns: Vec<_> = definition.columns().collect();
         let mut review = definition.review();
-        let mut add = |record, column, message| {
+        let conditions: Vec<_> = definition
+            .conditions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, condition)| {
+                let Some((source, target)) = definition.condition_columns(condition) else {
+                    review.unavailable.push(index);
+                    return None;
+                };
+                Some((index, source, target, condition.predicate.as_ref()?))
+            })
+            .collect();
+        let mut add = |record, column, message, condition| {
             review.issue_count += 1;
             if review.issues.len() < linkage::DISPLAY_LIMIT {
                 review.issues.push(linkage::Issue {
                     record,
                     column,
                     message,
+                    condition,
                 });
             }
         };
@@ -116,14 +129,27 @@ impl Csv {
                     record,
                     fields.len().min(columns.len()),
                     "structured.linkage-column-count",
+                    None,
                 );
                 continue;
+            }
+            for &(index, source, target, predicate) in &conditions {
+                if predicate.matches(&cell_text(&raw[fields[source].clone()]))
+                    && cell_text(&raw[fields[target].clone()]).is_empty()
+                {
+                    add(
+                        record,
+                        target,
+                        "structured.linkage-conditional-required",
+                        Some(index),
+                    );
+                }
             }
             for (column, (field, definition_column)) in fields.into_iter().zip(&columns).enumerate()
             {
                 if let Some(message) = definition.check(definition_column, &cell_text(&raw[field]))
                 {
-                    add(record, column, message);
+                    add(record, column, message, None);
                 }
             }
         }
@@ -207,6 +233,44 @@ fn branch(name: String, span: Range<usize>, expanded: bool, parent: Option<usize
 #[cfg(test)]
 mod tests {
     use super::{Csv, linkage};
+
+    #[test]
+    fn linkage_conditions_use_literal_values_and_report_unavailable_references() {
+        let definition = linkage::Definition::parse(
+            br#"{
+            "format": "mrlgss-linkage-csv", "version": 1, "codeValues": {},
+            "layout": {"id":"example","name":"Example","repeat_header":"{name}_{n}","columns":[
+                {"name":"trigger","field":"012-00001"},
+                {"name":"equals","required":"conditional"},
+                {"name":"nonempty","required":"conditional"},
+                {"name":"missing","required":"conditional"}
+            ]},
+            "header":["trigger","equals","nonempty","missing"],
+            "conditions":[
+                {"target":"equals","predicate":{"field":"012-00001","values":["01"]}},
+                {"target":"nonempty","predicate":{"field":"012-00001"}},
+                {"target":"missing","note":"missing reference","predicate":{"field":"012-00002"}}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let bytes = b"trigger,equals,nonempty,missing\n01,,,\n1,,,\n\"\",,,\n,,,\n01,ok,ok,";
+        let review = Csv::read(bytes)
+            .unwrap()
+            .review(bytes, &definition)
+            .unwrap();
+        assert_eq!(review.checked, 5);
+        assert_eq!(review.unavailable, [2]);
+        let positions: Vec<_> = review
+            .issues
+            .iter()
+            .map(|issue| (issue.record, issue.column, issue.condition))
+            .collect();
+        assert_eq!(
+            positions,
+            [(0, 1, Some(0)), (0, 2, Some(1)), (1, 2, Some(1))]
+        );
+    }
 
     #[test]
     fn linkage_definition_checks_literal_cells_and_order() {
