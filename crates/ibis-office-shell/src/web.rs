@@ -73,6 +73,8 @@ extern "C" {
     /// Defined by `www/main.ts`: the file picker for an ICC profile (`.icc`, `.icm`); `{ name, bytes }` or `null`.
     #[wasm_bindgen(catch, js_name = ibisOfficePickIcc)]
     fn pick_icc_js() -> Result<js_sys::Promise, JsValue>;
+    #[wasm_bindgen(catch, js_name = ibisOfficePickDesignTokens)]
+    fn pick_design_tokens_js(max_bytes: u32) -> Result<js_sys::Promise, JsValue>;
     /// Defined by `www/main.ts`: keeps the CMYK profile the user chose in the browser's IndexedDB (a setting).
     #[wasm_bindgen(js_name = ibisOfficeIccSave)]
     fn icc_save_js(name: &str, bytes: &[u8]);
@@ -99,6 +101,10 @@ async fn named_bytes(promise: Result<js_sys::Promise, JsValue>) -> Result<Option
 /// Let the user choose an ICC profile file; its name and contents, or `None` if cancelled.
 pub(crate) async fn pick_icc_file() -> Result<Option<(String, Vec<u8>)>, String> {
     named_bytes(pick_icc_js()).await
+}
+
+pub(crate) async fn pick_design_tokens(max_bytes: u32) -> Result<Option<(String, Vec<u8>)>, String> {
+    named_bytes(pick_design_tokens_js(max_bytes)).await
 }
 
 /// Keep the CMYK profile `bytes` (a file called `name`) in the browser's IndexedDB.

@@ -93,6 +93,7 @@ pub mod chrome;
 pub mod links;
 pub mod dialog;
 pub mod color_palette;
+mod design_tokens;
 pub mod color_editor;
 pub(crate) mod color_picker_dialog;
 pub(crate) mod theme_colors;

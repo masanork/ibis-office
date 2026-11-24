@@ -5627,7 +5627,7 @@ impl SlideEditor {
     pub(crate) fn current_docx_theme_colors_preset(&self) -> Option<&'static str> {
         let colors = &self.presentation().theme_colors;
         if colors.is_empty() {
-            return Some("office");
+            return Some("office_2013_2022");
         }
         for preset in &DOCX_THEME_COLORS_PRESETS {
             let matched = preset.colors.iter().all(|(name, rgb)| {

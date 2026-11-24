@@ -518,6 +518,7 @@ pub struct SlideEditor {
     pub protection_password: Option<String>,
     /// The colours picked lately from a palette, the last first (for the palette's row of them).
     pub recent_colors: Vec<ibis_doc_model::Rgb>,
+    pub(crate) design_token_colors: Vec<(String, ibis_doc_model::Rgb)>,
     /// The colour last picked from each toolbar palette button (by its id), for the split button's left half.
     pub(crate) last_colors: std::collections::HashMap<&'static str, ibis_doc_model::Rgb>,
     /// The menu item last chosen from each split button of the toolbar (not a colour), by the button's id: what its
@@ -925,6 +926,7 @@ impl SlideEditor {
             #[cfg(not(target_family = "wasm"))]
             protection_password: None,
             recent_colors: Vec::new(),
+            design_token_colors: Vec::new(),
             last_colors: Default::default(),
             last_choices: Default::default(),
             recent_scroll: ScrollHandle::new(),
@@ -5225,6 +5227,7 @@ impl SlideEditor {
                 #[cfg(not(target_family = "wasm"))]
                 protection_password: _,
                 recent_colors: _,
+                design_token_colors: _,
                 last_colors: _,
                 last_choices: _,
                 recent_scroll: _,

@@ -101,6 +101,19 @@ jobs:
           done
       - name: Test offline image Content Credentials
         run: cargo test --locked -p ibis-office-shell --lib --no-default-features image_provenance
+      - name: Test Office theme selection in document color pickers
+        if: matrix.platform == 'macos-arm64'
+        run: cargo test --locked -p ibis-office-app --test scenarios -- shell::office_theme_color_picker_tracks_preset
+      - name: Test color token import with Digital Agency JSON
+        if: matrix.platform == 'macos-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export IBIS_DADS_TOKENS="$RUNNER_TEMP/digital-agency-tokens.json"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://raw.githubusercontent.com/digital-go-jp/design-tokens/a96c66793fef07af96b16f5e87f688a263b66df0/figma/tokens.json \
+            --output "$IBIS_DADS_TOKENS"
+          cargo test --locked -p ibis-office-shell --lib --no-default-features design_tokens
       - name: Test image provenance in the native editor
         if: matrix.platform == 'macos-arm64'
         run: cargo run --locked -p ibis-image-provenance-check
@@ -190,7 +203,7 @@ jobs:
     needs: validate-source
     permissions:
       contents: read
-    uses: masanork/ibis-office/.github/workflows/linux-appimage-compile.yml@0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93
+    uses: sorane-dev/docs/.github/workflows/linux-appimage-compile.yml@0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93
 
   linux:
     name: Linux AppImage trusted build
@@ -200,7 +213,7 @@ jobs:
       attestations: write
       contents: read
       id-token: write
-    uses: masanork/ibis-office/.github/workflows/linux-appimage-builder.yml@0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93
+    uses: sorane-dev/docs/.github/workflows/linux-appimage-builder.yml@0ea0a290aaef5c68c8a2160d7ada061a3c6d5d93
 
   verify-linux-provenance:
     name: Verify downloaded Linux AppImage provenance

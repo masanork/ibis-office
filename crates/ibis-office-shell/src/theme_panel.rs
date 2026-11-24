@@ -40,21 +40,21 @@ pub struct ThemePalettePreset {
 }
 
 pub const OFFICE_CURRENT_COLORS: [(&str, Rgb); 12] = [
-            ("dk1", Rgb(0x000000)), ("lt1", Rgb(0xffffff)),
-            ("dk2", Rgb(0x0e2841)), ("lt2", Rgb(0xe8e8e8)),
-            ("accent1", Rgb(0x156082)), ("accent2", Rgb(0xe97132)),
-            ("accent3", Rgb(0x196b24)), ("accent4", Rgb(0x0f9ed5)),
-            ("accent5", Rgb(0xa02b93)), ("accent6", Rgb(0x4ea72e)),
-            ("hlink", Rgb(0x467886)), ("folHlink", Rgb(0x96607d)),
-        ];
+    ("dk1", Rgb(0x000000)), ("lt1", Rgb(0xffffff)),
+    ("dk2", Rgb(0x0e2841)), ("lt2", Rgb(0xe8e8e8)),
+    ("accent1", Rgb(0x156082)), ("accent2", Rgb(0xe97132)),
+    ("accent3", Rgb(0x196b24)), ("accent4", Rgb(0x0f9ed5)),
+    ("accent5", Rgb(0xa02b93)), ("accent6", Rgb(0x4ea72e)),
+    ("hlink", Rgb(0x467886)), ("folHlink", Rgb(0x96607d)),
+];
 pub const OFFICE_2013_2022_COLORS: [(&str, Rgb); 12] = [
-            ("dk1", Rgb(0x000000)), ("lt1", Rgb(0xffffff)),
-            ("dk2", Rgb(0x44546a)), ("lt2", Rgb(0xe7e6e6)),
-            ("accent1", Rgb(0x4472c4)), ("accent2", Rgb(0xed7d31)),
-            ("accent3", Rgb(0xa5a5a5)), ("accent4", Rgb(0xffc000)),
-            ("accent5", Rgb(0x5b9bd5)), ("accent6", Rgb(0x70ad47)),
-            ("hlink", Rgb(0x0563c1)), ("folHlink", Rgb(0x954f72)),
-        ];
+    ("dk1", Rgb(0x000000)), ("lt1", Rgb(0xffffff)),
+    ("dk2", Rgb(0x44546a)), ("lt2", Rgb(0xe7e6e6)),
+    ("accent1", Rgb(0x4472c4)), ("accent2", Rgb(0xed7d31)),
+    ("accent3", Rgb(0xa5a5a5)), ("accent4", Rgb(0xffc000)),
+    ("accent5", Rgb(0x5b9bd5)), ("accent6", Rgb(0x70ad47)),
+    ("hlink", Rgb(0x0563c1)), ("folHlink", Rgb(0x954f72)),
+];
 
 pub const THEME_PALETTES: [ThemePalettePreset; 8] = [
     ThemePalettePreset {

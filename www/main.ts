@@ -83,6 +83,7 @@ declare global {
     /** Download an exported HTML document without sending it to a server. */
     ibisOfficeDownloadHtml: (name: string, bytes: Uint8Array) => void;
     /** Called from Rust for the CMYK profile setting (ICC file picker, kept in IndexedDB). */
+    ibisOfficePickDesignTokens: (maxBytes: number) => Promise<PickedFile | null>;
     ibisOfficePickIcc: () => Promise<PickedFile | null>;
     ibisOfficeIccSave: (name: string, bytes: Uint8Array) => void;
     ibisOfficeIccForget: () => void;
@@ -314,7 +315,7 @@ function showPdf(tab: Window | null, bytes: Uint8Array): void {
 }
 
 /** Show the browser's file picker. Resolves to `null` when cancelled. */
-function pickFile(accept?: string): Promise<PickedFile | null> {
+function pickFile(accept?: string, maxBytes?: number): Promise<PickedFile | null> {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -325,6 +326,10 @@ function pickFile(accept?: string): Promise<PickedFile | null> {
       const file = input.files?.[0];
       if (!file) {
         resolve(null);
+        return;
+      }
+      if (maxBytes !== undefined && file.size > maxBytes) {
+        reject(new Error('File is too large'));
         return;
       }
       file.arrayBuffer().then((buffer) => resolve({ name: file.name, bytes: new Uint8Array(buffer) }), reject);
@@ -839,6 +844,7 @@ window.ibisOfficeDecodeHeic = decodeHeic;
 window.ibisOfficePickFile = () => pickFile();
 window.ibisOfficeFetchUrl = fetchSameOriginUrl;
 window.ibisOfficePickIcc = pickIcc;
+window.ibisOfficePickDesignTokens = (maxBytes) => pickFile('.json', maxBytes);
 window.ibisOfficeIccSave = iccSave;
 window.ibisOfficeIccForget = iccForget;
 window.ibisOfficeIccLoad = iccLoad;
