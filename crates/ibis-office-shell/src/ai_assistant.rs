@@ -71,6 +71,9 @@ struct JsonLinesFieldPicker {
     catalog: ibis_doc_model::query::JsonLinesFieldCatalog,
     selected: Vec<String>,
     filter: Entity<InputState>,
+    first_line: Entity<InputState>,
+    last_line: Entity<InputState>,
+    errors_only: bool,
     _filter_subscription: Subscription,
 }
 
@@ -1202,9 +1205,16 @@ impl SlideEditor {
                         let filter = cx.new(|cx| InputState::new(window, cx)
                             .placeholder(crate::i18n::text("editor.jsonl.filter").to_string()));
                         let subscription = cx.observe(&filter, |_, _, cx| cx.notify());
+                        let line_field = |key, window: &mut Window, cx: &mut Context<Self>| {
+                            cx.new(|cx| InputState::new(window, cx)
+                                .placeholder(crate::i18n::text(key).to_string()))
+                        };
+                        let first_line = line_field("editor.jsonl.first-line", window, cx);
+                        let last_line = line_field("editor.jsonl.last-line", window, cx);
                         if let Some(panel) = this.ai_assistant.as_mut() {
                             panel.json_lines_fields = Some(JsonLinesFieldPicker {
                                 source: path, catalog, selected: Vec::new(), filter,
+                                first_line, last_line, errors_only: false,
                                 _filter_subscription: subscription,
                             });
                         }
@@ -1221,7 +1231,27 @@ impl SlideEditor {
         let Some(path) = self.selected_json_lines_source().cloned() else { return };
         let Some(picker) = self.ai_assistant.as_ref().and_then(|panel| panel.json_lines_fields.as_ref())
             .filter(|picker| picker.source == path && !picker.selected.is_empty()) else { return };
+        let parse_line = |field: &Entity<InputState>| {
+            let value = field.read(cx).value();
+            let value = value.trim();
+            if value.is_empty() {
+                Ok(None)
+            } else {
+                value.parse::<u32>().ok().filter(|&line| line > 0).map(Some).ok_or(())
+            }
+        };
+        let (Ok(first), Ok(last)) = (parse_line(&picker.first_line), parse_line(&picker.last_line))
+        else {
+            self.set_status(crate::i18n::text("editor.jsonl.invalid-range").to_string(), cx);
+            return;
+        };
+        let first = first.unwrap_or(1);
+        if last.is_some_and(|last| last < first) {
+            self.set_status(crate::i18n::text("editor.jsonl.invalid-range").to_string(), cx);
+            return;
+        }
         let paths = picker.selected.clone();
+        let errors_only = picker.errors_only;
         let file_id = self.file_id;
         self.commit_edit(window, cx);
         let presentation = self.document.presentation();
@@ -1239,7 +1269,8 @@ impl SlideEditor {
         let args = json!({
             "destination_sheet": name,
             "anchor": "A1",
-            "sql": format!("SELECT * FROM input ORDER BY _jsonl_line LIMIT {limit}"),
+            "sql": "SELECT * FROM input WHERE _jsonl_line >= ?1 AND (?2 IS NULL OR _jsonl_line <= ?2) AND (?3 = 0 OR _jsonl_error IS NOT NULL) ORDER BY _jsonl_line LIMIT ?4",
+            "params": [json!(first), json!(last), json!(u8::from(errors_only)), json!(limit)],
             "datasets": [{"source":"1","alias":"input","paths":paths}],
         });
         self.set_status(crate::i18n::text("editor.jsonl.extracting").to_string(), cx);
@@ -1279,6 +1310,7 @@ impl SlideEditor {
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn json_lines_field_controls(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use gpui_kit::component::checkbox::Checkbox;
         use gpui_kit::component::Disableable as _;
         let source = self.selected_json_lines_source()?;
         let panel = self.ai_assistant.as_ref()?;
@@ -1322,6 +1354,21 @@ impl SlideEditor {
             .when(catalog.truncated, |body| body.child(div().text_xs().child(text("editor.jsonl.truncated"))))
             .child(Input::new(&picker.filter).small())
             .child(div().id("jsonl-field-list").max_h(px(200.0)).overflow_y_scroll().children(items))
+            .child(h_flex().gap_1()
+                .child(v_flex().flex_1().min_w_0()
+                    .child(div().text_xs().child(text("editor.jsonl.first-line")))
+                    .child(Input::new(&picker.first_line).small()))
+                .child(v_flex().flex_1().min_w_0()
+                    .child(div().text_xs().child(text("editor.jsonl.last-line")))
+                    .child(Input::new(&picker.last_line).small())))
+            .child(Checkbox::new("jsonl-errors-only").label(text("editor.jsonl.errors-only"))
+                .checked(picker.errors_only)
+                .on_change(cx.listener(|this, checked, _, cx| {
+                    if let Some(picker) = this.ai_assistant.as_mut().and_then(|panel| panel.json_lines_fields.as_mut()) {
+                        picker.errors_only = *checked;
+                        cx.notify();
+                    }
+                })))
             .child(h_flex().gap_1().flex_wrap().children([
                 (25, "editor.jsonl.export-small"),
                 (1000, "editor.jsonl.export"),

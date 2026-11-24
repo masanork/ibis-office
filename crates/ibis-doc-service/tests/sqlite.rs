@@ -1637,3 +1637,82 @@ fn saved_report_selectors_bind_typed_values_and_apply_the_preview() {
     assert_eq!(rows["rows"][0][0], "001");
     assert_eq!(rows["rows"][0][1].as_f64(), Some(9.0));
 }
+
+#[test]
+fn json_lines_errors_only_range_survives_save_and_refresh() {
+    use ibis_doc_model::{CellValue, Document, sheet_calc::sheet_of_slide};
+    use std::time::Instant;
+    use ibis_doc_service::{
+        DraftToolContext, prepare_selected_datasets_export, prepare_selected_query_refresh,
+        query_report_definition,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("late-errors.jsonl");
+    let records = "{\"event\":\"ok\"}\n".repeat(100_000);
+    std::fs::write(
+        &path,
+        format!("{records}bad-before\n{{\"event\":\"good\"}}\nbad-at-end\nbad-after\n"),
+    )
+    .unwrap();
+    let start = Instant::now();
+    let catalog = ibis_doc_model::query::json_lines_fields(&path).unwrap();
+    assert_eq!((catalog.valid_records, catalog.invalid_records), (100_001, 3));
+    let catalog_time = start.elapsed();
+    let opened = ibis_formats::open(ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let source = std::sync::Arc::new(opened.source);
+    let mut draft = Document::new(opened.presentation);
+    let name = draft.presentation().workbook.as_ref().unwrap().sheets[0].name.clone();
+    let sql = "SELECT * FROM input WHERE _jsonl_line >= ?1 AND (?2 IS NULL OR _jsonl_line <= ?2) AND (?3 = 0 OR _jsonl_error IS NOT NULL) ORDER BY _jsonl_line LIMIT ?4";
+    let params = json!([100_002, 100_003, 1, 25]);
+    let files = [path];
+    let apply_context = || DraftToolContext { source: Some(source.clone()), workbook: Default::default() };
+    let args = json!({
+        "destination_sheet":name, "anchor":"A1", "sql":sql, "params":params,
+        "datasets":[{"source":"1","alias":"input","paths":["/event"]}],
+    });
+    let mut unfiltered = args.clone();
+    unfiltered.as_object_mut().unwrap().remove("destination_sheet");
+    unfiltered.as_object_mut().unwrap().remove("anchor");
+    unfiltered["params"] = json!([100_003, null, 0, 1]);
+    let result = ibis_doc_service::run_selected_datasets_tool(&files, "sqlite_query", unfiltered).unwrap();
+    assert_eq!(result["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(result["rows"][0][0], 100_003);
+
+    let start = Instant::now();
+    let prepared = prepare_selected_datasets_export(&files, args).unwrap();
+    prepared.stage(&mut draft, apply_context()).unwrap();
+    let export_time = start.elapsed();
+    let sheet = |book: &ibis_doc_model::Presentation| {
+        sheet_of_slide(&book.slides[0]).unwrap().clone()
+    };
+    let initial = sheet(draft.presentation());
+    assert_eq!(initial.cell(1, 0).unwrap().value, CellValue::Number(100_003.0));
+    assert!(initial.cell(2, 0).is_none());
+
+    let bytes = source.save(draft.presentation(), Default::default()).unwrap();
+    let reopened = ibis_formats::open(bytes).unwrap();
+    let mut draft = Document::new(reopened.presentation);
+    let refresh = json!({"table": initial.tables[0].name, "sources":["1"]});
+    let definition = query_report_definition(draft.presentation(), &refresh).unwrap();
+    assert_eq!(definition["params"], params);
+    assert_eq!(definition["sources"][0]["paths"], json!(["/event"]));
+
+    std::fs::write(
+        &files[0],
+        format!("{records}bad-before\nbad-at-start\n{{\"event\":\"repaired\"}}\nbad-after\n"),
+    )
+    .unwrap();
+    let start = Instant::now();
+    let prepared = prepare_selected_query_refresh(&files, refresh, definition).unwrap();
+    let (result, _) = prepared.stage(&mut draft, DraftToolContext {
+        source: Some(std::sync::Arc::new(reopened.source)), workbook: Default::default(),
+    }).unwrap();
+    let refresh_time = start.elapsed();
+    assert_eq!(result["rows"], 1);
+    let refreshed = sheet(draft.presentation());
+    assert_eq!(refreshed.cell(1, 0).unwrap().value, CellValue::Number(100_002.0));
+    assert!(refreshed.cell(1, 1).unwrap().text.starts_with("Expected one JSON object"));
+    assert!(refreshed.cell(2, 0).is_none());
+    eprintln!("100,004 JSONL lines: catalog {catalog_time:?}, extraction {export_time:?}, refresh {refresh_time:?}");
+}

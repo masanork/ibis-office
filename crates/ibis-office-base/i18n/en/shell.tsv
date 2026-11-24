@@ -1728,13 +1728,17 @@ editor.jsonl.scanning	Scanning JSONL fields…
 editor.jsonl.filter	Filter paths (shows up to 120)
 editor.jsonl.counts	{valid} valid records and {invalid} unreadable lines
 editor.jsonl.truncated	Some fields exceeded the catalog limits and are omitted.
-editor.jsonl.export	Create a table from the first 1,000 lines
+editor.jsonl.export	Create a table with up to 1,000 rows
 editor.jsonl.extracting	Reading the selected fields…
 editor.jsonl.retry	The workbook changed during import. Try again.
 editor.jsonl.exported	The selected fields were imported into a new worksheet.
 editor.jsonl.preview-loading	Preparing the JSONL preview…
 editor.jsonl.preview-ready	The JSONL preview is ready. Open JSONL fields to choose columns to import.
-editor.jsonl.export-small	Create a table from the first 25 lines
+editor.jsonl.export-small	Create a table with up to 25 rows
+editor.jsonl.first-line	Start line (default 1)
+editor.jsonl.last-line	End line (optional)
+editor.jsonl.errors-only	Errors only
+editor.jsonl.invalid-range	Use positive line numbers and an end line on or after the start line.
 ai.skills	Skills
 ai.skill-none	No skill
 ai.workspace-instructions	Use folder instructions (AGENTS.md)
