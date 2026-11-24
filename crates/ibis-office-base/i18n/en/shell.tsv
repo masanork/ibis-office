@@ -1736,6 +1736,10 @@ editor.jsonl.preview-loading	Preparing the JSONL preview…
 editor.jsonl.preview-exact	{total} lines (end of file reached)
 editor.jsonl.preview-estimated	Showing the first {lines} lines · About {total} total (estimated from the preview)
 editor.jsonl.next-page	Show next 200 lines
+editor.jsonl.jump-line	Line number
+editor.jsonl.jump	Go
+editor.jsonl.jump-past-end	The requested line is past the end ({total} lines).
+editor.jsonl.invalid-jump	Enter a line number of 1 or greater.
 editor.jsonl.page-exact	Showing lines {first}–{last} · {total} total
 editor.jsonl.page-estimated	Showing lines {first}–{last} · About {total} total
 editor.jsonl.preview-reopen	Cannot continue. Reopen the source JSONL file. {error}

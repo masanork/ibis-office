@@ -83,6 +83,7 @@ struct JsonLinesFieldPicker {
 struct JsonLinesPreview {
     cursor: Option<ibis_doc_model::query::JsonLinesPreviewCursor>,
     page: Option<ibis_doc_model::query::QTable>,
+    jump_line: Entity<InputState>,
     busy: bool,
 }
 
@@ -1168,7 +1169,7 @@ impl SlideEditor {
                         .map(|prepared| (prepared, None))
                 }
             }).await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 if this.file_id != file_id || this.document.presentation() != &baseline
                     || (json_lines && this.selected_json_lines_source() != Some(&source)) {
                     return;
@@ -1189,8 +1190,10 @@ impl SlideEditor {
                         let status = if let Some(cursor) = cursor {
                             let position = cursor.position();
                             if let Some(panel) = this.ai_assistant.as_mut() {
+                                let jump_line = cx.new(|cx| InputState::new(window, cx)
+                                    .placeholder(crate::i18n::text("editor.jsonl.jump-line").to_string()));
                                 panel.json_lines_preview = Some(JsonLinesPreview {
-                                    cursor: Some(cursor), page: None, busy: false,
+                                    cursor: Some(cursor), page: None, jump_line, busy: false,
                                 });
                             }
                             crate::i18n::format(
@@ -1219,12 +1222,22 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    fn next_json_lines_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn read_json_lines_page(&mut self, jump: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(source) = self.selected_json_lines_source().cloned() else { return };
         let file_id = self.file_id;
         let Some(preview) = self.ai_assistant.as_mut().and_then(|panel| panel.json_lines_preview.as_mut()) else { return };
+        let line = if jump {
+            let value = preview.jump_line.read(cx).value();
+            let Some(line) = value.trim().parse::<usize>().ok().filter(|&line| line > 0) else {
+                self.set_status(crate::i18n::text("editor.jsonl.invalid-jump").to_string(), cx);
+                return;
+            };
+            Some(line)
+        } else {
+            None
+        };
         let Some(cursor) = preview.cursor.take() else { return };
-        if cursor.position().at_end() {
+        if line.is_none() && cursor.position().at_end() {
             preview.cursor = Some(cursor);
             return;
         }
@@ -1232,7 +1245,13 @@ impl SlideEditor {
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let selected_path = source.clone();
-            let result = cx.background_executor().spawn(async move { cursor.next_page(&selected_path) }).await;
+            let result = cx.background_executor().spawn(async move {
+                if let Some(line) = line {
+                    cursor.jump_to(&selected_path, line)
+                } else {
+                    cursor.next_page(&selected_path)
+                }
+            }).await;
             let _ = this.update(cx, |this, cx| {
                 if this.file_id != file_id || this.selected_json_lines_source() != Some(&source) {
                     return;
@@ -1289,17 +1308,27 @@ impl SlideEditor {
             let position = cursor.position();
             if let Some(page) = &preview.page {
                 let first = position.lines.saturating_sub(page.rows.len()) + 1;
-                let summary = crate::i18n::format(
-                    if position.at_end() { "editor.jsonl.page-exact" } else { "editor.jsonl.page-estimated" },
+                let total = cursor.total_lines();
+                let key = if page.rows.is_empty() {
+                    "editor.jsonl.jump-past-end"
+                } else if total.is_some() {
+                    "editor.jsonl.page-exact"
+                } else {
+                    "editor.jsonl.page-estimated"
+                };
+                let summary = crate::i18n::format(key,
                     &[("first", &first.to_string()), ("last", &position.lines.to_string()),
-                        ("total", &position.estimated_lines().to_string())],
-                );
+                        ("total", &total.unwrap_or_else(|| position.estimated_lines()).to_string())]);
                 body = body.child(div().text_xs().child(summary));
             }
+            body = body.child(h_flex().gap_1()
+                .child(div().flex_1().min_w_0().child(Input::new(&preview.jump_line).small()))
+                .child(Button::new("jsonl-jump").outline().xsmall().label(text("editor.jsonl.jump"))
+                    .on_click(cx.listener(|this, _, window, cx| this.read_json_lines_page(true, window, cx)))));
             if !position.at_end() {
                 body = body.child(Button::new("jsonl-next-page").outline().xsmall()
                     .label(text("editor.jsonl.next-page"))
-                    .on_click(cx.listener(|this, _, window, cx| this.next_json_lines_page(window, cx))));
+                    .on_click(cx.listener(|this, _, window, cx| this.read_json_lines_page(false, window, cx))));
             }
         }
         if preview.busy {

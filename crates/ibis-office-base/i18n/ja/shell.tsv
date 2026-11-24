@@ -1734,6 +1734,10 @@ editor.jsonl.preview-loading	JSONLのプレビューを作成しています…
 editor.jsonl.preview-exact	全{total}行（末尾まで確認）
 editor.jsonl.preview-estimated	先頭{lines}行を表示中・全体約{total}行（先頭のデータから推定）
 editor.jsonl.next-page	次の200行を見る
+editor.jsonl.jump-line	行番号を入力
+editor.jsonl.jump	移動
+editor.jsonl.jump-past-end	指定行は末尾を超えています（全{total}行）。
+editor.jsonl.invalid-jump	1以上の行番号を入力してください。
 editor.jsonl.page-exact	{first}〜{last}行を表示中・全{total}行
 editor.jsonl.page-estimated	{first}〜{last}行を表示中・全体約{total}行
 editor.jsonl.preview-reopen	続きが読めません。元のJSONLを開き直してください。{error}

@@ -95,6 +95,8 @@ impl JsonLinesSamplePosition {
     }
 }
 
+const JSON_LINES_CHECKPOINT_STEP: usize = 4096;
+
 /// Position and file identity for continuing a read-only preview.
 #[derive(Clone, Debug)]
 pub struct JsonLinesPreviewCursor {
@@ -102,6 +104,9 @@ pub struct JsonLinesPreviewCursor {
     metadata: std::fs::Metadata,
     position: JsonLinesSamplePosition,
     max_lines: usize,
+    // Keys are physical lines already consumed, values are the next byte offsets.
+    checkpoints: std::sync::Arc<BTreeMap<usize, usize>>,
+    total_lines: Option<usize>,
 }
 
 impl JsonLinesPreviewCursor {
@@ -109,21 +114,82 @@ impl JsonLinesPreviewCursor {
         self.position
     }
 
+    pub fn total_lines(&self) -> Option<usize> {
+        self.total_lines
+    }
+
+    fn check_selected(&self, selected_path: &Path) -> Result<(), String> {
+        if std::fs::metadata(selected_path)
+            .is_ok_and(|current| same_snapshot(&self.metadata, &current))
+        {
+            Ok(())
+        } else {
+            Err("JSON Lines source changed; reopen the file".into())
+        }
+    }
+
     pub fn next_page(&self, selected_path: &Path) -> Result<(QTable, Self), String> {
-        let check_selected = || {
-            if std::fs::metadata(selected_path)
-                .is_ok_and(|current| same_snapshot(&self.metadata, &current))
-            {
-                Ok(())
-            } else {
-                Err("JSON Lines source changed; reopen the file".to_owned())
-            }
-        };
-        check_selected()?;
+        self.check_selected(selected_path)?;
         let page =
             super::DiskDataset::collect_json_lines_page(&self.path, self.max_lines, Some(self))?;
-        check_selected()?;
+        self.check_selected(selected_path)?;
         Ok(page)
+    }
+
+    pub fn jump_to(&self, selected_path: &Path, line: usize) -> Result<(QTable, Self), String> {
+        let target = line
+            .checked_sub(1)
+            .ok_or("Use a positive JSON Lines line number")?;
+        self.check_selected(selected_path)?;
+
+        let mut cursor = self.clone();
+        let (&start_line, &start_offset) = self
+            .checkpoints
+            .range(..=target)
+            .next_back()
+            .unwrap_or((&0, &0));
+        let (mut lines, mut bytes) = (start_line, start_offset);
+        let current = self.position;
+        if (lines..=target).contains(&current.lines) {
+            (lines, bytes) = (current.lines, current.bytes);
+        }
+        if lines < target && bytes < current.file_bytes {
+            let mut file = File::open(&self.path).map_err(|error| error.to_string())?;
+            if !same_snapshot(
+                &self.metadata,
+                &file.metadata().map_err(|error| error.to_string())?,
+            ) {
+                return Err("JSON Lines source changed; reopen the file".into());
+            }
+            file.seek(SeekFrom::Start(bytes as u64))
+                .map_err(|error| error.to_string())?;
+            let remaining = current.file_bytes - bytes;
+            let mut reader = BufReader::new(file.take((remaining as u64).saturating_add(1)));
+            while lines < target {
+                let skipped = reader
+                    .skip_until(b'\n')
+                    .map_err(|error| error.to_string())?;
+                if skipped == 0 {
+                    break;
+                }
+                bytes = bytes
+                    .checked_add(skipped)
+                    .ok_or("JSON Lines source changed; reopen the file")?;
+                if bytes > current.file_bytes {
+                    return Err("JSON Lines source changed; reopen the file".into());
+                }
+                lines += 1;
+                if lines.is_multiple_of(JSON_LINES_CHECKPOINT_STEP) {
+                    std::sync::Arc::make_mut(&mut cursor.checkpoints).insert(lines, bytes);
+                }
+            }
+        }
+        cursor.position.lines = lines;
+        cursor.position.bytes = bytes;
+        if cursor.position.at_end() {
+            cursor.total_lines = Some(lines);
+        }
+        cursor.next_page(selected_path)
     }
 }
 
@@ -610,15 +676,35 @@ pub(super) fn visit_recoverable_json_lines(
     {
         return Err("JSON Lines source changed; reopen the file".into());
     }
+    let position = JsonLinesSamplePosition {
+        lines: previous_lines + position.lines,
+        bytes: offset + position.bytes,
+        file_bytes,
+    };
+    let mut checkpoints = cursor
+        .map(|cursor| cursor.checkpoints.clone())
+        .unwrap_or_default();
+    if max_lines != usize::MAX
+        && position.lines > previous_lines
+        && (cursor.is_none()
+            || position.lines / JSON_LINES_CHECKPOINT_STEP
+                > previous_lines / JSON_LINES_CHECKPOINT_STEP)
+    {
+        std::sync::Arc::make_mut(&mut checkpoints).insert(position.lines, position.bytes);
+    }
     Ok(JsonLinesPreviewCursor {
         path: path.to_path_buf(),
         metadata: before,
-        position: JsonLinesSamplePosition {
-            lines: previous_lines + position.lines,
-            bytes: offset + position.bytes,
-            file_bytes,
-        },
+        position,
         max_lines,
+        checkpoints: cursor
+            .map(|cursor| cursor.checkpoints.clone())
+            .unwrap_or_default(),
+        total_lines: if position.at_end() {
+            Some(position.lines)
+        } else {
+            cursor.and_then(|cursor| cursor.total_lines)
+        },
     })
 }
 
@@ -962,6 +1048,58 @@ mod tests {
         assert_eq!(cursor.position().bytes, input.len());
         assert!(cursor.position().at_end());
         assert_eq!(cursor.position().estimated_lines(), 401);
+    }
+
+    #[test]
+    fn preview_jumps_reuse_offsets_and_keep_physical_line_numbers() {
+        use std::time::Instant;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jump.ndjson");
+        let row = "{\"event\":\"example\",\"actor\":{\"id\":\"001\"}}\r\n";
+        let input = format!(
+            "{}broken\n{}{{\"last\":true}}",
+            row.repeat(900_000),
+            row.repeat(100_000)
+        );
+        std::fs::write(&path, &input).unwrap();
+        let (_, initial) =
+            super::super::DiskDataset::collect_json_lines_sample(&path, 200).unwrap();
+        let start = Instant::now();
+        let (far_page, far) = initial.jump_to(&path, 900_001).unwrap();
+        let first_time = start.elapsed();
+        assert_eq!(far_page.rows[0][0], CellValue::Number(900_001.0));
+        assert!(
+            matches!(&far_page.rows[0][1], CellValue::Text(error) if error.starts_with("Expected one JSON object"))
+        );
+        assert_eq!(far_page.rows[1][0], CellValue::Number(900_002.0));
+        assert!(far.checkpoints.range(..900_001).next_back().is_some_and(
+            |(&line, &offset)| 900_000 - line < JSON_LINES_CHECKPOINT_STEP
+                && offset == row.len() * line
+        ));
+        let (_, near) = far.jump_to(&path, 1).unwrap();
+        let start = Instant::now();
+        let (repeated, far) = near.jump_to(&path, 900_001).unwrap();
+        let repeat_time = start.elapsed();
+        assert_eq!(far_page, repeated);
+        eprintln!(
+            "1,000,002 lines / {} bytes: first jump {first_time:?}, repeated jump {repeat_time:?}",
+            input.len()
+        );
+
+        let (empty, end) = far.jump_to(&path, 2_000_000).unwrap();
+        assert!(empty.rows.is_empty());
+        assert!(end.position().at_end());
+        assert_eq!(end.total_lines(), Some(1_000_002));
+        let (last, end) = end.jump_to(&path, 1_000_002).unwrap();
+        assert_eq!(last.rows[0][0], CellValue::Number(1_000_002.0));
+        assert!(end.position().at_end());
+        let (_, earlier) = end.jump_to(&path, 1).unwrap();
+        assert!(!earlier.position().at_end());
+        assert_eq!(earlier.total_lines(), Some(1_000_002));
+
+        std::fs::write(&path, "{}").unwrap();
+        assert!(earlier.jump_to(&path, 1).unwrap_err().contains("reopen"));
     }
 
     #[test]
