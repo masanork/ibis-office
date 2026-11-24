@@ -567,6 +567,34 @@ impl Render for View {
                                     }))
                                     .child(div().truncate().text_sm().child(node.name.clone())),
                             )
+                            .children(node.paragraph.and_then(|paragraph| {
+                                let (editor, _, file_id) = view.editor.as_ref()?;
+                                let editor = editor.upgrade()?;
+                                let editor = editor.read(cx);
+                                if editor.file_id != *file_id {
+                                    return None;
+                                }
+                                let folded = crate::with_format!(
+                                    editor,
+                                    outline_heading_folded(editor, paragraph)
+                                )?;
+                                let key = if folded {
+                                    "structured.expand-body"
+                                } else {
+                                    "structured.collapse-body"
+                                };
+                                Some(
+                                    Button::new(("structured-fold-body", id))
+                                        .outline()
+                                        .xsmall()
+                                        .label(crate::i18n::text(key))
+                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                            view.selected = Some(id);
+                                            view.navigate_heading(id, true, cx);
+                                            cx.notify();
+                                        })),
+                                )
+                            }))
                             .children((node.expanded && node.more).then(|| {
                                 Button::new(("more", id))
                                     .ghost()
@@ -759,41 +787,6 @@ impl Render for View {
                     })
                     .child(div().flex_1().min_w_0().h_full().child(rows)),
             )
-            .children(self.selected.and_then(|id| {
-                let paragraph = self.tree.nodes[id].paragraph?;
-                let (editor, _, file_id) = self.editor.as_ref()?;
-                let editor = editor.upgrade()?;
-                let editor = editor.read(cx);
-                if editor.file_id != *file_id {
-                    return None;
-                }
-                let folded =
-                    crate::with_format!(editor, outline_heading_folded(editor, paragraph))?;
-                let key = if folded {
-                    "structured.expand-body"
-                } else {
-                    "structured.collapse-body"
-                };
-                Some(
-                    h_flex()
-                        .px_4()
-                        .py_2()
-                        .gap_2()
-                        .border_t_1()
-                        .border_color(theme.border)
-                        .child(
-                            Button::new("structured-fold-body")
-                                .outline()
-                                .small()
-                                .label(crate::i18n::text(key))
-                                .on_click(cx.listener(move |view, _, _, cx| {
-                                    view.navigate_heading(id, true, cx);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(div().truncate().child(self.tree.nodes[id].name.clone())),
-                )
-            }))
             .children(self.selected.zip(self.source.as_ref()).map(|(id, source)| {
                 let node = &self.tree.nodes[id];
                 let raw = &source.bytes[node.span.clone()];
