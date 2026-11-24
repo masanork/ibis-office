@@ -1958,8 +1958,10 @@ impl SlideEditor {
         let flag = cancel.flag();
         panel.acp_cancel = Some(cancel);
         self.emit_assistant_event(json!({"event":"started","run_id":run_id,"harness":"acp"}));
-        cx.spawn(async move |editor, cx| {
-            let (result, turn, commands, labels) = cx.background_executor().spawn(async move {
+        let (finished, outcome) = futures::channel::oneshot::channel();
+        // Document draft operations can exceed the GPUI worker stack.
+        let worker = std::thread::Builder::new().name("assistant-acp".into()).stack_size(8 * 1024 * 1024)
+            .spawn(move || {
                 let mut commands = Vec::new();
                 let mut labels = Vec::new();
                 let mut edits = 0;
@@ -1997,15 +1999,26 @@ impl SlideEditor {
                     Ok(value)
                 });
                 labels.extend(evidence);
-                (result, turn, commands, labels)
-            }).await;
+                let _ = finished.send(result.map(|text| (text, turn, commands, labels)));
+            });
+        cx.spawn(async move |editor, cx| {
+            let result = match worker {
+                Ok(_) => outcome.await.unwrap_or_else(|_| Err("The ACP worker stopped unexpectedly.".into())),
+                Err(error) => Err(format!("Could not start the ACP worker: {error}")),
+            };
             let _ = editor.update(cx, |editor, cx| {
-                let valid = turn.matches_target(editor.file_id, editor.file_path().as_deref(), editor.presentation());
+                let result = result.and_then(|(text, turn, commands, labels)| {
+                    if turn.matches_target(editor.file_id, editor.file_path().as_deref(), editor.presentation()) {
+                        Ok((text, turn, commands, labels))
+                    } else {
+                        Err("The document changed during the ACP turn.".into())
+                    }
+                });
                 let Some(panel) = editor.ai_assistant.as_mut().filter(|panel| panel.run_id == run_id && panel.streaming) else { return };
                 panel.acp_cancel = None;
                 panel.streaming = false;
                 let event = match result {
-                    Ok(text) if valid => {
+                    Ok((text, turn, commands, labels)) => {
                         if !text.trim().is_empty() {
                             panel.messages.push(UiMessage::new(UiMessageKind::Assistant, text.clone()));
                         }
@@ -2015,8 +2028,7 @@ impl SlideEditor {
                             None => json!({"event":"completed","run_id":run_id,"review":false,"text":text}),
                         }
                     }
-                    result => {
-                        let error = result.err().unwrap_or_else(|| "The document changed during the ACP turn.".into());
+                    Err(error) => {
                         panel.messages.push(UiMessage::new(UiMessageKind::Error, error.clone()));
                         json!({"event":"error","run_id":run_id,"message":error})
                     }

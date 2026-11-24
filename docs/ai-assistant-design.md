@@ -18,6 +18,13 @@ Linux・macOS の DOCX・XLSX・PPTX で、Assistant の入力欄に依頼を書
 
 別の ACP v1 エージェントを使う場合は、提供元の手順で stdio 対応の実行ファイルをインストールし、ibisOffice 起動時に `IBIS_ACP_COMMAND` と、引数の JSON 文字列配列 `IBIS_ACP_ARGS`（省略時は `[]`）を設定する。実行ファイルと引数はシェルを介さずに渡す。
 
+たとえば [Claude Agent ACP](https://zed.dev/acp/agent/claude-agent) を使う場合は、Node.js 環境でアダプターをインストールし、次のように起動する。認証はアダプターの案内に従う。
+
+```sh
+npm install --global @zed-industries/claude-agent-acp
+IBIS_ACP_COMMAND=claude-agent-acp ibisOffice
+```
+
 たとえば既存のコマンドライン MCP からは `assistant_prompt` に `{"text":"変更案を作って","harness":"acp"}` を渡す。既存の実行 ID、キュー、`assistant_result` を使える。実行中は `assistant_cancel` に同じ `run_id` を渡すか、GUI の「停止」を押す。`harness` を省略した呼び出しと `builtin` は従来の内蔵経路を使う。
 
 外部エージェントに渡す文書 MCP は、アクティブ文書の形式に対応する共通カタログと `document_context` を公開する。変更は下書きに対して行い、確定は GUI のレビュー画面で行う。文書が変わっていれば確定を拒否し、確定後は一度の Undo で戻せる。ファイルの保存や別文書のオープンはこの MCP に含めない。
