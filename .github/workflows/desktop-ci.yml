@@ -210,6 +210,18 @@ jobs:
           artifact-ids: ${{ needs.linux.outputs.provenance_artifact_id }}
           merge-multiple: true
           path: provenance
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          persist-credentials: false
+      - name: Verify downloaded AppImage inventories
+        run: |
+          set -euo pipefail
+          (cd linux && sha256sum -c SHA256SUMS)
+          python3 -m venv "$RUNNER_TEMP/bom-validator"
+          python="$RUNNER_TEMP/bom-validator/bin/python"
+          "$python" -m pip install 'jsonschema==4.23.0'
+          "$python" scripts/verify-appimage-boms.py linux "$EXPECTED_SOURCE_SHA"
       - name: Verify signature, source and AppImage digest
         run: |
           set -euo pipefail
