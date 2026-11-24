@@ -3190,3 +3190,18 @@ query.report-cohort-unavailable	比較対象別の寄与を照合できません
 query.report-chart-delta	{chart} · {category}（{series}） {before} → {after}（差 {delta}）
 query.report-chart-changed	変わるグラフ: {chart}
 query.report-chart-unchanged	変わらないグラフ: {chart}
+query.report-quotient-heading	{table} · {metric} の寄与ランキング
+query.report-quotient-pp	ポイント
+query.report-quotient-unavailable	寄与ランキングを計算できません。
+query.report-quotient-mismatch	寄与の合計が全体の増減と一致しません。
+query.report-quotient-total	全{count}グループの寄与合計 {total} {unit}
+query.report-quotient-row	{rank}. {key} · {total} {unit}
+query.report-quotient-parts	グループ内 {within} · 構成比 {composition}
+query.report-quotient-before	適用済みの値
+query.report-quotient-after	適用後の予定値
+query.report-quotient-absent	このグループの行はありません
+query.report-quotient-numerator	分子
+query.report-quotient-denominator	分母
+query.report-quotient-sum	合計
+query.report-quotient-count	件数
+query.report-quotient-evidence	{field} · {sheet}!{cell} = {value}

@@ -31,6 +31,98 @@ fn saved_check_text(value: String) -> AnyElement {
     div().whitespace_normal().child(value).into_any_element()
 }
 
+fn signed_contribution(value: &Value) -> String {
+    value.as_f64().map_or_else(|| "—".to_owned(), |number| {
+        if number != 0.0 && !(0.000001..1e9).contains(&number.abs()) {
+            format!("{number:+.6e}")
+        } else {
+            format!("{number:+.6}").trim_end_matches('0').trim_end_matches('.').to_owned()
+        }
+    })
+}
+
+fn quotient_preview(
+    comparison: &Value, index: usize, selected: Option<usize>, generation: u64, cx: &mut Context<SlideEditor>,
+) -> impl IntoElement {
+    let rate = comparison["kind"] == "rate";
+    let unit = if rate { text("query.report-quotient-pp").to_string() }
+        else { comparison["unit"].as_str().unwrap_or_default().to_owned() };
+    let heading = format("query.report-quotient-heading", &[
+        ("table", &comparison["table"].as_str().unwrap_or_default()),
+        ("metric", &comparison["metric"].as_str().unwrap_or_default()),
+    ]);
+    let mut section = v_flex().gap_1().child(div().text_sm().font_weight(FontWeight::BOLD).child(heading));
+    let decomposition = &comparison["decomposition"];
+    let ranking = &decomposition["ranking"];
+    let Some(groups) = ranking["groups"].as_array() else {
+        return section.child(div().text_sm().child(text("query.report-quotient-unavailable")));
+    };
+    if decomposition["state"] == "totals_mismatch" {
+        section = section.child(div().text_sm().child(text("query.report-quotient-mismatch")));
+    }
+    section = section.child(div().text_sm().child(format("query.report-quotient-total", &[
+        ("count", &ranking["group_count"]), ("total", &signed_contribution(&ranking["total_contribution"])), ("unit", &unit),
+    ])));
+    for (row, group) in groups.iter().enumerate() {
+        let key = group["key"].as_str().unwrap_or_default();
+        let rank = row + 1;
+        let total = signed_contribution(&group["contribution"]);
+        let label = format("query.report-quotient-row", &[("rank", &rank), ("key", &key), ("total", &total), ("unit", &unit)]);
+        let id = SharedString::from(format!("query-report-quotient-{index}-{row}"));
+        let button = action_button(id).small().label(label.clone()).on_click(cx.listener(move |editor, _, _, cx| {
+            if let Some(review) = editor.query_reports_mut().filter(|panel| panel.generation == generation)
+                .and_then(|panel| panel.review.as_mut())
+            {
+                if review.quotient_selection.get(&index) == Some(&row) {
+                    review.quotient_selection.remove(&index);
+                } else {
+                    review.quotient_selection.insert(index, row);
+                }
+                cx.notify();
+            }
+        }));
+        #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+        let button = crate::shell::scenario::button_probe::observe_control(div().id(SharedString::from(format!("quotient-row-probe-{index}-{row}"))).child(button), SharedString::from(format!("query-report-quotient-row:{label}")).into());
+        section = section.child(button).child(div().text_sm().child(saved_check_text(format("query.report-quotient-parts", &[
+            ("within", &signed_contribution(&group["within_group"])),
+            ("composition", &signed_contribution(&group["composition"])),
+        ]))));
+        if selected == Some(row) {
+            let fields = if rate { ["numerator", "denominator"] } else { ["sum", "count"] };
+            for (side, side_label) in [("before", "query.report-quotient-before"), ("after", "query.report-quotient-after")] {
+                let evidence = &group[side];
+                section = section.child(div().text_sm().font_weight(FontWeight::BOLD).child(text(side_label)));
+                let Some(sheet) = evidence["sheet"].as_str() else {
+                    section = section.child(div().text_sm().child(text("query.report-quotient-absent")));
+                    continue;
+                };
+                for field in fields {
+                    let Some(cell) = evidence[field]["cell"].as_str() else { continue };
+                    let name = format!("query.report-quotient-{field}");
+                    let value = &evidence[field]["value"];
+                    let value = if value.is_null() { "—".to_owned() } else { value.to_string() };
+                    let line = format("query.report-quotient-evidence", &[
+                        ("field", &text(&name)), ("sheet", &sheet), ("cell", &cell), ("value", &value),
+                    ]);
+                    if side == "before" {
+                        let reference = format!("'{}'!{cell}", sheet.replace('\'', "''"));
+                        let button = action_button(SharedString::from(format!("query-report-quotient-cell-{index}-{field}")))
+                            .small().label(line.clone()).on_click(cx.listener(move |editor, _, window, cx| {
+                                editor.go_to_reference(&reference, window, cx);
+                            }));
+                        #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+                        let button = crate::shell::scenario::button_probe::observe_control(div().id(SharedString::from(format!("quotient-evidence-probe-{index}-{field}"))).child(button), SharedString::from(format!("query-report-quotient-evidence:{line}")).into());
+                        section = section.child(button);
+                    } else {
+                        section = section.child(div().text_sm().child(saved_check_text(line)));
+                    }
+                }
+            }
+        }
+    }
+    section
+}
+
 fn parameter_choices(workbook: &Presentation, control: &ReportParameterControl) -> Vec<(Value, String)> {
     let Some(sheet) = workbook.slides.iter()
         .find(|slide| slide.name.as_deref() == Some(&control.sheet))
@@ -74,6 +166,8 @@ struct ReviewedRefresh {
     candidate: Option<Presentation>,
     chart_diffs: Vec<Value>,
     chart_diffs_truncated: bool,
+    quotient_previews: Vec<Value>,
+    quotient_selection: BTreeMap<usize, usize>,
 }
 
 pub(crate) struct QueryReportPanel {
@@ -533,7 +627,22 @@ impl SlideEditor {
                             let (chart_diffs, chart_diffs_truncated) = candidate.as_ref().map(|candidate| {
                                 crate::chart_preview_diff::summary(&base, candidate, &result["charts"])
                             }).unwrap_or_default();
-                            Ok(ReviewedRefresh { base, result, commands, candidate, chart_diffs, chart_diffs_truncated })
+                            let quotient_previews = candidate.as_ref().map(|candidate| {
+                                result["reports"].as_array().into_iter().flatten().filter_map(|report| {
+                                    let table = report["table"].as_str()?;
+                                    let definition = crate::chart_cohort::report_comparison_definition(&base, table).ok()?;
+                                    if !crate::report_quotient::supports(definition) {
+                                        return None;
+                                    }
+                                    let metric = definition["metric"].as_str()?;
+                                    let mut preview = crate::report_quotient::compare(&base, candidate, table, metric, None);
+                                    preview["table"] = json!(table);
+                                    preview["metric"] = json!(metric);
+                                    Some(preview)
+                                }).collect()
+                            }).unwrap_or_default();
+                            Ok(ReviewedRefresh { base, result, commands, candidate, chart_diffs, chart_diffs_truncated,
+                                quotient_previews, quotient_selection: BTreeMap::new() })
                         })
                         .map_err(|error| ibis_doc_service::ToolError::new("internal", error.to_string()))?
                         .join()
@@ -856,6 +965,10 @@ impl SlideEditor {
                 ])));
             }
             if self.presentation() == &review.base {
+                for (index, comparison) in review.quotient_previews.iter().enumerate() {
+                    body = body.child(quotient_preview(comparison, index,
+                        review.quotient_selection.get(&index).copied(), generation, cx));
+                }
                 for chart in &review.chart_diffs {
                     for change in chart["top"].as_array().into_iter().flatten() {
                         body = body.child(div().text_sm().child(format("query.report-chart-delta", &[
@@ -1792,6 +1905,7 @@ pub(crate) fn report_rate_scenario() {
     let missing = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult1", "M")));
     let none = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult2", "Z")));
     assert_rate_evidence(&summary, &zero, &missing, &none);
+    assert_quotient_preview_ui(&mut scene, &summary, "conversion");
 }
 
 #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
@@ -1877,6 +1991,7 @@ pub(crate) fn report_average_scenario() {
     let invalid = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult1", "X")));
     let none = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult2", "Z")));
     assert_average_evidence(&summary, &zero, &missing, &invalid, &none);
+    assert_quotient_preview_ui(&mut scene, &summary, "mean");
 }
 
 #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
@@ -1942,4 +2057,46 @@ fn assert_quotient_effects(summary: &Value, delta_key: &str, effects: [f64; 2], 
     for (field, expected) in ["within_group","composition","before_share","after_share"].into_iter().zip(contributor) {
         assert!((breakdown["contributor"][field].as_f64().unwrap() - expected).abs() < 1e-12, "{field}");
     }
+}
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+fn assert_quotient_preview_ui(scene: &mut crate::shell::scenario::Scenario, summary: &Value, metric: &str) {
+    use crate::shell::scenario::button_probe;
+    let rate = metric == "conversion";
+    let unit = if rate { text("query.report-quotient-pp").to_string() }
+        else { summary["unit"].as_str().unwrap().to_owned() };
+    let ranking = summary["decomposition"]["ranking"]["groups"].as_array().unwrap();
+    scene.size(1280., 1200.);
+    scene.wait(100);
+    for (row, group) in ranking.iter().enumerate() {
+        let label = format("query.report-quotient-row", &[
+            ("rank", &(row + 1)), ("key", &group["key"].as_str().unwrap()),
+            ("total", &signed_contribution(&group["contribution"])), ("unit", &unit),
+        ]);
+        assert!(button_probe::bounds(&format!("query-report-quotient-row:{label}")).is_some(), "{label}");
+        let parts = format("query.report-quotient-parts", &[
+            ("within", &signed_contribution(&group["within_group"])),
+            ("composition", &signed_contribution(&group["composition"])),
+        ]);
+        assert!(button_probe::bounds(&format!("query-report-check-text:{parts}")).is_some(), "{parts}");
+    }
+    let first = button_probe::bounds("query-report-quotient-0-0").unwrap();
+    let second = button_probe::bounds("query-report-quotient-0-1").unwrap();
+    assert!(first.origin.y < second.origin.y);
+    button_probe::click(scene, "query-report-quotient-0-0");
+    let fields = if rate { ["numerator", "denominator"] } else { ["sum", "count"] };
+    for (side, prefix) in [("before", "query-report-quotient-evidence"), ("after", "query-report-check-text")] {
+        let evidence = &ranking[0][side];
+        for field in fields {
+            let label = text(&format!("query.report-quotient-{field}"));
+            let line = format("query.report-quotient-evidence", &[
+                ("field", &label), ("sheet", &evidence["sheet"].as_str().unwrap()),
+                ("cell", &evidence[field]["cell"].as_str().unwrap()), ("value", &evidence[field]["value"]),
+            ]);
+            assert!(button_probe::bounds(&format!("{prefix}:{line}")).is_some(), "{side}: {line}");
+        }
+    }
+    let first_field = fields[0];
+    button_probe::click(scene, &format!("query-report-quotient-cell-0-{first_field}"));
+    assert_eq!(scene.with(|editor, _| editor.current_cell()), Some((3, 5)));
 }

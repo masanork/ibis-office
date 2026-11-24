@@ -3193,3 +3193,18 @@ query.report-cohort-unavailable	The contributions by membership could not be rec
 query.report-chart-delta	{chart} · {category} ({series}) {before} → {after} (change {delta})
 query.report-chart-changed	Chart changes: {chart}
 query.report-chart-unchanged	Chart unchanged: {chart}
+query.report-quotient-heading	{table} · {metric} contribution ranking
+query.report-quotient-pp	pp
+query.report-quotient-unavailable	Contribution ranking unavailable.
+query.report-quotient-mismatch	The sum of contributions differs from the overall change.
+query.report-quotient-total	All {count} groups: {total} {unit}
+query.report-quotient-row	{rank}. {key} · {total} {unit}
+query.report-quotient-parts	Within group {within} · Composition {composition}
+query.report-quotient-before	Applied values
+query.report-quotient-after	Proposed values
+query.report-quotient-absent	No row for this group
+query.report-quotient-numerator	Numerator
+query.report-quotient-denominator	Denominator
+query.report-quotient-sum	Sum
+query.report-quotient-count	Count
+query.report-quotient-evidence	{field} · {sheet}!{cell} = {value}

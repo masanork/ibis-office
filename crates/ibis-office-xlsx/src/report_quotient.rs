@@ -202,15 +202,40 @@ impl CompensatedSum {
     }
 }
 
+struct ReportRow {
+    index: u32,
+    state: &'static str,
+    group: Option<Group>,
+}
+
 struct Side<'a> {
     metric: Metric,
     totals: QuotientTotals,
-    groups: BTreeMap<&'a str, Option<Group>>,
-    evidence: Value,
+    rows: BTreeMap<&'a str, ReportRow>,
+    sheet: &'a ibis_doc_model::Sheet,
+    columns: [u32; 3],
     source: Value,
 }
 
-fn report_side<'a>(workbook: &'a Presentation, name: &str, metric: &str, key: Option<&str>) -> Result<Side<'a>, &'static str> {
+impl Side<'_> {
+    fn evidence(&self, key: &str) -> Value {
+        let Some(row) = self.rows.get(key) else { return json!({"state":"absent"}); };
+        let [key_column, numerator_column, denominator_column] = self.columns;
+        let (_, _, left, right) = self.metric.fields();
+        let value = row.group.and_then(|group| group.value.is_finite().then_some(group.value));
+        let cell = |column| json!({
+            "cell":cell_name(column, row.index),
+            "value":Observation::read(self.sheet.cell(row.index, column)).value(),
+        });
+        json!({
+            "state":if row.state == "ready" && value.is_none() {"non_finite"} else {row.state},
+            "sheet":self.source["sheet"], "key_cell":cell_name(key_column, row.index),
+            (self.metric.name()):value, (left):cell(numerator_column), (right):cell(denominator_column),
+        })
+    }
+}
+
+fn report_side<'a>(workbook: &'a Presentation, name: &str, metric: &str) -> Result<Side<'a>, &'static str> {
     let definition = report_comparison_definition(workbook, name)?;
     let kind = Metric::from_definition(definition).ok_or("unknown_metric")?;
     if definition["metric"].as_str() != Some(metric) {
@@ -236,9 +261,8 @@ fn report_side<'a>(workbook: &'a Presentation, name: &str, metric: &str, key: Op
     if range.last_row.saturating_sub(range.first_row) > 100_000 {
         return Err("too_many_rows");
     }
-    let mut groups = BTreeMap::new();
+    let mut rows = BTreeMap::new();
     let mut totals = QuotientTotals::default();
-    let mut evidence = json!({"state":"absent"});
     for row in range.first_row + 1..=range.last_row.saturating_sub(table.totals_rows) {
         let Some(CellValue::Text(label)) = sheet.cell(row, key_column).map(|cell| &cell.value) else {
             return Err("invalid_key");
@@ -252,15 +276,8 @@ fn report_side<'a>(workbook: &'a Presentation, name: &str, metric: &str, key: Op
                 Some(Group { value: n / d, denominator: d }),
             _ => None,
         };
-        if groups.insert(label.as_str(), group).is_some() { return Err("duplicate_key"); }
-        if key == Some(label.as_str()) {
-            let value = group.and_then(|group| group.value.is_finite().then_some(group.value));
-            evidence = json!({
-                "state":if state == "ready" && value.is_none() {"non_finite"} else {state},
-                "sheet":page.name, "key_cell":cell_name(key_column, row), (kind.name()):value,
-                (left):{"cell":cell_name(numerator_column,row),"value":numerator.value()},
-                (right):{"cell":cell_name(denominator_column,row),"value":denominator.value()},
-            });
+        if rows.insert(label.as_str(), ReportRow { index: row, state, group }).is_some() {
+            return Err("duplicate_key");
         }
     }
     let source = json!({
@@ -269,7 +286,7 @@ fn report_side<'a>(workbook: &'a Presentation, name: &str, metric: &str, key: Op
         (left_column):definition[left_column],
         (right_column):definition[right_column],
     });
-    Ok(Side { metric: kind, totals, groups, evidence, source })
+    Ok(Side { metric: kind, totals, rows, sheet, columns: [key_column, numerator_column, denominator_column], source })
 }
 
 fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, key: Option<&str>) -> Value {
@@ -307,11 +324,11 @@ fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, ke
         }
         ranked.push((label, effect, contribution));
     };
-    for (&label, &group) in &before.groups {
-        accumulate(label, group, after.groups.get(label).copied().flatten());
+    for (&label, row) in &before.rows {
+        accumulate(label, row.group, after.rows.get(label).and_then(|row| row.group));
     }
-    for (&label, &group) in &after.groups {
-        if !before.groups.contains_key(label) { accumulate(label, None, group); }
+    for (&label, row) in &after.rows {
+        if !before.rows.contains_key(label) { accumulate(label, None, row.group); }
     }
     let within = within.sum * scale;
     let composition = composition.sum * scale;
@@ -335,6 +352,7 @@ fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, ke
         "key":key, "contribution":contribution, "within_group":effect.within * scale,
         "composition":effect.composition * scale,
         "before_share":effect.before_share, "after_share":effect.after_share,
+        "before":before.evidence(key), "after":after.evidence(key),
     })).collect();
     json!({
         "state":if residual.abs() <= tolerance && group_residual.abs() <= tolerance {"ready"} else {"totals_mismatch"},
@@ -350,11 +368,11 @@ pub(crate) fn compare(base: &Presentation, candidate: &Presentation, table: &str
     if report_comparison_definition(base, table) != report_comparison_definition(candidate, table) {
         return json!({"state":"comparison_changed"});
     }
-    let before = match report_side(base, table, metric, key) {
+    let before = match report_side(base, table, metric) {
         Ok(side) => side,
         Err(reason) => return json!({"state":reason,"side":"before"}),
     };
-    let after = match report_side(candidate, table, metric, key) {
+    let after = match report_side(candidate, table, metric) {
         Ok(side) => side,
         Err(reason) => return json!({"state":reason,"side":"after"}),
     };
@@ -370,15 +388,20 @@ pub(crate) fn compare(base: &Presentation, candidate: &Presentation, table: &str
         result["unit"] = unit.clone();
     }
     if let Some(key) = key {
-        let (_, delta) = kind.delta(before.evidence[kind.name()].as_f64(), after.evidence[kind.name()].as_f64());
-        result["contributor"] = json!({"key":key,"before":before.evidence,"after":after.evidence,(delta_key):delta});
+        let before = before.evidence(key);
+        let after = after.evidence(key);
+        let (_, delta) = kind.delta(before[kind.name()].as_f64(), after[kind.name()].as_f64());
+        result["contributor"] = json!({"key":key,"before":before,"after":after,(delta_key):delta});
     }
     result
 }
 
 pub(crate) fn applied(workbook: &Presentation, table: &str, metric: &str, key: &str) -> Value {
-    match report_side(workbook, table, metric, Some(key)) {
-        Ok(side) => json!({"state":side.evidence["state"],"kind":side.metric.name(),"table":table,"metric":metric,"key":key,"evidence":side.evidence}),
+    match report_side(workbook, table, metric) {
+        Ok(side) => {
+            let evidence = side.evidence(key);
+            json!({"state":evidence["state"],"kind":side.metric.name(),"table":table,"metric":metric,"key":key,"evidence":evidence})
+        }
         Err(reason) => json!({"state":reason}),
     }
 }
