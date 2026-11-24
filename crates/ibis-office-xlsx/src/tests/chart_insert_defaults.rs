@@ -313,13 +313,35 @@ pub(crate) fn chart_drill_down() {
     };
     assert_eq!(current(&mut s), (value.0, (value.1, value.2)));
 
+    s.update(|e, w, cx| e.insert_sheet(w, cx));
+    let (evidence_sheet, evidence_name) = s.with(|e, _| (e.current_slide, e.slide().name.clone().unwrap()));
     s.update(|e, w, cx| {
+        for (sheet, row, column, value) in [
+            (detail_sheet, 5, 3, CellValue::Number(23.5)),
+            (evidence_sheet, 0, 0, CellValue::Text("Aggregation rule".into())),
+        ] {
+            e.run_sheet(vec![Command::Sheet(SheetCommand::SetCells {
+                sheet, edits: vec![CellEdit { row, column, input: CellInput::Value(value) }],
+            })], cx);
+        }
+        e.select_slide(detail_sheet, w, cx);
+        e.set_cell(4, 5);
+        e.insert_cell_link(&format!("#'{evidence_name}'!A1"), cx);
         e.select_slide(category.0, w, cx);
         e.set_cell(category.1, category.2);
         e.insert_cell_link(&format!("#'{detail_name}'!D6"), cx);
         e.select_slide(chart_sheet, w, cx);
     });
     s.click(first_bar);
+    assert_eq!(s.with(|e, _| e.current_slide), chart_sheet);
+    let drill = s.with(|e, _| e.live_chart_drill_down());
+    assert_eq!(drill["state"], "ready");
+    assert_eq!(drill["destination"]["sheet"], detail_name);
+    assert_eq!(drill["destination"]["anchor"], "D6");
+    assert!(drill["value_cell"]["data"]["value"].is_number());
+    assert_eq!(drill["destination"]["cells"][0]["data"]["value"], 23.5);
+    assert_eq!(drill["evidence"][0]["target"]["sheet"], evidence_name);
+    assert_eq!(drill["evidence"][0]["target"]["cells"][0]["data"]["value"], "Aggregation rule");
     assert_eq!(s.with(|e, _| e.current_slide), chart_sheet);
     s.dispatch_click_with(first_bar, modifier);
     assert_eq!(current(&mut s), (detail_sheet, (3, 5)));

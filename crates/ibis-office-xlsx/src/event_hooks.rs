@@ -199,40 +199,106 @@ impl SlideEditor {
     }
 
     fn chart_drill_down(&mut self, id: ibis_doc_model::ShapeId, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let target = (|| {
-            let (_, _, _, series, index) = self.selected_chart_bar?;
-            let ShapeKind::Chart(chart) = &self.slide().shape(id)?.kind else { return None };
-            let refs = chart.cell_refs.get(series)?;
-            let source = |formula: &str| {
-                let reference = crate::sheet_ui::parse_reference(formula)?;
-                let (slide, range) = self.resolve_reference(&reference)?;
-                let (column, row) = chart_source_cell(range, index)?;
-                Some((slide, column, row))
-            };
-            let value = refs.values.as_deref().and_then(source);
-            for (slide, column, row) in refs.categories.as_deref().and_then(source).into_iter().chain(value) {
-                let (_, sheet) = crate::shell::editor::sheet_of(self.presentation().slide(slide)?)?;
-                let location = sheet.hyperlinks.iter().find_map(|link| {
-                    (link.target.is_none()
-                        && (link.range.first_row..=link.range.last_row).contains(&row)
-                        && (link.range.first_column..=link.range.last_column).contains(&column))
-                        .then_some(link.location.as_deref()).flatten()
-                });
-                if let Some(location) = location
-                    && let Some(reference) = crate::sheet_ui::parse_reference(location)
-                    && let Some(target) = self.resolve_reference_from(&reference, slide)
-                {
-                    return Some(target);
-                }
-            }
-            let (slide, column, row) = value?;
-            Some((slide, ibis_doc_model::CellRange {
-                first_column: column, last_column: column, first_row: row, last_row: row,
-            }))
-        })();
-        let Some((slide, range)) = target else { return false };
-        self.jump_to_cell_range(slide, range, window, cx);
+        let Some(drill) = self.chart_drill_target(id) else { return false };
+        self.jump_to_cell_range(drill.target_sheet, drill.target, window, cx);
         true
+    }
+
+    fn chart_drill_target(&self, id: ibis_doc_model::ShapeId) -> Option<ChartDrillTarget> {
+        use ibis_doc_model::CellRange;
+
+        let (file, slide, selected, series, index) = self.selected_chart_bar?;
+        if file != self.file_id || slide != self.current_slide || selected != id {
+            return None;
+        }
+        let ShapeKind::Chart(chart) = &self.slide().shape(id)?.kind else { return None };
+        let refs = chart.cell_refs.get(series)?;
+        let source = |formula: &str| {
+            let reference = crate::sheet_ui::parse_reference(formula)?;
+            let (slide, range) = self.resolve_reference(&reference)?;
+            let (column, row) = chart_source_cell(range, index)?;
+            Some((slide, column, row))
+        };
+        let value = refs.values.as_deref().and_then(source);
+        let category = refs.categories.as_deref().and_then(source);
+        for (slide, column, row) in category.into_iter().chain(value) {
+            let (_, sheet) = crate::shell::editor::sheet_of(self.presentation().slide(slide)?)?;
+            let location = sheet.hyperlinks.iter().find_map(|link| {
+                (link.target.is_none() && range_contains(link.range, column, row))
+                    .then_some(link.location.as_deref()).flatten()
+            });
+            if let Some(location) = location
+                && let Some(reference) = crate::sheet_ui::parse_reference(location)
+                && let Some((target_sheet, target)) = self.resolve_reference_from(&reference, slide)
+            {
+                return Some(ChartDrillTarget { target_sheet, target, category, value, linked: true });
+            }
+        }
+        let (target_sheet, column, row) = value?;
+        let target = CellRange {
+            first_column: column, last_column: column, first_row: row, last_row: row,
+        };
+        Some(ChartDrillTarget { target_sheet, target, category, value, linked: false })
+    }
+
+    pub(crate) fn live_chart_drill_down(&self) -> serde_json::Value {
+        use serde_json::json;
+
+        let Some(drill) = self.selection.and_then(|id| self.chart_drill_target(id)) else {
+            return json!({"state":"no_target"});
+        };
+        let source = |(slide, column, row)| {
+            let slide = self.presentation().slide(slide)?;
+            let (_, sheet) = crate::shell::editor::sheet_of(slide)?;
+            Some(json!({
+                "sheet":slide.name, "cell":ibis_doc_model::cell_name(column, row),
+                "data":sheet.cell(row, column).map(drill_cell_data),
+            }))
+        };
+        let Some(slide) = self.presentation().slide(drill.target_sheet) else {
+            return json!({"state":"no_target"});
+        };
+        let Some((_, sheet)) = crate::shell::editor::sheet_of(slide) else {
+            return json!({"state":"no_target"});
+        };
+        let bounds = drill_bounds(drill.target, drill.linked);
+        let mut evidence = Vec::new();
+        let mut evidence_truncated = false;
+        for link in &sheet.hyperlinks {
+            if link.target.is_some() || !range_contains(bounds, link.range.first_column, link.range.first_row) {
+                continue;
+            }
+            let Some((id, range)) = link.location.as_deref()
+                .and_then(crate::sheet_ui::parse_reference)
+                .and_then(|reference| self.resolve_reference_from(&reference, drill.target_sheet))
+            else { continue };
+            let returns_to_source = drill.category.into_iter().chain(drill.value)
+                .any(|(slide, column, row)| slide == id && range_contains(range, column, row));
+            if returns_to_source
+                || (id == drill.target_sheet && range_contains(bounds, range.first_column, range.first_row))
+            {
+                continue;
+            }
+            let Some(page) = self.presentation().slide(id) else { continue };
+            let Some((_, evidence_sheet)) = crate::shell::editor::sheet_of(page) else { continue };
+            if evidence.len() == 4 {
+                evidence_truncated = true;
+                break;
+            }
+            evidence.push(json!({
+                "link_cell":ibis_doc_model::cell_name(link.range.first_column, link.range.first_row),
+                "target":drill_section(page, evidence_sheet, range, true),
+            }));
+        }
+
+        json!({
+            "state":"ready",
+            "category_cell":drill.category.and_then(source),
+            "value_cell":drill.value.and_then(source),
+            "destination":drill_section(slide, sheet, drill.target, drill.linked),
+            "evidence":evidence,
+            "evidence_truncated":evidence_truncated,
+        })
     }
 
     /// Escape, after the window's dialogs: a cell jump in progress is cancelled.
@@ -339,6 +405,97 @@ impl SlideEditor {
         };
         Ok(crate::shell::format::PdfJob { bytes, slides, format: "pdf", args: None })
     }
+}
+
+type ChartSourceCell = (ibis_doc_model::SlideId, u32, u32);
+
+struct ChartDrillTarget {
+    target_sheet: ibis_doc_model::SlideId,
+    target: ibis_doc_model::CellRange,
+    category: Option<ChartSourceCell>,
+    value: Option<ChartSourceCell>,
+    linked: bool,
+}
+
+fn range_contains(range: ibis_doc_model::CellRange, column: u32, row: u32) -> bool {
+    (range.first_column..=range.last_column).contains(&column)
+        && (range.first_row..=range.last_row).contains(&row)
+}
+
+fn drill_bounds(anchor: ibis_doc_model::CellRange, linked: bool) -> ibis_doc_model::CellRange {
+    if linked && anchor.first_column == anchor.last_column && anchor.first_row == anchor.last_row {
+        return ibis_doc_model::CellRange {
+            last_column: (anchor.first_column + 31).min(16_383),
+            last_row: (anchor.first_row + 99).min(1_048_575),
+            ..anchor
+        };
+    }
+    ibis_doc_model::CellRange {
+        last_column: anchor.last_column.min(anchor.first_column + 31),
+        last_row: anchor.last_row.min(anchor.first_row + 99),
+        ..anchor
+    }
+}
+
+fn drill_cell_data(cell: &ibis_doc_model::SheetCell) -> serde_json::Value {
+    use ibis_doc_model::CellValue;
+    use serde_json::json;
+
+    const MAX_TEXT_CHARS: usize = 4096;
+    let bounded = |text: &str| text.chars().take(MAX_TEXT_CHARS).collect::<String>();
+    let value = match &cell.value {
+        CellValue::Empty => serde_json::Value::Null,
+        CellValue::Number(n) => json!(n),
+        CellValue::Text(text) => json!(bounded(text)),
+        CellValue::Bool(value) => json!(value),
+        CellValue::Error(error) => json!({"error":format!("{error:?}")}),
+    };
+    json!({
+        "value":value, "text":bounded(&cell.text), "formula":cell.formula.as_deref().map(bounded),
+        "truncated":cell.text.chars().nth(MAX_TEXT_CHARS).is_some()
+            || matches!(&cell.value, CellValue::Text(text) if text.chars().nth(MAX_TEXT_CHARS).is_some())
+            || cell.formula.as_ref().is_some_and(|formula| formula.chars().nth(MAX_TEXT_CHARS).is_some()),
+    })
+}
+
+fn drill_section(
+    slide: &ibis_doc_model::Slide,
+    sheet: &ibis_doc_model::Sheet,
+    anchor: ibis_doc_model::CellRange,
+    linked: bool,
+) -> serde_json::Value {
+    use ibis_doc_model::{CellValue, cell_name};
+    use serde_json::json;
+
+    let bounds = drill_bounds(anchor, linked);
+    let mut cells = Vec::new();
+    let mut remaining_bytes = 256 * 1024;
+    let mut truncated = anchor.last_column > bounds.last_column || anchor.last_row > bounds.last_row;
+    'rows: for row in bounds.first_row..=bounds.last_row {
+        for column in bounds.first_column..=bounds.last_column {
+            let Some(cell) = sheet.cell(row, column) else { continue };
+            let empty = cell.value == CellValue::Empty
+                || matches!(&cell.value, CellValue::Text(value) if value.is_empty());
+            if empty && cell.formula.is_none() {
+                continue;
+            }
+            let entry = json!({"cell":cell_name(column, row),"data":drill_cell_data(cell)});
+            // Keep all sections combined well within the live socket response limit.
+            let bytes = entry.to_string().len() + 1;
+            if cells.len() == 100 || bytes > remaining_bytes {
+                truncated = true;
+                break 'rows;
+            }
+            remaining_bytes -= bytes;
+            cells.push(entry);
+        }
+    }
+    let address = |r: ibis_doc_model::CellRange| {
+        let first = cell_name(r.first_column, r.first_row);
+        let last = cell_name(r.last_column, r.last_row);
+        if first == last { first } else { format!("{first}:{last}") }
+    };
+    json!({"sheet":slide.name,"anchor":address(anchor),"window":address(bounds),"cells":cells,"truncated":truncated})
 }
 
 pub(crate) fn chart_source_cell(range: ibis_doc_model::CellRange, index: usize) -> Option<(u32, u32)> {
