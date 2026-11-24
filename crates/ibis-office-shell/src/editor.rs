@@ -1545,7 +1545,7 @@ impl SlideEditor {
         self.open_file_local(window, cx);
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[cfg(not(target_family = "wasm"))]
     const ANALYSIS_LOG_EXTENSIONS: &'static [&'static str] = &["jsonl", "ndjson", "log", "syslog"];
 
     /// The OS's (the browser's) file picker, and the file opened as this window's document: the way 開く works without a host, and the
@@ -1753,6 +1753,13 @@ impl SlideEditor {
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    pub fn opens_as_analysis_source(path: &std::path::Path) -> bool {
+        cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux"))
+            && path.extension().is_some_and(|ext| Self::ANALYSIS_LOG_EXTENSIONS.iter()
+                .any(|candidate| ext.eq_ignore_ascii_case(candidate)))
+    }
+
     /// Open the .pptx, .xlsx or .docx at `path` and put it first in the
     /// recent files, then show slide `slide` (1-based) if given. A window
     /// with no document shows an empty one of the file's kind while it
@@ -1760,8 +1767,7 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub fn open_path(&mut self, path: std::path::PathBuf, slide: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        if path.extension().is_some_and(|ext| Self::ANALYSIS_LOG_EXTENSIONS.iter()
-            .any(|candidate| ext.eq_ignore_ascii_case(candidate))) {
+        if Self::opens_as_analysis_source(&path) {
             self.open_selected_analysis_source(path, window, cx);
             return;
         }

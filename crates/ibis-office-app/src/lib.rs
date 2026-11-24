@@ -1180,20 +1180,24 @@ pub fn run_native() {
         eprintln!("ibisOffice: --ai-query needs the original DOCX file");
         std::process::exit(2);
     }
-    let initial_query = args.ai_query.clone();
-    // The file named is read and parsed while the application starts.
-    let early_read = args.path.clone().map(|path| {
+    // Read documents while the application starts. Analysis sources use the
+    // editor's regular open path to create a workbook preview.
+    let start_read = |path: std::path::PathBuf, query: Option<std::path::PathBuf>| {
+        if query.is_none() && SlideEditor::opens_as_analysis_source(&path) {
+            return (path, None);
+        }
         let (sender, receiver) = std::sync::mpsc::channel();
         let read_path = path.clone();
         std::thread::spawn(move || {
-            let result = match initial_query {
+            let result = match query {
                 Some(query) => read_file_at_ai_citation(&read_path, &query).map(|(loaded, id)| (loaded, Some(id))),
                 None => read_file(&read_path).map(|loaded| (loaded, None)),
             };
             sender.send(result).ok()
         });
-        (path, receiver)
-    });
+        (path, Some(receiver))
+    };
+    let early_read = args.path.clone().map(|path| start_read(path, args.ai_query.clone()));
     let slide = args.slide;
     let quit_after_first_frame = args.quit_after_first_frame;
     timing::quit_after_document(quit_after_first_frame);
@@ -1262,44 +1266,35 @@ pub fn run_native() {
             // document of the file's kind until the file is read.
             let (first, rest) = match (early_read, pending.split_first()) {
                 (Some(read), _) => (Some(read), pending.clone()),
-                (None, Some((first, rest))) => {
-                    let (sender, receiver) = std::sync::mpsc::channel();
-                    let read_path = first.clone();
-                    std::thread::spawn(move || sender.send(read_file(&read_path).map(|loaded| (loaded, None))).ok());
-                    (Some((first.clone(), receiver)), rest.to_vec())
-                }
+                (None, Some((first, rest))) => (Some(start_read(first.clone(), None)), rest.to_vec()),
                 (None, None) => (None, Vec::new()),
             };
             let opens_file = first.is_some();
             let read_only = args.read_only;
-            match first {
-                Some((path, receiver)) => open_window_with(cx, move |editor, window, cx| {
-                    editor.read_only = read_only;
-                    #[cfg(any(target_os = "macos", target_os = "linux"))]
-                    if let Some(socket) = assistant_socket {
-                        shell::assistant_socket::start(socket, editor, window, cx);
+            open_window_with(cx, move |editor, window, cx| {
+                editor.read_only = read_only;
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                if let Some(socket) = assistant_socket {
+                    shell::assistant_socket::start(socket, editor, window, cx);
+                }
+                let Some((path, receiver)) = first else { return };
+                let Some(receiver) = receiver else {
+                    editor.open_path(path, slide, window, cx);
+                    return;
+                };
+                let (position, destination) = std::sync::mpsc::channel();
+                let read = move || {
+                    let (loaded, paragraph) = receiver.recv()
+                        .unwrap_or_else(|_| Err(crate::shell::i18n::text("shell.read-stopped").to_string()))?;
+                    let _ = position.send(paragraph);
+                    Ok(loaded)
+                };
+                editor.open_read_then(path, read, slide, window, cx, move |editor, cx| {
+                    if let Ok(Some(id)) = destination.try_recv() {
+                        docx::reveal_body_paragraph(editor, id, cx);
                     }
-                    let (position, destination) = std::sync::mpsc::channel();
-                    let read = move || {
-                        let (loaded, paragraph) = receiver.recv()
-                            .unwrap_or_else(|_| Err(crate::shell::i18n::text("shell.read-stopped").to_string()))?;
-                        let _ = position.send(paragraph);
-                        Ok(loaded)
-                    };
-                    editor.open_read_then(path, read, slide, window, cx, move |editor, cx| {
-                        if let Ok(Some(id)) = destination.try_recv() {
-                            docx::reveal_body_paragraph(editor, id, cx);
-                        }
-                    });
-                }),
-                None => open_window_with(cx, move |editor, _window, _cx| {
-                    editor.read_only = read_only;
-                    #[cfg(any(target_os = "macos", target_os = "linux"))]
-                    if let Some(socket) = assistant_socket {
-                        shell::assistant_socket::start(socket, editor, _window, _cx);
-                    }
-                }),
-            }
+                });
+            });
             rest.into_iter().for_each(|p| open_path_in_app(p, cx));
             timing::mark("window");
             if !quit_after_first_frame {
