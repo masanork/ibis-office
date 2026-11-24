@@ -11,7 +11,10 @@ use ibis_doc_model::flow::{
 
 use crate::{Error, Opened};
 
+mod appearance;
 mod table;
+
+use appearance::Packets;
 
 use table::{CellInfo, Table};
 
@@ -60,7 +63,10 @@ fn read(data: &[u8]) -> Result<FlowDocument, Error> {
         .get(start..end)
         .filter(|_| start >= header.len())
         .ok_or_else(malformed)?;
-    let mut importer = Importer::default();
+    let mut importer = Importer {
+        packets: Packets::read(&data[..start]),
+        ..Default::default()
+    };
     let mut deleted_depth = 0usize;
     while let Some(&code) = body.first() {
         let record = take_record(body, code)?;
@@ -113,7 +119,8 @@ fn next_id(ids: &mut u32) -> u32 {
 }
 
 #[derive(Default)]
-struct Importer {
+struct Importer<'a> {
+    packets: Packets<'a>,
     document: FlowDocument,
     paragraph: FlowParagraph,
     text: String,
@@ -123,7 +130,7 @@ struct Importer {
     table: Option<Table>,
 }
 
-impl Importer {
+impl Importer<'_> {
     fn record(&mut self, code: u8, record: &[u8]) -> Result<(), Error> {
         if code == 0xd4 && record[4] & 0x40 == 0 {
             match record[1] {
@@ -134,7 +141,7 @@ impl Importer {
                     if self.has_paragraph() {
                         self.finish_paragraph();
                     }
-                    self.table = Some(Table::new(next_id(&mut self.ids), record)?);
+                    self.table = Some(Table::new(next_id(&mut self.ids), record, self.packets)?);
                     return Ok(());
                 }
                 0x2b => return self.table.as_mut().ok_or_else(malformed)?.start(),
@@ -148,7 +155,11 @@ impl Importer {
                 0xc0..=0xc5 => Some((true, false, CellInfo::default())),
                 0xbd..=0xbf => Some((false, true, CellInfo::default())),
                 0xd0 if record[4] & 0x40 == 0 => match record[1] {
-                    10..=16 => Some((record[1] != 10, false, CellInfo::read(record)?)),
+                    10..=16 => Some((
+                        record[1] != 10,
+                        false,
+                        CellInfo::read(record, self.packets)?,
+                    )),
                     17..=19 => Some((false, true, CellInfo::default())),
                     _ => None,
                 },
@@ -505,6 +516,49 @@ mod tests {
             assert!(paragraph.runs[0].style.underline);
         }
         assert!(open(&table_fixture(4, false)).is_err());
+    }
+
+    #[test]
+    fn saves_wp6_table_colors_and_line_styles_through_docx() {
+        use ibis_doc_model::{
+            Rgb,
+            flow::{BorderStyle, VerticalMerge},
+        };
+
+        let data = include_bytes!("../../../test/fixtures/wordperfect/appearance.wpd");
+        let opened = open(data).unwrap();
+        let flow = opened.presentation.flow.unwrap();
+        let [
+            Block::Paragraph(_),
+            Block::Table(table),
+            Block::Paragraph(_),
+        ] = flow.body.as_slice()
+        else {
+            panic!("expected the WordPerfect table between body paragraphs");
+        };
+        let anchor = &table.rows[0].cells[0];
+        let continuation = &table.rows[1].cells[0];
+        assert_eq!((anchor.span, anchor.merge), (2, VerticalMerge::Start));
+        assert_eq!(
+            (continuation.span, continuation.merge),
+            (2, VerticalMerge::Continue)
+        );
+        assert_eq!(anchor.shading, Some(Rgb(0xffe599)));
+        assert_eq!(continuation.shading, anchor.shading);
+        assert_eq!(table.rows[0].cells[1].shading, Some(Rgb(0xe2f0d9)));
+        assert_eq!(table.rows[1].cells[1].shading, Some(Rgb(0xddebf7)));
+
+        for (cell, side, style, eighth_points) in [
+            (anchor, 0, BorderStyle::Double, 9),
+            (anchor, 3, BorderStyle::Dotted, 6),
+            (continuation, 2, BorderStyle::Dashed, 12),
+        ] {
+            let border = cell.own_borders[side].flatten().unwrap();
+            assert_eq!(border.style, style);
+            assert_eq!(border.color, Rgb(0x6400b4));
+            assert_eq!((border.width * 8 + 6350) / 12700, eighth_points);
+        }
+        assert_eq!(continuation.own_borders[0], Some(None));
     }
 
     #[test]

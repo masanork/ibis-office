@@ -3556,6 +3556,21 @@ impl Writer<'_> {
         }
     }
 
+    fn cell_shading(&mut self, pr: NodeId, shading: Option<ibis_doc_model::Rgb>) {
+        match shading {
+            Some(color) => {
+                let element = self.ensure(pr, "shd", TC_PR_ORDER);
+                for attribute in ["w:themeFill", "w:themeFillTint", "w:themeFillShade"] {
+                    self.doc.remove_attr(element, attribute);
+                }
+                self.doc.set_attr(element, "w:val", "clear");
+                self.doc.set_attr(element, "w:color", "auto");
+                self.doc.set_attr(element, "w:fill", &format!("{:06X}", color.0));
+            }
+            None => self.remove_child(pr, "shd"),
+        }
+    }
+
     fn cell_props(&mut self, tc: NodeId, old: &FlowCell, was: &FlowTable, new: &FlowCell, t: &FlowTable) {
         const ORDER: &[&str] = TC_PR_ORDER;
         let width = |table: &FlowTable, row_cell: &FlowCell| -> i64 {
@@ -3580,18 +3595,7 @@ impl Writer<'_> {
             self.vertical_merge(pr, new.merge);
         }
         if old.shading != new.shading {
-            match new.shading {
-                Some(c) => {
-                    let e = self.ensure(pr, "shd", ORDER);
-                    for a in ["w:themeFill", "w:themeFillTint", "w:themeFillShade"] {
-                        self.doc.remove_attr(e, a);
-                    }
-                    self.doc.set_attr(e, "w:val", "clear");
-                    self.doc.set_attr(e, "w:color", "auto");
-                    self.doc.set_attr(e, "w:fill", &format!("{:06X}", c.0));
-                }
-                None => self.remove_child(pr, "shd"),
-            }
+            self.cell_shading(pr, new.shading);
         }
         if old.own_borders!=new.own_borders || old.diagonals!=new.diagonals {
             let borders=self.ensure(pr,"tcBorders",ORDER);
@@ -3713,19 +3717,9 @@ impl Writer<'_> {
             self.doc.set_attr(e, "w:type", "dxa");
         }
         let borders = self.doc.append_element(pr, &w("tblBorders"));
-        for (i, name) in ["top", "left", "bottom", "right", "insideH", "insideV"].into_iter().enumerate() {
-            // Model order: top, right, bottom, left, insideH, insideV.
-            let b = t.borders[[0, 3, 2, 1, 4, 5][i]].flatten();
-            let e = self.doc.append_element(borders, &w(name));
-            match b {
-                Some(b) => {
-                    self.doc.set_attr(e, "w:val", "single");
-                    self.doc.set_attr(e, "w:sz", &(b.width * 8 / 12_700).to_string());
-                    self.doc.set_attr(e, "w:space", "0");
-                    self.doc.set_attr(e, "w:color", &format!("{:06X}", b.color.0));
-                }
-                None => self.doc.set_attr(e, "w:val", "nil"),
-            }
+        const EDGES: &[&str] = &["top", "left", "bottom", "right", "insideH", "insideV"];
+        for (name, side) in EDGES.iter().zip([0, 3, 2, 1, 4, 5]) {
+            self.border_property(borders, name, Some(t.borders[side].flatten()), EDGES);
         }
         // The cell margins at the sides the table's cells have (Word's 108 twips): written in the table, so that a file whose styles have no default table style (or none of the
         // named one), which would give none, reads them back (#227).
@@ -3774,6 +3768,9 @@ impl Writer<'_> {
                     for (i, name) in ["top", "right", "bottom", "left"].into_iter().enumerate() {
                         self.border_property(borders, name, cell.own_borders[i], EDGES);
                     }
+                }
+                if cell.shading.is_some() {
+                    self.cell_shading(tc_pr, cell.shading);
                 }
                 if cell.direction != ibis_doc_model::CellDirection::LrTb {
                     let e = self.doc.append_element(tc_pr, &w("textDirection"));
