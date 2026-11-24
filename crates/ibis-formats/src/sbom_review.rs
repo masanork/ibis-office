@@ -449,8 +449,8 @@ pub fn review_xlsx(inputs: [(&str, &[u8]); 4]) -> Result<Vec<u8>, String> {
     write_workbook(tables)
 }
 
-#[derive(Clone, Copy)]
-enum ReportFormat {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ReportFormat {
     CycloneDx,
     OsvScanner,
 }
@@ -492,6 +492,10 @@ pub fn table_xlsx(input: (&str, &[u8])) -> Result<Vec<u8>, String> {
 
 /// Recognize supported JSON exports without claiming unrelated JSON files.
 pub fn open_table(input: (&str, &[u8])) -> Result<Option<crate::Opened>, String> {
+    open_table_with_format(input).map(|table| table.map(|(opened, _)| opened))
+}
+
+pub fn open_table_with_format(input: (&str, &[u8])) -> Result<Option<(crate::Opened, ReportFormat)>, String> {
     let Ok(doc) = parse(input) else {
         return Ok(None);
     };
@@ -501,7 +505,7 @@ pub fn open_table(input: (&str, &[u8])) -> Result<Option<crate::Opened>, String>
     let tables = report_tables(format, &doc, input)?;
     drop(doc);
     crate::open(write_workbook(tables)?)
-        .map(Some)
+        .map(|opened| Some((opened, format)))
         .map_err(|e| e.to_string())
 }
 

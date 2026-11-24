@@ -278,6 +278,11 @@ pub fn view_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
         }
         entries.push(SEP);
     }
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    if editor.bom_source.is_some() {
+        entries.push(item("structured.show-bom-tree", "format_list_bulleted")
+            .on(|this, window, cx| this.open_bom_tree(window, cx)).into());
+    }
     entries.extend([
         MenuItem::tr("view.sidebar")
             .checked(editor.right_pane.shown)

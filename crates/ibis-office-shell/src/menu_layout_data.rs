@@ -987,6 +987,7 @@ pub(super) const SHEET: &[MenuSpec] = &[
         LayoutItem::Cmd("xlsx.hide-ink"),
     ] },
     MenuSpec { id: MenuId::View, items: &[
+        LayoutItem::Cmd("structured.show-bom-tree"),
         LayoutItem::Cmd("structured.outline"),
         LayoutItem::Cmd("xlsx.normal-view"),
         LayoutItem::Cmd("xlsx.page-break-preview"),

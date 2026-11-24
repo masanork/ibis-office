@@ -14,7 +14,7 @@ use crate::format::with_format;
 use crate::editor::SlideEditor;
 
 #[cfg(not(target_family = "wasm"))]
-fn compare_cbom_files(source: &crate::read_file::CbomSource, path: &std::path::Path) -> Result<ibis_formats::Opened, String> {
+fn compare_cbom_files(source: &crate::read_file::BomSource, path: &std::path::Path) -> Result<ibis_formats::Opened, String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
 
@@ -117,13 +117,13 @@ impl SlideEditor {
 
     #[cfg(not(target_family = "wasm"))]
     pub fn can_compare_cbom(&self) -> bool {
-        self.cbom_source.is_some()
+        self.bom_source.as_ref().is_some_and(|source| source.has_crypto_assets)
     }
 
     /// Compare the imported CBOM with a second file in a separate workbook.
     #[cfg(not(target_family = "wasm"))]
     pub fn compare_open_cbom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(source) = self.cbom_source.clone() else { return };
+        let Some(source) = self.bom_source.clone().filter(|source| source.has_crypto_assets) else { return };
         self.commit_edit(window, cx);
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -1247,7 +1247,7 @@ mod cbom_tests {
         let old = samples.join("payment-before.cdx.json");
         let new = samples.join("payment-after.cdx.json");
         let loaded = crate::read_file::read_file(&old).unwrap();
-        let mut source = loaded.cbom_source.unwrap();
+        let mut source = loaded.bom_source.unwrap();
         assert_eq!(source.digest, <[u8; 32]>::from(Sha256::digest(std::fs::read(&old).unwrap())));
         let opened = compare_cbom_files(&source, &new).unwrap();
         assert_eq!(opened.presentation.workbook.as_ref().unwrap().sheets[0].name, "Asset changes");

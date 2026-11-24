@@ -202,8 +202,8 @@ impl SlideEditor {
         }
         let position = reference.position.clone();
         let ext = extension(&path);
-        if matches!(ext.as_str(), "json" | "jsonl" | "ndjson") {
-            self.open_structured_data(path, window, cx);
+        if matches!(ext.as_str(), "jsonl" | "ndjson") {
+            self.open_structured_data(path, None, window, cx);
             return;
         }
         if matches!(ext.as_str(), "txt" | "yaml" | "yml") {
