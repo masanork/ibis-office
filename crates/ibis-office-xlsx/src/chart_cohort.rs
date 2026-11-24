@@ -127,8 +127,8 @@ fn report_rows<'a>(workbook: &'a Presentation, name: &str, metric: &str) -> Resu
 pub(crate) fn compare_report(
     base: &Presentation, candidate: &Presentation, table: &str, metric: &str, key: Option<&str>,
 ) -> Value {
-    if report_comparison_definition(base, table).is_ok_and(|definition| definition["kind"] == "rate") {
-        return crate::report_rate::compare(base, candidate, table, metric, key);
+    if report_comparison_definition(base, table).is_ok_and(|definition| crate::report_quotient::supports(definition)) {
+        return crate::report_quotient::compare(base, candidate, table, metric, key);
     }
     let (before, unit) = match report_rows(base, table, metric) {
         Ok(rows) => rows,
@@ -146,8 +146,8 @@ pub(crate) fn compare_report(
 }
 
 pub(crate) fn applied_report_row(workbook: &Presentation, table: &str, metric: &str, key: &str) -> Value {
-    if report_comparison_definition(workbook, table).is_ok_and(|definition| definition["kind"] == "rate") {
-        return crate::report_rate::applied(workbook, table, metric, key);
+    if report_comparison_definition(workbook, table).is_ok_and(|definition| crate::report_quotient::supports(definition)) {
+        return crate::report_quotient::applied(workbook, table, metric, key);
     }
     match report_rows(workbook, table, metric) {
         Ok((rows, unit)) => rows.entries.get(key).map_or_else(

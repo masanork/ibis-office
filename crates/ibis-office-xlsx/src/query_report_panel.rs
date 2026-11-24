@@ -1823,3 +1823,90 @@ fn assert_rate_evidence(summary: &Value, zero: &Value, missing: &Value, none: &V
     assert!(none["after"]["rate"].is_null());
     assert!(none["percentage_point_delta"].is_null());
 }
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn report_average_scenario() {
+    use crate::shell::scenario::{Scenario, button_probe};
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("observations.csv");
+    let new = dir.path().join("next.csv");
+    let blank = dir.path().join("blank.xlsx");
+    let workbook = dir.path().join("observations.xlsx");
+    std::fs::write(&old, "group_id,total,samples\nA,10,2\nB,90,3\nM,,3\nZ,7,0\nX,2,1.5\n").unwrap();
+    std::fs::write(&new, "group_id,total,samples\nA,36,3\nB,104,8\nM,3,\nZ,9,0\nX,2,-1\n").unwrap();
+    std::fs::write(&blank, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut service = ibis_doc_service::Service::new(&[dir.path().to_owned()], false, ibis_doc_service::Limits::default());
+    let id = service.call("app_open_document", &json!({"path":blank})).unwrap()["document_id"].clone();
+    let sheet = service.call("xlsx_list_sheets", &json!({"document_id":id})).unwrap()["sheets"][0]["name"].clone();
+    let sql = "SELECT group_id, CAST(NULLIF(total,'') AS REAL) AS total, CAST(NULLIF(samples,'') AS REAL) AS samples FROM src";
+    for (anchor, query) in [("C4", format!("{sql} ORDER BY group_id")), ("I4", format!("{sql} WHERE group_id IN ('M','Z') ORDER BY group_id"))] {
+        let result = service.call("sqlite_query_to_table", &json!({
+            "document_id":id,"destination_sheet":sheet,"anchor":anchor,"sql":query,
+            "datasets":[{"source":old,"alias":"src"}],
+        })).unwrap();
+        service.call("xlsx_set_query_report_comparison", &json!({
+            "document_id":id,"table":result["table"],
+            "comparison":{"kind":"average","key_column":"group_id","metric":"mean","sum_column":"total","count_column":"samples","unit":"points"},
+        })).unwrap();
+    }
+    service.call("app_save_document", &json!({"document_id":id,"path":workbook})).unwrap();
+    let mut scene = Scenario::open(workbook.to_str().unwrap());
+    let _probe = button_probe::Probe::new();
+    scene.update(|editor, _, cx| {
+        editor.open_queries_panel(cx);
+        editor.open_query_report_panel(cx);
+        editor.query_reports_mut().unwrap().files.insert("observations.csv".into(), new.clone());
+        cx.notify();
+    });
+    button_probe::click(&mut scene, "query-reports-preview");
+    let args = |table, key| json!({"table":table,"metric":"mean","contributor_key":key});
+    let mut summary = Value::Null;
+    for _ in 0..250 {
+        summary = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult1", "A")));
+        if summary["state"] == "review" { break; }
+        assert_eq!(summary["state"], "previewing");
+        std::thread::sleep(Duration::from_millis(20));
+        scene.wait(20);
+    }
+    let zero = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult1", "Z")));
+    let missing = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult1", "M")));
+    let invalid = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult1", "X")));
+    let none = scene.with(|editor, _| editor.live_report_preview_diff(&args("QueryResult2", "Z")));
+    assert_average_evidence(&summary, &zero, &missing, &invalid, &none);
+}
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+fn assert_average_evidence(summary: &Value, zero: &Value, missing: &Value, invalid: &Value, none: &Value) {
+    assert_eq!(summary["state"], "review");
+    assert_eq!(summary["kind"], "average");
+    assert_eq!(summary["unit"], "points");
+    for (side, sum, count) in [("before", 100., 5), ("after", 140., 11)] {
+        assert_eq!(summary[side]["sum"], sum);
+        assert_eq!(summary[side]["count"], count);
+        assert!((summary[side]["average"].as_f64().unwrap() - sum / count as f64).abs() < 1e-12);
+        assert_eq!(summary[side]["counts"], json!({"included":2,"missing":1,"zero_count":1,"invalid":1}));
+    }
+    assert!((summary["delta"].as_f64().unwrap() - (140. / 11. - 20.)).abs() < 1e-12);
+    let a = &summary["contributor"];
+    assert_eq!(a["before"]["average"], 5.);
+    assert_eq!(a["after"]["average"], 12.);
+    assert_eq!(a["delta"], 7.);
+    assert_eq!(a["after"]["key_cell"], "C5");
+    assert_eq!(a["after"]["sum"], json!({"cell":"D5","value":36.}));
+    assert_eq!(a["after"]["count"], json!({"cell":"E5","value":3.}));
+    assert_eq!(zero["contributor"]["after"]["state"], "zero_count");
+    assert_eq!(zero["contributor"]["after"]["count"]["value"], 0.);
+    assert!(zero["contributor"]["after"]["average"].is_null());
+    assert_eq!(missing["contributor"]["before"]["state"], "missing");
+    assert!(missing["contributor"]["before"]["sum"]["value"].is_null());
+    assert_eq!(missing["contributor"]["after"]["state"], "missing");
+    assert!(missing["contributor"]["after"]["count"]["value"].is_null());
+    assert_eq!(invalid["contributor"]["before"]["state"], "invalid");
+    assert_eq!(invalid["contributor"]["before"]["count"]["value"], 1.5);
+    assert!(invalid["contributor"]["before"]["average"].is_null());
+    assert_eq!(none["after"]["state"], "no_eligible_rows");
+    assert!(none["after"]["average"].is_null());
+    assert!(none["delta"].is_null());
+}

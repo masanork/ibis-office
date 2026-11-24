@@ -31,29 +31,71 @@ impl Observation {
     }
 }
 
-fn rate(numerator: f64, denominator: f64) -> Option<f64> {
+#[derive(Clone, Copy)]
+enum Metric {
+    Rate,
+    Average,
+}
+
+impl Metric {
+    fn from_definition(definition: &Value) -> Option<Self> {
+        match definition["kind"].as_str()? {
+            "rate" => Some(Self::Rate),
+            "average" => Some(Self::Average),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self { Self::Rate => "rate", Self::Average => "average" }
+    }
+
+    fn fields(self) -> (&'static str, &'static str, &'static str, &'static str) {
+        match self {
+            Self::Rate => ("numerator_column", "denominator_column", "numerator", "denominator"),
+            Self::Average => ("sum_column", "count_column", "sum", "count"),
+        }
+    }
+
+    fn zero_state(self) -> &'static str {
+        match self { Self::Rate => "zero_denominator", Self::Average => "zero_count" }
+    }
+
+    fn delta(self, before: Option<f64>, after: Option<f64>) -> (&'static str, Option<f64>) {
+        let (key, scale) = match self {
+            Self::Rate => ("percentage_point_delta", 100.),
+            Self::Average => ("delta", 1.),
+        };
+        let delta = before.zip(after).map(|(before, after)| (after - before) * scale)
+            .filter(|value| value.is_finite());
+        (key, delta)
+    }
+}
+
+pub(crate) fn supports(definition: &Value) -> bool {
+    Metric::from_definition(definition).is_some()
+}
+
+const MAX_EXACT_COUNT: u128 = 1 << 53;
+
+fn quotient(numerator: f64, denominator: f64) -> Option<f64> {
     let value = numerator / denominator;
     (value.is_finite() && denominator > 0.).then_some(value)
 }
 
-fn percentage_point_delta(before: Option<f64>, after: Option<f64>) -> Option<f64> {
-    let (before, after) = before.zip(after)?;
-    let delta = (after - before) * 100.;
-    delta.is_finite().then_some(delta)
-}
-
 #[derive(Default)]
-struct RateTotals {
+struct QuotientTotals {
     numerator: f64,
     denominator: f64,
+    exact_count: u128,
     used: usize,
     missing: usize,
     zero_denominator: usize,
     invalid: usize,
 }
 
-impl RateTotals {
-    fn observe(&mut self, numerator: Observation, denominator: Observation) -> &'static str {
+impl QuotientTotals {
+    fn observe(&mut self, metric: Metric, numerator: Observation, denominator: Observation) -> &'static str {
         use Observation::*;
         match (numerator, denominator) {
             (Invalid, _) | (_, Invalid) => {
@@ -66,9 +108,13 @@ impl RateTotals {
             }
             (Number(_), Number(denominator)) if denominator == 0. => {
                 self.zero_denominator += 1;
-                "zero_denominator"
+                metric.zero_state()
             }
-            (Number(numerator), Number(denominator)) if denominator > 0. => {
+            (Number(numerator), Number(denominator)) if denominator > 0. && (matches!(metric, Metric::Rate)
+                || (denominator.fract() == 0. && denominator <= MAX_EXACT_COUNT as f64)) => {
+                if matches!(metric, Metric::Average) {
+                    self.exact_count += denominator as u128;
+                }
                 self.numerator += numerator;
                 self.denominator += denominator;
                 self.used += 1;
@@ -81,33 +127,48 @@ impl RateTotals {
         }
     }
 
-    fn rate(&self) -> Option<f64> {
+    fn value(&self, metric: Metric) -> Option<f64> {
+        if matches!(metric, Metric::Average) && self.exact_count > MAX_EXACT_COUNT {
+            return None;
+        }
         (self.numerator.is_finite() && self.denominator.is_finite())
-            .then(|| rate(self.numerator, self.denominator)).flatten()
+            .then(|| quotient(self.numerator, self.denominator)).flatten()
     }
 
-    fn details(&self) -> Value {
+    fn details(&self, metric: Metric) -> Value {
         let state = if self.used == 0 {
             "no_eligible_rows"
-        } else if self.rate().is_some() {
+        } else if matches!(metric, Metric::Average) && self.exact_count > MAX_EXACT_COUNT {
+            "count_out_of_range"
+        } else if self.value(metric).is_some() {
             "ready"
         } else {
             "non_finite"
         };
-        json!({"state":state,"numerator":self.numerator,"denominator":self.denominator,"rate":self.rate(),
-            "counts":{"included":self.used,"missing":self.missing,"zero_denominator":self.zero_denominator,"invalid":self.invalid}})
+        let (_, _, left, right) = metric.fields();
+        let mut result = json!({"state":state,
+            "counts":{"included":self.used,"missing":self.missing,(metric.zero_state()):self.zero_denominator,"invalid":self.invalid}});
+        result[left] = json!(self.numerator);
+        result[right] = match metric {
+            Metric::Average => json!(u64::try_from(self.exact_count).ok().filter(|count| *count as u128 <= MAX_EXACT_COUNT)),
+            Metric::Rate => json!(self.denominator),
+        };
+        result[metric.name()] = json!(self.value(metric));
+        result
     }
 }
 
 struct Side {
-    totals: RateTotals,
+    metric: Metric,
+    totals: QuotientTotals,
     evidence: Value,
     source: Value,
 }
 
 fn report_side(workbook: &Presentation, name: &str, metric: &str, key: Option<&str>) -> Result<Side, &'static str> {
     let definition = report_comparison_definition(workbook, name)?;
-    if definition["kind"] != "rate" || definition["metric"].as_str() != Some(metric) {
+    let kind = Metric::from_definition(definition).ok_or("unknown_metric")?;
+    if definition["metric"].as_str() != Some(metric) {
         return Err("unknown_metric");
     }
     let (page, sheet, table) = report_table(workbook, name)?;
@@ -121,8 +182,9 @@ fn report_side(workbook: &Presentation, name: &str, metric: &str, key: Option<&s
         Ok(column)
     };
     let key_column = column("key_column")?;
-    let numerator_column = column("numerator_column")?;
-    let denominator_column = column("denominator_column")?;
+    let (left_column, right_column, left, right) = kind.fields();
+    let numerator_column = column(left_column)?;
+    let denominator_column = column(right_column)?;
     if table.header_rows != 1 || key_column == numerator_column || key_column == denominator_column || numerator_column == denominator_column {
         return Err("invalid_table");
     }
@@ -130,7 +192,7 @@ fn report_side(workbook: &Presentation, name: &str, metric: &str, key: Option<&s
         return Err("too_many_rows");
     }
     let mut keys = BTreeSet::new();
-    let mut totals = RateTotals::default();
+    let mut totals = QuotientTotals::default();
     let mut evidence = json!({"state":"absent"});
     for row in range.first_row + 1..=range.last_row.saturating_sub(table.totals_rows) {
         let Some(CellValue::Text(label)) = sheet.cell(row, key_column).map(|cell| &cell.value) else {
@@ -140,27 +202,27 @@ fn report_side(workbook: &Presentation, name: &str, metric: &str, key: Option<&s
         if !keys.insert(label.as_str()) { return Err("duplicate_key"); }
         let numerator = Observation::read(sheet.cell(row, numerator_column));
         let denominator = Observation::read(sheet.cell(row, denominator_column));
-        let state = totals.observe(numerator, denominator);
+        let state = totals.observe(kind, numerator, denominator);
         if key == Some(label.as_str()) {
             let value = match (numerator, denominator) {
-                (Observation::Number(n), Observation::Number(d)) => rate(n, d),
+                (Observation::Number(n), Observation::Number(d)) if state == "ready" => quotient(n, d),
                 _ => None,
             };
             evidence = json!({
                 "state":if state == "ready" && value.is_none() {"non_finite"} else {state},
-                "sheet":page.name, "key_cell":cell_name(key_column, row), "rate":value,
-                "numerator":{"cell":cell_name(numerator_column,row),"value":numerator.value()},
-                "denominator":{"cell":cell_name(denominator_column,row),"value":denominator.value()},
+                "sheet":page.name, "key_cell":cell_name(key_column, row), (kind.name()):value,
+                (left):{"cell":cell_name(numerator_column,row),"value":numerator.value()},
+                (right):{"cell":cell_name(denominator_column,row),"value":denominator.value()},
             });
         }
     }
     let source = json!({
         "sheet":page.name,"table":table.name,
         "key_column":definition["key_column"],
-        "numerator_column":definition["numerator_column"],
-        "denominator_column":definition["denominator_column"],
+        (left_column):definition[left_column],
+        (right_column):definition[right_column],
     });
-    Ok(Side { totals, evidence, source })
+    Ok(Side { metric: kind, totals, evidence, source })
 }
 
 pub(crate) fn compare(base: &Presentation, candidate: &Presentation, table: &str, metric: &str, key: Option<&str>) -> Value {
@@ -175,20 +237,26 @@ pub(crate) fn compare(base: &Presentation, candidate: &Presentation, table: &str
         Ok(side) => side,
         Err(reason) => return json!({"state":reason,"side":"after"}),
     };
-    let delta = percentage_point_delta(before.totals.rate(), after.totals.rate());
-    let mut result = json!({"state":"review","table":table,"metric":metric,"kind":"rate",
-        "before":before.totals.details(),"after":after.totals.details(),"percentage_point_delta":delta,
+    let kind = before.metric;
+    let (delta_key, delta) = kind.delta(before.totals.value(kind), after.totals.value(kind));
+    let mut result = json!({"state":"review","table":table,"metric":metric,"kind":kind.name(),
+        "before":before.totals.details(kind),"after":after.totals.details(kind),(delta_key):delta,
         "source":{"before":before.source,"after":after.source}});
+    if let Ok(definition) = report_comparison_definition(base, table)
+        && let Some(unit) = definition.get("unit")
+    {
+        result["unit"] = unit.clone();
+    }
     if let Some(key) = key {
-        let delta = percentage_point_delta(before.evidence["rate"].as_f64(), after.evidence["rate"].as_f64());
-        result["contributor"] = json!({"key":key,"before":before.evidence,"after":after.evidence,"percentage_point_delta":delta});
+        let (_, delta) = kind.delta(before.evidence[kind.name()].as_f64(), after.evidence[kind.name()].as_f64());
+        result["contributor"] = json!({"key":key,"before":before.evidence,"after":after.evidence,(delta_key):delta});
     }
     result
 }
 
 pub(crate) fn applied(workbook: &Presentation, table: &str, metric: &str, key: &str) -> Value {
     match report_side(workbook, table, metric, Some(key)) {
-        Ok(side) => json!({"state":side.evidence["state"],"kind":"rate","table":table,"metric":metric,"key":key,"evidence":side.evidence}),
+        Ok(side) => json!({"state":side.evidence["state"],"kind":side.metric.name(),"table":table,"metric":metric,"key":key,"evidence":side.evidence}),
         Err(reason) => json!({"state":reason}),
     }
 }

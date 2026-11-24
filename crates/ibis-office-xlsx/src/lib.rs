@@ -155,7 +155,7 @@ mod chart_preview_diff;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod chart_cohort;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-mod report_rate;
+mod report_quotient;
 pub(crate) mod cells_dialog;
 pub(crate) mod consolidate;
 pub(crate) mod context_menu;
