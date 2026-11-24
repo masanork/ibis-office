@@ -15,6 +15,7 @@ use serde_json::value::RawValue;
 mod csv;
 mod cyclonedx;
 mod hed;
+mod linkage;
 
 const MAX_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_RECORDS: usize = 1_000_000;
@@ -95,6 +96,7 @@ struct Source {
     inventory: Option<cyclonedx::Inventory>,
     csv: Option<csv::Csv>,
     notice: Option<hed::Check>,
+    linkage_review: Option<Result<linkage::Review, &'static str>>,
 }
 
 impl Source {
@@ -114,6 +116,12 @@ impl Source {
         }
         if is_csv {
             let mut csv = csv::Csv::read(&bytes)?;
+            let linkage_review = linkage::Definition::sidecar(&path).map(|definition| {
+                let definition = definition?;
+                let review = csv.review(&bytes, &definition)?;
+                csv.definition = Some(definition);
+                Ok(review)
+            });
             let notice = hed::Check::read(&path, bytes.len(), csv.data_count);
             return Ok(Self {
                 bytes,
@@ -123,6 +131,7 @@ impl Source {
                 inventory: None,
                 csv: Some(csv),
                 notice: Some(notice),
+                linkage_review,
             });
         }
         let mut source = Self::new(bytes, lines);
@@ -155,6 +164,7 @@ impl Source {
             inventory: None,
             csv: None,
             notice: None,
+            linkage_review: None,
             lines,
         }
     }
@@ -507,6 +517,34 @@ impl View {
         cx.notify();
     }
 
+    fn select_csv_issue(
+        &mut self,
+        record: usize,
+        column: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.query.clear();
+        self.search
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.select_record(record, cx);
+        let prefix = format!("[{}] ", column + 1);
+        if let Some(id) = self
+            .tree
+            .nodes
+            .iter()
+            .position(|node| node.name.starts_with(&prefix))
+        {
+            let mut parent = self.tree.nodes[id].parent;
+            while let Some(id) = parent {
+                self.tree.nodes[id].expanded = true;
+                parent = self.tree.nodes[id].parent;
+            }
+            self.selected = Some(id);
+        }
+        cx.notify();
+    }
+
     fn search(&mut self, cx: &mut Context<Self>) {
         self.query = self.search.read(cx).value().trim().to_lowercase();
         self.refresh_hits(cx);
@@ -855,6 +893,57 @@ impl Render for View {
                     .text_sm()
                     .text_color(theme.muted_foreground)
                     .child(crate::i18n::text("structured.csv-mode"))
+            }))
+            .children(self.source.as_ref().and_then(|source| {
+                source.linkage_review.as_ref().map(|review| {
+                    let mut panel = v_flex().px_4().py_2().gap_1().text_sm();
+                    let review = match review {
+                        Ok(review) => review,
+                        Err(message) => return panel.child(crate::i18n::text(message)),
+                    };
+                    panel = panel
+                        .child(div().truncate().child(review.label.clone()))
+                        .child(crate::i18n::format(
+                            "structured.linkage-summary",
+                            &[
+                                ("checked", &review.checked.to_string()),
+                                (
+                                    "total",
+                                    &source
+                                        .csv
+                                        .as_ref()
+                                        .map_or(0, |csv| csv.data_count)
+                                        .to_string(),
+                                ),
+                                ("issues", &review.issue_count.to_string()),
+                            ],
+                        ))
+                        .child(crate::i18n::text("structured.linkage-scope"));
+                    let mut issues = v_flex()
+                        .id("linkage-issues")
+                        .max_h(px(130.))
+                        .overflow_y_scroll();
+                    for (index, issue) in review.issues.iter().enumerate() {
+                        let (record, column) = (issue.record, issue.column);
+                        issues = issues.child(
+                            Button::new(("linkage-issue", index))
+                                .outline()
+                                .xsmall()
+                                .label(crate::i18n::format(
+                                    "structured.linkage-issue",
+                                    &[
+                                        ("record", &(record + 1).to_string()),
+                                        ("column", &(column + 1).to_string()),
+                                        ("message", &crate::i18n::text(issue.message)),
+                                    ],
+                                ))
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.select_csv_issue(record, column, window, cx)
+                                })),
+                        );
+                    }
+                    panel.child(issues)
+                })
             }))
             .children(
                 self.source

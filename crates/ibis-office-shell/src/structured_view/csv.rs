@@ -4,13 +4,14 @@ use std::{borrow::Cow, collections::HashMap, ops::Range};
 
 use ibis_formats::csv::{OriginalEncoding, raw_csv_record_ranges, raw_utf8_csv_record_fields};
 
-use super::{MAX_RECORDS, Node, Tree, excerpt};
+use super::{MAX_RECORDS, Node, Tree, excerpt, linkage};
 
 pub(super) struct Csv {
     columns: Vec<Column>,
     pub records: Vec<Range<usize>>,
     pub truncated: bool,
     pub data_count: usize,
+    pub definition: Option<linkage::Definition>,
 }
 
 struct Column {
@@ -77,7 +78,57 @@ impl Csv {
             records,
             truncated,
             data_count,
+            definition: None,
         })
+    }
+
+    pub fn review(
+        &self,
+        bytes: &[u8],
+        definition: &linkage::Definition,
+    ) -> Result<linkage::Review, &'static str> {
+        if !self
+            .columns
+            .iter()
+            .map(|column| &column.name)
+            .eq(&definition.header)
+        {
+            return Err("structured.linkage-header-mismatch");
+        }
+        let columns: Vec<_> = definition.columns().collect();
+        let mut review = definition.review();
+        let mut add = |record, column, message| {
+            review.issue_count += 1;
+            if review.issues.len() < linkage::DISPLAY_LIMIT {
+                review.issues.push(linkage::Issue {
+                    record,
+                    column,
+                    message,
+                });
+            }
+        };
+        for (record, span) in self.records.iter().enumerate() {
+            let raw = &bytes[span.clone()];
+            let fields =
+                raw_utf8_csv_record_fields(raw).map_err(|_| "structured.linkage-csv-invalid")?;
+            if fields.len() != columns.len() {
+                add(
+                    record,
+                    fields.len().min(columns.len()),
+                    "structured.linkage-column-count",
+                );
+                continue;
+            }
+            for (column, (field, definition_column)) in fields.into_iter().zip(&columns).enumerate()
+            {
+                if let Some(message) = definition.check(definition_column, &cell_text(&raw[field]))
+                {
+                    add(record, column, message);
+                }
+            }
+        }
+        review.checked = self.records.len();
+        Ok(review)
     }
 
     pub fn tree(&self, bytes: &[u8], index: usize, span: Range<usize>) -> Tree {
@@ -87,7 +138,12 @@ impl Csv {
         let root = tree.push(branch(format!("#{}", index + 1), span.clone(), true, None));
         tree.roots.push(root);
         let mut groups = HashMap::new();
+        let mut definitions = self
+            .definition
+            .iter()
+            .flat_map(linkage::Definition::columns);
         for column in 0..self.columns.len().max(fields.len()) {
+            let kind = definitions.next().and_then(|column| column.kind.as_deref());
             let header = self.columns.get(column);
             let parent = if let Some(group) = header.and_then(|header| header.group.as_deref()) {
                 *groups.entry(group).or_insert_with(|| {
@@ -118,7 +174,10 @@ impl Csv {
             let name = header.map_or("", |header| header.name.as_str());
             let id = tree.push(Node {
                 name: format!("[{}] {}", column + 1, name),
-                detail,
+                detail: match kind {
+                    Some(kind) => format!("{detail} · {kind}"),
+                    None => detail,
+                },
                 span: field.unwrap_or(0..0),
                 children: Some(Vec::new()),
                 expanded: false,
@@ -147,7 +206,46 @@ fn branch(name: String, span: Range<usize>, expanded: bool, parent: Option<usize
 
 #[cfg(test)]
 mod tests {
-    use super::Csv;
+    use super::{Csv, linkage};
+
+    #[test]
+    fn linkage_definition_checks_literal_cells_and_order() {
+        let definition = linkage::Definition::parse(
+            br#"{
+            "format": "mrlgss-linkage-csv", "version": 1, "codeValues": {"A": ["01"]},
+            "layout": {"id": "example", "name": "Example", "repeat_header": "{name}_{n}",
+                "columns": [{"name": "id", "type": "X(6)", "required": true},
+                            {"name": "code", "type": "X(2)", "code": "A"}]},
+            "header": ["id", "code"]
+        }"#,
+        )
+        .unwrap();
+        let literal = b"id,code\r\n000001,01\r\n0000001,1\r\n,01\r\n";
+        let csv = Csv::read(literal).unwrap();
+        let review = csv.review(literal, &definition).unwrap();
+        let issues: Vec<_> = review
+            .issues
+            .iter()
+            .map(|issue| (issue.record, issue.column, issue.message))
+            .collect();
+        assert_eq!(review.checked, 3);
+        assert_eq!(
+            issues,
+            [
+                (1, 0, "structured.linkage-length"),
+                (1, 1, "structured.linkage-code"),
+                (2, 0, "structured.linkage-required"),
+            ]
+        );
+        let reordered = b"code,id\n01,000001";
+        assert_eq!(
+            Csv::read(reordered)
+                .unwrap()
+                .review(reordered, &definition)
+                .err(),
+            Some("structured.linkage-header-mismatch")
+        );
+    }
 
     #[test]
     fn retains_csv_spelling_and_groups_wide_records() {

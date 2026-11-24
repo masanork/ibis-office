@@ -1795,3 +1795,14 @@ structured.search-columns	Search columns in this record
 structured.show-bom-tree	Open BOM dependency tree
 structured.show-inventory	Show inventory workbook
 structured.bom-changed	The original BOM has changed. Reopen it to see the current inventory and dependency tree.
+structured.linkage-definition-invalid	The linkage CSV definition could not be read or uses an unsupported format.
+structured.linkage-header-mismatch	The CSV headers or their order differ from the linkage definition. Values were not checked.
+structured.linkage-csv-invalid	The CSV records could not be checked.
+structured.linkage-summary	Checked {checked} of {total} records · {issues} issues
+structured.linkage-scope	Checks required single fields, X/N and integer types and widths, and available codes. Up to 20 issues are shown.
+structured.linkage-issue	Record {record}, column {column} · {message}
+structured.linkage-required	Required value is missing
+structured.linkage-type	Value does not match the field type
+structured.linkage-length	Value exceeds the maximum length
+structured.linkage-code	Value is absent from the code list
+structured.linkage-column-count	The record has a different number of fields than the header

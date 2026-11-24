@@ -202,7 +202,12 @@ mod stack_tests {
         let path = std::env::temp_dir().join(format!("ibis-linkage-csv-{}.csv", std::process::id()));
         std::fs::write(&path, "削除フラグ,操作者ID,操作年月日,操作時刻,備考\r\n0,000001,20261124,090000,=1+2\r\n").unwrap();
         let loaded = super::read_file(&path);
+        let definition = path.with_extension("definition.json");
+        std::fs::write(&definition, "{}").unwrap();
+        let with_definition = super::read_file(&path);
+        std::fs::remove_file(definition).unwrap();
         std::fs::remove_file(path).unwrap();
+        assert_eq!(with_definition.err().as_deref(), Some(super::LINKAGE_CSV_NEEDS_TREE));
         let loaded = loaded.unwrap();
         assert!(loaded.structured_preview);
         let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&loaded.presentation.slides[0]).unwrap();
@@ -401,7 +406,7 @@ fn read_file_data(
     if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
         && let Some((text, needs_tree)) = linkage_csv(&data)
     {
-        if needs_tree {
+        if needs_tree || path.with_extension("definition.json").is_file() {
             return Err(LINKAGE_CSV_NEEDS_TREE.into());
         }
         let encoding = if data.starts_with(b"\xef\xbb\xbf") {
