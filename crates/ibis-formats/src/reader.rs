@@ -2702,6 +2702,7 @@ fn parse_artistic_effect(blip: Node) -> Option<ibis_doc_model::ArtisticEffect> {
                 tabs: props.tabs.clone().unwrap_or_default(),
                 default_tab: props.default_tab.filter(|&v| v != 914_400),
                 no_snap_to_grid: false,
+                word_wrap: None,
                 grid_pitch: None,
                 no_hanging_punct: props.hanging_punct == Some(false),
                 latin_line_break: props.latin_line_break == Some(true),

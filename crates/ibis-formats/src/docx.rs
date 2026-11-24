@@ -3103,6 +3103,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
             end_style: end_style.clone(),
             line_break,
             no_snap_to_grid: para.snap == Some(false),
+            word_wrap: para.word_wrap,
             ..Default::default()
         };
         let mut current = new_paragraph(false);

@@ -243,8 +243,9 @@ pub(super) fn place_group_leaf(
                             ],
                             matrix,
                         ) {
-                            let line_width =
-                                ((width - i.left as f64 - i.right as f64) * sx).round() as i64;
+                            // The editable text keeps its original font metrics. A projected
+                            // axis length would widen the column even under pure shear.
+                            let line_width = original.width - i.left - i.right;
                             i.left = (area.x - frame.x).max(0);
                             i.top = (area.y - frame.y).max(0);
                             i.right = (frame.right() - area.right()).max(0);

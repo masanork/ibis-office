@@ -465,6 +465,7 @@ impl Resources {
             default_tab: paragraph.default_tab.unwrap_or(914_400).max(1) as f32 * scale,
             hanging_punct: !paragraph.no_hanging_punct,
             latin_line_break: paragraph.latin_line_break,
+            keep_hangul_words: paragraph.word_wrap == Some(true),
             room: Some(room),
             px_per_point,
             text_top: None,
@@ -7065,6 +7066,7 @@ pub(crate) fn text_body_element(
                 default_tab: paragraph.default_tab.unwrap_or(914_400).max(1) as f32 * scale,
                 hanging_punct: !paragraph.no_hanging_punct,
                 latin_line_break: paragraph.latin_line_break,
+                keep_hangul_words: paragraph.word_wrap == Some(true),
                 room: width.map(|w| {
                     let total_w = (w as f32 - (body.insets.left + body.insets.right) as f32).max(0.0);
                     let col_w = if body.columns > 1 {

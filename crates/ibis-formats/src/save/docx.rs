@@ -370,7 +370,11 @@ fn new_shape_paragraphs_xml(body: &ibis_doc_model::TextBody) -> String {
             } else {
                 format!(r#"<w:ind w:left="{}" w:firstLine="{}"/>"#, para.margin_left / 635, para.indent / 635)
             };
-            let _ = write!(out, r#"<w:p><w:pPr><w:spacing w:before="{}" w:after="{}"{line}/>{indent}<w:jc w:val="{align}"/></w:pPr>"#, para.space_before / 5, para.space_after / 5);
+            out.push_str("<w:p><w:pPr>");
+            if let Some(wrap) = para.word_wrap {
+                let _ = write!(out, r#"<w:wordWrap w:val="{}"/>"#, u8::from(wrap));
+            }
+            let _ = write!(out, r#"<w:spacing w:before="{}" w:after="{}"{line}/>{indent}<w:jc w:val="{align}"/></w:pPr>"#, para.space_before / 5, para.space_after / 5);
         } else {
             out.push_str("<w:r><w:br/></w:r>");
         }

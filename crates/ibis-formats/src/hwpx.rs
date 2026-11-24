@@ -240,6 +240,34 @@ fn attribute<'a>(node: Node<'a, '_>, name: &str) -> Result<&'a str, Error> {
         .ok_or_else(|| Error::new(format!("HWPX の {name} 属性がありません")))
 }
 
+// Line segments record UTF-16 positions from the last layout. Infer a
+// wrapping policy only when every saved continuation starts a new word.
+fn saved_word_wrap(array: Node<'_, '_>, text: &str) -> bool {
+    if text.contains(['\n', '\t']) || !text.chars().any(|c| matches!(c, '\u{ac00}'..='\u{d7a3}')) {
+        return false;
+    }
+    let text: Vec<_> = text.encode_utf16().collect();
+    let space = |unit| matches!(unit, 0x0020 | 0x3000);
+    let mut lines = array
+        .children()
+        .filter(|n| n.has_tag_name((PARAGRAPH, "lineseg")));
+    if lines.next().and_then(|n| number::<usize>(n, "textpos")) != Some(0) {
+        return false;
+    }
+    let mut previous = 0;
+    for line in lines {
+        let Some(start) = number::<usize>(line, "textpos") else {
+            return false;
+        };
+        if start <= previous || start >= text.len() || !space(text[start - 1]) || space(text[start])
+        {
+            return false;
+        }
+        previous = start;
+    }
+    previous > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,14 +410,33 @@ mod tests {
     }
 
     #[test]
+    fn saved_word_wrap_uses_utf16_offsets_and_rejects_partial_words() {
+        for (offset, expected) in [(5, true), (4, false), (6, false), (10, false)] {
+            let xml = format!(
+                r#"<hp:linesegarray xmlns:hp="{PARAGRAPH}"><hp:lineseg textpos="0"/>
+                  <hp:lineseg textpos="{offset}"/></hp:linesegarray>"#
+            );
+            let doc = Document::parse(&xml).unwrap();
+            assert_eq!(
+                saved_word_wrap(doc.root_element(), "😀 한 글상자"),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn hwpx_text_box_keeps_soft_wrapping_after_docx_conversion() {
         let package = format!(
             r#"<package xmlns="{OPF}"><manifest><item id="s" href="section0.xml"/></manifest><spine><itemref idref="s"/></spine></package>"#
         );
         let section = format!(
-            r#"<hs:sec xmlns:hs="{SECTION}" xmlns:hp="{PARAGRAPH}">
-            <hp:p><hp:run><hp:container><hp:rect><hp:orgSz width="4000" height="6000"/>
-            <hp:drawText lastWidth="3500"><hp:subList lineWrap="BREAK" vertAlign="CENTER">
+            r#"<hs:sec xmlns:hs="{SECTION}" xmlns:hp="{PARAGRAPH}" xmlns:hc="{CORE}">
+            <hp:p><hp:run><hp:container><hp:rect><hp:orgSz width="5500" height="6000"/>
+            <hp:renderingInfo>
+              <hc:transMatrix e1="1" e2="0" e3="0" e4="0" e5="1" e6="0"/>
+              <hc:rotMatrix e1="1" e2="0" e3="0" e4="0.35" e5="1" e6="0"/>
+            </hp:renderingInfo>
+            <hp:drawText lastWidth="5000"><hp:subList lineWrap="BREAK" vertAlign="CENTER">
               <hp:p><hp:run><hp:t>묶음 안 글상자 가나다</hp:t></hp:run>
                 <hp:linesegarray><hp:lineseg textpos="0" vertpos="0"/>
                   <hp:lineseg textpos="5" vertpos="1600"/><hp:lineseg textpos="9" vertpos="3200"/></hp:linesegarray>
@@ -406,21 +453,18 @@ mod tests {
         ] {
             writer.add(name, Default::default(), bytes).unwrap();
         }
-        let flow = open(&writer.finish().unwrap())
-            .unwrap()
-            .presentation
-            .flow
-            .unwrap();
-        let Block::Paragraph(p) = &flow.body[0] else {
+        let mut opened = open(&writer.finish().unwrap()).unwrap();
+        let flow = std::sync::Arc::make_mut(opened.presentation.flow.as_mut().unwrap());
+        let Block::Paragraph(p) = &mut flow.body[0] else {
             panic!("paragraph")
         };
-        let FlowRunKind::Shape(shape) = &p.runs[0].kind else {
+        let FlowRunKind::Shape(shape) = &mut p.runs[0].kind else {
             panic!("shape")
         };
-        let ShapeKind::Auto(auto) = &shape.kind else {
+        let ShapeKind::Auto(auto) = &mut shape.kind else {
             panic!("auto shape")
         };
-        let text = auto.text.as_ref().unwrap();
+        let text = auto.text.as_mut().unwrap();
         assert_eq!(text.text(), "묶음 안 글상자 가나다");
         assert_eq!(text.paragraphs.len(), 1);
         assert_eq!(
@@ -429,7 +473,43 @@ mod tests {
         );
         assert_eq!(text.anchor, VerticalAnchor::Middle);
         assert!(text.wrap);
-        assert_eq!(text.insets.right, units(783));
+        assert_eq!(text.paragraphs[0].word_wrap, Some(true));
+        assert!(!text.paragraphs[0].line_break);
+        assert_eq!(
+            shape.frame.width - text.insets.left - text.insets.right,
+            units(4434)
+        );
+
+        text.splice(0, 5, "");
+        let saved = opened
+            .source
+            .save(&opened.presentation, SaveOptions::default())
+            .unwrap();
+        let package = crate::package::Package::new(&saved).unwrap();
+        let document = package.read("word/document.xml").unwrap();
+        let xml = parse(&document).unwrap();
+        let box_content = xml
+            .descendants()
+            .find(|n| n.is_element() && n.tag_name().name() == "txbxContent")
+            .unwrap();
+        assert!(
+            box_content
+                .descendants()
+                .any(|n| n.is_element() && n.tag_name().name() == "wordWrap")
+        );
+        assert!(
+            !box_content
+                .descendants()
+                .any(|n| n.is_element() && n.tag_name().name() == "br")
+        );
+        assert_eq!(
+            box_content
+                .descendants()
+                .filter(|n| n.is_element() && n.tag_name().name() == "t")
+                .filter_map(|n| n.text())
+                .collect::<String>(),
+            "글상자 가나다"
+        );
     }
 
     #[test]
@@ -1520,6 +1600,16 @@ impl Importer<'_, '_> {
                         if !text.is_empty() {
                             para.runs.push(ibis_doc_model::Run { text, style });
                         }
+                    }
+                    if !matches!(content.attribute("lineWrap"), Some("SQUEEZE" | "KEEP"))
+                        && content.attribute("textDirection") != Some("VERTICAL")
+                        && part(p, "linesegarray").is_some_and(|array| {
+                            let text: String =
+                                para.runs.iter().map(|run| run.text.as_str()).collect();
+                            saved_word_wrap(array, &text)
+                        })
+                    {
+                        para.word_wrap = Some(true);
                     }
                     para
                 })

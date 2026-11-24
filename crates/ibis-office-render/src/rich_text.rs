@@ -452,6 +452,7 @@ pub(crate) struct RichParagraph {
     pub hanging_punct: bool,
     /// `a:pPr/@latinLnBrk`: a line may break inside a Latin word.
     pub latin_line_break: bool,
+    pub keep_hangul_words: bool,
     /// The width the lines are broken to, in pixels, when it is known
     /// exactly (else the element's width, which the layout rounds to
     /// pixels, so that the lines would break differently at each zoom).
@@ -2364,7 +2365,7 @@ fn lay_out_in(paragraph: &RichParagraph, width: Option<f32>, top_above: f32, tex
         (Some(_), Some(room)) => (Some(room), 0.02 * paragraph.px_per_point.max(0.05)),
         _ => (width, 0.5),
     };
-    let rules = Breaks { hang: paragraph.hanging_punct, latin: LatinBreaks { anywhere: paragraph.latin_line_break, ..LatinBreaks::default() }, hang_tab: !paragraph.word_lines };
+    let rules = Breaks { hang: paragraph.hanging_punct, latin: LatinBreaks { anywhere: paragraph.latin_line_break, ..LatinBreaks::default() }, hang_tab: !paragraph.word_lines, keep_hangul_words: paragraph.keep_hangul_words };
     // Among obstacles (text wrap round pictures): a line is looked for room at the place it would have, `top_above` pixels
     // below the top of the text area for the paragraph's first; the lines are taken to be as high as the paragraph's largest
     // characters make them (their real heights come after the breaks) and need room for one of them.
@@ -2624,7 +2625,7 @@ fn break_lines_in(
             }
         }
         let c = chars[i];
-        if i > start && may_break_between(chars, i, rules.latin) {
+        if i > start && may_break_between(chars, i, rules) {
             last_break = Some(i);
         }
         // Spaces, and with `hangingPunct` the commas and full stops, hang past the edge: one of them, after characters that fit (PowerPoint's
@@ -2633,7 +2634,7 @@ fn break_lines_in(
         let room = if lines.is_empty() { width - first_line } else { width };
         // Only where the line may end after it (or after the spaces that follow it): the full stop inside "figshare.com" does not hang, the word
         // breaks before it (PowerPoint's PDF of corpus 152); "words, and" hangs its comma (`kinsoku-*-hang1-probe.pptx`).
-        let ends_here = chars.get(i + 1).is_none_or(|n| n.c.is_whitespace() || may_break_between(chars, i + 1, rules.latin));
+        let ends_here = chars.get(i + 1).is_none_or(|n| n.c.is_whitespace() || may_break_between(chars, i + 1, rules));
         // The Latin comma and full stop hang only in a run of an East Asian language (PowerPoint's PDFs: "words," of `kinsoku-*-hang1-probe.pptx`,
         // lang ja-JP, hangs; "range," of corpus 139, English, goes down with its word).
         // Hanging punctuation is, like the kinsoku lists, for a run of an East Asian language: in en-US or with no lang a 。 that does not fit goes
@@ -2676,12 +2677,18 @@ fn break_lines_in(
 /// ideographic spaces is not parted from the character after it when a line may not start with that character ("(　　　)": the
 /// brackets and the spaces go to the next line together, and a line does not start with the spaces and a lone ")": PowerPoint's PDF of
 /// corpus pptx-C011-b1).
-fn may_break_between(chars: &[Char], at: usize, latin: LatinBreaks) -> bool {
+fn may_break_between(chars: &[Char], at: usize, rules: Breaks) -> bool {
+    let left = chars[at - 1].c;
+    let right = chars[at].c;
+    let hangul = |c| matches!(c, '\u{1100}'..='\u{11ff}' | '\u{3130}'..='\u{318f}' | '\u{ac00}'..='\u{d7ff}');
+    if rules.keep_hangul_words && left.is_alphanumeric() && right.is_alphanumeric() && (hangul(left) || hangul(right)) {
+        return false;
+    }
     // The line-start and line-end lists (禁則, `p:kinsoku` of a language) apply to the text of a Japanese, Chinese or Korean run (`a:rPr@lang`): a
     // line may start with 。 in a run of lang en-US or with none (PowerPoint's PDF of test/editing/pptx-text-turn-matrix4.pptx: the same sentence in
     // ja-JP breaks before the word the 。 follows, in en-US and without lang it breaks before the 。).
     let kinsoku = kinsoku_of(chars[at].east_asian);
-    if !may_break(chars[at - 1].c, chars[at].c, kinsoku, latin) {
+    if !may_break(left, right, kinsoku, rules.latin) {
         return false;
     }
     if chars[at].c == '\u{3000}'
@@ -2697,6 +2704,7 @@ fn may_break_between(chars: &[Char], at: usize, latin: LatinBreaks) -> bool {
 pub struct Breaks {
     pub hang: bool,
     pub latin: LatinBreaks,
+    pub keep_hangul_words: bool,
     /// The hanging indent's margin is a tab stop on the first line (PowerPoint's lines; TODO: Word's lines too, where the hanging indent's position
     /// is an implicit tab stop, once the docx corpus is measured with it).
     pub(crate) hang_tab: bool,
@@ -2704,7 +2712,7 @@ pub struct Breaks {
 
 impl Default for Breaks {
     fn default() -> Self {
-        Breaks { hang: true, latin: LatinBreaks::default(), hang_tab: false }
+        Breaks { hang: true, latin: LatinBreaks::default(), hang_tab: false, keep_hangul_words: false }
     }
 }
 
@@ -3090,6 +3098,18 @@ mod tests {
         let mut c = chars("ab cd ef", 1.0);
         // The space after "cd" hangs past the edge.
         assert_eq!(break_lines(&mut c, Some(5.0), 0.0, 0.0, &[], 0.0, 0.5, Breaks::default()), vec![(0, 6), (6, 8)]);
+    }
+
+    #[test]
+    fn hangul_word_wrap_reflows_when_the_text_or_width_changes() {
+        let rules = Breaks { keep_hangul_words: true, ..Breaks::default() };
+        let wrap = |text, width| {
+            break_lines(&mut chars(text, 1.0), Some(width), 0.0, 0.0, &[], 0.0, 0.01, rules)
+        };
+        assert_eq!(wrap("묶음 안 글상자 가나다", 5.0), [(0, 5), (5, 9), (9, 12)]);
+        assert_eq!(wrap("묶음 안 글상자 가나다", 8.0), [(0, 9), (9, 12)]);
+        assert_eq!(wrap("묶음 글상자 가나다", 6.0), [(0, 7), (7, 10)]);
+        assert_eq!(wrap("대한민국", 3.0), [(0, 3), (3, 4)]);
     }
 
     #[test]

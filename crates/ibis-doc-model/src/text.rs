@@ -516,6 +516,8 @@ pub struct Paragraph {
     pub default_tab: Option<Emu>,
     /// Whether `w:snapToGrid` is explicitly disabled (`false`) on this paragraph in a Word text box.
     pub no_snap_to_grid: bool,
+    /// Explicit Word text box setting for keeping words together on a line.
+    pub word_wrap: Option<bool>,
     /// The pitch of the page's line grid (`w:docGrid`) in hundredths of a point, set while a vertical Word text box is laid out on it: a
     /// line of 縦中横 that is not squeezed (行を広げる) takes whole pitches. `None` off the grid.
     pub grid_pitch: Option<u32>,
