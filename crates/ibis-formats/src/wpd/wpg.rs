@@ -48,7 +48,7 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
     let mut result = None;
     let mut drawing = Drawing::default();
     let mut ended = false;
-    let mut scopes: Vec<(usize, Transform)> = Vec::new();
+    let mut scopes: Vec<(usize, Transform, bool)> = Vec::new();
     while !records.is_empty() {
         if version == 2 {
             byte(&mut records)?; // record class
@@ -59,10 +59,15 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
         } else {
             0
         };
-        while scopes.last().is_some_and(|&(remaining, _)| remaining == 0) {
-            scopes.pop();
+        while scopes
+            .last()
+            .is_some_and(|&(remaining, _, _)| remaining == 0)
+        {
+            if scopes.pop()?.2 {
+                drawing.end_compound(canvas?)?;
+            }
         }
-        let parent = if let Some((remaining, transform)) = scopes.last_mut() {
+        let parent = if let Some((remaining, transform, _)) = scopes.last_mut() {
             *remaining -= 1;
             *transform
         } else {
@@ -102,6 +107,12 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
                 let (bounds, transform) = canvas?.bitmap_box(record)?;
                 bitmap_box = Some((bounds, parent.pre_concat(transform)));
             }
+            (2, 0x1a) => {
+                if children == 0 {
+                    return None;
+                }
+                child_transform = drawing.begin_compound(canvas?, record, parent)?;
+            }
             (2, 0x20) => {
                 if !record.is_empty() {
                     let (_, transform, _) = canvas?.object(record)?;
@@ -118,7 +129,7 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
                 let (bounds, transform) = bitmap_box.take()?;
                 drawing.bitmap(canvas?, bitmap_v2(record, &palette)?, bounds, transform)?
             }
-            (2, 0x15 | 0x18 | 0x19 | 0x25 | 0x29 | 0x2b | 0x2c | 0x31) => {
+            (2, 0x15 | 0x17..=0x19 | 0x25 | 0x29 | 0x2b | 0x2c | 0x31) => {
                 drawing.record(canvas?, kind, record, parent)?;
             }
             (1, 0x02..=0x0a | 0x11..=0x13 | 0x15..=0x1b)
@@ -127,8 +138,7 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
                 0x03..=0x06
                 | 0x0d
                 | 0x0f..=0x12
-                | 0x16..=0x17
-                | 0x1a
+                | 0x16
                 | 0x1c..=0x1f
                 | 0x21..=0x22
                 | 0x26
@@ -144,7 +154,7 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
             if scopes.len() >= 64 || !child_transform.is_finite() {
                 return None;
             }
-            scopes.push((children, child_transform));
+            scopes.push((children, child_transform, kind == 0x1a));
         }
     }
     if !ended {

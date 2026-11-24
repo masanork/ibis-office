@@ -734,6 +734,44 @@ mod tests {
     }
 
     #[test]
+    fn wpg2_curves_and_compound_holes_survive_docx_conversion() {
+        let data = include_bytes!("../../../test/fixtures/wordperfect/paths-wpg2.wpd");
+        let opened = open(data).unwrap();
+        let flow = opened.presentation.flow.as_ref().unwrap();
+        let Block::Paragraph(paragraph) = &flow.body[0] else {
+            panic!("expected inline picture paragraph");
+        };
+        let media = paragraph
+            .runs
+            .iter()
+            .find_map(|run| match run.kind {
+                FlowRunKind::Picture { media, .. } => Some(media),
+                _ => None,
+            })
+            .unwrap();
+        let media = opened
+            .presentation
+            .media
+            .iter()
+            .find(|item| item.id == media)
+            .unwrap();
+        let pixels = image::load_from_memory(&media.data).unwrap().to_rgba8();
+        assert_eq!(pixels.dimensions(), (300, 225));
+        for (x, y, expected) in [
+            (84, 33, [192, 46, 78, 255]),   // Cubic stroke.
+            (211, 29, [25, 110, 192, 255]), // The top of the open arc.
+            (211, 33, [236, 236, 236, 255]),
+            (25, 150, [112, 57, 184, 255]),
+            (85, 145, [240, 184, 62, 255]), // Odd-even hole over a prior object.
+            (180, 150, [35, 153, 96, 255]),
+            (225, 145, [236, 236, 236, 255]), // Opposite winding leaves a hole.
+            (145, 175, [222, 89, 28, 255]),   // Later object covers the compound edge.
+        ] {
+            assert_eq!(pixels.get_pixel(x, y).0, expected, "pixel at ({x}, {y})");
+        }
+    }
+
+    #[test]
     fn handles_framed_breaks_and_rejects_invalid_records() {
         let data =
             fixture(b"A\xd0\x04\x09\x00\x00\x00\x09\x00\xd0\xd0\x09\x09\x00\x00\x00\x09\x00\xd0B");

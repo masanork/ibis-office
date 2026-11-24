@@ -18,6 +18,14 @@ pub(super) struct Drawing {
     blend: Option<Pixmap>,
     first_bitmap: Option<(RgbaImage, Bounds)>,
     style: Style,
+    compound: Option<Compound>,
+}
+
+struct Compound {
+    path: PathBuilder,
+    transform: Transform,
+    inverse: Transform,
+    flags: u16,
 }
 
 struct Style {
@@ -44,6 +52,9 @@ impl Drawing {
         bounds: Bounds,
         local: Transform,
     ) -> Option<()> {
+        if self.compound.is_some() {
+            return None;
+        }
         if self.blend.is_none() && self.first_bitmap.is_none() && local.is_identity() {
             self.first_bitmap = Some((bitmap, bounds));
             return Some(());
@@ -129,40 +140,89 @@ impl Drawing {
             }
             0x31 if record.first() == Some(&0) => self.style.fill = color(record.get(1..)?)?,
             0x29 if word(record, 0)? == 0 => {}
-            0x15 | 0x18 | 0x19 => {
+            0x15 | 0x17..=0x19 => {
                 let (flags, local, mut shape) = canvas.object(record)?;
-                let path = path(canvas, kind, flags, &mut shape)?;
-                self.surface(canvas)?;
-                let surface = self.blend.as_mut()?;
-                let map = Self::transform(surface, canvas)
-                    .pre_concat(parent)
-                    .pre_concat(local);
-                if !map.is_finite() {
-                    return None;
-                }
-                if flags & 0x2000 != 0 {
-                    let mut paint = Paint::default();
-                    let [r, g, b, a] = self.style.fill;
-                    paint.set_color_rgba8(r, g, b, a);
-                    let rule = if flags & 0x1000 != 0 {
-                        FillRule::Winding
-                    } else {
-                        FillRule::EvenOdd
-                    };
-                    surface.fill_path(&path, &paint, rule, map, None);
-                }
-                if flags & 0x8000 != 0 {
-                    let mut paint = Paint::default();
-                    let [r, g, b, a] = self.style.pen;
-                    paint.set_color_rgba8(r, g, b, a);
-                    let stroke = Stroke {
-                        width: self.style.pen_width,
-                        ..Stroke::default()
-                    };
-                    surface.stroke_path(&path, &paint, &stroke, map, None);
+                let map = parent.pre_concat(local);
+                let close = self
+                    .compound
+                    .as_ref()
+                    .map_or(0, |compound| compound.flags & 0x4000);
+                let path = path(canvas, kind, flags | close, &mut shape)?;
+                if let Some(compound) = &mut self.compound {
+                    let contour = path.transform(compound.inverse.pre_concat(map))?;
+                    compound.path.push_path(&contour);
+                } else {
+                    self.paint(canvas, &path, map, flags)?;
                 }
             }
             _ => return None,
+        }
+        Some(())
+    }
+
+    pub(super) fn begin_compound(
+        &mut self,
+        canvas: Canvas,
+        record: &[u8],
+        parent: Transform,
+    ) -> Option<Transform> {
+        if self.compound.is_some() {
+            return None;
+        }
+        let (flags, local, _) = canvas.object(record)?;
+        let transform = parent.pre_concat(local);
+        self.compound = Some(Compound {
+            path: PathBuilder::new(),
+            transform,
+            inverse: transform.invert()?,
+            flags,
+        });
+        Some(transform)
+    }
+
+    pub(super) fn end_compound(&mut self, canvas: Canvas) -> Option<()> {
+        let compound = self.compound.take()?;
+        self.paint(
+            canvas,
+            &compound.path.finish()?,
+            compound.transform,
+            compound.flags,
+        )
+    }
+
+    fn paint(
+        &mut self,
+        canvas: Canvas,
+        path: &Path,
+        transform: Transform,
+        flags: u16,
+    ) -> Option<()> {
+        self.surface(canvas)?;
+        let surface = self.blend.as_mut()?;
+        let map = Self::transform(surface, canvas).pre_concat(transform);
+        if !map.is_finite() {
+            return None;
+        }
+        if flags & 0x2000 != 0 {
+            let mut paint = Paint::default();
+            let [r, g, b, a] = self.style.fill;
+            paint.set_color_rgba8(r, g, b, a);
+            let rule = if flags & 0x1000 != 0 {
+                FillRule::Winding
+            } else {
+                FillRule::EvenOdd
+            };
+            surface.fill_path(path, &paint, rule, map, None);
+        }
+        if flags & 0x8000 != 0 {
+            let mut paint = Paint::default();
+            let [r, g, b, a] = self.style.pen;
+            paint.set_color_rgba8(r, g, b, a);
+            let stroke = Stroke {
+                width: self.style.pen_width,
+                ..Stroke::default()
+            };
+            surface.stroke_path(path, &paint, &stroke, map, None);
         }
         Some(())
     }
@@ -210,6 +270,26 @@ fn path(canvas: Canvas, kind: u8, flags: u16, data: &mut &[u8]) -> Option<Path> 
                 path.close();
             }
         }
+        0x17 => {
+            let count = usize::from(word(split(data, 2)?, 0)?);
+            if count < 2 || count > data.len() / (6 * canvas.coordinate_bytes) {
+                return None;
+            }
+            let mut point = || Some((coordinate(canvas, data)?, coordinate(canvas, data)?));
+            point()?; // Incoming control point of the initial vertex.
+            let (x, y) = point()?;
+            let mut control = point()?;
+            path.move_to(x, y);
+            for _ in 1..count {
+                let (ix, iy) = point()?;
+                let (x, y) = point()?;
+                path.cubic_to(control.0, control.1, ix, iy, x, y);
+                control = point()?;
+            }
+            if flags & 0x4000 != 0 {
+                path.close();
+            }
+        }
         0x18 => {
             let (x0, y0, x1, y1) = (next()?, next()?, next()?, next()?);
             let bounds = Rect::from_ltrb(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))?;
@@ -222,14 +302,55 @@ fn path(canvas: Canvas, kind: u8, flags: u16, data: &mut &[u8]) -> Option<Path> 
         0x19 => {
             let (x, y, rx, ry) = (next()?, next()?, next()?, next()?);
             let (start, end) = ((next()?, next()?), (next()?, next()?));
-            if start != end || rx <= 0.0 || ry <= 0.0 {
-                return None; // A partial arc has different drawing semantics.
+            if rx <= 0.0 || ry <= 0.0 {
+                return None;
             }
-            path.push_oval(Rect::from_ltrb(x - rx, y - ry, x + rx, y + ry)?);
+            if start == end {
+                path.push_oval(Rect::from_ltrb(x - rx, y - ry, x + rx, y + ry)?);
+            } else {
+                ellipse_arc(&mut path, (x, y), (rx, ry), start, end)?;
+                if flags & 0x4000 != 0 {
+                    path.close();
+                }
+            }
         }
         _ => return None,
     }
     path.finish()
+}
+
+fn ellipse_arc(
+    path: &mut PathBuilder,
+    center: (f32, f32),
+    radii: (f32, f32),
+    start: (f32, f32),
+    end: (f32, f32),
+) -> Option<()> {
+    if start == (0.0, 0.0) || end == (0.0, 0.0) {
+        return None;
+    }
+    let (rx, ry) = (f64::from(radii.0), f64::from(radii.1));
+    let angle = |(x, y): (f32, f32)| (f64::from(y) / ry).atan2(f64::from(x) / rx);
+    let mut from = angle(start);
+    // WPG uses a y-up coordinate system. A clockwise arc decreases its angle.
+    let sweep = -(from - angle(end)).rem_euclid(std::f64::consts::TAU);
+    let count = (sweep.abs() / std::f64::consts::FRAC_PI_2).ceil().max(1.0) as usize;
+    let step = sweep / count as f64;
+    let control = 4.0 / 3.0 * (step / 4.0).tan();
+    let position = |x: f64, y: f64| (center.0 + (rx * x) as f32, center.1 + (ry * y) as f32);
+    let (sin, cos) = from.sin_cos();
+    let (x, y) = position(cos, sin);
+    path.move_to(x, y);
+    for _ in 0..count {
+        let (sin, cos) = from.sin_cos();
+        let (s, c) = (from + step).sin_cos();
+        let a = position(cos - control * sin, sin + control * cos);
+        let b = position(c + control * s, s - control * c);
+        let end = position(c, s);
+        path.cubic_to(a.0, a.1, b.0, b.1, end.0, end.1);
+        from += step;
+    }
+    Some(())
 }
 
 fn rounded_rectangle(path: &mut PathBuilder, rect: Rect, x: f32, y: f32) {
