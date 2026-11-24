@@ -15,7 +15,7 @@ use std::rc::Rc;
 use gpui_kit::*;
 use ibis_doc_model::{FontAlign, TextAlign};
 
-use crate::line_break::{Kinsoku, LatinBreaks, may_break};
+use crate::line_break::{Kinsoku, LatinBreaks, is_ideographic, may_break};
 use crate::math_view::{self, MathBox};
 use crate::font_metrics::{POWERPOINT_SINGLE, natural_below, powerpoint_below_baseline};
 
@@ -1288,7 +1288,15 @@ impl Element for RichParagraphElement {
             let shown_width: f32 = shown_slice.iter().map(|c| c.advance).sum();
             // A comma or full stop that hangs past the edge (the line broke because it did not fit) is not spread over the room: the characters before it
             // are, and it follows the last of them (PowerPoint's justified line of 032 p10 ends past the edge with its comma).
-            let hang = shown_slice.last().filter(|c| paragraph.hanging_punct && hangs_char(c.c, c.east_asian) && shown_width > room + 0.01 && shown_chars > 2).map_or(0.0, |c| c.advance);
+            let hang = if paragraph.hanging_punct && shown_width > room + 0.01
+                && let [.., prev, last] = shown_slice
+                && shown_chars > 2
+                && hangs_char(last.c, last.east_asian, prev.c)
+            {
+                last.advance
+            } else {
+                0.0
+            };
             let spread_chars = shown_chars - usize::from(hang > 0.0);
             let spread_width = shown_width - hang;
             let spread = match paragraph.align {
@@ -2639,7 +2647,8 @@ fn break_lines_in(
         // lang ja-JP, hangs; "range," of corpus 139, English, goes down with its word).
         // Hanging punctuation is, like the kinsoku lists, for a run of an East Asian language: in en-US or with no lang a 。 that does not fit goes
         // down (PowerPoint's PDF of test/editing/pptx-text-turn-matrix4.pptx, slide 4).
-        let hang = rules.hang && hangs_char(c.c, c.east_asian) && ends_here && used <= room + slack;
+        let hang = rules.hang && i > start && hangs_char(c.c, c.east_asian, chars[i - 1].c)
+            && ends_here && used <= room + slack;
         // A tab that does not fit does not hang past the edge as a space does: it starts the next line, where it goes to that line's first tab stop
         // and the spaces after it follow (PowerPoint's PDF of 079.ppt, slide 13: "…その時期<tab>    に取組め…", the second line begins in from the margin).
         let tab_wraps = c.c == '\t';
@@ -2745,10 +2754,13 @@ fn hangs(c: char) -> bool {
 /// Whether `c` hangs past the end of a line in a run of `language`. PowerPoint's PDFs of a justified Latin line one punctuation mark too long
 /// (30 pt Calibri, altLang set): zh-CN and ko-KR let `: ; ! ? )` and the comma and full stop hang (the line stays one line, the mark past the
 /// edge), ja-JP only the comma and full stop, en-US none (the last word goes down); `-` hangs in none.
-fn hangs_char(c: char, language: ibis_doc_model::EastAsianLang) -> bool {
+/// In ko-KR, the same ASCII marks move to the next line after CJK text when
+/// they do not fit (PowerPoint 16.109.2, Korean and Latin text box probes).
+fn hangs_char(c: char, language: ibis_doc_model::EastAsianLang, previous: char) -> bool {
     use ibis_doc_model::EastAsianLang::*;
     match language {
         Japanese | Chinese if hangs(c) => hangs_in(language),
+        Korean if is_ideographic(previous) => false,
         Chinese | Korean => matches!(c, ',' | '.' | ':' | ';' | '!' | '?' | ')'),
         _ => false,
     }
@@ -3098,6 +3110,22 @@ mod tests {
         let mut c = chars("ab cd ef", 1.0);
         // The space after "cd" hangs past the edge.
         assert_eq!(break_lines(&mut c, Some(5.0), 0.0, 0.0, &[], 0.0, 0.5, Breaks::default()), vec![(0, 6), (6, 8)]);
+    }
+
+    #[test]
+    fn korean_hanging_punctuation_respects_the_preceding_script() {
+        for mark in ['.', ',', ':', ';', '!', '?', ')'] {
+            for (text, expected) in [
+                (format!("가나다{mark} 라"), [(0, 3), (3, 6)]),
+                (format!("ABC{mark} DEF"), [(0, 5), (5, 8)]),
+            ] {
+                let mut c = chars(&text, 1.0);
+                for c in &mut c {
+                    c.east_asian = ibis_doc_model::EastAsianLang::Korean;
+                }
+                assert_eq!(break_lines(&mut c, Some(3.0), 0.0, 0.0, &[], 0.0, 0.01, Breaks::default()), expected);
+            }
+        }
     }
 
     #[test]
