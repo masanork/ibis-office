@@ -14,6 +14,7 @@ struct Point {
     series: usize,
     index: usize,
     value: PointValue,
+    source: Option<crate::chart_cohort::SourceCell>,
 }
 
 #[derive(Clone, Copy)]
@@ -40,13 +41,14 @@ fn points<'a>(workbook: &Presentation, sheet: SlideId, chart: &'a Chart) -> BTre
             .and_then(parse_reference)
             .and_then(|reference| resolve_workbook_reference(workbook, &reference, sheet))
             .and_then(|(sheet, range)| {
-                Some((ibis_doc_model::sheet_calc::sheet_of_slide(workbook.slide(sheet)?)?, range))
+                Some((sheet, ibis_doc_model::sheet_calc::sheet_of_slide(workbook.slide(sheet)?)?, range))
             });
         for (index, category) in data.categories.iter().enumerate().filter(|(_, category)| !category.is_empty()) {
-            let value = match source.and_then(|(sheet, range)| {
+            let cell = source.and_then(|(id, sheet, range)| {
                 let (column, row) = chart_source_cell(range, index)?;
-                Some(sheet.cell(row, column))
-            }) {
+                Some(((id, column, row), sheet.cell(row, column)))
+            });
+            let value = match cell.map(|(_, cell)| cell) {
                 Some(Some(cell)) => match &cell.value {
                     CellValue::Number(value) => PointValue::Number(*value),
                     CellValue::Empty => PointValue::Missing,
@@ -58,7 +60,7 @@ fn points<'a>(workbook: &Presentation, sheet: SlideId, chart: &'a Chart) -> BTre
             };
             points.entry((data.name.as_str(), category.as_str()))
                 .and_modify(|point| *point = None)
-                .or_insert(Some(Point { series, index, value }));
+                .or_insert(Some(Point { series, index, value, source: cell.map(|(cell, _)| cell) }));
         }
     }
     points
@@ -126,7 +128,15 @@ pub(crate) fn summary(base: &Presentation, candidate: &Presentation, charts: &Va
         let top: Vec<_> = changes.into_iter()
             .filter(|((_, category), _, _)| categories.insert(*category))
             .take(3)
-            .map(|((series, category), old, new)| json!({"series":series,"category":category,"amounts":amounts(old,new)}))
+            .map(|(key @ (series, category), old, new)| {
+                let mut change = json!({"series":series,"category":category,"amounts":amounts(old,new)});
+                if let Some(cohort) = crate::chart_cohort::compare(base, candidate,
+                    before[&key].and_then(|point| point.source), after[&key].and_then(|point| point.source), old, new)
+                {
+                    change["cohort"] = cohort;
+                }
+                change
+            })
             .collect();
         let summary = json!({"sheet":slide.name,"shape_id":shape.0,"title":changed["title"],"top":top,"not_comparable":not_comparable});
         let bytes = summary.to_string().len() + 1;
@@ -145,22 +155,28 @@ pub(crate) fn detail(base: &Presentation, candidate: &Presentation, shape: Shape
     };
     let lookup = |workbook: &Presentation| {
         let Some(chart) = chart(workbook, slide.id, shape) else {
-            return (value_info(None), None);
+            return (value_info(None), None, None);
         };
         let points = points(workbook, slide.id, chart);
         let point = points.get(&key);
         let drill = point.copied().flatten()
             .and_then(|point| chart_drill_target(workbook, slide.id, chart, point.series, point.index))
             .map(|target| chart_drill_data(workbook, target));
-        (value_info(point), drill)
+        (value_info(point), drill, point.copied().flatten().and_then(|point| point.source))
     };
-    let (before, before_drill) = lookup(base);
-    let (after, after_drill) = lookup(candidate);
+    let (before, before_drill, before_source) = lookup(base);
+    let (after, after_drill, after_source) = lookup(candidate);
     let values = before["value"].as_f64().zip(after["value"].as_f64())
         .filter(|(old, new)| (new - old).is_finite())
         .map(|(old, new)| amounts(old, new));
-    json!({"state":"review","shape_id":shape.0,"series":key.0,"category":key.1,"amounts":values,
-        "before":{"point":before,"drill":before_drill},"after":{"point":after,"drill":after_drill}})
+    let mut result = json!({"state":"review","shape_id":shape.0,"series":key.0,"category":key.1,"amounts":values,
+        "before":{"point":before,"drill":before_drill},"after":{"point":after,"drill":after_drill}});
+    if let Some((old, new)) = before["value"].as_f64().zip(after["value"].as_f64())
+        && let Some(cohort) = crate::chart_cohort::compare(base, candidate, before_source, after_source, old, new)
+    {
+        result["cohort"] = cohort;
+    }
+    result
 }
 
 #[cfg(test)]
@@ -169,7 +185,7 @@ mod tests {
 
     #[test]
     fn preview_diff_keeps_zero_distinct_from_missing_and_ambiguous_points() {
-        let point = |value| Some(Point { series: 0, index: 0, value });
+        let point = |value| Some(Point { series: 0, index: 0, value, source: None });
         let zero = point(PointValue::Number(0.0));
         let missing = point(PointValue::Missing);
         assert_eq!(value_info(Some(&zero)), json!({"state":"number","value":0.0}));

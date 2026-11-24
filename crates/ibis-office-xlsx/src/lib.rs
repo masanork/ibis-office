@@ -152,6 +152,8 @@ pub(crate) mod query_editor;
 mod query_report_panel;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod chart_preview_diff;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod chart_cohort;
 pub(crate) mod cells_dialog;
 pub(crate) mod consolidate;
 pub(crate) mod context_menu;

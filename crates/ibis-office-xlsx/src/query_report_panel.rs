@@ -824,6 +824,19 @@ impl SlideEditor {
                             ("after", &change["amounts"]["after"]),
                             ("delta", &change["amounts"]["delta"]),
                         ])));
+                        if change["cohort"]["state"] == "ready" {
+                            let cohort = &change["cohort"];
+                            body = body.child(div().text_sm().child(format("query.report-cohort-delta", &[
+                                ("retained_count", &cohort["retained"]["count"]),
+                                ("retained_delta", &cohort["retained"]["delta"]),
+                                ("added_count", &cohort["added"]["count"]),
+                                ("added_delta", &cohort["added"]["delta"]),
+                                ("removed_count", &cohort["removed"]["count"]),
+                                ("removed_delta", &cohort["removed"]["delta"]),
+                            ])));
+                        } else if change.get("cohort").is_some() {
+                            body = body.child(div().text_sm().child(text("query.report-cohort-unavailable")));
+                        }
                     }
                 }
             }

@@ -11,6 +11,8 @@ use crate::shell::editor::SlideEditor;
 use crate::sheet_ui::resolve_workbook_reference;
 use crate::ext::*;
 
+pub(crate) const COHORT_LINK_MARKER: &str = "ibis:cohort";
+
 #[ibis_office_macros::editor_ext(EventHooks)]
 impl SlideEditor {
     /// The pointer moved: the workbook's drags (the Draw panel's pen stroke first).
@@ -345,7 +347,7 @@ pub(crate) fn chart_drill_target(
     for (slide, column, row) in category.into_iter().chain(value) {
         let (_, sheet) = crate::shell::editor::sheet_of(workbook.slide(slide)?)?;
         let location = sheet.hyperlinks.iter().find_map(|link| {
-            (link.target.is_none() && range_contains(link.range, column, row))
+            (link.target.is_none() && link.tooltip.as_deref() != Some(COHORT_LINK_MARKER) && range_contains(link.range, column, row))
                 .then_some(link.location.as_deref()).flatten()
         });
         if let Some(location) = location
