@@ -221,7 +221,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/bom-validator"
           python="$RUNNER_TEMP/bom-validator/bin/python"
           "$python" -m pip install 'jsonschema==4.23.0'
-          "$python" scripts/verify-appimage-boms.py linux "$EXPECTED_SOURCE_SHA"
+          "$python" scripts/verify-build-boms.py linux-x64-appimage linux "$EXPECTED_SOURCE_SHA"
       - name: Verify signature, source and AppImage digest
         run: |
           set -euo pipefail
@@ -347,10 +347,24 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  verify-package-boms:
+    name: Verify downloaded BOMs (${{ matrix.platform }})
+    if: github.event_name != 'workflow_dispatch' || !inputs.appimage_only
+    needs: [desktop, android, ios]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-arm64, windows-x64, android-arm64, ios-arm64]
+    uses: ./.github/workflows/verify-build-boms.yml
+    with:
+      platform: ${{ matrix.platform }}
+      artifact: desktop-ci-${{ matrix.platform }}
+      source: ${{ github.event.pull_request.head.sha || github.sha }}
+
   release:
     name: Publish milestone release
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [validate-source, desktop, linux, android, ios, verify-linux-provenance]
+    needs: [validate-source, desktop, linux, android, ios, verify-linux-provenance, verify-package-boms]
     runs-on: ubuntu-latest
     permissions:
       contents: write

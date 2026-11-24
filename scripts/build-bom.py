@@ -4,17 +4,17 @@
 
 import argparse
 from collections import defaultdict
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
-import stat
 import subprocess
 from tempfile import TemporaryDirectory
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
 import zipfile
+
+from bom_payload import sha256, zip_components
 
 PLATFORMS = {
     "linux-x64-appimage": ("Linux", "x86_64-unknown-linux-gnu", ("ibis-office-app", "ibis-office-updater", "ibis-appimage"), False),
@@ -68,18 +68,6 @@ def cargo_graph(target, packages, no_default_features, app_ref):
     if roots != set(packages):
         raise ValueError(f"unexpected Cargo roots: {sorted(roots)}")
     return components, edges
-
-
-def stream_sha256(stream):
-    digest = hashlib.sha256()
-    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-        digest.update(chunk)
-    return digest.hexdigest()
-
-
-def sha256(path):
-    with path.open("rb") as stream:
-        return stream_sha256(stream)
 
 
 def inventory(platform, image, components, edges, scope, app_ref):
@@ -150,27 +138,7 @@ def add_payload(appdir, components, edges, namespace):
         components[ref] = component
 
 
-def add_zip_payload(archive, components):
-    with zipfile.ZipFile(archive) as payload:
-        for entry in payload.infolist():
-            if entry.is_dir():
-                continue
-            name = entry.filename
-            ref = f"ibisoffice:archive:file:{quote(name, safe='/')}"
-            if ref in components:
-                raise ValueError(f"duplicate ZIP entry: {name}")
-            component = {"type": "file", "bom-ref": ref, "name": name}
-            with payload.open(entry) as stream:
-                if stat.S_ISLNK(entry.external_attr >> 16):
-                    component["properties"] = [
-                        {"name": "ibisOffice:archive:symlinkTarget", "value": stream.read().decode("utf-8")},
-                    ]
-                else:
-                    component["hashes"] = [{"alg": "SHA-256", "content": stream_sha256(stream)}]
-            components[ref] = component
-
-
-def add_crypto(components, edges):
+def add_crypto(platform, components, edges):
     # Capabilities reviewed in source for the selected build.
     # Required direct dependencies detect manifest changes that need review.
     def record(package, required, source, usage, assets):
@@ -237,6 +205,8 @@ def add_crypto(components, edges):
                "SM3": {"primitive": "hash", "cryptoFunctions": ["digest"]},
            })
 
+    if platform in ("android-arm64", "ios-arm64", "wasm"):
+        return
     updater = record(
         "ibis-office-updater", ("ring",), "crates/ibis-office-updater/src/signed_manifest.rs",
         "Verify the signed desktop update manifest and digest the downloaded artifact",
@@ -313,13 +283,15 @@ def main():
         add_payload(args.appdir, components, edges, "flatpak")
         payload_scope = "Flatpak application files and ELF DT_NEEDED; Freedesktop runtime inventory is outside scope."
     else:
-        add_zip_payload(args.image, components)
+        payload = zip_components(args.image)
+        components.update(payload)
+        edges[app_ref].update(payload)
         payload_scope = "ZIP payload entries and symlinks; native system linkage is outside scope."
         if args.platform == "wasm":
             payload_scope = "Generated www/pkg WASM and glue files; deployed Worker and site assets are outside scope."
     scope = "Target Cargo normal dependencies, excluding build/dev dependencies and proc macros. " + payload_scope
     sbom = inventory(args.platform, args.image, components, edges, scope, app_ref)
-    add_crypto(components, edges)
+    add_crypto(args.platform, components, edges)
     cbom = inventory(args.platform, args.image, components, edges, scope +
                      " Reviewed OOXML/PDF encryption, OOXML/OFD signatures, and desktop updater crypto when present"
                      " in the Cargo graph. Updater evidence describes source capabilities, not release activation.", app_ref)

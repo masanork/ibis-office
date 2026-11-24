@@ -1,0 +1,42 @@
+name: Verify built package BOMs
+on:
+  workflow_call:
+    inputs:
+      platform:
+        required: true
+        type: string
+      artifact:
+        required: true
+        type: string
+      source:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify package and CycloneDX inventories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PLATFORM: ${{ inputs.platform }}
+      EXPECTED_SOURCE_SHA: ${{ inputs.source }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: package
+      - name: Verify package bytes and BOM evidence
+        run: |
+          set -euo pipefail
+          (cd package && sha256sum -c SHA256SUMS)
+          python3 -m venv "$RUNNER_TEMP/bom-validator"
+          python="$RUNNER_TEMP/bom-validator/bin/python"
+          "$python" -m pip install 'jsonschema==4.23.0'
+          "$python" scripts/verify-build-boms.py "$PLATFORM" package "$EXPECTED_SOURCE_SHA"
