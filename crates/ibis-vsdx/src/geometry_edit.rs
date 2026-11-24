@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
-use std::ops::Range;
+use std::{collections::BTreeSet, ops::Range};
 
 use ibis_pdf::{Error, Result};
 use roxmltree::Node;
@@ -67,16 +67,30 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                 {
                     return Err(unsupported());
                 }
+                if is_group(node) {
+                    let subtree: BTreeSet<_> = node
+                        .descendants()
+                        .filter(|&item| named(item, "Shape"))
+                        .filter_map(|item| id(item, "ID"))
+                        .collect();
+                    if links.iter().any(|&link| {
+                        let from = id(link, "FromSheet").is_some_and(|id| subtree.contains(&id));
+                        let to = id(link, "ToSheet").is_some_and(|id| subtree.contains(&id));
+                        from != to
+                    }) {
+                        return Err(unsupported());
+                    }
+                }
                 number_patch(&mut patches, cell(node, "PinX")?, x + dx)?;
                 number_patch(&mut patches, cell(node, "PinY")?, y + dy)?;
-                let mut connectors = std::collections::BTreeSet::new();
+                let mut connectors = BTreeSet::new();
                 for &link in &links {
                     if id(link, "ToSheet") == Some(shape) {
                         connectors.insert(id(link, "FromSheet").ok_or_else(unsupported)?);
                     }
                 }
                 for connector in connectors {
-                    let line = horizontal_line(shapes, &links, connector)?;
+                    let line = orthogonal_route(shapes, &links, connector)?;
                     let [mut start, mut end] = line.points;
                     for (point, link) in [(&mut start, line.links[0]), (&mut end, line.links[1])] {
                         if id(link, "ToSheet") == Some(shape) {
@@ -92,7 +106,7 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                 endpoint,
                 target,
             } => {
-                let line = horizontal_line(shapes, &links, connector)?;
+                let line = orthogonal_route(shapes, &links, connector)?;
                 let idx = match endpoint {
                     Endpoint::Begin => 0,
                     Endpoint::End => 1,
@@ -106,6 +120,9 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                 }
                 let old_node = shape_by_id(shapes, old)?;
                 let new_node = shape_by_id(shapes, target)?;
+                if is_group(old_node) || is_group(new_node) {
+                    return Err(unsupported());
+                }
                 let (old_x, old_y) = movable_pin(old_node)?;
                 let (new_x, new_y) = movable_pin(new_node)?;
                 let old_width = value(old_node, "Width")?;
@@ -185,10 +202,12 @@ fn value(node: XmlNode<'_, '_>, name: &str) -> Result<f64> {
         .ok_or_else(unsupported)
 }
 
+fn is_group(node: XmlNode<'_, '_>) -> bool {
+    node.attribute("Type") == Some("Group") || child(node, "Shapes").is_some()
+}
+
 fn movable_pin(node: XmlNode<'_, '_>) -> Result<(f64, f64)> {
-    if node.attribute("Type") == Some("Group")
-        || child(node, "Shapes").is_some()
-        || cell(node, "BeginX").is_ok()
+    if cell(node, "BeginX").is_ok()
         || ["PinX", "PinY"]
             .into_iter()
             .any(|key| cell(node, key).is_ok_and(|c| c.attribute("F").is_some()))
@@ -221,18 +240,19 @@ fn number_patch(patches: &mut Vec<Patch>, node: XmlNode<'_, '_>, value: f64) -> 
     attribute_patch(patches, node, "V", value.to_string())
 }
 
-struct HorizontalLine<'a, 'i> {
+struct OrthogonalRoute<'a, 'i> {
     shape: XmlNode<'a, 'i>,
     links: [XmlNode<'a, 'i>; 2],
     points: [(f64, f64); 2],
-    line_x: XmlNode<'a, 'i>,
+    vertices: Vec<([XmlNode<'a, 'i>; 2], [f64; 2])>,
+    size: [f64; 2],
 }
 
-fn horizontal_line<'a, 'i>(
+fn orthogonal_route<'a, 'i>(
     shapes: XmlNode<'a, 'i>,
     links: &[XmlNode<'a, 'i>],
     connector: u32,
-) -> Result<HorizontalLine<'a, 'i>> {
+) -> Result<OrthogonalRoute<'a, 'i>> {
     let shape = shape_by_id(shapes, connector)?;
     if child(shape, "Shapes").is_some()
         || links
@@ -249,14 +269,14 @@ fn horizontal_line<'a, 'i>(
     let [first, second] = outgoing.as_slice() else {
         return Err(unsupported());
     };
-    let [begin, end] = if first.attribute("FromCell") == Some("BeginX") {
+    let [begin, end_link] = if first.attribute("FromCell") == Some("BeginX") {
         [*first, *second]
     } else {
         [*second, *first]
     };
     for (link, prefix, trigger, opposite) in [
         (begin, "Begin", "BegTrigger", "EndTrigger"),
-        (end, "End", "EndTrigger", "BegTrigger"),
+        (end_link, "End", "EndTrigger", "BegTrigger"),
     ] {
         let target = id(link, "ToSheet").ok_or_else(unsupported)?;
         if link.attribute("FromCell") != Some(if prefix == "Begin" { "BeginX" } else { "EndX" })
@@ -284,59 +304,125 @@ fn horizontal_line<'a, 'i>(
         .next()
         .filter(|_| sections.next().is_none())
         .ok_or_else(unsupported)?;
-    let rows: Vec<_> = geometry.children().filter(|&n| named(n, "Row")).collect();
-    let [start, end_row] = rows.as_slice() else {
-        return Err(unsupported());
-    };
     let width = value(shape, "Width")?;
-    let close = |a: f64, b: f64| (a - b).abs() < 1e-5;
-    if start.attribute("T") != Some("MoveTo")
-        || end_row.attribute("T") != Some("LineTo")
-        || !close(value(*start, "X")?, 0.0)
-        || !close(value(*end_row, "X")?, width)
-        || !close(value(*start, "Y")?, value(*end_row, "Y")?)
-        || !close(points[0].1, points[1].1)
-        || !close(points[1].0 - points[0].0, width)
-        || !close(value(shape, "PinX")?, (points[0].0 + points[1].0) / 2.0)
-        || !close(value(shape, "PinY")?, points[0].1)
+    let height = value(shape, "Height")?;
+    let [start, end] = points;
+    let low = [start.0.min(end.0), start.1.min(end.1)];
+    let flat = [close(start.0, end.0), close(start.1, end.1)];
+    let size = [width, height];
+    if width <= 0.0
+        || height <= 0.0
+        || (flat[0] && flat[1])
+        || (!flat[0] && !close((end.0 - start.0).abs(), width))
+        || (!flat[1] && !close((end.1 - start.1).abs(), height))
+        || !close(value(shape, "PinX")?, (start.0 + end.0) / 2.0)
+        || !close(value(shape, "PinY")?, (start.1 + end.1) / 2.0)
         || !close(value(shape, "LocPinX")?, width / 2.0)
-        || !close(value(shape, "LocPinY")?, value(*start, "Y")?)
-        || ["Angle", "FlipX", "FlipY"]
-            .into_iter()
-            .any(|key| cell(shape, key).is_ok() && value(shape, key).ok() != Some(0.0))
-        || ["PinX", "PinY", "Width", "LocPinX"]
+        || !close(value(shape, "LocPinY")?, height / 2.0)
+        || ["Angle", "FlipX", "FlipY"].into_iter().any(|key| {
+            cell(shape, key)
+                .is_ok_and(|c| c.attribute("F").is_some() || value(shape, key).ok() != Some(0.0))
+        })
+        || ["PinX", "PinY", "Width", "Height", "LocPinX", "LocPinY"]
             .into_iter()
             .any(|key| cell(shape, key).is_ok_and(|c| c.attribute("F").is_some()))
-        || cell(*end_row, "X")?.attribute("F").is_some()
     {
         return Err(unsupported());
     }
-    Ok(HorizontalLine {
+
+    let mut vertices: Vec<([XmlNode<'_, '_>; 2], [f64; 2])> = Vec::new();
+    for row in geometry.children().filter(|&node| named(node, "Row")) {
+        let first = vertices.is_empty();
+        let cells = [cell(row, "X")?, cell(row, "Y")?];
+        let point = [value(row, "X")?, value(row, "Y")?];
+        if row.attribute("T") != Some(if first { "MoveTo" } else { "LineTo" })
+            || cells.iter().any(|cell| cell.attribute("F").is_some())
+            || point[0] < -1e-5
+            || point[0] > width + 1e-5
+            || point[1] < -1e-5
+            || point[1] > height + 1e-5
+            || (0..2).any(|axis| flat[axis] && !close(point[axis], size[axis] / 2.0))
+            || vertices.last().is_some_and(|(_, previous)| {
+                !close(previous[0], point[0]) && !close(previous[1], point[1])
+            })
+        {
+            return Err(unsupported());
+        }
+        vertices.push((cells, point));
+    }
+    let locally = |point: (f64, f64)| {
+        let value = [point.0, point.1];
+        [0, 1].map(|i| {
+            if flat[i] {
+                size[i] / 2.0
+            } else {
+                value[i] - low[i]
+            }
+        })
+    };
+    let first = vertices.first().ok_or_else(unsupported)?.1;
+    let last = vertices.last().ok_or_else(unsupported)?.1;
+    let expected_first = locally(start);
+    let expected_last = locally(end);
+    if vertices.len() < 2
+        || (0..2).any(|i| !close(first[i], expected_first[i]) || !close(last[i], expected_last[i]))
+    {
+        return Err(unsupported());
+    }
+    Ok(OrthogonalRoute {
         shape,
-        links: [begin, end],
+        links: [begin, end_link],
         points,
-        line_x: cell(*end_row, "X")?,
+        vertices,
+        size,
     })
 }
 
-impl HorizontalLine<'_, '_> {
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-5
+}
+
+impl OrthogonalRoute<'_, '_> {
     fn patch(&self, patches: &mut Vec<Patch>, start: (f64, f64), end: (f64, f64)) -> Result<()> {
-        let width = end.0 - start.0;
-        if width <= 1e-5 || (end.1 - start.1).abs() >= 1e-5 {
-            return Err(unsupported());
+        let old = [
+            self.points[1].0 - self.points[0].0,
+            self.points[1].1 - self.points[0].1,
+        ];
+        let new = [end.0 - start.0, end.1 - start.1];
+        let mut size = self.size;
+        for i in 0..2 {
+            if close(old[i], 0.0) {
+                if !close(new[i], 0.0) {
+                    return Err(unsupported());
+                }
+            } else {
+                if close(new[i], 0.0) || old[i].signum() != new[i].signum() {
+                    return Err(unsupported());
+                }
+                size[i] = new[i].abs();
+            }
         }
+        let [width, height] = size;
+        let x_scale = width / self.size[0];
+        let y_scale = height / self.size[1];
         for (name, value) in [
             ("BeginX", start.0),
             ("BeginY", start.1),
             ("EndX", end.0),
             ("EndY", end.1),
             ("PinX", (start.0 + end.0) / 2.0),
-            ("PinY", start.1),
+            ("PinY", (start.1 + end.1) / 2.0),
             ("Width", width),
+            ("Height", height),
             ("LocPinX", width / 2.0),
+            ("LocPinY", height / 2.0),
         ] {
             number_patch(patches, cell(self.shape, name)?, value)?;
         }
-        number_patch(patches, self.line_x, width)
+        for &([x, y], [local_x, local_y]) in &self.vertices {
+            number_patch(patches, x, local_x * x_scale)?;
+            number_patch(patches, y, local_y * y_scale)?;
+        }
+        Ok(())
     }
 }

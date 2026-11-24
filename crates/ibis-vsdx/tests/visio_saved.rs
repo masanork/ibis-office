@@ -146,3 +146,74 @@ fn moves_a_shape_in_a_drawing_saved_by_microsoft_visio() {
         after.text_index.plain_text()
     );
 }
+
+#[test]
+#[ignore = "requires the Apache POI VSDX corpus"]
+fn moves_a_visio_group_without_changing_child_positions_relative_to_each_other() {
+    use ibis_vsdx::geometry_edit::GeometryEdit;
+
+    let root = PathBuf::from(std::env::var_os("VSDX_VISIO_CORPUS_DIR").unwrap());
+    let original_bytes = std::fs::read(root.join("test.vsdx")).unwrap();
+    let original = VsdxContainer::from_bytes(original_bytes.clone().into()).unwrap();
+    let before = original.interpret_page_scene(0).unwrap();
+    let bytes = original
+        .edit_geometry(
+            0,
+            GeometryEdit::Move {
+                shape: 3,
+                dx: 0.25,
+                dy: 0.125,
+            },
+        )
+        .unwrap();
+    let children_xml = |bytes: Vec<u8>| {
+        let archive = ibis_ooxml::zip::Archive::new(bytes.into()).unwrap();
+        let page = archive
+            .entries()
+            .iter()
+            .find(|entry| entry.name == "visio/pages/page1.xml")
+            .unwrap();
+        let source = String::from_utf8(archive.read(page).unwrap()).unwrap();
+        let page = roxmltree::Document::parse(&source).unwrap();
+        let children = page
+            .descendants()
+            .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some("3"))
+            .unwrap()
+            .children()
+            .find(|n| n.has_tag_name("Shapes"))
+            .unwrap();
+        source[children.range()].to_owned()
+    };
+    assert_eq!(children_xml(original_bytes), children_xml(bytes.clone()));
+    let reopened = VsdxContainer::from_bytes(bytes.into()).unwrap();
+    let after = reopened.interpret_page_scene(0).unwrap();
+    assert_eq!(
+        before.text_index.plain_text(),
+        after.text_index.plain_text()
+    );
+    let band = |scene: &ibis_pdf::PageScene| {
+        scene
+            .display_list
+            .iter()
+            .find_map(|cmd| match cmd {
+                DisplayCmd::DrawPath {
+                    bounds,
+                    fill_rgba: Some([255, 255, 255, 255]),
+                    ..
+                } if bounds.width() > 350.0 && bounds.height() > 200.0 => Some(*bounds),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let old = band(&before);
+    let new = band(&after);
+    assert!((new.x0 - old.x0 - 18.0).abs() < 0.01);
+    assert!((new.y0 - old.y0 + 9.0).abs() < 0.01);
+    for phrase in ["This is a test.", "Nothing fancy."] {
+        let first = before.text_index.plain_text().find(phrase).unwrap();
+        let a = before.text_index.chars[first].rect_pt;
+        let b = after.text_index.chars[first].rect_pt;
+        // The text overlays are separate top-level shapes in this drawing.
+        assert_eq!(a, b);
+    }
+}

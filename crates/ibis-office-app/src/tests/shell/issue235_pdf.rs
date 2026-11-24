@@ -346,7 +346,7 @@ fn vsdx_edit_geometry() {
     drop(s);
     let mut reopened = Scenario::open("target/scenario/vsdx-geometry-src/moved.vsdx");
     reopened.menu("vsdx.edit-geometry");
-    reopened.type_text("connect 12 end 4");
+    reopened.type_text("connect 14 end 6");
     let updated = reopened.with(|editor, cx| ibis_office_pdf::editor::geometry_copy_bytes(editor, cx)).unwrap();
     std::fs::write(dir.join("reconnected.vsdx"), &updated).unwrap();
     drop(reopened);
@@ -354,7 +354,7 @@ fn vsdx_edit_geometry() {
     let page = zip.read_bounded("visio/pages/page1.xml", 100_000).unwrap().unwrap();
     let xml = String::from_utf8(page).unwrap();
     assert!(xml.contains(r#"N="PinX" V="1.322835""#));
-    assert!(xml.contains(r#"FromSheet="12" FromCell="EndX" ToSheet="4""#));
+    assert!(xml.contains(r#"FromSheet="14" FromCell="EndX" ToSheet="6""#));
     let mut final_view = Scenario::open("target/scenario/vsdx-geometry-src/reconnected.vsdx");
     final_view.screenshot("vsdx-reconnected");
 }
