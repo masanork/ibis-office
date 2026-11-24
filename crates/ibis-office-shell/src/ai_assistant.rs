@@ -112,9 +112,10 @@ fn acp_editor_tool_access(name: &str) -> Option<ibis_doc_service::Access> {
         "select_range" | "switch_sheet" | "select_slide" | "audit_formulas" |
         "inspect_vc_bindings" | "infer_vc_schema" | "parse_vc_token" |
         "export_active_lawtext" | "generate_lawtext_5set" | "verify_lawtext_aratame" |
-        "lint_lawtext" | "search_egov_law" | "fetch_egov_law" => Some(Read),
+        "lint_lawtext" | "search_egov_law" | "fetch_egov_law" | "get_vc_public_keys" => Some(Read),
         "insert_rows_or_cols" | "delete_rows_or_cols" | "merge_cells" |
         "set_axis_size" | "set_cell_comment" | "apply_vc_template" | "bind_vc_claim" |
+        "issue_vc_preview" | "prepare_oid4vp_presentation" |
         "duplicate_slide" | "insert_text_box" | "set_shape_fill" | "open_markdown_document" => Some(Edit),
         _ => None,
     }
@@ -377,6 +378,7 @@ struct SourceEdit {
 #[cfg(not(target_family = "wasm"))]
 struct AssistantReview {
     gui_only: bool,
+    credential: Option<ToolCall>,
     turn: AssistantTurn,
     commands: Vec<Command>,
     preview: String,
@@ -397,10 +399,19 @@ impl AssistantReview {
     }
 
     fn build(turn: AssistantTurn, commands: Vec<Command>, labels: &[String], history_start: usize, gui_only: bool) -> Option<Self> {
-        if !Self::has_changes(&turn, &commands) {
+        Self::build_with_credential(turn, commands, labels, history_start, gui_only, None)
+    }
+
+    fn build_with_credential(
+        turn: AssistantTurn, commands: Vec<Command>, labels: &[String], history_start: usize, gui_only: bool,
+        credential: Option<(ToolCall, String)>,
+    ) -> Option<Self> {
+        if credential.is_none() && !Self::has_changes(&turn, &commands) {
             return None;
         }
-        let preview = if let Some(source) = &turn.source_edit {
+        let preview = if let Some((_, preview)) = &credential {
+            preview.clone()
+        } else if let Some(source) = &turn.source_edit {
             source_edit_preview(&source.before, &source.replacement)
         } else if turn.base.workbook.is_some() {
             workbook_preview(&turn, labels)
@@ -409,6 +420,7 @@ impl AssistantReview {
         };
         Some(Self {
             turn, commands, preview, history_start, gui_only, check_sql_open: false,
+            credential: credential.map(|(call, _)| call),
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             check_trial: None,
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -1064,7 +1076,9 @@ impl SlideEditor {
             "document_ready": self.check_assistant_connection_document().is_ok(),
             "streaming": panel.is_some_and(|panel| panel.streaming),
             "run_id": panel.map(|panel| panel.run_id),
-            "review": review.map(|review| &review.preview),
+            "review": review.map(|review| if review.credential.is_some() {
+                "Credential confirmation required in the GUI"
+            } else { review.preview.as_str() }),
             "skills": skills,
             "workspace_context": self.folder_pane.as_ref().map(|pane| json!({
                 "agents_md": pane.use_agent_instructions,
@@ -1117,8 +1131,8 @@ impl SlideEditor {
     ) -> Result<(), &'static str> {
         if let Some(panel) = &self.ai_assistant {
             panel.check_prompt_available()?;
-            self.clear_ai_assistant_history(cx);
         }
+        self.clear_ai_assistant_history(cx);
         Ok(())
     }
 
@@ -1956,7 +1970,9 @@ impl SlideEditor {
         if let Some(p) = self.ai_assistant.as_mut() {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             if p.acp_cancel.take().is_some() {
-                p.acp_session = None;
+                if let Some((_, conversation)) = p.acp_session.take() {
+                    conversation.clear_resume();
+                }
                 p.messages.push(UiMessage::new(UiMessageKind::Assistant, crate::i18n::text("ai.acp-cancelled").to_string()));
             }
             p.streaming = false;
@@ -1980,6 +1996,12 @@ impl SlideEditor {
     }
 
     fn clear_ai_assistant_history(&mut self, cx: &mut Context<Self>) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(record) = self.file_path().as_deref()
+            .and_then(|path| crate::ai_assistant_acp::ResumeRecord::for_document(path, self.is_read_only()))
+        {
+            record.clear();
+        }
         #[cfg(target_family = "wasm")]
         abort_browser_stream();
         #[cfg(not(target_family = "wasm"))]
@@ -1988,7 +2010,12 @@ impl SlideEditor {
         }
         if let Some(p) = self.ai_assistant.as_mut() {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            { p.acp_cancel = None; p.acp_session = None; }
+            {
+                p.acp_cancel = None;
+                if let Some((_, conversation)) = p.acp_session.take() {
+                    conversation.clear_resume();
+                }
+            }
             p.streaming = false;
             p.run_id = p.run_id.wrapping_add(1);
             p.streaming_text.clear();
@@ -2057,6 +2084,19 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn acp_resume_record(&self) -> Option<crate::ai_assistant_acp::ResumeRecord> {
+        if self.is_dirty() {
+            return None;
+        }
+        let path = self.file_path()?;
+        let stamp = crate::file_watch::DiskStamp::stat(&path)?;
+        if !self.watch.known.as_ref().is_some_and(|known| known.same_stat(&stamp)) {
+            return None;
+        }
+        crate::ai_assistant_acp::ResumeRecord::for_document(&path, self.is_read_only())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn submit_acp_prompt(
         &mut self, user: String, run_id: u64, skill: Option<ibis_formats::agent_skill::Skill>,
         formula_messages: Option<Vec<ChatMessage>>, cx: &mut Context<Self>,
@@ -2112,6 +2152,7 @@ impl SlideEditor {
             append_assistant_skill_context(&skill, &mut prompt);
             skill.metadata.name
         });
+        let resume = (!formula_only).then(|| self.acp_resume_record()).flatten();
         let panel = self.ai_assistant.as_mut().ok_or("Assistant panel is closed")?;
         panel.check_prompt_available()?;
         let analysis_sources = panel.analysis_sources.as_ref()
@@ -2130,23 +2171,29 @@ impl SlideEditor {
                 }))
             }));
         }
+        let workspace_context = self.folder_pane.as_ref().map(|pane| (pane.use_agent_instructions, pane.use_agent_memory));
+        let resume = resume.filter(|_| workspace_context.is_none() && analysis_sources.is_none());
         let scope = AcpScope {
             file_id: turn.file_id, path: turn.path.clone(), kind, read_only,
-            workspace_context: self.folder_pane.as_ref().map(|pane| (pane.use_agent_instructions, pane.use_agent_memory)),
-            analysis_sources: analysis_sources.clone(),
+            workspace_context, analysis_sources: analysis_sources.clone(),
         };
         let isolated_conversation = if let Some(messages) = formula_messages {
             // The dedicated command sees only the selected formula, even after
             // a conversation that had full document access.
             prompt = messages.into_iter().filter_map(|message| message.content).collect::<Vec<_>>().join("\n\n");
             tools.clear();
-            Some(crate::ai_assistant_acp::Conversation::start()?)
+            Some(crate::ai_assistant_acp::Conversation::start(None)?)
         } else {
             None
         };
         if !formula_only && panel.acp_session.as_ref().is_none_or(|(previous, _)| *previous != scope) {
             panel.acp_session = None;
-            panel.acp_session = Some((scope.clone(), crate::ai_assistant_acp::Conversation::start()?));
+            panel.acp_session = Some((scope.clone(), crate::ai_assistant_acp::Conversation::start(resume.clone())?));
+        }
+        if !formula_only
+            && let Some((_, conversation)) = panel.acp_session.as_mut()
+        {
+            conversation.restrict_resume(resume.as_ref());
         }
         let cancel = crate::ai_assistant_acp::Cancellation::default();
         let flag = cancel.flag();
@@ -2162,6 +2209,7 @@ impl SlideEditor {
             let mut edits = 0;
             let mut evidence = std::collections::BTreeSet::new();
             let mut new_documents = Vec::new();
+            let mut credential = None;
             let mut tool_calls = 0;
             let result = session.prompt(&prompt, flag, |chunk| {
                 if !chunk.is_empty() { let _ = deltas.unbounded_send(chunk.to_owned()); }
@@ -2191,6 +2239,9 @@ impl SlideEditor {
                         evidence.insert(format!("Evidence: {}", reference.label()));
                     }
                     return Ok(result.value);
+                }
+                if credential.is_some() {
+                    return Err("Resolve the pending credential request before requesting more document operations.".into());
                 }
                 if matches!(name, "read_editable_source" | "replace_source_text") {
                     if !commands.is_empty() {
@@ -2237,6 +2288,17 @@ impl SlideEditor {
                 if access == ibis_doc_service::Access::Edit && (read_only || edits >= 16) {
                     return Err("The document is read-only or the ACP draft has reached its 16-edit limit.".into());
                 }
+                if name == "parse_vc_token" && read_only && args["import_to_sheet"] == true {
+                    return Err("Cannot import a credential into a read-only workbook.".into());
+                }
+                if matches!(name, "issue_vc_preview" | "prepare_oid4vp_presentation") {
+                    if !commands.is_empty() {
+                        return Err("Apply or discard the document edits before preparing a credential.".into());
+                    }
+                    let preview = Self::credential_approval_preview(&turn, &call)?;
+                    credential = Some((call, preview));
+                    return Ok(json!({"state":"awaiting_gui_confirmation"}));
+                }
                 if name == "open_markdown_document" {
                     if new_documents.len() >= 4 {
                         return Err("The ACP turn has reached its four-document limit.".into());
@@ -2275,7 +2337,7 @@ impl SlideEditor {
                 }
                 Ok(text)
             });
-            result.map(|text| (text, turn, commands, labels, law_baseline, new_documents))
+            result.map(|text| (text, turn, commands, labels, law_baseline, new_documents, credential, session.checkpoint()))
         });
         let outcome = match outcome {
             Ok(outcome) => outcome,
@@ -2301,6 +2363,7 @@ impl SlideEditor {
             }
             let result = outcome.await.unwrap_or_else(|_| Err("The ACP worker stopped unexpectedly.".into()));
             let _ = editor.update(cx, |editor, cx| {
+                let current_resume = (!formula_only).then(|| editor.acp_resume_record()).flatten();
                 let analysis_sources = editor.ai_assistant.as_ref().and_then(|panel| panel.analysis_sources.as_ref())
                     .filter(|(file_id, _)| scope.kind == ibis_formats::Kind::Workbook && *file_id == editor.file_id)
                     .map(|(_, paths)| paths);
@@ -2308,9 +2371,9 @@ impl SlideEditor {
                     && scope.file_id == editor.file_id && scope.path == editor.file_path()
                     && scope.kind == ibis_formats::Kind::of(editor.presentation()) && scope.read_only == editor.is_read_only()
                     && scope.workspace_context == editor.folder_pane.as_ref().map(|pane| (pane.use_agent_instructions, pane.use_agent_memory));
-                let result = result.and_then(|(text, turn, commands, labels, law_baseline, new_documents)| {
+                let result = result.and_then(|(text, turn, commands, labels, law_baseline, new_documents, credential, checkpoint)| {
                     if valid_scope && turn.matches_target(editor.file_id, editor.file_path().as_deref(), editor.presentation()) {
-                        Ok((text, turn, commands, labels, law_baseline, new_documents))
+                        Ok((text, turn, commands, labels, law_baseline, new_documents, credential, checkpoint))
                     } else {
                         Err("The document changed during the ACP turn.".into())
                     }
@@ -2322,19 +2385,29 @@ impl SlideEditor {
                 let mut navigation = None;
                 let mut prepared_documents = Vec::new();
                 let event = match result {
-                    Ok((text, turn, commands, labels, law_baseline, new_documents)) => {
+                    Ok((text, turn, commands, labels, law_baseline, new_documents, credential, checkpoint)) => {
                         prepared_documents = new_documents;
+                        if let Some((record, id)) = checkpoint
+                            && current_resume.as_ref() == Some(&record)
+                            && panel.acp_session.as_ref().is_some_and(|(_, conversation)| conversation.can_save(&record))
+                            && let Err(error) = record.save(&id)
+                        {
+                            log::warn!("Could not save the ACP session: {error}");
+                        }
                         if !formula_only && editor_kind == AiDocKind::Docx {
                             panel.pending_old_lawtext = law_baseline;
                         }
-                        if !AssistantReview::has_changes(&turn, &commands) && turn.navigate {
+                        if credential.is_none() && !AssistantReview::has_changes(&turn, &commands) && turn.navigate {
                             navigation = Some((turn.active, turn.selection));
                         }
                         if !text.trim().is_empty() {
                             panel.messages.push(UiMessage::new(UiMessageKind::Assistant, text.clone()));
                         }
-                        panel.assistant_review = AssistantReview::build(turn, commands, &labels, panel.history.len(), true);
+                        panel.assistant_review = AssistantReview::build_with_credential(
+                            turn, commands, &labels, panel.history.len(), true, credential,
+                        );
                         match &panel.assistant_review {
+                            Some(review) if review.credential.is_some() => json!({"event":"review","run_id":run_id,"preview":"Credential confirmation required in the GUI","text":text}),
                             Some(review) => json!({"event":"review","run_id":run_id,"preview":review.preview,"text":text}),
                             None => json!({"event":"completed","run_id":run_id,"review":false,"text":text}),
                         }
@@ -3010,13 +3083,22 @@ impl SlideEditor {
                 files: trial.refresh_files?,
             })
         });
-        let AssistantReview { turn, commands, history_start, .. } = review;
+        let AssistantReview { mut turn, commands, history_start, credential, preview, .. } = review;
+        let mut credential_result = None;
         let (kind, message) = if !apply {
             (UiMessageKind::Assistant, "変更案を破棄しました。".into())
         } else if !turn.matches_target(self.file_id, self.file_path().as_deref(), self.presentation()) {
             (UiMessageKind::Error, "文書が変更されました。変更案を作り直してください。".into())
         } else if self.is_read_only() || self.is_pptx_mark_as_final() || self.is_pptx_read_only_blocked() {
             (UiMessageKind::Error, "文書は現在編集できません。".into())
+        } else if let Some(call) = credential {
+            match self.approve_assistant_credential(&mut turn, &call, &preview, cx) {
+                Ok(token) => {
+                    credential_result = Some(token);
+                    (UiMessageKind::Assistant, "Credential prepared locally. Copy the token from the Assistant message.".into())
+                }
+                Err(error) => (UiMessageKind::Error, error),
+            }
         } else if let Some(source) = &turn.source_edit {
             match self.apply_assistant_source_edit(source, cx) {
                 Ok(()) => (UiMessageKind::Assistant, "ソースの変更を適用しました。".into()),
@@ -3053,11 +3135,70 @@ impl SlideEditor {
             if kind == UiMessageKind::Error || !apply {
                 panel.history.truncate(history_start);
             }
+            if let Some(token) = credential_result {
+                panel.messages.push(UiMessage::new(UiMessageKind::Assistant, token));
+            }
             panel.messages.push(UiMessage::new(kind, message));
             panel.scroll_handle.scroll_to_bottom();
         }
         cx.notify();
         result
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn credential_approval_preview(turn: &AssistantTurn, call: &ToolCall) -> Result<String, String> {
+        let args = &call.function.arguments;
+        let slide = Self::resolve_ai_target_slide(turn, args)?;
+        let presentation = turn.draft.presentation();
+        let worksheet = presentation.slide(slide).and_then(|slide| slide.name.as_deref()).unwrap_or("");
+        let bindings = extract_sheet_claims(presentation, slide).ok_or("No credential bindings found on this worksheet")?;
+        let arguments: serde_json::Value = serde_json::from_str(args).map_err(|error| error.to_string())?;
+        let (heading, selection) = if call.function.name == "prepare_oid4vp_presentation" {
+            let parsed: PrepareOid4vpArgs = serde_json::from_value(arguments.clone()).map_err(|error| error.to_string())?;
+            let request = Oid4vpRequest::parse(&parsed.request).ok_or("Invalid OID4VP request")?;
+            let destination = json!({"client_id":request.client_id,"response_uri":request.response_uri,"nonce":request.nonce});
+            (format!("Prepare a signed presentation locally\nVerifier: {destination}"),
+                (!request.requested_claims.is_empty()).then_some(request.requested_claims))
+        } else {
+            let parsed: IssueVcPreviewArgs = serde_json::from_value(arguments.clone()).map_err(|error| error.to_string())?;
+            ("Issue a signed credential preview locally".into(), parsed.disclose_paths)
+        };
+        let claims: Vec<_> = bindings.claims.iter()
+            .filter(|claim| !claim.selective || selection.as_ref().map_or(claim.disclose, |paths| paths.contains(&claim.path_str)))
+            .map(|claim| json!({"path":claim.path_str,"value":claim_value_to_json(&claim.value)}))
+            .collect();
+        use sha2::{Digest, Sha256};
+        let keys = vc_public_keys_json("all")?;
+        let fingerprint = Sha256::digest(keys.to_string());
+        let options = json!({"format":arguments["format"],"issuer":arguments["iss"],
+            "type":arguments["vct"],"namespace":arguments["name_space"],
+            "update_sheet":arguments["apply_to_sheet"] == true});
+        let details = serde_json::to_string_pretty(&claims).map_err(|error| error.to_string())?;
+        let preview = format!("{heading}\nWorksheet: {}\nClaims to disclose:\n{details}\nOptions: {options}\nSigning keys: issuer {}, holder {}\nKey fingerprint: {fingerprint:x}",
+            json!(worksheet), keys["issuer_source"], keys["holder_source"]);
+        if preview.len() > 12_000 {
+            return Err("The credential request is too large for the confirmation view.".into());
+        }
+        Ok(preview)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn approve_assistant_credential(
+        &mut self, turn: &mut AssistantTurn, call: &ToolCall, preview: &str, cx: &mut Context<Self>,
+    ) -> Result<String, String> {
+        if Self::credential_approval_preview(turn, call)? != preview {
+            return Err("The credential configuration changed. Prepare the request again.".into());
+        }
+        let (result, commands, _) = Self::stage_document_tool(
+            AiDocKind::Xlsx, ibis_formats::Kind::Workbook, call, turn, &mut None,
+        );
+        let value: serde_json::Value = serde_json::from_str(&result).map_err(|error| error.to_string())?;
+        let token = value["vp_token"].as_str().or(value["sd_jwt_presentation"].as_str())
+            .or(value["mdoc_base64url_presentation"].as_str()).ok_or("Credential was not prepared")?;
+        if !commands.is_empty() && !with_format!(self, apply_ai_commands(self, commands, cx)) {
+            return Err("Could not update the workbook.".into());
+        }
+        Ok(token.to_owned())
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -4643,7 +4784,9 @@ impl SlideEditor {
                 let mut options = SdJwtOptions::default();
                 options.holder_public_jwk = Some(holder_key.to_public_jwk());
                 let output = issue_sd_jwt(&bindings, &options, &issuer_key);
-                let kb = output.attach_key_binding(&req.client_id, &req.nonce, 1_700_000_000, &holder_key);
+                let issued_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_secs()) as i64;
+                let kb = output.attach_key_binding(&req.client_id, &req.nonce, issued_at, &holder_key);
 
                 (
                     json!({
@@ -5491,7 +5634,9 @@ impl SlideEditor {
         });
         #[cfg(not(target_family = "wasm"))]
         let pending_box = panel.assistant_review.as_ref().map(|review| {
-            let apply = Button::new("ai-workbook-apply").primary().small().label("適用")
+            let is_credential = review.credential.is_some();
+            let apply = Button::new("ai-workbook-apply").primary().small()
+                .label(if is_credential { "署名して作成" } else { "適用" })
                 .on_click(cx.listener(|this, _, _, cx| {
                     let _ = this.finish_assistant_review(true, cx);
                 }));
@@ -5575,8 +5720,8 @@ impl SlideEditor {
                 .p_2()
                 .rounded_md()
                 .bg(cx.theme().secondary.opacity(0.5))
-                .child(div().text_sm().child("変更案"))
-                .when(kind == AiDocKind::Xlsx, |card| card.child(div().text_xs().child("数式の表示値は、適用時の再計算で変わる場合があります。")))
+                .child(div().text_sm().child(if is_credential { "資格情報の確認" } else { "変更案" }))
+                .when(kind == AiDocKind::Xlsx && !is_credential, |card| card.child(div().text_xs().child("数式の表示値は、適用時の再計算で変わる場合があります。")))
                 .child(div().id("ai-workbook-preview").max_h(px(180.0)).overflow_y_scroll()
                     .text_xs().child(review.preview.clone()))
                 .children(check_review)
@@ -6039,14 +6184,14 @@ mod assistant_review_tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn acp_editor_tool_access_excludes_interactive_credential_operations() {
+    fn acp_editor_tool_access_treats_credentials_as_edits() {
         use ibis_doc_service::Access::{Edit, Read};
         assert_eq!(super::acp_editor_tool_access("audit_formulas"), Some(Read));
         assert_eq!(super::acp_editor_tool_access("set_cell_comment"), Some(Edit));
         assert_eq!(super::acp_editor_tool_access("duplicate_slide"), Some(Edit));
         assert_eq!(super::acp_editor_tool_access("open_markdown_document"), Some(Edit));
         for name in ["issue_vc_preview", "prepare_oid4vp_presentation"] {
-            assert!(super::acp_editor_tool_access(name).is_none(), "{name}");
+            assert_eq!(super::acp_editor_tool_access(name), Some(Edit), "{name}");
         }
     }
 

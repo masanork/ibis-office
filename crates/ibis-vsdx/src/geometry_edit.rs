@@ -20,7 +20,7 @@ pub enum Endpoint {
 
 #[derive(Debug, Clone, Copy)]
 pub enum GeometryEdit {
-    /// Translation in page units (inches, positive upward).
+    /// Translation in parent coordinates (inches, positive upward).
     Move { shape: u32, dx: f64, dy: f64 },
     Reconnect {
         connector: u32,
@@ -53,7 +53,14 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
             .collect();
         match edit {
             GeometryEdit::Move { shape, dx, dy } => {
-                let node = shape_by_id(shapes, shape)?;
+                let mut candidates = shapes
+                    .descendants()
+                    .filter(|&node| named(node, "Shape") && id(node, "ID") == Some(shape));
+                let node = candidates
+                    .next()
+                    .filter(|_| candidates.next().is_none())
+                    .ok_or_else(unsupported)?;
+                let nested = node.parent() != Some(shapes);
                 let (x, y) = movable_pin(node)?;
                 if !dx.is_finite() || !dy.is_finite() || dx.abs().max(dy.abs()) > 1000.0 {
                     return Err(unsupported());
@@ -67,7 +74,7 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                 {
                     return Err(unsupported());
                 }
-                if is_group(node) {
+                if nested || is_group(node) {
                     let subtree: BTreeSet<_> = node
                         .descendants()
                         .filter(|&item| named(item, "Shape"))
@@ -90,10 +97,16 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                     }
                 }
                 for connector in connectors {
-                    let line = orthogonal_route(shapes, &links, connector)?;
+                    let line = editable_route(shapes, &links, connector)?;
                     let [mut start, mut end] = line.points;
                     for (point, link) in [(&mut start, line.links[0]), (&mut end, line.links[1])] {
                         if id(link, "ToSheet") == Some(shape) {
+                            if let Some(row) = fixed_row(link) {
+                                let saved = connection_point(node, row)?;
+                                if !close(saved.0, point.0) || !close(saved.1, point.1) {
+                                    return Err(unsupported());
+                                }
+                            }
                             point.0 += dx;
                             point.1 += dy;
                         }
@@ -106,7 +119,7 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                 endpoint,
                 target,
             } => {
-                let line = orthogonal_route(shapes, &links, connector)?;
+                let line = editable_route(shapes, &links, connector)?;
                 let idx = match endpoint {
                     Endpoint::Begin => 0,
                     Endpoint::End => 1,
@@ -123,43 +136,79 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                 if is_group(old_node) || is_group(new_node) {
                     return Err(unsupported());
                 }
-                let (old_x, old_y) = movable_pin(old_node)?;
-                let (new_x, new_y) = movable_pin(new_node)?;
-                let old_width = value(old_node, "Width")?;
-                let new_width = value(new_node, "Width")?;
-                let old_height = value(old_node, "Height")?;
-                let new_height = value(new_node, "Height")?;
-                if [old_width, new_width, old_height, new_height]
-                    .into_iter()
-                    .any(|v| v <= 0.0)
-                    || [old_node, new_node].into_iter().any(|n| {
-                        ["Angle", "FlipX", "FlipY"].into_iter().any(|name| {
-                            cell(n, name).is_ok_and(|c| {
-                                c.attribute("V").and_then(|v| v.parse::<f64>().ok()) != Some(0.0)
+                let link = line.links[idx];
+                let mut points = line.points;
+                points[idx] = if let Some(row) = fixed_row(link) {
+                    let old_point = connection_point(old_node, row)?;
+                    if !close(old_point.0, points[idx].0) || !close(old_point.1, points[idx].1) {
+                        return Err(unsupported());
+                    }
+                    let new_point = connection_point(new_node, row)?;
+                    let prefix = if idx == 0 { "Begin" } else { "End" };
+                    for axis in ["X", "Y"] {
+                        attribute_patch(
+                            &mut patches,
+                            cell(line.shape, &format!("{prefix}{axis}"))?,
+                            "F",
+                            fixed_formula(target, row),
+                        )?;
+                    }
+                    if let Ok(trigger) = cell(
+                        line.shape,
+                        if idx == 0 { "BegTrigger" } else { "EndTrigger" },
+                    ) {
+                        if trigger.attribute("F")
+                            != Some(&format!("_XFTRIGGER(Sheet.{old}!EventXFMod)"))
+                        {
+                            return Err(unsupported());
+                        }
+                        attribute_patch(
+                            &mut patches,
+                            trigger,
+                            "F",
+                            format!("_XFTRIGGER(Sheet.{target}!EventXFMod)"),
+                        )?;
+                    }
+                    new_point
+                } else {
+                    let trigger = cell(
+                        line.shape,
+                        if idx == 0 { "BegTrigger" } else { "EndTrigger" },
+                    )?;
+                    attribute_patch(
+                        &mut patches,
+                        trigger,
+                        "F",
+                        format!("_XFTRIGGER(Sheet.{target}!EventXFMod)"),
+                    )?;
+                    let (old_x, old_y) = movable_pin(old_node)?;
+                    let (new_x, new_y) = movable_pin(new_node)?;
+                    let old_width = value(old_node, "Width")?;
+                    let new_width = value(new_node, "Width")?;
+                    let old_height = value(old_node, "Height")?;
+                    let new_height = value(new_node, "Height")?;
+                    if [old_width, new_width, old_height, new_height]
+                        .into_iter()
+                        .any(|v| v <= 0.0)
+                        || [old_node, new_node].into_iter().any(|n| {
+                            ["Angle", "FlipX", "FlipY"].into_iter().any(|name| {
+                                cell(n, name).is_ok_and(|c| {
+                                    c.attribute("V").and_then(|v| v.parse::<f64>().ok())
+                                        != Some(0.0)
+                                })
                             })
                         })
-                    })
-                {
-                    return Err(unsupported());
-                }
-                let mut points = line.points;
-                let (x, y) = points[idx];
-                points[idx] = (
-                    new_x + (x - old_x) * new_width / old_width,
-                    new_y + (y - old_y) * new_height / old_height,
-                );
+                    {
+                        return Err(unsupported());
+                    }
+                    let (x, y) = points[idx];
+                    (
+                        new_x + (x - old_x) * new_width / old_width,
+                        new_y + (y - old_y) * new_height / old_height,
+                    )
+                };
                 line.patch(&mut patches, points[0], points[1])?;
-                attribute_patch(&mut patches, line.links[idx], "ToSheet", target.to_string())?;
-                let trigger = cell(
-                    line.shape,
-                    if idx == 0 { "BegTrigger" } else { "EndTrigger" },
-                )?;
-                attribute_patch(
-                    &mut patches,
-                    trigger,
-                    "F",
-                    format!("_XFTRIGGER(Sheet.{target}!EventXFMod)"),
-                )?;
+                attribute_patch(&mut patches, link, "ToSheet", target.to_string())?;
             }
         }
     }
@@ -240,7 +289,7 @@ fn number_patch(patches: &mut Vec<Patch>, node: XmlNode<'_, '_>, value: f64) -> 
     attribute_patch(patches, node, "V", value.to_string())
 }
 
-struct OrthogonalRoute<'a, 'i> {
+struct EditableRoute<'a, 'i> {
     shape: XmlNode<'a, 'i>,
     links: [XmlNode<'a, 'i>; 2],
     points: [(f64, f64); 2],
@@ -248,11 +297,56 @@ struct OrthogonalRoute<'a, 'i> {
     size: [f64; 2],
 }
 
-fn orthogonal_route<'a, 'i>(
+fn fixed_row(link: XmlNode<'_, '_>) -> Option<u32> {
+    let row: u32 = link
+        .attribute("ToCell")?
+        .strip_prefix("Connections.X")?
+        .parse()
+        .ok()?;
+    let part = 99_u32.checked_add(row)?;
+    (row != 0 && id(link, "ToPart") == Some(part)).then_some(row)
+}
+
+fn fixed_formula(target: u32, row: u32) -> String {
+    format!("PAR(PNT(Sheet.{target}!Connections.X{row},Sheet.{target}!Connections.Y{row}))")
+}
+
+fn connection_point(shape: XmlNode<'_, '_>, row: u32) -> Result<(f64, f64)> {
+    if ["Angle", "FlipX", "FlipY"].into_iter().any(|key| {
+        cell(shape, key)
+            .is_ok_and(|c| c.attribute("F").is_some() || value(shape, key).ok() != Some(0.0))
+    }) {
+        return Err(unsupported());
+    }
+    let mut sections = shape
+        .children()
+        .filter(|&n| named(n, "Section") && n.attribute("N") == Some("Connection"));
+    let section = sections
+        .next()
+        .filter(|_| sections.next().is_none())
+        .ok_or_else(unsupported)?;
+    let mut rows = section
+        .children()
+        .filter(|&n| named(n, "Row") && id(n, "IX") == Some(row - 1));
+    let point = rows
+        .next()
+        .filter(|_| rows.next().is_none())
+        .ok_or_else(unsupported)?;
+    if point.attribute("Del") == Some("1") {
+        return Err(unsupported());
+    }
+    let (x, y) = movable_pin(shape)?;
+    Ok((
+        x + value(point, "X")? - value(shape, "LocPinX")?,
+        y + value(point, "Y")? - value(shape, "LocPinY")?,
+    ))
+}
+
+fn editable_route<'a, 'i>(
     shapes: XmlNode<'a, 'i>,
     links: &[XmlNode<'a, 'i>],
     connector: u32,
-) -> Result<OrthogonalRoute<'a, 'i>> {
+) -> Result<EditableRoute<'a, 'i>> {
     let shape = shape_by_id(shapes, connector)?;
     if child(shape, "Shapes").is_some()
         || links
@@ -279,14 +373,19 @@ fn orthogonal_route<'a, 'i>(
         (end_link, "End", "EndTrigger", "BegTrigger"),
     ] {
         let target = id(link, "ToSheet").ok_or_else(unsupported)?;
-        if link.attribute("FromCell") != Some(if prefix == "Begin" { "BeginX" } else { "EndX" })
-            || !matches!(link.attribute("ToCell"), None | Some("PinX"))
-            || cell(shape, trigger)?.attribute("F")
-                != Some(&format!("_XFTRIGGER(Sheet.{target}!EventXFMod)"))
-        {
+        if link.attribute("FromCell") != Some(if prefix == "Begin" { "BeginX" } else { "EndX" }) {
             return Err(unsupported());
         }
-        let formula = format!("_WALKGLUE({trigger},{opposite},WalkPreference)");
+        let formula = if let Some(row) = fixed_row(link) {
+            fixed_formula(target, row)
+        } else if matches!(link.attribute("ToCell"), None | Some("PinX"))
+            && cell(shape, trigger)?.attribute("F")
+                == Some(&format!("_XFTRIGGER(Sheet.{target}!EventXFMod)"))
+        {
+            format!("_WALKGLUE({trigger},{opposite},WalkPreference)")
+        } else {
+            return Err(unsupported());
+        };
         for axis in ["X", "Y"] {
             if cell(shape, &format!("{prefix}{axis}"))?.attribute("F") != Some(formula.as_str()) {
                 return Err(unsupported());
@@ -330,25 +429,50 @@ fn orthogonal_route<'a, 'i>(
         return Err(unsupported());
     }
 
-    let mut vertices: Vec<([XmlNode<'_, '_>; 2], [f64; 2])> = Vec::new();
+    let mut vertices = Vec::new();
+    let mut first = None;
+    let mut previous: Option<[f64; 2]> = None;
+    let mut count = 0;
     for row in geometry.children().filter(|&node| named(node, "Row")) {
-        let first = vertices.is_empty();
+        let kind = match (count, row.attribute("T")) {
+            (0, Some("MoveTo")) | (1.., Some("LineTo")) => false,
+            (0, Some("RelMoveTo")) | (1.., Some("RelLineTo" | "RelCubBezTo")) => true,
+            _ => return Err(unsupported()),
+        };
         let cells = [cell(row, "X")?, cell(row, "Y")?];
-        let point = [value(row, "X")?, value(row, "Y")?];
-        if row.attribute("T") != Some(if first { "MoveTo" } else { "LineTo" })
-            || cells.iter().any(|cell| cell.attribute("F").is_some())
-            || point[0] < -1e-5
-            || point[0] > width + 1e-5
-            || point[1] < -1e-5
-            || point[1] > height + 1e-5
-            || (0..2).any(|axis| flat[axis] && !close(point[axis], size[axis] / 2.0))
-            || vertices.last().is_some_and(|(_, previous)| {
-                !close(previous[0], point[0]) && !close(previous[1], point[1])
+        let raw = [value(row, "X")?, value(row, "Y")?];
+        let point = if kind {
+            [raw[0] * width, raw[1] * height]
+        } else {
+            raw
+        };
+        let cubic = row.attribute("T") == Some("RelCubBezTo");
+        if cubic {
+            for key in ["A", "B", "C", "D"] {
+                if cell(row, key)?.attribute("F").is_some() {
+                    return Err(unsupported());
+                }
+                value(row, key)?;
+            }
+        }
+        if cells.iter().any(|cell| cell.attribute("F").is_some())
+            || (0..2).any(|axis| {
+                point[axis] < -1e-5
+                    || point[axis] > size[axis] + 1e-5
+                    || (flat[axis] && !close(point[axis], size[axis] / 2.0))
             })
+            || (!cubic
+                && previous
+                    .is_some_and(|last| !close(last[0], point[0]) && !close(last[1], point[1])))
         {
             return Err(unsupported());
         }
-        vertices.push((cells, point));
+        if !kind {
+            vertices.push((cells, point));
+        }
+        first.get_or_insert(point);
+        previous = Some(point);
+        count += 1;
     }
     let locally = |point: (f64, f64)| {
         let value = [point.0, point.1];
@@ -360,16 +484,16 @@ fn orthogonal_route<'a, 'i>(
             }
         })
     };
-    let first = vertices.first().ok_or_else(unsupported)?.1;
-    let last = vertices.last().ok_or_else(unsupported)?.1;
+    let first = first.ok_or_else(unsupported)?;
+    let last = previous.ok_or_else(unsupported)?;
     let expected_first = locally(start);
     let expected_last = locally(end);
-    if vertices.len() < 2
+    if count < 2
         || (0..2).any(|i| !close(first[i], expected_first[i]) || !close(last[i], expected_last[i]))
     {
         return Err(unsupported());
     }
-    Ok(OrthogonalRoute {
+    Ok(EditableRoute {
         shape,
         links: [begin, end_link],
         points,
@@ -382,7 +506,7 @@ fn close(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-5
 }
 
-impl OrthogonalRoute<'_, '_> {
+impl EditableRoute<'_, '_> {
     fn patch(&self, patches: &mut Vec<Patch>, start: (f64, f64), end: (f64, f64)) -> Result<()> {
         let old = [
             self.points[1].0 - self.points[0].0,

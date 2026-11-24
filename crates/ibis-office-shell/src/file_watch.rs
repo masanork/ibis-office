@@ -40,7 +40,7 @@ impl DiskStamp {
         Some(Self { hash: Some(content_hash(bytes)), ..Self::stat(path)? })
     }
 
-    fn same_stat(&self, other: &Self) -> bool {
+    pub(crate) fn same_stat(&self, other: &Self) -> bool {
         self.modified == other.modified && self.len == other.len
     }
 }

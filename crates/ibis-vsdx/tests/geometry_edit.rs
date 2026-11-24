@@ -229,3 +229,165 @@ fn updates_vertical_and_leftward_routes() {
         && n.attribute("FromCell") == Some("EndX")
         && n.attribute("ToSheet") == Some("13")));
 }
+
+#[test]
+fn reconnects_a_fixed_point_and_reopens_with_both_endpoint_formulas() {
+    use ibis_ooxml::package::{Package, SaveOptions};
+    let zip = Archive::new(SAMPLE.into()).unwrap();
+    let entry = zip
+        .entries()
+        .iter()
+        .find(|entry| entry.name == PAGE)
+        .unwrap();
+    let source = String::from_utf8(zip.read(entry).unwrap()).unwrap();
+    let xml = roxmltree::Document::parse(&source).unwrap();
+    let mut insertions = Vec::new();
+    for (shape, x) in [("3", 0.0), ("4", 0.0)] {
+        let node = xml
+            .descendants()
+            .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some(shape))
+            .unwrap();
+        let y = cell_value(&xml, shape, "LocPinY");
+        insertions.push((node.range().end - "</Shape>".len(),
+            format!(r#"<Section N="Connection"><Row IX="0"><Cell N="X" V="{x}"/><Cell N="Y" V="{y}"/></Row></Section>"#)));
+    }
+    let mut source = source;
+    insertions.sort_by_key(|&(offset, _)| std::cmp::Reverse(offset));
+    for (offset, text) in insertions {
+        source.insert_str(offset, &text);
+    }
+    let original = r#"<Connect FromSheet="12" FromCell="EndX" ToSheet="3"/>"#;
+    assert!(source.contains(original));
+    source = source.replace(original, r#"<Connect FromSheet="12" FromCell="EndX" ToSheet="3" ToCell="Connections.X1" ToPart="100"/>"#);
+    source = source.replacen(
+        "_WALKGLUE(EndTrigger,BegTrigger,WalkPreference)",
+        "PAR(PNT(Sheet.3!Connections.X1,Sheet.3!Connections.Y1))",
+        2,
+    );
+    let mut package = Package::open(SAMPLE).unwrap();
+    package.set_bytes(PAGE, source.into_bytes());
+    let doc =
+        VsdxContainer::from_bytes(package.save(SaveOptions::default()).unwrap().into()).unwrap();
+    let bytes = doc
+        .edit_geometry(
+            0,
+            GeometryEdit::Reconnect {
+                connector: 12,
+                endpoint: Endpoint::End,
+                target: 4,
+            },
+        )
+        .unwrap();
+    VsdxContainer::from_bytes(bytes.clone().into())
+        .unwrap()
+        .interpret_page_scene(0)
+        .unwrap();
+    let zip = Archive::new(bytes.into()).unwrap();
+    let entry = zip
+        .entries()
+        .iter()
+        .find(|entry| entry.name == PAGE)
+        .unwrap();
+    let result = String::from_utf8(zip.read(entry).unwrap()).unwrap();
+    assert_eq!(
+        result
+            .matches("PAR(PNT(Sheet.4!Connections.X1,Sheet.4!Connections.Y1))")
+            .count(),
+        2
+    );
+    assert!(result.contains(r#"<Connect FromSheet="12" FromCell="EndX" ToSheet="4" ToCell="Connections.X1" ToPart="100"/>"#));
+}
+
+fn rewrite_flowchart(change: impl FnOnce(String) -> String) -> VsdxContainer {
+    use ibis_ooxml::package::{Package, SaveOptions};
+    let zip = Archive::new(SAMPLE.into()).unwrap();
+    let entry = zip
+        .entries()
+        .iter()
+        .find(|entry| entry.name == PAGE)
+        .unwrap();
+    let source = String::from_utf8(zip.read(entry).unwrap()).unwrap();
+    let mut package = Package::open(SAMPLE).unwrap();
+    package.set_bytes(PAGE, change(source).into_bytes());
+    VsdxContainer::from_bytes(package.save(SaveOptions::default()).unwrap().into()).unwrap()
+}
+
+#[test]
+fn reconnects_relative_cubic_geometry_without_discarding_control_points() {
+    let doc = rewrite_flowchart(|mut source| {
+        let xml = roxmltree::Document::parse(&source).unwrap();
+        let route = xml
+            .descendants()
+            .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some("14"))
+            .unwrap();
+        let geometry = route
+            .children()
+            .find(|n| n.attribute("N") == Some("Geometry"))
+            .unwrap()
+            .range();
+        source.replace_range(geometry, concat!(
+            r#"<Section N="Geometry" IX="0"><Cell N="NoFill" V="1"/>"#,
+            r#"<Row T="RelMoveTo" IX="1"><Cell N="X" V="0"/><Cell N="Y" V="0"/></Row>"#,
+            r#"<Row T="RelCubBezTo" IX="2"><Cell N="X" V="1"/><Cell N="Y" V="1"/>"#,
+            r#"<Cell N="A" V="0.25"/><Cell N="B" V="0"/><Cell N="C" V="0.75"/><Cell N="D" V="1"/></Row></Section>"#));
+        source
+    });
+    let bytes = doc
+        .edit_geometry(
+            0,
+            GeometryEdit::Reconnect {
+                connector: 14,
+                endpoint: Endpoint::End,
+                target: 6,
+            },
+        )
+        .unwrap();
+    let reopened = VsdxContainer::from_bytes(bytes.clone().into()).unwrap();
+    reopened.interpret_page_scene(0).unwrap();
+    let zip = Archive::new(bytes.into()).unwrap();
+    let page = zip
+        .entries()
+        .iter()
+        .find(|entry| entry.name == PAGE)
+        .unwrap();
+    let page = String::from_utf8(zip.read(page).unwrap()).unwrap();
+    assert!(page.contains(r#"<Row T="RelCubBezTo" IX="2"><Cell N="X" V="1"/><Cell N="Y" V="1"/><Cell N="A" V="0.25"/><Cell N="B" V="0"/><Cell N="C" V="0.75"/><Cell N="D" V="1"/>"#));
+    assert!(page.contains(r#"FromSheet="14" FromCell="EndX" ToSheet="6""#));
+}
+
+#[test]
+fn moves_an_unconnected_child_in_group_coordinates() {
+    let doc = rewrite_flowchart(|mut source| {
+        let xml = roxmltree::Document::parse(&source).unwrap();
+        let shape = xml
+            .descendants()
+            .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some("1"))
+            .unwrap()
+            .range();
+        source.insert_str(shape.end, "</Shapes></Shape>");
+        source.insert_str(shape.start, r#"<Shape ID="100" Type="Group"><Cell N="PinX" V="0"/><Cell N="PinY" V="0"/><Cell N="LocPinX" V="0"/><Cell N="LocPinY" V="0"/><Cell N="Width" V="20"/><Cell N="Height" V="3"/><Shapes>"#);
+        source
+    });
+    let bytes = doc
+        .edit_geometry(
+            0,
+            GeometryEdit::Move {
+                shape: 1,
+                dx: 0.25,
+                dy: 0.0,
+            },
+        )
+        .unwrap();
+    let reopened = VsdxContainer::from_bytes(bytes.clone().into()).unwrap();
+    reopened.interpret_page_scene(0).unwrap();
+    let zip = Archive::new(bytes.into()).unwrap();
+    let page = zip
+        .entries()
+        .iter()
+        .find(|entry| entry.name == PAGE)
+        .unwrap();
+    let page = String::from_utf8(zip.read(page).unwrap()).unwrap();
+    let xml = roxmltree::Document::parse(&page).unwrap();
+    assert!((cell_value(&xml, "1", "PinX") - 10.181102).abs() < 1e-6);
+    assert_eq!(cell_value(&xml, "100", "PinX"), 0.0);
+}
