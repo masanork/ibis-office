@@ -1610,7 +1610,9 @@ impl SlideEditor {
             // holds the page while it runs.
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
             let extension = name.rsplit_once('.').map(|(_, ext)| ext);
-            if let Some(format) = crate::read_file::FixedLayoutFormat::detect(extension, &data) {
+            use crate::read_file::{EditableImport, PreviewImport};
+            let preview_import = PreviewImport::detect(extension, &data);
+            if let Some(PreviewImport::FixedLayout(format)) = preview_import {
                 let result = format.read(data.into());
                 this.update_in(cx, |this, window, cx| {
                     if this.closed != closed || this.web_open_generation != generation { return; }
@@ -1621,8 +1623,7 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
-            let is_jtd = name.rsplit_once('.').is_some_and(|(_, ext)| ibis_formats::jtd::is_extension(ext)) || ibis_formats::jtd::is_jtd(&data);
-            if is_jtd {
+            if preview_import == Some(PreviewImport::Jtd) {
                 let mut result = crate::jtd_preview::read(&data);
                 if let Ok((presentation, _)) = &result {
                     if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
@@ -1644,8 +1645,12 @@ impl SlideEditor {
             // A download-enabled embed needs the original package to write
             // edits back; ordinary initial previews keep the lighter read path.
             let production_image = extension.is_some_and(ibis_formats::production_image::supports_extension);
+            let editable_import = EditableImport::detect(extension, &data);
             if initial && law_input.is_none() && !production_image && !crate::embed::show_download() {
-                let mut result = ibis_formats::read(&data).map_err(|e| e.to_string());
+                let mut result = match editable_import {
+                    Some(format) => format.open(&data).map(|opened| opened.presentation),
+                    None => ibis_formats::read(&data),
+                }.map_err(|e| e.to_string());
                 if let Ok(presentation) = &result {
                     if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
                         result = Err(crate::web::font_preload_error(error));
@@ -1660,17 +1665,17 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
-            let hangul = ibis_formats::hwp::Format::detect(extension, &data);
-            let converted_hangul = hangul.is_some();
             let mut image_provenance = None;
             let mut law_source = None;
+            let mut opened_import = None;
             let mut result = if let Some(markdown) = law_input {
                 law_source = Some(std::sync::Arc::new(data));
                 markdown
                     .and_then(|text| ibis_formats::markdown::open_markdown(text.into_bytes()))
                     .map(|opened| (opened, None))
                     .map_err(|e| e.to_string())
-            } else if let Some(format) = hangul {
+            } else if let Some(format) = editable_import {
+                opened_import = Some(format);
                 format.open(&data).map(|opened| (opened, None)).map_err(|e| e.to_string())
             } else if extension.is_some_and(ibis_formats::production_image::is_heic_extension) {
                 crate::web::open_heic(&data).await.map(|opened| (opened, None))
@@ -1697,7 +1702,7 @@ impl SlideEditor {
                         }
                         Ok(result)
                     }
-                    Ok(None) => ibis_odf::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
+                    Ok(None) => ibis_formats::open(data).map(|opened| (opened, None)).map_err(|e| e.to_string()),
                     Err(error) => Err(error),
                 }
             };
@@ -1714,9 +1719,9 @@ impl SlideEditor {
                     let is_tmpl = name.rsplit_once('.').is_some_and(|(_, e)| ibis_formats::is_template(e));
                     let doc_name = if is_tmpl {
                         crate::file_actions::new_file_name(ibis_formats::Kind::of(&opened.presentation))
-                    } else if converted_hangul {
+                    } else if let Some(import) = opened_import {
                         let stem = name.rsplit_once('.').map_or(name.as_ref(), |(stem, _)| stem);
-                        format!("{stem}.docx").into()
+                        format!("{stem}.{}", import.save_extension()).into()
                     } else {
                         name
                     };
@@ -1933,13 +1938,16 @@ impl SlideEditor {
                         this.set_loaded_source(loaded.source);
                         this.path = None;
                         this.document.set_file(None);
-                    } else if production_image || loaded.converted_hangul
+                    } else if production_image || loaded.editable_import.is_some()
                         || (ibis_formats::Kind::of(&loaded.presentation) == ibis_formats::Kind::Workbook
                             && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")))
                         || path.extension().is_some_and(|e| ["xls", "ods", "ppt", "pps", "pot", "odp", "otp", "odt", "ott", "doc", "dot", "rtf", "txt", "text", "html", "htm", "pdf"].iter().any(|x| e.eq_ignore_ascii_case(x))) {
                         // An old workbook or presentation (or an OpenDocument workbook) is read as a new .xlsx or .pptx: saving asks where, and leaves the old file as it is.
                         let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        let extension = crate::format::info(ibis_formats::Kind::of(&loaded.presentation)).extension;
+                        let extension = loaded.editable_import.map_or_else(
+                            || crate::format::info(ibis_formats::Kind::of(&loaded.presentation)).extension,
+                            crate::read_file::EditableImport::save_extension,
+                        );
                         this.load(loaded.presentation, format!("{stem}.{extension}").into(), window, cx);
                         this.set_opened_source(loaded.source, production_image);
                         this.bom_source = loaded.bom_source;

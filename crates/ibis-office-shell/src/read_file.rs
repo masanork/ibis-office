@@ -23,7 +23,7 @@ pub struct Loaded {
     /// The password a protected file was opened with: saving protects it again.
     pub password: Option<String>,
     pub standard_encryption: bool,
-    pub converted_hangul: bool,
+    pub(crate) editable_import: Option<EditableImport>,
     pub jtd_original: Option<Vec<u8>>,
     pub jtd_gallery: bool,
     pub structured_preview: bool,
@@ -41,7 +41,7 @@ fn read_only_preview(opened: ibis_formats::Opened) -> Loaded {
     crate::render::preload::Preload::start_for_next(&opened.presentation);
     Loaded {
         presentation: opened.presentation, source: std::sync::Arc::new(opened.source),
-        password: None, standard_encryption: false, converted_hangul: false, csv_stream: None,
+        password: None, standard_encryption: false, editable_import: None, csv_stream: None,
         jtd_original: None, jtd_gallery: false, structured_preview: true, bom_source: None,
         exr_exposure: None, image_provenance: None,
     }
@@ -120,7 +120,7 @@ fn load_production_image(
     image_provenance: Option<crate::image_provenance::Report>,
 ) -> Loaded {
     crate::render::preload::Preload::start_for_next(&opened.presentation);
-    Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, converted_hangul: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source: None, exr_exposure, image_provenance }
+    Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, editable_import: None, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source: None, exr_exposure, image_provenance }
 }
 
 /// Run `read` for the file at `path`. One file's reader going wrong must close that file only: every window shares this
@@ -138,6 +138,37 @@ pub fn catch_read_panic<T>(path: &std::path::Path, read: impl FnOnce() -> Result
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod stack_tests {
+    #[test]
+    fn imported_opendocument_uses_detected_type_for_save() {
+        use super::EditableImport;
+        use ibis_formats::Kind;
+        use ibis_odf::Format;
+
+        type WriteOdf = fn(&ibis_doc_model::Presentation) -> Result<Vec<u8>, ibis_formats::Error>;
+        let cases: [(Kind, Format, &str, WriteOdf); 3] = [
+            (Kind::Document, Format::Text, "docx", ibis_odf::export_docx_to_odt),
+            (Kind::Workbook, Format::Spreadsheet, "xlsx", ibis_odf::write_ods),
+            (Kind::Presentation, Format::Presentation, "pptx", ibis_odf::write_odp),
+        ];
+        for (kind, format, extension, write) in cases {
+            let blank = ibis_formats::open(ibis_formats::blank_file(kind).unwrap()).unwrap();
+            let bytes = write(&blank.presentation).unwrap();
+            let detected = EditableImport::detect(None, &bytes).unwrap();
+            assert_eq!(detected, EditableImport::OpenDocument(format));
+            assert_eq!(detected.save_extension(), extension);
+            assert_eq!(detected.open(&bytes).unwrap().source.kind(), kind);
+        }
+    }
+
+    #[test]
+    fn imported_preview_formats_use_the_shared_routes() {
+        use super::{EditableImport, FixedLayoutFormat, PreviewImport};
+        assert_eq!(PreviewImport::detect(Some("XDW"), b""), Some(PreviewImport::FixedLayout(FixedLayoutFormat::Xdw)));
+        assert_eq!(PreviewImport::detect(Some("JTT"), b""), Some(PreviewImport::Jtd));
+        assert_eq!(EditableImport::detect(Some("HWPX"), b""), Some(EditableImport::Hancom(ibis_formats::hwp::Format::Hwpx)));
+        assert_eq!(EditableImport::detect(Some("HWP"), b"").unwrap().save_extension(), "docx");
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
     fn plain_cyclonedx_workbook_retains_source_without_enabling_cbom_comparison() {
@@ -207,6 +238,62 @@ mod stack_tests {
     }
 }
 
+/// Imports that can be edited and saved to a new OOXML file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EditableImport {
+    Hancom(ibis_formats::hwp::Format),
+    OpenDocument(ibis_odf::Format),
+}
+
+impl EditableImport {
+    pub(crate) fn detect(extension: Option<&str>, data: &[u8]) -> Option<Self> {
+        if let Some(format) = ibis_formats::hwp::Format::detect(extension, data) {
+            return Some(Self::Hancom(format));
+        }
+        // A text-document extension also routes malformed input to its importer.
+        if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("odt") || ext.eq_ignore_ascii_case("ott")) {
+            return Some(Self::OpenDocument(ibis_odf::Format::Text));
+        }
+        ibis_odf::Format::detect(data).map(Self::OpenDocument)
+    }
+
+    pub(crate) fn open(self, data: &[u8]) -> Result<ibis_formats::Opened, ibis_formats::Error> {
+        match self {
+            Self::Hancom(format) => format.open(data),
+            Self::OpenDocument(format) => ibis_formats::open(format.to_ooxml(data)?),
+        }
+    }
+
+    pub(crate) fn save_extension(self) -> &'static str {
+        match self {
+            Self::Hancom(_) | Self::OpenDocument(ibis_odf::Format::Text) => "docx",
+            Self::OpenDocument(ibis_odf::Format::Spreadsheet) => "xlsx",
+            Self::OpenDocument(ibis_odf::Format::Presentation) => "pptx",
+        }
+    }
+}
+
+/// Imports displayed through a preview instead of an editable OOXML source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PreviewImport {
+    FixedLayout(FixedLayoutFormat),
+    /// The JTD document model can subsequently be exported or reopened as DOCX.
+    Jtd,
+}
+
+impl PreviewImport {
+    pub(crate) fn detect(extension: Option<&str>, data: &[u8]) -> Option<Self> {
+        if let Some(format) = FixedLayoutFormat::detect(extension, data) {
+            Some(Self::FixedLayout(format))
+        } else if extension.is_some_and(ibis_formats::jtd::is_extension) || ibis_formats::jtd::is_jtd(data) {
+            Some(Self::Jtd)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FixedLayoutFormat {
     Pdf,
     Ofd,
@@ -330,23 +417,24 @@ fn read_file_data(
         let opened = ibis_formats::open(workbook).map_err(|error| error.to_string())?;
         return Ok(read_only_preview(opened));
     }
-    if let Some(format) = FixedLayoutFormat::detect(extension, &data) {
+    let preview_import = PreviewImport::detect(extension, &data);
+    if let Some(PreviewImport::FixedLayout(format)) = preview_import {
         let presentation = format.read(data.into())?;
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, converted_hangul: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source: None, exr_exposure: None, image_provenance: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, editable_import: None, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source: None, exr_exposure: None, image_provenance: None });
     }
     let extension = path.extension().and_then(|e| e.to_str());
     if let Some((opened, exr_exposure)) = ibis_formats::production_image::open_with_exposure(extension, &data)? {
         let image_provenance = extension.and_then(|ext| crate::image_provenance::inspect(ext, &data));
         return Ok(load_production_image(opened, exr_exposure, image_provenance));
     }
-    if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_formats::jtd::is_extension) || ibis_formats::jtd::is_jtd(&data) {
+    if preview_import == Some(PreviewImport::Jtd) {
         let (presentation, jtd_gallery) = crate::jtd_preview::read(&data)?;
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
         crate::render::preload::Preload::start_for_next(&presentation);
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, converted_hangul: false, csv_stream: None, jtd_original: Some(data), jtd_gallery, structured_preview: false, bom_source: None, exr_exposure: None, image_provenance: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, editable_import: None, csv_stream: None, jtd_original: Some(data), jtd_gallery, structured_preview: false, bom_source: None, exr_exposure: None, image_provenance: None });
     }
     let standard_encryption = ibis_formats::ibis_ooxml::encryption::is_standard_encrypted(&data);
     let read_fs_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
@@ -360,9 +448,13 @@ fn read_file_data(
     let open_t0 = crate::clock::Instant::now();
     // An old binary file (.xls, .ppt, .doc): read by its content, not by its extension.
     let is_legacy_binary = ibis_formats::is_legacy_binary(&data);
-    let hangul = ibis_formats::hwp::Format::detect(extension, &data);
-    let converted_hangul = hangul.is_some();
-    let external_document_format = ibis_formats::docx_convert::DocxConvertFormat::from_path(path);
+    use ibis_formats::docx_convert::DocxConvertFormat;
+    let external_document_format = DocxConvertFormat::from_path(path);
+    let editable_import = EditableImport::detect(extension, &data).filter(|format| {
+        matches!(format, EditableImport::Hancom(_))
+            || matches!(external_document_format, None | Some(DocxConvertFormat::Odt))
+    });
+    let mut opened_import = None;
     let mut bom_source = None;
     let open_result = if let Some(law_md) = ibis_formats::lawtext::path_input_to_markdown(path, &data).map_err(|e| {
         note_open_failed(path);
@@ -393,20 +485,22 @@ fn read_file_data(
     } else if let Some(extension) = extension.filter(|ext| ibis_formats::structured_preview::supports_extension(ext)) {
         let opened = crate::structured_preview::open(extension, &data)?;
         return Ok(read_only_preview(opened));
-    } else if external_document_format == Some(ibis_formats::docx_convert::DocxConvertFormat::Markdown) {
+    } else if external_document_format == Some(DocxConvertFormat::Markdown) {
         if ibis_formats::markdown::is_presentation_markdown(&data) {
             ibis_formats::markdown::open_markdown_presentation_with_base_dir(data, path.parent()).map(|opened| (opened, None))
         } else {
             ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent()).map(|opened| (opened, None))
         }
-    } else if let Some(format) = hangul {
-        format.open(&data).map(|opened| (opened, None))
+    } else if let Some(format) = editable_import {
+        opened_import = Some(format);
+        ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || {
+            format.open(&data).map(|opened| (opened, None))
+        })
     } else if let Some(format) = external_document_format {
-        (if format == ibis_formats::docx_convert::DocxConvertFormat::Odt { ibis_odf::import_odt(&data) } else { ibis_formats::docx_convert::import_docx_format(&data, format) }).map(|opened| (opened, None))
+        ibis_formats::docx_convert::import_docx_format(&data, format).map(|opened| (opened, None))
     } else {
         // The volatile cells calculated again on open (CELL("filename") among them) need the file's path.
         ibis_calc::eval::convert::with_opening_file(Some(path.to_string_lossy().into_owned()), || {
-            let data = ibis_odf::to_ooxml(&data)?.unwrap_or(data);
             ibis_formats::open_progressive_with_options(data, 100_000, crate::settings_dialog::csv_font().as_ref(), csv_encoding)
         })
     };
@@ -424,7 +518,7 @@ fn read_file_data(
     let total_file_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
     eprintln!("ibisOffice timing: read_file total: {total_file_ms:.1} ms (fs::read: {read_fs_ms:.1} ms, open: {open_ms:.1} ms)");
     crate::render::preload::Preload::start_for_next(&opened.presentation);
-    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, converted_hangul, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source, exr_exposure: None, image_provenance: None })
+    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, editable_import: opened_import, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source, exr_exposure: None, image_provenance: None })
 }
 
 /// Tell every format that the file at `path` could not be parsed (in the order of their registration, as they were told

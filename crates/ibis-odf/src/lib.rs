@@ -28,9 +28,38 @@ use ibis_formats::{CsvProgressiveChunk, Error, Opened, Source};
 pub use odp::to_pptx as odp_to_pptx;
 pub use odt::{export_docx_to_odt, export_odt, import_odt, import_odt_to_docx_bytes, is_odt};
 
-/// Whether `data` is an OpenDocument spreadsheet, presentation or text document.
+/// The document type carried by an OpenDocument package.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Format {
+    Text,
+    Spreadsheet,
+    Presentation,
+}
+
+impl Format {
+    pub fn detect(data: &[u8]) -> Option<Self> {
+        if ods::is_ods(data) {
+            Some(Self::Spreadsheet)
+        } else if odp::is_odp(data) {
+            Some(Self::Presentation)
+        } else if odt::is_odt(data) {
+            Some(Self::Text)
+        } else {
+            None
+        }
+    }
+
+    pub fn to_ooxml(self, data: &[u8]) -> Result<Vec<u8>, Error> {
+        match self {
+            Self::Text => odt::import_odt_to_docx_bytes(data),
+            Self::Spreadsheet => ods::to_xlsx(data),
+            Self::Presentation => odp::to_pptx(data),
+        }
+    }
+}
+
 pub fn is_odf(data: &[u8]) -> bool {
-    ods::is_ods(data) || odp::is_odp(data) || odt::is_odt(data)
+    Format::detect(data).is_some()
 }
 
 /// The presentation as an OpenDocument presentation (`.odp`).
@@ -51,15 +80,7 @@ pub fn write_ods_with_source(presentation: &Presentation, source: &Source) -> Re
 
 /// `data` as the OOXML package made from it when it is an OpenDocument file, else `None`.
 pub fn to_ooxml(data: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-    if ods::is_ods(data) {
-        ods::to_xlsx(data).map(Some)
-    } else if odp::is_odp(data) {
-        odp::to_pptx(data).map(Some)
-    } else if odt::is_odt(data) {
-        odt::import_odt_to_docx_bytes(data).map(Some)
-    } else {
-        Ok(None)
-    }
+    Format::detect(data).map(|format| format.to_ooxml(data)).transpose()
 }
 
 /// `ibis_formats::read`, for OpenDocument files too.
