@@ -427,23 +427,35 @@ pub fn json_lines_fields(path: &Path) -> Result<JsonLinesFieldCatalog, String> {
         for (key, value) in values {
             let length = parent.len();
             parent.push('/');
-            parent.push_str(&key.replace('~', "~0").replace('/', "~1"));
+            let mut start = 0;
+            for (index, special) in key.match_indices(['~', '/']) {
+                parent.push_str(&key[start..index]);
+                parent.push_str(if special == "~" { "~0" } else { "~1" });
+                start = index + 1;
+            }
+            parent.push_str(&key[start..]);
             if parent.encode_utf16().take(PATH_LIMIT + 1).count() > PATH_LIMIT
                 || parent.contains('\0')
-                || (!fields.contains_key(parent.as_str()) && fields.len() == FIELD_LIMIT)
             {
                 *truncated = true;
                 parent.truncate(length);
                 continue;
             }
-            let field = fields
-                .entry(parent.clone())
-                .or_insert_with(|| JsonLinesField {
+            let has_capacity = fields.len() < FIELD_LIMIT;
+            let field = if let Some(field) = fields.get_mut(parent.as_str()) {
+                field
+            } else if has_capacity {
+                fields.entry(parent.clone()).or_insert_with(|| JsonLinesField {
                     path: parent.clone(),
                     occurrences: 0,
                     types: Vec::new(),
                     example: None,
-                });
+                })
+            } else {
+                *truncated = true;
+                parent.truncate(length);
+                continue;
+            };
             field.occurrences += 1;
             let kind = match value {
                 Value::Null => "null",
@@ -477,13 +489,14 @@ pub fn json_lines_fields(path: &Path) -> Result<JsonLinesFieldCatalog, String> {
     let max_bytes = usize::try_from(before.len()).map_err(|_| "JSON Lines file is too large")?;
     let mut catalog = JsonLinesFieldCatalog::default();
     let mut fields = BTreeMap::new();
+    let mut path_buffer = String::new();
     scan_lines(BufReader::new(&file), max_bytes, true, |line, _| {
         match line.and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok()) {
             Some(Value::Object(values)) => {
                 catalog.valid_records += 1;
                 object(
                     &values,
-                    &mut String::new(),
+                    &mut path_buffer,
                     &mut fields,
                     &mut catalog.truncated,
                 );
