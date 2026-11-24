@@ -68,7 +68,10 @@ jobs:
       # version.txt on GitHub's main is pushed only after the release is out (the
       # installed apps update from it), so a release build takes its version
       # from the tag (v0.8.5 -> 0.8.5).
-      - run: python3 scripts/docs_build.py prepare-history
+      - name: Prepare the source history in the build container
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 scripts/docs_build.py prepare-history
 
       - name: Use the release tag's version
         if: inputs.release_tag != ''
@@ -87,7 +90,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           image=$(realpath target/dist/ibisOffice-*-Linux.AppImage)
           mkdir -p "$RUNNER_TEMP/verify-appimage"
           (cd "$RUNNER_TEMP/verify-appimage" && "$image" --appimage-extract)
