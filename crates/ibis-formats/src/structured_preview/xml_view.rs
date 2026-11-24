@@ -27,6 +27,15 @@ struct Root {
     name: String,
     #[serde(default)]
     attributes: BTreeMap<String, String>,
+    #[serde(default)]
+    elements: Vec<ElementSelector>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ElementSelector {
+    path: Vec<String>,
+    value: String,
 }
 
 #[derive(Deserialize)]
@@ -56,14 +65,14 @@ pub fn read(bytes: &[u8], definition: &[u8]) -> Result<Preview, String> {
     let definition = Definition::parse(definition)?;
     let doc = super::parse_xml(bytes)?;
     let root = doc.root_element();
-    if !definition.root.matches(root) {
-        return Err("XML does not match the root element or version in the view definition".into());
+    if !definition.matches(root)? {
+        return Err("XML does not match the selectors in the view definition".into());
     }
     definition.preview(root)
 }
 
 /// Select a unique shared definition for the document. Invalid definitions
-/// and definitions without a root attribute selector are skipped.
+/// and definitions without an attribute or element selector are skipped.
 pub fn select_shared(
     bytes: &[u8],
     definitions: impl IntoIterator<Item = Vec<u8>>,
@@ -80,7 +89,8 @@ pub fn select_shared(
     let mut matches = definitions
         .filter_map(|bytes| Definition::parse(&bytes).ok())
         .filter(|definition| {
-            !definition.root.attributes.is_empty() && definition.root.matches(root)
+            (!definition.root.attributes.is_empty() || !definition.root.elements.is_empty())
+                && definition.matches(root).unwrap_or(false)
         });
     let Some(definition) = matches.next() else {
         return Ok(None);
@@ -114,6 +124,22 @@ impl Definition {
             return Err("Unsupported XML view definition".into());
         }
         Ok(definition)
+    }
+
+    fn matches(&self, root: Node<'_, '_>) -> Result<bool, String> {
+        if !self.root.matches(root) {
+            return Ok(false);
+        }
+        for selector in &self.root.elements {
+            let nodes = self.select(root, &selector.path)?;
+            let [node] = nodes.as_slice() else {
+                return Ok(false);
+            };
+            if leaf_text(*node).is_none_or(|value| value.trim() != selector.value) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn preview(&self, root: Node<'_, '_>) -> Result<Preview, String> {
@@ -180,14 +206,8 @@ impl Definition {
                     group_digits,
                 } => {
                     for node in self.select(root, path)? {
-                        if node.children().any(|child| child.is_element()) {
-                            return Err("An XML view field must refer to a leaf element".into());
-                        }
-                        let text: String = node
-                            .children()
-                            .filter(|child| child.is_text())
-                            .filter_map(|child| child.text())
-                            .collect();
+                        let text = leaf_text(node)
+                            .ok_or("An XML view field must refer to a leaf element")?;
                         let mut value = if *group_digits {
                             group_integer(text.trim())
                         } else {
@@ -215,6 +235,18 @@ impl Definition {
         }
         Ok(())
     }
+}
+
+fn leaf_text(node: Node<'_, '_>) -> Option<String> {
+    if node.children().any(|child| child.is_element()) {
+        return None;
+    }
+    Some(
+        node.children()
+            .filter(|child| child.is_text())
+            .filter_map(|child| child.text())
+            .collect(),
+    )
 }
 
 fn source_path(node: Node<'_, '_>, definition: &Definition) -> Result<String, String> {
@@ -259,6 +291,54 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../../test/fixtures/structured-preview/etax/life-insurance.view.json"
     ));
+
+    #[test]
+    fn shared_jma_definitions_match_the_unique_values_of_both_header_fields() {
+        const PHENOLOGY: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test/fixtures/structured-preview/jma/phenology.view.json"
+        ));
+        const WEATHER: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test/fixtures/structured-preview/jma/special-weather.view.json"
+        ));
+        let select = |header: &str| {
+            let xml = format!(
+                r#"<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:i="http://xml.kishou.go.jp/jmaxml1/informationBasis1/"><i:Head>{header}</i:Head></Report>"#
+            );
+            super::select_shared(xml.as_bytes(), [WEATHER.to_vec(), PHENOLOGY.to_vec()]).unwrap()
+        };
+        for (kind, title) in [
+            ("生物季節観測報告気象報", "生物季節観測の項目"),
+            ("特殊気象報", "特殊気象報の項目"),
+        ] {
+            let header = format!(
+                "<i:InfoKind> {kind} </i:InfoKind><i:InfoKindVersion>1.0_0</i:InfoKindVersion>"
+            );
+            assert_eq!(select(&header).unwrap().fields[0].name, title);
+            assert!(select(&header.replace("1.0_0", "2.0_0")).is_none());
+            assert!(select(&header.replace("i:InfoKindVersion", "InfoKindVersion")).is_none());
+            assert!(select(&(header + "<i:InfoKindVersion>1.0_0</i:InfoKindVersion>")).is_none());
+        }
+    }
+
+    #[test]
+    fn shared_element_and_attribute_selectors_are_combined() {
+        let select = |profile: Vec<u8>| super::select_shared(XML, [profile]).unwrap();
+        assert!(select(DEFINITION.to_vec()).is_some());
+
+        let mut profile: serde_json::Value = serde_json::from_slice(DEFINITION).unwrap();
+        profile["root"]["elements"] = serde_json::json!([
+            {"path": ["WCA00000"], "value": "架空保険株式会社"}
+        ]);
+        assert!(select(serde_json::to_vec(&profile).unwrap()).is_some());
+        profile["root"]["attributes"]["VR"] = serde_json::json!("2.0");
+        assert!(select(serde_json::to_vec(&profile).unwrap()).is_none());
+
+        profile["root"]["attributes"]["VR"] = serde_json::json!("1.1");
+        profile["root"]["elements"][0]["value"] = serde_json::json!("別の会社");
+        assert!(select(serde_json::to_vec(&profile).unwrap()).is_none());
+    }
 
     #[test]
     fn official_schema_fixture_uses_local_order_and_keeps_repeated_details() {

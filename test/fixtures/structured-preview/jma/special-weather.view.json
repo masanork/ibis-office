@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "title": "特殊気象報の項目",
+  "root": {
+    "namespace": "http://xml.kishou.go.jp/jmaxml1/",
+    "name": "Report",
+    "elements": [
+      {"path": ["h:Head", "h:InfoKind"], "value": "特殊気象報"},
+      {"path": ["h:Head", "h:InfoKindVersion"], "value": "1.0_0"}
+    ]
+  },
+  "namespaces": {"h": "http://xml.kishou.go.jp/jmaxml1/informationBasis1/", "b": "http://xml.kishou.go.jp/jmaxml1/body/meteorology1/"},
+  "entries": [
+    {"kind": "field", "path": ["h:Head", "h:InfoKind"], "label": "電文種別"},
+    {"kind": "field", "path": ["h:Head", "h:InfoKindVersion"], "label": "電文仕様の版"},
+    {"kind": "field", "path": ["Control", "PublishingOffice"], "label": "発表官署"},
+    {"kind": "field", "path": ["h:Head", "h:ReportDateTime"], "label": "発表日時"},
+    {"kind": "group", "path": ["b:Body", "b:MeteorologicalInfos", "b:MeteorologicalInfo", "b:Item"], "label": "観測明細", "entries": [{"kind": "field", "path": ["b:Kind", "b:Name"], "label": "観測対象"}, {"kind": "field", "path": ["b:Station", "b:Location"], "label": "観測地点"}]},
+    {"kind": "field", "path": ["b:Body", "b:AdditionalInfo", "b:ObservationAddition", "b:Text"], "label": "観測の補足"}
+  ]
+}

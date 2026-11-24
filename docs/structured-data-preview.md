@@ -35,9 +35,14 @@ Windowsでは `%APPDATA%/ibisOffice/xml-views`、Linuxでは
 `IBIS_DATA_DIR` を設定している場合は、その配下の `ibisOffice/xml-views` を使います。
 
 先にXMLと同じ場所の個別定義を確認します。個別定義がなければ、共有定義の
-ルート要素名、名前空間URI、`root.attributes` に指定した版などの属性を照合します。
+ルート要素名と名前空間URIに加え、`root.attributes` のルート属性と
+`root.elements` の要素値を照合します。共有定義には属性か要素値の条件が必要です。
+両方を指定した場合はすべての条件が必要です。`root.elements` は `path` と
+`value` の組を並べ、各パスにはルートからの子要素名を指定します。表示項目と同じ
+名前空間の接頭辞が使えます。パスがテキストだけを持つ要素1件に一致し、
+前後の空白を除いた値が `value` と完全に一致すると条件を満たします。
 共有定義のファイル名は末尾が `.view.json` であれば任意です。
-属性指定が空の定義や読み取れない定義は共有選択から除外し、一致がなければ通常のXML表示になります。
+条件のない定義や読み取れない定義は共有選択から除外し、一致がなければ通常のXML表示になります。
 複数の定義が一致するとエラーを表示します。
 
 試すには、[e-Taxの試用ファイル](../test/fixtures/structured-preview/etax)から
@@ -47,6 +52,9 @@ Windowsでは `%APPDATA%/ibisOffice/xml-views`、Linuxでは
 
 [FDSN StationXML 1.2の試用ファイル](../test/fixtures/structured-preview/stationxml)でも、
 共有定義をコピーして観測所の名前・座標・標高の表示を確認できます。
+
+[気象庁防災情報XMLの表示定義](../test/fixtures/structured-preview/jma)では、ルート属性の代わりに
+`Head` の `InfoKind` と `InfoKindVersion` の値を照合します。
 
 ## 連携CSVを定義に沿って確認する
 
