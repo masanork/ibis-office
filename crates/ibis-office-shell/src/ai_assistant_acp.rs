@@ -70,6 +70,7 @@ fn send(writer: &mut impl Write, value: Value) -> Result<(), String> {
 
 pub(crate) fn run(
     prompt: String,
+    tools: Value,
     cancelled: Arc<AtomicBool>,
     mut tool: impl FnMut(&str, Value) -> Result<Value, String>,
 ) -> Result<String, String> {
@@ -86,19 +87,29 @@ pub(crate) fn run(
     let listener = UnixListener::bind(&socket).map_err(|e| e.to_string())?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut child =
-        Command::new(std::env::var_os("IBIS_OPENCODE").unwrap_or_else(|| "opencode".into()))
-            .arg("acp")
-            .current_dir(&dir.0)
-            .env(
-                "OPENCODE_PERMISSION",
-                r#"{"*":"deny","workbook_*":"allow"}"#,
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Could not start OpenCode: {e}"))?;
+    let mut command = if let Some(executable) = std::env::var_os("IBIS_ACP_COMMAND") {
+        let args = std::env::var("IBIS_ACP_ARGS").unwrap_or_else(|_| "[]".into());
+        let args: Vec<String> = serde_json::from_str(&args)
+            .map_err(|error| format!("Invalid IBIS_ACP_ARGS: {error}"))?;
+        let mut command = Command::new(executable);
+        command.args(args);
+        command
+    } else {
+        let mut command =
+            Command::new(std::env::var_os("IBIS_OPENCODE").unwrap_or_else(|| "opencode".into()));
+        command.arg("acp").env(
+            "OPENCODE_PERMISSION",
+            r#"{"*":"deny","workbook_*":"allow"}"#,
+        );
+        command
+    };
+    let mut child = command
+        .current_dir(&dir.0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Could not start ACP agent: {e}"))?;
     let mut input = child.stdin.take().unwrap();
     let output = child.stdout.take().unwrap();
     let (tx, rx) = mpsc::sync_channel(32);
@@ -143,14 +154,14 @@ pub(crate) fn run(
                     );
                     stop = Some(Instant::now() + Duration::from_millis(600));
                 } else {
-                    return Err("OpenCode run cancelled".into());
+                    return Err("ACP run cancelled".into());
                 }
             }
             if stop.is_some_and(|stop| Instant::now() >= stop) {
-                return Err("OpenCode run cancelled".into());
+                return Err("ACP run cancelled".into());
             }
             if Instant::now() >= deadline {
-                return Err("OpenCode run timed out".into());
+                return Err("ACP run timed out".into());
             }
             if stop.is_none()
                 && let Ok((mut connection, _)) = listener.accept()
@@ -159,10 +170,14 @@ pub(crate) fn run(
                 let _ = connection.set_read_timeout(timeout);
                 let _ = connection.set_write_timeout(timeout);
                 if let Ok(Some(call)) = line(&mut BufReader::new(&connection)) {
-                    let result = tool(
-                        call["name"].as_str().unwrap_or_default(),
-                        call.get("arguments").cloned().unwrap_or_else(|| json!({})),
-                    );
+                    let result = if call["list"] == true {
+                        Ok(tools.clone())
+                    } else {
+                        tool(
+                            call["name"].as_str().unwrap_or_default(),
+                            call.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                        )
+                    };
                     let response = match result {
                         Ok(value) => json!({"value":value}),
                         Err(error) => json!({"error":error}),
@@ -173,7 +188,7 @@ pub(crate) fn run(
             let message = match rx.recv_timeout(Duration::from_millis(20)) {
                 Ok(result) => result?,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(_) => return Err("OpenCode disconnected".into()),
+                Err(_) => return Err("ACP agent disconnected".into()),
             };
             if let Some(method) = message["method"].as_str() {
                 if method == "session/update" {
@@ -183,7 +198,7 @@ pub(crate) fn run(
                     {
                         text.push_str(chunk);
                         if text.len() > MAX_MESSAGE {
-                            return Err("OpenCode response exceeds 1 MiB".into());
+                            return Err("ACP response exceeds 1 MiB".into());
                         }
                     }
                 } else if let Some(id) = message.get("id") {
@@ -208,11 +223,11 @@ pub(crate) fn run(
                         json!({"cwd":dir.0,"mcpServers":[{"name":"workbook","command":exe,"args":["--assistant-acp-workbook",socket],"env":[]}]}),
                     ),
                 )?,
-                Some(1) => return Err("OpenCode did not negotiate ACP v1".into()),
+                Some(1) => return Err("ACP agent did not negotiate ACP v1".into()),
                 Some(2) => {
                     let id = message["result"]["sessionId"]
                         .as_str()
-                        .ok_or("OpenCode returned no session ID")?;
+                        .ok_or("ACP agent returned no session ID")?;
                     session = Some(id.to_owned());
                     send(
                         &mut input,
@@ -228,7 +243,7 @@ pub(crate) fn run(
                 }
                 Some(3) => {
                     return Err(format!(
-                        "OpenCode ended without a completed turn: {}",
+                        "ACP agent ended without a completed turn: {}",
                         message["result"]["stopReason"]
                     ));
                 }
@@ -243,7 +258,35 @@ pub(crate) fn run(
     result
 }
 
-/// Stdio MCP endpoint for one private ACP workbook turn.
+fn request_tool(socket: &Path, call: Value) -> Result<Value, String> {
+    let mut connection = UnixStream::connect(socket).map_err(|e| e.to_string())?;
+    let timeout = Some(Duration::from_secs(3));
+    connection
+        .set_read_timeout(timeout)
+        .and_then(|_| connection.set_write_timeout(timeout))
+        .map_err(|e| e.to_string())?;
+    send(&mut connection, call)?;
+    line(&mut BufReader::new(connection))?.ok_or_else(|| "Document turn ended".into())
+}
+
+pub(crate) fn document_schema(kind: ibis_formats::Kind, read_only: bool) -> Vec<Value> {
+    ibis_doc_service::document_tools(kind)
+        .filter(|tool| !read_only || tool.access == ibis_doc_service::Access::Read)
+        .map(|tool| {
+            let mut schema = (tool.schema)();
+            if let Some(properties) = schema["properties"].as_object_mut() {
+                properties.remove("document_id");
+            }
+            if let Some(required) = schema["required"].as_array_mut() {
+                required.retain(|key| key != "document_id");
+            }
+            json!({"name":tool.name,"description":tool.description,"inputSchema":schema,
+            "annotations":{"readOnlyHint":tool.access == ibis_doc_service::Access::Read}})
+        })
+        .collect()
+}
+
+/// Stdio MCP endpoint for one private ACP document turn.
 pub fn workbook_mcp(socket: &Path) -> Result<(), String> {
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
@@ -254,25 +297,35 @@ pub fn workbook_mcp(socket: &Path) -> Result<(), String> {
         let result = match request["method"].as_str() {
             Some("initialize") => json!({
                 "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05"),
-                "capabilities":{"tools":{}},"serverInfo":{"name":"ibisOffice workbook draft","version":"0.1"}
+                "capabilities":{"tools":{}},"serverInfo":{"name":"ibisOffice document draft","version":"0.1"}
             }),
             Some("ping") => json!({}),
-            Some("tools/list") => json!({"tools":[
-                {"name":"read_selection","description":"Read the captured selection, including the sheet, A1 range and values. Cite these cells as evidence.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-                {"name":"propose_cells","description":"Stage cell values in an A1 range on the captured sheet. GUI review is required to apply.","inputSchema":{"type":"object","properties":{"range":{"type":"string"},"values":{}},"required":["range","values"],"additionalProperties":false}}
-            ]}),
-            Some("tools/call") => {
-                let answer: Result<Value, String> = (|| {
-                    let mut connection = UnixStream::connect(socket).map_err(|e| e.to_string())?;
-                    let timeout = Some(Duration::from_secs(3));
-                    connection
-                        .set_read_timeout(timeout)
-                        .and_then(|_| connection.set_write_timeout(timeout))
-                        .map_err(|e| e.to_string())?;
-                    send(&mut connection, request["params"].clone())?;
-                    line(&mut BufReader::new(connection))?
-                        .ok_or_else(|| "Workbook turn ended".into())
-                })();
+            Some(method @ ("tools/list" | "tools/call")) => {
+                let call = if method == "tools/list" {
+                    json!({"list":true})
+                } else {
+                    request["params"].clone()
+                };
+                let answer = request_tool(socket, call);
+                if method == "tools/list" {
+                    match answer {
+                        Ok(value) if value.get("error").is_none() => {
+                            send(
+                                &mut output,
+                                json!({"jsonrpc":"2.0","id":id,"result":{"tools":value["value"]}}),
+                            )?;
+                        }
+                        Ok(value) => send(
+                            &mut output,
+                            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":value["error"]}}),
+                        )?,
+                        Err(error) => send(
+                            &mut output,
+                            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":error}}),
+                        )?,
+                    }
+                    continue;
+                }
                 match answer {
                     Ok(value) if value.get("error").is_none() => {
                         json!({"content":[{"type":"text","text":value["value"].to_string()}]})
@@ -297,4 +350,33 @@ pub fn workbook_mcp(socket: &Path) -> Result<(), String> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::document_schema;
+    use ibis_formats::Kind;
+
+    #[test]
+    fn catalog_schemas_are_scoped_to_the_active_draft() {
+        for kind in [Kind::Document, Kind::Workbook, Kind::Presentation] {
+            let tools = document_schema(kind, false);
+            assert!(
+                tools
+                    .iter()
+                    .any(|tool| tool["annotations"]["readOnlyHint"] == false)
+            );
+            assert!(tools.iter().all(|tool| {
+                tool["inputSchema"]["properties"]
+                    .get("document_id")
+                    .is_none()
+                    && !tool["name"].as_str().unwrap().starts_with("app_")
+            }));
+            assert!(
+                document_schema(kind, true)
+                    .iter()
+                    .all(|tool| tool["annotations"]["readOnlyHint"] == true)
+            );
+        }
+    }
 }

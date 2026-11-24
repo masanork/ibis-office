@@ -48,6 +48,7 @@ const TOOLS: &[(&str, &str, &str, bool)] = &[
         "Queue a workbook inspection on a headless Workbook Assistant. Pass an XLSX path relative to the workspace and use assistant_result to follow the run.",
         false,
     ),
+    ("assistant_cancel", "cancel", "Stop a running GUI Assistant turn by run ID and discard its unfinished draft.", false),
     (
         "assistant_apply",
         "apply",
@@ -76,10 +77,10 @@ impl LiveAssistant {
                 "analysis_preview_diff" => (json!({"shape_id":{"type":"integer","minimum":0},"series":{"type":"string"},"category":{"type":"string"},"contributor_key":{"type":"string","minLength":1},"table":{"type":"string","minLength":1},"metric":{"type":"string","minLength":1},"applied":{"type":"boolean"},"remainder_offset":{"type":"integer","minimum":0},"excluded_offset":{"type":"integer","minimum":0},"excluded_reason":{"type":"string","enum":["direction","name","both"]},"contribution_direction":{"type":"string","enum":["all","increase","decrease"]},"group_query":{"type":"string"}}), json!([])),
                 "chart_drill_down" => (json!({"contributor_key":{"type":"string","minLength":1}}), json!([])),
                 "preview_analysis" => (json!({"parameter_values":{"type":"object","minProperties":1,"maxProperties":12,"additionalProperties":{"type":["string","number"]}}}), json!(["parameter_values"])),
-                "prompt" => (json!({"text":{"type":"string","minLength":1},"skill":{"type":"string","minLength":1,"maxLength":64}}), json!(["text"])),
+                "prompt" => (json!({"text":{"type":"string","minLength":1},"skill":{"type":"string","minLength":1,"maxLength":64},"harness":{"enum":["builtin","acp"]}}), json!(["text"])),
                 "result" => (json!({"run_id":{"type":"integer","minimum":0},"after":{"type":"integer","minimum":0}}), json!(["run_id"])),
                 "inspect_workbook" => (json!({"path":{"type":"string","minLength":1}}), json!(["path"])),
-                "apply" => (json!({"run_id":{"type":"integer","minimum":0}}), json!(["run_id"])),
+                "apply" | "cancel" => (json!({"run_id":{"type":"integer","minimum":0}}), json!(["run_id"])),
                 _ => (json!({}), json!([])),
             };
             if workspace {
@@ -130,9 +131,9 @@ impl LiveAssistant {
             "analysis_preview_diff" => &["shape_id", "series", "category", "contributor_key", "table", "metric", "applied", "remainder_offset", "excluded_offset", "excluded_reason", "contribution_direction", "group_query"],
             "chart_drill_down" => &["contributor_key"],
             "preview_analysis" => &["parameter_values"],
-            "prompt" => &["text", "skill"],
+            "prompt" => &["text", "skill", "harness"],
             "result" => &["run_id", "after"],
-            "apply" => &["run_id"],
+            "apply" | "cancel" => &["run_id"],
             "inspect_workbook" => &["path"],
             _ => &[],
         };
@@ -141,6 +142,9 @@ impl LiveAssistant {
             .is_none_or(|object| object.keys().any(|key| !keys.contains(&key.as_str())))
         {
             return Err("unexpected Assistant arguments".into());
+        }
+        if args.get("harness").is_some_and(|harness| !matches!(harness.as_str(), Some("builtin" | "acp"))) {
+            return Err("harness must be builtin or acp".into());
         }
         if op == "prompt"
             && !args["text"]
@@ -156,7 +160,7 @@ impl LiveAssistant {
         }) {
             return Err("skill must be a nonempty name of at most 64 characters".into());
         }
-        if matches!(op, "result" | "apply") && args["run_id"].as_u64().is_none() {
+        if matches!(op, "result" | "apply" | "cancel") && args["run_id"].as_u64().is_none() {
             return Err("run_id must be a nonnegative integer".into());
         }
         if args

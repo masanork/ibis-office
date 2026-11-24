@@ -142,7 +142,8 @@ pub fn start_demo(workspace: &Path) -> io::Result<(SocketLifetime, thread::JoinH
                 "operations":["assistant_status","assistant_prompt","assistant_result"],
             }),
             Some("prompt") if request["text"].as_str().is_some_and(|text| !text.trim().is_empty())
-                && request.get("skill").is_none() =>
+                && request.get("skill").is_none()
+                && matches!(request["harness"].as_str(), None | Some("builtin")) =>
             {
                 if request["queue_phase"] == "admit" {
                     return answer.send(json!({"accepted":true})).map_err(io::Error::other);
