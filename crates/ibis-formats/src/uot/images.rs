@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use ibis_doc_model::{Emu, EmuSize, FlowRunKind, MediaFormat, MediaId, Presentation};
+use ibis_doc_model::{
+    Emu, EmuRect, EmuSize, FloatingAnchor, FlowRunKind, MediaFormat, MediaId, Picture,
+    Presentation, Shape, ShapeKind,
+};
 use roxmltree::Node;
 
 use super::{UOF, WORD, word_child};
@@ -75,15 +78,8 @@ impl<'xml, 'input, 'path> Images<'xml, 'input, 'path> {
     ) -> Option<FlowRunKind> {
         let properties = word_child(anchor, "锚点属性")?;
         let dimension = |name| {
-            let value = word_child(properties, name)?
-                .text()?
-                .trim()
-                .parse::<f64>()
-                .ok()?;
-            let emu = (value * self.emu_per_unit).round();
-            (1.0..=f64::from(i32::MAX))
-                .contains(&emu)
-                .then_some(emu as Emu)
+            self.length(word_child(properties, name)?.text()?)
+                .filter(|&length| length > 0)
         };
         let size = EmuSize::new(dimension("宽度")?, dimension("高度")?);
         let reference = word_child(anchor, "图形")?.attribute((WORD, "图形引用"))?;
@@ -99,11 +95,120 @@ impl<'xml, 'input, 'path> Images<'xml, 'input, 'path> {
             self.media.insert(id, media);
             media
         }?;
+        if anchor.attribute((WORD, "类型")) == Some("normal") {
+            let floating = self.floating_anchor(properties);
+            let mut shape = Shape::new(
+                presentation.new_shape_id(),
+                EmuRect::new(
+                    floating.offset_x,
+                    floating.offset_y,
+                    size.width,
+                    size.height,
+                ),
+                ShapeKind::Picture(Picture::new(media)),
+            );
+            shape.floating = Some(floating);
+            return Some(FlowRunKind::Shape(Box::new(shape)));
+        }
         Some(FlowRunKind::Picture {
             media,
             size,
             look: Default::default(),
         })
+    }
+
+    fn length(&self, raw: &str) -> Option<Emu> {
+        let emu = (raw.trim().parse::<f64>().ok()? * self.emu_per_unit).round();
+        (f64::from(i32::MIN)..=f64::from(i32::MAX))
+            .contains(&emu)
+            .then_some(emu as Emu)
+    }
+
+    fn floating_anchor(&self, properties: Node<'_, '_>) -> FloatingAnchor {
+        let position = word_child(properties, "位置");
+        let h = position.and_then(|node| word_child(node, "水平"));
+        let v = position.and_then(|node| word_child(node, "垂直"));
+        let coordinate = |axis: Option<Node<'_, '_>>, alignments: &[&str]| {
+            let offset = axis
+                .and_then(|node| word_child(node, "绝对"))
+                .and_then(|node| node.attribute((WORD, "值")))
+                .and_then(|raw| self.length(raw));
+            let alignment = axis
+                .filter(|_| offset.is_none())
+                .and_then(|node| word_child(node, "相对"))
+                .and_then(|node| node.attribute((WORD, "值")))
+                .filter(|value| alignments.contains(value))
+                .map(str::to_owned);
+            (offset.unwrap_or(0), alignment)
+        };
+        let (offset_x, align_h) = coordinate(h, &["left", "center", "right", "inside", "outside"]);
+        let (offset_y, align_v) = coordinate(v, &["top", "center", "bottom", "inside", "outside"]);
+        let relative_h = match h.and_then(|node| node.attribute((WORD, "相对于"))) {
+            Some("page") => "page",
+            Some("margin") => "margin",
+            Some("char") => "character",
+            _ => "column",
+        };
+        let relative_v = match v.and_then(|node| node.attribute((WORD, "相对于"))) {
+            Some("page") => "page",
+            Some("margin") => "margin",
+            Some("line") => "line",
+            _ => "paragraph",
+        };
+        let wrapping = word_child(properties, "绕排");
+        let mode = wrapping.and_then(|node| node.attribute((WORD, "绕排方式")));
+        let wrap = match mode {
+            Some("tight") => "tight",
+            Some("through") => "through",
+            Some("top-bottom" | "none") => "topAndBottom",
+            Some("infrontoftext" | "behindtext") => "none",
+            _ => "square",
+        };
+        let wrap_text = match wrap {
+            "square" | "tight" | "through" => Some(
+                match wrapping.and_then(|node| node.attribute((WORD, "环绕文字"))) {
+                    Some("left") => "left",
+                    Some("right") => "right",
+                    Some("largest") => "largest",
+                    _ => "bothSides",
+                }
+                .to_owned(),
+            ),
+            _ => None,
+        };
+        let margins = word_child(properties, "边距");
+        let distance = |side| {
+            margins
+                .and_then(|node| node.attribute((WORD, side)))
+                .and_then(|raw| self.length(raw))
+                .unwrap_or(0)
+                .max(0)
+        };
+        let flag = |name| match word_child(properties, name)
+            .and_then(|node| node.attribute((WORD, "值")))
+        {
+            Some("true" | "1") => Some(true),
+            Some("false" | "0") => Some(false),
+            _ => None,
+        };
+        FloatingAnchor {
+            offset_x,
+            offset_y,
+            align_h,
+            align_v,
+            relative_h: relative_h.to_owned(),
+            relative_v: relative_v.to_owned(),
+            wrap: wrap.to_owned(),
+            wrap_text,
+            behind_doc: mode == Some("behindtext"),
+            locked: flag("锁定").unwrap_or(false),
+            allow_overlap: flag("允许重叠").unwrap_or(true),
+            dist_t: distance("上"),
+            dist_b: distance("下"),
+            dist_l: distance("左"),
+            dist_r: distance("右"),
+            ..Default::default()
+        }
     }
 
     fn read(&self, object: Node<'_, '_>) -> Option<(MediaFormat, Vec<u8>)> {

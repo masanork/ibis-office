@@ -175,25 +175,31 @@ impl Importer<'_, '_, '_, '_> {
             style,
             ..Default::default()
         };
-        for item in node
-            .children()
-            .filter(|run| run.has_tag_name((WORD, "句")))
-            .flat_map(|run| run.children())
-        {
-            let kind = if item.has_tag_name((WORD, "文本串")) {
-                item.text().map(|text| FlowRunKind::Text(text.into()))
-            } else if item.has_tag_name((WORD, "锚点")) {
-                self.images.picture(item, self.presentation)
-            } else {
-                None
-            };
-            if let Some(kind) = kind {
-                paragraph.runs.push(FlowRun::new(kind, Default::default()));
+        for child in node.children() {
+            if child.has_tag_name((WORD, "句")) {
+                for item in child.children() {
+                    self.append_run_item(&mut paragraph, item);
+                }
+            } else if child.has_tag_name((WORD, "锚点")) {
+                self.append_run_item(&mut paragraph, child);
             }
         }
         paragraph.resolve(self.styles);
         paragraph.normalize();
         paragraph
+    }
+
+    fn append_run_item(&mut self, paragraph: &mut FlowParagraph, item: Node<'_, '_>) {
+        let kind = if item.has_tag_name((WORD, "文本串")) {
+            item.text().map(|text| FlowRunKind::Text(text.into()))
+        } else if item.has_tag_name((WORD, "锚点")) {
+            self.images.picture(item, self.presentation)
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            paragraph.runs.push(FlowRun::new(kind, Default::default()));
+        }
     }
 
     fn heading_level(&self, properties: Node<'_, '_>) -> Option<u8> {
@@ -446,6 +452,114 @@ mod tests {
         let from_markdown =
             crate::markdown::import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
         assert_image(&crate::open(&from_markdown[..]).unwrap().presentation);
+    }
+
+    #[test]
+    fn preserves_floating_image_placement_and_wrapping_through_docx_and_markdown() {
+        for (mode, wrap, side, behind) in [
+            ("square", "square", Some("bothSides"), false),
+            ("tight", "tight", Some("left"), false),
+            ("through", "through", Some("right"), false),
+            ("top-bottom", "topAndBottom", None, false),
+            ("behindtext", "none", None, true),
+            ("infrontoftext", "none", None, false),
+        ] {
+            let extras = format!(
+                r#"<w:位置>
+                    <w:水平 w:相对于="margin"><w:绝对 w:值="40.01"/></w:水平>
+                    <w:垂直 w:相对于="paragraph"><w:绝对 w:值="-1.01"/></w:垂直>
+                </w:位置>
+                <w:绕排 w:绕排方式="{mode}" w:环绕文字="{side}"/>
+                <w:边距 w:上="1.01" w:下="1.5" w:左="1.99" w:右="2.5"/>
+                <w:锁定 w:值="true"/><w:允许重叠 w:值="false"/>"#,
+                side = side.unwrap_or(""),
+            );
+            let manuscript = image_example(&format!("<uof:数据>{IMAGE}</uof:数据>"))
+                .replace("<w:锚点>", r#"<w:锚点 w:类型="normal">"#)
+                .replace("</w:锚点属性>", &format!("{extras}</w:锚点属性>"));
+            let docx = to_docx(manuscript.as_bytes()).unwrap();
+            let direct = crate::read(&docx).unwrap();
+            let md = crate::markdown::export_presentation_to_markdown(&direct).unwrap();
+            assert!(md.contains("docx-anchor="), "{mode}");
+            let from_md = crate::markdown::read_markdown(md.as_bytes()).unwrap();
+            let rebuilt = crate::markdown::import_markdown_to_docx_bytes(md.as_bytes()).unwrap();
+            for presentation in [direct, from_md, crate::read(&rebuilt).unwrap()] {
+                let [Block::Paragraph(paragraph)] =
+                    presentation.flow.as_ref().unwrap().body.as_slice()
+                else {
+                    panic!("expected one paragraph");
+                };
+                let [before, image, after] = paragraph.runs.as_slice() else {
+                    panic!("expected text, image, text");
+                };
+                assert_eq!(before.kind, FlowRunKind::Text("前".into()));
+                assert_eq!(after.kind, FlowRunKind::Text("後".into()));
+                let FlowRunKind::Shape(shape) = &image.kind else {
+                    panic!("expected floating shape");
+                };
+                let ibis_doc_model::ShapeKind::Picture(picture) = &shape.kind else {
+                    panic!("expected picture");
+                };
+                assert_eq!(
+                    presentation.media(picture.media).unwrap().data.as_ref(),
+                    STANDARD.decode(IMAGE).unwrap()
+                );
+                assert_eq!(
+                    (shape.frame.width, shape.frame.height),
+                    (1_828_800, 914_400)
+                );
+                let anchor = shape.floating.as_ref().unwrap();
+                assert_eq!((anchor.offset_x, anchor.offset_y), (1_440_360, -36_360));
+                assert_eq!(
+                    (anchor.relative_h.as_str(), anchor.relative_v.as_str()),
+                    ("margin", "paragraph")
+                );
+                assert_eq!(anchor.wrap, wrap);
+                assert_eq!(anchor.wrap_text.as_deref(), side);
+                assert_eq!(anchor.behind_doc, behind);
+                assert_eq!(
+                    (anchor.dist_t, anchor.dist_b, anchor.dist_l, anchor.dist_r),
+                    (36_360, 54_000, 71_640, 90_000)
+                );
+                assert!(anchor.locked);
+                assert!(!anchor.allow_overlap);
+            }
+        }
+    }
+
+    #[test]
+    fn preserves_relative_alignment_for_paragraph_level_float() {
+        let manuscript = image_example(&format!("<uof:数据>{IMAGE}</uof:数据>"))
+            .replace("<w:锚点>", r#"</w:句><w:锚点 w:类型="normal">"#)
+            .replace("</w:锚点>", "</w:锚点><w:句>")
+            .replace(
+                "</w:锚点属性>",
+                r#"<w:位置>
+                <w:水平 w:相对于="page"><w:相对 w:值="right"/></w:水平>
+                <w:垂直 w:相对于="margin"><w:相对 w:值="center"/></w:垂直>
+            </w:位置></w:锚点属性>"#,
+            );
+        let opened = open(manuscript.as_bytes()).unwrap();
+        let md = crate::markdown::export_presentation_to_markdown(&opened.presentation).unwrap();
+        for presentation in [
+            opened.presentation,
+            crate::markdown::read_markdown(md.as_bytes()).unwrap(),
+        ] {
+            let flow = presentation.flow.as_ref().unwrap();
+            let Block::Paragraph(paragraph) = &flow.body[0] else {
+                panic!("expected paragraph");
+            };
+            let FlowRunKind::Shape(shape) = &paragraph.runs[1].kind else {
+                panic!("expected shape");
+            };
+            let anchor = shape.floating.as_ref().unwrap();
+            assert_eq!(anchor.align_h.as_deref(), Some("right"));
+            assert_eq!(anchor.align_v.as_deref(), Some("center"));
+            assert_eq!(
+                (anchor.relative_h.as_str(), anchor.relative_v.as_str()),
+                ("page", "margin")
+            );
+        }
     }
 
     #[cfg(not(target_family = "wasm"))]
