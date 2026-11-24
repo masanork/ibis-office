@@ -138,7 +138,7 @@ pub(super) fn menu(editor:&SlideEditor)->Vec<MenuEntry> {
             let first = paragraphs[0].shading?;
             paragraphs.iter().all(|p| p.shading == Some(first)).then_some(first)
         }).flatten();
-        let mut theme = theme_rows(&super::toolbar::THEME_10, &pick, cur);
+        let mut theme = theme_rows(&ibis_formats::workbook_theme_colors_from_slice(&editor.presentation().theme_colors), &pick, cur);
         if !enabled {
             for s in theme.iter_mut().flatten() {
                 s.item = s.item.clone().disabled(true);
@@ -190,7 +190,7 @@ pub(super) fn menu(editor:&SlideEditor)->Vec<MenuEntry> {
             let first = borders[0]?.color;
             borders.iter().all(|b| b.is_some_and(|b| b.color == first)).then_some(first)
         }).flatten();
-        let mut theme = theme_rows(&super::toolbar::THEME_10, &pick, cur);
+        let mut theme = theme_rows(&ibis_formats::workbook_theme_colors_from_slice(&editor.presentation().theme_colors), &pick, cur);
         if !enabled {
             for s in theme.iter_mut().flatten() {
                 s.item = s.item.clone().disabled(true);

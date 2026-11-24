@@ -1249,7 +1249,7 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     ]).into());
     menus.items_mut(MenuId::Format).push(Submenu::tr("pptx.text-outline", "format_color_text", text_outline_items).into());
     let has_table = editor.selected_shapes().iter().any(|s| matches!(s.kind, ShapeKind::Table(_)));
-    menus.items_mut(MenuId::Format).push(Submenu::tr("table.borders", "border_all", table_borders_menu_items(has_table)).into());
+    menus.items_mut(MenuId::Format).push(Submenu::tr("table.borders", "border_all", table_borders_menu_items(editor, has_table)).into());
     let has_line_or_connector = editor.selected_shapes().iter().any(|s| matches!(&s.kind, ShapeKind::Line(_)) || matches!(&s.kind, ShapeKind::Auto(a) if super::editing::is_connector_geometry(&a.geometry)));
     if has_line_or_connector {
         menus.items_mut(MenuId::Format).push(Submenu::tr("pptx.chrome.begin-arrow", "line_start", line_end_menu(editor, true)).into());
@@ -2040,7 +2040,7 @@ fn table_button(editor: &SlideEditor) -> ToolItem {
         .into()
 }
 
-pub(crate) fn table_borders_menu_items(enabled: bool) -> Vec<MenuEntry> {
+pub(crate) fn table_borders_menu_items(editor: &SlideEditor, enabled: bool) -> Vec<MenuEntry> {
     use super::editing::BorderPlacement as BP;
     vec![
         MenuItem::tr("table.borders.all").icon("border_all").disabled(!enabled).on(|e, _, cx| e.apply_table_borders(BP::All, cx)).into(),
@@ -2073,11 +2073,7 @@ pub(crate) fn table_borders_menu_items(enabled: bool) -> Vec<MenuEntry> {
                     e.stroke_selected(move |s| Some(Stroke { color: Color::opaque(rgb), ..s.unwrap_or_else(|| Stroke::solid(Color::opaque(rgb), 12_700)) }), cx);
                 }
             });
-            let default_theme = [
-                Rgb(0xffffff), Rgb(0x000000), Rgb(0xe7e6e6), Rgb(0x44546a),
-                Rgb(0x4472c4), Rgb(0xed7d31), Rgb(0xa5a5a5), Rgb(0xffc000), Rgb(0x5b9bd5), Rgb(0x70ad47),
-            ];
-            let mut theme = theme_rows(&default_theme, &pick, None);
+            let mut theme = theme_rows(&ibis_formats::workbook_theme_colors_from_slice(&editor.presentation().theme_colors), &pick, None);
             let mut standard: Vec<Swatch> = COLORS
                 .iter()
                 .filter(|(rgb, _)| !matches!(rgb, 0x000000 | 0x404040 | 0x7f7f7f | 0xd9d9d9 | 0xffffff | 0x4472c4))
