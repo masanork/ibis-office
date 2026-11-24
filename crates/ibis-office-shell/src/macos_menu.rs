@@ -28,7 +28,11 @@ enum Item {
         index: usize,
     },
     Separator,
-    Submenu(SharedString, Vec<Item>),
+    Submenu {
+        label: SharedString,
+        icon: Option<&'static str>,
+        items: Vec<Item>,
+    },
 }
 
 impl Item {
@@ -42,20 +46,21 @@ impl Item {
                 index,
                 ..
             } => {
-                use crate::actions::{CloseFile, Open, Print, Save, SaveAs};
-                // Retain the existing AppKit equivalents for common File commands.
+                use crate::actions::{CloseFile, MinimizeWindow, Open, Print, Save, SaveAs};
+                // Retain the native actions and shortcuts for these commands.
                 let item = match id {
                     "file.open" => MenuItem::action(label, Open),
                     "file.save" => MenuItem::action(label, Save),
                     "file.save-as" => MenuItem::action(label, SaveAs),
                     "file.print" => MenuItem::action(label, Print),
                     "file.close" => MenuItem::action(label, CloseFile),
+                    "window.minimize" => MenuItem::action(label, MinimizeWindow),
                     _ => MenuItem::action(label, RunMenuCommand { generation, index }),
                 };
                 item.checked(checked).disabled(!enabled)
             }
             Self::Separator => MenuItem::separator(),
-            Self::Submenu(label, items) => MenuItem::submenu(native_menu(label, items, generation)),
+            Self::Submenu { label, items, .. } => MenuItem::submenu(native_menu(label, items, generation)),
         }
     }
 }
@@ -160,7 +165,15 @@ pub(crate) fn sync(editor: &SlideEditor, window: &Window, cx: &mut Context<Slide
         .bar_items()
         .into_iter()
         .map(|(id, entries)| {
-            let mut items = projection.entries(entries);
+            let mut items = Vec::new();
+            if id == BarMenu::Static(MenuId::Window) && !projection.blocked {
+                let minimize = crate::chrome::MenuItem::tr("window.minimize")
+                    .icon("remove")
+                    .on(|_, window, _| window.minimize_window());
+                items.push(projection.command(minimize));
+                items.push(Item::Separator);
+            }
+            items.extend(projection.entries(entries));
             if id == BarMenu::Static(MenuId::View) {
                 let toggle = crate::chrome::MenuItem::tr("shell.menu.window-bar")
                     .checked(editor.show_menu_bar)
@@ -193,19 +206,9 @@ pub(crate) fn sync(editor: &SlideEditor, window: &Window, cx: &mut Context<Slide
     state.generation += 1;
     let generation = state.generation;
     let mut menus = vec![crate::app::application_menu()];
-    for (id, label, items) in &entries {
-        let mut menu = Menu::new(label.clone());
-        if matches!(id, BarMenu::Static(MenuId::Window)) && !projection.blocked {
-            menu.items.push(MenuItem::action(
-                crate::i18n::text("window.minimize"),
-                crate::actions::MinimizeWindow,
-            ));
-            menu.items.push(MenuItem::separator());
-        }
-        menu.items
-            .extend(items.iter().map(|item| item.clone().native(generation)));
-        menus.push(menu);
-    }
+    menus.extend(entries.iter().map(|(_, label, items)| {
+        native_menu(label.clone(), items.clone(), generation)
+    }));
     state.active = Some(ActiveMenu {
         window: handle,
         editor: weak,
@@ -225,10 +228,7 @@ fn apply_menu_images(entries: &[(BarMenu, SharedString, Vec<Item>)]) {
     unsafe {
         let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
         let bar: *mut Object = msg_send![app, mainMenu];
-        for (index, (id, _, items)) in entries.iter().enumerate() {
-            if *id == BarMenu::Static(MenuId::Window) {
-                continue;
-            }
+        for (index, (_, _, items)) in entries.iter().enumerate() {
             let item: *mut Object = msg_send![bar, itemAtIndex: (index + 1) as isize];
             let menu: *mut Object = msg_send![item, submenu];
             apply_item_images(menu, items);
@@ -237,7 +237,7 @@ fn apply_menu_images(entries: &[(BarMenu, SharedString, Vec<Item>)]) {
 }
 
 fn apply_item_images(menu: *mut objc::runtime::Object, items: &[Item]) {
-    use objc::{class, msg_send, runtime::{BOOL, Object, YES}, sel, sel_impl};
+    use objc::{msg_send, runtime::Object, sel, sel_impl};
     if menu.is_null() {
         return;
     }
@@ -246,28 +246,56 @@ fn apply_item_images(menu: *mut objc::runtime::Object, items: &[Item]) {
         for (index, item) in items.iter().take(count.max(0) as usize).enumerate() {
             let native: *mut Object = msg_send![menu, itemAtIndex: index as isize];
             match item {
-                Item::Submenu(_, children) => {
+                Item::Submenu { icon, items: children, .. } => {
+                    if let Some(icon) = icon {
+                        set_item_image(native, icon);
+                    }
                     let submenu: *mut Object = msg_send![native, submenu];
                     apply_item_images(submenu, children);
                 }
-                Item::Command { icon: Some(icon), .. } => {
-                    let Some(svg) = crate::icons::icon_svg_bytes(icon) else { continue };
-                    let data: *mut Object = msg_send![class!(NSData), dataWithBytes: svg.as_ptr() length: svg.len()];
-                    let image: *mut Object = msg_send![class!(NSImage), alloc];
-                    let image: *mut Object = msg_send![image, initWithData: data];
-                    if !image.is_null() {
-                        let _: () = msg_send![image, setTemplate: YES];
-                        let _: () = msg_send![native, setImage: image];
-                        let _: () = msg_send![image, release];
-                        let supports_visibility: BOOL =
-                            msg_send![native, respondsToSelector: sel!(setPreferredImageVisibility:)];
-                        if supports_visibility == YES {
-                            // NSMenuItemImageVisibilityVisible on macOS 27 and later.
-                            let _: () = msg_send![native, setPreferredImageVisibility: 1isize];
-                        }
-                    }
-                }
+                Item::Command { icon: Some(icon), .. } => set_item_image(native, icon),
                 _ => {}
+            }
+        }
+    }
+}
+
+fn set_item_image(item: *mut objc::runtime::Object, icon: &'static str) {
+    use objc::{class, msg_send, rc::StrongPtr, runtime::{BOOL, Object, YES}, sel, sel_impl};
+    use std::{cell::RefCell, collections::HashMap};
+
+    thread_local! {
+        // The menu is rebuilt when the focused window or command state changes.
+        static IMAGES: RefCell<HashMap<&'static str, Option<StrongPtr>>> = RefCell::new(HashMap::new());
+    }
+
+    if icon.is_empty() || item.is_null() {
+        return;
+    }
+    let image = IMAGES.with(|images| {
+        let mut images = images.borrow_mut();
+        images.entry(icon).or_insert_with(|| {
+            let svg = crate::icons::icon_svg_bytes(icon)?;
+            unsafe {
+                let data: *mut Object = msg_send![class!(NSData), dataWithBytes: svg.as_ptr() length: svg.len()];
+                let image: *mut Object = msg_send![class!(NSImage), alloc];
+                let image: *mut Object = msg_send![image, initWithData: data];
+                if image.is_null() {
+                    return None;
+                }
+                let _: () = msg_send![image, setTemplate: YES];
+                Some(StrongPtr::new(image))
+            }
+        }).as_ref().map(|image| **image)
+    });
+    if let Some(image) = image {
+        unsafe {
+            let _: () = msg_send![item, setImage: image];
+            let supports_visibility: BOOL =
+                msg_send![item, respondsToSelector: sel!(setPreferredImageVisibility:)];
+            if supports_visibility == YES {
+                // NSMenuItemImageVisibilityVisible on macOS 27 and later.
+                let _: () = msg_send![item, setPreferredImageVisibility: 1isize];
             }
         }
     }
@@ -288,7 +316,7 @@ impl Projection<'_> {
         Item::Command {
             id: item.id,
             label,
-            icon: item.icon.filter(|_| item.thumb.is_some()),
+            icon: item.format_mark.map(|(_, icon)| icon).or(item.icon),
             checked: item.checked,
             enabled,
             index,
@@ -302,10 +330,11 @@ impl Projection<'_> {
                 MenuEntry::Item(item) => items.push(self.command(item)),
                 MenuEntry::Separator => items.push(Item::Separator),
                 MenuEntry::Submenu(sub) => {
-                    items.push(Item::Submenu(
-                        crate::i18n::text(&sub.label),
-                        self.entries(sub.items),
-                    ));
+                    items.push(Item::Submenu {
+                        label: crate::i18n::text(&sub.label),
+                        icon: sub.icon,
+                        items: self.entries(sub.items),
+                    });
                 }
                 MenuEntry::Tiles(tiles) => {
                     items.extend(tiles.into_iter().map(|item| self.command(item)))
@@ -371,7 +400,7 @@ impl Projection<'_> {
                         self.command(item)
                     })
                     .collect();
-                items.push(Item::Submenu(text(label), colors));
+                items.push(Item::Submenu { label: text(label), icon: None, items: colors });
             }
         }
         let more = palette
