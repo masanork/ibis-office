@@ -196,6 +196,17 @@ fn markdown_desktop_roundtrip() {
     };
     doc.click_text(FlowPos::new(first.id, first.len()));
     doc.type_text(" Revised.");
+    let original = folder.join("monthly-revenue.md");
+    doc.update(|editor, window, _| editor.save_to(original.clone(), window)).unwrap();
+    let markdown = std::fs::read_to_string(&original).unwrap();
+    assert!(markdown.contains("Monthly revenue review. Revised."), "{markdown}");
+    assert!(markdown.contains("x-audit:\n  source: synthetic # keep this comment"), "{markdown}");
+    assert!(markdown.contains("[Revenue figure](#fig_revenue)"), "{markdown}");
+    assert!(markdown.contains("[Revenue equation](#eq_revenue)"), "{markdown}");
+    assert!(markdown.contains("R=pq"), "{markdown}");
+    assert!(!markdown.contains("![[images/revenue.png"), "{markdown}");
+    doc.reload_saved();
+
     let saved = folder.join("monthly-revenue-edited.docx");
     doc.update(|editor, window, _| editor.save_to(saved.clone(), window)).unwrap();
     doc.reload_saved();
@@ -244,6 +255,14 @@ fn markdown_desktop_roundtrip() {
     deck.open_folder_document("briefing.md");
     deck.double_click_shape(0);
     deck.type_text(" Revised");
+    let original = folder.join("briefing.md");
+    deck.update(|editor, window, _| editor.save_to(original.clone(), window)).unwrap();
+    let markdown = std::fs::read_to_string(&original).unwrap();
+    assert!(markdown.contains("x-ibis-format: presentation"), "{markdown}");
+    assert!(markdown.contains("Revised"), "{markdown}");
+    assert!(markdown.contains("monthly totals"), "{markdown}");
+    deck.reload_saved();
+
     let saved = folder.join("briefing-edited.pptx");
     deck.update(|editor, window, _| editor.save_to(saved.clone(), window)).unwrap();
     deck.reload_saved();

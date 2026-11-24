@@ -5,6 +5,8 @@ tags: [finance, monthly]
 generated: {by: "process:monthly-import", at: "2020-01-01"}
 verified: {by: "human:reviewer", at: "2020-01-02"}
 stale_after: "2020-02-01"
+x-audit:
+  source: synthetic # keep this comment
 ---
 
 Monthly revenue review.
