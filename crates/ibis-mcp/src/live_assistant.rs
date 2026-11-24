@@ -20,7 +20,7 @@ pub(crate) struct LiveAssistant {
 }
 
 const TOOLS: &[(&str, &str, &str, bool)] = &[
-    ("assistant_analysis_preview_diff", "analysis_preview_diff", "Read the three largest comparable category changes per chart in the live report preview. Pass a chart shape ID, series label and category label together to read the applied and proposed drill-down for that point. Alternatively pass table and metric for a saved report comparison, with an optional contributor_key. Rate and average comparisons rank up to ten groups by absolute net contribution and include the sum across all groups and the Other subtotal. Pass a non-negative remainder_offset (starting at zero) to page through Other, including evidence. Use contribution_direction and group_query to create a filtered ranking while keeping full totals. Use excluded_offset with an active filter to page through excluded groups, reasons and evidence. Pass a ranked key as contributor_key to read its source cells. Use applied=true with a key to read its current evidence row.", true),
+    ("assistant_analysis_preview_diff", "analysis_preview_diff", "Read the three largest comparable category changes per chart in the live report preview. Pass a chart shape ID, series label and category label together to read the applied and proposed drill-down for that point. Alternatively pass table and metric for a saved report comparison, with an optional contributor_key. Rate and average comparisons rank up to ten groups by absolute net contribution and include the sum across all groups and the Other subtotal. Pass a non-negative remainder_offset (starting at zero) to page through Other, including evidence. Use contribution_direction and group_query to create a filtered ranking while keeping full totals. Use excluded_offset with an active filter to page through excluded groups, reasons and evidence. Use excluded_reason to page only the direction, name, or both bucket. Pass a ranked key as contributor_key to read its source cells. Use applied=true with a key to read its current evidence row.", true),
     ("assistant_chart_drill_down", "chart_drill_down", "Read the selected chart bar’s value, its workbook drill-down destination, and directly linked evidence. Select a bar in the shared live workbook. Optionally specify contributor_key for its applied evidence row.", true),
     ("assistant_analysis_context", "analysis_context", "Read the live workbook's selected chart bar, applied parameters, and current report preview status.", true),
     ("assistant_preview_analysis", "preview_analysis", "Preview report parameter changes in the live workbook using its open SQL Report Refresh panel and files assigned by the user. Does not apply; the user reviews and applies in the GUI.", false),
@@ -73,7 +73,7 @@ impl LiveAssistant {
         }));
         discovery.into_iter().chain(TOOLS.iter().filter(move |tool| (!self.read_only || tool.3) && (workspace || tool.1 != "inspect_workbook")).map(move |(name, op, description, read)| {
             let (mut properties, mut required) = match *op {
-                "analysis_preview_diff" => (json!({"shape_id":{"type":"integer","minimum":0},"series":{"type":"string"},"category":{"type":"string"},"contributor_key":{"type":"string","minLength":1},"table":{"type":"string","minLength":1},"metric":{"type":"string","minLength":1},"applied":{"type":"boolean"},"remainder_offset":{"type":"integer","minimum":0},"excluded_offset":{"type":"integer","minimum":0},"contribution_direction":{"type":"string","enum":["all","increase","decrease"]},"group_query":{"type":"string"}}), json!([])),
+                "analysis_preview_diff" => (json!({"shape_id":{"type":"integer","minimum":0},"series":{"type":"string"},"category":{"type":"string"},"contributor_key":{"type":"string","minLength":1},"table":{"type":"string","minLength":1},"metric":{"type":"string","minLength":1},"applied":{"type":"boolean"},"remainder_offset":{"type":"integer","minimum":0},"excluded_offset":{"type":"integer","minimum":0},"excluded_reason":{"type":"string","enum":["direction","name","both"]},"contribution_direction":{"type":"string","enum":["all","increase","decrease"]},"group_query":{"type":"string"}}), json!([])),
                 "chart_drill_down" => (json!({"contributor_key":{"type":"string","minLength":1}}), json!([])),
                 "preview_analysis" => (json!({"parameter_values":{"type":"object","minProperties":1,"maxProperties":12,"additionalProperties":{"type":["string","number"]}}}), json!(["parameter_values"])),
                 "prompt" => (json!({"text":{"type":"string","minLength":1},"skill":{"type":"string","minLength":1,"maxLength":64}}), json!(["text"])),
@@ -127,7 +127,7 @@ impl LiveAssistant {
             }
         };
         let keys: &[&str] = match op {
-            "analysis_preview_diff" => &["shape_id", "series", "category", "contributor_key", "table", "metric", "applied", "remainder_offset", "excluded_offset", "contribution_direction", "group_query"],
+            "analysis_preview_diff" => &["shape_id", "series", "category", "contributor_key", "table", "metric", "applied", "remainder_offset", "excluded_offset", "excluded_reason", "contribution_direction", "group_query"],
             "chart_drill_down" => &["contributor_key"],
             "preview_analysis" => &["parameter_values"],
             "prompt" => &["text", "skill"],

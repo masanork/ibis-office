@@ -3222,3 +3222,6 @@ query.report-quotient-filter-reconciled	丸め前の小計で全体の増減と�
 query.report-quotient-excluded-direction	対象外の理由：増減の符号
 query.report-quotient-excluded-name	対象外の理由：グループ名
 query.report-quotient-excluded-both	対象外の理由：増減の符号とグループ名
+query.report-quotient-subtotal-direction	符号のみ（{count}件） {total} {unit}
+query.report-quotient-subtotal-name	名前のみ（{count}件） {total} {unit}
+query.report-quotient-subtotal-both	両方（{count}件） {total} {unit}
