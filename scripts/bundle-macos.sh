@@ -34,6 +34,8 @@ if [[ "${1:-}" == "--release" || -n $QUICK ]]; then PROFILE=release; FLAGS=(--re
 # are rewritten to short relative ones, in a target directory of its own so
 # that the everyday builds (target/debug, target/release) are not rebuilt by the flags.
 REMAP="--remap-path-prefix=$HOME/.cargo/registry/src=crates.io --remap-path-prefix=$HOME/.cargo/git/checkouts=git --remap-path-prefix=$HOME/.rustup=rustup --remap-path-prefix=$(pwd)=."
+export IBIS_THIRD_PARTY_NOTICES="$PWD/target/third-party-macos.md"
+python3 scripts/gen-web-licenses.py macos
 if [[ -n $QUICK ]]; then
   cargo build --release --locked -p ibis-office-app -p ibis-office-updater
   BIN_DIR=target/release
@@ -67,9 +69,8 @@ cp crates/ibis-office-app/icons/doc/presentation.icns "$APP/Contents/Resources/S
 # The third-party components in the app and the notices their licences ask
 # for (made afresh from the dependencies), and Carlito's licence on its own
 # (OFL-1.1 asks for it with the font).
-python3 scripts/gen-web-licenses.py macos
 mkdir -p "$APP/Contents/Resources/Licenses"
-cp crates/ibis-office-app/macos/license.md "$APP/Contents/Resources/Licenses/license.md"
+cp "$IBIS_THIRD_PARTY_NOTICES" "$APP/Contents/Resources/Licenses/license.md"
 cp crates/ibis-office-render/fonts/carlito/OFL.txt "$APP/Contents/Resources/Licenses/Carlito-OFL.txt"
 # The pictures of Word's art page borders: ECMA-376's zip, unmodified, with
 # its notice (read when a document uses an art border; not in the executable).

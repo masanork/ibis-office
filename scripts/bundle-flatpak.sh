@@ -29,6 +29,8 @@ case "$ARCH" in
 esac
 
 REMAP="--remap-path-prefix=$HOME/.cargo/registry/src=crates.io --remap-path-prefix=$HOME/.cargo/git/checkouts=git --remap-path-prefix=$HOME/.rustup=rustup --remap-path-prefix=$(pwd)=."
+export IBIS_THIRD_PARTY_NOTICES="$PWD/target/third-party-linux.md"
+IBIS_LINUX_TARGET="$(rustc -vV | sed -n 's/^host: //p')" python3 scripts/gen-web-licenses.py linux
 RUSTFLAGS="$REMAP -C link-arg=-Wl,-rpath,\$ORIGIN/../lib" CARGO_TARGET_DIR=target/dist cargo build ${FLAGS[@]+"${FLAGS[@]}"} --locked -p ibis-office-app
 
 VERSION=$(awk -F'\t' '$1 == "Linux" { sub(/\r$/, "", $2); print $2 }' version.txt)
@@ -64,14 +66,14 @@ cp crates/ibis-formats/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.
   crates/ibis-formats/data/artborders/ECMA-NOTICE.txt \
   "$STAGE/share/ibisOffice/artborders/"
 
-python3 scripts/gen-web-licenses.py linux
 DOC="$STAGE/share/doc/ibisOffice"
 # The licence files are in publish/ here, at the top in the public repository (GitHub).
 LIC=publish; [[ -f $LIC/LICENSE ]] || LIC=.
 cp "$LIC/LICENSE" "$DOC/LICENSE"
 cp "$LIC/COMMERCIAL-LICENSE.md" "$DOC/COMMERCIAL-LICENSE.md"
 [[ -f $LIC/NOTICE ]] && cp "$LIC/NOTICE" "$DOC/NOTICE"
-cp crates/ibis-office-app/linux/license.md "$DOC/third-party-licenses.md"
+cp "$IBIS_THIRD_PARTY_NOTICES" "$DOC/third-party-licenses.md"
+python3 scripts/check-third-party-notices.py --desktop "$STAGE/bin/ibisOffice" "$DOC/third-party-licenses.md"
 cp crates/ibis-office-render/fonts/carlito/OFL.txt "$DOC/Carlito-OFL.txt"
 
 cp crates/ibis-office-app/linux/dev.sorane.Docs.yml "$WORK/dev.sorane.Docs.yml"
