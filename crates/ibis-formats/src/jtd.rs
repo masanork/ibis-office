@@ -288,10 +288,15 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
         match segment {
             Segment::ParagraphFormat(format) => {
                 template.direct.overlay(&format);
+                // A JTD paragraph with its own layout uses start alignment
+                // unless it specifies another one. Record that choice so it
+                // does not inherit the blank DOCX template's justification.
+                template.direct.align.get_or_insert_default();
                 let direct = template.direct.clone();
                 direct.apply_to(&mut template);
                 if paragraph.runs.is_empty() {
                     paragraph.direct.overlay(&format);
+                    paragraph.direct.align.get_or_insert_default();
                     let direct = paragraph.direct.clone();
                     direct.apply_to(&mut paragraph);
                 }
@@ -845,6 +850,35 @@ fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
     true
 }
 
+// DOCX stores page geometry and exact line feeds in twips. Round to the
+// closest one before the general writer serializes the already rounded values.
+fn nearest_twip(emu: i64) -> i64 {
+    (emu / 635 + emu % 635 / 318).saturating_mul(635)
+}
+
+fn round_docx_line_feeds(blocks: &mut [Block]) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                if let Some(ibis_doc_model::LineHeight::Exact(feed)) = &mut paragraph.direct.line {
+                    *feed = nearest_twip(*feed);
+                    paragraph.line = ibis_doc_model::LineHeight::Exact(*feed);
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    if let RowHeight::Exact(height) = &mut row.height {
+                        *height = nearest_twip(*height);
+                    }
+                    for cell in &mut row.cells {
+                        round_docx_line_feeds(&mut cell.blocks);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Export the currently recognized model as DOCX. Unsupported JTD features
 /// cannot be represented and the resulting file is not a lossless conversion.
 pub fn export_docx(presentation: &Presentation) -> Result<Vec<u8>, Error> {
@@ -852,6 +886,15 @@ pub fn export_docx(presentation: &Presentation) -> Result<Vec<u8>, Error> {
     let mut exported = presentation.clone();
     if let Some(flow) = exported.flow.as_mut() {
         let flow = std::sync::Arc::make_mut(flow);
+        let page = &mut flow.page;
+        page.size.width = nearest_twip(page.size.width);
+        page.size.height = nearest_twip(page.size.height);
+        page.top = nearest_twip(page.top);
+        page.right = nearest_twip(page.right);
+        page.bottom = nearest_twip(page.bottom);
+        page.left = nearest_twip(page.left);
+        page.line_pitch = page.line_pitch.map(nearest_twip);
+        round_docx_line_feeds(&mut flow.body);
         if let (Some(space), Some(size)) = (flow.page.char_space, flow.styles.defaults_run.size) {
             // Word stores the default size in half-points. Preserve the
             // source's full-width grid pitch after that unavoidable rounding.
@@ -2007,6 +2050,32 @@ mod tests {
             assert!(
                 matches!(p.line, ibis_doc_model::LineHeight::Exact(feed) if (feed - 180_000).abs() < 635)
             );
+        }
+    }
+
+    #[test]
+    fn fixed_feed_without_alignment_keeps_jtd_start_alignment_after_conversion() {
+        use ibis_doc_model::{FlowAlign, LineHeight};
+
+        let payload = [0, 0x20, 4, 8, 599, 0, 0, 0xffff, 0];
+        let length = (payload.len() + 7) as u16;
+        let mut units = vec![0x1c, 0x10, length];
+        units.extend(payload);
+        units.extend([length, 0, 0x10, 0x1f, 0x7532]);
+        let data = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&units),
+        )]);
+
+        let original = read(&data).unwrap();
+        let reopened = crate::read(&export_docx(&original).unwrap()).unwrap();
+        let second = crate::read(&export_docx(&reopened).unwrap()).unwrap();
+        for (model, feed) in [(&original, 215_640), (&reopened, 215_900), (&second, 215_900)] {
+            let flow = model.flow.as_ref().unwrap();
+            let Block::Paragraph(paragraph) = &flow.body[0] else { panic!("paragraph") };
+            assert_eq!(paragraph.align, FlowAlign::Left);
+            assert_eq!(paragraph.line, LineHeight::Exact(feed));
+            assert!(!paragraph.snap_to_grid);
         }
     }
 
