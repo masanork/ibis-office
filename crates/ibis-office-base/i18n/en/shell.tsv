@@ -1861,3 +1861,13 @@ structured.linkage-export-cell-limit	A value is too long for an XLSX cell.
 structured.linkage-export-path	Choose a separate file with an .xlsx extension.
 structured.linkage-export-saved	Saved the issue workbook.
 structured.linkage-export-error	Could not save the issue workbook. {error}
+structured.schema-edit-value	Edit JSON value…
+structured.schema-edit-apply	Apply
+structured.schema-edit-cancel	Cancel
+structured.schema-edit-save	Save schema as…
+structured.schema-edit-count	{count} edited values
+structured.schema-edit-invalid	Enter a JSON string in quotes, a number, true, false, or null.
+structured.schema-edit-output	Choose a different .json file for the edited schema.
+structured.schema-edit-saved	Saved the schema copy.
+structured.schema-edit-save-error	Could not save the schema copy. {error}
+structured.schema-choose	Choose JSON Schema…
