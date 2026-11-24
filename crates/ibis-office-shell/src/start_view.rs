@@ -195,7 +195,7 @@ const ISSUES_URL: &str = "https://github.com/masanork/ibis-office/issues";
 
 /// The window's title while no file is open: the app and its version.
 pub fn start_title() -> String {
-    format!("Docs {}", env!("IBIS_VERSION"))
+    format!("soraneDocs {}", env!("IBIS_VERSION"))
 }
 
 /// Custom right-hand landing panel supplied by a Web host (`StartViewPanel`).

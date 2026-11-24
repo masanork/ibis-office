@@ -546,7 +546,7 @@ fn fix_docx_edit014_symbols() {
 /// empty file of their kind (the xlsx one here).
 fn start_view_new_and_select() {
     let mut s = Scenario::start_view();
-    assert_eq!(crate::shell::start_view::start_title(), format!("ibisOffice {}", crate::shell::VERSION));
+    assert_eq!(crate::shell::start_view::start_title(), format!("soraneDocs {}", crate::shell::VERSION));
     s.screenshot("start");
     // 新規作成's second page (xlsx), below the section's title.
     s.click((150.0, 140.0));

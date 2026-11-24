@@ -1345,12 +1345,18 @@ pub(crate) fn hover_row_actions(index: usize, entries: Vec<MenuEntry>, editor: &
         .child(Dropdown::with_button("row-actions",button,entries,false,index,editor).reveal_on_hover("row-actions")).into_any_element()
 }
 
-/// Docs wordmark, shared by the start panel and editor bars.
+/// soraneDocs wordmark, shared by the start panel, About and editor bars.
 pub(crate) fn brand_logo(id: &'static str, height: f32, full_width: bool) -> Stateful<Div> {
     let root = div().id(id).flex().items_center().gap(px(height * 0.22)).flex_none();
     let root = if full_width { root.w_full().h(px(height)) } else { root.w(px(height * LOGO_ASPECT)).h(px(height)) };
     let mark = img(docs_mark()).size(px(height * 0.9)).flex_none();
-    let root = root.child(mark).child(div().text_size(px(height * 0.72)).font_weight(FontWeight::BOLD).child("Docs"));
+    let wordmark = div()
+        .flex()
+        .items_baseline()
+        .text_size(px(height * 0.62))
+        .child(div().font_weight(FontWeight::NORMAL).child("sorane"))
+        .child(div().font_weight(FontWeight::BOLD).child("Docs"));
+    let root = root.child(mark).child(wordmark);
     #[cfg(all(feature="scenarios",any(target_os="macos",target_os="linux")))]
     let root = super::scenario::button_probe::observe_control(root,id.into());
     root
