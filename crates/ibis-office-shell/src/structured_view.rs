@@ -19,6 +19,8 @@ mod cyclonedx;
 mod hed;
 mod linkage;
 mod row_schema;
+#[cfg(not(target_family = "wasm"))]
+mod schema_tools;
 
 const MAX_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_RECORDS: usize = 1_000_000;
@@ -571,6 +573,8 @@ pub(crate) struct View {
     export_status: Option<SharedString>,
     #[cfg(not(target_family = "wasm"))]
     exporting: bool,
+    #[cfg(not(target_family = "wasm"))]
+    schema_tools: schema_tools::SchemaTools,
     _subscription: Subscription,
 }
 
@@ -870,6 +874,17 @@ impl Render for View {
             .visible(if lines && !is_csv { "" } else { &self.query });
         let visible_is_empty = visible.is_empty();
         let show_hits = (inventory.is_some() || (lines && !is_csv)) && !self.query.is_empty();
+        let row_review = self
+            .source
+            .as_ref()
+            .and_then(|source| source.row_review.as_ref());
+        #[cfg(not(target_family = "wasm"))]
+        let row_review = self
+            .schema_tools
+            .review
+            .as_ref()
+            .map(|(_, result)| result)
+            .or(row_review);
         let hit_count = self.hits.as_ref().map_or(0, Vec::len);
         let hit_rows = uniform_list(
             "structured-search-hits",
@@ -1132,8 +1147,18 @@ impl Render for View {
                     .text_color(theme.muted_foreground)
                     .child(crate::i18n::text("structured.csv-mode"))
             }))
+            .children({
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    self.schema_actions(cx)
+                }
+                #[cfg(target_family = "wasm")]
+                {
+                    None::<Div>
+                }
+            })
             .children(self.source.as_ref().and_then(|source| {
-                source.row_review.as_ref().map(|result| {
+                row_review.map(|result| {
                     let panel = v_flex().px_4().py_2().gap_1().text_sm();
                     let review = match result {
                         Ok(review) => review,
@@ -1479,9 +1504,9 @@ impl Render for View {
                             inventory.target(&node.name, parent, reference)
                         });
                 let body = decoded
-                    .filter(|text| source.row_review.is_none() || !text.is_empty())
+                    .filter(|text| row_review.is_none() || !text.is_empty())
                     .unwrap_or_else(|| {
-                        if source.row_review.is_some() && node.span.is_empty() {
+                        if row_review.is_some() && node.span.is_empty() {
                             return node.detail.clone();
                         }
                         excerpt(
@@ -1489,6 +1514,12 @@ impl Render for View {
                             16_000,
                         )
                     });
+                #[cfg(not(target_family = "wasm"))]
+                let body = self
+                    .schema_tools
+                    .value(&node.span)
+                    .map(str::to_owned)
+                    .unwrap_or(body);
                 v_flex()
                     .px_4()
                     .py_2()
@@ -1507,6 +1538,16 @@ impl Render for View {
                                 node.span.end
                             )),
                     )
+                    .children({
+                        #[cfg(not(target_family = "wasm"))]
+                        {
+                            self.edit_schema_button(id, source, cx)
+                        }
+                        #[cfg(target_family = "wasm")]
+                        {
+                            None::<Button>
+                        }
+                    })
                     .children(target.map(|target| {
                         let span = target.span.clone();
                         let label = target.label.clone();
@@ -1665,6 +1706,7 @@ fn open_view(
                 document_tree: None,
                 export_status: None,
                 exporting: false,
+                schema_tools: Default::default(),
                 _subscription: subscription,
             };
             if view

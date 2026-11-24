@@ -1859,3 +1859,13 @@ structured.linkage-export-cell-limit	XLSXのセルに収まらない値があり
 structured.linkage-export-path	拡張子 .xlsx の別ファイルを指定してください。
 structured.linkage-export-saved	指摘一覧を保存しました。
 structured.linkage-export-error	指摘一覧を保存できませんでした。{error}
+structured.schema-edit-value	JSONの値を編集…
+structured.schema-edit-apply	反映
+structured.schema-edit-cancel	キャンセル
+structured.schema-edit-save	スキーマを別名で保存…
+structured.schema-edit-count	変更した値 {count}件
+structured.schema-edit-invalid	引用符付きの文字列、数値、true、false、nullのいずれかを入力してください。
+structured.schema-edit-output	編集したスキーマの保存先に別の .json ファイルを指定してください。
+structured.schema-edit-saved	スキーマのコピーを保存しました。
+structured.schema-edit-save-error	スキーマを保存できませんでした。{error}
+structured.schema-choose	JSON Schemaを選択…

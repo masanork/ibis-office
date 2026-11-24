@@ -61,6 +61,15 @@ JSONLと同じ検査処理で、JSON文書全体を1件として確認します�
 `contains` / `minContains` / `maxContains`、型 `array` / `boolean`、
 文字列・真偽値・nullの `const` / `enum` です。未対応キーワードを含むスキーマは読み込み時にエラーを表示します。
 
+### スキーマの値を編集して試す
+
+デスクトップで `*.schema.json` を開き、ツリーでスカラー値を選択して「JSONの値を編集」を選びます。
+数値、引用符付きの文字列、真偽値、nullを入力し、「反映」してから「スキーマを別名で保存」でコピーを保存します。
+たとえば `maxContains` を `1` から `2` に変えると、条件を満たす配列の要素を2件まで許容できます。
+
+元のデータのビューで「JSON Schemaを選択」から保存したコピーを開くと、そのデータを再検査できます。
+既存のスカラー値が編集対象です。オブジェクトや配列の構造の変更は対象外です。
+
 ## 修了記録で試す
 
 [test/fixtures/structured-preview](../test/fixtures/structured-preview) の
