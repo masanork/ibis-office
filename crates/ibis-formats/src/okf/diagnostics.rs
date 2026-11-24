@@ -8,6 +8,7 @@ pub struct Finding {
     pub field: String,
     pub code: &'static str,
     pub target: Option<String>,
+    pub line: Option<usize>,
 }
 
 /// Inspect a bounded Markdown frontmatter prefix. Unresolved local targets are advisory.
@@ -18,6 +19,7 @@ pub fn inspect(path: &str, prefix: &str, exists: impl Fn(&str) -> bool) -> Vec<F
             field: field.into(),
             code,
             target,
+            line: None,
         })
     };
     let (metadata, _) = match super::markdown_frontmatter(prefix) {
@@ -93,21 +95,11 @@ pub fn inspect(path: &str, prefix: &str, exists: impl Fn(&str) -> bool) -> Vec<F
             add(field, "invalid_path_value", None);
             return;
         };
-        let first = target.split(['/', '?', '#']).next().unwrap_or_default();
-        if target.starts_with("//") || first.contains(':') {
-            return;
-        }
         if allows_descriptor && target.contains(char::is_whitespace) {
             return;
         }
-        let path_target = target.split(['?', '#']).next().unwrap_or_default();
-        let resolved = super::resolve(path, path_target.trim_end_matches('/'));
-        if let Some((relative, _)) = resolved {
-            if !exists(&relative) {
-                add(field, "unresolved_local_target", Some(target.into()));
-            }
-        } else if path_target != "/" {
-            add(field, "outside_or_invalid_path", Some(target.into()));
+        if let Some(code) = path_problem(path, target, &exists) {
+            add(field, code, Some(target.into()));
         }
     };
     for (field, value) in [
@@ -133,4 +125,100 @@ pub fn inspect(path: &str, prefix: &str, exists: impl Fn(&str) -> bool) -> Vec<F
         );
     }
     findings
+}
+
+fn path_problem(path: &str, target: &str, exists: &impl Fn(&str) -> bool) -> Option<&'static str> {
+    let first = target.split(['/', '?', '#']).next().unwrap_or_default();
+    if target.starts_with("//") || first.contains(':') {
+        return None;
+    }
+    match super::resolve_reference(path, target, true) {
+        Some((relative, _)) if relative.is_empty() || exists(&relative) => None,
+        Some(_) => Some("unresolved_local_target"),
+        None => Some("outside_or_invalid_path"),
+    }
+}
+
+/// Find broken CommonMark links in a body whose first line is at `first_line` in the file.
+pub fn inspect_body<'a>(
+    path: &'a str,
+    body: &'a str,
+    first_line: usize,
+    exists: impl Fn(&str) -> bool + 'a,
+) -> impl Iterator<Item = Finding> + 'a {
+    use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
+
+    let newlines: Vec<_> = body.match_indices('\n').map(|(offset, _)| offset).collect();
+    Parser::new_ext(body, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES)
+        .into_offset_iter()
+        .filter_map(move |(event, range)| {
+            let Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            }) = event
+            else {
+                return None;
+            };
+            if matches!(link_type, LinkType::Email | LinkType::Autolink) || dest_url.is_empty() {
+                return None;
+            }
+            Some(Finding {
+                field: "body.link".into(),
+                code: path_problem(path, &dest_url, &exists)?,
+                target: Some(dest_url.into_string()),
+                line: Some(first_line + newlines.partition_point(|offset| *offset < range.start)),
+            })
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn body_links_use_occurrence_lines_and_ignore_code_and_non_links() {
+        let body = r#"[Inline](missing.md)
+[Reference][Ref]
+
+[Ref]: /nested/missing.md
+
+`[inline code](ignored.md)`
+
+~~~md
+[Fenced](ignored.md)
+~~~
+
+    [Indented](ignored.md)
+
+![Image](ignored.png)
+[[wiki]]
+<https://example.org/>
+[Parent directory](../)
+[Existing asset](/assets/a%20b.png?raw=1)
+[Fragment](#heading)
+[Escape](../../elsewhere.md)
+"#;
+        let findings: Vec<_> = inspect_body("nested/note.md", body, 5, |path| {
+            matches!(path, "nested/note.md" | "assets/a b.png")
+        })
+        .map(|finding| (finding.line, finding.code, finding.target.unwrap()))
+        .collect();
+        assert_eq!(
+            findings,
+            [
+                (Some(5), "unresolved_local_target", "missing.md".into()),
+                (
+                    Some(6),
+                    "unresolved_local_target",
+                    "/nested/missing.md".into()
+                ),
+                (
+                    Some(24),
+                    "outside_or_invalid_path",
+                    "../../elsewhere.md".into()
+                ),
+            ]
+        );
+    }
 }

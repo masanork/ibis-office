@@ -63,6 +63,14 @@ pub(crate) fn markdown_frontmatter(text: &str) -> Result<Option<(Map<String, Val
 /// Returns a bundle-relative path and optional fragment. Callers must still enforce
 /// the bundle boundary when opening the file.
 pub fn resolve<'a>(from: &str, reference: &'a str) -> Option<(String, Option<&'a str>)> {
+    resolve_reference(from, reference, false)
+}
+
+fn resolve_reference<'a>(
+    from: &str,
+    reference: &'a str,
+    allow_directory: bool,
+) -> Option<(String, Option<&'a str>)> {
     let (target, fragment) = reference
         .split_once('#')
         .map_or((reference, None), |(path, fragment)| (path, Some(fragment)));
@@ -78,7 +86,16 @@ pub fn resolve<'a>(from: &str, reference: &'a str) -> Option<(String, Option<&'a
         parts.extend(from.split('/').map(str::to_owned));
         parts.pop();
     }
-    for segment in path.trim_start_matches('/').split('/') {
+    let segments = path.trim_start_matches('/');
+    let segments = if allow_directory {
+        segments.trim_end_matches('/')
+    } else {
+        segments
+    };
+    if allow_directory && segments.is_empty() {
+        return Some((String::new(), fragment));
+    }
+    for segment in segments.split('/') {
         let name = percent_encoding::percent_decode_str(segment)
             .decode_utf8()
             .ok()?;
@@ -96,7 +113,7 @@ pub fn resolve<'a>(from: &str, reference: &'a str) -> Option<(String, Option<&'a
             _ => return None,
         }
     }
-    (!parts.is_empty()).then(|| (parts.join("/"), fragment))
+    (allow_directory || !parts.is_empty()).then(|| (parts.join("/"), fragment))
 }
 
 #[cfg(test)]

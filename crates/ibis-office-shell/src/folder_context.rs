@@ -288,7 +288,7 @@ pub(crate) fn tools() -> [ToolDefinition; 8] {
     [
         tool(
             "folder_diagnose_okf",
-            "Inspect OKF YAML metadata and its local path fields in the open folder. Findings are advisory and no files are changed. Pass next_offset to inspect more Markdown files.",
+            "Inspect OKF YAML metadata and local references in YAML and Markdown bodies in the open folder. Findings are advisory and no files are changed. Pass next_offset to inspect more Markdown files.",
             json!({"offset":{"type":"integer","minimum":0}}),
             json!([]),
         ),
@@ -398,15 +398,32 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
             let mut partial = folder.truncated || folder.skipped > 0;
             for path in files.by_ref().take(32) {
                 examined += 1;
-                let Some(prefix) = folder.resolve(path).ok().and_then(|path| std::fs::File::open(path).ok())
-                    .and_then(frontmatter_prefix)
+                let Some((content, truncated)) = folder.resolve(path).ok()
+                    .and_then(|path| read_text(&path).ok())
                 else {
                     partial = true;
                     continue;
                 };
-                let findings = ibis_formats::okf::diagnostics::inspect(path, &prefix, |target| {
-                    folder.resolve_entry(target).is_ok()
-                });
+                partial |= truncated;
+                let Some(prefix) = frontmatter_prefix(content.as_bytes()) else {
+                    partial = true;
+                    continue;
+                };
+                let exists = |target: &str| folder.resolve_entry(target).is_ok();
+                let mut findings = ibis_formats::okf::diagnostics::inspect(path, &prefix, exists);
+                if prefix.is_empty() || prefix.lines().skip(1).last() == Some("---") {
+                    let body = &content[prefix.len()..];
+                    let body = if truncated {
+                        body.rsplit_once('\n').map_or("", |(complete, _)| complete)
+                    } else {
+                        body
+                    };
+                    let first_line = 1 + prefix.bytes().filter(|byte| *byte == b'\n').count();
+                    findings.extend(
+                        ibis_formats::okf::diagnostics::inspect_body(path, body, first_line, exists)
+                            .take(13usize.saturating_sub(findings.len()))
+                    );
+                }
                 partial |= findings.len() > 12;
                 for finding in findings.into_iter().take(12) {
                     if issues.len() >= 16 {
@@ -416,6 +433,7 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
                     issues.push(json!({
                         "path": excerpt(path, 120),
                         "field": finding.field,
+                        "line": finding.line,
                         "code": finding.code,
                         "target": finding.target.as_deref().map(|target| excerpt(target, 100)),
                     }));
@@ -939,7 +957,7 @@ mod tests {
         let fixture = Fixture::new();
         std::fs::create_dir(fixture.0.join("nested")).unwrap();
         std::fs::create_dir(fixture.0.join("assets")).unwrap();
-        let concept = "---\ntype: Metric\ntags: [finance, false]\nresource: /assets/\ncomputation: ../missing.md\nsuperseded_by: ../../outside.md\nsources: {resource: https://example.org/data}\n---\n";
+        let concept = "---\ntype: Metric\ntags: [finance, false]\nresource: /assets/\ncomputation: ../missing.md\nsuperseded_by: ../../outside.md\nsources: {resource: https://example.org/data}\n---\n\nRead [detail][source].\n\n[source]: ../body-absent.md\n";
         fixture.write("nested/metric.md", concept);
         fixture.write("assets/raw.bin", "asset");
         fixture.write("broken.md", "---\n[one, two]\n---\n");
@@ -954,7 +972,11 @@ mod tests {
         let codes: Vec<_> = result.value["issues"].as_array().unwrap().iter()
             .map(|issue| issue["code"].as_str().unwrap()).collect();
         assert_eq!(codes, ["invalid_yaml_mapping", "invalid_version", "unexpected_reserved_frontmatter",
-            "invalid_tags", "unresolved_local_target", "outside_or_invalid_path", "incomplete_frontmatter"]);
+            "invalid_tags", "unresolved_local_target", "outside_or_invalid_path", "unresolved_local_target", "incomplete_frontmatter"]);
+        let body_issue = &result.value["issues"][6];
+        assert_eq!(body_issue["field"], "body.link");
+        assert_eq!(body_issue["line"], 10);
+        assert_eq!(body_issue["target"], "../body-absent.md");
         assert_eq!(std::fs::read_to_string(fixture.0.join("nested/metric.md")).unwrap(), concept);
     }
 
