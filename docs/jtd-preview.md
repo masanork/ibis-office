@@ -23,8 +23,9 @@ qualification covers 22 local documents. This does not establish visual
 fidelity. See [implementation and remaining gaps](jtd-structured-import.md).
 
 The browser and desktop app can open `.jtd`, uncompressed `.jtt`, and observed LH5-compressed `.jttc` files locally as a read-only preview when their content is supported. The original is never saved as JTD, JTT or JTTC; recognized content can be exported separately as DOCX. Recognized view-style direction flags enable vertical writing; one observed ruby pattern is imported. Some table rows and supported 008f border records are reconstructed approximately.
-File > Export > Convert to Word and edit creates an editable DOCX from the recognized
-preview in memory. Save it separately; the source file remains unchanged. The
+The Viewing Mode bar at the top of the document offers Convert to Word and edit.
+The same action is available under File > Export. It creates an editable DOCX
+from the recognized preview in memory. Save the DOCX as a separate file. The
 conversion is lossy, including missing images and some table rules, and the
 result is not a substitute for the original. Explicit read-only mode remains
 read-only. Editing or writing JTD, JTT or JTTC is not implemented.

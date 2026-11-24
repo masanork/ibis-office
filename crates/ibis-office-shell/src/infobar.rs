@@ -34,6 +34,8 @@ pub enum InfoBarKind {
     ReadMode,
     /// DOCX: Viewing mode chosen in the document (the user can switch to editing).
     Viewing,
+    /// JTD: viewing the imported body before converting it to editable DOCX.
+    JtdViewing,
     /// DOCX: an older compatibility mode.
     Compatibility,
     /// XLSX / PPTX: the file was read from an old binary format (.xls, .ppt): Compatibility Mode, until it is saved in a current format.
@@ -109,6 +111,7 @@ impl InfoBarKind {
             InfoBarKind::ReadOnlyRecommended => ("docx-infobar-readonly", "infobar-btn-enable-editing", "docx.infobar.readonly.title", "docx.infobar.readonly.message", "docx.infobar.readonly.enable-editing"),
             InfoBarKind::ReadMode => ("docx-infobar-readmode", "infobar-btn-exit-readmode", "docx.infobar.readmode.title", "docx.infobar.readmode.message", "docx.infobar.readmode.exit"),
             InfoBarKind::Viewing => ("docx-infobar-viewing", "infobar-btn-switch-to-editing", "docx.infobar.viewing.title", "docx.infobar.viewing.message", "docx.infobar.viewing.edit"),
+            InfoBarKind::JtdViewing => ("jtd-infobar-viewing", "infobar-btn-jtd-edit", "docx.infobar.viewing.title", "jtd.infobar.viewing.message", "jtd.edit-as-docx"),
             InfoBarKind::Compatibility => ("docx-infobar-compat", "infobar-btn-convert-compat", "docx.infobar.compat.title", "docx.infobar.compat.message", "docx.infobar.compat.convert"),
         }
     }
@@ -155,6 +158,9 @@ impl SlideEditor {
         // The file's digital signatures come before the bars of the format: they are what an edit loses.
         if self.signature.present {
             return Some(InfoBarKind::DigitalSignature);
+        }
+        if self.can_edit_jtd_as_docx() {
+            return Some(InfoBarKind::JtdViewing);
         }
         with_format!(self, infobar_kind(self))
     }
@@ -252,6 +258,7 @@ impl SlideEditor {
     /// What the bar's button does: the shell's own bars here, the format's by its `infobar_action`.
     fn run_infobar_action(&mut self, kind: InfoBarKind, window: &mut Window, cx: &mut Context<Self>) {
         match kind {
+            InfoBarKind::JtdViewing => self.edit_jtd_as_docx(window, cx),
             InfoBarKind::ModifyPassword => self.ask_modify_password_to_unlock(window, cx),
             // The model is already the current format; saving it under a new name (.xlsx / .pptx) makes it so.
             InfoBarKind::LegacyFormat => self.save_as_then(window, cx, |_, _, _| {}),

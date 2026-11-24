@@ -436,9 +436,16 @@ fn open_read_only() {
     // Editing begins from a DOCX model, with no path to the original file.
     s.update(|e, w, cx| { e.read_only = true; e.edit_jtd_as_docx(w, cx); });
     assert!(s.with(|e, _| e.is_jtd_read_only()));
-    s.update(|e, _, _| e.read_only = false);
-    s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
+    use crate::shell::infobar::InfoBarKind;
+    use crate::shell::scenario::button_probe;
+    assert_ne!(s.with(|e, _| e.infobar_kind()), Some(InfoBarKind::JtdViewing));
+    let _probe = button_probe::Probe::new();
+    s.update(|e, _, cx| { e.read_only = false; cx.notify(); });
+    s.settle();
+    assert_eq!(s.with(|e, _| e.infobar_kind()), Some(InfoBarKind::JtdViewing));
+    button_probe::click(&mut s, "infobar-btn-jtd-edit");
     assert!(s.with(|e, _| !e.is_read_only() && !e.is_jtd_read_only()));
+    assert_ne!(s.with(|e, _| e.infobar_kind()), Some(InfoBarKind::JtdViewing));
     let (paragraph, _) = s.paragraph(0);
     s.click_text(ibis_doc_model::FlowPos::new(paragraph, 0));
     s.type_text("edited");

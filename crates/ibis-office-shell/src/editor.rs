@@ -1235,9 +1235,13 @@ impl SlideEditor {
         { self.set_file_path(path); self.watch.known = stamp; }
     }
 
+    pub(crate) fn can_edit_jtd_as_docx(&self) -> bool {
+        self.is_jtd_read_only() && !self.jtd_gallery && !self.read_only && self.host.read_only.is_none()
+    }
+
     /// Convert the recognized preview into a separate editable Word document.
     pub fn edit_jtd_as_docx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.is_jtd_read_only() || self.read_only || self.jtd_gallery { return; }
+        if !self.can_edit_jtd_as_docx() { return; }
         let omissions = self.jtd_original.as_deref().and_then(|bytes| ibis_formats::jtd::omitted_content(bytes).ok());
         let result = ibis_formats::jtd::export_docx(self.presentation()).and_then(ibis_formats::open);
         match result {
@@ -1251,6 +1255,11 @@ impl SlideEditor {
                 self.set_loaded_source(std::sync::Arc::new(opened.source));
                 #[cfg(not(target_family = "wasm"))]
                 { self.jtd_source_path = original_path; self.document.set_file(None); }
+                #[cfg(any(target_os = "android", target_family = "wasm"))]
+                {
+                    self.phone_editing = true;
+                    self.update_phone_view(Self::narrow_phone_editor(window), window, cx);
+                }
                 let mut notice = crate::i18n::text("jtd.editable-notice").to_string();
                 Self::jtd_omission_notice(&mut notice, omissions);
                 self.set_status(notice, cx);
