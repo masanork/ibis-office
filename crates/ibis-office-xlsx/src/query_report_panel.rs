@@ -144,15 +144,92 @@ impl ReviewedRefresh {
     }
 }
 
+enum PreviewActivity {
+    Idle,
+    Picking(Option<Box<ReviewedRefresh>>),
+    Running,
+    Ready(Box<ReviewedRefresh>),
+}
+
+struct PreviewState {
+    generation: u64,
+    activity: PreviewActivity,
+}
+
+impl PreviewState {
+    fn idle() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self { generation: NEXT.fetch_add(1, Ordering::Relaxed), activity: PreviewActivity::Idle }
+    }
+
+    fn busy(&self) -> bool {
+        matches!(self.activity, PreviewActivity::Picking(_) | PreviewActivity::Running)
+    }
+
+    fn picking(&self) -> bool {
+        matches!(self.activity, PreviewActivity::Picking(_))
+    }
+
+    fn review(&self) -> Option<&ReviewedRefresh> {
+        match &self.activity {
+            PreviewActivity::Ready(review) => Some(review),
+            PreviewActivity::Picking(review) => review.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn review_mut(&mut self) -> Option<&mut ReviewedRefresh> {
+        match &mut self.activity {
+            PreviewActivity::Ready(review) => Some(review),
+            _ => None,
+        }
+    }
+
+    fn take_review(&mut self) -> Option<Box<ReviewedRefresh>> {
+        if !matches!(self.activity, PreviewActivity::Ready(_)) {
+            return None;
+        }
+        match std::mem::replace(&mut self.activity, PreviewActivity::Idle) {
+            PreviewActivity::Ready(review) => Some(review),
+            _ => unreachable!(),
+        }
+    }
+
+    fn finish_pick(&mut self, generation: u64) -> bool {
+        if self.generation != generation || !self.picking() {
+            return false;
+        }
+        if let PreviewActivity::Picking(Some(review)) = std::mem::replace(&mut self.activity, PreviewActivity::Idle) {
+            self.activity = PreviewActivity::Ready(review);
+        }
+        true
+    }
+
+    fn finish_preview(&mut self, generation: u64, result: Result<ReviewedRefresh, ibis_doc_service::ToolError>) -> Option<String> {
+        if self.generation != generation || !matches!(self.activity, PreviewActivity::Running) {
+            return None;
+        }
+        match result {
+            Ok(review) => {
+                let message = if review.result["blocked"] == true { text("query.report-blocked").to_string() } else { String::new() };
+                self.activity = PreviewActivity::Ready(Box::new(review));
+                Some(message)
+            }
+            Err(error) => {
+                self.activity = PreviewActivity::Idle;
+                Some(error.message)
+            }
+        }
+    }
+}
+
 pub(crate) struct QueryReportPanel {
     quotient_filters: BTreeMap<usize, QuotientFilterView>,
     reports: Vec<ReportChoice>,
     files: BTreeMap<String, PathBuf>,
     parameter_values: BTreeMap<String, Value>,
-    review: Option<ReviewedRefresh>,
+    preview: PreviewState,
     message: String,
-    busy: bool,
-    generation: u64,
 }
 
 impl QueryReportPanel {
@@ -222,7 +299,7 @@ impl QueryReportPanel {
     }
 
     fn invalidate(&mut self) {
-        self.review = None;
+        self.preview = PreviewState::idle();
         self.quotient_filters.clear();
         self.message.clear();
     }
@@ -231,7 +308,7 @@ impl QueryReportPanel {
 #[ibis_office_macros::editor_ext(QueryReportPanelExt)]
 impl SlideEditor {
     fn chart_review_candidate<'a>(&self, panel: &'a QueryReportPanel, review: &'a ReviewedRefresh) -> Option<&'a Presentation> {
-        if !self.sidebar_open || panel.busy || self.page_layout_shown()
+        if !self.sidebar_open || panel.preview.busy() || self.page_layout_shown()
             || !review.result["charts"].as_array().is_some_and(|charts| charts.iter().any(|chart| chart["changed"] == true))
         {
             return None;
@@ -241,7 +318,7 @@ impl SlideEditor {
 
     fn visible_chart_review(&self) -> Option<(&ReviewedRefresh, &Presentation)> {
         let panel = self.wb().panels.queries.as_ref()?.reports.as_ref()?;
-        let review = panel.review.as_ref()?;
+        let review = panel.preview.review()?;
         let candidate = self.chart_review_candidate(panel, review)?;
         review.is_current(self.presentation()).then_some((review, candidate))
     }
@@ -260,7 +337,7 @@ impl SlideEditor {
         &mut self, id: ibis_doc_model::ShapeId, position: Option<(usize, usize)>, cx: &mut Context<Self>,
     ) {
         let slide = self.current_slide;
-        if let Some(review) = self.query_reports_mut().and_then(|panel| panel.review.as_mut()) {
+        if let Some(review) = self.query_reports_mut().and_then(|panel| panel.preview.review_mut()) {
             review.preview_bar = position.map(|(series, point)| (slide, id, series, point));
             cx.notify();
         }
@@ -291,7 +368,7 @@ impl SlideEditor {
     }
 
     fn open_quotient_group_search(&mut self, index: usize, generation: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(panel) = self.query_reports_mut().filter(|panel| panel.generation == generation && panel.review.is_some()) else { return };
+        let Some(panel) = self.query_reports_mut().filter(|panel| panel.preview.generation == generation && panel.preview.review().is_some()) else { return };
         let filter = panel.quotient_filters.entry(index).or_default();
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(text("query.report-quotient-search")));
         input.update(cx, |input, cx| input.focus(window, cx));
@@ -306,8 +383,8 @@ impl SlideEditor {
 
     fn filter_quotient_ranking(&mut self, index: usize, generation: u64, direction: Option<RankingDirection>, cx: &mut Context<Self>) {
         let Some(panel) = self.wb().panels.queries.as_ref().and_then(|panels| panels.reports.as_ref())
-            .filter(|panel| panel.generation == generation) else { return };
-        let Some(review) = panel.review.as_ref().filter(|review| review.is_current(self.presentation())) else { return };
+            .filter(|panel| panel.preview.generation == generation) else { return };
+        let Some(review) = panel.preview.review().filter(|review| review.is_current(self.presentation())) else { return };
         let Some(comparison) = review.quotient_previews.get(index) else { return };
         let view = panel.quotient_filters.get(&index);
         let mut criteria = view.map_or_else(RankingFilter::default, |view| view.criteria.clone());
@@ -322,7 +399,7 @@ impl SlideEditor {
             None
         };
         let Some(panel) = self.query_reports_mut() else { return };
-        let Some(review) = panel.review.as_mut() else { return };
+        let Some(review) = panel.preview.review_mut() else { return };
         let view = panel.quotient_filters.entry(index).or_default();
         view.criteria = criteria;
         view.ranking = ranking;
@@ -334,8 +411,8 @@ impl SlideEditor {
     fn set_quotient_page(&mut self, index: usize, generation: u64, requested: Option<RankingPage>, cx: &mut Context<Self>) {
         let page = requested.and_then(|requested| {
             let panel = self.wb().panels.queries.as_ref()?.reports.as_ref()?;
-            let review = panel.review.as_ref()?;
-            if panel.generation != generation || !review.is_current(self.presentation()) {
+            let review = panel.preview.review()?;
+            if panel.preview.generation != generation || !review.is_current(self.presentation()) {
                 return None;
             }
             let comparison = review.quotient_previews.get(index)?;
@@ -345,8 +422,8 @@ impl SlideEditor {
             let field = match requested { RankingPage::Remainder(_) => "remainder", RankingPage::Excluded(..) => "excluded" };
             ranking.get("filtered").unwrap_or(ranking)[field].get("page").cloned().map(|page| (requested, page))
         });
-        if let Some(review) = self.query_reports_mut().filter(|panel| panel.generation == generation)
-            .and_then(|panel| panel.review.as_mut())
+        if let Some(review) = self.query_reports_mut().filter(|panel| panel.preview.generation == generation)
+            .and_then(|panel| panel.preview.review_mut())
         {
             review.quotient_selection.remove(&index);
             if let Some(page) = page {
@@ -438,10 +515,10 @@ impl SlideEditor {
         let Some(panel) = self.wb().panels.queries.as_ref().and_then(|panel| panel.reports.as_ref()) else {
             return json!({"state":"idle"});
         };
-        if panel.busy {
+        if panel.preview.busy() {
             return json!({"state":"previewing"});
         }
-        let Some(review) = &panel.review else { return json!({"state":"idle"}) };
+        let Some(review) = panel.preview.review() else { return json!({"state":"idle"}) };
         if !review.is_current(self.presentation()) {
             return json!({"state":"stale"});
         }
@@ -492,7 +569,7 @@ impl SlideEditor {
             let Some(panel) = self.wb().panels.queries.as_ref().and_then(|p| p.reports.as_ref()) else {
                 return json!({"error":"Open SQL Report Refresh in the workbook and assign the source files"});
             };
-            if panel.busy || panel.review.is_some() {
+            if panel.preview.picking() || panel.preview.review().is_some() {
                 return json!({"error":"Finish or close the current report preview first"});
             }
             if panel.sources().keys().any(|name| !panel.files.contains_key(name)) {
@@ -559,9 +636,9 @@ impl SlideEditor {
             }))
         })();
         let preview = self.wb().panels.queries.as_ref().and_then(|p| p.reports.as_ref()).map(|panel| {
-            if panel.busy {
+            if panel.preview.busy() {
                 json!({"state":"previewing"})
-            } else if let Some(review) = &panel.review {
+            } else if let Some(review) = panel.preview.review() {
                 if !review.is_current(self.presentation()) {
                     json!({"state":"stale"})
                 } else {
@@ -656,17 +733,14 @@ impl SlideEditor {
         if reports.len() <= 12 {
             reports.iter_mut().for_each(|report| report.selected = true);
         }
-        static NEXT: AtomicU64 = AtomicU64::new(1);
         if let Some(panel) = self.wb_mut().panels.queries.as_mut() {
             panel.reports = Some(QueryReportPanel {
                 reports,
                 files: BTreeMap::new(),
                 parameter_values: BTreeMap::new(),
-                review: None,
+                preview: PreviewState::idle(),
                 quotient_filters: BTreeMap::new(),
                 message: String::new(),
-                busy: false,
-                generation: NEXT.fetch_add(1, Ordering::Relaxed),
             });
         }
         cx.notify();
@@ -703,11 +777,12 @@ impl SlideEditor {
         cx: &mut Context<Self>,
     ) {
         let file_id = self.file_id;
-        let Some(panel) = self.query_reports_mut().filter(|panel| !panel.busy) else {
+        let Some(panel) = self.query_reports_mut().filter(|panel| !panel.preview.busy()) else {
             return;
         };
-        let generation = panel.generation;
-        panel.busy = true;
+        let review = panel.preview.take_review();
+        let generation = panel.preview.generation;
+        panel.preview.activity = PreviewActivity::Picking(review);
         let extensions: &[&str] = match kind {
             "csv" => &["csv"],
             "parquet" => &["parquet"],
@@ -737,11 +812,11 @@ impl SlideEditor {
                 }
                 let Some(panel) = editor
                     .query_reports_mut()
-                    .filter(|panel| panel.generation == generation)
+                    .filter(|panel| panel.preview.generation == generation)
                 else {
                     return;
                 };
-                panel.busy = false;
+                if !panel.preview.finish_pick(generation) { return; }
                 if let Some(path) = chosen {
                     panel.files.insert(file, path);
                     panel.invalidate();
@@ -757,15 +832,15 @@ impl SlideEditor {
         self.commit_cell_edit(cx);
         let base = self.presentation().clone();
         let file_id = self.file_id;
-        let Some(panel) = self.query_reports_mut().filter(|panel| !panel.busy) else {
+        let Some(panel) = self.query_reports_mut().filter(|panel| !panel.preview.picking()) else {
             return;
         };
         let Some((paths, args)) = panel.request() else {
             return;
         };
-        let generation = panel.generation;
         panel.invalidate();
-        panel.busy = true;
+        let generation = panel.preview.generation;
+        panel.preview.activity = PreviewActivity::Running;
         panel.message = text("query.report-reading").to_string();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -807,32 +882,24 @@ impl SlideEditor {
                 })
                 .await;
             let _ = this.update(cx, |editor, cx| {
-                if editor.file_id != file_id {
-                    return;
+                if editor.file_id == file_id {
+                    editor.finish_report_preview(generation, result, cx);
                 }
-                let Some(panel) = editor
-                    .query_reports_mut()
-                    .filter(|panel| panel.generation == generation)
-                else {
-                    return;
-                };
-                panel.busy = false;
-                match result {
-                    Ok(review) => {
-                        panel.message = if review.result["blocked"] == true {
-                            text("query.report-blocked").to_string()
-                        } else {
-                            String::new()
-                        };
-                        panel.review = Some(review);
-                    }
-                    Err(error) => panel.message = error.message,
-                }
-                cx.notify();
             });
         })
         .detach();
         cx.notify();
+    }
+
+    fn finish_report_preview(
+        &mut self, generation: u64, result: Result<ReviewedRefresh, ibis_doc_service::ToolError>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.query_reports_mut() else { return };
+        if let Some(message) = panel.preview.finish_preview(generation, result) {
+            panel.message = message;
+            cx.notify();
+        }
     }
 
     fn apply_query_report_review(&mut self, cx: &mut Context<Self>) {
@@ -842,8 +909,8 @@ impl SlideEditor {
         self.commit_cell_edit(cx);
         let Some(review) = self
             .query_reports_mut()
-            .filter(|panel| !panel.busy)
-            .and_then(|panel| panel.review.take())
+            .filter(|panel| !panel.preview.busy())
+            .and_then(|panel| panel.preview.take_review())
         else {
             return;
         };
@@ -876,17 +943,14 @@ impl SlideEditor {
         let read_only = self.is_read_only();
         let panel = self.wb().panels.queries.as_ref()?.reports.as_ref()?;
         let workbook = self.presentation().workbook.as_ref()?;
-        let generation = panel.generation;
-        let busy = panel.busy;
-        let current_review = panel.review.as_ref().filter(|review| review.is_current(self.presentation()));
+        let generation = panel.preview.generation;
+        let busy = panel.preview.busy();
+        let picking = panel.preview.picking();
+        let current_review = panel.preview.review().filter(|review| review.is_current(self.presentation()));
         let chart_candidate = current_review.and_then(|review| self.chart_review_candidate(panel, review));
         let mut can_preview = panel.request().is_some() && !busy;
-        let can_apply = !read_only
-            && !busy
-            && panel
-                .review
-                .as_ref()
-                .is_some_and(|review| !review.commands.is_empty());
+        let can_apply = !read_only && !busy
+            && current_review.is_some_and(|review| !review.commands.is_empty());
         let mut body = v_flex().gap_2().px(gpui_kit::px(18.)).py(gpui_kit::px(8.));
         if let Some(controls) = panel.controls() {
             let owner = cx.entity().downgrade();
@@ -907,7 +971,7 @@ impl SlideEditor {
                     let name = name.to_owned();
                     DropdownItem::new(display).checked(checked).on_select(std::rc::Rc::new(move |editor: &mut SlideEditor, _, cx| {
                         if let Some(panel) = editor.query_reports_mut()
-                            .filter(|panel| !panel.busy && panel.generation == generation)
+                            .filter(|panel| !panel.preview.picking() && panel.preview.generation == generation)
                         {
                             panel.parameter_values.insert(name.clone(), value.clone());
                             panel.invalidate();
@@ -926,7 +990,7 @@ impl SlideEditor {
                         label.unwrap_or_else(|| text("query.report-parameter-choose").to_string()),
                         entries, true, index, &owner,
                     )
-                        .fill_width().disabled(busy),
+                        .fill_width().disabled(picking),
                 );
             }
         } else {
@@ -946,11 +1010,11 @@ impl SlideEditor {
                 Checkbox::new(("query-report-table", index))
                     .label(format!("{} · {}", report.name, report.sheet))
                     .checked(report.selected)
-                    .disabled(busy)
+                    .disabled(picking)
                     .on_change(cx.listener(move |editor, checked, _, cx| {
                         if let Some(panel) = editor
                             .query_reports_mut()
-                            .filter(|panel| !panel.busy && panel.generation == generation)
+                            .filter(|panel| !panel.preview.picking() && panel.preview.generation == generation)
                         {
                             panel.reports[index].selected = *checked;
                             panel.invalidate();
@@ -985,7 +1049,7 @@ impl SlideEditor {
                             .on_click(cx.listener(move |editor, _, _, cx| {
                                 if let Some(panel) = editor
                                     .query_reports_mut()
-                                    .filter(|panel| panel.generation == generation)
+                                    .filter(|panel| panel.preview.generation == generation)
                                     && let Some(report) = panel.reports.get_mut(index)
                                 {
                                     report.check_details_open = !report.check_details_open;
@@ -1051,11 +1115,11 @@ impl SlideEditor {
                         Checkbox::new(key)
                             .label(column.clone())
                             .checked(report.metrics.contains(&column))
-                            .disabled(busy)
+                            .disabled(picking)
                             .on_change(cx.listener(move |editor, checked, _, cx| {
                                 if let Some(panel) = editor
                                     .query_reports_mut()
-                                    .filter(|panel| !panel.busy && panel.generation == generation)
+                                    .filter(|panel| !panel.preview.picking() && panel.preview.generation == generation)
                                 {
                                     let metrics = &mut panel.reports[index].metrics;
                                     if *checked {
@@ -1111,7 +1175,7 @@ impl SlideEditor {
                     ),
             );
         }
-        if let Some(review) = &panel.review {
+        if let Some(review) = panel.preview.review() {
             body = body.child(
                 div()
                     .font_weight(FontWeight::BOLD)
@@ -1487,7 +1551,7 @@ pub(crate) fn refresh_report_scenario() {
                     .reports
                     .as_ref()
                     .unwrap();
-                (panel.review.is_some(), panel.busy, panel.message.clone())
+                (panel.preview.review().is_some(), panel.preview.busy(), panel.message.clone())
             });
             if ready {
                 return;
@@ -1514,7 +1578,7 @@ pub(crate) fn refresh_report_scenario() {
     scene.update(|editor, _, _| {
         let panel = editor.query_reports_mut().unwrap();
         assert_eq!(panel.files.get("monthly.csv"), Some(&next));
-        let review = panel.review.as_ref().unwrap();
+        let review = panel.preview.review().unwrap();
         assert_eq!(review.result["blocked"], false);
         assert_eq!(review.result["reports"][0]["checks"][0]["count"], 0);
         let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(
@@ -1576,7 +1640,7 @@ pub(crate) fn refresh_report_scenario() {
             .reports
             .as_ref()
             .unwrap();
-        assert!(!panel.busy);
+        assert!(!panel.preview.busy());
         assert!(panel.files.is_empty());
     });
     button_probe::click(&mut scene, "query-report-source-0");
@@ -1609,7 +1673,7 @@ pub(crate) fn refresh_report_scenario() {
             .reports
             .as_ref()
             .unwrap();
-        let review = panel.review.as_ref().unwrap();
+        let review = panel.preview.review().unwrap();
         assert_eq!(review.result["blocked"], true);
         assert_eq!(review.result["reports"][0]["checks"][0]["count"], 1);
         assert_eq!(review.result["reports"][0]["checks"][0]["diagnostic"]["rows"], json!([["001",2]]));
@@ -1630,7 +1694,7 @@ pub(crate) fn refresh_report_scenario() {
             .reports
             .as_ref()
             .unwrap();
-        let review = panel.review.as_ref().unwrap();
+        let review = panel.preview.review().unwrap();
         assert_eq!(review.result["blocked"], false);
         assert_eq!(review.result["reports"][0]["metrics"][0]["delta"], -12.0);
         assert_eq!(
@@ -1638,6 +1702,28 @@ pub(crate) fn refresh_report_scenario() {
             json!([{"source":"monthly","column":"region","previous":null,"current":"TEXT"}]),
         );
     });
+    // Hold a genuinely computed result, change the input, then deliver it through
+    // the same completion handler the asynchronous worker uses.
+    let (generation, delayed) = scene.update(|editor, _, _| {
+        let panel = editor.query_reports_mut().unwrap();
+        let delayed = panel.preview.take_review().unwrap();
+        panel.preview.activity = PreviewActivity::Running;
+        (panel.preview.generation, delayed)
+    });
+    scene.update(|editor, _, cx| {
+        let panel = editor.query_reports_mut().unwrap();
+        panel.reports[0].metrics.clear();
+        panel.invalidate();
+        editor.finish_report_preview(generation, Ok(*delayed), cx);
+        cx.notify();
+    });
+    assert_eq!(scene.with(|editor, _| editor.live_report_preview_diff(&json!({})))["state"], "idle");
+    assert_eq!(scene.update(|editor, _, cx| editor.live_report_analysis(None, cx))["report_preview"]["state"], "idle");
+    button_probe::click(&mut scene, "query-reports-apply");
+    assert_eq!(amount(&mut scene), Some(CellValue::Number(24.0)));
+    button_probe::click(&mut scene, "query-reports-preview");
+    wait_for_review(&mut scene);
+
     // Apply what appeared in the review even if the source is replaced meanwhile.
     std::fs::write(&next, "code,amount\n001,6\n").unwrap();
     button_probe::click(&mut scene, "query-reports-apply");
@@ -1702,7 +1788,7 @@ pub(crate) fn arrow_report_snapshot_scenario() {
         for _ in 0..500 {
             let (result, busy, message) = scene.with(|editor, _| {
                 let panel = editor.wb().panels.queries.as_ref().unwrap().reports.as_ref().unwrap();
-                (panel.review.as_ref().map(|review| review.result.clone()), panel.busy, panel.message.clone())
+                (panel.preview.review().map(|review| review.result.clone()), panel.preview.busy(), panel.message.clone())
             });
             if let Some(result) = result {
                 let reports = result["reports"].as_array().unwrap();
@@ -1812,7 +1898,7 @@ pub(crate) fn json_avro_report_snapshot_scenario() {
         for _ in 0..500 {
             let (result, busy, message) = scene.with(|editor, _| {
                 let panel = editor.wb().panels.queries.as_ref().unwrap().reports.as_ref().unwrap();
-                (panel.review.as_ref().map(|review| review.result.clone()), panel.busy, panel.message.clone())
+                (panel.preview.review().map(|review| review.result.clone()), panel.preview.busy(), panel.message.clone())
             });
             if let Some(result) = result {
                 assert_eq!(result["blocked"], false);
@@ -2399,7 +2485,7 @@ pub(crate) fn report_quotient_remainder_scenario(rate: bool) {
     button_probe::click(&mut scene, "query-report-quotient-previous-0");
     button_probe::click(&mut scene, "query-report-quotient-remainder-0");
     let review = scene.with(|editor, _| editor.wb().panels.queries.as_ref().unwrap().reports.as_ref()
-        .unwrap().review.as_ref().unwrap().quotient_pages.is_empty());
+        .unwrap().preview.review().unwrap().quotient_pages.is_empty());
     assert!(review);
 
     let filtered = |direction, query| json!({
@@ -2573,5 +2659,5 @@ pub(crate) fn report_quotient_remainder_scenario(rate: bool) {
     button_probe::click(&mut scene, "query-report-quotient-excluded-previous-0");
     button_probe::click(&mut scene, "query-report-quotient-excluded-0");
     assert!(scene.with(|editor, _| editor.wb().panels.queries.as_ref().unwrap().reports.as_ref()
-        .unwrap().review.as_ref().unwrap().quotient_pages.is_empty()));
+        .unwrap().preview.review().unwrap().quotient_pages.is_empty()));
 }

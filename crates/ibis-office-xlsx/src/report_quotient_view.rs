@@ -162,8 +162,8 @@ pub(super) fn quotient_preview(
         let label = format("query.report-quotient-row", &[("rank", &rank), ("key", &key), ("total", &total), ("unit", &unit)]);
         let id = SharedString::from(format!("query-report-quotient-{index}-{row}"));
         let button = action_button(id).small().label(label.clone()).on_click(cx.listener(move |editor, _, _, cx| {
-            if let Some(review) = editor.query_reports_mut().filter(|panel| panel.generation == generation)
-                .and_then(|panel| panel.review.as_mut())
+            if let Some(review) = editor.query_reports_mut().filter(|panel| panel.preview.generation == generation)
+                .and_then(|panel| panel.preview.review_mut())
             {
                 if review.quotient_selection.get(&index) == Some(&row) {
                     review.quotient_selection.remove(&index);
