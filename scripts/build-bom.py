@@ -199,6 +199,7 @@ def add_crypto(components, edges):
                 {"name": "ibisOffice:evidence:usage", "value": usage},
             ])
             edges[consumer].add(ref)
+        return consumer
 
     aes = {
         f"AES-{bits}-CBC": {
@@ -235,6 +236,32 @@ def add_crypto(components, edges):
                "SM2-with-SM3": {"primitive": "signature", "cryptoFunctions": ["verify"]},
                "SM3": {"primitive": "hash", "cryptoFunctions": ["digest"]},
            })
+
+    updater = record(
+        "ibis-office-updater", ("ring",), "crates/ibis-office-updater/src/signed_manifest.rs",
+        "Verify the signed desktop update manifest and digest the downloaded artifact",
+        {
+            "Ed25519": {"primitive": "signature", "cryptoFunctions": ["verify"]},
+            "SHA-256": {"primitive": "hash", "cryptoFunctions": ["digest"]},
+        },
+    )
+    if updater is not None:
+        transport = "crates/ibis-office-updater/src/update_transport.rs"
+        if not Path(transport).is_file():
+            raise ValueError(f"missing crypto evidence source: {transport}")
+        curl = "ibisoffice:external:desktop-updater:curl"
+        components[curl] = {
+            "type": "application", "bom-ref": curl, "name": "curl",
+            "description": "Host command selected at runtime for desktop updater HTTPS.",
+            "properties": [
+                {"name": "ibisOffice:evidence:source", "value": transport},
+                {"name": "ibisOffice:evidence:usage",
+                 "value": "HTTPS-only requests and redirects; certificate verification delegated to curl"},
+                {"name": "ibisOffice:evidence:boundary",
+                 "value": "Host curl version, TLS backend, negotiated protocol and trust store are runtime-dependent"},
+            ],
+        }
+        edges[updater].add(curl)
 
 
 def verify_workbook(app, bom, crypto):
@@ -294,7 +321,8 @@ def main():
     sbom = inventory(args.platform, args.image, components, edges, scope, app_ref)
     add_crypto(components, edges)
     cbom = inventory(args.platform, args.image, components, edges, scope +
-                     " Reviewed OOXML/PDF encryption and OOXML/OFD signatures when present in the Cargo graph.", app_ref)
+                     " Reviewed OOXML/PDF encryption, OOXML/OFD signatures, and desktop updater crypto when present"
+                     " in the Cargo graph. Updater evidence describes source capabilities, not release activation.", app_ref)
     args.output.mkdir(parents=True, exist_ok=True)
     for kind, data in (("sbom", sbom), ("cbom", cbom)):
         path = args.output / f"{args.platform}.{kind}.cdx.json"
