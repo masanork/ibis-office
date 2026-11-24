@@ -3,6 +3,11 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! [`FormatEditor`] implementation for `Kind::Pdf`.
 
+#[cfg(not(target_family = "wasm"))]
+mod geometry_drag;
+#[cfg(not(target_family = "wasm"))]
+pub use geometry_drag::screen_point as geometry_screen_point;
+
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -632,6 +637,9 @@ impl FormatEditor for PdfDocument {
         });
         #[cfg(target_family = "wasm")]
         let label_bar: Option<AnyElement> = None;
+        #[cfg(not(target_family = "wasm"))]
+        let geometry_handles = editor.format_state::<State>().and_then(|s| s.geometry_edit.as_ref())
+            .map(|mode| (mode.page, mode.targets.clone(), mode.drag.as_ref().map(|drag| geometry_drag::ghost(drag, &mode.targets))));
 
         div()
             .relative()
@@ -655,7 +663,12 @@ impl FormatEditor for PdfDocument {
                             // The text is picked by pressing on it and dragging; a press without a drag picks nothing.
                             .on_mouse_down(MouseButton::Left, cx.listener(|editor, event: &MouseDownEvent, window, cx| press(editor, event, window, cx)))
                             .on_mouse_move(cx.listener(|editor, event: &MouseMoveEvent, _, cx| drag(editor, event, cx)))
-                            .on_mouse_up(MouseButton::Left, cx.listener(|editor, _: &MouseUpEvent, _, cx| release(editor, cx)))
+                            .on_mouse_up(MouseButton::Left, cx.listener(|editor, event: &MouseUpEvent, window, cx| {
+                                #[cfg(not(target_family = "wasm"))]
+                                if geometry_drag::release(editor, event.position, window, cx) { return; }
+                                let _ = (event, window);
+                                release(editor, cx);
+                            }))
                             .child(
                                 canvas(
                                     |_bounds, _window, _cx| {},
@@ -696,6 +709,24 @@ impl FormatEditor for PdfDocument {
                                                     cx,
                                                 );
                                                 paint_marks(&mut guard, idx, x, y, scale, window);
+                                                #[cfg(not(target_family = "wasm"))]
+                                                if let Some((page, targets, ghost)) = &geometry_handles
+                                                    && *page == idx
+                                                {
+                                                    if let Some(rect) = ghost {
+                                                        window.paint_quad(fill(Bounds {
+                                                            origin: point(px(x + rect.x0 * scale), px(y + rect.y0 * scale)),
+                                                            size: size(px(rect.width() * scale), px(rect.height() * scale)),
+                                                        }, hsla(0.61, 0.85, 0.54, 0.12))
+                                                            .border_widths(px(1.0)).border_color(rgb(0x2563eb)));
+                                                    }
+                                                    for (_, _, (handle_x, handle_y)) in &targets.endpoints {
+                                                        window.paint_quad(fill(
+                                                            Bounds { origin: point(px(x + handle_x * scale - 4.0), px(y + handle_y * scale - 4.0)), size: size(px(8.0), px(8.0)) },
+                                                            rgb(0x2563eb),
+                                                        ).border_widths(px(1.0)).border_color(rgb(0xffffff)));
+                                                    }
+                                                }
                                             }
                                             y += ph + PAGE_GAP_PX;
                                         }
@@ -752,6 +783,8 @@ fn paint_marks(viewer: &mut PdfViewerState, page: usize, left: f32, top: f32, sc
 fn press(editor: &mut SlideEditor, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<SlideEditor>) {
     window.focus(&editor.focus_handle, cx);
     let Some((page, x, y)) = pdf_point(editor, event.position) else { return };
+    #[cfg(not(target_family = "wasm"))]
+    if geometry_drag::press(editor, page, x, y, cx) { return; }
     let Some(state) = editor.format_state::<State>() else { return };
     {
         let mut guard = state.viewer.lock().expect("pdf viewer lock");
@@ -768,6 +801,13 @@ fn press(editor: &mut SlideEditor, event: &MouseDownEvent, window: &mut Window, 
 
 /// The drag: the selection reaches to the character under the pointer.
 fn drag(editor: &mut SlideEditor, event: &MouseMoveEvent, cx: &mut Context<SlideEditor>) {
+    #[cfg(not(target_family = "wasm"))]
+    if event.pressed_button == Some(MouseButton::Left)
+        && editor.format_state::<State>().is_some_and(|s| s.geometry_edit.is_some())
+    {
+        geometry_drag::update(editor, event.position, cx);
+        return;
+    }
     let Some(state) = editor.format_state::<State>() else { return };
     if !state.ui.lock().expect("pdf ui lock").dragging || event.pressed_button != Some(MouseButton::Left) {
         return;
@@ -988,6 +1028,8 @@ struct GeometryEditor {
     page: usize,
     input: Entity<InputState>,
     staged: Option<Arc<[u8]>>,
+    targets: Arc<ibis_vsdx::geometry_edit::GeometryTargets>,
+    drag: Option<geometry_drag::GeometryDrag>,
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -997,13 +1039,17 @@ fn open_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Co
     if editor.format_state::<State>().is_some_and(|s| s.label_edit.is_some()) {
         return editor.report(Err(ibis_office_shell::i18n::text("vsdx.close-label-first").to_string()), cx);
     }
+    let targets = geometry_drag::targets(editor, page);
     let input = if let Some(state) = editor.format_state_mut::<State>() {
         let mode = state.geometry_edit.get_or_insert_with(|| GeometryEditor {
             page,
             input: cx.new(|cx| InputState::new(window, cx).placeholder("move 2 0.25 0 / connect 12 end 4")),
             staged: None,
+            targets: targets.clone(),
+            drag: None,
         });
         mode.page = page;
+        mode.targets = targets;
         state.find_open = false;
         state.page_open = false;
         mode.input.clone()
@@ -1037,30 +1083,52 @@ pub fn geometry_copy_bytes(editor: &SlideEditor, cx: &gpui_kit::App) -> Result<V
         },
         _ => return Err(invalid()),
     };
+    geometry_edit_bytes(editor, mode.page, edit)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn geometry_edit_bytes(editor: &SlideEditor, page: usize, edit: ibis_vsdx::geometry_edit::GeometryEdit) -> Result<Vec<u8>, String> {
+    let invalid = || ibis_office_shell::i18n::text("vsdx.geometry-command-error").to_string();
     let viewer = viewer_of(editor).ok_or_else(invalid)?;
     let document = {
         let viewer = viewer.lock().expect("pdf viewer lock");
         let crate::ViewerSource::Vsdx(document) = &viewer.source else { return Err(invalid()); };
         document.clone()
     };
-    document.edit_geometry(mode.page, edit).map_err(|error| error.to_string())
+    document.edit_geometry(page, edit).map_err(|error| error.to_string())
 }
 
 /// Apply a command to the live preview without writing to the original file.
 #[cfg(not(target_family = "wasm"))]
 fn apply_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> Result<(), String> {
-    let bytes: Arc<[u8]> = geometry_copy_bytes(editor, cx)?.into();
+    let bytes = geometry_copy_bytes(editor, cx)?;
+    stage_geometry_edit(editor, bytes, window, cx, true)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn stage_geometry_edit(editor: &mut SlideEditor, bytes: Vec<u8>, window: &mut Window, cx: &mut Context<SlideEditor>, focus_input: bool) -> Result<(), String> {
+    let bytes: Arc<[u8]> = bytes.into();
     let preview = PdfViewerState::open(bytes.clone()).map_err(|error| error.to_string())?;
     let state = editor.format_state_mut::<State>().expect("Visio editing state");
     replace_geometry_preview(&state.viewer, preview);
-    let mode = state.geometry_edit.as_mut().expect("Visio geometry editor");
+    let page = state.geometry_edit.as_ref().expect("Visio geometry editor").page;
+    let targets = geometry_drag::targets(editor, page);
+    let mode = editor.format_state_mut::<State>().unwrap().geometry_edit.as_mut().unwrap();
     mode.staged = Some(bytes);
-    mode.input.update(cx, |field, cx| {
-        field.set_value("", window, cx);
-        field.focus(window, cx);
-    });
+    mode.targets = targets;
+    if focus_input {
+        mode.input.update(cx, |field, cx| {
+            field.set_value("", window, cx);
+            field.focus(window, cx);
+        });
+    }
     cx.notify();
     Ok(())
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn cx_report_geometry(editor: &mut SlideEditor, result: Result<(), String>, cx: &mut Context<SlideEditor>) {
+    editor.report(result.map(|()| ibis_office_shell::i18n::text("vsdx.geometry-applied").to_string()), cx);
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -1099,13 +1167,13 @@ fn geometry_edit_bar(mode: &GeometryEditor, cx: &mut Context<SlideEditor>) -> An
         .id("vsdx-geometry-edit")
         .absolute().top(px(12.0)).right(px(24.0))
         .child(div().child(text("vsdx.geometry-mode")))
+        .child(div().child(text("vsdx.geometry-drag-help")))
         .child(div().child(format("vsdx.geometry-command-help", &[("page", &(mode.page + 1))])))
         .child(text_field(&mode.input).width(px(265.0)).select_on_focus())
         .child(action_button("vsdx-geometry-apply").small().label(text("vsdx.geometry-apply"))
             .on_click(cx.listener(|editor, _, window, cx| {
-                let result = apply_geometry_edit(editor, window, cx)
-                    .map(|()| text("vsdx.geometry-applied").to_string());
-                editor.report(result, cx);
+                let result = apply_geometry_edit(editor, window, cx);
+                cx_report_geometry(editor, result, cx);
             })))
         .child(action_button("vsdx-geometry-save").small().label(text("vsdx.save-label-copy"))
             .on_click(cx.listener(|editor, _, window, cx| {

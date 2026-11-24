@@ -1885,3 +1885,5 @@ vsdx.geometry-mode	Drawing editing mode
 vsdx.geometry-apply	Apply
 vsdx.geometry-applied	The preview has been updated. Save a copy to keep the changes.
 vsdx.geometry-discard	Discard changes
+vsdx.geometry-drop-target	Drag the endpoint onto a target shape.
+vsdx.geometry-drag-help	Drag a shape or a blue endpoint

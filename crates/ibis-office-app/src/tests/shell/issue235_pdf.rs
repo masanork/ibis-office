@@ -419,7 +419,7 @@ fn vsdx_visio_authored_edit_mode() {
     let path = std::env::var("VSDX_VISIO_GLUED_ARC_SAMPLE").unwrap();
     geometry_mode_roundtrip(
         &path, "move 250 0.25 0", "connect 614 end 253",
-        "N='PinX' V='9.266713647729857'",
+        "",
         "FromSheet='614' FromCell='EndX' FromPart='12' ToSheet='253'",
         "visio-native-edited.vsdx",
         &["250", "614"],
@@ -435,11 +435,29 @@ fn geometry_mode_roundtrip(input: &str, move_command: &str, reconnect_command: &
     let path = s.with(|editor, _| editor.file_path().unwrap());
     let original = std::fs::read(&path).unwrap();
     s.menu("vsdx.resume-edit");
-    s.type_text(move_command);
-    buttons::click(&mut s, "vsdx-geometry-apply");
-    assert!(s.with(|editor, _| staged_geometry_bytes(editor).is_some()), "{:?}", s.status_texts());
-    s.type_text(reconnect_command);
-    buttons::click(&mut s, "vsdx-geometry-apply");
+    if pin.is_empty() {
+        s.size(1500.0, 1200.0);
+        s.update(|editor, _, cx| { editor.zoom = Some(0.65); cx.notify(); });
+        let screen = |s: &mut Scenario, x: f32, y: f32| {
+            s.with(|editor, _| {
+                let h = 16.035433_f32 * 72.0;
+                ibis_office_pdf::editor::geometry_screen_point(editor, 0, x * 72.0, h - y * 72.0).unwrap()
+            })
+        };
+        let from = screen(&mut s, 9.016714, 14.057004);
+        let to = screen(&mut s, 9.266714, 14.057004);
+        s.drag(from, to);
+        assert!(s.with(|editor, _| staged_geometry_bytes(editor).is_some()), "{:?}", s.status_texts());
+        let from = screen(&mut s, 6.612055, 3.960532);
+        let to = screen(&mut s, 9.596682, 4.136813);
+        s.drag(from, to);
+    } else {
+        s.type_text(move_command);
+        buttons::click(&mut s, "vsdx-geometry-apply");
+        assert!(s.with(|editor, _| staged_geometry_bytes(editor).is_some()), "{:?}", s.status_texts());
+        s.type_text(reconnect_command);
+        buttons::click(&mut s, "vsdx-geometry-apply");
+    }
     let updated = s.with(|editor, _| staged_geometry_bytes(editor)).unwrap();
     let dir = crate::shell::scenario::repo_root().join("target/scenario/vsdx-geometry-src");
     std::fs::create_dir_all(&dir).unwrap();
@@ -457,7 +475,15 @@ fn geometry_mode_roundtrip(input: &str, move_command: &str, reconnect_command: &
         let new_part = after.read(&name).unwrap();
         if name == "visio/pages/page1.xml" {
             let xml = String::from_utf8(new_part.unwrap()).unwrap();
-            assert!(xml.contains(pin), "missing moved pin");
+            if pin.is_empty() {
+                let doc = roxmltree::Document::parse(&xml).unwrap();
+                let position = doc.descendants().find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some("250"))
+                    .unwrap().children().find(|n| n.attribute("N") == Some("PinX")).unwrap()
+                    .attribute("V").unwrap().parse::<f64>().unwrap();
+                assert!((position - 9.266713647729857).abs() < 0.01, "{position}");
+            } else {
+                assert!(xml.contains(pin), "missing moved pin");
+            }
             assert!(xml.contains(link), "missing connection");
             let shape_parts = |source: &str| {
                 let doc = roxmltree::Document::parse(source).unwrap();

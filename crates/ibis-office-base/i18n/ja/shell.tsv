@@ -1883,3 +1883,5 @@ vsdx.geometry-mode	図面の編集モード
 vsdx.geometry-apply	適用
 vsdx.geometry-applied	図面に反映しました。変更は別名で保存できます。
 vsdx.geometry-discard	変更を破棄
+vsdx.geometry-drop-target	接続先の図形の上に端点をドラッグしてください。
+vsdx.geometry-drag-help	図形または青い端点をドラッグ

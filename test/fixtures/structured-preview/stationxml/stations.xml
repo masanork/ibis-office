@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FDSNStationXML xmlns="http://www.fdsn.org/xml/station/1" schemaVersion="1.2">
+  <Source>Synthetic demonstration</Source>
+  <Created>2026-11-25T00:00:00Z</Created>
+  <Network code="XX">
+    <Description>架空の地震観測網</Description>
+    <Station code="TEST1">
+      <Latitude>35.25</Latitude><Longitude>139.50</Longitude><Elevation>120</Elevation>
+      <Site><Name>北丘観測所</Name></Site>
+    </Station>
+    <Station code="TEST2">
+      <Latitude>36.50</Latitude><Longitude>140.25</Longitude><Elevation>240</Elevation>
+      <Site><Name>南谷観測所</Name></Site>
+    </Station>
+  </Network>
+</FDSNStationXML>

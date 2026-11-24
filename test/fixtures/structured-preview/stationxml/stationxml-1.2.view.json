@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "title": "地震観測所メタデータ（合成サンプル）",
+  "root": {
+    "namespace": "http://www.fdsn.org/xml/station/1",
+    "name": "FDSNStationXML",
+    "attributes": {"schemaVersion": "1.2"}
+  },
+  "entries": [
+    {"kind": "field", "path": ["Source"], "label": "データ提供元"},
+    {"kind": "field", "path": ["Created"], "label": "作成日時"},
+    {
+      "kind": "group", "path": ["Network"], "label": "観測網",
+      "entries": [
+        {"kind": "field", "path": ["Description"], "label": "観測網の説明"},
+        {
+          "kind": "group", "path": ["Station"], "label": "観測所",
+          "entries": [
+            {"kind": "field", "path": ["Site", "Name"], "label": "観測所名"},
+            {"kind": "field", "path": ["Latitude"], "label": "緯度"},
+            {"kind": "field", "path": ["Longitude"], "label": "経度"},
+            {"kind": "field", "path": ["Elevation"], "label": "標高", "unit": "m"}
+          ]
+        }
+      ]
+    }
+  ]
+}

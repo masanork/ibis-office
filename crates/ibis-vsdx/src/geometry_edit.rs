@@ -874,3 +874,84 @@ impl EditableRoute<'_, '_> {
         Ok(())
     }
 }
+
+/// Page-local hit targets in points, with the origin at the top left.
+#[derive(Default)]
+pub struct GeometryTargets {
+    pub shapes: Vec<(u32, ibis_pdf::PdfRect)>,
+    pub endpoints: Vec<(u32, Endpoint, (f32, f32))>,
+}
+
+impl VsdxContainer {
+    pub fn geometry_targets(&self, page: usize) -> Result<GeometryTargets> {
+        let page = self.pages.get(page).ok_or_else(unsupported)?;
+        let archive = open_archive(&self.bytes)?;
+        let source = crate::part(&archive, &page.name)?;
+        let doc = xml(&source)?;
+        let root = doc.root_element();
+        let shapes = child(root, "Shapes").ok_or_else(unsupported)?;
+        let master_parts = self.load_master_parts(&archive, root)?;
+        let masters: HashMap<_, _> = master_parts
+            .iter()
+            .map(|(&id, source)| Ok((id, xml(source)?)))
+            .collect::<Result<_>>()?;
+        let links: Vec<_> = child(root, "Connects")
+            .into_iter()
+            .flat_map(|n| n.children())
+            .filter(|&n| named(n, "Connect"))
+            .collect();
+        let height = page.info.crop_box.height();
+        let point = |x: f64, y: f64| ((x * 72.0) as f32, height - (y * 72.0) as f32);
+        let mut targets = GeometryTargets::default();
+        for shape in shapes.children().filter(|&node| named(node, "Shape")) {
+            let Some(shape_id) = id(shape, "ID") else {
+                continue;
+            };
+            let master = master_for(shape, &masters, 0);
+            let Some((center, extent)) = target_bounds(shape, master) else {
+                continue;
+            };
+            let (x0, y0) = point(center.0, center.1 + extent.1);
+            let (x1, y1) = point(center.0 + extent.0, center.1);
+            targets
+                .shapes
+                .push((shape_id, ibis_pdf::PdfRect { x0, y0, x1, y1 }));
+        }
+        let connectors: BTreeSet<_> = links
+            .iter()
+            .filter_map(|&link| id(link, "FromSheet"))
+            .collect();
+        for connector in connectors {
+            if let Ok(route) = editable_route(shapes, &links, connector, &masters) {
+                for (endpoint, (x, y)) in [Endpoint::Begin, Endpoint::End]
+                    .into_iter()
+                    .zip(route.points)
+                {
+                    targets.endpoints.push((connector, endpoint, point(x, y)));
+                }
+            }
+        }
+        Ok(targets)
+    }
+}
+
+fn target_bounds(
+    shape: XmlNode<'_, '_>,
+    master: Option<XmlNode<'_, '_>>,
+) -> Option<((f64, f64), (f64, f64))> {
+    if ["Angle", "FlipX", "FlipY"]
+        .into_iter()
+        .any(|name| inherited_value(shape, master, name).is_ok_and(|value| value != 0.0))
+    {
+        return None;
+    }
+    let (x, y) = movable_pin(shape, master).ok()?;
+    let w = inherited_value(shape, master, "Width").ok()?;
+    let h = inherited_value(shape, master, "Height").ok()?;
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let local_x = inherited_value(shape, master, "LocPinX").unwrap_or(w / 2.0);
+    let local_y = inherited_value(shape, master, "LocPinY").unwrap_or(h / 2.0);
+    Some(((x - local_x, y - local_y), (w, h)))
+}
