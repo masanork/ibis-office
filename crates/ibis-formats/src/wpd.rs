@@ -11,6 +11,10 @@ use ibis_doc_model::flow::{
 
 use crate::{Error, Opened};
 
+mod table;
+
+use table::{CellInfo, Table};
+
 const MAGIC: &[u8] = b"\xffWPC";
 
 pub fn is_extension(extension: &str) -> bool {
@@ -68,13 +72,15 @@ fn read(data: &[u8]) -> Result<FlowDocument, Error> {
                 _ => {}
             }
         } else if deleted_depth == 0 {
-            importer.record(code, record);
+            importer.record(code, record)?;
         }
     }
-    if deleted_depth != 0 {
+    if deleted_depth != 0 || importer.table.is_some() {
         return Err(malformed());
     }
-    importer.finish_paragraph();
+    if importer.has_paragraph() || !matches!(importer.document.body.last(), Some(Block::Table(_))) {
+        importer.finish_paragraph();
+    }
     Ok(importer.document)
 }
 
@@ -101,16 +107,78 @@ fn take_record(body: &[u8], code: u8) -> Result<&[u8], Error> {
         .ok_or_else(malformed)
 }
 
+fn next_id(ids: &mut u32) -> u32 {
+    *ids += 1;
+    *ids + 1
+}
+
 #[derive(Default)]
 struct Importer {
     document: FlowDocument,
     paragraph: FlowParagraph,
     text: String,
     format: RunFormat,
+    cell_format: RunFormat,
+    ids: u32,
+    table: Option<Table>,
 }
 
 impl Importer {
-    fn record(&mut self, code: u8, record: &[u8]) {
+    fn record(&mut self, code: u8, record: &[u8]) -> Result<(), Error> {
+        if code == 0xd4 && record[4] & 0x40 == 0 {
+            match record[1] {
+                0x2a => {
+                    if self.table.is_some() {
+                        return Err(malformed());
+                    }
+                    if self.has_paragraph() {
+                        self.finish_paragraph();
+                    }
+                    self.table = Some(Table::new(next_id(&mut self.ids), record)?);
+                    return Ok(());
+                }
+                0x2b => return self.table.as_mut().ok_or_else(malformed)?.start(),
+                0x2c => return self.table.as_mut().ok_or_else(malformed)?.column(record),
+                _ => {}
+            }
+        }
+        if self.table.is_some() {
+            let boundary = match code {
+                0xc6 => Some((false, false, CellInfo::default())),
+                0xc0..=0xc5 => Some((true, false, CellInfo::default())),
+                0xbd..=0xbf => Some((false, true, CellInfo::default())),
+                0xd0 if record[4] & 0x40 == 0 => match record[1] {
+                    10..=16 => Some((record[1] != 10, false, CellInfo::read(record)?)),
+                    17..=19 => Some((false, true, CellInfo::default())),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some((new_row, end, info)) = boundary {
+                let table = self.table.as_ref().unwrap();
+                if table.active {
+                    self.finish_paragraph();
+                }
+                self.cell_format = RunFormat::default();
+                let table = self.table.as_mut().unwrap();
+                if end {
+                    let table = self.table.take().unwrap().finish(&mut self.ids)?;
+                    self.document.body.push(Block::Table(table));
+                } else {
+                    table.cell(new_row, info, &mut self.ids)?;
+                    for bit in 0..16 {
+                        if table.attributes & (1 << bit) != 0 {
+                            attribute(&mut self.cell_format, bit, true);
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            if !self.table.as_ref().unwrap().active {
+                return Ok(());
+            }
+        }
+
         match code {
             0x01..=0x20 => self.text.push(INTERNATIONAL[usize::from(code - 1)].1),
             0x21..=0x7e => self.text.push(char::from(code)),
@@ -133,28 +201,41 @@ impl Importer {
             },
             0xe0 if record[4] & 0x40 == 0 => self.push_run(FlowRunKind::Tab),
             0xf0 => self.text.push(extended_character(record[1], record[2])),
-            0xf2 | 0xf3 if record[1] & 0x80 == 0 => self.attribute(record[1] & 0x3f, code == 0xf2),
+            0xf2 | 0xf3 if record[1] & 0x80 == 0 => {
+                self.flush_text();
+                attribute(&mut self.format, record[1] & 0x3f, code == 0xf2);
+            }
             _ => {}
         }
+        Ok(())
     }
 
     fn page_break(&mut self) {
-        if !self.text.is_empty()
-            || !self.paragraph.runs.is_empty()
-            || self.paragraph.direct.page_break_before == Some(true)
-        {
+        if self.has_paragraph() {
             self.finish_paragraph();
         }
         self.paragraph.direct.page_break_before = Some(true);
     }
 
+    fn has_paragraph(&self) -> bool {
+        !self.text.is_empty()
+            || !self.paragraph.runs.is_empty()
+            || self.paragraph.direct.page_break_before == Some(true)
+    }
+
     fn finish_paragraph(&mut self) {
         self.flush_text();
+        self.paragraph.id = next_id(&mut self.ids);
+        if let Some(table) = &self.table {
+            self.paragraph.direct.align = table.align;
+        }
         self.paragraph.resolve(&Default::default());
-        self.paragraph.id = (self.document.body.len() + 2) as u32;
-        self.document
-            .body
-            .push(Block::Paragraph(std::mem::take(&mut self.paragraph)));
+        let paragraph = Block::Paragraph(std::mem::take(&mut self.paragraph));
+        if let Some(table) = &mut self.table {
+            table.push(paragraph);
+        } else {
+            self.document.body.push(paragraph);
+        }
     }
 
     fn push_run(&mut self, kind: FlowRunKind) {
@@ -172,43 +253,43 @@ impl Importer {
     fn append_run(&mut self, kind: FlowRunKind) {
         let mut run = FlowRun::new(kind, Default::default());
         run.format = self.format.clone();
+        run.format.overlay(&self.cell_format);
         self.paragraph.runs.push(run);
     }
+}
 
-    fn attribute(&mut self, attribute: u8, enabled: bool) {
-        self.flush_text();
-        match attribute {
-            5 | 6 => {
-                let position = match (attribute, enabled) {
-                    (5, true) => VerticalPosition::Superscript,
-                    (6, true) => VerticalPosition::Subscript,
-                    _ => VerticalPosition::Baseline,
-                };
-                self.format.position = Some(position);
-            }
-            8 => {
-                self.format.italic = Some(enabled);
-            }
-            11 | 14 => {
-                let style = if attribute == 11 && enabled {
-                    UnderlineStyle::Double
-                } else {
-                    UnderlineStyle::Single
-                };
-                self.format.underline = Some(enabled);
-                self.format.underline_style = Some(style);
-            }
-            12 => {
-                self.format.bold = Some(enabled);
-            }
-            13 => {
-                self.format.strike = Some(enabled);
-            }
-            15 => {
-                self.format.small_caps = Some(enabled);
-            }
-            _ => {}
+fn attribute(format: &mut RunFormat, attribute: u8, enabled: bool) {
+    match attribute {
+        5 | 6 => {
+            let position = match (attribute, enabled) {
+                (5, true) => VerticalPosition::Superscript,
+                (6, true) => VerticalPosition::Subscript,
+                _ => VerticalPosition::Baseline,
+            };
+            format.position = Some(position);
         }
+        8 => {
+            format.italic = Some(enabled);
+        }
+        11 | 14 => {
+            let style = if attribute == 11 && enabled {
+                UnderlineStyle::Double
+            } else {
+                UnderlineStyle::Single
+            };
+            format.underline = Some(enabled);
+            format.underline_style = Some(style);
+        }
+        12 => {
+            format.bold = Some(enabled);
+        }
+        13 => {
+            format.strike = Some(enabled);
+        }
+        15 => {
+            format.small_caps = Some(enabled);
+        }
+        _ => {}
     }
 }
 
@@ -322,6 +403,108 @@ mod tests {
                 "missing formatting for {word}"
             );
         }
+    }
+
+    fn record(group: u8, kind: u8, flags: u8, payload: &[u8]) -> Vec<u8> {
+        let size = (10 + payload.len() as u16).to_le_bytes();
+        let mut record = vec![group, kind, size[0], size[1], flags];
+        record.extend((payload.len() as u16).to_le_bytes());
+        record.extend(payload);
+        record.extend(size);
+        record.push(group);
+        record
+    }
+
+    fn table_fixture(across: u8, explicit_coverage: bool) -> Vec<u8> {
+        let mut body = b"Before\xcc".to_vec();
+        body.extend(record(0xd4, 0x2a, 3, &[0; 17]));
+        let mut column = [0; 17];
+        column[1..3].copy_from_slice(&1500u16.to_le_bytes());
+        for _ in 0..3 {
+            body.extend(record(0xd4, 0x2c, 0, &column));
+        }
+        body.extend(record(0xd4, 0x2b, 3, &[]));
+        // First grid cell spans two columns and two rows. Covered slots can
+        // appear as explicit markers, or be implied by the first cell.
+        body.extend(record(0xd0, 11, 0, &[0, 0, 0x85, across, 2, 0x85]));
+        body.extend(b"\xf2\x0c\xf2Merged\xf3\x0c\xf3\xccLabel");
+        if explicit_coverage {
+            body.extend(record(0xd0, 10, 0, &[0, 0, 0x85, 0x82, 2, 0x85]));
+        }
+        body.extend(b"\xc6Right");
+        if explicit_coverage {
+            body.extend(record(0xd0, 11, 0, &[0, 0, 0x85, 2, 0x82, 0x85]));
+            body.extend(record(0xd0, 10, 0, &[0, 0, 0x85, 0x82, 0x82, 0x85]));
+        }
+        // This cell uses its own italic default, centered horizontally and vertically.
+        body.extend(record(
+            0xd0,
+            if explicit_coverage { 10 } else { 11 },
+            0,
+            &[0, 0, 0x84, 3, 2, 1, 0, 1, 0, 0, 0x84],
+        ));
+        body.extend(b"Other\xc5One\xc6\xf2\x0e\xf2Two\xf3\x0e\xf3\xc6Three\xbfAfter");
+        fixture(&body)
+    }
+
+    #[test]
+    fn preserves_cell_grid_merges_and_format_in_docx() {
+        use ibis_doc_model::flow::{CellAnchor, FlowAlign, VerticalMerge};
+
+        for explicit_coverage in [true, false] {
+            let opened = open(&table_fixture(2, explicit_coverage)).unwrap();
+            let flow = opened.presentation.flow.unwrap();
+            let [
+                Block::Paragraph(_),
+                Block::Table(table),
+                Block::Paragraph(_),
+            ] = flow.body.as_slice()
+            else {
+                panic!("expected one table between paragraphs");
+            };
+            assert_eq!(table.columns, vec![1_143_000; 3]);
+            assert_eq!(
+                table
+                    .rows
+                    .iter()
+                    .map(|row| row.cells.len())
+                    .collect::<Vec<_>>(),
+                [2, 2, 3]
+            );
+            for (row, expected) in [(0, VerticalMerge::Start), (1, VerticalMerge::Continue)] {
+                let cell = &table.rows[row].cells[0];
+                assert_eq!((cell.span, cell.merge), (2, expected));
+                if expected == VerticalMerge::Continue {
+                    assert!(
+                        matches!(cell.blocks.as_slice(), [Block::Paragraph(p)] if p.runs.is_empty())
+                    );
+                }
+            }
+            let merged = &table.rows[0].cells[0];
+            let [Block::Paragraph(first), Block::Paragraph(second)] = merged.blocks.as_slice()
+            else {
+                panic!("expected two paragraphs inside the merged cell");
+            };
+            assert_eq!(first.runs[0].kind, FlowRunKind::Text("Merged".into()));
+            assert!(first.runs[0].style.bold);
+            assert_eq!(second.runs[0].kind, FlowRunKind::Text("Label".into()));
+            assert!(!second.runs[0].style.bold);
+
+            let other = &table.rows[1].cells[1];
+            assert_eq!(other.anchor, CellAnchor::Center);
+            let Block::Paragraph(paragraph) = &other.blocks[0] else {
+                panic!("expected a paragraph")
+            };
+            assert_eq!(paragraph.align, FlowAlign::Center);
+            assert_eq!(paragraph.runs[0].kind, FlowRunKind::Text("Other".into()));
+            assert!(paragraph.runs[0].style.italic);
+            let Block::Paragraph(paragraph) = &table.rows[2].cells[1].blocks[0] else {
+                panic!("expected a paragraph");
+            };
+            assert_eq!(paragraph.runs[0].kind, FlowRunKind::Text("Two".into()));
+            assert!(paragraph.runs[0].style.underline);
+        }
+        assert!(open(&table_fixture(4, false)).is_err());
     }
 
     #[test]
