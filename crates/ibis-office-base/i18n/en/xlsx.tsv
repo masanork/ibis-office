@@ -3225,3 +3225,6 @@ query.report-quotient-filter-reconciled	Subtotals reconcile before rounding.
 query.report-quotient-excluded-direction	Excluded by contribution direction
 query.report-quotient-excluded-name	Excluded by group name
 query.report-quotient-excluded-both	Excluded by contribution direction and group name
+query.report-quotient-subtotal-direction	Direction only ({count}): {total} {unit}
+query.report-quotient-subtotal-name	Name only ({count}): {total} {unit}
+query.report-quotient-subtotal-both	Both conditions ({count}): {total} {unit}

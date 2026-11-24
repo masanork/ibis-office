@@ -16,7 +16,7 @@ use ibis_doc_service::{ReportParameterControl, ReportParameterKind, report_param
 use serde_json::{Value, json};
 
 use crate::ext::*;
-use crate::report_quotient::{RankingDirection, RankingFilter, RankingPage};
+use crate::report_quotient::{ExclusionReason, RankingDirection, RankingFilter, RankingPage};
 use crate::shell::chrome::{Dropdown, DropdownItem, SidebarPanel, action_button, panel_message};
 use crate::shell::editor::SlideEditor;
 use crate::shell::i18n::{format, text};
@@ -89,7 +89,7 @@ fn quotient_preview(
             .small().label(text("query.report-quotient-search"))
             .on_click(cx.listener(move |editor, _, window, cx| editor.open_quotient_group_search(index, generation, window, cx))));
     }
-    let excluded_page = page.and_then(|(kind, page)| matches!(kind, RankingPage::Excluded(_)).then_some(page));
+    let excluded_page = page.and_then(|(kind, page)| matches!(kind, RankingPage::Excluded(..)).then_some(page));
     let page = page.and_then(|(kind, page)| matches!(kind, RankingPage::Remainder(_)).then_some(page));
     let ranking = if let Some(filtered) = filter.and_then(|filter| filter.ranking.as_ref()) {
         if filtered["state"] != "ready" && decomposition["state"] == "ready" {
@@ -103,11 +103,11 @@ fn quotient_preview(
             ("count", &excluded["count"]), ("total", &signed_contribution(&excluded["contribution"])), ("unit", &unit),
         ]);
         if excluded["count"].as_u64().unwrap_or_default() > 0 {
-            let expanded = excluded_page.is_some();
+            let expanded = excluded_page.is_some_and(|page| page["reason"].is_null());
             let button = action_button(SharedString::from(format!("query-report-quotient-excluded-{index}")))
                 .small().label(format!("{} {label}", if expanded { "▾" } else { "▸" }))
                 .on_click(cx.listener(move |editor, _, _, cx| {
-                    editor.set_quotient_page(index, generation, (!expanded).then_some(RankingPage::Excluded(0)), cx);
+                    editor.set_quotient_page(index, generation, (!expanded).then_some(RankingPage::Excluded(0, None)), cx);
                 }));
             #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
             let button = crate::shell::scenario::button_probe::observe_control(
@@ -117,6 +117,29 @@ fn quotient_preview(
             section = section.child(button);
         } else {
             section = section.child(div().text_sm().child(saved_check_text(label)));
+        }
+        for reason in ExclusionReason::ALL {
+            let key = reason.key();
+            let summary = &excluded["by_reason"][key];
+            let label = format(&format!("query.report-quotient-subtotal-{key}"), &[
+                ("count", &summary["count"]), ("total", &signed_contribution(&summary["contribution"])), ("unit", &unit),
+            ]);
+            if summary["count"].as_u64().unwrap_or_default() == 0 {
+                section = section.child(div().pl_3().text_sm().child(saved_check_text(label)));
+                continue;
+            }
+            let expanded = excluded_page.is_some_and(|page| page["reason"] == key);
+            let button = action_button(SharedString::from(format!("query-report-quotient-excluded-{key}-{index}")))
+                .small().label(format!("{} {label}", if expanded { "▾" } else { "▸" }))
+                .on_click(cx.listener(move |editor, _, _, cx| {
+                    editor.set_quotient_page(index, generation, (!expanded).then_some(RankingPage::Excluded(0, Some(reason))), cx);
+                }));
+            #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+            let button = crate::shell::scenario::button_probe::observe_control(
+                div().id(SharedString::from(format!("quotient-excluded-probe-{key}-{index}"))).child(button),
+                SharedString::from(format!("query-report-check-text:{label}")).into(),
+            );
+            section = section.child(div().pl_3().child(button));
         }
         if filtered["state"] == "ready" {
             section = section.child(div().text_sm().child(text("query.report-quotient-filter-reconciled")));
@@ -236,6 +259,7 @@ fn quotient_page_navigation(
     let size = page["page_size"].as_u64().unwrap_or_default() as usize;
     let next = page["next_offset"].as_u64().map(|offset| offset as usize);
     let kind = if excluded { "excluded-" } else { "" };
+    let reason = page["reason"].as_str().and_then(|key| ExclusionReason::ALL.into_iter().find(|reason| reason.key() == key));
     let mut controls = h_flex().gap_1();
     for (action, offset) in [
         ("previous", (page_offset > 0).then(|| page_offset.saturating_sub(size))),
@@ -245,7 +269,7 @@ fn quotient_page_navigation(
             controls = controls.child(action_button(SharedString::from(format!("query-report-quotient-{kind}{action}-{index}")))
                 .small().label(text(&format!("query.report-quotient-{action}")))
                 .on_click(cx.listener(move |editor, _, _, cx| {
-                    let page = if excluded { RankingPage::Excluded(offset) } else { RankingPage::Remainder(offset) };
+                    let page = if excluded { RankingPage::Excluded(offset, reason) } else { RankingPage::Remainder(offset) };
                     editor.set_quotient_page(index, generation, Some(page), cx);
                 })));
         }
@@ -469,7 +493,7 @@ impl SlideEditor {
             let filter = panel.quotient_filters.get(&index).map(|view| view.criteria.clone()).unwrap_or_default();
             let result = crate::report_quotient::compare_ranking(&review.base, candidate, table, metric, None, Some(requested), &filter);
             let ranking = &result["decomposition"]["ranking"];
-            let field = match requested { RankingPage::Remainder(_) => "remainder", RankingPage::Excluded(_) => "excluded" };
+            let field = match requested { RankingPage::Remainder(_) => "remainder", RankingPage::Excluded(..) => "excluded" };
             ranking.get("filtered").unwrap_or(ranking)[field].get("page").cloned().map(|page| (requested, page))
         });
         if let Some(review) = self.query_reports_mut().filter(|panel| panel.generation == generation)
@@ -511,7 +535,7 @@ impl SlideEditor {
         let mut ranking_page = None;
         for (field, make_page) in [
             ("remainder_offset", RankingPage::Remainder as fn(usize) -> RankingPage),
-            ("excluded_offset", RankingPage::Excluded),
+            ("excluded_offset", |offset| RankingPage::Excluded(offset, None)),
         ] {
             if let Some(value) = args.get(field) {
                 let Some(offset) = value.as_u64().and_then(|offset| usize::try_from(offset).ok()) else {
@@ -539,7 +563,16 @@ impl SlideEditor {
                 filter.query = query.to_owned();
             }
         }
-        if matches!(ranking_page, Some(RankingPage::Excluded(_))) && !filter.active() {
+        if let Some(value) = args.get("excluded_reason") {
+            let Some(reason) = ExclusionReason::ALL.into_iter().find(|reason| value.as_str() == Some(reason.key())) else {
+                return json!({"error":"Use direction, name, or both for excluded_reason"});
+            };
+            let Some(RankingPage::Excluded(offset, _)) = ranking_page else {
+                return json!({"error":"excluded_reason requires excluded_offset"});
+            };
+            ranking_page = Some(RankingPage::Excluded(offset, Some(reason)));
+        }
+        if matches!(ranking_page, Some(RankingPage::Excluded(..))) && !filter.active() {
             return json!({"error":"excluded_offset requires an active contribution filter"});
         }
         if let Some(applied) = args.get("applied") {
@@ -2584,6 +2617,52 @@ pub(crate) fn report_quotient_remainder_scenario(rate: bool) {
     assert_eq!(first["count"], 19);
     assert_eq!(first["page"]["next_offset"], 10);
     assert!(second["page"]["next_offset"].is_null());
+    let mut reason_sum = 0.;
+    let mut reason_count = 0;
+    for (reason, count, numerator, first_key, cell, row_index) in [
+        ("direction", 5, -25., "G09", "D13", 12),
+        ("name", 7, 112., "G22", "D26", 25),
+        ("both", 7, -119., "G23", "D27", 26),
+    ] {
+        let summary = &first["by_reason"][reason];
+        let contribution = summary["contribution"].as_f64().unwrap();
+        assert_eq!(summary["count"], count);
+        assert!((contribution - numerator / 46. * scale).abs() <= tolerance);
+        reason_sum += contribution;
+        reason_count += count;
+        let label = format(&format!("query.report-quotient-subtotal-{reason}"), &[
+            ("count", &count), ("total", &signed_contribution(&summary["contribution"])), ("unit", &unit),
+        ]);
+        assert!(button_probe::bounds(&format!("query-report-check-text:{label}")).is_some());
+        let mut args = excluded_args(0);
+        args["excluded_reason"] = json!(reason);
+        let detail = scene.with(|editor, _| editor.live_report_preview_diff(&args));
+        let page = &detail["decomposition"]["ranking"]["filtered"]["excluded"]["page"];
+        assert_eq!(page["reason"], reason);
+        let groups = page["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), count);
+        assert_eq!(groups[0]["key"], first_key);
+        let subtotal: f64 = groups.iter().map(|row| row["contribution"].as_f64().unwrap()).sum();
+        assert!((subtotal - contribution).abs() <= tolerance);
+        button_probe::click(&mut scene, &format!("query-report-quotient-excluded-{reason}-0"));
+        let label = format("query.report-quotient-row", &[
+            ("rank", &1), ("key", &first_key), ("total", &signed_contribution(&groups[0]["contribution"])), ("unit", &unit),
+        ]);
+        assert!(button_probe::bounds(&format!("query-report-quotient-row:{label}")).is_some());
+        button_probe::click(&mut scene, "query-report-quotient-0-4");
+        let evidence = &groups[0]["before"];
+        assert_eq!(evidence[field]["cell"], cell);
+        let label = format("query.report-quotient-evidence", &[
+            ("field", &text(&format!("query.report-quotient-{field}"))),
+            ("sheet", &evidence["sheet"].as_str().unwrap()), ("cell", &cell), ("value", &evidence[field]["value"]),
+        ]);
+        assert!(button_probe::bounds(&format!("query-report-quotient-evidence:{label}")).is_some());
+        button_probe::click(&mut scene, &format!("query-report-quotient-cell-0-{field}"));
+        assert_eq!(scene.with(|editor, _| editor.current_cell()), Some((3, row_index)));
+    }
+    assert_eq!(first["count"], reason_count);
+    assert!((reason_sum - first["contribution"].as_f64().unwrap()).abs() <= tolerance);
+    assert!(first["reason_residual"].as_f64().unwrap().abs() <= tolerance);
     let rows: Vec<_> = [first, second].into_iter()
         .flat_map(|page| page["page"]["groups"].as_array().unwrap()).collect();
     assert_eq!(rows.len(), 19);

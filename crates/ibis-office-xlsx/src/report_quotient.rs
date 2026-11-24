@@ -324,10 +324,38 @@ impl RankingFilter {
 const RANKED_LIMIT: usize = 10;
 const REMAINDER_PAGE_SIZE: usize = 10;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExclusionReason {
+    Direction,
+    Name,
+    Both,
+}
+
+impl ExclusionReason {
+    pub(crate) const ALL: [Self; 3] = [Self::Direction, Self::Name, Self::Both];
+
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Direction => "direction",
+            Self::Name => "name",
+            Self::Both => "both",
+        }
+    }
+
+    fn from_conditions(direction: bool, name: bool) -> Option<Self> {
+        match (direction, name) {
+            (true, false) => Some(Self::Direction),
+            (false, true) => Some(Self::Name),
+            (true, true) => Some(Self::Both),
+            (false, false) => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum RankingPage {
     Remainder(usize),
-    Excluded(usize),
+    Excluded(usize, Option<ExclusionReason>),
 }
 
 type RankedGroup<'a> = (&'a str, Effect, f64);
@@ -453,6 +481,7 @@ fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, ke
         let mut matched = CompensatedSum::default();
         let mut excluded = CompensatedSum::default();
         let mut excluded_groups = Vec::new();
+        let mut reasons = [(0usize, CompensatedSum::default()), (0, CompensatedSum::default()), (0, CompensatedSum::default())];
         let exclusion = |name: &str, contribution: f64| {
             let direction = match filter.direction {
                 RankingDirection::All => false,
@@ -463,14 +492,20 @@ fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, ke
             (direction, name)
         };
         for &group @ (name, _, contribution) in &ranked {
-            if exclusion(name, contribution) == (false, false) {
-                matched.add(contribution);
-                matches.push(group);
-            } else {
+            let (direction, name) = exclusion(name, contribution);
+            if let Some(reason) = ExclusionReason::from_conditions(direction, name) {
                 excluded.add(contribution);
-                if matches!(page, Some(RankingPage::Excluded(_))) {
+                let (count, subtotal) = &mut reasons[reason as usize];
+                *count += 1;
+                subtotal.add(contribution);
+                if let Some(RankingPage::Excluded(_, requested)) = page
+                    && requested.is_none_or(|requested| requested == reason)
+                {
                     excluded_groups.push(group);
                 }
+            } else {
+                matched.add(contribution);
+                matches.push(group);
             }
         }
         let residual = (matched.sum + excluded.sum) - delta;
@@ -478,17 +513,30 @@ fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, ke
         let mut result = rank_groups(&mut matches, remainder_offset, row);
         result["total_contribution"] = json!(matched.sum);
         result["excluded"] = json!({"count":excluded_count,"contribution":excluded.sum});
-        if let Some(RankingPage::Excluded(offset)) = page {
+        let mut by_reason = serde_json::Map::new();
+        let mut reason_total = CompensatedSum::default();
+        for reason in ExclusionReason::ALL {
+            let (count, subtotal) = &reasons[reason as usize];
+            reason_total.add(subtotal.sum);
+            by_reason.insert(reason.key().into(), json!({"count":count,"contribution":subtotal.sum}));
+        }
+        let reason_residual = reason_total.sum - excluded.sum;
+        result["excluded"]["by_reason"] = Value::Object(by_reason);
+        result["excluded"]["reason_residual"] = json!(reason_residual);
+        if let Some(RankingPage::Excluded(offset, reason)) = page {
             result["excluded"]["page"] = rank_page(&mut excluded_groups, offset, |entry| {
                 let (direction, name) = exclusion(entry.0, entry.2);
                 let mut value = row(entry);
                 value["excluded_by"] = json!({"direction":direction,"name":name});
                 value
             });
+            if let Some(reason) = reason {
+                result["excluded"]["page"]["reason"] = json!(reason.key());
+            }
         }
         result["partition_residual"] = json!(residual);
-        result["state"] = json!(if !residual.is_finite() { "non_finite" }
-            else if residual.abs() <= tolerance { "ready" }
+        result["state"] = json!(if !residual.is_finite() || !reason_residual.is_finite() { "non_finite" }
+            else if residual.abs() <= tolerance && reason_residual.abs() <= tolerance { "ready" }
             else { "totals_mismatch" });
         result
     });
