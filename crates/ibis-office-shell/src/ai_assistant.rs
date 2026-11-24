@@ -9,6 +9,8 @@ use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ibis_doc_model::EmuRect;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+use ibis_doc_model::CellValue;
 use ibis_doc_model::ai_sheet::{
     audit_sheet_errors, format_range, parse_cell_range, parse_hex_rgb,
     resolve_sheet_slide, workbook_overview,
@@ -75,6 +77,13 @@ struct JsonLinesFieldPicker {
     last_line: Entity<InputState>,
     errors_only: bool,
     _filter_subscription: Subscription,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+struct JsonLinesPreview {
+    cursor: Option<ibis_doc_model::query::JsonLinesPreviewCursor>,
+    page: Option<ibis_doc_model::query::QTable>,
+    busy: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +172,8 @@ pub struct AiAssistantState {
     analysis_sources: Option<(u64, Vec<std::path::PathBuf>)>,
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     json_lines_fields: Option<JsonLinesFieldPicker>,
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    json_lines_preview: Option<JsonLinesPreview>,
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     report_refresh_handoff: Option<ReportRefreshHandoff>,
     /// Allowlist from `GET /api/ai/models`. Desktop leaves this empty.
@@ -1054,6 +1065,8 @@ impl SlideEditor {
                 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                 json_lines_fields: None,
                 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                json_lines_preview: None,
+                #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
                 report_refresh_handoff: None,
                 browser_models: Vec::new(),
                 browser_status: String::new(),
@@ -1128,6 +1141,7 @@ impl SlideEditor {
         if let Some(panel) = self.ai_assistant.as_mut() {
             panel.analysis_sources = Some((self.file_id, vec![path.clone()]));
             panel.json_lines_fields = None;
+            panel.json_lines_preview = None;
         }
         let file_id = self.file_id;
         let baseline = self.document.presentation().clone();
@@ -1143,34 +1157,42 @@ impl SlideEditor {
         });
         let destination_sheet = sheet.name.clone();
         self.set_status(crate::i18n::text(if json_lines { "editor.jsonl.preview-loading" } else { "editor.analysis.loading" }).to_string(), cx);
+        let source = path.clone();
         cx.spawn_in(window, async move |this, cx| {
             let prepared = cx.background_executor().spawn(async move {
                 if json_lines {
                     ibis_doc_service::prepare_selected_json_lines_preview(path, destination_sheet)
-                        .map(|(prepared, position)| (prepared, Some(position)))
+                        .map(|(prepared, cursor)| (prepared, Some(cursor)))
                 } else {
                     ibis_doc_service::prepare_selected_datasets_export(&[path], args)
                         .map(|prepared| (prepared, None))
                 }
             }).await;
             let _ = this.update(cx, |this, cx| {
-                if this.file_id != file_id || this.document.presentation() != &baseline {
+                if this.file_id != file_id || this.document.presentation() != &baseline
+                    || (json_lines && this.selected_json_lines_source() != Some(&source)) {
                     return;
                 }
                 let context = this.assistant_turn().tool_context();
-                let result = prepared.and_then(|(prepared, position)| {
-                    if position.is_some_and(|position| position.lines == 0) {
-                        return Ok((Vec::new(), position));
+                let result = prepared.and_then(|(prepared, cursor)| {
+                    if cursor.as_ref().is_some_and(|cursor| cursor.position().lines == 0) {
+                        return Ok((Vec::new(), cursor));
                     }
                     let mut draft = ibis_doc_model::Document::new(baseline);
-                    prepared.stage(&mut draft, context).map(|(_, commands)| (commands, position))
+                    prepared.stage(&mut draft, context).map(|(_, commands)| (commands, cursor))
                 });
                 match result {
-                    Ok((commands, position)) => {
+                    Ok((commands, cursor)) => {
                         if !commands.is_empty() {
                             this.execute(commands, cx);
                         }
-                        let status = if let Some(position) = position {
+                        let status = if let Some(cursor) = cursor {
+                            let position = cursor.position();
+                            if let Some(panel) = this.ai_assistant.as_mut() {
+                                panel.json_lines_preview = Some(JsonLinesPreview {
+                                    cursor: Some(cursor), page: None, busy: false,
+                                });
+                            }
                             crate::i18n::format(
                                 if position.at_end() { "editor.jsonl.preview-exact" } else { "editor.jsonl.preview-estimated" },
                                 &[("lines", &position.lines.to_string()), ("total", &position.estimated_lines().to_string())],
@@ -1194,6 +1216,97 @@ impl SlideEditor {
         (*file_id == self.file_id && path.extension().is_some_and(|ext|
             ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson")
         )).then_some(path)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn next_json_lines_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self.selected_json_lines_source().cloned() else { return };
+        let file_id = self.file_id;
+        let Some(preview) = self.ai_assistant.as_mut().and_then(|panel| panel.json_lines_preview.as_mut()) else { return };
+        let Some(cursor) = preview.cursor.take() else { return };
+        if cursor.position().at_end() {
+            preview.cursor = Some(cursor);
+            return;
+        }
+        preview.busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let selected_path = source.clone();
+            let result = cx.background_executor().spawn(async move { cursor.next_page(&selected_path) }).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.file_id != file_id || this.selected_json_lines_source() != Some(&source) {
+                    return;
+                }
+                let Some(preview) = this.ai_assistant.as_mut().and_then(|panel| panel.json_lines_preview.as_mut())
+                    .filter(|preview| preview.busy) else { return };
+                preview.busy = false;
+                match result {
+                    Ok((page, cursor)) => {
+                        preview.page = Some(page);
+                        preview.cursor = Some(cursor);
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        preview.page = None;
+                        this.set_status(crate::i18n::format(
+                            "editor.jsonl.preview-reopen", &[("error", &error)],
+                        ).to_string(), cx);
+                    }
+                }
+            });
+        }).detach();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    fn json_lines_preview_controls(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use gpui_kit::component::Disableable as _;
+        self.selected_json_lines_source()?;
+        let preview = self.ai_assistant.as_ref()?.json_lines_preview.as_ref()?;
+        let text = crate::i18n::text;
+        let mut body = v_flex().gap_1();
+        if let Some(page) = &preview.page {
+            let rows = page.rows.iter().map(|row| {
+                let line = row.iter().zip(&page.columns).filter_map(|(value, column)| {
+                    let value = match value {
+                        CellValue::Empty => return None,
+                        CellValue::Text(text) => {
+                            let mut chars = text.chars();
+                            let mut value: String = chars.by_ref().take(160).collect();
+                            if chars.next().is_some() { value.push('…'); }
+                            value.replace(['\r', '\n'], " ")
+                        }
+                        CellValue::Number(value) => value.to_string(),
+                        CellValue::Bool(value) => value.to_string(),
+                        CellValue::Error(error) => format!("{error:?}"),
+                    };
+                    Some(format!("{}: {value}", column.name))
+                }).collect::<Vec<_>>().join("  ·  ");
+                div().text_xs().py_1().child(line)
+            });
+            body = body.child(div().id("jsonl-preview-page").max_h(px(220.0)).overflow_y_scroll().children(rows));
+        }
+        if let Some(cursor) = &preview.cursor {
+            let position = cursor.position();
+            if let Some(page) = &preview.page {
+                let first = position.lines.saturating_sub(page.rows.len()) + 1;
+                let summary = crate::i18n::format(
+                    if position.at_end() { "editor.jsonl.page-exact" } else { "editor.jsonl.page-estimated" },
+                    &[("first", &first.to_string()), ("last", &position.lines.to_string()),
+                        ("total", &position.estimated_lines().to_string())],
+                );
+                body = body.child(div().text_xs().child(summary));
+            }
+            if !position.at_end() {
+                body = body.child(Button::new("jsonl-next-page").outline().xsmall()
+                    .label(text("editor.jsonl.next-page"))
+                    .on_click(cx.listener(|this, _, window, cx| this.next_json_lines_page(window, cx))));
+            }
+        }
+        if preview.busy {
+            body = body.child(Button::new("jsonl-next-page-loading").outline().xsmall()
+                .label(text("editor.jsonl.preview-loading")).disabled(true));
+        }
+        Some(body.into_any_element())
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -1421,6 +1534,7 @@ impl SlideEditor {
                 {
                     panel.analysis_sources = Some((file_id, paths));
                     panel.json_lines_fields = None;
+                    panel.json_lines_preview = None;
                     if let Some(review) = panel.assistant_review.as_mut() {
                         review.check_trial = None;
                     }
@@ -4613,6 +4727,7 @@ impl SlideEditor {
                             if let Some(panel) = this.ai_assistant.as_mut() {
                                 panel.analysis_sources = None;
                                 panel.json_lines_fields = None;
+                                panel.json_lines_preview = None;
                                 if let Some(review) = panel.assistant_review.as_mut() {
                                     review.check_trial = None;
                                 }
@@ -4626,6 +4741,10 @@ impl SlideEditor {
 
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         let json_lines_controls = self.json_lines_field_controls(cx);
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        let json_lines_preview_controls = self.json_lines_preview_controls(cx);
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        let json_lines_preview_controls: Option<AnyElement> = None;
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         let json_lines_controls: Option<AnyElement> = None;
 
@@ -5258,6 +5377,7 @@ impl SlideEditor {
         let content = content
             .child(header)
             .children(sqlite_controls)
+            .children(json_lines_preview_controls)
             .children(json_lines_controls)
             .children(browser_box)
             .children(settings_box)

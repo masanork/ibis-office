@@ -713,13 +713,13 @@ impl DiskDataset {
                 super::json_lines_source::visit_json_lines(path, selected, schema_only, visit)
             }
             Self::RecoverableJsonLines(path, selected) => {
-                super::json_lines_source::visit_recoverable_json_lines(path, selected, false, usize::MAX, schema_only, visit).map(|_| ())
+                super::json_lines_source::visit_recoverable_json_lines(path, selected, false, usize::MAX, None, schema_only, visit).map(|_| ())
             }
             Self::JsonLinesSample(path, selected, max_lines) => {
-                super::json_lines_source::visit_recoverable_json_lines(path, selected, false, *max_lines, schema_only, visit).map(|_| ())
+                super::json_lines_source::visit_recoverable_json_lines(path, selected, false, *max_lines, None, schema_only, visit).map(|_| ())
             }
             Self::JsonLinesPaths(path, selected) => {
-                super::json_lines_source::visit_recoverable_json_lines(path, selected, true, usize::MAX, schema_only, visit).map(|_| ())
+                super::json_lines_source::visit_recoverable_json_lines(path, selected, true, usize::MAX, None, schema_only, visit).map(|_| ())
             }
             Self::Avro(path, selected) => super::avro_source::visit_avro(path, selected, schema_only, visit),
             Self::Parquet(path, selected, filters) => {
@@ -748,17 +748,23 @@ impl DiskDataset {
         Ok(table)
     }
 
+    pub(super) fn collect_json_lines_page(
+        path: &Path,
+        max_lines: usize,
+        cursor: Option<&super::JsonLinesPreviewCursor>,
+    ) -> Result<(QTable, super::JsonLinesPreviewCursor), String> {
+        let mut table = QTable::default();
+        let cursor = super::json_lines_source::visit_recoverable_json_lines(
+            path, &[], false, max_lines, cursor, false, bounded_rows(&mut table, 100_000, 8 * 1024 * 1024),
+        )?;
+        Ok((table, cursor))
+    }
+
     pub fn collect_json_lines_sample(
         path: &Path,
         max_lines: usize,
-        max_cells: usize,
-        max_text: usize,
-    ) -> Result<(QTable, super::JsonLinesSamplePosition), String> {
-        let mut table = QTable::default();
-        let position = super::json_lines_source::visit_recoverable_json_lines(
-            path, &[], false, max_lines, false, bounded_rows(&mut table, max_cells, max_text),
-        )?;
-        Ok((table, position))
+    ) -> Result<(QTable, super::JsonLinesPreviewCursor), String> {
+        Self::collect_json_lines_page(path, max_lines, None)
     }
 }
 

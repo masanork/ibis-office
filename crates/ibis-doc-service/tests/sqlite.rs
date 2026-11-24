@@ -1744,7 +1744,8 @@ fn json_lines_preview_samples_physical_lines_and_persists_the_bound() {
     let source = std::sync::Arc::new(opened.source);
     let mut draft = Document::new(opened.presentation);
     let name = draft.presentation().workbook.as_ref().unwrap().sheets[0].name.clone();
-    let (prepared, position) = prepare_selected_json_lines_preview(files[0].clone(), name).unwrap();
+    let (prepared, cursor) = prepare_selected_json_lines_preview(files[0].clone(), name).unwrap();
+    let position = cursor.position();
     assert_eq!(position.lines, 200);
     assert_eq!(position.bytes, input("200").lines().take(200).map(|line| line.len() + 1).sum::<usize>());
     assert_eq!(position.file_bytes, 34 * 1024 * 1024);

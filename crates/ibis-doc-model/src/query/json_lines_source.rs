@@ -11,7 +11,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
     fs::File,
-    io::{BufRead, BufReader, Read, Seek},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -93,6 +93,57 @@ impl JsonLinesSamplePosition {
         let unit = 10usize.pow(estimate.checked_ilog10().unwrap_or(0).saturating_sub(1));
         (estimate.saturating_add(unit / 2) / unit * unit).max(self.lines)
     }
+}
+
+/// Position and file identity for continuing a read-only preview.
+#[derive(Clone, Debug)]
+pub struct JsonLinesPreviewCursor {
+    path: std::path::PathBuf,
+    metadata: std::fs::Metadata,
+    position: JsonLinesSamplePosition,
+    max_lines: usize,
+}
+
+impl JsonLinesPreviewCursor {
+    pub fn position(&self) -> JsonLinesSamplePosition {
+        self.position
+    }
+
+    pub fn next_page(&self, selected_path: &Path) -> Result<(QTable, Self), String> {
+        let check_selected = || {
+            if std::fs::metadata(selected_path)
+                .is_ok_and(|current| same_snapshot(&self.metadata, &current))
+            {
+                Ok(())
+            } else {
+                Err("JSON Lines source changed; reopen the file".to_owned())
+            }
+        };
+        check_selected()?;
+        let page =
+            super::DiskDataset::collect_json_lines_page(&self.path, self.max_lines, Some(self))?;
+        check_selected()?;
+        Ok(page)
+    }
+}
+
+fn same_snapshot(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (
+            before.dev(),
+            before.ino(),
+            before.ctime(),
+            before.ctime_nsec(),
+        ) != (after.dev(), after.ino(), after.ctime(), after.ctime_nsec())
+        {
+            return false;
+        }
+    }
+    before.len() == after.len()
+        && before.modified().ok() == after.modified().ok()
+        && before.created().ok() == after.created().ok()
 }
 
 fn scan_lines(
@@ -364,9 +415,10 @@ pub(super) fn visit_recoverable_json_lines(
     selected: &[String],
     pointers: bool,
     max_lines: usize,
+    cursor: Option<&JsonLinesPreviewCursor>,
     schema_only: bool,
     mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
-) -> Result<JsonLinesSamplePosition, String> {
+) -> Result<JsonLinesPreviewCursor, String> {
     const LINE: &str = "_jsonl_line";
     const ERROR: &str = "_jsonl_error";
     let mut input = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
@@ -374,7 +426,19 @@ pub(super) fn visit_recoverable_json_lines(
         .get_ref()
         .metadata()
         .map_err(|error| error.to_string())?;
-    let max_bytes = usize::try_from(before.len()).map_err(|_| "JSON Lines file is too large")?;
+    let file_bytes = usize::try_from(before.len()).map_err(|_| "JSON Lines file is too large")?;
+    let (offset, previous_lines) = if let Some(cursor) = cursor {
+        if cursor.path != path || !same_snapshot(&cursor.metadata, &before) {
+            return Err("JSON Lines source changed; reopen the file".into());
+        }
+        (cursor.position.bytes, cursor.position.lines)
+    } else {
+        (0, 0)
+    };
+    input
+        .seek(SeekFrom::Start(offset as u64))
+        .map_err(|error| error.to_string())?;
+    let max_bytes = file_bytes - offset;
     let mut indices = HashMap::new();
     let mut columns = Vec::new();
     let mut types = Vec::new();
@@ -453,11 +517,13 @@ pub(super) fn visit_recoverable_json_lines(
     }
     visit(&columns, None)?;
     if !schema_only {
-        input.rewind().map_err(|error| error.to_string())?;
+        input
+            .seek(SeekFrom::Start(offset as u64))
+            .map_err(|error| error.to_string())?;
         let read_position =
             scan_lines_up_to(&mut input, max_bytes, true, max_lines, |line, number| {
                 let mut row = vec![CellValue::Empty; columns.len()];
-                row[0] = CellValue::Number(number as f64);
+                row[0] = CellValue::Number((previous_lines + number) as f64);
                 match parse(line) {
                     Ok(fields) => {
                         for (name, (value, _)) in fields {
@@ -481,10 +547,21 @@ pub(super) fn visit_recoverable_json_lines(
         .get_ref()
         .metadata()
         .map_err(|error| error.to_string())?;
-    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
-        return Err("JSON Lines file changed during import".into());
+    if !same_snapshot(&before, &after)
+        || !std::fs::metadata(path).is_ok_and(|current| same_snapshot(&before, &current))
+    {
+        return Err("JSON Lines source changed; reopen the file".into());
     }
-    Ok(position)
+    Ok(JsonLinesPreviewCursor {
+        path: path.to_path_buf(),
+        metadata: before,
+        position: JsonLinesSamplePosition {
+            lines: previous_lines + position.lines,
+            bytes: offset + position.bytes,
+            file_bytes,
+        },
+        max_lines,
+    })
 }
 
 fn infer_type(
@@ -786,6 +863,61 @@ fn exceeds_text_limit(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_pages_preserve_physical_lines_diagnose_boundaries_and_stop_at_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("page.jsonl");
+        let prefix = "{\"old\":true}\r\n".repeat(200);
+        let input = format!(
+            "{prefix}{{broken\n{}{{\"last\":\"003\"}}",
+            "{\"new\":true}\n".repeat(199)
+        );
+        std::fs::write(&path, &input).unwrap();
+        let (first, cursor) =
+            super::super::DiskDataset::collect_json_lines_sample(&path, 200).unwrap();
+        assert_eq!(first.rows.len(), 200);
+        assert_eq!(cursor.position().bytes, prefix.len());
+        assert!(!cursor.position().at_end());
+
+        let (next, cursor) = cursor.next_page(&path).unwrap();
+        assert_eq!(next.names(), ["_jsonl_line", "_jsonl_error", "new"]);
+        assert_eq!(next.rows.len(), 200);
+        assert_eq!(next.rows[0][0], CellValue::Number(201.0));
+        assert!(
+            matches!(&next.rows[0][1], CellValue::Text(error) if error.starts_with("Expected one JSON object"))
+        );
+        assert_eq!(next.rows[1][0], CellValue::Number(202.0));
+        assert_eq!(next.rows[199][0], CellValue::Number(400.0));
+        assert!(!cursor.position().at_end());
+
+        let (last, cursor) = cursor.next_page(&path).unwrap();
+        assert_eq!(last.names(), ["_jsonl_line", "_jsonl_error", "last"]);
+        assert_eq!(
+            last.rows[0],
+            [
+                CellValue::Number(401.0),
+                CellValue::Empty,
+                CellValue::Text("003".into())
+            ]
+        );
+        assert_eq!(cursor.position().bytes, input.len());
+        assert!(cursor.position().at_end());
+        assert_eq!(cursor.position().estimated_lines(), 401);
+    }
+
+    #[test]
+    fn preview_cursor_rejects_a_replaced_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.jsonl");
+        let first = "{\"id\":1}\n{\"id\":2}\n";
+        std::fs::write(&path, first).unwrap();
+        let (_, cursor) = super::super::DiskDataset::collect_json_lines_sample(&path, 1).unwrap();
+        // Keep the original inode occupied while putting an equally sized file at its path.
+        std::fs::rename(&path, dir.path().join("old.jsonl")).unwrap();
+        std::fs::write(&path, first.replace('2', "3")).unwrap();
+        assert!(cursor.next_page(&path).unwrap_err().contains("reopen"));
+    }
 
     #[test]
     fn sample_position_distinguishes_estimates_from_exact_end() {

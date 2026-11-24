@@ -39,7 +39,7 @@ mod csv_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod log_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use json_lines_source::{JsonLinesField, JsonLinesFieldCatalog, JsonLinesSamplePosition, json_array_choices, json_lines_fields, read_json_array, read_json_lines};
+pub use json_lines_source::{JsonLinesField, JsonLinesFieldCatalog, JsonLinesPreviewCursor, JsonLinesSamplePosition, json_array_choices, json_lines_fields, read_json_array, read_json_lines};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use parquet_source::{parquet_columns, parquet_dataset_columns, parquet_files_columns, parquet_folder_files, read_parquet_folder, read_parquet, read_parquet_bounded, read_parquet_columns, read_parquet_filtered, read_parquet_files, ParquetBound, ParquetColumn, ParquetPredicate};
 mod codec;

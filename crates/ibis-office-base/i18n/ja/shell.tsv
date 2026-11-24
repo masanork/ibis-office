@@ -1733,6 +1733,10 @@ editor.jsonl.exported	選んだフィールドを新しいシートに取り込�
 editor.jsonl.preview-loading	JSONLのプレビューを作成しています…
 editor.jsonl.preview-exact	全{total}行（末尾まで確認）
 editor.jsonl.preview-estimated	先頭{lines}行を表示中・全体約{total}行（先頭のデータから推定）
+editor.jsonl.next-page	次の200行を見る
+editor.jsonl.page-exact	{first}〜{last}行を表示中・全{total}行
+editor.jsonl.page-estimated	{first}〜{last}行を表示中・全体約{total}行
+editor.jsonl.preview-reopen	続きが読めません。元のJSONLを開き直してください。{error}
 editor.jsonl.export-small	最大25行を表にする
 editor.jsonl.first-line	開始行（既定は1）
 editor.jsonl.last-line	終了行（省略可）
