@@ -70,6 +70,17 @@ impl VsdxContainer {
         if by_page.is_empty() {
             return Ok(self.bytes.to_vec());
         }
+        self.update_pages(
+            by_page
+                .into_iter()
+                .map(|(page, replacements)| (page, move |source| patch_page(source, replacements))),
+        )
+    }
+
+    pub(crate) fn update_pages(
+        &self,
+        updates: impl IntoIterator<Item = (usize, impl FnOnce(String) -> Result<Option<Vec<u8>>>)>,
+    ) -> Result<Vec<u8>> {
         let zip = open_archive(&self.bytes)?;
         let root_rels = relationships(&zip, "")?;
         let mut package = Package::open(self.bytes.clone()).map_err(package_error)?;
@@ -83,9 +94,12 @@ impl VsdxContainer {
             return Err(Error::new("Signed Visio drawings cannot be edited"));
         }
         let mut changed = false;
-        for (page, replacements) in by_page {
-            let name = &self.pages[page].name;
-            if let Some(updated) = patch_page(part(&zip, name)?, replacements)? {
+        for (page, update) in updates {
+            let name = &self.pages.get(page).ok_or_else(invalid)?.name;
+            if let Some(updated) = update(part(&zip, name)?)? {
+                if updated.len() > MAX_PART {
+                    return Err(Error::new("Drawing page is too large"));
+                }
                 package.set_bytes(name, updated);
                 changed = true;
             }

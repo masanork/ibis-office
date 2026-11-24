@@ -1847,3 +1847,6 @@ vsdx.label-number	Page {page} · Label {n} / {total}
 vsdx.save-label-copy	Save VSDX Copy
 vsdx.keep-original	Choose a different path to preserve the original diagram.
 vsdx.label-copy-saved	Saved the updated VSDX copy.
+vsdx.edit-geometry	Move or reconnect shapes…
+vsdx.geometry-command-help	Page {page} · Use shape IDs (inches, positive upward)
+vsdx.geometry-command-error	Enter move SHAPE DX DY or connect CONNECTOR begin/end TARGET.
