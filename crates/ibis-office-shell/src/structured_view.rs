@@ -4,6 +4,8 @@
 
 use std::{fmt, io::Read, ops::Range, path::PathBuf, sync::Arc};
 
+#[cfg(not(target_family = "wasm"))]
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme as _, Root, Sizable as _, h_flex, v_flex};
@@ -90,6 +92,8 @@ struct SearchHit {
 }
 
 struct Source {
+    #[cfg(not(target_family = "wasm"))]
+    path: Option<PathBuf>,
     bytes: Vec<u8>,
     records: Vec<Range<usize>>,
     lines: bool,
@@ -102,6 +106,7 @@ struct Source {
 }
 
 impl Source {
+    #[cfg(not(target_family = "wasm"))]
     fn read(path: PathBuf) -> Result<Self, String> {
         let lines = path.extension().is_some_and(|ext| {
             ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson")
@@ -126,6 +131,7 @@ impl Source {
             });
             let notice = hed::Check::read(&path, bytes.len(), csv.data_count);
             return Ok(Self {
+                path: Some(path),
                 bytes,
                 records: std::mem::take(&mut csv.records),
                 lines: true,
@@ -138,6 +144,7 @@ impl Source {
             });
         }
         let mut source = Self::new(bytes, lines);
+        source.path = Some(path.clone());
         if let Some(schema) = row_schema::sidecar(&path) {
             source.row_review = Some(row_schema::review(&schema, &source));
         } else if !lines {
@@ -163,6 +170,8 @@ impl Source {
             std::iter::once(start..bytes.len()).collect()
         };
         Self {
+            #[cfg(not(target_family = "wasm"))]
+            path: None,
             truncated: lines && offset < bytes.len(),
             bytes,
             records,
@@ -558,10 +567,79 @@ pub(crate) struct View {
     tree_scroll: UniformListScrollHandle,
     selected: Option<usize>,
     document_tree: Option<(Tree, Option<usize>)>,
+    #[cfg(not(target_family = "wasm"))]
+    export_status: Option<SharedString>,
+    #[cfg(not(target_family = "wasm"))]
+    exporting: bool,
     _subscription: Subscription,
 }
 
 impl View {
+    #[cfg(not(target_family = "wasm"))]
+    fn export_linkage_issues(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.exporting {
+            return;
+        }
+        let Some(source) = self.source.clone() else {
+            return;
+        };
+        let Some(input) = source.path.as_ref() else {
+            return;
+        };
+        let directory = input.parent().unwrap_or(std::path::Path::new("."));
+        let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+        let name = format!("{stem}-issues.xlsx");
+        let picked = cx.prompt_for_new_path_with_formats(
+            directory,
+            Some(&name),
+            &[SaveFormat {
+                label: crate::i18n::text("file.save-format.xlsx"),
+                extensions: vec!["xlsx".into()],
+            }],
+        );
+        self.exporting = true;
+        self.export_status = None;
+        cx.notify();
+        cx.spawn_in(window, async move |view, cx| {
+            let result = match picked.await {
+                Ok(Ok(Some(path))) => Some(
+                    cx.background_executor()
+                        .spawn(async move {
+                            let input = source.path.as_ref().unwrap();
+                            if !path
+                                .extension()
+                                .is_some_and(|ext| ext.eq_ignore_ascii_case("xlsx"))
+                                || crate::save::same_file(input, &path)
+                            {
+                                return Err(
+                                    crate::i18n::text("structured.linkage-export-path").to_string()
+                                );
+                            }
+                            let csv = source.csv.as_ref().unwrap();
+                            let bytes = csv.issue_workbook(&source.bytes, &source.records)?;
+                            crate::save::write_replacing(&path, &bytes).map_err(|e| e.to_string())
+                        })
+                        .await,
+                ),
+                Ok(Ok(None)) => None,
+                Ok(Err(error)) => Some(Err(error.to_string())),
+                Err(_) => None,
+            };
+            let _ = view.update(cx, |view, cx| {
+                view.exporting = false;
+                view.export_status = result.map(|result| match result {
+                    Ok(()) => crate::i18n::text("structured.linkage-export-saved"),
+                    Err(error) => {
+                        crate::i18n::format("structured.linkage-export-error", &[("error", &error)])
+                            .into()
+                    }
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn navigate_heading(&self, id: usize, toggle_body: bool, cx: &mut Context<Self>) {
         let Some(paragraph) = self.tree.nodes[id].paragraph else {
             return;
@@ -1017,10 +1095,9 @@ impl Render for View {
                                     .on_click(cx.listener(|view, _, _, cx| {
                                         if let Some(table) = &view.table {
                                             let (editor, owner, file_id) = &table.editor;
-                                            if editor
-                                                .upgrade()
-                                                .is_some_and(|editor| editor.read(cx).file_id == *file_id)
-                                            {
+                                            if editor.upgrade().is_some_and(|editor| {
+                                                editor.read(cx).file_id == *file_id
+                                            }) {
                                                 crate::open_guard::raise(*owner, cx);
                                             } else {
                                                 crate::app::open_editor_for(
@@ -1159,16 +1236,11 @@ impl Render for View {
                     }
                     for (index, issue) in review.issues.iter().enumerate() {
                         let (record, column) = (issue.record, issue.column);
-                        let message = crate::i18n::text(issue.message);
-                        let message = issue
-                            .condition
-                            .and_then(|index| conditions.get(index))
-                            .and_then(|condition| condition.note.as_deref())
-                            .and_then(|note| note.lines().next())
-                            .map_or_else(
-                                || message.to_string(),
-                                |note| format!("{message} · {}", excerpt(note, 150)),
-                            );
+                        let message = definition.map_or_else(
+                            || crate::i18n::text(issue.message).to_string(),
+                            |definition| definition.issue_reason(issue),
+                        );
+                        let message = excerpt(&message, 220);
                         issues = issues.child(
                             Button::new(("linkage-issue", index))
                                 .outline()
@@ -1208,6 +1280,25 @@ impl Render for View {
                             key,
                             &[("target", &condition.target), ("note", &excerpt(note, 150))],
                         )));
+                    }
+                    #[cfg(not(target_family = "wasm"))]
+                    if review.issue_count > 0 {
+                        panel = panel.child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    Button::new("linkage-export-issues")
+                                        .outline()
+                                        .xsmall()
+                                        .label(crate::i18n::text("structured.linkage-export"))
+                                        .disabled(self.exporting)
+                                        .on_click(cx.listener(|view, _, window, cx| {
+                                            view.export_linkage_issues(window, cx)
+                                        })),
+                                )
+                                .children(self.export_status.clone()),
+                        );
                     }
                     panel.child(issues)
                 })
@@ -1572,6 +1663,8 @@ fn open_view(
                 tree_scroll: UniformListScrollHandle::default(),
                 selected: None,
                 document_tree: None,
+                export_status: None,
+                exporting: false,
                 _subscription: subscription,
             };
             if view
@@ -1598,7 +1691,10 @@ pub(crate) fn is_linkage_csv(data: &[u8]) -> bool {
         return false;
     };
     let signature = ["削除フラグ", "操作者ID", "操作年月日", "操作時刻"];
-    if !signature.iter().all(|name| header.iter().any(|column| column == name)) {
+    if !signature
+        .iter()
+        .all(|name| header.iter().any(|column| column == name))
+    {
         return false;
     }
     header.len() > 256

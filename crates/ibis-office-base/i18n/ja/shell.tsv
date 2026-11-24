@@ -1848,3 +1848,14 @@ vsdx.label-copy-saved	更新したVSDXを別名で保存しました。
 vsdx.edit-geometry	図形の移動・接続変更…
 vsdx.geometry-command-help	{page}ページ · 図形IDを指定（親座標・インチ・上向きが正）
 vsdx.geometry-command-error	move 図形ID 横移動 縦移動 または connect コネクタID begin/end 接続先ID を入力してください。
+structured.linkage-export	指摘をXLSXで保存…
+structured.linkage-export-record	データ番号
+structured.linkage-export-id	宛名番号
+structured.linkage-export-field	項目名
+structured.linkage-export-value	元の値
+structured.linkage-export-reason	指摘理由
+structured.linkage-export-limit	指摘一覧が書き出せる容量または行数を超えています。
+structured.linkage-export-cell-limit	XLSXのセルに収まらない値があります。
+structured.linkage-export-path	拡張子 .xlsx の別ファイルを指定してください。
+structured.linkage-export-saved	指摘一覧を保存しました。
+structured.linkage-export-error	指摘一覧を保存できませんでした。{error}

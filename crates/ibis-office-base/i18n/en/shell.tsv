@@ -1850,3 +1850,14 @@ vsdx.label-copy-saved	Saved the updated VSDX copy.
 vsdx.edit-geometry	Move or reconnect shapes…
 vsdx.geometry-command-help	Page {page} · Use shape IDs (parent coordinates, inches, positive upward)
 vsdx.geometry-command-error	Enter move SHAPE DX DY or connect CONNECTOR begin/end TARGET.
+structured.linkage-export	Save issues as XLSX…
+structured.linkage-export-record	Data record
+structured.linkage-export-id	Addressee ID
+structured.linkage-export-field	Field
+structured.linkage-export-value	Original value
+structured.linkage-export-reason	Issue reason
+structured.linkage-export-limit	The issue report exceeds the export size or row limit.
+structured.linkage-export-cell-limit	A value is too long for an XLSX cell.
+structured.linkage-export-path	Choose a separate file with an .xlsx extension.
+structured.linkage-export-saved	Saved the issue workbook.
+structured.linkage-export-error	Could not save the issue workbook. {error}
