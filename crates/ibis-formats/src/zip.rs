@@ -28,11 +28,11 @@ pub struct Archive<'a> {
 }
 
 fn u16_at(data: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(data.get(at..at + 2)?.try_into().ok()?))
+    Some(u16::from_le_bytes(data.get(at..)?.get(..2)?.try_into().ok()?))
 }
 
 fn u32_at(data: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?))
+    Some(u32::from_le_bytes(data.get(at..)?.get(..4)?.try_into().ok()?))
 }
 
 impl<'a> Archive<'a> {
@@ -52,11 +52,12 @@ impl<'a> Archive<'a> {
 
         let mut entries = HashMap::with_capacity(count);
         for _ in 0..count {
-            if u32_at(data, at) != Some(CENTRAL_DIRECTORY_HEADER) {
+            let record = data.get(at..end).ok_or_else(bad)?;
+            if u32_at(record, 0) != Some(CENTRAL_DIRECTORY_HEADER) {
                 return Err(bad());
             }
-            let field16 = |offset| u16_at(data, at + offset).ok_or_else(bad);
-            let field32 = |offset| u32_at(data, at + offset).ok_or_else(bad);
+            let field16 = |offset| u16_at(record, offset).ok_or_else(bad);
+            let field32 = |offset| u32_at(record, offset).ok_or_else(bad);
             let method = field16(10)?;
             let compressed_size = field32(20)? as usize;
             let size = field32(24)? as usize;
@@ -64,10 +65,12 @@ impl<'a> Archive<'a> {
             let extra_len = field16(30)? as usize;
             let comment_len = field16(32)? as usize;
             let local_header = field32(42)? as usize;
-            let name = data.get(at + 46..at + 46 + name_len).ok_or_else(bad)?;
+            let len = 46 + name_len + extra_len + comment_len;
+            let record = record.get(..len).ok_or_else(bad)?;
+            let name = &record[46..46 + name_len];
             let name = String::from_utf8_lossy(name).into_owned();
             entries.insert(name, Entry { method, compressed_size, size, local_header });
-            at += 46 + name_len + extra_len + comment_len;
+            at += len;
         }
         Ok(Self { data, entries })
     }
@@ -81,35 +84,37 @@ impl<'a> Archive<'a> {
         self.entries.contains_key(name)
     }
 
-    /// Read untrusted package metadata with a cap on the declared and actual size.
-    pub(crate) fn read_bounded(&self, name: &str, limit: usize) -> Result<Option<Vec<u8>>, Error> {
-        if let Some(entry) = self.entries.get(name) {
-            if entry.size > limit || (entry.method == 0 && entry.compressed_size > limit) {
-                return Err(Error::new(format!("{name} が大きすぎます")));
-            }
-        }
-        self.read(name)
-    }
-
     /// The uncompressed contents of `name`, or `None` if there is no such entry.
     pub fn read(&self, name: &str) -> Result<Option<Vec<u8>>, Error> {
+        self.read_bounded(name, usize::MAX)
+    }
+
+    /// Read an entry with a cap on its uncompressed size.
+    pub fn read_bounded(&self, name: &str, limit: usize) -> Result<Option<Vec<u8>>, Error> {
         let Some(entry) = self.entries.get(name) else { return Ok(None) };
+        if entry.size > limit || (entry.method == 0 && entry.compressed_size > limit) {
+            return Err(Error::new(format!("{name} が大きすぎます")));
+        }
         let bad = || Error::new(format!("{name} を展開できません"));
-        let at = entry.local_header;
-        if u32_at(self.data, at) != Some(LOCAL_FILE_HEADER) {
+        let local = self.data.get(entry.local_header..).ok_or_else(bad)?;
+        if u32_at(local, 0) != Some(LOCAL_FILE_HEADER) {
             return Err(bad());
         }
         // The local header repeats name and extra field with its own lengths.
-        let name_len = u16_at(self.data, at + 26).ok_or_else(bad)? as usize;
-        let extra_len = u16_at(self.data, at + 28).ok_or_else(bad)? as usize;
-        let start = at + 30 + name_len + extra_len;
-        let raw = self.data.get(start..start + entry.compressed_size).ok_or_else(bad)?;
+        let name_len = u16_at(local, 26).ok_or_else(bad)? as usize;
+        let extra_len = u16_at(local, 28).ok_or_else(bad)? as usize;
+        let start = 30 + name_len + extra_len;
+        let raw = local.get(start..).and_then(|tail| tail.get(..entry.compressed_size)).ok_or_else(bad)?;
         let bytes = match entry.method {
-            0 => raw.to_vec(),
+            0 if raw.len() == entry.size => raw.to_vec(),
+            0 => return Err(bad()),
             8 => miniz_oxide::inflate::decompress_to_vec_with_limit(raw, entry.size.max(1))
                 .map_err(|_| bad())?,
             _ => return Err(Error::new(format!("{name} の圧縮方式には対応していません"))),
         };
+        if bytes.len() != entry.size {
+            return Err(bad());
+        }
         Ok(Some(bytes))
     }
 }
@@ -164,6 +169,35 @@ mod tests {
         let archive = Archive::new(&bytes).unwrap();
         assert!(archive.read_bounded("metadata", 9).is_err());
         assert_eq!(archive.read_bounded("metadata", 10).unwrap().as_deref(), Some(&b"0123456789"[..]));
+    }
+
+    #[test]
+    fn bounded_read_checks_deflated_output_size() {
+        use ibis_ooxml::zip::{EntryMeta, Writer, crc32};
+
+        let body = b"0123456789";
+        let compressed = miniz_oxide::deflate::compress_to_vec(body, 6);
+        let mut writer = Writer::new();
+        writer.add_raw("xml", EntryMeta::new(), 8, crc32(body), body.len(), &compressed).unwrap();
+        let mut zip = writer.finish().unwrap();
+        let archive = Archive::new(&zip).unwrap();
+        assert_eq!(archive.read_bounded("xml", 10).unwrap().as_deref(), Some(body.as_slice()));
+        assert!(archive.read_bounded("xml", 9).unwrap_err().to_string().contains("大きすぎます"));
+
+        let cd = u32_at(&zip, zip.len() - 6).unwrap() as usize;
+        for size in [0u32, 9, 11] {
+            zip[cd + 24..cd + 28].copy_from_slice(&size.to_le_bytes());
+            assert!(Archive::new(&zip).unwrap().read_bounded("xml", 11)
+                .unwrap_err().to_string().contains("展開できません"));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_local_offset() {
+        let mut zip = stored_zip("xml", b"<x/>");
+        let cd = u32_at(&zip, zip.len() - 6).unwrap() as usize;
+        zip[cd + 42..cd + 46].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(Archive::new(&zip).unwrap().read_bounded("xml", 10).is_err());
     }
 
     #[test]

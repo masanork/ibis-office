@@ -6,6 +6,11 @@ use roxmltree::Node;
 
 pub mod enhanced_geometry;
 
+/// Maximum uncompressed size of an OpenDocument package's media type entry.
+pub const MIMETYPE_LIMIT: usize = 256;
+/// Maximum uncompressed size per OpenDocument XML part.
+pub const XML_PART_LIMIT: usize = 64 * 1024 * 1024;
+
 pub const TABLE: &str = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
 pub const TEXT: &str = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
 

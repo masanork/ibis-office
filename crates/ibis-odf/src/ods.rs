@@ -22,6 +22,7 @@ mod shapes;
 use roxmltree::{Document, Node};
 
 use ibis_formats::Error;
+use ibis_formats::odf::{MIMETYPE_LIMIT, XML_PART_LIMIT};
 use crate::odf::{TABLE, TEXT};
 
 const OFFICE: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
@@ -45,7 +46,8 @@ pub fn is_ods(data: &[u8]) -> bool {
         return false;
     }
     let Ok(archive) = ibis_formats::zip::Archive::new(data) else { return false };
-    archive.read("mimetype").ok().flatten().is_some_and(|m| m.starts_with(MIMETYPE.as_bytes()) || m.starts_with(b"application/vnd.oasis.opendocument.spreadsheet-template"))
+    archive.read_bounded("mimetype", MIMETYPE_LIMIT)
+        .ok().flatten().is_some_and(|m| m.starts_with(MIMETYPE.as_bytes()) || m.starts_with(b"application/vnd.oasis.opendocument.spreadsheet-template"))
 }
 
 fn attr<'a>(n: Node<'a, '_>, ns: &str, local: &str) -> Option<&'a str> {
@@ -915,10 +917,10 @@ fn column_letters(mut n: u32) -> String {
 /// A spreadsheet document as the bytes of an `.xlsx` made from it.
 pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
     let archive = ibis_formats::zip::Archive::new(data)?;
-    let content = archive.read("content.xml")?.ok_or_else(|| bad("content.xml がありません"))?;
+    let content = archive.read_bounded("content.xml", XML_PART_LIMIT)?.ok_or_else(|| bad("content.xml がありません"))?;
     let content = String::from_utf8(content).map_err(|_| bad("content.xml が UTF-8 ではありません"))?;
     let doc = Document::parse_with_options(&content, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).map_err(|e| bad(&format!("content.xml を読めません：{e}")))?;
-    let styles_doc_text = archive.read("styles.xml")?.and_then(|b| String::from_utf8(b).ok());
+    let styles_doc_text = archive.read_bounded("styles.xml", XML_PART_LIMIT)?.and_then(|b| String::from_utf8(b).ok());
     let styles_doc = styles_doc_text.as_deref().and_then(|t| Document::parse_with_options(t, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).ok());
     let root = doc.root_element();
     let body = children(root, OFFICE, "body").next().ok_or_else(|| bad("本文がありません"))?;
@@ -1357,7 +1359,7 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
             let name = if pic.name.is_empty() { format!("Picture {}", n + 1) } else { pic.name.clone() };
             let body = if pic.chart {
                 // A chart: its part, read from the object's folder.
-                let Some(content) = archive.read(&format!("{}/content.xml", pic.href.trim_end_matches('/'))).ok().flatten().and_then(|b| String::from_utf8(b).ok()) else { continue };
+                let Some(content) = archive.read_bounded(&format!("{}/content.xml", pic.href.trim_end_matches('/')), XML_PART_LIMIT).ok().flatten().and_then(|b| String::from_utf8(b).ok()) else { continue };
                 let Some(chart) = chart::read_chart(&content, &chart_tables) else { continue };
                 let xml = ibis_formats::xls_chart::chart_xml(&chart, &chart::OdsCells { tables: chart_tables.clone() }, &|n| if ibis_formats::english_names() { format!("Series{n}") } else { format!("系列{n}") }); // i18n-ok（文書に保存する名前）
                 let xml = crate::odp_chart_style::three_d_chart(xml, &content);

@@ -1947,7 +1947,7 @@ pub fn is_odt(data: &[u8]) -> bool {
         return false;
     }
     let Ok(archive) = crate::zip::Archive::new(data) else { return false };
-    archive.read("mimetype").ok().flatten().is_some_and(|m| m.starts_with(b"application/vnd.oasis.opendocument.text"))
+    archive.read_bounded("mimetype", crate::odf::MIMETYPE_LIMIT).ok().flatten().is_some_and(|m| m.starts_with(b"application/vnd.oasis.opendocument.text"))
 }
 
 /// Open OpenDocument Text (`.odt`) bytes as an editable Word document (`Opened`).

@@ -210,7 +210,7 @@ pub(crate) fn is_opendocument(data: &[u8]) -> bool {
         return false;
     }
     let Ok(archive) = zip::Archive::new(data) else { return false };
-    archive.read("mimetype").ok().flatten().is_some_and(|m| m.starts_with(b"application/vnd.oasis.opendocument."))
+    archive.read_bounded("mimetype", crate::odf::MIMETYPE_LIMIT).ok().flatten().is_some_and(|m| m.starts_with(b"application/vnd.oasis.opendocument."))
 }
 
 /// Read a `.pptx` presentation, a `.xlsx` workbook (see [`read_xlsx`]) or a

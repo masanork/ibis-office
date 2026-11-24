@@ -1962,7 +1962,7 @@ fn body_blocks<'a>(parent: Node<'a, 'a>, ctx: &mut Ctx<'a>, out: &mut String, st
 pub fn import(data: &[u8]) -> Result<Vec<u8>, Error> {
     let archive = Archive::new(data).map_err(|e| Error::new(format!("ODT アーカイブを開けません: {e}")))?; // i18n-ok（読めないファイルの理由）
     let read = |name: &str| -> Result<Option<String>, Error> {
-        match archive.read(name)? {
+        match archive.read_bounded(name, crate::odf::XML_PART_LIMIT)? {
             Some(b) => Ok(Some(String::from_utf8(b).map_err(|e| Error::new(format!("ODT {name} UTF-8 エラー: {e}")))?)), // i18n-ok
             None => Ok(None),
         }

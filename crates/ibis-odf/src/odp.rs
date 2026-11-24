@@ -20,6 +20,7 @@ use crate::odp_shape::{Geom, geom_of, objects};
 use crate::odp_style::{DRAW, FO, OFFICE, PRESENTATION, SMIL, STYLE, Styles, XLINK, attr, children, emu, is};
 use crate::odp_text::{esc, paragraphs, Body};
 use ibis_formats::Error;
+use ibis_formats::odf::{MIMETYPE_LIMIT, XML_PART_LIMIT};
 
 const MIMETYPE: &str = "application/vnd.oasis.opendocument.presentation";
 const P: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";
@@ -38,7 +39,8 @@ pub fn is_odp(data: &[u8]) -> bool {
         return false;
     }
     let Ok(archive) = ibis_formats::zip::Archive::new(data) else { return false };
-    archive.read("mimetype").ok().flatten().is_some_and(|m| m.starts_with(MIMETYPE.as_bytes()))
+    archive.read_bounded("mimetype", MIMETYPE_LIMIT)
+        .ok().flatten().is_some_and(|m| m.starts_with(MIMETYPE.as_bytes()))
 }
 
 /// The pictures of the package so far.
@@ -95,7 +97,7 @@ impl<'s, 'a, 'i> Cx<'s, 'a, 'i> {
         if dir.is_empty() || dir.contains("://") {
             return None;
         }
-        let content = String::from_utf8(self.archive.read(&format!("{dir}/content.xml")).ok().flatten()?).ok()?;
+        let content = String::from_utf8(self.archive.read_bounded(&format!("{dir}/content.xml"), XML_PART_LIMIT).ok().flatten()?).ok()?;
         let mut chart = crate::ods::chart::read_chart(&content, &[])?;
         // PowerPoint ignores the `chart:gap-width` and `chart:overlap` of a chart that has a bar group and a line group (measured with
         // topptx on a bar + line chart whose y axis says gap 200 / overlap 0 and gap 80 / overlap -27: both give `c:gapWidth` 150 and no
@@ -287,7 +289,7 @@ fn duration_ms(text: &str) -> Option<u64> {
 pub fn to_pptx(data: &[u8]) -> Result<Vec<u8>, Error> {
     let archive = ibis_formats::zip::Archive::new(data)?;
     let read_xml = |name: &str| -> Result<Option<String>, Error> {
-        match archive.read(name)? {
+        match archive.read_bounded(name, XML_PART_LIMIT)? {
             Some(b) => Ok(Some(String::from_utf8(b).map_err(|_| bad(&format!("{name} が UTF-8 ではありません")))?)),
             None => Ok(None),
         }
