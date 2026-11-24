@@ -1788,3 +1788,7 @@ structured.hed-bytes	Byte size
 structured.hed-records	Data records
 structured.hed-difference	{field} · .hed {declared} · CSV {actual}
 structured.no-search-results	No search results
+structured.back-to-record	Back to record
+structured.searching	Searching…
+structured.search-bom	Search names, references or types
+structured.search-columns	Search columns in this record

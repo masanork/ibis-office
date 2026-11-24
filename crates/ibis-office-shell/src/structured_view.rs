@@ -220,6 +220,63 @@ impl Source {
         }
     }
 
+    fn field_search(&self, record: usize, query: &str) -> Vec<SearchHit> {
+        let Some(span) = self.records.get(record) else {
+            return Vec::new();
+        };
+        let Ok(root) = serde_json::from_slice::<&RawValue>(&self.bytes[span.clone()]) else {
+            return Vec::new();
+        };
+        let mut hits = Vec::new();
+        let mut pending = vec![(root, "$".to_owned(), None::<String>)];
+        while let Some((raw, path, label)) = pending.pop() {
+            let text = raw.get();
+            let container = text.starts_with(['{', '[']);
+            let decoded = text
+                .starts_with('"')
+                .then(|| serde_json::from_str::<String>(text).ok())
+                .flatten();
+            let scalar = decoded.as_deref().unwrap_or(text);
+            if let Some(label) = label
+                && (label.to_lowercase().contains(query)
+                    || (!container && scalar.to_lowercase().contains(query)))
+            {
+                hits.push(SearchHit {
+                    span: self.span(raw),
+                    label: excerpt(&label, 120),
+                    detail: if container {
+                        String::new()
+                    } else {
+                        excerpt(scalar, 160)
+                    },
+                    path: path.clone(),
+                });
+                if hits.len() > SEARCH_LIMIT {
+                    break;
+                }
+            }
+            if container {
+                let children = parse_fields(
+                    text.as_bytes(),
+                    Fields {
+                        offset: 0,
+                        limit: usize::MAX,
+                    },
+                );
+                pending.extend(children.into_iter().rev().map(|(label, child)| {
+                    let label = if label.is_empty() {
+                        "\"\"".to_owned()
+                    } else {
+                        label
+                    };
+                    let path = format!("{path} / {}", excerpt(&label, 120));
+                    (child, path, Some(label))
+                }));
+            }
+        }
+        hits
+    }
+
     fn children(&self, span: Range<usize>, offset: usize) -> (Vec<Node>, bool) {
         let page = parse_fields(&self.bytes[span], Fields::page(offset));
         let more = page.len() > PAGE_SIZE;
@@ -435,19 +492,18 @@ impl View {
         let root = self.tree.push(source.record(index));
         self.tree.roots.push(root);
         self.tree.toggle(root, Some(source));
+        self.refresh_hits(cx);
         cx.notify();
     }
 
     fn search(&mut self, cx: &mut Context<Self>) {
         self.query = self.search.read(cx).value().trim().to_lowercase();
-        self.hits = None;
-        if let Some(source) = self.source.clone()
-            && let Some(inventory) = &source.inventory
-            && !self.query.is_empty()
+        self.refresh_hits(cx);
+        if let Some(source) = self
+            .source
+            .clone()
+            .filter(|source| source.lines && source.csv.is_none())
         {
-            self.hits = Some(inventory.search(&self.query));
-        }
-        if let Some(source) = self.source.clone().filter(|source| source.lines) {
             let query = self.query.clone();
             cx.spawn(async move |this, cx| {
                 let search = query.clone();
@@ -479,6 +535,47 @@ impl View {
         }
         cx.notify();
     }
+    fn refresh_hits(&mut self, cx: &mut Context<Self>) {
+        self.hits = None;
+        let Some(source) = self.source.clone() else {
+            return;
+        };
+        if self.query.is_empty()
+            || (source.inventory.is_none() && (!source.lines || source.csv.is_some()))
+        {
+            return;
+        }
+        let query = self.query.clone();
+        let record = self.record;
+        cx.spawn(async move |this, cx| {
+            let search = query.clone();
+            let hits = cx
+                .background_executor()
+                .spawn(async move {
+                    if let Some(inventory) = &source.inventory {
+                        inventory.search(&search)
+                    } else {
+                        source.field_search(record, &search)
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.query == query && view.record == record {
+                    view.hits = Some(hits);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn back_to_tree(&mut self, cx: &mut Context<Self>) {
+        if let Some((tree, selected)) = self.document_tree.take() {
+            self.tree = tree;
+            self.selected = selected;
+            cx.notify();
+        }
+    }
 }
 
 impl Render for View {
@@ -493,8 +590,11 @@ impl Render for View {
             .source
             .as_ref()
             .and_then(|source| source.inventory.as_ref());
-        let visible = self.tree.visible(if lines { "" } else { &self.query });
-        let show_hits = inventory.is_some() && !self.query.is_empty();
+        let visible = self
+            .tree
+            .visible(if lines && !is_csv { "" } else { &self.query });
+        let visible_is_empty = visible.is_empty();
+        let show_hits = (inventory.is_some() || (lines && !is_csv)) && !self.query.is_empty();
         let hit_count = self.hits.as_ref().map_or(0, Vec::len);
         let hit_rows = uniform_list(
             "structured-search-hits",
@@ -504,7 +604,7 @@ impl Render for View {
                     .filter_map(|position| {
                         let hit = view.hits.as_ref()?.get(position)?.clone();
                         let label = hit.label.clone();
-                        let path = hit.path.clone();
+                        let target_label = format!("{} · {}", hit.label, hit.path);
                         Some(
                             v_flex()
                                 .id(("structured-hit", position))
@@ -518,7 +618,7 @@ impl Render for View {
                                 .on_click(cx.listener(move |view, _, window, cx| {
                                     view.follow_reference(
                                         hit.span.clone(),
-                                        path.clone(),
+                                        target_label.clone(),
                                         window,
                                         cx,
                                     );
@@ -705,6 +805,13 @@ impl Render for View {
                             .text_lg()
                             .child(self.title.clone()),
                     )
+                    .children((lines && !is_csv && self.document_tree.is_some()).then(|| {
+                        Button::new("structured-record-back")
+                            .outline()
+                            .xsmall()
+                            .label(crate::i18n::text("structured.back-to-record"))
+                            .on_click(cx.listener(|view, _, _, cx| view.back_to_tree(cx)))
+                    }))
                     .child(div().w(px(270.)).child(Input::new(&self.search).small())),
             )
             .children(is_csv.then(|| {
@@ -770,16 +877,8 @@ impl Render for View {
                                     .outline()
                                     .xsmall()
                                     .label(crate::i18n::text("structured.back-to-document"))
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        if let Some((tree, selected)) = view.document_tree.take() {
-                                            view.tree = tree;
-                                            view.selected = selected;
-                                            view.query.clear();
-                                            view.search.update(cx, |input, cx| {
-                                                input.set_value("", window, cx)
-                                            });
-                                            cx.notify();
-                                        }
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.back_to_tree(cx);
                                     }))
                             })),
                     )
@@ -857,11 +956,24 @@ impl Render for View {
                             .flex_1()
                             .min_w_0()
                             .h_full()
+                            .when(
+                                is_csv && !self.query.is_empty() && visible_is_empty,
+                                |pane| {
+                                    pane.child(
+                                        div().px_4().py_2().text_sm().child(crate::i18n::text(
+                                            "structured.no-search-results",
+                                        )),
+                                    )
+                                },
+                            )
                             .when(!show_hits, |pane| {
                                 pane.child(div().flex_1().min_h_0().child(rows))
                             })
                             .when(show_hits, |pane| {
                                 let status = match hit_count {
+                                    0 if self.hits.is_none() => {
+                                        crate::i18n::text("structured.searching").to_string()
+                                    }
                                     0 => crate::i18n::text("structured.no-search-results")
                                         .to_string(),
                                     count if count > SEARCH_LIMIT => format!("{SEARCH_LIMIT}+"),
@@ -1026,7 +1138,12 @@ fn open_view(
                     .detach();
             }
             let search = cx.new(|cx| {
-                InputState::new(window, cx).placeholder(crate::i18n::text("structured.search"))
+                let key = match source.as_ref() {
+                    Some(source) if source.inventory.is_some() => "structured.search-bom",
+                    Some(source) if source.csv.is_some() => "structured.search-columns",
+                    _ => "structured.search",
+                };
+                InputState::new(window, cx).placeholder(crate::i18n::text(key))
             });
             let subscription =
                 cx.subscribe(&search, |view: &mut View, _, event: &InputEvent, cx| {
@@ -1135,6 +1252,19 @@ impl crate::editor::SlideEditor {
 #[cfg(test)]
 mod tests {
     use super::{PAGE_SIZE, Source, Tree};
+
+    #[test]
+    fn searches_nested_fields_without_loading_tree_pages() {
+        let source = Source::new(
+            br#"{"meta":{"data":[{"name":"first"},{"name":"deeper"}]},"number":15}"#.to_vec(),
+            true,
+        );
+        let hits = source.field_search(0, "deeper");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, "$ / meta / data / [1] / name");
+        assert_eq!(&source.bytes[hits[0].span.clone()], br#""deeper""#);
+        assert_eq!(source.field_search(0, "name").len(), 2);
+    }
 
     #[test]
     fn retains_record_order_and_duplicate_nested_fields() {
