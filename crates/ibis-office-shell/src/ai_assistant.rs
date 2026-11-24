@@ -1142,8 +1142,8 @@ impl SlideEditor {
             "datasets": [{"source":"1","alias":"input"}],
         });
         if json_lines {
-            args["sql"] = serde_json::json!("SELECT * FROM input ORDER BY _jsonl_line LIMIT 25");
-            args["datasets"][0]["recover"] = serde_json::json!(true);
+            args["sql"] = serde_json::json!("SELECT * FROM input ORDER BY _jsonl_line");
+            args["datasets"][0]["sample_lines"] = serde_json::json!(200);
         }
         self.set_status(crate::i18n::text(if json_lines { "editor.jsonl.preview-loading" } else { "editor.analysis.loading" }).to_string(), cx);
         cx.spawn_in(window, async move |this, cx| {

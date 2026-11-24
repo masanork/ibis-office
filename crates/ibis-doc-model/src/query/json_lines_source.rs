@@ -74,12 +74,22 @@ fn scan_lines(
     reader: impl BufRead,
     max_bytes: usize,
     recover: bool,
+    visit: impl FnMut(Option<&[u8]>, usize) -> Result<(), String>,
+) -> Result<(), String> {
+    scan_lines_up_to(reader, max_bytes, recover, usize::MAX, visit)
+}
+
+fn scan_lines_up_to(
+    reader: impl BufRead,
+    max_bytes: usize,
+    recover: bool,
+    max_lines: usize,
     mut visit: impl FnMut(Option<&[u8]>, usize) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut reader = reader.take((max_bytes as u64).saturating_add(1));
     let mut line = Vec::new();
     let mut bytes = 0usize;
-    for number in 1.. {
+    for number in 1..=max_lines {
         line.clear();
         let read = reader
             .by_ref()
@@ -322,6 +332,7 @@ pub(super) fn visit_recoverable_json_lines(
     path: &Path,
     selected: &[String],
     pointers: bool,
+    max_lines: usize,
     schema_only: bool,
     mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -387,7 +398,7 @@ pub(super) fn visit_recoverable_json_lines(
                 .map(|(name, value)| Ok((name, recover_cell(value)?)))
                 .collect()
         };
-    scan_lines(&mut input, max_bytes, true, |line, _| {
+    scan_lines_up_to(&mut input, max_bytes, true, max_lines, |line, _| {
         if let Ok(fields) = parse(line) {
             for (name, (_, ty)) in fields {
                 if reserved(&name) {
@@ -412,7 +423,7 @@ pub(super) fn visit_recoverable_json_lines(
     visit(&columns, None)?;
     if !schema_only {
         input.rewind().map_err(|error| error.to_string())?;
-        scan_lines(&mut input, max_bytes, true, |line, number| {
+        scan_lines_up_to(&mut input, max_bytes, true, max_lines, |line, number| {
             let mut row = vec![CellValue::Empty; columns.len()];
             row[0] = CellValue::Number(number as f64);
             match parse(line) {

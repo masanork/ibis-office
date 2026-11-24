@@ -669,6 +669,7 @@ pub enum DiskDataset {
     ArrowIpc(std::path::PathBuf, Vec<String>),
     JsonLines(std::path::PathBuf, Vec<String>),
     RecoverableJsonLines(std::path::PathBuf, Vec<String>),
+    JsonLinesSample(std::path::PathBuf, Vec<String>, usize),
     JsonLinesPaths(std::path::PathBuf, Vec<String>),
     Avro(std::path::PathBuf, Vec<String>),
     Sqlite(std::path::PathBuf, String),
@@ -712,10 +713,13 @@ impl DiskDataset {
                 super::json_lines_source::visit_json_lines(path, selected, schema_only, visit)
             }
             Self::RecoverableJsonLines(path, selected) => {
-                super::json_lines_source::visit_recoverable_json_lines(path, selected, false, schema_only, visit)
+                super::json_lines_source::visit_recoverable_json_lines(path, selected, false, usize::MAX, schema_only, visit)
+            }
+            Self::JsonLinesSample(path, selected, max_lines) => {
+                super::json_lines_source::visit_recoverable_json_lines(path, selected, false, *max_lines, schema_only, visit)
             }
             Self::JsonLinesPaths(path, selected) => {
-                super::json_lines_source::visit_recoverable_json_lines(path, selected, true, schema_only, visit)
+                super::json_lines_source::visit_recoverable_json_lines(path, selected, true, usize::MAX, schema_only, visit)
             }
             Self::Avro(path, selected) => super::avro_source::visit_avro(path, selected, schema_only, visit),
             Self::Parquet(path, selected, filters) => {

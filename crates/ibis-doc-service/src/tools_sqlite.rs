@@ -427,6 +427,8 @@ fn datasets_property() -> (&'static str, Value) {
                 ("alias", string("SQL table name to register for this dataset.")),
                 ("table", string("Source table name, required for SQLite files.")),
                 ("recover", json!({"type":"boolean","description":"JSON Lines only: retain invalid records with _jsonl_line and _jsonl_error. Defaults to false."})),
+                ("sample_lines", json!({"type":"integer","minimum":1,"maximum":200,
+                    "description":"JSON Lines only: sample the first physical lines with recovery and infer columns from this sample. Cannot be combined with paths."})),
                 ("paths", json!({
                     "type":"array","minItems":1,"maxItems":254,"uniqueItems":true,
                     "items":{"type":"string","minLength":1},
@@ -693,6 +695,14 @@ fn json_lines_dataset(
     path: PathBuf,
     columns: Vec<String>,
 ) -> Result<DiskDataset, ToolError> {
+    if let Some(sample) = spec.get("sample_lines") {
+        if spec.get("paths").is_some() {
+            return Err(ToolError::invalid("sample_lines cannot be combined with paths"));
+        }
+        let lines = sample.as_u64().filter(|lines| (1..=200).contains(lines))
+            .ok_or_else(|| ToolError::invalid("sample_lines must be an integer between 1 and 200"))?;
+        return Ok(DiskDataset::JsonLinesSample(path, columns, lines as usize));
+    }
     if let Some(paths) = spec.get("paths") {
         if spec.get("columns").is_some() {
             return Err(ToolError::invalid("Use either paths or columns for JSON Lines"));
@@ -772,7 +782,7 @@ fn visit_datasets(
     let mut cells = 100_000usize;
     let mut text = 8 * 1024 * 1024usize;
     for spec in specs {
-        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where", "recover", "paths"])?;
+        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where", "recover", "paths", "sample_lines"])?;
         let alias = dataset_alias(spec, &mut aliases)?;
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
@@ -782,7 +792,7 @@ fn visit_datasets(
             || spec["recover"] == true
             || spec.get("paths").is_some()
             || service.limits.max_text_dataset_file_size.is_some();
-        let limit = if !schema_only || !full_schema_scan {
+        let limit = if spec.get("sample_lines").is_none() && (!schema_only || !full_schema_scan) {
             limit.min(32 * 1024 * 1024)
         } else {
             limit
@@ -791,8 +801,8 @@ fn visit_datasets(
             return Err(ToolError::invalid("dataset must be a regular file within the input size limit"));
         }
         let table_name = spec.opt_str("table")?;
-        if kind != "json_lines" && (spec.get("recover").is_some() || spec.get("paths").is_some()) {
-            return Err(ToolError::invalid("recover and paths are only used for JSON Lines datasets"));
+        if kind != "json_lines" && ["recover", "paths", "sample_lines"].iter().any(|key| spec.get(key).is_some()) {
+            return Err(ToolError::invalid("recover, paths, and sample_lines are only used for JSON Lines datasets"));
         }
         let columns = dataset_columns(spec, kind)?;
         let filters = parquet_filters(spec, kind)?;
@@ -1082,7 +1092,7 @@ fn saved_definition(args: &Value) -> Result<Value, ToolError> {
             "kind": source_kind(path),
             "alias": spec["alias"], "table": spec["table"],
         });
-        for key in ["columns", "where", "recover", "paths"] {
+        for key in ["columns", "where", "recover", "paths", "sample_lines"] {
             if let Some(value) = spec.get(key) {
                 source[key] = value.clone();
             }
@@ -1170,7 +1180,7 @@ fn bound_query(definition: &Value, args: &Value) -> Result<Value, ToolError> {
             }
             let mut dataset =
                 json!({"source":path,"alias":source["alias"],"table":source["table"]});
-            for key in ["columns", "where", "recover", "paths"] {
+            for key in ["columns", "where", "recover", "paths", "sample_lines"] {
                 if let Some(value) = source.get(key) {
                     dataset[key] = value.clone();
                 }
@@ -1441,7 +1451,7 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
     let mut estimated_bytes = 0u64;
     let mut bounded = Vec::new();
     for spec in specs {
-        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where", "recover", "paths"])?;
+        crate::edit::only_known(spec, &["source", "alias", "table", "columns", "where", "recover", "paths", "sample_lines"])?;
         let alias = dataset_alias(spec, &mut aliases)?.to_owned();
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
         let kind = source_kind(&path);
@@ -1463,8 +1473,8 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
                 "Dataset must be a regular file within the {} MiB input limit", limit / (1024 * 1024),
             )));
         }
-        if kind != "json_lines" && (spec.get("recover").is_some() || spec.get("paths").is_some()) {
-            return Err(ToolError::invalid("recover and paths are only used for JSON Lines datasets"));
+        if kind != "json_lines" && ["recover", "paths", "sample_lines"].iter().any(|key| spec.get(key).is_some()) {
+            return Err(ToolError::invalid("recover, paths, and sample_lines are only used for JSON Lines datasets"));
         }
         let estimated = metadata.len().saturating_mul(if is_text_dataset(kind) { 3 } else { 1 });
         estimated_bytes = estimated_bytes.saturating_add(estimated);
@@ -1512,9 +1522,13 @@ fn batch_session(service: &Service, query: &Value, arrow_disk: bool) -> Result<S
     for spec in streaming {
         has_streaming = true;
         let path = paths::resolve(&service.allow_dirs, spec.str_arg("source")?, DATASET_EXTENSIONS, true)?;
-        bytes = bytes.saturating_add(std::fs::metadata(path).map_err(sqlite_error)?.len());
+        if spec.get("sample_lines").is_none() {
+            bytes = bytes.saturating_add(std::fs::metadata(path).map_err(sqlite_error)?.len());
+        }
     }
-    if bytes > MEMORY_FILE_BYTES || specs.iter().any(|spec| spec["recover"] == true || spec.get("paths").is_some()) {
+    if bytes > MEMORY_FILE_BYTES || specs.iter().any(|spec| {
+        (spec["recover"] == true && spec.get("sample_lines").is_none()) || spec.get("paths").is_some()
+    }) {
         return disk_dataset_session(service, specs, false);
     }
     match memory_query_session(service, query) {

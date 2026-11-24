@@ -1716,3 +1716,62 @@ fn json_lines_errors_only_range_survives_save_and_refresh() {
     assert!(refreshed.cell(2, 0).is_none());
     eprintln!("100,004 JSONL lines: catalog {catalog_time:?}, extraction {export_time:?}, refresh {refresh_time:?}");
 }
+
+#[test]
+fn json_lines_preview_samples_physical_lines_and_persists_the_bound() {
+    use ibis_doc_model::{Document, sheet_calc::sheet_of_slide};
+    use ibis_doc_service::{
+        DraftToolContext, prepare_selected_datasets_export, prepare_selected_query_refresh,
+        query_report_definition,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("preview.jsonl");
+    let records = "{\"code\":\"001\"}\n".repeat(198);
+    let wide = serde_json::Value::Object(
+        (0..260).map(|index| (format!("late_{index}"), json!(index))).collect(),
+    );
+    let input = |code: &str| {
+        format!("{records}malformed\n{{\"code\":\"{code}\"}}\n{wide}\n")
+    };
+    std::fs::write(&path, input("200")).unwrap();
+    // The whole file exceeds the ordinary in-memory dataset size limit.
+    std::fs::OpenOptions::new().write(true).open(&path).unwrap()
+        .set_len(34 * 1024 * 1024).unwrap();
+
+    let files = [path];
+    let opened = ibis_formats::open(ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let source = std::sync::Arc::new(opened.source);
+    let mut draft = Document::new(opened.presentation);
+    let name = draft.presentation().workbook.as_ref().unwrap().sheets[0].name.clone();
+    let prepared = prepare_selected_datasets_export(&files, json!({
+        "destination_sheet":name, "anchor":"A1",
+        "sql":"SELECT * FROM input ORDER BY _jsonl_line",
+        "datasets":[{"source":"1","alias":"input","sample_lines":200}],
+    })).unwrap();
+    prepared.stage(&mut draft, DraftToolContext {
+        source: Some(source.clone()), workbook: Default::default(),
+    }).unwrap();
+    let sheet = sheet_of_slide(&draft.presentation().slides[0]).unwrap();
+    assert_eq!(sheet.cell(0, 2).unwrap().text, "code");
+    assert!(sheet.cell(0, 3).is_none());
+    assert_eq!(sheet.cell(1, 2).unwrap().text, "001");
+    assert!(sheet.cell(199, 1).unwrap().text.starts_with("Expected one JSON object"));
+    assert_eq!(sheet.cell(200, 2).unwrap().text, "200");
+    assert!(sheet.cell(201, 0).is_none());
+    let report = json!({"table":sheet.tables[0].name,"sources":["1"]});
+
+    let saved = source.save(draft.presentation(), Default::default()).unwrap();
+    let reopened = ibis_formats::open(saved).unwrap();
+    let mut draft = Document::new(reopened.presentation);
+    let definition = query_report_definition(draft.presentation(), &report).unwrap();
+    assert_eq!(definition["sources"][0]["sample_lines"], 200);
+    std::fs::write(&files[0], input("updated")).unwrap();
+    let prepared = prepare_selected_query_refresh(&files, report, definition).unwrap();
+    prepared.stage(&mut draft, DraftToolContext {
+        source: Some(std::sync::Arc::new(reopened.source)), workbook: Default::default(),
+    }).unwrap();
+    let sheet = sheet_of_slide(&draft.presentation().slides[0]).unwrap();
+    assert_eq!(sheet.cell(200, 2).unwrap().text, "updated");
+    assert!(sheet.cell(201, 0).is_none());
+}
