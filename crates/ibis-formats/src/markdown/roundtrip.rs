@@ -38,24 +38,45 @@ pub(crate) fn document_type_is(metadata: &str, expected: &str) -> bool {
 const PROFILE_PROPERTY: &str = "ibisOffice.MarkdownProfile";
 
 pub(super) fn store_profile(profile: String, properties: &mut ibis_doc_model::DocProperties) {
-    properties
-        .custom
-        .retain(|property| property.name != PROFILE_PROPERTY);
+    store_text_property(PROFILE_PROPERTY, profile, properties);
+}
+
+fn store_text_property(name: &str, value: String, properties: &mut ibis_doc_model::DocProperties) {
+    properties.custom.retain(|property| property.name != name);
     properties.custom.push(ibis_doc_model::CustomProperty {
-        name: PROFILE_PROPERTY.to_owned(),
-        value: ibis_doc_model::CustomPropertyValue::Text(profile),
+        name: name.to_owned(),
+        value: ibis_doc_model::CustomPropertyValue::Text(value),
     });
 }
 
 pub(super) fn saved_profile(properties: &ibis_doc_model::DocProperties) -> Option<&str> {
+    saved_text_property(PROFILE_PROPERTY, properties)
+}
+
+fn saved_text_property<'a>(name: &str, properties: &'a ibis_doc_model::DocProperties) -> Option<&'a str> {
     let property = properties
         .custom
         .iter()
-        .find(|property| property.name == PROFILE_PROPERTY)?;
+        .find(|property| property.name == name)?;
     match &property.value {
         ibis_doc_model::CustomPropertyValue::Text(text) => Some(text),
         _ => None,
     }
+}
+
+const FRONTMATTER_PROPERTY: &str = "ibisOffice.MarkdownFrontmatter";
+
+pub(super) fn store_unknown_frontmatter(source: &str, properties: &mut ibis_doc_model::DocProperties) {
+    use base64::Engine as _;
+    if !source.is_empty() {
+        store_text_property(FRONTMATTER_PROPERTY, base64::engine::general_purpose::STANDARD.encode(source), properties);
+    }
+}
+
+pub(super) fn saved_unknown_frontmatter(properties: &ibis_doc_model::DocProperties) -> Option<String> {
+    use base64::Engine as _;
+    let source = saved_text_property(FRONTMATTER_PROPERTY, properties)?;
+    String::from_utf8(base64::engine::general_purpose::STANDARD.decode(source).ok()?).ok()
 }
 
 const OKF_SOURCE_PREFIX: &str = "okf-editable-base64:";

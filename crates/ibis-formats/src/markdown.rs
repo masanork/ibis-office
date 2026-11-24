@@ -1904,16 +1904,62 @@ fn populate_toc_blocks(doc: &mut FlowDocument) {
 // Frontmatter parsing
 // ============================================================================
 
+fn frontmatter_entries(source: &str) -> impl Iterator<Item = (&str, &str)> {
+    let starts = source.split_inclusive('\n').scan(0, |offset, line| {
+        let start = *offset;
+        *offset += line.len();
+        Some((start, line))
+    }).filter_map(|(start, line)| {
+        if line.starts_with(char::is_whitespace) || line.starts_with(['#', '-']) {
+            return None;
+        }
+        let (key, _) = line.split_once(':')?;
+        Some((start, key.trim_end().trim_matches(['"', '\''])))
+    });
+    let mut starts = starts.peekable();
+    std::iter::from_fn(move || {
+        let (start, key) = starts.next()?;
+        let end = starts.peek().map_or(source.len(), |(start, _)| *start);
+        Some((key, &source[start..end]))
+    })
+}
+
+fn is_document_frontmatter_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase().replace('-', "_");
+    key.starts_with("page.") || key.starts_with("margins.") || matches!(
+        key.as_str(),
+        "title" | "subtitle" | "subject" | "author" | "creator" | "keywords" | "tags" |
+        "description" | "summary" | "category" | "company" | "size" | "paper" | "page" |
+        "orientation" | "margins" | "margin_top" | "margin_bottom" | "margin_left" |
+        "margin_right" | "page_grid" | "page_line_pitch" | "page_char_space_4096pt" |
+        "columns" | "column_separator" | "direction" | "text_direction" | "line_numbers" |
+        "font" | "font_family" | "east_asian_font" | "font_size" | "style_set" |
+        "paragraph_spacing" | "even_and_odd_headers" | "header" | "footer" | "watermark" |
+        "page_color" | "track_changes"
+    )
+}
+
 fn apply_frontmatter(fm: &str, doc: &mut FlowDocument, ctx: &mut ParseContext<'_>) {
     let mut okf_source = false;
-    if let Some(profile) = crate::lawtext::markdown_profile(fm) {
-        roundtrip::store_profile(profile, &mut doc.properties);
+    let law_profile = crate::lawtext::markdown_profile(fm);
+    if let Some(profile) = law_profile.as_ref() {
+        roundtrip::store_profile(profile.clone(), &mut doc.properties);
     } else {
         let metadata = format!("---\n{fm}---\n");
         if crate::okf::concept("document.md", &metadata).ok().flatten().is_some() {
             roundtrip::store_okf_source(fm, &mut doc.properties);
             okf_source = true;
         }
+    }
+    if !okf_source {
+        let unknown: String = frontmatter_entries(fm)
+            .filter(|(key, _)| !is_document_frontmatter_key(key))
+            .filter(|(key, _)| !law_profile.as_ref().is_some_and(|profile| {
+                frontmatter_entries(profile).any(|(law_key, _)| key == &law_key)
+            }))
+            .map(|(_, source)| source)
+            .collect();
+        roundtrip::store_unknown_frontmatter(&unknown, &mut doc.properties);
     }
     let mut map: BTreeMap<String, String> = BTreeMap::new();
     let mut current_section: Option<String> = None;
@@ -7441,13 +7487,14 @@ fn serialize_frontmatter(doc: &FlowDocument, diagnostics: &mut Vec<SourceDiagnos
         lines.push("track_changes: true".to_string());
     }
 
-    if lines.is_empty() {
-        String::new()
-    } else {
-        let mut s = lines.join("\n");
-        s.push('\n');
-        s
+    let mut output = lines.join("\n");
+    if !output.is_empty() {
+        output.push('\n');
     }
+    if let Some(source) = roundtrip::saved_unknown_frontmatter(props) {
+        output.push_str(&source);
+    }
+    output
 }
 
 fn serialize_header_footer(blocks: &[Block]) -> String {
