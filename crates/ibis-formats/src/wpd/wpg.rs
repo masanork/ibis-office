@@ -5,7 +5,7 @@
 use ibis_doc_model::EmuSize;
 use image::{ImageEncoder, Rgba, RgbaImage};
 
-use super::appearance::word;
+use super::{appearance::word, wpg_drawing::Drawing};
 
 const MAX_PIXELS: usize = 16 * 1024 * 1024;
 
@@ -45,6 +45,7 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
     let mut canvas = None;
     let mut bitmap_box = None;
     let mut result = None;
+    let mut drawing = Drawing::default();
     let mut ended = false;
     while !records.is_empty() {
         if version == 2 {
@@ -81,30 +82,45 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
                 }
             }
             (2, 0x1b) => bitmap_box = Some(canvas?.bitmap_box(record)?),
-            (1, 0x0b | 0x14) | (2, 0x0e) => {
-                // A standalone bitmap can be carried as PNG. Don't drop
-                // objects from a composite drawing and present it as complete.
+            (1, 0x0b | 0x14) => {
                 if result.is_some() {
                     return None;
                 }
-                result = Some(if version == 1 {
-                    bitmap_v1(record, kind == 0x14, &palette)?
-                } else {
-                    let context = canvas?;
-                    let bounds = bitmap_box.take()?;
-                    let raster = bitmap_v2(record, &palette)?;
-                    context.pad(raster, bounds)?
-                });
+                result = Some(bitmap_v1(record, kind == 0x14, &palette)?);
+            }
+            (2, 0x0e) => {
+                drawing.bitmap(canvas?, bitmap_v2(record, &palette)?, bitmap_box.take()?)?
+            }
+            (2, 0x15 | 0x18 | 0x19 | 0x25 | 0x29 | 0x2b | 0x2c | 0x31) => {
+                drawing.record(canvas?, kind, record)?;
             }
             (1, 0x02..=0x0a | 0x11..=0x13 | 0x15..=0x1b)
-            | (2, 0x03..=0x06 | 0x0d | 0x0f..=0x12 | 0x15..=0x1a | 0x1c..=0x22) => return None,
+            | (
+                2,
+                0x03..=0x06
+                | 0x0d
+                | 0x0f..=0x12
+                | 0x16..=0x17
+                | 0x1a
+                | 0x1c..=0x22
+                | 0x26
+                | 0x2a
+                | 0x2d..=0x30
+                | 0x32
+                | 0x35..=0x37
+                | 0x3a..=0x3f,
+            ) => return None,
             _ => {}
         }
     }
     if !ended {
         return None;
     }
-    let (pixels, size) = result?;
+    let (pixels, size) = if version == 2 {
+        drawing.finish(canvas?)?
+    } else {
+        result?
+    };
     let mut png = Vec::new();
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(
@@ -144,14 +160,14 @@ fn default_palette(version: u8) -> [Option<Rgba<u8>>; 256] {
     palette
 }
 
-type Bounds = [i64; 4];
+pub(super) type Bounds = [i64; 4];
 
 #[derive(Clone, Copy)]
-struct Canvas {
-    bounds: Bounds,
+pub(super) struct Canvas {
+    pub(super) bounds: Bounds,
     dpi_x: i64,
     dpi_y: i64,
-    coordinate_bytes: usize,
+    pub(super) coordinate_bytes: usize,
 }
 
 impl Canvas {
@@ -176,7 +192,7 @@ impl Canvas {
         })
     }
 
-    fn bitmap_box(self, record: &[u8]) -> Option<Bounds> {
+    pub(super) fn object(self, record: &[u8]) -> Option<(u16, &[u8])> {
         let flags = word(record, 0)?;
         // Identity transforms, with an optional lock or object identifier.
         if flags & 0x1f != 0 {
@@ -190,23 +206,30 @@ impl Canvas {
                 4
             };
         }
-        bounds(record.get(at..)?, self.coordinate_bytes)
+        Some((flags, record.get(at..)?))
     }
 
-    fn pad(self, bitmap: RgbaImage, bounds: Bounds) -> Option<(RgbaImage, EmuSize)> {
+    fn bitmap_box(self, record: &[u8]) -> Option<Bounds> {
+        bounds(self.object(record)?.1, self.coordinate_bytes)
+    }
+
+    pub(super) fn size(self) -> Option<EmuSize> {
         let [left, bottom, right, top] = self.bounds;
-        let [x0, y0, x1, y1] = bounds;
-        if x0 < left || x1 > right || y0 < bottom || y1 > top {
-            return None;
-        }
         let dp = if self.coordinate_bytes == 4 { 65536 } else { 1 };
         let size = EmuSize::new(
             (right - left) * 914400 / (self.dpi_x * dp),
             (top - bottom) * 914400 / (self.dpi_y * dp),
         );
-        if size.width <= 0 || size.height <= 0 {
+        (size.width > 0 && size.height > 0).then_some(size)
+    }
+
+    pub(super) fn pad(self, bitmap: RgbaImage, bounds: Bounds) -> Option<(RgbaImage, EmuSize)> {
+        let [left, bottom, right, top] = self.bounds;
+        let [x0, y0, x1, y1] = bounds;
+        if x0 < left || x1 > right || y0 < bottom || y1 > top {
             return None;
         }
+        let size = self.size()?;
         if self.bounds == bounds {
             return Some((bitmap, size));
         }
@@ -242,7 +265,7 @@ fn bounds(data: &[u8], size: usize) -> Option<Bounds> {
     (x0 != x1 && y0 != y1).then_some([x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)])
 }
 
-fn limit(width: usize, height: usize) -> Option<usize> {
+pub(super) fn limit(width: usize, height: usize) -> Option<usize> {
     let pixels = width.checked_mul(height)?;
     (pixels > 0 && pixels <= MAX_PIXELS).then_some(pixels)
 }

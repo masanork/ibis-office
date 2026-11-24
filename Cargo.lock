@@ -5712,6 +5712,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tiff",
+ "tiny-skia",
  "unicode-segmentation",
  "wait-timeout",
 ]
