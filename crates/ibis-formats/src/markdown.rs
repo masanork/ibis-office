@@ -4139,7 +4139,7 @@ fn parse_structured_quote(
     quote_depth: usize,
     callout_style: Option<(Rgb, Rgb)>,
 ) -> Result<Option<Vec<Block>>, Error> {
-    use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+    use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
 
     // Bound nested style IDs so they fit Word's paragraph style identifiers.
     if quote_depth >= 8 {
@@ -4150,17 +4150,9 @@ fn parse_structured_quote(
     let mut structured = quote_depth > 0 || callout_style.is_some();
     let mut has_nested = false;
     let mut depth = 0;
-    let mut list_depth = 0;
     for (event, span) in Parser::new_ext(&source, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES).into_offset_iter() {
         match event {
             Event::Start(tag) => {
-                // A quote inside a list item needs its own block ownership in the list model.
-                if list_depth > 0 && matches!(tag, Tag::BlockQuote(_)) {
-                    return Ok(None);
-                }
-                if matches!(tag, Tag::List(_)) {
-                    list_depth += 1;
-                }
                 if depth == 0 {
                     count += 1;
                     match tag {
@@ -4177,12 +4169,7 @@ fn parse_structured_quote(
                 }
                 depth += 1;
             }
-            Event::End(tag) => {
-                depth -= 1;
-                if matches!(tag, TagEnd::List(_)) {
-                    list_depth -= 1;
-                }
-            }
+            Event::End(_) => depth -= 1,
             _ => {}
         }
     }
