@@ -1031,14 +1031,17 @@ impl crate::editor::SlideEditor {
     pub(crate) fn open_structured_outline(&mut self, window: &Window, cx: &mut Context<Self>) {
         if let Some(flow) = self.presentation().flow.as_ref() {
             let tree = Tree::outline(flow);
-            let editor = cx.weak_entity();
-            open_view(
-                crate::i18n::text("structured.outline"),
-                None,
-                tree,
-                Some((editor, window.window_handle(), self.file_id)),
-                cx,
-            );
+            let owner = (cx.weak_entity(), window.window_handle(), self.file_id);
+            // The first frame reads fold state from the owner.
+            cx.defer(move |cx| {
+                open_view(
+                    crate::i18n::text("structured.outline"),
+                    None,
+                    tree,
+                    Some(owner),
+                    cx,
+                );
+            });
         }
     }
 }
