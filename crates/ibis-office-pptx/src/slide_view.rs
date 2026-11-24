@@ -1544,7 +1544,50 @@ impl SlideEditor {
 
                 }
             }
-            Drag::Resize { shape, .. } => {
+            Drag::Resize { shape, handle, .. } => {
+                #[cfg(not(target_family = "wasm"))]
+                if self.is_visio_draft()
+                    && let Some(line) = self.slide().shape(*shape)
+                    && matches!(line.kind, ibis_doc_model::ShapeKind::Line(_))
+                    && let Some(mut glue) = self.slide().shape_glues.get(shape).copied()
+                {
+                    let start_handle = match (line.flip_h, line.flip_v) {
+                        (false, false) => ResizeHandle::TopLeft,
+                        (true, false) => ResizeHandle::TopRight,
+                        (false, true) => ResizeHandle::BottomLeft,
+                        (true, true) => ResizeHandle::BottomRight,
+                    };
+                    let current_slide = self.slide();
+                    let p = layout.to_emu(current);
+                    let target = moved(start, current).then(|| ibis_doc_model::connector::nearest_site_on_slide(
+                        current_slide.shapes.iter().filter(|item| item.id != *shape),
+                        p.x, p.y, 127_000,
+                    )).flatten();
+                    let commands = target.and_then(|(id, site, _)| {
+                        let (edited, opposite) = if *handle == start_handle {
+                            (&mut glue.start, glue.end)
+                        } else {
+                            (&mut glue.end, glue.start)
+                        };
+                        if opposite.is_some_and(|(other, _)| other == id) || *edited == Some((id, site)) {
+                            return None;
+                        }
+                        *edited = Some((id, site));
+                        let glues = std::collections::HashMap::from([(*shape, glue)]);
+                        let (_, frame, flip_h, flip_v) = ibis_doc_model::connector::rerouted_on_slide(&current_slide.shapes, &glues).into_iter().next()?;
+                        Some(vec![
+                            Command::SetShapeGlue { slide, shape: *shape, glue: Some(glue) },
+                            Command::SetConnectorFrame { slide, shape: *shape, frame, flip_h, flip_v },
+                        ])
+                    });
+                    self.set_drag(None);
+                    if let Some(commands) = commands {
+                        self.run(commands, cx);
+                    }
+                    return;
+                }
+                #[cfg(target_family = "wasm")]
+                let _ = handle;
                 let frame = self.slide().shape(*shape).map(|s| (s.frame, self.preview(s).0));
                 self.set_drag(None);
                 if let Some((old, new)) = frame

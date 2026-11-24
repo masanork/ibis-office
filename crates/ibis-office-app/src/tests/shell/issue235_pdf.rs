@@ -314,7 +314,52 @@ fn vsdx_new_diagram() {
     let mut reopened = Scenario::open("target/scenario/vsdx-new-save-src/saved-diagram.vsdx");
     assert!(reopened.with(|editor, _| editor.is_read_only()));
     assert_eq!(reopened.with(|editor, _| editor.presentation().slides.len()), 1);
-    reopened.screenshot("visio-saved-reopened");
+    reopened.menu("vsdx.resume-edit");
+    assert!(!reopened.with(|e, _| e.is_read_only()));
+    let (original_x, start, end, connector) = reopened.with(|e, _| {
+        let slide = e.slide();
+        let (&connector, glue) = slide.shape_glues.iter().next().unwrap();
+        assert_eq!(glue.start.unwrap().0, slide.shapes[0].id.0);
+        assert_eq!(glue.end.unwrap().0, slide.shapes[1].id.0);
+        (slide.shapes[0].frame.x, slide.shapes[0].id, slide.shapes[2].id, connector)
+    });
+    reopened.click_shape(0);
+    reopened.key("escape");
+    reopened.key("right");
+    let moved_x = reopened.with(|e, _| e.slide().shapes[0].frame.x);
+    assert!(moved_x > original_x);
+    let (old_end, new_end) = reopened.with(|e, _| {
+        let ellipse = e.slide().shapes[1].frame;
+        let rect = e.slide().shapes[2].frame;
+        ((ellipse.x, ellipse.y + ellipse.height / 2), (rect.x, rect.y + rect.height / 2))
+    });
+    reopened.click_shape(3);
+    let from = point(&mut reopened, old_end.0, old_end.1);
+    let to = point(&mut reopened, new_end.0, new_end.1);
+    reopened.drag(from, to);
+    reopened.with(|e, _| {
+        let glue = e.slide().shape_glues[&connector];
+        assert_eq!(glue.start.unwrap().0, start.0);
+        assert_eq!(glue.end.unwrap().0, end.0);
+    });
+    reopened.key("cmd-s");
+    assert!(!reopened.with(|e, _| e.is_dirty()));
+    let saved = reopened.with(|e, _| e.file_path().unwrap());
+    let new = std::fs::read(saved).unwrap();
+    std::fs::write(dir.join("saved-after-reopen.vsdx"), new).unwrap();
+    drop(reopened);
+
+    let mut again = Scenario::open("target/scenario/vsdx-new-save-src/saved-after-reopen.vsdx");
+    assert!(again.with(|e, _| e.is_read_only()));
+    again.menu("vsdx.resume-edit");
+    again.with(|e, _| {
+        let slide = e.slide();
+        assert!((slide.shapes[0].frame.x - moved_x).abs() <= 1);
+        let glue = slide.shape_glues.values().next().unwrap();
+        assert_eq!(glue.start.unwrap().0, slide.shapes[0].id.0);
+        assert_eq!(glue.end.unwrap().0, slide.shapes[2].id.0);
+    });
+    again.screenshot("visio-saved-reopened");
 }
 
 fn vsdx_edit_label() {

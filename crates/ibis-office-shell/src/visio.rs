@@ -114,3 +114,100 @@ const ELLIPSE: [Option<Side>; 8] = [
     Some(Side::Right),
     None,
 ];
+
+pub(crate) fn editable_presentation(drawing: &Drawing) -> Result<ibis_formats::Opened, String> {
+    use ibis_doc_model::{Color, EmuPoint, EmuRect, EmuSize, EndSize, Glue, Rgb, ShapeId};
+    let mut opened = ibis_formats::blank_file(ibis_formats::Kind::Presentation)
+        .and_then(ibis_formats::open)
+        .map_err(|e| e.to_string())?;
+    let emu = |value: f64| (value * EMU_PER_POINT as f64).round() as i64;
+    let (width, height) = drawing.page_size();
+    opened.presentation.slide_size = EmuSize {
+        width: emu(width),
+        height: emu(height),
+    };
+    let layout = opened
+        .presentation
+        .layouts
+        .iter()
+        .find(|layout| layout.placeholders.is_empty())
+        .map(|layout| layout.id);
+    let slide = &mut opened.presentation.slides[0];
+    slide.layout = layout;
+    slide.shapes.clear();
+    slide.placeholders.clear();
+    slide.backdrop.clear();
+    for (index, (kind, frame, [r, g, b], label)) in drawing.shapes().enumerate() {
+        let frame = EmuRect::from_corners(
+            EmuPoint {
+                x: emu(frame.x0.into()),
+                y: emu(frame.y0.into()),
+            },
+            EmuPoint {
+                x: emu(frame.x1.into()),
+                y: emu(frame.y1.into()),
+            },
+        );
+        let preset = match kind {
+            DiagramShape::Rectangle => "rect",
+            DiagramShape::Ellipse => "ellipse",
+            DiagramShape::Diamond => "diamond",
+        };
+        let mut shape = crate::shape_items::new_shape(ShapeId(index as u64 + 1), preset, frame);
+        if let ShapeKind::Auto(auto) = &mut shape.kind {
+            auto.fill = Fill::Solid(Color::opaque(Rgb(u32::from_be_bytes([0, r, g, b]))));
+            if let Some(text) = auto.text.as_mut() {
+                text.set_text(label);
+            }
+        }
+        slide.shapes.push(shape);
+    }
+    for (start, end, (head, tail)) in drawing.connectors() {
+        let endpoint = |(index, side): (usize, Side)| {
+            let shape = &slide.shapes[index];
+            let frame = shape.frame;
+            let (x, y) = match side {
+                Side::Left => (frame.x, frame.y + frame.height / 2),
+                Side::Right => (frame.right(), frame.y + frame.height / 2),
+                Side::Top => (frame.x + frame.width / 2, frame.y),
+                Side::Bottom => (frame.x + frame.width / 2, frame.bottom()),
+            };
+            let sites: &[Option<Side>] = if matches!(&shape.kind, ShapeKind::Auto(auto) if auto.geometry.preset_name() == Some("ellipse"))
+            {
+                &ELLIPSE
+            } else {
+                &CARDINAL
+            };
+            let site = sites
+                .iter()
+                .position(|candidate| *candidate == Some(side))
+                .unwrap() as u32;
+            (EmuPoint { x, y }, (shape.id.0, site))
+        };
+        let (a, from) = endpoint(start);
+        let (b, to) = endpoint(end);
+        let id = ShapeId(slide.shapes.len() as u64 + 1);
+        let mut shape = crate::shape_items::new_line(
+            id,
+            EmuRect::from_corners(a, b),
+            a.x > b.x,
+            a.y > b.y,
+            tail,
+        );
+        if head && let ShapeKind::Line(stroke) = &mut shape.kind {
+            stroke.head = LineEnd::Triangle(EndSize {
+                width: 1,
+                length: 1,
+            });
+        }
+        slide.shapes.push(shape);
+        slide.shape_glues.insert(
+            id,
+            Glue {
+                start: Some(from),
+                end: Some(to),
+            },
+        );
+    }
+    Ok(opened)
+}
