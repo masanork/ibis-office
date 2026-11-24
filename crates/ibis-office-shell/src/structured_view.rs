@@ -12,12 +12,36 @@ use gpui_kit::*;
 use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::value::RawValue;
 
+mod cyclonedx;
+
 const MAX_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_RECORDS: usize = 1_000_000;
 
 const PAGE_SIZE: usize = 256;
 
-struct Fields(usize);
+struct Fields {
+    offset: usize,
+    limit: usize,
+}
+
+impl Fields {
+    fn page(offset: usize) -> Self {
+        Self {
+            offset,
+            limit: PAGE_SIZE + 1,
+        }
+    }
+}
+
+fn parse_fields(bytes: &[u8], fields: Fields) -> Vec<(String, &RawValue)> {
+    let mut parser = serde_json::Deserializer::from_slice(bytes);
+    if bytes.first() == Some(&b'{') {
+        parser.deserialize_map(fields)
+    } else {
+        parser.deserialize_seq(fields)
+    }
+    .unwrap_or_default()
+}
 impl<'de> Visitor<'de> for Fields {
     type Value = Vec<(String, &'de RawValue)>;
 
@@ -30,7 +54,7 @@ impl<'de> Visitor<'de> for Fields {
         let mut index = 0;
         while let Some(key) = map.next_key()? {
             let raw = map.next_value()?;
-            if index >= self.0 && fields.len() <= PAGE_SIZE {
+            if index >= self.offset && fields.len() < self.limit {
                 fields.push((key, raw));
             }
             index += 1;
@@ -42,7 +66,7 @@ impl<'de> Visitor<'de> for Fields {
         let mut fields = Vec::new();
         let mut index = 0;
         while let Some(raw) = sequence.next_element()? {
-            if index >= self.0 && fields.len() <= PAGE_SIZE {
+            if index >= self.offset && fields.len() < self.limit {
                 fields.push((format!("[{index}]"), raw));
             }
             index += 1;
@@ -56,6 +80,7 @@ struct Source {
     records: Vec<Range<usize>>,
     lines: bool,
     truncated: bool,
+    inventory: Option<cyclonedx::Inventory>,
 }
 
 impl Source {
@@ -70,7 +95,11 @@ impl Source {
         if bytes.len() as u64 > MAX_BYTES {
             return Err(crate::i18n::text("structured.size-limit").to_string());
         }
-        Ok(Self::new(bytes, lines))
+        let mut source = Self::new(bytes, lines);
+        if !lines {
+            source.inventory = cyclonedx::Inventory::read(&source);
+        }
+        Ok(source)
     }
 
     fn new(bytes: Vec<u8>, lines: bool) -> Self {
@@ -93,16 +122,22 @@ impl Source {
             truncated: lines && offset < bytes.len(),
             bytes,
             records,
+            inventory: None,
             lines,
         }
     }
 
-    fn node(&self, raw: &RawValue, mut name: String) -> Node {
+    fn span(&self, raw: &RawValue) -> Range<usize> {
         let text = raw.get();
         let start = text.as_ptr() as usize - self.bytes.as_ptr() as usize;
+        start..start + text.len()
+    }
+
+    fn node(&self, raw: &RawValue, mut name: String) -> Node {
+        let text = raw.get();
         if !self.lines && name.starts_with('[') && text.starts_with('{') {
             let mut parser = serde_json::Deserializer::from_str(text);
-            if let Ok(fields) = parser.deserialize_map(Fields(0)) {
+            if let Ok(fields) = parser.deserialize_map(Fields::page(0)) {
                 let label = ["name", "bom-ref", "ref"].iter().find_map(|key| {
                     fields
                         .iter()
@@ -127,7 +162,7 @@ impl Source {
             } else {
                 kind.into()
             },
-            span: start..start + text.len(),
+            span: self.span(raw),
             children,
             expanded: false,
             paragraph: None,
@@ -154,14 +189,7 @@ impl Source {
     }
 
     fn children(&self, span: Range<usize>, offset: usize) -> (Vec<Node>, bool) {
-        let bytes = &self.bytes[span];
-        let mut parser = serde_json::Deserializer::from_slice(bytes);
-        let page = if bytes.first() == Some(&b'{') {
-            parser.deserialize_map(Fields(offset))
-        } else {
-            parser.deserialize_seq(Fields(offset))
-        }
-        .unwrap_or_default();
+        let page = parse_fields(&self.bytes[span], Fields::page(offset));
         let more = page.len() > PAGE_SIZE;
         (
             page.into_iter()
@@ -305,10 +333,37 @@ struct View {
     query: String,
     record: usize,
     selected: Option<usize>,
+    document_tree: Option<(Tree, Option<usize>)>,
     _subscription: Subscription,
 }
 
 impl View {
+    fn follow_reference(
+        &mut self,
+        span: Range<usize>,
+        label: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = &self.source else { return };
+        let Ok(raw) = serde_json::from_slice::<&RawValue>(&source.bytes[span]) else {
+            return;
+        };
+        let mut target = Tree::default();
+        let root = target.push(source.node(raw, label));
+        target.roots.push(root);
+        target.toggle(root, Some(source));
+        let previous = std::mem::replace(&mut self.tree, target);
+        if self.document_tree.is_none() {
+            self.document_tree = Some((previous, self.selected));
+        }
+        self.selected = Some(root);
+        self.query.clear();
+        self.search
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        cx.notify();
+    }
+
     fn select_record(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(source) = &self.source else { return };
         self.record = index;
@@ -360,6 +415,10 @@ impl Render for View {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let lines = self.source.as_ref().is_some_and(|source| source.lines);
+        let inventory = self
+            .source
+            .as_ref()
+            .and_then(|source| source.inventory.as_ref());
         let visible = self.tree.visible(if lines { "" } else { &self.query });
         let record_rows = uniform_list(
             "structured-records",
@@ -516,6 +575,70 @@ impl Render for View {
                     )
                     .child(div().w(px(270.)).child(Input::new(&self.search).small())),
             )
+            .children(inventory.map(|inventory| {
+                let caption = format!("CycloneDX {}", inventory.version);
+                v_flex()
+                    .px_4()
+                    .py_3()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(caption))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(inventory.subject.clone()),
+                            )
+                            .children(self.document_tree.is_some().then(|| {
+                                Button::new("structured-document")
+                                    .outline()
+                                    .xsmall()
+                                    .label(crate::i18n::text("structured.back-to-document"))
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        if let Some((tree, selected)) = view.document_tree.take() {
+                                            view.tree = tree;
+                                            view.selected = selected;
+                                            view.query.clear();
+                                            view.search.update(cx, |input, cx| {
+                                                input.set_value("", window, cx)
+                                            });
+                                            cx.notify();
+                                        }
+                                    }))
+                            })),
+                    )
+                    .child(
+                        h_flex().gap_3().children(
+                            [
+                                ("structured.components", inventory.components),
+                                ("structured.crypto-assets", inventory.crypto_assets),
+                                ("structured.services", inventory.services),
+                                (
+                                    "structured.dependency-entries",
+                                    inventory.dependency_entries,
+                                ),
+                            ]
+                            .map(|(label, count)| {
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .rounded_md()
+                                    .bg(theme.muted)
+                                    .px_3()
+                                    .py_2()
+                                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(count.to_string()))
+                                    .child(
+                                        div().text_xs().truncate().child(crate::i18n::text(label)),
+                                    )
+                            }),
+                        ),
+                    )
+            }))
             .child(
                 h_flex()
                     .flex_1()
@@ -561,6 +684,13 @@ impl Render for View {
                 let decoded = (raw.len() <= 16_384)
                     .then(|| serde_json::from_slice::<String>(raw).ok())
                     .flatten();
+                let parent = node.parent.map(|id| self.tree.nodes[id].name.as_str());
+                let target =
+                    inventory
+                        .zip(decoded.as_deref())
+                        .and_then(|(inventory, reference)| {
+                            inventory.target(&node.name, parent, reference)
+                        });
                 let body = decoded.unwrap_or_else(|| {
                     excerpt(
                         &String::from_utf8_lossy(&raw[..raw.len().min(16_384)]),
@@ -585,6 +715,27 @@ impl Render for View {
                                 node.span.end
                             )),
                     )
+                    .children(target.map(|target| {
+                        let span = target.span.clone();
+                        let label = target.label.clone();
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("structured-follow-reference")
+                                    .outline()
+                                    .xsmall()
+                                    .label(crate::i18n::text("structured.follow-reference"))
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.follow_reference(
+                                            span.clone(),
+                                            label.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(div().text_sm().truncate().child(target.label.clone()))
+                    }))
                     .child(
                         div()
                             .id("structured-detail")
@@ -642,6 +793,7 @@ fn open_view(
                 query: String::new(),
                 record: 0,
                 selected: None,
+                document_tree: None,
                 _subscription: subscription,
             };
             if view

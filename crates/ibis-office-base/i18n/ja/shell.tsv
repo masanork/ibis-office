@@ -1747,3 +1747,9 @@ structured.invalid	不正なJSON
 structured.size-limit	ビューで開けるファイルは128 MiBまでです。
 structured.more	さらに表示
 structured.records-limit	先頭100万行を表示しています。
+structured.components	構成部品
+structured.crypto-assets	暗号資産
+structured.services	サービス
+structured.dependency-entries	依存関係の項目
+structured.back-to-document	文書全体に戻る
+structured.follow-reference	参照先へ移動

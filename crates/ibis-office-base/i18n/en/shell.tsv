@@ -1749,3 +1749,9 @@ structured.invalid	Invalid JSON
 structured.size-limit	The viewer can open files up to 128 MiB.
 structured.more	More
 structured.records-limit	Showing the first 1,000,000 lines.
+structured.components	Components
+structured.crypto-assets	Cryptographic assets
+structured.services	Services
+structured.dependency-entries	Dependency entries
+structured.back-to-document	Back to document
+structured.follow-reference	Go to reference target
