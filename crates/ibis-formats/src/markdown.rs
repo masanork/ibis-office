@@ -1522,6 +1522,29 @@ impl<'a> ParseContext<'a> {
         id
     }
 
+    fn new_quoted_list(&mut self, spec: QuotedList) -> u32 {
+        let base = if spec.start.is_some() {
+            self.ensure_ordered_list()
+        } else {
+            self.ensure_bullet_list()
+        };
+        let numbering = &mut self.styles.numbering;
+        let mut instance = numbering.nums[&base].clone();
+        let mut definition = numbering.abstracts[&instance.abstract_id].clone();
+        if let Some(start) = spec.start {
+            let level = &mut definition.levels[spec.level as usize];
+            level.format = "decimal".to_owned();
+            level.text = format!("%{}.", spec.level + 1);
+            instance.start_overrides.insert(spec.level, start.max(1));
+        }
+        let id = numbering.nums.keys().next_back().copied().unwrap_or(0) + 1;
+        let abstract_id = numbering.abstracts.keys().next_back().copied().unwrap_or(0) + 1;
+        instance.abstract_id = abstract_id;
+        numbering.abstracts.insert(abstract_id, definition);
+        numbering.nums.insert(id, instance);
+        id
+    }
+
     fn footnote_id_for(&mut self, label: &str) -> u32 {
         if let Some(&id) = self.footnote_ids.get(label) {
             return id;
@@ -2551,6 +2574,25 @@ fn append_myst_figure(
     true
 }
 
+#[derive(Clone, Copy)]
+struct QuotedList {
+    offset: usize,
+    start: Option<u32>,
+    level: u32,
+}
+
+const MARKDOWN_QUOTED_LIST_STYLE: &str = "IbisMarkdownQuotedList";
+
+fn markdown_quoted_list_style(style: Option<&str>) -> Option<(usize, char, bool)> {
+    let data = style?.strip_prefix(MARKDOWN_QUOTED_LIST_STYLE)?;
+    let (indent, rest) = data.split_once('-')?;
+    let (marker, blank) = rest.split_once('-')?;
+    let indent = indent.parse().ok()?;
+    let marker = char::from_u32(marker.parse().ok()?)?;
+    (indent <= 64 && matches!(marker, '-' | '+' | '*' | '.' | ')') && matches!(blank, "0" | "1"))
+        .then_some((indent, marker, blank == "1"))
+}
+
 enum MarkdownContinuation<'a> {
     Paragraph { indent: usize },
     Code { indent: Option<usize>, text: String, info: &'a str },
@@ -2560,11 +2602,15 @@ enum MarkdownContinuation<'a> {
 
 // Use CommonMark's container boundaries to distinguish paragraphs and code
 // belonging to an item from ordinary indentation outside that item.
-fn markdown_continuations<'a>(text: &'a str, lines: &[&'a str]) -> HashMap<usize, (usize, MarkdownContinuation<'a>)> {
+fn markdown_continuations<'a>(
+    text: &'a str,
+    lines: &[&'a str],
+    quoted_lists: Option<&mut HashMap<usize, QuotedList>>,
+) -> HashMap<usize, (usize, MarkdownContinuation<'a>)> {
     use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
     let mut blocks = HashMap::new();
-    if !lines.iter().any(|line| line.starts_with([' ', '\t', '<', '>'])) {
+    if quoted_lists.is_none() && !lines.iter().any(|line| line.starts_with([' ', '\t', '<', '>'])) {
         return blocks;
     }
 
@@ -2572,6 +2618,7 @@ fn markdown_continuations<'a>(text: &'a str, lines: &[&'a str]) -> HashMap<usize
         .chain(text.match_indices('\n').map(|(offset, _)| offset + 1))
         .collect();
     let mut parents = Vec::new();
+    let mut quoted_lists = quoted_lists;
     let mut code = None;
     let mut html = None;
     for (event, span) in Parser::new_ext(text, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES)
@@ -2582,7 +2629,7 @@ fn markdown_continuations<'a>(text: &'a str, lines: &[&'a str]) -> HashMap<usize
                 let first = line_starts.partition_point(|&start| start <= span.start) - 1;
                 let next = line_starts.partition_point(|&start| start < span.end);
                 let item = match parents.last() {
-                    Some((TagEnd::Item, item)) => *item,
+                    Some((TagEnd::Item, item, _)) => *item,
                     _ => None,
                 };
                 let continuation_indent = item
@@ -2618,8 +2665,25 @@ fn markdown_continuations<'a>(text: &'a str, lines: &[&'a str]) -> HashMap<usize
                     }
                     _ => {}
                 }
+                let list_spec = match tag {
+                    Tag::List(start) if quoted_lists.is_some()
+                        && parents.iter().all(|(tag, _, _)| matches!(tag, TagEnd::List(_) | TagEnd::Item)) => {
+                        Some(QuotedList {
+                            offset: span.start,
+                            start: start.map(|n| n as u32),
+                            level: parents.iter().filter(|(tag, _, _)| matches!(tag, TagEnd::List(_))).count().min(8) as u32,
+                        })
+                    }
+                    _ => None,
+                };
+                if matches!(tag, Tag::Item)
+                    && let Some(quoted_lists) = quoted_lists.as_deref_mut()
+                    && let Some((TagEnd::List(_), _, Some(spec))) = parents.last()
+                {
+                    quoted_lists.entry(first).or_insert(*spec);
+                }
                 let item = if matches!(tag, Tag::Item)
-                    && parents.iter().all(|(tag, _)| matches!(tag, TagEnd::List(_) | TagEnd::Item))
+                    && parents.iter().all(|(tag, _, _)| matches!(tag, TagEnd::List(_) | TagEnd::Item))
                 {
                     parse_list_marker(lines[first])
                         .filter(|item| !item.text.trim().is_empty())
@@ -2630,12 +2694,21 @@ fn markdown_continuations<'a>(text: &'a str, lines: &[&'a str]) -> HashMap<usize
                                 2
                             };
                             let level = if item.task_checked.is_some() { 0 } else { item.level };
-                            (first, usize::from(level) * 2 + marker_width)
+                            let indent = if quoted_lists.is_some() && item.task_checked.is_none() {
+                                let content = item.text.trim_start_matches([' ', '\t']);
+                                let prefix = &lines[first][..lines[first].len() - content.len()];
+                                prefix.bytes().fold(0usize, |column, byte| {
+                                    if byte == b'\t' { column + 4 - column % 4 } else { column + 1 }
+                                })
+                            } else {
+                                usize::from(level) * 2 + marker_width
+                            };
+                            (first, indent)
                         })
                 } else {
                     None
                 };
-                parents.push((tag.to_end(), item));
+                parents.push((tag.to_end(), item, list_spec));
             }
             Event::Text(text) => {
                 if let Some((_, _, _, _, content)) = &mut code {
@@ -2769,7 +2842,9 @@ fn parse_blocks_at_quote_depth(
     quote_depth: usize,
 ) -> Result<Vec<Block>, Error> {
     let lines: Vec<&str> = body_text.lines().collect();
-    let mut continuations = markdown_continuations(body_text, &lines);
+    let mut quoted_items = HashMap::new();
+    let mut quoted_numbering = HashMap::new();
+    let mut continuations = markdown_continuations(body_text, &lines, (quote_depth > 0).then_some(&mut quoted_items));
     let mut blocks: Vec<Block> = Vec::new();
     let mut i = 0;
 
@@ -3200,10 +3275,14 @@ fn parse_blocks_at_quote_depth(
 
         // Bullet / Ordered / Task List item
         if let Some(item) = parse_list_marker(raw) {
-            let num_id = if item.ordered {
-                ctx.ordered_list_for(&item, &blocks)
+            let quoted = quoted_items.get(&i).filter(|_| item.task_checked.is_none());
+            let (num_id, level) = if let Some(spec) = quoted {
+                let num_id = *quoted_numbering.entry(spec.offset).or_insert_with(|| ctx.new_quoted_list(*spec));
+                (num_id, spec.level)
+            } else if item.ordered {
+                (ctx.ordered_list_for(&item, &blocks), u32::from(item.level))
             } else {
-                ctx.ensure_bullet_list()
+                (ctx.ensure_bullet_list(), u32::from(item.level))
             };
             let (clean_text, attrs) = strip_trailing_block_attrs(item.text);
             let mut runs = Vec::new();
@@ -3223,7 +3302,23 @@ fn parse_blocks_at_quote_depth(
             }
             runs.extend(parse_inlines(clean_text, ctx, &RunFormat::default()));
             let mut style = ctx.styles.default_paragraph.clone();
-            if i > 0 && lines[i - 1].trim().is_empty() && blocks.last().is_some_and(is_markdown_list_item) {
+            let blank_before = i > 0 && lines[i - 1].trim().is_empty() && blocks.last().is_some_and(is_markdown_list_item);
+            if quoted.is_some() {
+                let content = raw.trim_start_matches([' ', '\t']);
+                let indent = raw[..raw.len() - content.len()].bytes()
+                    .fold(0usize, |column, byte| if byte == b'\t' { column + 4 - column % 4 } else { column + 1 })
+                    .min(64);
+                let marker = content.trim_start_matches(|ch: char| ch.is_ascii_digit()).as_bytes()[0];
+                let id = format!("{MARKDOWN_QUOTED_LIST_STYLE}{indent}-{marker}-{}", u8::from(blank_before));
+                ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
+                    name: format!("Markdown quoted list ({indent}, {marker}, {})", u8::from(blank_before)),
+                    kind: StyleKind::Paragraph,
+                    based_on: style.clone(),
+                    next: style.clone(),
+                    ..FlowStyle::default()
+                });
+                style = Some(id);
+            } else if blank_before {
                 let id = MARKDOWN_LIST_BLANK_STYLE.to_owned();
                 ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
                     name: "Markdown list item after a blank line".to_owned(),
@@ -3240,7 +3335,7 @@ fn parse_blocks_at_quote_depth(
                 direct: ParaFormat {
                     align: attrs.align,
                     num_id: if item.task_checked.is_some() { None } else { Some(num_id) },
-                    level: if item.task_checked.is_some() { None } else { Some(item.level as u32) },
+                    level: if item.task_checked.is_some() { None } else { Some(level) },
                     ..ParaFormat::default()
                 },
                 bookmarks: attrs.id.into_iter().collect(),
@@ -3249,7 +3344,7 @@ fn parse_blocks_at_quote_depth(
                 } else {
                     Some(ListRef {
                         num_id,
-                        level: item.level as u32,
+                        level: level,
                     })
                 },
                 runs,
@@ -3786,7 +3881,7 @@ fn parse_structured_quote(
     ctx: &mut ParseContext<'_>,
     quote_depth: usize,
 ) -> Result<Option<Vec<Block>>, Error> {
-    use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
+    use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
     // Bound nested style IDs so they fit Word's paragraph style identifiers.
     if quote_depth >= 8 || lines.iter().find(|line| !line.trim().is_empty())
@@ -3799,14 +3894,22 @@ fn parse_structured_quote(
     let mut structured = quote_depth > 0;
     let mut has_nested = false;
     let mut depth = 0;
+    let mut list_depth = 0;
     for (event, span) in Parser::new_ext(&source, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES).into_offset_iter() {
         match event {
             Event::Start(tag) => {
+                // A quote inside a list item needs its own block ownership in the list model.
+                if list_depth > 0 && matches!(tag, Tag::BlockQuote(_)) {
+                    return Ok(None);
+                }
+                if matches!(tag, Tag::List(_)) {
+                    list_depth += 1;
+                }
                 if depth == 0 {
                     count += 1;
                     match tag {
                         Tag::Paragraph => {}
-                        Tag::BlockQuote(_) => {
+                        Tag::BlockQuote(_) | Tag::List(_) => {
                             structured = true;
                             has_nested = true;
                         }
@@ -3818,7 +3921,12 @@ fn parse_structured_quote(
                 }
                 depth += 1;
             }
-            Event::End(_) => depth -= 1,
+            Event::End(tag) => {
+                depth -= 1;
+                if matches!(tag, TagEnd::List(_)) {
+                    list_depth -= 1;
+                }
+            }
             _ => {}
         }
     }
@@ -3828,7 +3936,7 @@ fn parse_structured_quote(
 
     let mut blocks = parse_blocks_at_quote_depth(&source, ctx, &mut HashMap::new(), quote_depth + 1)?;
     if (!has_nested && blocks.len() != count)
-        || blocks.iter().any(|block| !matches!(block, Block::Paragraph(p) if p.list.is_none()))
+        || blocks.iter().any(|block| !matches!(block, Block::Paragraph(_)))
     {
         return Ok(None);
     }
@@ -3852,7 +3960,8 @@ fn parse_structured_quote(
             ..FlowStyle::default()
         });
         paragraph.style = Some(id);
-        paragraph.direct.left = Some(paragraph.direct.left.unwrap_or(0) + 14 * EMU_PER_PT);
+        let left = if paragraph.list.is_some() { paragraph.left } else { paragraph.direct.left.unwrap_or(0) };
+        paragraph.direct.left = Some(left + 14 * EMU_PER_PT);
         if paragraph.direct.borders[3].is_none() {
             paragraph.direct.borders[3] = Some(Some(markdown_quote_border(Rgb(0xD0D7DE))));
         }
@@ -6422,8 +6531,9 @@ fn export_markdown_with_positions<'a>(
     mut record: impl FnMut(MarkdownSource<'a>, usize, usize),
 ) -> String {
     let mut out = String::new();
-    let list_labels = doc.styles.numbering.nums.values()
+    let list_labels = (doc.styles.numbering.nums.values()
         .any(|list| list.start_overrides.values().any(|&start| start != 1))
+        || doc.body.iter().any(|block| matches!(block, Block::Paragraph(p) if p.list.is_some() && markdown_quote_style(p.style.as_deref()).is_some())))
         .then(|| ibis_doc_model::flow::list_labels(doc));
 
 
@@ -7557,20 +7667,29 @@ fn finish_markdown_quote(block: &Block, next: Option<&Block>, out: &mut String) 
         paragraph.style.as_deref()
     }
 
-    let mut current = markdown_quote_style(quote_style(block));
-    if current.is_none() {
+    let mut current_base = quote_style(block);
+    if markdown_quote_style(current_base).is_none() {
         return;
     }
-    let mut next = markdown_quote_style(next.and_then(quote_style));
+    let mut next_base = next.and_then(quote_style);
     let mut depth = 0;
-    while let (Some((_, current_base)), Some((true, next_base))) = (current, next) {
-        if depth > 0 {
+    while let (Some((_, current_inner)), Some((true, next_inner))) =
+        (markdown_quote_style(current_base), markdown_quote_style(next_base))
+    {
+        depth += 1;
+        current_base = current_inner;
+        next_base = next_inner;
+    }
+    if depth > 0 && markdown_quoted_list_style(current_base).is_some()
+        && matches!(markdown_quoted_list_style(next_base), Some((_, _, false)))
+    {
+        return;
+    }
+    for index in 0..depth {
+        if index != 0 {
             out.push(' ');
         }
         out.push('>');
-        depth += 1;
-        current = markdown_quote_style(current_base);
-        next = markdown_quote_style(next_base);
     }
     out.push('\n');
 }
@@ -7716,7 +7835,7 @@ fn serialize_paragraph(
                 if style == Some(MARKDOWN_HTML_LIST_ITEM_BLANK_STYLE) && !out.is_empty() && !out.ends_with("\n\n") {
                     out.push('\n');
                 }
-                let prefix = markdown_list_prefix(doc, list, list_label);
+                let prefix = markdown_list_prefix(doc, list, list_label, markdown_quoted_list_style(p.style.as_deref()));
                 let indent = " ".repeat(prefix.len());
                 for (index, line) in code.split('\n').enumerate() {
                     out.push_str(if index == 0 { &prefix } else if !line.is_empty() { &indent } else { "" });
@@ -7852,7 +7971,7 @@ fn serialize_paragraph(
 
     // 7. Bullet or Ordered list item
     if let Some(list) = p.list {
-        let prefix = markdown_list_prefix(doc, list, list_label);
+        let prefix = markdown_list_prefix(doc, list, list_label, markdown_quoted_list_style(p.style.as_deref()));
         let text = serialize_text();
         out.push_str(&format!("{prefix}{text}{attr_suffix}\n"));
         return;
@@ -7865,9 +7984,11 @@ fn serialize_paragraph(
     }
 }
 
-fn markdown_list_prefix(doc: &FlowDocument, list: ListRef, list_label: Option<&str>) -> String {
+fn markdown_list_prefix(
+    doc: &FlowDocument, list: ListRef, list_label: Option<&str>, quoted: Option<(usize, char, bool)>,
+) -> String {
     let ListRef { num_id, level } = list;
-    let indent = "  ".repeat(level as usize);
+    let indent = " ".repeat(quoted.map_or(level as usize * 2, |(indent, _, _)| indent));
     let is_ordered = doc
         .styles
         .numbering
@@ -7877,13 +7998,14 @@ fn markdown_list_prefix(doc: &FlowDocument, list: ListRef, list_label: Option<&s
         let start = doc.styles.numbering.nums.get(&num_id)
             .and_then(|list| list.start_overrides.get(&level)).copied().unwrap_or(1);
         let number = list_label.and_then(|label| label.strip_suffix('.'))
-            .filter(|_| start != 1)
+            .filter(|_| start != 1 || quoted.is_some())
             .and_then(|number| number.parse::<u32>().ok())
             .filter(|&number| number <= 999_999_999)
             .unwrap_or(start);
-        format!("{number}.")
+        let delimiter = quoted.map(|(_, marker, _)| marker).filter(|marker| *marker == ')').unwrap_or('.');
+        format!("{number}{delimiter}")
     } else {
-        "-".to_owned()
+        quoted.map(|(_, marker, _)| marker).filter(|marker| matches!(marker, '-' | '*' | '+')).unwrap_or('-').to_string()
     };
     format!("{indent}{marker} ")
 }
@@ -9617,6 +9739,41 @@ mod tests {
             assert_eq!(media.data.as_ref(), original);
             assert_eq!(size, EmuSize::new(width, height));
         }
+    }
+
+    #[test]
+    fn markdown_quoted_lists_preserve_numbers_and_nesting_through_docx() {
+        let source = concat!(
+            "> Steps.\n>\n",
+            "> 10. First\n",
+            ">     - Inner bullet\n>\n",
+            ">       7) Inner numbered item\n",
+            ">       8) Next number\n",
+            "> 11. Second\n>\n",
+            "> - Separate bullet\n",
+            ">   - Nested bullet\n",
+            "> - Last bullet\n\n",
+            "Outside.\n",
+        );
+        let check = |presentation: &Presentation| {
+            let flow = presentation.flow.as_deref().unwrap();
+            let labels = ibis_doc_model::flow::list_labels(flow);
+            let items: Vec<_> = ibis_doc_model::flow_command::all_paragraphs(flow).into_iter()
+                .filter_map(|p| p.list.map(|l| (l.level, labels[&p.id].as_str()))).collect();
+            assert_eq!(items.iter().map(|(level, _)| *level).collect::<Vec<_>>(), [0, 1, 2, 2, 0, 0, 1, 0]);
+            assert_eq!(items.iter().filter(|(_, label)| label.ends_with('.')).map(|(_, label)| *label).collect::<Vec<_>>(),
+                ["10.", "7.", "8.", "11."]);
+        };
+
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        check(&opened.presentation);
+        let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert_eq!(saved, source);
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        check(&reopened.presentation);
+        let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+        check(&crate::read(&docx).unwrap());
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
     }
 
     #[test]
