@@ -250,6 +250,28 @@ impl VsdxContainer {
         self.pages.iter().map(|p| p.info.clone()).collect()
     }
 
+    fn load_master_parts<'a>(&self, zip: &Archive<'_>, root: Node<'a, '_>) -> Result<HashMap<&'a str, String>> {
+        let mut master_parts = HashMap::new();
+        let mut total = 0;
+        for id in root
+            .descendants()
+            .filter(|&n| named(n, "Shape"))
+            .filter_map(|n| n.attribute("Master"))
+        {
+            if let Some(name) = self.masters.get(id)
+                && !master_parts.contains_key(id)
+            {
+                let text = part(zip, name)?;
+                total += text.len();
+                if total > MAX_MASTER_XML {
+                    return Err(invalid());
+                }
+                master_parts.insert(id, text);
+            }
+        }
+        Ok(master_parts)
+    }
+
     pub fn interpret_page_scene(&self, index: usize) -> Result<PageScene> {
         let page = self.pages.get(index).ok_or_else(invalid)?;
         let zip = Archive::new(&self.bytes).map_err(|_| invalid())?;
@@ -258,25 +280,7 @@ impl VsdxContainer {
         if !named(doc.root_element(), "PageContents") {
             return Err(invalid());
         }
-        let mut master_parts = HashMap::new();
-        let mut total = 0;
-        for id in doc
-            .root_element()
-            .descendants()
-            .filter(|&n| named(n, "Shape"))
-            .filter_map(|n| n.attribute("Master"))
-        {
-            if let Some(name) = self.masters.get(id)
-                && !master_parts.contains_key(id)
-            {
-                let text = part(&zip, name)?;
-                total += text.len();
-                if total > MAX_MASTER_XML {
-                    return Err(invalid());
-                }
-                master_parts.insert(id, text);
-            }
-        }
+        let master_parts = self.load_master_parts(&zip, doc.root_element())?;
         let masters: HashMap<_, _> = master_parts
             .iter()
             .map(|(&id, text)| Ok((id, xml(text)?)))

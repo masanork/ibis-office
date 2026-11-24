@@ -232,6 +232,15 @@ fn updates_vertical_and_leftward_routes() {
 
 #[test]
 fn reconnects_a_fixed_point_and_reopens_with_both_endpoint_formulas() {
+    verify_fixed_point(false);
+}
+
+#[test]
+fn reconnects_to_a_master_connection_point_using_instance_dimensions() {
+    verify_fixed_point(true);
+}
+
+fn verify_fixed_point(inherited: bool) {
     use ibis_ooxml::package::{Package, SaveOptions};
     let zip = Archive::new(SAMPLE.into()).unwrap();
     let entry = zip
@@ -242,14 +251,21 @@ fn reconnects_a_fixed_point_and_reopens_with_both_endpoint_formulas() {
     let source = String::from_utf8(zip.read(entry).unwrap()).unwrap();
     let xml = roxmltree::Document::parse(&source).unwrap();
     let mut insertions = Vec::new();
-    for (shape, x) in [("3", 0.0), ("4", 0.0)] {
+    for shape in ["3", "4"] {
         let node = xml
             .descendants()
             .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some(shape))
             .unwrap();
         let y = cell_value(&xml, shape, "LocPinY");
-        insertions.push((node.range().end - "</Shape>".len(),
-            format!(r#"<Section N="Connection"><Row IX="0"><Cell N="X" V="{x}"/><Cell N="Y" V="{y}"/></Row></Section>"#)));
+        if inherited && shape == "4" {
+            insertions.push((
+                node.range().start + "<Shape".len(),
+                r#" Master="100""#.to_owned(),
+            ));
+        } else {
+            insertions.push((node.range().end - "</Shape>".len(),
+                format!(r#"<Section N="Connection"><Row IX="0"><Cell N="X" V="0"/><Cell N="Y" V="{y}"/></Row></Section>"#)));
+        }
     }
     let mut source = source;
     insertions.sort_by_key(|&(offset, _)| std::cmp::Reverse(offset));
@@ -266,6 +282,35 @@ fn reconnects_a_fixed_point_and_reopens_with_both_endpoint_formulas() {
     );
     let mut package = Package::open(SAMPLE).unwrap();
     package.set_bytes(PAGE, source.into_bytes());
+    if inherited {
+        for (name, closing, addition) in [
+            (
+                "visio/masters/masters.xml",
+                "</Masters>",
+                r#"<Master ID="100"><Rel r:id="point-master"/></Master>"#,
+            ),
+            (
+                "visio/masters/_rels/masters.xml.rels",
+                "</Relationships>",
+                r#"<Relationship Id="point-master" Type="http://schemas.microsoft.com/visio/2010/relationships/master" Target="point-master.xml"/>"#,
+            ),
+        ] {
+            let entry = zip
+                .entries()
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap();
+            let original = String::from_utf8(zip.read(entry).unwrap()).unwrap();
+            assert!(original.contains(closing));
+            package.set_bytes(
+                name,
+                original
+                    .replace(closing, &format!("{addition}{closing}"))
+                    .into_bytes(),
+            );
+        }
+        package.set_bytes("visio/masters/point-master.xml", br#"<MasterContents xmlns="http://schemas.microsoft.com/office/visio/2012/main"><Shapes><Shape ID="1"><Cell N="Height" V="2"/><Section N="Connection"><Row IX="0"><Cell N="X" V="0"/><Cell N="Y" V="1" F="0.5*Height"/></Row></Section></Shape></Shapes></MasterContents>"#.to_vec());
+    }
     let doc =
         VsdxContainer::from_bytes(package.save(SaveOptions::default()).unwrap().into()).unwrap();
     let bytes = doc
@@ -289,6 +334,10 @@ fn reconnects_a_fixed_point_and_reopens_with_both_endpoint_formulas() {
         .find(|entry| entry.name == PAGE)
         .unwrap();
     let result = String::from_utf8(zip.read(entry).unwrap()).unwrap();
+    let page = roxmltree::Document::parse(&result).unwrap();
+    let expected_x = cell_value(&page, "4", "PinX") - cell_value(&page, "4", "LocPinX");
+    assert!((cell_value(&page, "12", "EndX") - expected_x).abs() < 1e-6);
+    assert!((cell_value(&page, "12", "EndY") - cell_value(&page, "4", "PinY")).abs() < 1e-5);
     assert_eq!(
         result
             .matches("PAR(PNT(Sheet.4!Connections.X1,Sheet.4!Connections.Y1))")

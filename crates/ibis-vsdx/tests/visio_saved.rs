@@ -217,3 +217,75 @@ fn moves_a_visio_group_without_changing_child_positions_relative_to_each_other()
         assert_eq!(a, b);
     }
 }
+
+#[test]
+#[ignore = "requires the Apache POI VSDX corpus"]
+fn moves_a_master_child_and_writes_only_a_local_pin_override() {
+    use ibis_ooxml::zip::Archive;
+    use ibis_vsdx::geometry_edit::GeometryEdit;
+
+    let root = PathBuf::from(std::env::var_os("VSDX_VISIO_CORPUS_DIR").unwrap());
+    let bytes = std::fs::read(root.join("test.vsdx")).unwrap();
+    let original = VsdxContainer::from_bytes(bytes.clone().into()).unwrap();
+    let before = original.interpret_page_scene(0).unwrap();
+    let moved = original
+        .edit_geometry(
+            0,
+            GeometryEdit::Move {
+                shape: 4,
+                dx: 0.25,
+                dy: 0.0,
+            },
+        )
+        .unwrap();
+    let temp_path = std::env::temp_dir().join(format!(
+        "ibis-visio-master-child-{}.vsdx",
+        std::process::id()
+    ));
+    std::fs::write(&temp_path, &moved).unwrap();
+    let saved = std::fs::read(&temp_path).unwrap();
+    std::fs::remove_file(&temp_path).unwrap();
+    let reopened = VsdxContainer::from_bytes(saved.into()).unwrap();
+    let after = reopened.interpret_page_scene(0).unwrap();
+    let body = |scene: &ibis_pdf::PageScene| {
+        scene
+            .display_list
+            .iter()
+            .find_map(|cmd| match cmd {
+                DisplayCmd::DrawPath {
+                    bounds,
+                    fill_rgba: Some([255, 255, 255, 255]),
+                    ..
+                } if bounds.width() > 350.0 && bounds.height() > 200.0 => Some(*bounds),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert!((body(&after).x0 - body(&before).x0 - 18.0).abs() < 0.01);
+    let old = Archive::new(bytes.into()).unwrap();
+    let new = Archive::new(moved.into()).unwrap();
+    for part in old.entries() {
+        let updated = new.entries().iter().find(|e| e.name == part.name).unwrap();
+        if part.name == "visio/pages/page1.xml" {
+            let xml = String::from_utf8(new.read(updated).unwrap()).unwrap();
+            let xml = roxmltree::Document::parse(&xml).unwrap();
+            let shape = xml
+                .descendants()
+                .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some("4"))
+                .unwrap();
+            assert_eq!(shape.attribute("MasterShape"), Some("6"));
+            let pin = shape
+                .children()
+                .find(|n| n.attribute("N") == Some("PinX"))
+                .unwrap();
+            assert_eq!(pin.attribute("F"), None);
+        } else {
+            assert_eq!(
+                old.read(part).unwrap(),
+                new.read(updated).unwrap(),
+                "{}",
+                part.name
+            );
+        }
+    }
+}

@@ -2,12 +2,15 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
-use std::{collections::BTreeSet, ops::Range};
+use std::{
+    collections::{BTreeSet, HashMap},
+    ops::Range,
+};
 
 use ibis_pdf::{Error, Result};
 use roxmltree::Node;
 
-use crate::{VsdxContainer, child, named, xml};
+use crate::{VsdxContainer, child, named, open_archive, xml};
 
 type Patch = (Range<usize>, String);
 type XmlNode<'a, 'i> = Node<'a, 'i>;
@@ -32,7 +35,7 @@ pub enum GeometryEdit {
 impl VsdxContainer {
     /// Patch one page and retain the other parts of the original package.
     pub fn edit_geometry(&self, page: usize, edit: GeometryEdit) -> Result<Vec<u8>> {
-        self.update_pages([(page, move |source| patch_page(source, edit))])
+        self.update_pages([(page, move |source| patch_page(self, source, edit))])
     }
 }
 
@@ -40,11 +43,21 @@ fn unsupported() -> Error {
     Error::new("This Visio shape or connector uses unsupported geometry, routing, or formulas")
 }
 
-fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>> {
+fn patch_page(
+    document: &VsdxContainer,
+    mut source: String,
+    edit: GeometryEdit,
+) -> Result<Option<Vec<u8>>> {
     let mut patches = Vec::new();
     {
         let doc = xml(&source)?;
         let root = doc.root_element();
+        let archive = open_archive(&document.bytes)?;
+        let master_parts = document.load_master_parts(&archive, root)?;
+        let masters: HashMap<_, _> = master_parts
+            .iter()
+            .map(|(&id, source)| Ok((id, xml(source)?)))
+            .collect::<Result<_>>()?;
         let shapes = child(root, "Shapes").ok_or_else(unsupported)?;
         let links: Vec<_> = child(root, "Connects")
             .into_iter()
@@ -61,7 +74,8 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                     .filter(|_| candidates.next().is_none())
                     .ok_or_else(unsupported)?;
                 let nested = node.parent() != Some(shapes);
-                let (x, y) = movable_pin(node)?;
+                let master = master_for(node, &masters, 0);
+                let (x, y) = movable_pin(node, master)?;
                 if !dx.is_finite() || !dy.is_finite() || dx.abs().max(dy.abs()) > 1000.0 {
                     return Err(unsupported());
                 }
@@ -88,8 +102,7 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                         return Err(unsupported());
                     }
                 }
-                number_patch(&mut patches, cell(node, "PinX")?, x + dx)?;
-                number_patch(&mut patches, cell(node, "PinY")?, y + dy)?;
+                patch_pin(&mut patches, node, x + dx, y + dy)?;
                 let mut connectors = BTreeSet::new();
                 for &link in &links {
                     if id(link, "ToSheet") == Some(shape) {
@@ -102,7 +115,7 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                     for (point, link) in [(&mut start, line.links[0]), (&mut end, line.links[1])] {
                         if id(link, "ToSheet") == Some(shape) {
                             if let Some(row) = fixed_row(link) {
-                                let saved = connection_point(node, row)?;
+                                let saved = connection_point(node, master, row)?;
                                 if !close(saved.0, point.0) || !close(saved.1, point.1) {
                                     return Err(unsupported());
                                 }
@@ -136,14 +149,16 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                 if is_group(old_node) || is_group(new_node) {
                     return Err(unsupported());
                 }
+                let old_master = master_for(old_node, &masters, 0);
+                let new_master = master_for(new_node, &masters, 0);
                 let link = line.links[idx];
                 let mut points = line.points;
                 points[idx] = if let Some(row) = fixed_row(link) {
-                    let old_point = connection_point(old_node, row)?;
+                    let old_point = connection_point(old_node, old_master, row)?;
                     if !close(old_point.0, points[idx].0) || !close(old_point.1, points[idx].1) {
                         return Err(unsupported());
                     }
-                    let new_point = connection_point(new_node, row)?;
+                    let new_point = connection_point(new_node, new_master, row)?;
                     let prefix = if idx == 0 { "Begin" } else { "End" };
                     for axis in ["X", "Y"] {
                         attribute_patch(
@@ -181,8 +196,8 @@ fn patch_page(mut source: String, edit: GeometryEdit) -> Result<Option<Vec<u8>>>
                         "F",
                         format!("_XFTRIGGER(Sheet.{target}!EventXFMod)"),
                     )?;
-                    let (old_x, old_y) = movable_pin(old_node)?;
-                    let (new_x, new_y) = movable_pin(new_node)?;
+                    let (old_x, old_y) = movable_pin(old_node, old_master)?;
+                    let (new_x, new_y) = movable_pin(new_node, new_master)?;
                     let old_width = value(old_node, "Width")?;
                     let new_width = value(new_node, "Width")?;
                     let old_height = value(old_node, "Height")?;
@@ -255,17 +270,80 @@ fn is_group(node: XmlNode<'_, '_>) -> bool {
     node.attribute("Type") == Some("Group") || child(node, "Shapes").is_some()
 }
 
-fn movable_pin(node: XmlNode<'_, '_>) -> Result<(f64, f64)> {
+fn master_for<'a, 'i>(
+    shape: XmlNode<'_, '_>,
+    masters: &'a HashMap<&str, roxmltree::Document<'i>>,
+    depth: usize,
+) -> Option<XmlNode<'a, 'i>> {
+    if depth >= 64 {
+        return None;
+    }
+    if let Some(id) = shape.attribute("Master") {
+        return child(child(masters.get(id)?.root_element(), "Shapes")?, "Shape");
+    }
+    let id = shape.attribute("MasterShape")?;
+    let parent = shape.parent()?.parent()?;
+    let master = master_for(parent, masters, depth + 1)?;
+    child(master, "Shapes")?
+        .children()
+        .find(|&node| named(node, "Shape") && node.attribute("ID") == Some(id))
+}
+
+fn inherited_value(
+    node: XmlNode<'_, '_>,
+    master: Option<XmlNode<'_, '_>>,
+    key: &str,
+) -> Result<f64> {
+    if cell(node, key).is_ok() {
+        value(node, key)
+    } else {
+        value(master.ok_or_else(unsupported)?, key)
+    }
+}
+
+fn movable_pin(node: XmlNode<'_, '_>, master: Option<XmlNode<'_, '_>>) -> Result<(f64, f64)> {
     if cell(node, "BeginX").is_ok()
-        || ["PinX", "PinY"]
+        || master.is_some_and(|m| cell(m, "BeginX").is_ok())
+        || ["PinX", "PinY"].into_iter().any(|key| {
+            match cell(node, key).ok().and_then(|c| c.attribute("F")) {
+                None => false,
+                Some("Inh") => master.is_none(),
+                Some(_) => true,
+            }
+        })
+        || ["LockMoveX", "LockMoveY"]
             .into_iter()
-            .any(|key| cell(node, key).is_ok_and(|c| c.attribute("F").is_some()))
-        || cell(node, "LockMoveX").is_ok_and(|_| value(node, "LockMoveX").ok() != Some(0.0))
-        || cell(node, "LockMoveY").is_ok_and(|_| value(node, "LockMoveY").ok() != Some(0.0))
+            .any(|key| inherited_value(node, master, key).is_ok_and(|value| value != 0.0))
     {
         return Err(unsupported());
     }
-    Ok((value(node, "PinX")?, value(node, "PinY")?))
+    Ok((
+        inherited_value(node, master, "PinX")?,
+        inherited_value(node, master, "PinY")?,
+    ))
+}
+
+fn patch_pin(patches: &mut Vec<Patch>, shape: XmlNode<'_, '_>, x: f64, y: f64) -> Result<()> {
+    let mut added = String::new();
+    for (key, position) in [("PinX", x), ("PinY", y)] {
+        if let Ok(node) = cell(shape, key) {
+            number_patch(patches, node, position)?;
+            if let Some(formula) = node.attribute_node("F") {
+                patches.push((formula.range(), String::new()));
+            }
+        } else {
+            if !position.is_finite() || position.abs() > 1_000_000.0 {
+                return Err(unsupported());
+            }
+            added.push_str(&format!(r#"<Cell N="{key}" V="{position}"/>"#));
+        }
+    }
+    if !added.is_empty() {
+        let first = shape.first_element_child().ok_or_else(unsupported)?;
+        let at = first.range().start;
+        patches.push((at..at, added));
+    }
+    Ok(())
 }
 
 fn attribute_patch(
@@ -311,34 +389,76 @@ fn fixed_formula(target: u32, row: u32) -> String {
     format!("PAR(PNT(Sheet.{target}!Connections.X{row},Sheet.{target}!Connections.Y{row}))")
 }
 
-fn connection_point(shape: XmlNode<'_, '_>, row: u32) -> Result<(f64, f64)> {
-    if ["Angle", "FlipX", "FlipY"].into_iter().any(|key| {
-        cell(shape, key)
-            .is_ok_and(|c| c.attribute("F").is_some() || value(shape, key).ok() != Some(0.0))
-    }) {
+fn connection_row<'a, 'i>(shape: XmlNode<'a, 'i>, row: u32) -> Option<XmlNode<'a, 'i>> {
+    let section = shape
+        .children()
+        .find(|&n| named(n, "Section") && n.attribute("N") == Some("Connection"))?;
+    section
+        .children()
+        .find(|&n| named(n, "Row") && id(n, "IX") == Some(row - 1))
+}
+
+fn connection_point(
+    shape: XmlNode<'_, '_>,
+    master: Option<XmlNode<'_, '_>>,
+    row: u32,
+) -> Result<(f64, f64)> {
+    if ["Angle", "FlipX", "FlipY"]
+        .into_iter()
+        .any(|key| inherited_value(shape, master, key).is_ok_and(|value| value != 0.0))
+    {
         return Err(unsupported());
     }
-    let mut sections = shape
-        .children()
-        .filter(|&n| named(n, "Section") && n.attribute("N") == Some("Connection"));
-    let section = sections
-        .next()
-        .filter(|_| sections.next().is_none())
-        .ok_or_else(unsupported)?;
-    let mut rows = section
-        .children()
-        .filter(|&n| named(n, "Row") && id(n, "IX") == Some(row - 1));
-    let point = rows
-        .next()
-        .filter(|_| rows.next().is_none())
-        .ok_or_else(unsupported)?;
-    if point.attribute("Del") == Some("1") {
+    let local = connection_row(shape, row);
+    let inherited = master.and_then(|master| connection_row(master, row));
+    if local.is_some_and(|row| row.attribute("Del") == Some("1"))
+        || inherited.is_some_and(|row| row.attribute("Del") == Some("1"))
+    {
         return Err(unsupported());
     }
-    let (x, y) = movable_pin(shape)?;
+    let coordinate = |key: &str| {
+        let local_cell = local.and_then(|node| cell(node, key).ok());
+        let master_cell = inherited.and_then(|node| cell(node, key).ok());
+        // A local cached value already accounts for resizing the master instance.
+        if let Some(local) = local_cell {
+            return local
+                .attribute("V")
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite())
+                .ok_or_else(unsupported);
+        }
+        let cell = master_cell.ok_or_else(unsupported)?;
+        let Some(formula) = cell.attribute("F") else {
+            return cell
+                .attribute("V")
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite())
+                .ok_or_else(unsupported);
+        };
+        for dimension in ["Width", "Height"] {
+            let factor = if formula == dimension {
+                Some(1.0)
+            } else {
+                formula
+                    .strip_prefix(dimension)
+                    .and_then(|f| f.strip_prefix('*'))
+                    .or_else(|| {
+                        formula
+                            .strip_suffix(dimension)
+                            .and_then(|f| f.strip_suffix('*'))
+                    })
+                    .and_then(|f| f.parse::<f64>().ok())
+            };
+            if let Some(factor) = factor.filter(|v| v.is_finite()) {
+                return Ok(factor * inherited_value(shape, master, dimension)?);
+            }
+        }
+        Err(unsupported())
+    };
+    let (x, y) = movable_pin(shape, master)?;
     Ok((
-        x + value(point, "X")? - value(shape, "LocPinX")?,
-        y + value(point, "Y")? - value(shape, "LocPinY")?,
+        x + coordinate("X")? - inherited_value(shape, master, "LocPinX")?,
+        y + coordinate("Y")? - inherited_value(shape, master, "LocPinY")?,
     ))
 }
 
