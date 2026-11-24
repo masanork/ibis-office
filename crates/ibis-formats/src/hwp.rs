@@ -4,7 +4,7 @@
 
 //! Binary Hangul 5.x import from Hancom's published file-format specification.
 //!
-//! 본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
+//! 본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
 
 use std::collections::HashMap;
 
@@ -23,7 +23,7 @@ use crate::{
 };
 
 pub const SPEC_CREDIT: &str =
-    "본 제품은 한글과컴퓨터의 한글 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.";
+    "본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.";
 
 const SIGNATURE: &[u8] = b"HWP Document File\0";
 const STREAM_LIMIT: usize = 16 * 1024 * 1024;

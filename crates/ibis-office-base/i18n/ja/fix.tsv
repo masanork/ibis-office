@@ -38,6 +38,7 @@ app.settings	設定…
 app.file.print	印刷…
 about.version	バージョン {version}
 about.license	AGPL-3.0-only または商用ライセンスで提供しています。
+about.hwp-spec-credit	HWP の取り込みは、Hancom の公開仕様に基づいています。
 about.update-available	新しいバージョンがあります。
 xlsx.print-options	印刷オプション
 xlsx.print.gridlines	枠線

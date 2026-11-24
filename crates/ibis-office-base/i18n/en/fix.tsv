@@ -209,6 +209,7 @@ fix.symbols.circled-numbers-units	Circled Numbers and Units
 fix.symbols.symbols-special-characters	Symbols and Special Characters
 about.version	Version {version}
 about.license	Provided under AGPL-3.0-only or a commercial license.
+about.hwp-spec-credit	HWP import is based on Hancom's published specification.
 about.update-available	A new version is available.
 fix.picture-panel.rotate-flip	Rotate and Flip
 fix.picture-panel.rotate-left-90	Rotate Left 90°
