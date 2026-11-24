@@ -420,6 +420,11 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
                         body
                     };
                     let first_line = 1 + prefix.bytes().filter(|byte| *byte == b'\n').count();
+                    if !truncated {
+                        findings.extend(ibis_formats::okf::diagnostics::inspect_reserved_body(
+                            path, body, first_line, 13usize.saturating_sub(findings.len()),
+                        ));
+                    }
                     findings.extend(
                         ibis_formats::okf::diagnostics::inspect_body(path, body, first_line, |target, fragment| {
                             let (status, unchecked) = check_okf_body_target(
@@ -442,6 +447,7 @@ pub(crate) fn run(folder: &Folder, call: &ToolCall, skill: Option<&str>) -> Resu
                         "field": finding.field,
                         "line": finding.line,
                         "code": finding.code,
+                        "severity": finding.severity,
                         "target": finding.target.as_deref().map(|target| excerpt(target, 100)),
                     }));
                 }
@@ -1020,8 +1026,8 @@ mod tests {
         fixture.write("assets/raw.bin", "asset");
         fixture.write("broken.md", "---\n[one, two]\n---\n");
         fixture.write("unterminated.md", "---\ntype: Metric\n");
-        fixture.write("nested/log.md", "---\ntitle: Log\n---\n");
-        fixture.write("index.md", "---\nokf_version: 0.3\n---\n");
+        fixture.write("nested/log.md", "---\ntitle: Log\n---\n## 2025-01-01\n\n- Change\n");
+        fixture.write("index.md", "---\nokf_version: 0.3\n---\n# Index\n\n- [Ordinary](ordinary.md) - Other notes\n");
         fixture.write("ordinary.md", "# Ordinary Markdown");
         let folder = Folder::scan(&fixture.0).unwrap();
         let result = call(&folder, "folder_diagnose_okf", json!({})).unwrap();
@@ -1036,6 +1042,20 @@ mod tests {
         assert_eq!(body_issue["line"], 10);
         assert_eq!(body_issue["target"], "../body-absent.md");
         assert_eq!(std::fs::read_to_string(fixture.0.join("nested/metric.md")).unwrap(), concept);
+    }
+
+    #[test]
+    fn okf_reserved_body_issues_include_file_line_and_severity() {
+        let fixture = Fixture::new();
+        fixture.write("entry.md", "Body");
+        fixture.write("index.md", "---\nokf_version: \"0.3\"\n---\n# Entries\n\n- [Entry](entry.md)\n");
+        fixture.write("log.md", "# History\n\n## 2025-02-29\n\n- Added entry\n");
+        let folder = Folder::scan(&fixture.0).unwrap();
+        let result = call(&folder, "folder_diagnose_okf", json!({})).unwrap();
+        assert_eq!(result.value["issues"], json!([
+            {"path":"index.md","field":"body.index","line":6,"code":"index_entry_without_description","severity":"warning","target":null},
+            {"path":"log.md","field":"body.log","line":3,"code":"log_invalid_date","severity":"error","target":null},
+        ]));
     }
 
     #[test]

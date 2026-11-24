@@ -2,13 +2,17 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
 use serde_json::Value;
+
+use std::ops::Range;
 
 pub struct Finding {
     pub field: String,
     pub code: &'static str,
     pub target: Option<String>,
     pub line: Option<usize>,
+    pub severity: Option<&'static str>,
 }
 
 /// Inspect a bounded Markdown frontmatter prefix. Unresolved local targets are advisory.
@@ -20,6 +24,7 @@ pub fn inspect(path: &str, prefix: &str, exists: impl Fn(&str) -> bool) -> Vec<F
             code,
             target,
             line: None,
+            severity: None,
         })
     };
     let (metadata, _) = match super::markdown_frontmatter(prefix) {
@@ -166,30 +171,44 @@ pub fn inspect_body<'a>(
     first_line: usize,
     mut check: impl FnMut(&str, Option<&str>) -> LinkTarget + 'a,
 ) -> impl Iterator<Item = Finding> + 'a {
-    use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
-
     let newlines: Vec<_> = body.match_indices('\n').map(|(offset, _)| offset).collect();
-    Parser::new_ext(body, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES)
-        .into_offset_iter()
-        .filter_map(move |(event, range)| {
-            let Event::Start(Tag::Link {
-                link_type,
-                dest_url,
-                ..
-            }) = event
-            else {
-                return None;
-            };
-            if matches!(link_type, LinkType::Email | LinkType::Autolink) || dest_url.is_empty() {
-                return None;
-            }
-            Some(Finding {
-                field: "body.link".into(),
-                code: path_problem(path, &dest_url, &mut check)?,
-                target: Some(dest_url.into_string()),
-                line: Some(first_line + newlines.partition_point(|offset| *offset < range.start)),
-            })
+    body_events(body).filter_map(move |(event, range)| {
+        let Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            ..
+        }) = event
+        else {
+            return None;
+        };
+        if matches!(link_type, LinkType::Email | LinkType::Autolink) || dest_url.is_empty() {
+            return None;
+        }
+        Some(Finding {
+            field: "body.link".into(),
+            code: path_problem(path, &dest_url, &mut check)?,
+            target: Some(dest_url.into_string()),
+            line: Some(line_at(&newlines, first_line, range.start)),
+            severity: None,
         })
+    })
+}
+
+pub fn inspect_reserved_body(
+    path: &str,
+    body: &str,
+    first_line: usize,
+    limit: usize,
+) -> Vec<Finding> {
+    super::reserved::inspect(path, body, first_line, limit)
+}
+
+pub(super) fn body_events(body: &str) -> impl Iterator<Item = (Event<'_>, Range<usize>)> {
+    Parser::new_ext(body, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES).into_offset_iter()
+}
+
+pub(super) fn line_at(newlines: &[usize], first_line: usize, offset: usize) -> usize {
+    first_line + newlines.partition_point(|newline| *newline < offset)
 }
 
 #[cfg(test)]
