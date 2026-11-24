@@ -3030,6 +3030,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
             Some(FlowAlign::Center) => TextAlign::Center,
             Some(FlowAlign::Right) => TextAlign::Right,
             Some(FlowAlign::Justify) => TextAlign::Justify,
+            Some(FlowAlign::Distribute) => TextAlign::Distributed,
             _ => TextAlign::Left,
         });
         let hundredths = |emu: Option<i64>| emu.map_or(0, |e| (e.max(0) / 127) as u32);
@@ -3071,6 +3072,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
                     _ => ibis_doc_model::TateChuYoko::Off,
                 }),
                 char_scale: f.scale.filter(|s| *s != 100),
+                spacing: (f.spacing.unwrap_or(0) / 127).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
                 // Word's line-start and line-end rules (禁則) apply to East Asian text whatever language it is marked as; the shape text engine follows the run's
                 // language for them (PowerPoint's rule), so a run with no East Asian language is Japanese here (the vertical text box of `ibisOffice-087-tatechuyoko.docx`
                 // started a line with 。).
@@ -3088,6 +3090,8 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
         let end_style = style_of(ppr.and_then(|pr| child(pr, "rPr")), true);
         let new_paragraph = |line_break: bool| Paragraph {
             align,
+            margin_left: para.left.unwrap_or(0),
+            indent: para.first_line.unwrap_or(0),
             space_before: hundredths(para.before),
             space_before_exact: true,
             space_after: hundredths(para.after),
@@ -3139,6 +3143,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
                         }
                     }
                     "noBreakHyphen" => text.push('-'),
+                    "tab" => text.push('\t'),
                     "br" if attr(c, "type").is_none_or(|t| t == "textWrapping") => {
                         flush(&mut text, &mut current);
                         done.push(std::mem::replace(&mut current, new_paragraph(true)));

@@ -243,9 +243,14 @@ pub(super) fn place_group_leaf(
                             ],
                             matrix,
                         ) {
+                            let line_width =
+                                ((width - i.left as f64 - i.right as f64) * sx).round() as i64;
                             i.left = (area.x - frame.x).max(0);
                             i.top = (area.y - frame.y).max(0);
                             i.right = (frame.right() - area.right()).max(0);
+                            if text.wrap && line_width > 0 {
+                                i.right = i.right.max(frame.width - i.left - line_width);
+                            }
                             i.bottom = (frame.bottom() - area.bottom()).max(0);
                         }
                     }
@@ -675,5 +680,57 @@ mod tests {
             panic!("cubic segment")
         };
         assert_eq!(&segment[..2], ["933", "400"]);
+    }
+}
+
+pub(super) fn box_run_style(
+    format: Option<&ibis_doc_model::RunFormat>,
+) -> ibis_doc_model::RunStyle {
+    let Some(f) = format else {
+        return Default::default();
+    };
+    ibis_doc_model::RunStyle {
+        font_size: f.size,
+        lang: Some("ko-KR".into()),
+        font: f.east_asian_font.clone().or_else(|| f.font.clone()),
+        fallback_font: f.font.clone(),
+        bold: f.bold,
+        italic: f.italic,
+        underline: f.underline.unwrap_or(false),
+        color: f.color,
+        char_scale: f.scale,
+        spacing: (f.spacing.unwrap_or(0) / 127).clamp(-16_000, 16_000) as i32,
+        ..Default::default()
+    }
+}
+
+pub(super) fn box_paragraph(
+    format: Option<&ibis_doc_model::ParaFormat>,
+    pitch: Option<ibis_doc_model::LineHeight>,
+) -> ibis_doc_model::Paragraph {
+    use ibis_doc_model::{LineHeight, LineSpacing, TextAlign};
+    let height = pitch.or_else(|| format.and_then(|p| p.line));
+    let hundredths =
+        |value: Option<i64>| (value.unwrap_or(0).max(0) / 127).min(i64::from(u32::MAX)) as u32;
+    ibis_doc_model::Paragraph {
+        margin_left: format.and_then(|p| p.left).unwrap_or(0),
+        indent: format.and_then(|p| p.first_line).unwrap_or(0),
+        space_before: hundredths(format.and_then(|p| p.before)),
+        space_after: hundredths(format.and_then(|p| p.after)),
+        align: format.and_then(|p| p.align).map(|a| match a {
+            FlowAlign::Center => TextAlign::Center,
+            FlowAlign::Right => TextAlign::Right,
+            FlowAlign::Justify => TextAlign::Justify,
+            FlowAlign::Distribute => TextAlign::Distributed,
+            _ => TextAlign::Left,
+        }),
+        line_spacing: match height {
+            Some(LineHeight::Exact(h)) => Some(LineSpacing::Points((h / 127).max(1) as u32)),
+            Some(LineHeight::Auto(f)) => {
+                Some(LineSpacing::Percent(f.saturating_mul(100_000) / 240))
+            }
+            _ => None,
+        },
+        ..Default::default()
     }
 }

@@ -12,7 +12,7 @@ use ibis_doc_model::{
     FlowTable, Geometry, GradientStop, GroupMember, LineDash, LineHeight, ListLevel, ListSuffix,
     MediaFormat, MediaId, Numbering, PageSetup, ParaFormat, PartKind, PictureLook, Presentation,
     Rgb, RowHeight, RunFormat, SectionBreak, SectionSetup, Shape, ShapeGroup, ShapeKind, Stroke,
-    TextBody, TextStyle, VerticalAnchor, VerticalMerge,
+    TextBody, VerticalAnchor, VerticalMerge,
 };
 use roxmltree::{Document, Node};
 
@@ -382,6 +382,57 @@ mod tests {
     }
 
     #[test]
+    fn hwpx_text_box_keeps_soft_wrapping_after_docx_conversion() {
+        let package = format!(
+            r#"<package xmlns="{OPF}"><manifest><item id="s" href="section0.xml"/></manifest><spine><itemref idref="s"/></spine></package>"#
+        );
+        let section = format!(
+            r#"<hs:sec xmlns:hs="{SECTION}" xmlns:hp="{PARAGRAPH}">
+            <hp:p><hp:run><hp:container><hp:rect><hp:orgSz width="4000" height="6000"/>
+            <hp:drawText lastWidth="3500"><hp:subList lineWrap="BREAK" vertAlign="CENTER">
+              <hp:p><hp:run><hp:t>묶음 안 글상자 가나다</hp:t></hp:run>
+                <hp:linesegarray><hp:lineseg textpos="0" vertpos="0"/>
+                  <hp:lineseg textpos="5" vertpos="1600"/><hp:lineseg textpos="9" vertpos="3200"/></hp:linesegarray>
+              </hp:p>
+            </hp:subList><hp:textMargin left="283" right="283" top="283" bottom="283"/></hp:drawText>
+            </hp:rect></hp:container></hp:run></hp:p>
+            </hs:sec>"#
+        );
+        let mut writer = ibis_ooxml::zip::Writer::new();
+        for (name, bytes) in [
+            ("mimetype", MIME_TYPE),
+            (PACKAGE, package.as_bytes()),
+            ("Contents/section0.xml", section.as_bytes()),
+        ] {
+            writer.add(name, Default::default(), bytes).unwrap();
+        }
+        let flow = open(&writer.finish().unwrap())
+            .unwrap()
+            .presentation
+            .flow
+            .unwrap();
+        let Block::Paragraph(p) = &flow.body[0] else {
+            panic!("paragraph")
+        };
+        let FlowRunKind::Shape(shape) = &p.runs[0].kind else {
+            panic!("shape")
+        };
+        let ShapeKind::Auto(auto) = &shape.kind else {
+            panic!("auto shape")
+        };
+        let text = auto.text.as_ref().unwrap();
+        assert_eq!(text.text(), "묶음 안 글상자 가나다");
+        assert_eq!(text.paragraphs.len(), 1);
+        assert_eq!(
+            text.paragraphs[0].line_spacing,
+            Some(ibis_doc_model::LineSpacing::Points(1600))
+        );
+        assert_eq!(text.anchor, VerticalAnchor::Middle);
+        assert!(text.wrap);
+        assert_eq!(text.insets.right, units(783));
+    }
+
+    #[test]
     fn nested_vector_group_survives_docx_roundtrip() {
         let package = format!(
             r#"<package xmlns="{OPF}"><manifest><item id="s" href="section0.xml"/></manifest><spine><itemref idref="s"/></spine></package>"#
@@ -595,7 +646,11 @@ mod tests {
                 <hp:pos treatAsChar="0" horzRelTo="PAPER" horzOffset="5000" vertRelTo="PAPER" vertOffset="2500"/>
                 <hp:lineShape color="#000000" width="100" style="DOT"/>
                 <hc:fillBrush><hc:winBrush faceColor="#86AFDC"/></hc:fillBrush>
-                <hp:drawText><hp:subList vertAlign="CENTER"><hp:p><hp:run><hp:t>ABC</hp:t></hp:run></hp:p></hp:subList><hp:textMargin left="400"/></hp:drawText>
+                <hp:drawText><hp:subList vertAlign="CENTER" lineWrap="KEEP"><hp:p paraPrIDRef="1">
+                  <hp:run charPrIDRef="1"><hp:t>ABC<hp:tab/>한글</hp:t></hp:run>
+                  <hp:run><hp:t><hp:lineBreak/>DEF</hp:t></hp:run>
+                  <hp:linesegarray><hp:lineseg vertpos="0"/><hp:lineseg vertpos="1550"/></hp:linesegarray>
+                </hp:p></hp:subList><hp:textMargin left="400"/></hp:drawText>
               </hp:rect>
             </hp:run></hp:p>
             <hp:p><hp:run><hp:tbl rowCnt="3" colCnt="3" pageBreak="TABLE" repeatHeader="1" cellSpacing="100">
@@ -674,7 +729,18 @@ mod tests {
         assert_eq!(rectangle.fill, Fill::Solid(Color::opaque(Rgb(0x86_af_dc))));
         assert_eq!(rectangle.stroke.as_ref().unwrap().dash, LineDash::Dot);
         let text = rectangle.text.as_ref().unwrap();
-        assert_eq!(text.text(), "ABC");
+        assert_eq!(text.text(), "ABC\t한글\nDEF");
+        assert!(!text.wrap);
+        assert_eq!(
+            text.paragraphs[0].align,
+            Some(ibis_doc_model::TextAlign::Center)
+        );
+        assert_eq!(
+            text.paragraphs[0].line_spacing,
+            Some(ibis_doc_model::LineSpacing::Points(1550))
+        );
+        assert!(text.paragraphs[1].line_break);
+        assert_eq!(text.paragraphs[0].runs[0].style.font_size, Some(1400));
         assert_eq!(text.anchor, VerticalAnchor::Middle);
         assert_eq!(text.insets.left, units(400));
         assert_eq!(rect.floating.as_ref().unwrap().wrap, "none");
@@ -1407,29 +1473,64 @@ impl Importer<'_, '_> {
         if let Some(draw) = part(node, "drawText")
             && let Some(content) = part(draw, "subList")
         {
-            let lines: Vec<String> = content
+            let paragraphs: Vec<_> = content
                 .children()
                 .filter(|p| p.has_tag_name((PARAGRAPH, "p")))
                 .map(|p| {
-                    p.children()
-                        .filter(|r| r.has_tag_name((PARAGRAPH, "run")))
-                        .flat_map(|r| r.children().filter(|t| t.has_tag_name((PARAGRAPH, "t"))))
-                        .flat_map(|t| {
-                            t.children().filter_map(|n| {
-                                if n.has_tag_name((PARAGRAPH, "lineBreak")) {
-                                    Some("\n")
-                                } else if n.has_tag_name((PARAGRAPH, "tab")) {
-                                    Some("\t")
-                                } else {
-                                    n.is_text().then(|| n.text()).flatten()
-                                }
+                    let format = number(p, "paraPrIDRef").and_then(|id| self.paragraphs.get(&id));
+                    // Use the recorded baseline distance only for regular multi-line
+                    // paragraphs. The text stays in one paragraph and can reflow.
+                    let pitch = part(p, "linesegarray").and_then(|array| {
+                        let mut positions = array
+                            .children()
+                            .filter_map(|line| number::<i64>(line, "vertpos"));
+                        let first = positions.next()?;
+                        let second = positions.next()?;
+                        let step = second
+                            .checked_sub(first)
+                            .filter(|d| (1..=100_000).contains(d))?;
+                        let mut last = second;
+                        positions
+                            .all(|p| {
+                                let uniform = p.checked_sub(last) == Some(step);
+                                last = p;
+                                uniform
                             })
-                        })
-                        .collect()
+                            .then(|| LineHeight::Exact(units(step)))
+                    });
+                    let mut para = shared::box_paragraph(format, pitch);
+                    for run in p.children().filter(|r| r.has_tag_name((PARAGRAPH, "run"))) {
+                        let format = number(run, "charPrIDRef").and_then(|id| self.runs.get(&id));
+                        let style = shared::box_run_style(format);
+                        let text: String = run
+                            .children()
+                            .filter(|t| t.has_tag_name((PARAGRAPH, "t")))
+                            .flat_map(|t| {
+                                t.children().filter_map(|n| {
+                                    if n.has_tag_name((PARAGRAPH, "lineBreak")) {
+                                        Some("\n")
+                                    } else if n.has_tag_name((PARAGRAPH, "tab")) {
+                                        Some("\t")
+                                    } else {
+                                        n.is_text().then(|| n.text()).flatten()
+                                    }
+                                })
+                            })
+                            .collect();
+                        if !text.is_empty() {
+                            para.runs.push(ibis_doc_model::Run { text, style });
+                        }
+                    }
+                    para
                 })
                 .collect();
-            if !lines.is_empty() {
-                let mut text = TextBody::plain(&lines.join("\n"), TextStyle::default());
+            if !paragraphs.is_empty() {
+                let mut text = TextBody {
+                    paragraphs,
+                    wrap: !matches!(content.attribute("lineWrap"), Some("SQUEEZE" | "KEEP")),
+                    vertical: content.attribute("textDirection") == Some("VERTICAL"),
+                    ..Default::default()
+                };
                 text.anchor = match content.attribute("vertAlign") {
                     Some("CENTER") => VerticalAnchor::Middle,
                     Some("BOTTOM") => VerticalAnchor::Bottom,
@@ -1441,6 +1542,16 @@ impl Importer<'_, '_> {
                     text.insets.right = inset("right");
                     text.insets.top = inset("top");
                     text.insets.bottom = inset("bottom");
+                }
+                // A rotated HWPX text box may keep a narrower layout width
+                // than the drawing's own unrotated frame.
+                if let Some(last_width) = number::<i64>(draw, "lastWidth").filter(|&w| w > 0)
+                    && let Some(size) = size_part(node, "orgSz").or_else(|| object_size(node))
+                {
+                    text.insets.right = text
+                        .insets
+                        .right
+                        .max(size.width - units(last_width) + text.insets.right);
                 }
                 auto.text = Some(text);
             }

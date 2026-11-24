@@ -814,7 +814,7 @@ impl<'a> Importer<'a> {
         if root_size.is_none()
             && let ShapeKind::Auto(auto) = &mut shape_kind
         {
-            auto.text = grouped_shape_text(records, index);
+            auto.text = grouped_shape_text(records, index, &self.paragraphs, &self.runs);
         }
         let id = self.presentation.new_shape_id();
         let mut shape = Shape::new(
@@ -1148,7 +1148,12 @@ fn measured_paragraph_height(bytes: &[u8], include_final_gap: bool) -> Option<Em
     Some(total)
 }
 
-fn grouped_shape_text(records: &[Record<'_>], index: usize) -> Option<ibis_doc_model::TextBody> {
+fn grouped_shape_text(
+    records: &[Record<'_>],
+    index: usize,
+    formats: &[ParaFormat],
+    styles: &[RunFormat],
+) -> Option<ibis_doc_model::TextBody> {
     let record = records[index];
     let mut children = index + 1..record.end;
     let list_index = children.find(|&i| {
@@ -1165,19 +1170,58 @@ fn grouped_shape_text(records: &[Record<'_>], index: usize) -> Option<ibis_doc_m
         if paragraph.tag != PARA || paragraph.level != list.level {
             break;
         }
-        let mut line = Vec::new();
-        for text in &records[cursor + 1..paragraph.end] {
-            if text.tag != TEXT || text.level != paragraph.level + 1 {
-                continue;
-            }
+        let parts = &records[cursor + 1..paragraph.end];
+        let find = |tag| {
+            parts
+                .iter()
+                .find(|r| r.tag == tag && r.level == paragraph.level + 1)
+        };
+        let format = word(paragraph.bytes, 8)
+            .ok()
+            .and_then(|id| formats.get(usize::from(id)));
+        let pitch = find(69).and_then(|lines| {
+            let mut chunks = lines.bytes.chunks_exact(36);
+            let first = dimension(chunks.next()?, 4).ok()?;
+            let second = dimension(chunks.next()?, 4).ok()?;
+            let step = second - first;
+            let mut last = second;
+            (step > 0
+                && chunks.all(|line| {
+                    let next = dimension(line, 4).unwrap_or(0);
+                    let uniform = next - last == step;
+                    last = next;
+                    uniform
+                }))
+            .then_some(LineHeight::Exact(step))
+        });
+        let mut line = shared::box_paragraph(format, pitch);
+        if let Some(text) = find(TEXT) {
             let words = utf16(text.bytes).ok()?;
+            let mut changes = find(CHAR_RUNS)
+                .map_or(&[][..], |r| r.bytes)
+                .chunks_exact(8)
+                .filter_map(|r| Some((dword(r, 0).ok()? as usize, dword(r, 4).ok()? as usize)))
+                .peekable();
+            let mut style = None;
+            let mut buffer = Vec::new();
             let mut offset = 0;
+            let push = |line: &mut ibis_doc_model::Paragraph, buffer: &mut Vec<u16>, style| {
+                if !buffer.is_empty() {
+                    line.runs.push(ibis_doc_model::Run {
+                        text: String::from_utf16_lossy(buffer),
+                        style: shared::box_run_style(style),
+                    });
+                    buffer.clear();
+                }
+            };
             while let Some(&code) = words.get(offset) {
-                match code {
-                    9 => line.push(9),
-                    10 => line.push(10),
-                    32.. => line.push(code),
-                    _ => {}
+                while let Some(&(_, id)) = changes.peek().filter(|(pos, _)| *pos <= offset) {
+                    push(&mut line, &mut buffer, style);
+                    style = styles.get(id);
+                    changes.next();
+                }
+                if matches!(code, 9 | 10 | 32..) {
+                    buffer.push(code);
                 }
                 offset += if matches!(code, 2..=9 | 11 | 12 | 14..=23) {
                     8
@@ -1185,14 +1229,26 @@ fn grouped_shape_text(records: &[Record<'_>], index: usize) -> Option<ibis_doc_m
                     1
                 };
             }
+            push(&mut line, &mut buffer, style);
         }
-        lines.push(String::from_utf16_lossy(&line));
+        lines.push(line);
         cursor = paragraph.end;
     }
     if lines.is_empty() {
         return None;
     }
-    let mut text = ibis_doc_model::TextBody::plain(&lines.join("\n"), Default::default());
+    let flags = dword(list.bytes, 4).ok()?;
+    let mut text = ibis_doc_model::TextBody {
+        paragraphs: lines,
+        anchor: match (flags >> 5) & 3 {
+            1 => ibis_doc_model::VerticalAnchor::Middle,
+            2 => ibis_doc_model::VerticalAnchor::Bottom,
+            _ => ibis_doc_model::VerticalAnchor::Top,
+        },
+        wrap: (flags >> 3) & 3 == 0,
+        vertical: flags & 7 == 1,
+        ..Default::default()
+    };
     let inset = |offset| word(list.bytes, offset).map_or(0, |n| units(i64::from(n)));
     text.insets.left = inset(8);
     text.insets.right = inset(10);
@@ -1595,6 +1651,7 @@ mod tests {
             if tag == 79 {
                 let mut list = [0; 20];
                 list[0] = 1;
+                list[4] = 0x28;
                 list[8] = 40;
                 record(&mut body, LIST, 4, &list);
                 record(&mut body, PARA, 4, &[0; 24]);
@@ -1641,6 +1698,8 @@ mod tests {
         };
         let text = rect.text.as_ref().unwrap();
         assert_eq!(text.text(), "목");
+        assert_eq!(text.anchor, ibis_doc_model::VerticalAnchor::Middle);
+        assert!(!text.wrap);
         assert_eq!(text.insets.left, units(40));
         assert!(matches!(shapes[2].kind, ShapeKind::Line(_)));
         assert!(shapes[2].flip_h);

@@ -332,6 +332,85 @@ fn run_looks(body: &ibis_doc_model::TextBody) -> Vec<Vec<RunLook>> {
         .collect()
 }
 
+fn new_shape_paragraphs_xml(body: &ibis_doc_model::TextBody) -> String {
+    use ibis_doc_model::{LineSpacing, TextAlign};
+    use std::fmt::Write as _;
+    let underline_xml = |on: bool, kind: ibis_doc_model::Underline| {
+        if on {
+            format!(r#"<w:u w:val="{}"/>"#, ibis_doc_model::UnderlineStyle::from_drawing_underline(kind).name())
+        } else {
+            String::new()
+        }
+    };
+    if let Some(xml) = tcy_paragraph_xml(body, &xml_escape, &underline_xml) {
+        return xml;
+    }
+    let mut out = String::new();
+    let mut open = false;
+    for para in &body.paragraphs {
+        if !open || !para.line_break {
+            if open {
+                out.push_str("</w:p>");
+            }
+            open = true;
+            let align = match para.align.unwrap_or(body.style.align) {
+                TextAlign::Left => "left",
+                TextAlign::Center => "center",
+                TextAlign::Right => "right",
+                TextAlign::Justify => "both",
+                TextAlign::Distributed => "distribute",
+            };
+            let line = match para.line_spacing {
+                Some(LineSpacing::Percent(p)) => format!(r#" w:line="{}" w:lineRule="auto""#, (u64::from(p) * 240 + 50_000) / 100_000),
+                Some(LineSpacing::Points(p)) => format!(r#" w:line="{}" w:lineRule="exact""#, (u64::from(p) + 2) / 5),
+                None => String::new(),
+            };
+            let indent = if para.indent < 0 {
+                format!(r#"<w:ind w:left="{}" w:hanging="{}"/>"#, para.margin_left / 635, para.indent.saturating_abs() / 635)
+            } else {
+                format!(r#"<w:ind w:left="{}" w:firstLine="{}"/>"#, para.margin_left / 635, para.indent / 635)
+            };
+            let _ = write!(out, r#"<w:p><w:pPr><w:spacing w:before="{}" w:after="{}"{line}/>{indent}<w:jc w:val="{align}"/></w:pPr>"#, para.space_before / 5, para.space_after / 5);
+        } else {
+            out.push_str("<w:r><w:br/></w:r>");
+        }
+        for run in &para.runs {
+            let style = &run.style;
+            let half = (style.font_size.unwrap_or(body.style.font_size).saturating_add(25) / 50).max(2);
+            let bold = if style.bold.unwrap_or(body.style.bold) { "<w:b/><w:bCs/>" } else { "" };
+            let italic = if style.italic.unwrap_or(body.style.italic) { "<w:i/><w:iCs/>" } else { "" };
+            let underline = underline_xml(style.underline, style.underline_kind);
+            let rgb = style.color.unwrap_or(body.style.color).0 & 0xff_ffff;
+            let font = style.font.as_deref().or(body.style.font.as_deref());
+            let fonts = font.map_or_else(String::new, |east| {
+                let latin = xml_escape(style.fallback_font.as_deref().unwrap_or(east));
+                let east = xml_escape(east);
+                format!(r#"<w:rFonts w:ascii="{latin}" w:hAnsi="{latin}" w:eastAsia="{east}"/>"#)
+            });
+            let lang = style.lang.as_ref().map_or_else(String::new, |lang| format!(r#"<w:lang w:eastAsia="{}"/>"#, xml_escape(lang)));
+            let spacing = if style.spacing != 0 {
+                format!(r#"<w:spacing w:val="{}"/>"#, style.spacing / 5)
+            } else { String::new() };
+            let scale = style.char_scale.map_or_else(String::new, |s| format!(r#"<w:w w:val="{s}"/>"#));
+            let effects = w14_effects_xml(&text_effects_look(style));
+            let _ = write!(out, r#"<w:r><w:rPr>{fonts}{bold}{italic}<w:color w:val="{rgb:06X}"/>{spacing}{scale}<w:sz w:val="{half}"/><w:szCs w:val="{half}"/>{underline}{lang}{effects}</w:rPr>"#);
+            for (i, line) in run.text.split('\n').enumerate() {
+                if i != 0 { out.push_str("<w:br/>"); }
+                for (j, text) in line.split('\t').enumerate() {
+                    if j != 0 { out.push_str("<w:tab/>"); }
+                    if !text.is_empty() {
+                        let _ = write!(out, r#"<w:t xml:space="preserve">{}</w:t>"#, xml_escape(text));
+                    }
+                }
+            }
+            out.push_str("</w:r>");
+        }
+    }
+    if open { out.push_str("</w:p>"); }
+    if out.is_empty() { out.push_str("<w:p/>"); }
+    out
+}
+
 /// Which characters of a text body are 縦中横 (and how), paragraph by paragraph: (the run's text, its `TateChuYoko`).
 fn tcy_marks(body: &ibis_doc_model::TextBody) -> Vec<Vec<(String, ibis_doc_model::TateChuYoko)>> {
     body.paragraphs
@@ -4198,60 +4277,16 @@ impl Writer<'_> {
             ShapeKind::Line(stroke) => (String::new(), crate::save::pptx_new::line_xml(&px, Some(stroke))),
             _ => ("<a:noFill/>".to_string(), "<a:ln><a:noFill/></a:ln>".to_string()),
         };
-        let half = (body.style.font_size / 50).max(2);
-        let esc = |t: &str| t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-        let first = body.paragraphs.iter().flat_map(|p| &p.runs).find(|r| !r.text.is_empty());
-        let bold = first.and_then(|r| r.style.bold).unwrap_or(body.style.bold);
-        let italic = first.and_then(|r| r.style.italic).unwrap_or(body.style.italic);
-        let underline = first.is_some_and(|r| r.style.underline);
-        let underline_kind = first.map_or(ibis_doc_model::Underline::Single, |r| r.style.underline_kind);
-        let color = first.and_then(|r| r.style.color).unwrap_or(body.style.color);
-        let half = first.and_then(|r| r.style.font_size).map_or(half, |v| (v / 50).max(2));
-        let u_xml = |on: bool, kind: ibis_doc_model::Underline| {
-            if on {
-                format!(r#"<w:u w:val="{}"/>"#, ibis_doc_model::UnderlineStyle::from_drawing_underline(kind).name())
-            } else {
-                String::new()
-            }
-        };
-        // CT_RPr order: b, i, color, sz, szCs, u.
-        let rpr = format!(
-            "{}{}{}{}<w:sz w:val=\"{half}\"/><w:szCs w:val=\"{half}\"/>",
-            if bold { "<w:b/><w:bCs/>" } else { "" },
-            if italic { "<w:i/><w:iCs/>" } else { "" },
-            u_xml(underline, underline_kind),
-            if color != ibis_doc_model::TextStyle::default().color { format!("<w:color w:val=\"{:06X}\"/>", color.0 & 0xffffff) } else { String::new() },
-        ) + &first.map(|r| w14_effects_xml(&text_effects_look(&r.style))).unwrap_or_default();
         if body.paragraphs.iter().flat_map(|p| &p.runs).any(|r| text_effects_look(&r.style) != TextEffectsLook::default()) {
             self.ensure_w14_ignorable();
         }
-        // Each run with its own look when the paragraphs have runs that differ (a part of the text bold…); else a run per line.
-        let looks = run_looks(body);
-        let paragraphs: String = if let Some(x) = tcy_paragraph_xml(body, &esc, &u_xml) {
-            x
-        } else if looks.iter().any(|p| p.len() > 1) && looks.len() == body.paragraphs.len() {
-            looks
-                .iter()
-                .map(|p| {
-                    let runs: String = p
-                        .iter()
-                        .map(|(t, b, i, u, uk, half, c, fx)| {
-                            let rpr = format!(
-                                "{}{}{}{}<w:sz w:val=\"{half}\"/><w:szCs w:val=\"{half}\"/>{}",
-                                if *b { "<w:b/><w:bCs/>" } else { "" },
-                                if *i { "<w:i/><w:iCs/>" } else { "" },
-                                u_xml(*u, *uk),
-                                if *c != ibis_doc_model::TextStyle::default().color.0 & 0xffffff { format!("<w:color w:val=\"{c:06X}\"/>") } else { String::new() },
-                                w14_effects_xml(fx),
-                            );
-                            format!(r#"<w:r><w:rPr>{rpr}</w:rPr><w:t xml:space="preserve">{}</w:t></w:r>"#, esc(t))
-                        })
-                        .collect();
-                    format!("<w:p>{runs}</w:p>")
-                })
-                .collect()
-        } else {
-            body.text().split('\n').map(|l| format!(r#"<w:p><w:r><w:rPr>{rpr}</w:rPr><w:t xml:space="preserve">{}</w:t></w:r></w:p>"#, esc(l))).collect()
+        let paragraphs = new_shape_paragraphs_xml(body);
+        let wrap = if body.wrap { "square" } else { "none" };
+        let vertical = match body.sideways.rem_euclid(21_600_000) {
+            5_400_000 => "vert",
+            16_200_000 => "vert270",
+            _ if body.vertical => body.vertical_kind.ooxml(),
+            _ => "horz",
         };
         let i = body.insets;
         let anchor_val = match text.map(|b| b.anchor).unwrap_or(ibis_doc_model::VerticalAnchor::Top) {
@@ -4267,10 +4302,10 @@ impl Writer<'_> {
                 r#"<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp>{csp}"#,
                 r#"<wps:spPr><a:xfrm{flips}><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>{geometry}{fill}{line}</wps:spPr>"#,
                 "{txbx}",
-                r#"<wps:bodyPr rot="0" vert="horz" wrap="square" lIns="{l}" tIns="{t}" rIns="{r}" bIns="{b}" anchor="{anchor}" anchorCtr="0"><a:noAutofit/></wps:bodyPr>"#,
+                r#"<wps:bodyPr rot="0" vert="{vertical}" wrap="{wrap}" lIns="{l}" tIns="{t}" rIns="{r}" bIns="{b}" anchor="{anchor}" anchorCtr="0"><a:noAutofit/></wps:bodyPr>"#,
                 r#"</wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></mc:Choice></mc:AlternateContent>"#
             ),
-            cx = cx, cy = cy, id = id, fill = fill, line = line, geometry = geometry, flips = flips, l = i.left, t = i.top, r = i.right, b = i.bottom, anchor = anchor_val,
+            cx = cx, cy = cy, id = id, fill = fill, line = line, geometry = geometry, flips = flips, l = i.left, t = i.top, r = i.right, b = i.bottom, anchor = anchor_val, wrap = wrap, vertical = vertical,
             // As Word names them, in the UI's language.
             name = match (crate::english_names(), text.is_some(), is_line, is_ink) {
                 (false, true, _, _) => "テキスト ボックス", // i18n-ok（文書に保存する名前。ibis-formats は表を持たない）
@@ -4338,58 +4373,16 @@ impl Writer<'_> {
             ShapeKind::Line(stroke) => (String::new(), crate::save::pptx_new::line_xml(&px, Some(stroke))),
             _ => ("<a:noFill/>".to_string(), "<a:ln><a:noFill/></a:ln>".to_string()),
         };
-        let half = (body.style.font_size / 50).max(2);
-        let esc = |t: &str| t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
-        let first = body.paragraphs.iter().flat_map(|p| &p.runs).find(|r| !r.text.is_empty());
-        let bold = first.and_then(|r| r.style.bold).unwrap_or(body.style.bold);
-        let italic = first.and_then(|r| r.style.italic).unwrap_or(body.style.italic);
-        let underline = first.is_some_and(|r| r.style.underline);
-        let underline_kind = first.map_or(ibis_doc_model::Underline::Single, |r| r.style.underline_kind);
-        let color = first.and_then(|r| r.style.color).unwrap_or(body.style.color);
-        let half = first.and_then(|r| r.style.font_size).map_or(half, |v| (v / 50).max(2));
-        let u_xml = |on: bool, kind: ibis_doc_model::Underline| {
-            if on {
-                format!(r#"<w:u w:val="{}"/>"#, ibis_doc_model::UnderlineStyle::from_drawing_underline(kind).name())
-            } else {
-                String::new()
-            }
-        };
-        let rpr = format!(
-            "{}{}{}{}<w:sz w:val=\"{half}\"/><w:szCs w:val=\"{half}\"/>",
-            if bold { "<w:b/><w:bCs/>" } else { "" },
-            if italic { "<w:i/><w:iCs/>" } else { "" },
-            u_xml(underline, underline_kind),
-            if color != ibis_doc_model::TextStyle::default().color { format!("<w:color w:val=\"{:06X}\"/>", color.0 & 0xffffff) } else { String::new() },
-        ) + &first.map(|r| w14_effects_xml(&text_effects_look(&r.style))).unwrap_or_default();
         if body.paragraphs.iter().flat_map(|p| &p.runs).any(|r| text_effects_look(&r.style) != TextEffectsLook::default()) {
             self.ensure_w14_ignorable();
         }
-        let looks = run_looks(body);
-        let paragraphs: String = if let Some(x) = tcy_paragraph_xml(body, &esc, &u_xml) {
-            x
-        } else if looks.iter().any(|p| p.len() > 1) && looks.len() == body.paragraphs.len() {
-            looks
-                .iter()
-                .map(|p| {
-                    let runs: String = p
-                        .iter()
-                        .map(|(t, b, i, u, uk, half, c, fx)| {
-                            let rpr = format!(
-                                "{}{}{}{}<w:sz w:val=\"{half}\"/><w:szCs w:val=\"{half}\"/>{}",
-                                if *b { "<w:b/><w:bCs/>" } else { "" },
-                                if *i { "<w:i/><w:iCs/>" } else { "" },
-                                u_xml(*u, *uk),
-                                if *c != ibis_doc_model::TextStyle::default().color.0 & 0xffffff { format!("<w:color w:val=\"{c:06X}\"/>") } else { String::new() },
-                                w14_effects_xml(fx),
-                            );
-                            format!(r#"<w:r><w:rPr>{rpr}</w:rPr><w:t xml:space="preserve">{}</w:t></w:r>"#, esc(t))
-                        })
-                        .collect();
-                    format!("<w:p>{runs}</w:p>")
-                })
-                .collect()
-        } else {
-            body.text().split('\n').map(|l| format!(r#"<w:p><w:r><w:rPr>{rpr}</w:rPr><w:t xml:space="preserve">{}</w:t></w:r></w:p>"#, esc(l))).collect()
+        let paragraphs = new_shape_paragraphs_xml(body);
+        let wrap = if body.wrap { "square" } else { "none" };
+        let vertical = match body.sideways.rem_euclid(21_600_000) {
+            5_400_000 => "vert",
+            16_200_000 => "vert270",
+            _ if body.vertical => body.vertical_kind.ooxml(),
+            _ => "horz",
         };
         let i = body.insets;
         let anchor_val = match text.map(|b| b.anchor).unwrap_or(ibis_doc_model::VerticalAnchor::Top) {
@@ -4419,12 +4412,12 @@ impl Writer<'_> {
                 "<wps:wsp>{cnvpr}{csp}",
                 r#"<wps:spPr><a:xfrm{flips}><a:off x="{off_x}" y="{off_y}"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>{geometry}{fill}{line}</wps:spPr>"#,
                 "{txbx}",
-                r#"<wps:bodyPr rot="0" vert="horz" wrap="square" lIns="{l}" tIns="{t}" rIns="{r}" bIns="{b}" anchor="{anchor}" anchorCtr="0"><a:noAutofit/></wps:bodyPr>"#,
+                r#"<wps:bodyPr rot="0" vert="{vertical}" wrap="{wrap}" lIns="{l}" tIns="{t}" rIns="{r}" bIns="{b}" anchor="{anchor}" anchorCtr="0"><a:noAutofit/></wps:bodyPr>"#,
                 "</wps:wsp>"
             ),
             cnvpr = cnvpr, csp = csp, flips = flips, off_x = off_x, off_y = off_y, cx = cx, cy = cy,
             geometry = geometry, fill = fill, line = line, txbx = txbx,
-            l = i.left, t = i.top, r = i.right, b = i.bottom, anchor = anchor_val,
+            l = i.left, t = i.top, r = i.right, b = i.bottom, anchor = anchor_val, wrap = wrap, vertical = vertical,
         )
     }
 
