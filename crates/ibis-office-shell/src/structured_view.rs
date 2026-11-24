@@ -410,13 +410,24 @@ impl Tree {
     }
 }
 
-type OutlineTarget = (WeakEntity<crate::editor::SlideEditor>, AnyWindowHandle, u64);
+pub(crate) type EditorTarget = (WeakEntity<crate::editor::SlideEditor>, AnyWindowHandle, u64);
+
+pub(crate) struct InventoryTarget {
+    editor: EditorTarget,
+    source: crate::read_file::BomSource,
+}
+
+enum Origin {
+    Outline(EditorTarget),
+    Inventory(InventoryTarget),
+}
 
 struct View {
     title: SharedString,
     source: Option<Arc<Source>>,
     tree: Tree,
-    editor: Option<OutlineTarget>,
+    editor: Option<EditorTarget>,
+    table: Option<InventoryTarget>,
     search: Entity<InputState>,
     matching: Vec<usize>,
     query: String,
@@ -805,6 +816,29 @@ impl Render for View {
                             .text_lg()
                             .child(self.title.clone()),
                     )
+                    .children(self.table.as_ref().map(|_| {
+                        Button::new("structured-bom-table")
+                            .outline()
+                            .xsmall()
+                            .label(crate::i18n::text("structured.show-inventory"))
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                if let Some(table) = &view.table {
+                                    let (editor, owner, file_id) = &table.editor;
+                                    if editor
+                                        .upgrade()
+                                        .is_some_and(|editor| editor.read(cx).file_id == *file_id)
+                                    {
+                                        crate::open_guard::raise(*owner, cx);
+                                    } else {
+                                        crate::app::open_editor_for(
+                                            table.source.path.clone(),
+                                            None,
+                                            cx,
+                                        );
+                                    }
+                                }
+                            }))
+                    }))
                     .children((lines && !is_csv && self.document_tree.is_some()).then(|| {
                         Button::new("structured-record-back")
                             .outline()
@@ -1114,9 +1148,14 @@ fn open_view(
     title: SharedString,
     source: Option<Arc<Source>>,
     tree: Tree,
-    editor: Option<OutlineTarget>,
+    origin: Option<Origin>,
     cx: &mut App,
 ) {
+    let (editor, table) = match origin {
+        Some(Origin::Outline(editor)) => (Some(editor), None),
+        Some(Origin::Inventory(table)) => (None, Some(table)),
+        None => (None, None),
+    };
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -1161,6 +1200,7 @@ fn open_view(
                 source,
                 tree,
                 editor,
+                table,
                 search,
                 matching,
                 query: String::new(),
@@ -1184,9 +1224,22 @@ fn open_view(
 }
 
 impl crate::editor::SlideEditor {
+    pub(crate) fn open_bom_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self.bom_source.clone() else {
+            return;
+        };
+        let path = source.path.clone();
+        let table = InventoryTarget {
+            editor: (cx.weak_entity(), window.window_handle(), self.file_id),
+            source,
+        };
+        self.open_structured_data(path, Some(table), window, cx);
+    }
+
     pub(crate) fn open_structured_data(
         &mut self,
         path: PathBuf,
+        table: Option<InventoryTarget>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1197,12 +1250,28 @@ impl crate::editor::SlideEditor {
             .into_owned()
             .into();
         cx.spawn_in(window, async move |this, cx| {
+            let expected = table.as_ref().map(|table| table.source.digest);
             let loaded = cx
                 .background_executor()
-                .spawn(async move { Source::read(path) })
+                .spawn(async move {
+                    let source = Source::read(path)?;
+                    if let Some(expected) = expected {
+                        use sha2::{Digest, Sha256};
+                        if <[u8; 32]>::from(Sha256::digest(&source.bytes)) != expected {
+                            return Err(crate::i18n::text("structured.bom-changed").to_string());
+                        }
+                    }
+                    Ok(source)
+                })
                 .await;
             let _ = this.update(cx, |editor, cx| match loaded {
-                Ok(source) => open_view(title, Some(Arc::new(source)), Tree::default(), None, cx),
+                Ok(source) => open_view(
+                    title,
+                    Some(Arc::new(source)),
+                    Tree::default(),
+                    table.map(Origin::Inventory),
+                    cx,
+                ),
                 Err(error) => {
                     editor.show_alert(crate::i18n::text("structured.open"), error.into(), cx)
                 }
@@ -1221,7 +1290,7 @@ impl crate::editor::SlideEditor {
                     crate::i18n::text("structured.outline"),
                     None,
                     tree,
-                    Some(owner),
+                    Some(Origin::Outline(owner)),
                     cx,
                 );
             });

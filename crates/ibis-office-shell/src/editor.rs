@@ -651,7 +651,7 @@ pub struct SlideEditor {
     pub standard_read_only: bool,
     pub(crate) structured_preview: bool,
     #[cfg(not(target_family = "wasm"))]
-    pub(crate) cbom_source: Option<crate::read_file::CbomSource>,
+    pub(crate) bom_source: Option<crate::read_file::BomSource>,
     /// Preserve the original path even after creating an editable copy.
     #[cfg(not(target_family = "wasm"))]
     pub standard_source_path: Option<std::path::PathBuf>,
@@ -1000,7 +1000,7 @@ impl SlideEditor {
             standard_read_only: false,
             structured_preview: false,
             #[cfg(not(target_family = "wasm"))]
-            cbom_source: None,
+            bom_source: None,
             #[cfg(not(target_family = "wasm"))]
             standard_source_path: None,
             jtd_original: None,
@@ -1348,7 +1348,7 @@ impl SlideEditor {
         self.standard_read_only = false;
         self.structured_preview = false;
         #[cfg(not(target_family = "wasm"))]
-        { self.cbom_source = None; }
+        { self.bom_source = None; }
         #[cfg(target_family = "wasm")]
         { self.web_law_source = None; }
         #[cfg(any(target_os = "android", target_family = "wasm"))]
@@ -1905,7 +1905,7 @@ impl SlideEditor {
                 let csv_tree = result.as_ref().is_err_and(|error| error == crate::read_file::LINKAGE_CSV_NEEDS_TREE);
                 if json_tree || csv_tree {
                     this.fail_loading(String::new(), cx);
-                    this.open_structured_data(path, window, cx);
+                    this.open_structured_data(path, None, window, cx);
                     return;
                 }
             }
@@ -1942,7 +1942,7 @@ impl SlideEditor {
                         let extension = crate::format::info(ibis_formats::Kind::of(&loaded.presentation)).extension;
                         this.load(loaded.presentation, format!("{stem}.{extension}").into(), window, cx);
                         this.set_opened_source(loaded.source, production_image);
-                        this.cbom_source = loaded.cbom_source;
+                        this.bom_source = loaded.bom_source;
                         this.path = None;
                         this.document.set_file(None);
                     } else {
@@ -2668,7 +2668,7 @@ impl SlideEditor {
         let standard_read_only = self.standard_read_only;
         let structured_preview = self.structured_preview;
         #[cfg(not(target_family = "wasm"))]
-        let cbom_source = self.cbom_source.clone();
+        let bom_source = self.bom_source.clone();
         #[cfg(not(target_family = "wasm"))]
         let standard_source_path = self.standard_source_path.clone();
         #[cfg(not(target_family = "wasm"))]
@@ -2716,7 +2716,7 @@ impl SlideEditor {
                 editor.standard_read_only = standard_read_only;
                 editor.structured_preview = structured_preview;
                 #[cfg(not(target_family = "wasm"))]
-                { editor.standard_source_path = standard_source_path; editor.protection_password = protection_password; editor.cbom_source = cbom_source; }
+                { editor.standard_source_path = standard_source_path; editor.protection_password = protection_password; editor.bom_source = bom_source; }
                 editor.jtd_original = jtd_original;
                 editor.jtd_gallery = jtd_gallery;
                 editor.jtd_gallery_body = jtd_gallery_body;

@@ -1792,3 +1792,6 @@ structured.back-to-record	Back to record
 structured.searching	Searching…
 structured.search-bom	Search names, references or types
 structured.search-columns	Search columns in this record
+structured.show-bom-tree	Open BOM dependency tree
+structured.show-inventory	Show inventory workbook
+structured.bom-changed	The original BOM has changed. Reopen it to see the current inventory and dependency tree.

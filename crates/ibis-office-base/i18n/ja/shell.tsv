@@ -1790,3 +1790,6 @@ structured.back-to-record	レコード全体に戻る
 structured.searching	検索中…
 structured.search-bom	名前・参照ID・種類を検索
 structured.search-columns	選択中のレコードの列を検索
+structured.show-bom-tree	BOMの依存関係ツリーを開く
+structured.show-inventory	棚卸し表を表示
+structured.bom-changed	元のBOMが変更されています。現在の棚卸し表と依存関係ツリーを表示するには、BOMを開き直してください。
