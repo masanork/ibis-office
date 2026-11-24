@@ -270,7 +270,7 @@ impl VsdxContainer {
         let page_height = f64::from(page.info.crop_box.height());
         let to_points = Matrix([72.0, 0.0, 0.0, -72.0, 0.0, page_height]);
         if let Some(shapes) = child(doc.root_element(), "Shapes") {
-            render.shapes(shapes, to_points, &masters, 0)?;
+            render.shapes(shapes, to_points, &masters, None, 0)?;
         }
         Ok(render.scene)
     }
@@ -324,6 +324,7 @@ impl Render<'_, '_> {
         shapes: Node<'_, '_>,
         parent: Matrix,
         masters: &HashMap<&str, Document<'_>>,
+        parent_master: Option<Node<'_, '_>>,
         depth: usize,
     ) -> Result<()> {
         if depth > 32 {
@@ -338,7 +339,13 @@ impl Render<'_, '_> {
                 .attribute("Master")
                 .and_then(|id| masters.get(id))
                 .and_then(|doc| child(doc.root_element(), "Shapes"))
-                .and_then(|shapes| child(shapes, "Shape"));
+                .and_then(|shapes| child(shapes, "Shape"))
+                .or_else(|| {
+                    let id = shape.attribute("MasterShape")?;
+                    child(parent_master?, "Shapes")?
+                        .children()
+                        .find(|&n| named(n, "Shape") && n.attribute("ID") == Some(id))
+                });
             let get = |key| value(Some(shape), key).or_else(|| value(master, key));
             let num = |key| number(get(key));
             let w = num("Width").unwrap_or(0.0);
@@ -420,7 +427,7 @@ impl Render<'_, '_> {
                 )?;
             }
             if let Some(sub) = child(shape, "Shapes") {
-                self.shapes(sub, m, masters, depth + 1)?;
+                self.shapes(sub, m, masters, master, depth + 1)?;
             }
             if let Some(label) = child(shape, "Text").or_else(|| child(master?, "Text"))
                 && label
@@ -634,12 +641,19 @@ impl Render<'_, '_> {
             _ => (style.top + style.bottom) / 2.0,
         };
         let angle = (-matrix.0[1]).atan2(matrix.0[0]) as f32;
-        for (index, line) in lines.into_iter().enumerate() {
+        for (index, (line, continues_text)) in lines.into_iter().enumerate() {
             if line.is_empty() {
                 continue;
             }
             let visible = line.trim_end();
-            let width = text_width(visible, font_size);
+            let measured_width = text_width(visible, font_size);
+            let max_width = (style.wrap && style.width > 0.0).then_some(style.width);
+            let width = max_width.map_or(measured_width, |limit| measured_width.min(limit));
+            let index_scale = if measured_width > 0.0 {
+                width / measured_width
+            } else {
+                1.0
+            };
             let (anchor, fraction) = match style.alignment {
                 "0" => (TextAnchor::Start, 0.0),
                 "2" => (TextAnchor::End, 1.0),
@@ -662,12 +676,13 @@ impl Render<'_, '_> {
                     angle,
                     horizontal_scale: 1.0,
                     anchor,
-                    max_width: (style.wrap && style.width > 0.0).then_some(style.width),
+                    continues_text,
+                    max_width,
                     rgba: style.color,
                 });
             let mut cursor = x;
             for ch in line.chars() {
-                let end = cursor + estimated_advance_em(ch) * font_size;
+                let end = cursor + estimated_advance_em(ch) * font_size * index_scale;
                 let pt = |x: f32, y: f32| {
                     matrix.point(f64::from(x) / 72.0, center_y - f64::from(y) / 72.0)
                 };
@@ -720,27 +735,27 @@ fn text_width(text: &str, font_size: f32) -> f32 {
     text.chars().map(estimated_advance_em).sum::<f32>() * font_size
 }
 
-fn wrap_lines(text: &str, width: Option<f32>, font_size: f32) -> Vec<&str> {
+// The boolean marks a visual continuation of the same source line for search.
+fn wrap_lines(text: &str, width: Option<f32>, font_size: f32) -> Vec<(&str, bool)> {
     let Some(width) = width.filter(|&w| w > 0.0) else {
-        return text.lines().collect();
+        return text.lines().map(|line| (line, false)).collect();
     };
     let mut lines = Vec::new();
     for paragraph in text.lines() {
         let mut start = 0;
         let mut used = 0.0;
-        let mut used_bytes = 0;
-        for word in paragraph.split_inclusive(char::is_whitespace) {
-            let advance = text_width(word, font_size);
-            if used > 0.0 && used + text_width(word.trim_end(), font_size) > width {
-                lines.push(&paragraph[start..start + used_bytes]);
-                start += used_bytes;
+        let mut previous_break = 0;
+        for (next_break, _) in unicode_linebreak::linebreaks(paragraph) {
+            let segment = &paragraph[previous_break..next_break];
+            if previous_break > start && used + text_width(segment.trim_end(), font_size) > width {
+                lines.push((&paragraph[start..previous_break], start > 0));
+                start = previous_break;
                 used = 0.0;
-                used_bytes = 0;
             }
-            used += advance;
-            used_bytes += word.len();
+            used += text_width(segment, font_size);
+            previous_break = next_break;
         }
-        lines.push(&paragraph[start..]);
+        lines.push((&paragraph[start..], start > 0));
     }
     lines
 }
@@ -834,6 +849,20 @@ fn geometry_path(
                 out.push(PathCmd::LineTo(p.0, p.1));
                 if start == Some(p) {
                     out.push(PathCmd::Close);
+                }
+            }
+            "RelCubBezTo" if start.is_some() => {
+                if let (Some(a), Some(b), Some(c), Some(d)) =
+                    (num("A", 1.0), num("B", 1.0), num("C", 1.0), num("D", 1.0))
+                {
+                    let first = m.point(a * size.0, b * size.1);
+                    let second = m.point(c * size.0, d * size.1);
+                    out.push(PathCmd::CubicTo(
+                        first.0, first.1, second.0, second.1, p.0, p.1,
+                    ));
+                    if start == Some(p) {
+                        out.push(PathCmd::Close);
+                    }
                 }
             }
             "EllipticalArcTo" if start.is_some() => {

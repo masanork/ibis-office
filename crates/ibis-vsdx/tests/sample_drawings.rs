@@ -138,3 +138,48 @@ fn sample_details_keep_their_styles_and_geometry() {
     )).count();
     assert_eq!(arrows, 12);
 }
+
+#[test]
+fn chinese_flowchart_wraps_at_a_legal_boundary_and_keeps_search_positions() {
+    let document = open(include_bytes!("fixtures/07-zh-flowchart.vsdx"));
+    assert_eq!(document.page_infos().len(), 1);
+    let scene = document.interpret_page_scene(0).unwrap();
+    for label in [
+        "IT 运维支持",
+        "核验入职材料",
+        "并建档",
+        "转正答辩通",
+        "过？",
+    ] {
+        assert_label(&scene, label);
+    }
+    let phrase = "转正答辩通过？";
+    let byte = scene.text_index.plain_text().find(phrase).unwrap();
+    let start = scene.text_index.plain_text()[..byte].chars().count();
+    let boxes = &scene.text_index.chars[start..start + phrase.chars().count()];
+    let (first, second) = boxes.split_at(5);
+    assert!(
+        first
+            .iter()
+            .all(|c| near(c.rect_pt.y1, first[0].rect_pt.y1))
+    );
+    assert!(
+        second
+            .iter()
+            .all(|c| near(c.rect_pt.y1, second[0].rect_pt.y1))
+    );
+    assert!(second[0].rect_pt.y0 >= first[0].rect_pt.y1);
+    for line in [first, second] {
+        let DisplayCmd::DrawStyledGlyphRun {
+            origin, max_width, ..
+        } = &scene.display_list[line[0].stream_op_index]
+        else {
+            panic!("search hit does not point to a drawn label");
+        };
+        assert!(near(
+            (line[0].rect_pt.x0 + line.last().unwrap().rect_pt.x1) / 2.0,
+            origin.0
+        ));
+        assert!(line.last().unwrap().rect_pt.x1 - line[0].rect_pt.x0 <= max_width.unwrap() + 0.05);
+    }
+}

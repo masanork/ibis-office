@@ -308,6 +308,7 @@ impl State {
                 },
                 horizontal_scale: 1.0,
                 anchor: ibis_pdf::scene::TextAnchor::Start,
+                continues_text: false,
                 max_width,
                 rgba: self.text_color,
             }

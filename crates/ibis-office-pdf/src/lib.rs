@@ -413,8 +413,27 @@ impl PdfViewerState {
         if query.is_empty() {
             return;
         }
+        let vsdx = self.is_vsdx();
         for page in 0..self.pages.len() {
-            let found = self.text_index(page).text_index.find(query, false);
+            let scene = self.text_index(page);
+            let text = &scene.text_index;
+            let found = if vsdx {
+                text.find_with_continuation(query, false, |i| {
+                    let previous = text.chars[i - 1].stream_op_index;
+                    let current = text.chars[i].stream_op_index;
+                    previous == current
+                        || (previous + 1 == current
+                            && matches!(
+                                scene.display_list.get(current),
+                                Some(ibis_pdf::DisplayCmd::DrawStyledGlyphRun {
+                                    continues_text: true,
+                                    ..
+                                })
+                            ))
+                })
+            } else {
+                text.find(query, false)
+            };
             self.find_matches.extend(found.into_iter().map(|(start, end)| FindMatch { page, start, end }));
         }
     }
@@ -500,5 +519,28 @@ mod tests {
         let xs: Vec<f32> = (0..6).filter_map(|i| viewer.char_rect(0, i)).map(|r| r.x0).collect();
         assert_eq!(xs.len(), 6);
         assert!(xs.windows(2).all(|p| p[1] > p[0]), "{xs:?}");
+    }
+}
+
+#[cfg(test)]
+mod vsdx_search_tests {
+    use super::*;
+
+    #[test]
+    fn find_spans_wrapped_visio_text_but_does_not_join_separate_labels() {
+        let bytes = include_bytes!("../../ibis-vsdx/tests/fixtures/07-zh-flowchart.vsdx");
+        let mut viewer = PdfViewerState::open(bytes.as_slice()).unwrap();
+        viewer.run_find("转正答辩通过？");
+        let [found] = viewer.find_matches.as_slice() else {
+            panic!("expected one result across the wrapped line");
+        };
+        let (page, start, end) = (found.page, found.start, found.end);
+        assert_eq!(end - start, 7);
+        let first = viewer.char_rect(page, start).unwrap();
+        let last = viewer.char_rect(page, end - 1).unwrap();
+        assert!(first.y1 < last.y0);
+        assert!(viewer.page_scene(page).unwrap().text_index.plain_text().contains("？辅导"));
+        viewer.run_find("？辅导");
+        assert!(viewer.find_matches.is_empty());
     }
 }

@@ -203,6 +203,7 @@ pub fn paint_page_scene(
                 angle,
                 horizontal_scale,
                 anchor,
+                continues_text: _,
                 max_width,
                 rgba,
             } => {

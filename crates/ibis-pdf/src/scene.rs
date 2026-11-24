@@ -92,6 +92,8 @@ pub enum DisplayCmd {
         angle: f32,
         horizontal_scale: f32,
         anchor: TextAnchor,
+        /// This line continues the same source text after a visual wrap.
+        continues_text: bool,
         max_width: Option<f32>,
         rgba: [u8; 4],
     },
@@ -201,6 +203,16 @@ impl PageTextIndex {
 
     /// Where `query` stands in the text: character ranges `[start, end)`, not across a line, not overlapping.
     pub fn find(&self, query: &str, match_case: bool) -> Vec<(usize, usize)> {
+        self.find_with_continuation(query, match_case, |i| self.same_line(i - 1, i))
+    }
+
+    /// Search with a caller-supplied boundary between each pair of characters.
+    pub fn find_with_continuation(
+        &self,
+        query: &str,
+        match_case: bool,
+        continues: impl Fn(usize) -> bool,
+    ) -> Vec<(usize, usize)> {
         let needle: Vec<char> = query.chars().collect();
         let n = self.chars.len();
         let mut out = Vec::new();
@@ -211,7 +223,7 @@ impl PageTextIndex {
         let mut at = 0;
         while at + needle.len() <= n {
             let end = at + needle.len();
-            let ok = (0..needle.len()).all(|k| same(self.chars[at + k].ch, needle[k])) && (at + 1..end).all(|i| self.same_line(i - 1, i));
+            let ok = (0..needle.len()).all(|k| same(self.chars[at + k].ch, needle[k])) && (at + 1..end).all(&continues);
             if ok {
                 out.push((at, end));
                 at = end;

@@ -124,6 +124,7 @@ pub(crate) fn render(object: &PageObject<'_>, data: &[u8]) -> Result<Vec<Display
                             angle: 0.0,
                             horizontal_scale: sx / sy,
                             anchor: ibis_pdf::scene::TextAnchor::Start,
+                            continues_text: false,
                             max_width: (advance > 0.0).then_some(advance),
                             rgba: color,
                         });

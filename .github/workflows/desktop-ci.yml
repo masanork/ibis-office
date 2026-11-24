@@ -84,6 +84,9 @@ jobs:
         run: cargo test --locked -p ibis-ooxml --test standard_encryption
       - name: Test Visio preview
         run: cargo test --locked -p ibis-vsdx
+      - name: Test Visio viewer search
+        if: matrix.platform == 'macos-arm64'
+        run: cargo test --locked -p ibis-office-pdf vsdx_search_tests
       - name: Test offline image Content Credentials
         run: cargo test --locked -p ibis-office-shell --lib --no-default-features image_provenance
       - name: Test image provenance in the native editor

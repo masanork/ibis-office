@@ -6090,6 +6090,7 @@ dependencies = [
  "ibis-ooxml",
  "ibis-pdf",
  "roxmltree 0.21.1",
+ "unicode-linebreak",
 ]
 
 [[package]]
