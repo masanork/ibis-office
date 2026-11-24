@@ -664,6 +664,19 @@ impl FormatEditor for Document {
         reveal_body_paragraph(editor, id, cx);
     }
 
+    fn outline_heading_folded(editor: &SlideEditor, id: u32) -> Option<bool> {
+        (editor.can_fold_markdown_outline() && editor.heading_has_content(id))
+            .then(|| editor.resources.collapsed_headings.contains(&id))
+    }
+
+    fn navigate_outline_heading(editor: &mut SlideEditor, id: u32, toggle_body: bool, cx: &mut Context<SlideEditor>) {
+        if editor.can_fold_markdown_outline() {
+            editor.navigate_markdown_outline(id, toggle_body, cx);
+        } else if !toggle_body {
+            reveal_body_paragraph(editor, id, cx);
+        }
+    }
+
     fn ai_docx_cursor_paragraph(editor: &crate::shell::editor::SlideEditor) -> Option<u32> {
         editor.doc_state().and_then(|s| s.caret).map(|p| p.para)
     }

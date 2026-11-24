@@ -239,6 +239,41 @@ impl SlideEditor {
         done
     }
 
+    pub(crate) fn can_fold_markdown_outline(&self) -> bool {
+        !self.is_markdown_source_mode() && self.file_name.as_ref().is_some_and(|name| {
+            std::path::Path::new(name.as_ref()).extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+        })
+    }
+
+    pub(crate) fn navigate_markdown_outline(&mut self, id: u32, toggle_body: bool, cx: &mut Context<Self>) {
+        let Some(doc) = self.flow() else { return };
+        let Some(index) = doc.body.iter().position(|block| matches!(block, Block::Paragraph(p) if p.id == id)) else { return };
+        let can_toggle = level_at(doc, index).is_some() && range_of(doc, index).len() > 1;
+        if toggle_body && !can_toggle {
+            return;
+        }
+        let previous = &self.resources.collapsed_headings;
+        let mut folded = (**previous).clone();
+        for (ancestor, block) in doc.body[..index].iter().enumerate() {
+            if let Block::Paragraph(p) = block
+                && folded.contains(&p.id)
+                && range_of(doc, ancestor).contains(&index)
+            {
+                folded.remove(&p.id);
+            }
+        }
+        if toggle_body && !folded.remove(&id) {
+            folded.insert(id);
+        }
+        if folded != **previous {
+            self.resources.collapsed_headings = std::sync::Arc::new(folded);
+            self.relayout_now(cx);
+        }
+        self.jump_to(id, cx);
+        cx.notify();
+    }
+
     /// Whether the heading `id` is shown collapsed.
     pub(crate) fn heading_collapsed(&self, id: u32) -> bool {
         self.flow().and_then(|d| d.body.iter().find_map(|b| match b {

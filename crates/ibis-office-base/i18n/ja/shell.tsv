@@ -1757,3 +1757,5 @@ structured.csv-mode	UTF-8 CSV・先頭レコードを列名として使用
 structured.csv-header-required	ヘッダーのレコードが必要です。
 structured.csv-missing	項目なし
 structured.csv-unquoted-empty	引用符なしの空項目
+structured.collapse-body	本文のセクションを折りたたむ
+structured.expand-body	本文のセクションを展開する

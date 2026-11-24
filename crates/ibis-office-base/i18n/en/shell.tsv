@@ -1759,3 +1759,5 @@ structured.csv-mode	UTF-8 CSV · First record supplies column names
 structured.csv-header-required	The CSV needs a header record.
 structured.csv-missing	Missing field
 structured.csv-unquoted-empty	Unquoted empty field
+structured.collapse-body	Collapse section in document
+structured.expand-body	Expand section in document

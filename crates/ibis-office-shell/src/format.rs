@@ -341,6 +341,15 @@ pub trait FormatEditor {
 
     fn reveal_ai_paragraph(_editor: &mut SlideEditor, _id: u32, _cx: &mut Context<SlideEditor>) {}
 
+    fn outline_heading_folded(_editor: &SlideEditor, _id: u32) -> Option<bool> { None }
+
+    fn navigate_outline_heading(editor: &mut SlideEditor, id: u32, toggle_body: bool, cx: &mut Context<SlideEditor>) {
+        if !toggle_body {
+            Self::reveal_ai_paragraph(editor, id, cx);
+        }
+    }
+
+
     /// Active caret paragraph index for AI Assistant (docx only).
     fn ai_docx_cursor_paragraph(_editor: &SlideEditor) -> Option<u32> {
         None
@@ -1392,6 +1401,8 @@ pub trait FormatDriver: Sync {
     fn ai_sheet_selection(&self, _editor: &SlideEditor, _slide: SlideId) -> Option<ibis_doc_model::sheet::CellRange>;
     fn set_ai_sheet_selection(&self, _editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange);
     fn reveal_ai_paragraph(&self, editor: &mut SlideEditor, id: u32, cx: &mut Context<SlideEditor>);
+    fn outline_heading_folded(&self, editor: &SlideEditor, id: u32) -> Option<bool>;
+    fn navigate_outline_heading(&self, editor: &mut SlideEditor, id: u32, toggle_body: bool, cx: &mut Context<SlideEditor>);
     fn ai_docx_cursor_paragraph(&self, _editor: &SlideEditor) -> Option<u32>;
     fn ai_selection_plain_text(&self, _editor: &SlideEditor) -> Option<String>;
     fn ai_editable_source(&self, editor: &SlideEditor, kind: crate::ai_tools::EditableSourceKind) -> Result<crate::ai_tools::EditableSource, String>;
@@ -1662,6 +1673,13 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn reveal_ai_paragraph(&self, editor: &mut SlideEditor, id: u32, cx: &mut Context<SlideEditor>) {
         F::reveal_ai_paragraph(editor, id, cx);
     }
+    fn outline_heading_folded(&self, editor: &SlideEditor, id: u32) -> Option<bool> {
+        F::outline_heading_folded(editor, id)
+    }
+    fn navigate_outline_heading(&self, editor: &mut SlideEditor, id: u32, toggle_body: bool, cx: &mut Context<SlideEditor>) {
+        F::navigate_outline_heading(editor, id, toggle_body, cx);
+    }
+
     fn ai_docx_cursor_paragraph(&self, _editor: &SlideEditor) -> Option<u32> {
         F::ai_docx_cursor_paragraph(_editor)
     }

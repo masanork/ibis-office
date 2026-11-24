@@ -355,6 +355,30 @@ struct View {
 }
 
 impl View {
+    fn navigate_heading(&self, id: usize, toggle_body: bool, cx: &mut Context<Self>) {
+        let Some(paragraph) = self.tree.nodes[id].paragraph else {
+            return;
+        };
+        let Some((editor, owner, file_id)) = &self.editor else {
+            return;
+        };
+        let moved = editor
+            .update(cx, |editor, cx| {
+                if editor.file_id != *file_id {
+                    return false;
+                }
+                crate::with_format!(
+                    editor,
+                    navigate_outline_heading(editor, paragraph, toggle_body, cx)
+                );
+                true
+            })
+            .unwrap_or(false);
+        if moved {
+            crate::open_guard::raise(*owner, cx);
+        }
+    }
+
     fn follow_reference(
         &mut self,
         span: Range<usize>,
@@ -533,25 +557,7 @@ impl Render for View {
                                     .items_center()
                                     .on_click(cx.listener(move |view, _, _, cx| {
                                         view.selected = Some(id);
-                                        if let Some(paragraph) = view.tree.nodes[id].paragraph
-                                            && let Some((editor, owner, file_id)) = &view.editor
-                                        {
-                                            let moved = editor
-                                                .update(cx, |editor, cx| {
-                                                    if editor.file_id != *file_id {
-                                                        return false;
-                                                    }
-                                                    crate::with_format!(
-                                                        editor,
-                                                        reveal_ai_paragraph(editor, paragraph, cx)
-                                                    );
-                                                    true
-                                                })
-                                                .unwrap_or(false);
-                                            if moved {
-                                                crate::open_guard::raise(*owner, cx);
-                                            }
-                                        }
+                                        view.navigate_heading(id, false, cx);
                                         cx.notify();
                                     }))
                                     .child(div().truncate().text_sm().child(node.name.clone())),
@@ -722,6 +728,41 @@ impl Render for View {
                     })
                     .child(div().flex_1().min_w_0().h_full().child(rows)),
             )
+            .children(self.selected.and_then(|id| {
+                let paragraph = self.tree.nodes[id].paragraph?;
+                let (editor, _, file_id) = self.editor.as_ref()?;
+                let editor = editor.upgrade()?;
+                let editor = editor.read(cx);
+                if editor.file_id != *file_id {
+                    return None;
+                }
+                let folded =
+                    crate::with_format!(editor, outline_heading_folded(editor, paragraph))?;
+                let key = if folded {
+                    "structured.expand-body"
+                } else {
+                    "structured.collapse-body"
+                };
+                Some(
+                    h_flex()
+                        .px_4()
+                        .py_2()
+                        .gap_2()
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .child(
+                            Button::new("structured-fold-body")
+                                .outline()
+                                .small()
+                                .label(crate::i18n::text(key))
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.navigate_heading(id, true, cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(div().truncate().child(self.tree.nodes[id].name.clone())),
+                )
+            }))
             .children(self.selected.zip(self.source.as_ref()).map(|(id, source)| {
                 let node = &self.tree.nodes[id];
                 let raw = &source.bytes[node.span.clone()];
@@ -813,6 +854,12 @@ fn open_view(
     };
     let _ = cx.open_window(options, |window, cx| {
         let view = cx.new(|cx| {
+            if let Some((owner, _, _)) = &editor
+                && let Some(owner) = owner.upgrade()
+            {
+                cx.observe(&owner, |_: &mut View, _, cx| cx.notify())
+                    .detach();
+            }
             let search = cx.new(|cx| {
                 InputState::new(window, cx).placeholder(crate::i18n::text("structured.search"))
             });
