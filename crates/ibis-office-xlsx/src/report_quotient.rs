@@ -289,7 +289,10 @@ fn report_side<'a>(workbook: &'a Presentation, name: &str, metric: &str) -> Resu
     Ok(Side { metric: kind, totals, rows, sheet, columns: [key_column, numerator_column, denominator_column], source })
 }
 
-fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, key: Option<&str>) -> Value {
+const RANKED_LIMIT: usize = 10;
+const REMAINDER_PAGE_SIZE: usize = 10;
+
+fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, key: Option<&str>, remainder_offset: Option<usize>) -> Value {
     let Some(delta) = delta else { return json!({"state":"unavailable"}); };
     let scale = match before.metric { Metric::Rate => 100., Metric::Average => 1. };
     let before_total = before.totals.denominator;
@@ -339,32 +342,76 @@ fn decomposition<'a>(before: &Side<'a>, after: &Side<'a>, delta: Option<f64>, ke
         return json!({"state":"non_finite"});
     }
     let group_count = ranked.len();
-    const RANKED_LIMIT: usize = 10;
     let rank = |left: &(&str, Effect, f64), right: &(&str, Effect, f64)| {
         right.2.abs().total_cmp(&left.2.abs()).then_with(|| left.0.cmp(right.0))
     };
     if group_count > RANKED_LIMIT {
         ranked.select_nth_unstable_by(RANKED_LIMIT, rank);
-        ranked.truncate(RANKED_LIMIT);
     }
-    ranked.sort_unstable_by(rank);
-    let groups: Vec<_> = ranked.into_iter().map(|(key, effect, contribution)| json!({
+    let (top, remainder) = ranked.split_at_mut(group_count.min(RANKED_LIMIT));
+    top.sort_unstable_by(rank);
+    let row = |&(key, ref effect, contribution): &(&str, Effect, f64)| json!({
         "key":key, "contribution":contribution, "within_group":effect.within * scale,
         "composition":effect.composition * scale,
         "before_share":effect.before_share, "after_share":effect.after_share,
         "before":before.evidence(key), "after":after.evidence(key),
-    })).collect();
+    });
+    let groups: Vec<_> = top.iter().map(row).collect();
+    // Sum both partitions before sorting the optional page.
+    let subtotal = |rows: &[(&str, Effect, f64)]| {
+        let mut sum = CompensatedSum::default();
+        for &(_, _, contribution) in rows { sum.add(contribution); }
+        sum.sum
+    };
+    let top_contribution = subtotal(top);
+    let remainder_contribution = subtotal(remainder);
+    let partition_residual = (top_contribution + remainder_contribution) - delta;
+    if !partition_residual.is_finite() {
+        return json!({"state":"non_finite"});
+    }
+    let mut other = json!({"count":remainder.len(),"contribution":remainder_contribution});
+    if let Some(offset) = remainder_offset {
+        let offset = offset.min(remainder.len());
+        let end = offset.saturating_add(REMAINDER_PAGE_SIZE).min(remainder.len());
+        let groups = if offset == end {
+            &mut remainder[..0]
+        } else {
+            if end < remainder.len() {
+                remainder.select_nth_unstable_by(end, rank);
+            }
+            let prefix = &mut remainder[..end];
+            if offset > 0 {
+                prefix.select_nth_unstable_by(offset, rank);
+            }
+            let groups = &mut prefix[offset..];
+            groups.sort_unstable_by(rank);
+            groups
+        };
+        let entries: Vec<_> = groups.iter().map(row).collect();
+        other["page"] = json!({
+            "offset":offset, "groups":entries, "page_size":REMAINDER_PAGE_SIZE,
+            "next_offset":(end < remainder.len()).then_some(end),
+        });
+    }
     json!({
-        "state":if residual.abs() <= tolerance && group_residual.abs() <= tolerance {"ready"} else {"totals_mismatch"},
+        "state":if residual.abs() <= tolerance && group_residual.abs() <= tolerance && partition_residual.abs() <= tolerance {"ready"} else {"totals_mismatch"},
         "within_group":within,"composition":composition,"residual":residual,"tolerance":tolerance,
         "counts":{"continued":continued,"entered":entered,"exited":exited},
         "contributor":contributor,
         "ranking":{"groups":groups,"group_count":group_count,"total_contribution":total.sum,
-            "residual":group_residual},
+            "residual":group_residual,"top_contribution":top_contribution,"remainder":other,
+            "partition_residual":partition_residual},
     })
 }
 
 pub(crate) fn compare(base: &Presentation, candidate: &Presentation, table: &str, metric: &str, key: Option<&str>) -> Value {
+    compare_with_remainder(base, candidate, table, metric, key, None)
+}
+
+pub(crate) fn compare_with_remainder(
+    base: &Presentation, candidate: &Presentation, table: &str, metric: &str,
+    key: Option<&str>, remainder_offset: Option<usize>,
+) -> Value {
     if report_comparison_definition(base, table) != report_comparison_definition(candidate, table) {
         return json!({"state":"comparison_changed"});
     }
@@ -381,7 +428,7 @@ pub(crate) fn compare(base: &Presentation, candidate: &Presentation, table: &str
     let mut result = json!({"state":"review","table":table,"metric":metric,"kind":kind.name(),
         "before":before.totals.details(kind),"after":after.totals.details(kind),(delta_key):delta,
         "source":{"before":before.source,"after":after.source},
-        "decomposition":decomposition(&before, &after, delta, key)});
+        "decomposition":decomposition(&before, &after, delta, key, remainder_offset)});
     if let Ok(definition) = report_comparison_definition(base, table)
         && let Some(unit) = definition.get("unit")
     {

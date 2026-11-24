@@ -724,6 +724,8 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::report_rate", crate::query_report_panel::report_rate_scenario),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         ("xlsx::report_average", crate::query_report_panel::report_average_scenario),
+        ("xlsx::report_rate_remainder", || crate::query_report_panel::report_quotient_remainder_scenario(true)),
+        ("xlsx::report_average_remainder", || crate::query_report_panel::report_quotient_remainder_scenario(false)),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         ("xlsx::query_report_arrow_snapshot", crate::query_report_panel::arrow_report_snapshot_scenario),
         #[cfg(any(target_os = "macos", target_os = "linux"))]

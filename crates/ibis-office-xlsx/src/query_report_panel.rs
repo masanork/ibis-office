@@ -42,7 +42,7 @@ fn signed_contribution(value: &Value) -> String {
 }
 
 fn quotient_preview(
-    comparison: &Value, index: usize, selected: Option<usize>, generation: u64, cx: &mut Context<SlideEditor>,
+    comparison: &Value, page: Option<&Value>, index: usize, selected: Option<usize>, generation: u64, cx: &mut Context<SlideEditor>,
 ) -> impl IntoElement {
     let rate = comparison["kind"] == "rate";
     let unit = if rate { text("query.report-quotient-pp").to_string() }
@@ -63,7 +63,20 @@ fn quotient_preview(
     section = section.child(div().text_sm().child(format("query.report-quotient-total", &[
         ("count", &ranking["group_count"]), ("total", &signed_contribution(&ranking["total_contribution"])), ("unit", &unit),
     ])));
-    for (row, group) in groups.iter().enumerate() {
+    let remainder = &ranking["remainder"];
+    let page_groups = page.and_then(|page| page["groups"].as_array()).into_iter().flatten();
+    let remainder_count = remainder["count"].as_u64().unwrap_or_default();
+    if remainder_count > 0 {
+        section = section.child(div().text_sm().child(saved_check_text(format("query.report-quotient-top", &[
+            ("count", &groups.len()), ("total", &signed_contribution(&ranking["top_contribution"])), ("unit", &unit),
+        ]))));
+    }
+    let page_offset = page.and_then(|page| page["offset"].as_u64()).unwrap_or_default() as usize;
+    for (position, group) in groups.iter().chain(page_groups).enumerate() {
+        if position == groups.len() {
+            section = section.child(quotient_remainder_button(remainder, true, &unit, index, generation, cx));
+        }
+        let row = if position < groups.len() { position } else { position + page_offset };
         let key = group["key"].as_str().unwrap_or_default();
         let rank = row + 1;
         let total = signed_contribution(&group["contribution"]);
@@ -120,7 +133,44 @@ fn quotient_preview(
             }
         }
     }
+    if remainder_count > 0 && page.is_none() {
+        section = section.child(quotient_remainder_button(remainder, false, &unit, index, generation, cx));
+    }
+    if let Some(page) = page {
+        let size = page["page_size"].as_u64().unwrap_or_default() as usize;
+        let next = page["next_offset"].as_u64().map(|offset| offset as usize);
+        for (action, offset) in [
+            ("previous", (page_offset > 0).then(|| page_offset.saturating_sub(size))),
+            ("next", next),
+        ] {
+            if let Some(offset) = offset {
+                section = section.child(action_button(SharedString::from(format!("query-report-quotient-{action}-{index}")))
+                    .small().label(text(&format!("query.report-quotient-{action}")))
+                    .on_click(cx.listener(move |editor, _, _, cx| {
+                        editor.set_quotient_remainder_page(index, generation, Some(offset), cx);
+                    })));
+            }
+        }
+    }
     section
+}
+
+fn quotient_remainder_button(
+    remainder: &Value, expanded: bool, unit: &str, index: usize, generation: u64, cx: &mut Context<SlideEditor>,
+) -> impl IntoElement {
+    let label = format(if expanded { "query.report-quotient-remainder-expanded" } else { "query.report-quotient-remainder" }, &[
+        ("count", &remainder["count"]), ("total", &signed_contribution(&remainder["contribution"])), ("unit", &unit),
+    ]);
+    let button = action_button(SharedString::from(format!("query-report-quotient-remainder-{index}")))
+        .small().label(label.clone()).on_click(cx.listener(move |editor, _, _, cx| {
+            editor.set_quotient_remainder_page(index, generation, (!expanded).then_some(0), cx);
+        }));
+    #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+    let button = crate::shell::scenario::button_probe::observe_control(
+        div().id(SharedString::from(format!("quotient-remainder-probe-{index}"))).child(button),
+        SharedString::from(format!("query-report-quotient-remainder:{label}")).into(),
+    );
+    button
 }
 
 fn parameter_choices(workbook: &Presentation, control: &ReportParameterControl) -> Vec<(Value, String)> {
@@ -168,6 +218,7 @@ struct ReviewedRefresh {
     chart_diffs_truncated: bool,
     quotient_previews: Vec<Value>,
     quotient_selection: BTreeMap<usize, usize>,
+    quotient_pages: BTreeMap<usize, Value>,
 }
 
 pub(crate) struct QueryReportPanel {
@@ -254,6 +305,33 @@ impl QueryReportPanel {
 
 #[ibis_office_macros::editor_ext(QueryReportPanelExt)]
 impl SlideEditor {
+    fn set_quotient_remainder_page(&mut self, index: usize, generation: u64, offset: Option<usize>, cx: &mut Context<Self>) {
+        let page = offset.and_then(|offset| {
+            let panel = self.wb().panels.queries.as_ref()?.reports.as_ref()?;
+            let review = panel.review.as_ref()?;
+            if panel.generation != generation || self.presentation() != &review.base {
+                return None;
+            }
+            let comparison = review.quotient_previews.get(index)?;
+            let table = comparison["table"].as_str()?;
+            let metric = comparison["metric"].as_str()?;
+            let candidate = review.candidate.as_ref()?;
+            let result = crate::report_quotient::compare_with_remainder(&review.base, candidate, table, metric, None, Some(offset));
+            result["decomposition"]["ranking"]["remainder"].get("page").cloned()
+        });
+        if let Some(review) = self.query_reports_mut().filter(|panel| panel.generation == generation)
+            .and_then(|panel| panel.review.as_mut())
+        {
+            review.quotient_selection.remove(&index);
+            if let Some(page) = page {
+                review.quotient_pages.insert(index, page);
+            } else {
+                review.quotient_pages.remove(&index);
+            }
+            cx.notify();
+        }
+    }
+
     pub(crate) fn live_report_preview_diff(&self, args: &Value) -> Value {
         let contributor_key = match args.get("contributor_key") {
             None => None,
@@ -276,6 +354,18 @@ impl SlideEditor {
                 Some((table, metric))
             }
             _ => return json!({"error":"Supply a report table and metric together"}),
+        };
+        let remainder_offset = match args.get("remainder_offset") {
+            None => None,
+            Some(offset) => {
+                let Some(offset) = offset.as_u64().and_then(|offset| usize::try_from(offset).ok()) else {
+                    return json!({"error":"Supply a non-negative integer remainder_offset"});
+                };
+                if report.is_none() || args["applied"] == true {
+                    return json!({"error":"remainder_offset requires a rate or average report preview"});
+                }
+                Some(offset)
+            }
         };
         if let Some(applied) = args.get("applied") {
             let (Some(applied), Some((table, metric))) = (applied.as_bool(), report) else {
@@ -304,6 +394,12 @@ impl SlideEditor {
                 report["table"].as_str().is_some_and(|name| name.eq_ignore_ascii_case(table))
             }) {
                 return json!({"state":"report_not_in_preview"});
+            }
+            if remainder_offset.is_some() {
+                if !crate::chart_cohort::report_comparison_definition(&review.base, table).is_ok_and(crate::report_quotient::supports) {
+                    return json!({"error":"remainder_offset requires a rate or average report preview"});
+                }
+                return crate::report_quotient::compare_with_remainder(&review.base, candidate, table, metric, contributor_key, remainder_offset);
             }
             return crate::chart_cohort::compare_report(&review.base, candidate, table, metric, contributor_key);
         }
@@ -642,7 +738,7 @@ impl SlideEditor {
                                 }).collect()
                             }).unwrap_or_default();
                             Ok(ReviewedRefresh { base, result, commands, candidate, chart_diffs, chart_diffs_truncated,
-                                quotient_previews, quotient_selection: BTreeMap::new() })
+                                quotient_previews, quotient_selection: BTreeMap::new(), quotient_pages: BTreeMap::new() })
                         })
                         .map_err(|error| ibis_doc_service::ToolError::new("internal", error.to_string()))?
                         .join()
@@ -966,7 +1062,7 @@ impl SlideEditor {
             }
             if self.presentation() == &review.base {
                 for (index, comparison) in review.quotient_previews.iter().enumerate() {
-                    body = body.child(quotient_preview(comparison, index,
+                    body = body.child(quotient_preview(comparison, review.quotient_pages.get(&index), index,
                         review.quotient_selection.get(&index).copied(), generation, cx));
                 }
                 for chart in &review.chart_diffs {
@@ -2099,4 +2195,127 @@ fn assert_quotient_preview_ui(scene: &mut crate::shell::scenario::Scenario, summ
     let first_field = fields[0];
     button_probe::click(scene, &format!("query-report-quotient-cell-0-{first_field}"));
     assert_eq!(scene.with(|editor, _| editor.current_cell()), Some((3, 5)));
+}
+
+#[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn report_quotient_remainder_scenario(rate: bool) {
+    use crate::shell::scenario::{Scenario, button_probe};
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("base.csv");
+    let new = dir.path().join("next.csv");
+    let blank = dir.path().join("blank.xlsx");
+    let workbook = dir.path().join("remainder.xlsx");
+    for (path, refresh) in [(&old, false), (&new, true)] {
+        let mut csv = String::from("sku,amount,weight\n");
+        for index in 1..=23 {
+            let change = if index % 2 == 0 { index } else { -index };
+            let amount = if refresh { 30 + change } else { 30 };
+            csv.push_str(&format!("G{index:02},{amount},2\n"));
+        }
+        std::fs::write(path, csv).unwrap();
+    }
+    std::fs::write(&blank, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+    let mut service = ibis_doc_service::Service::new(&[dir.path().to_owned()], false, ibis_doc_service::Limits::default());
+    let id = service.call("app_open_document", &json!({"path":blank})).unwrap()["document_id"].clone();
+    let sheet = service.call("xlsx_list_sheets", &json!({"document_id":id})).unwrap()["sheets"][0]["name"].clone();
+    let result = service.call("sqlite_query_to_table", &json!({
+        "document_id":id,"destination_sheet":sheet,"anchor":"C4",
+        "sql":"SELECT sku, CAST(amount AS INTEGER) AS amount, CAST(weight AS INTEGER) AS weight FROM src ORDER BY sku",
+        "datasets":[{"source":old,"alias":"src"}],
+    })).unwrap();
+    let (metric, comparison) = if rate {
+        ("conversion", json!({"kind":"rate","key_column":"sku","metric":"conversion","numerator_column":"amount","denominator_column":"weight"}))
+    } else {
+        ("mean", json!({"kind":"average","key_column":"sku","metric":"mean","sum_column":"amount","count_column":"weight","unit":"points"}))
+    };
+    service.call("xlsx_set_query_report_comparison", &json!({"document_id":id,"table":result["table"],"comparison":comparison})).unwrap();
+    service.call("app_save_document", &json!({"document_id":id,"path":workbook})).unwrap();
+    let mut scene = Scenario::open(workbook.to_str().unwrap());
+    let _probe = button_probe::Probe::new();
+    scene.size(1280., 1800.);
+    scene.update(|editor, _, cx| {
+        editor.open_queries_panel(cx);
+        editor.open_query_report_panel(cx);
+        editor.query_reports_mut().unwrap().files.insert("base.csv".into(), new.clone());
+        cx.notify();
+    });
+    button_probe::click(&mut scene, "query-reports-preview");
+    let mut summary = Value::Null;
+    let args = |offset| json!({"table":"QueryResult1","metric":metric,"remainder_offset":offset});
+    for _ in 0..250 {
+        summary = scene.with(|editor, _| editor.live_report_preview_diff(&args(0)));
+        if summary["state"] == "review" { break; }
+        assert_eq!(summary["state"], "previewing");
+        std::thread::sleep(Duration::from_millis(20));
+        scene.wait(20);
+    }
+    let ranking = &summary["decomposition"]["ranking"];
+    let remainder = &ranking["remainder"];
+    let scale = if rate { 100. } else { 1. };
+    let delta = summary[if rate { "percentage_point_delta" } else { "delta" }].as_f64().unwrap();
+    let tolerance = summary["decomposition"]["tolerance"].as_f64().unwrap();
+    let top = ranking["top_contribution"].as_f64().unwrap();
+    let other = remainder["contribution"].as_f64().unwrap();
+    assert_eq!(remainder["count"], 13);
+    assert_eq!(ranking["groups"].as_array().unwrap().len(), 10);
+    assert!((top - (-5. / 46. * scale)).abs() <= tolerance);
+    assert!((other - (-7. / 46. * scale)).abs() <= tolerance);
+    assert!((top + other - delta).abs() <= tolerance);
+    assert!(ranking["partition_residual"].as_f64().unwrap().abs() <= tolerance);
+    let page = &remainder["page"];
+    assert_eq!(page["next_offset"], 10);
+    assert_eq!(page["groups"][0]["key"], "G13");
+    assert_eq!(page["groups"][9]["key"], "G04");
+    let second = scene.with(|editor, _| editor.live_report_preview_diff(&args(10)));
+    let second_page = &second["decomposition"]["ranking"]["remainder"]["page"];
+    assert_eq!(second_page["groups"][0]["key"], "G03");
+    assert_eq!(second_page["groups"].as_array().unwrap().len(), 3);
+    assert!(second_page["next_offset"].is_null());
+    let sum: f64 = page["groups"].as_array().unwrap().iter()
+        .chain(second_page["groups"].as_array().unwrap()).map(|entry| entry["contribution"].as_f64().unwrap()).sum();
+    assert!((sum - other).abs() <= tolerance);
+
+    let unit = if rate { text("query.report-quotient-pp").to_string() } else { "points".to_owned() };
+    let label = format("query.report-quotient-remainder", &[
+        ("count", &remainder["count"]), ("total", &signed_contribution(&remainder["contribution"])), ("unit", &unit),
+    ]);
+    scene.wait(100);
+    let top_label = format("query.report-quotient-top", &[
+        ("count", &10), ("total", &signed_contribution(&ranking["top_contribution"])), ("unit", &unit),
+    ]);
+    assert!(button_probe::bounds(&format!("query-report-check-text:{top_label}")).is_some());
+    assert!(button_probe::bounds(&format!("query-report-quotient-remainder:{label}")).is_some());
+    assert!(button_probe::bounds("query-report-quotient-0-10").is_none());
+    button_probe::click(&mut scene, "query-report-quotient-remainder-0");
+    let group = &page["groups"][0];
+    let label = format("query.report-quotient-row", &[
+        ("rank", &11), ("key", &"G13"), ("total", &signed_contribution(&group["contribution"])), ("unit", &unit),
+    ]);
+    assert!(button_probe::bounds(&format!("query-report-quotient-row:{label}")).is_some());
+    button_probe::click(&mut scene, "query-report-quotient-0-10");
+    let field = if rate { "numerator" } else { "sum" };
+    for (side, prefix, value) in [("before", "query-report-quotient-evidence", 30), ("after", "query-report-check-text", 17)] {
+        let evidence = &group[side];
+        assert_eq!(evidence[field]["cell"], "D17");
+        assert_eq!(evidence[field]["value"].as_f64().unwrap(), f64::from(value));
+        let line = format("query.report-quotient-evidence", &[
+            ("field", &text(&format!("query.report-quotient-{field}"))),
+            ("sheet", &evidence["sheet"].as_str().unwrap()), ("cell", &"D17"), ("value", &evidence[field]["value"]),
+        ]);
+        assert!(button_probe::bounds(&format!("{prefix}:{line}")).is_some(), "{line}");
+    }
+    button_probe::click(&mut scene, &format!("query-report-quotient-cell-0-{field}"));
+    assert_eq!(scene.with(|editor, _| editor.current_cell()), Some((3, 16)));
+    button_probe::click(&mut scene, "query-report-quotient-next-0");
+    let group = &second_page["groups"][0];
+    let label = format("query.report-quotient-row", &[
+        ("rank", &21), ("key", &"G03"), ("total", &signed_contribution(&group["contribution"])), ("unit", &unit),
+    ]);
+    assert!(button_probe::bounds(&format!("query-report-quotient-row:{label}")).is_some());
+    button_probe::click(&mut scene, "query-report-quotient-previous-0");
+    button_probe::click(&mut scene, "query-report-quotient-remainder-0");
+    let review = scene.with(|editor, _| editor.wb().panels.queries.as_ref().unwrap().reports.as_ref()
+        .unwrap().review.as_ref().unwrap().quotient_pages.is_empty());
+    assert!(review);
 }

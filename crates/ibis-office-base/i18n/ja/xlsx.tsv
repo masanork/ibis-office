@@ -3205,3 +3205,8 @@ query.report-quotient-denominator	分母
 query.report-quotient-sum	合計
 query.report-quotient-count	件数
 query.report-quotient-evidence	{field} · {sheet}!{cell} = {value}
+query.report-quotient-remainder	▸ その他（{count}件）· {total} {unit}
+query.report-quotient-remainder-expanded	▾ その他（{count}件）· {total} {unit}
+query.report-quotient-previous	前のグループ
+query.report-quotient-next	次のグループ
+query.report-quotient-top	上位{count}グループの寄与合計 {total} {unit}

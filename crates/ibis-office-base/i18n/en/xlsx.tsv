@@ -3208,3 +3208,8 @@ query.report-quotient-denominator	Denominator
 query.report-quotient-sum	Sum
 query.report-quotient-count	Count
 query.report-quotient-evidence	{field} · {sheet}!{cell} = {value}
+query.report-quotient-remainder	▸ Other ({count}) · {total} {unit}
+query.report-quotient-remainder-expanded	▾ Other ({count}) · {total} {unit}
+query.report-quotient-previous	Previous groups
+query.report-quotient-next	Next groups
+query.report-quotient-top	Top {count} groups: {total} {unit}
