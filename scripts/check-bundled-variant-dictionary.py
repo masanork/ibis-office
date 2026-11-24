@@ -18,11 +18,8 @@ def main():
     if not dictionary or dictionary not in args.executable.read_bytes():
         raise SystemExit(f"Bundled gjs dictionary missing from {args.executable}")
 
-    credit = "| gjs 異体字クラスターマップ | 異体字照合。調製・提供 Masanori Kusunoki (gjs) |"
-    if not any(
-        line.startswith(credit)
-        for line in args.licenses.read_text(encoding="utf-8").splitlines()
-    ):
+    credit = "| 異体字クラスターマップ | 異体字照合 | 調製・提供 Masanori Kusunoki |"
+    if credit not in args.licenses.read_text(encoding="utf-8").splitlines():
         raise SystemExit(f"Bundled gjs attribution missing from {args.licenses}")
 
     print(f"Verified bundled gjs dictionary ({len(dictionary):,} bytes) and attribution")

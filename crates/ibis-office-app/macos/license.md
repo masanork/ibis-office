@@ -15,7 +15,7 @@ ibisOffice の macOS 版（`ibisOffice.app`）に含まれる、ibisOffice 以�
 | Lucide | アイコン（実行ファイルに埋め込み） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 | Unicode 15.0 | 文字の表示可否データ | Unicode-3.0 |
-| gjs 異体字クラスターマップ | 異体字照合。調製・提供 Masanori Kusunoki (gjs) | ibisOffice への提供データ。[元データの表示](https://github.com/digital-go-jp/gjs/blob/main/NOTICE.md) |
+| 異体字クラスターマップ | 異体字照合 | 調製・提供 Masanori Kusunoki |
 
 ## Rust の部品（837 件）
 

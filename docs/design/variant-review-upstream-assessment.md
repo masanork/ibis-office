@@ -16,7 +16,7 @@ gjs の調製者 Masanori Kusunoki からクラスタマップの使用は許諾
 
 観測時の gjs `9173a4d90addf8b6c7e3563473c9195e3acbdb5e` の `export_clusters_csv.ts` は、`compat`、`v2n`、`traditional`、`simplified`、`z_variant`、`mj_substitution`、`gj_substitution`、`semantic` の関係を入力に、seeded Kruskal で direct クラスタを再計算する。ソース中の「1-hop」とするコメントと実装上のクラスタ生成の説明には差があり、実際の関係を検証せずに「直接対応のみ」と説明しない。個別エッジへの寄与、入力版、適用規約の追跡が次の作業。
 
-[gjs Third-Party Notices](https://github.com/digital-go-jp/gjs/blob/main/NOTICE.md) はコードとデータを分けて扱っている。[MJ 縮退マップ](https://moji.or.jp/mojikiban/map/) 等の条件を、利用した具体的なファイルと加工・配布形態ごとに確認する。AGPL と商用ライセンスの両方で配布できることを、コードの独自実装やクレジットから推定しない。
+コードとデータの利用条件は分けて確認する。[MJ 縮退マップ](https://moji.or.jp/mojikiban/map/) 等の条件を、利用した具体的なファイルと加工・配布形態ごとに確認する。AGPL と商用ライセンスの両方で配布できることを、コードの独自実装やクレジットから推定しない。
 
 ## 限定検証と残作業
 

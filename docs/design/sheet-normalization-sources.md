@@ -25,7 +25,7 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
 
 ## 配布用の異体字クラスタ
 
-デスクトップ版と Web 版は、Masanori Kusunoki (gjs) が公開データから再構築し、
+デスクトップ版と Web 版は、Masanori Kusunoki が公開データから再構築し、
 ibisOffice に CLA に沿って提供した異体字クラスターマップを既定で組み込む。
 提供された `clusters_direct.csv` の全 34,509 文字・9,538 クラスタを収録する。
 元データの表記は保持し、「髙」と「高」のように同じクラスタに属する別の文字を氏名照合で曖昧一致として扱う。
@@ -37,7 +37,6 @@ ibisOffice に CLA に沿って提供した異体字クラスターマップを�
 `python3 scripts/generate-variant-bitmap.py clusters_direct.csv crates/ibis-doc-model/resources/gjs-variant-clusters.zst`
 で生成した辞書は 171,059 バイトで、SHA-256 は
 `544b80b5ba1aeb0c30bccee327379dac244d0aba54b7dc6174061c63ba3187e8`。
-元データの条件は [gjs の Third-Party Notices](https://github.com/digital-go-jp/gjs/blob/main/NOTICE.md) を参照。
 
 開発時は `IBIS_VARIANT_BITMAP` で別の検証用辞書に差し替えられる。
 辞書はバイナリに組み込むため、照合時は gjs・soroe やネットワークに接続する必要がない。
