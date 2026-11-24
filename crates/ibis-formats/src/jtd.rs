@@ -258,6 +258,9 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     {
         let styles = std::sync::Arc::make_mut(&mut flow.styles);
         styles.defaults_run.size = Some(defaults.size);
+        // The imported runs do not request pair kerning. Drop the blank Word
+        // template's threshold so conversion does not squeeze pairs like 。」.
+        styles.defaults_run.kern = None;
         if defaults.font.is_some() {
             styles.defaults_run.font = defaults.font.clone();
             styles.defaults_run.east_asian_font = defaults.east_asian_font.clone();
@@ -1984,6 +1987,21 @@ mod tests {
             assert!(expected_font.is_some());
             assert_eq!(original_text.font_for(character), expected_font);
             assert_eq!(original_mark.font_for(character), reopened_mark.font_for(character));
+        }
+    }
+
+    #[test]
+    fn docx_conversion_does_not_add_template_kerning_to_jtd() {
+        let original = read(&fixture("「甲。」乙")).unwrap();
+        let reopened = crate::read(&export_docx(&original).unwrap()).unwrap();
+        for model in [&original, &reopened] {
+            let flow = model.flow.as_ref().unwrap();
+            assert_eq!(flow.styles.defaults_run.kern, None);
+            let Block::Paragraph(paragraph) = &flow.body[0] else {
+                panic!("paragraph");
+            };
+            assert_eq!(paragraph.text(), "「甲。」乙");
+            assert!(paragraph.runs.iter().all(|run| run.style.kern.is_none()));
         }
     }
 
