@@ -1718,6 +1718,11 @@ pub fn workbook_from_with_delimiter(text: &str, name: &str, delimiter: char) -> 
     workbook_from_fields(text, name, delimiter, |_, _| false)
 }
 
+/// Open a delimited file as literal cells, including numeric-looking and formula-looking text.
+pub fn workbook_from_literal_fields(text: &str, name: &str, font: Option<&CsvFont>) -> Result<Vec<u8>, Error> {
+    build_workbook(text, name, ',', |_, _| true, false, font)
+}
+
 pub(crate) fn workbook_from_fields(
     text: &str,
     name: &str,

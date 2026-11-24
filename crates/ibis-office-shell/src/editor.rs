@@ -1894,17 +1894,20 @@ impl SlideEditor {
             }
             this.watch.opening_path = None;
             let restore = this.watch.restore_view.take().filter(|(p, _)| *p == path).map(|(_, view)| view);
-            // Specialized JSON imports have already been selected by the reader.
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-                && match &result {
-                    Ok(loaded) => loaded.structured_preview,
-                    Err(error) => error == ibis_formats::structured_preview::SIZE_LIMIT_ERROR,
-                }
             {
-                this.fail_loading(String::new(), cx);
-                this.open_structured_data(path, window, cx);
-                return;
+                // Specialized JSON imports have already been selected by the reader.
+                let json_tree = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                    && match &result {
+                        Ok(loaded) => loaded.structured_preview,
+                        Err(error) => error == ibis_formats::structured_preview::SIZE_LIMIT_ERROR,
+                    };
+                let csv_tree = result.as_ref().is_err_and(|error| error == crate::read_file::LINKAGE_CSV_NEEDS_TREE);
+                if json_tree || csv_tree {
+                    this.fail_loading(String::new(), cx);
+                    this.open_structured_data(path, window, cx);
+                    return;
+                }
             }
             match result {
                 Ok(loaded) => {

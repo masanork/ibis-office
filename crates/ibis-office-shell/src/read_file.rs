@@ -32,6 +32,40 @@ pub struct Loaded {
     pub(crate) csv_stream: Option<std::sync::mpsc::Receiver<ibis_formats::CsvProgressiveChunk>>,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub(crate) const LINKAGE_CSV_NEEDS_TREE: &str = "\u{1}linkage-csv-needs-tree";
+
+#[cfg(not(target_family = "wasm"))]
+fn read_only_preview(opened: ibis_formats::Opened) -> Loaded {
+    crate::render::preload::Preload::start_for_next(&opened.presentation);
+    Loaded {
+        presentation: opened.presentation, source: std::sync::Arc::new(opened.source),
+        password: None, standard_encryption: false, converted_hangul: false, csv_stream: None,
+        jtd_original: None, jtd_gallery: false, structured_preview: true, cbom_source: None,
+        exr_exposure: None, image_provenance: None,
+    }
+}
+
+/// Identify municipal standard linkage files before the ordinary CSV importer infers cell types.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn linkage_csv(data: &[u8]) -> Option<(&str, bool)> {
+    let text = std::str::from_utf8(data.strip_prefix(b"\xef\xbb\xbf").unwrap_or(data)).ok()?;
+    let mut records = ibis_formats::csv::CsvRecordIter::new(text, ',');
+    let header = records.next()?;
+    let signature = ["削除フラグ", "操作者ID", "操作年月日", "操作時刻"];
+    if !signature.iter().all(|name| header.iter().any(|column| column == name)) {
+        return None;
+    }
+    let needs_tree = header.len() > 256
+        || header.iter().filter_map(|column| column.rsplit_once('_')).any(|(name, index)| {
+            !name.is_empty() && index.trim_start_matches('0') == "1"
+                && header.iter().filter_map(|column| column.rsplit_once('_'))
+                    .any(|(other, index)| other == name && index.trim_start_matches('0') == "2")
+        })
+        || records.enumerate().any(|(index, fields)| fields.len() != header.len() || index >= 1_048_575);
+    Some((text, needs_tree))
+}
+
 /// What `read_file` says when the file is protected and needs its password.
 pub const NEEDS_PASSWORD: &str = "\u{1}needs-password";
 /// What it says when the password given is not the file's.
@@ -103,6 +137,36 @@ pub fn catch_read_panic<T>(path: &std::path::Path, read: impl FnOnce() -> Result
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod stack_tests {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn linkage_csv_distinguishes_plain_tabular_and_structured_inputs() {
+        use super::linkage_csv;
+        let header = "操作時刻,削除フラグ,操作者ID,操作年月日";
+        assert!(linkage_csv("削除フラグ,操作者ID,操作年月日\n0,u,20261124".as_bytes()).is_none());
+        assert!(!linkage_csv(format!("\u{feff}{header}\r\n090000,0,000001,20261124").as_bytes()).unwrap().1);
+        assert!(linkage_csv(format!("{header},項目_01,項目_02\n090000,0,000001,20261124,x,y").as_bytes()).unwrap().1);
+        assert!(linkage_csv(format!("{header}\n090000,0,000001").as_bytes()).unwrap().1);
+        let wide = (1..=253).map(|index| format!(",列{index}")).collect::<String>();
+        assert!(linkage_csv(format!("{header}{wide}").as_bytes()).unwrap().1);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn linkage_csv_opens_as_read_only_literal_cells() {
+        let path = std::env::temp_dir().join(format!("ibis-linkage-csv-{}.csv", std::process::id()));
+        std::fs::write(&path, "削除フラグ,操作者ID,操作年月日,操作時刻,備考\r\n0,000001,20261124,090000,=1+2\r\n").unwrap();
+        let loaded = super::read_file(&path);
+        std::fs::remove_file(path).unwrap();
+        let loaded = loaded.unwrap();
+        assert!(loaded.structured_preview);
+        let sheet = ibis_doc_model::sheet_calc::sheet_of_slide(&loaded.presentation.slides[0]).unwrap();
+        for (column, expected) in [(1, "000001"), (2, "20261124"), (3, "090000"), (4, "=1+2")] {
+            let cell = sheet.cell(1, column).unwrap();
+            assert_eq!(cell.value, ibis_doc_model::CellValue::Text(expected.into()));
+            assert!(cell.formula.is_none());
+        }
+    }
+
     #[test]
     fn osv_json_opens_as_an_editable_workbook() {
         let path = std::env::temp_dir().join(format!("ibis-review-{}.osv.json", std::process::id()));
@@ -231,6 +295,26 @@ fn read_file_data(
     read_t0: crate::clock::Instant,
 ) -> Result<Loaded, String> {
     let extension = path.extension().and_then(|ext| ext.to_str());
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
+        && let Some((text, needs_tree)) = linkage_csv(&data)
+    {
+        if needs_tree {
+            return Err(LINKAGE_CSV_NEEDS_TREE.into());
+        }
+        let encoding = if data.starts_with(b"\xef\xbb\xbf") {
+            ibis_formats::csv::OriginalEncoding::Utf8Bom
+        } else {
+            ibis_formats::csv::OriginalEncoding::Utf8
+        };
+        ibis_formats::csv::raw_csv_record_ranges(&data, encoding, ',', 0)
+            .map_err(|error| error.to_string())?;
+        let font = crate::settings_dialog::csv_font();
+        let workbook = ibis_formats::csv::workbook_from_literal_fields(text, "Sheet1", font.as_ref())
+            .map_err(|error| error.to_string())?;
+        let opened = ibis_formats::open(workbook).map_err(|error| error.to_string())?;
+        return Ok(read_only_preview(opened));
+    }
     if let Some(format) = FixedLayoutFormat::detect(extension, &data) {
         let presentation = format.read(data.into())?;
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
@@ -293,13 +377,7 @@ fn read_file_data(
         Ok((opened, None))
     } else if let Some(extension) = extension.filter(|ext| ibis_formats::structured_preview::supports_extension(ext)) {
         let opened = crate::structured_preview::open(extension, &data)?;
-        crate::render::preload::Preload::start_for_next(&opened.presentation);
-        return Ok(Loaded {
-            presentation: opened.presentation, source: std::sync::Arc::new(opened.source),
-            password: None, standard_encryption: false, converted_hangul: false, csv_stream: None,
-            jtd_original: None, jtd_gallery: false, structured_preview: true, cbom_source: None,
-            exr_exposure: None, image_provenance: None,
-        });
+        return Ok(read_only_preview(opened));
     } else if external_document_format == Some(ibis_formats::docx_convert::DocxConvertFormat::Markdown) {
         if ibis_formats::markdown::is_presentation_markdown(&data) {
             ibis_formats::markdown::open_markdown_presentation_with_base_dir(data, path.parent()).map(|opened| (opened, None))
