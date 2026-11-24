@@ -1456,16 +1456,20 @@ impl<'a> ParseContext<'a> {
     }
 
     fn code_language_style(&mut self, info: &str) -> Option<String> {
-        let mut token = info.split_whitespace().next()?.chars().peekable();
-        let mut language = String::new();
-        while let Some(ch) = token.next() {
-            if ch == '\\' && token.peek().is_some_and(char::is_ascii_punctuation) {
-                language.extend(token.next());
-            } else {
-                language.push(ch);
-            }
-        }
-        if !is_code_language(&language) {
+        let decoded;
+        let info = if info.contains(['&', '\\']) {
+            use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag};
+            let source = format!("~~~ {info}\n~~~\n");
+            let Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) = Parser::new(&source).next()? else {
+                return None;
+            };
+            decoded = info.into_string();
+            decoded.as_str()
+        } else {
+            info
+        };
+        let language = info.split_whitespace().next()?;
+        if !is_code_language(language) {
             return None;
         }
         use std::fmt::Write;
@@ -3083,16 +3087,34 @@ fn strip_list_item_indent(line: &str, indent: usize) -> &str {
     &line[bytes..]
 }
 
-fn strip_quote_marker(line: &str) -> &str {
-    let marked = line.trim_start();
-    marked.strip_prefix("> ").or_else(|| marked.strip_prefix('>')).unwrap_or(line)
-}
-
-fn markdown_quote_line(line: &str) -> std::borrow::Cow<'_, str> {
-    if line.trim_start().starts_with('>') {
-        return strip_quote_marker(line).into();
+fn markdown_quote_line(line: &str, fenced: bool) -> std::borrow::Cow<'_, str> {
+    if let Some(after_marker) = line.trim_start().strip_prefix('>') {
+        let marker_end = markdown_indent(line) + 1;
+        if fenced {
+            if let Some(rest) = after_marker.strip_prefix('\t') {
+                return format!("{}{rest}", " ".repeat(3 - marker_end % 4)).into();
+            }
+            return after_marker.strip_prefix(' ').unwrap_or(after_marker).into();
+        }
+        let content = after_marker.trim_start_matches([' ', '\t']);
+        let whitespace = &after_marker[..after_marker.len() - content.len()];
+        if whitespace.contains('\t') {
+            // The optional space after > can consume only one column of a tab.
+            let mut column = marker_end;
+            let mut consumed = 0;
+            // Keep tabs beyond the four columns of code indentation literal.
+            for byte in whitespace.bytes() {
+                column += if byte == b'\t' { 4 - column % 4 } else { 1 };
+                consumed += 1;
+                if column >= marker_end + 5 {
+                    break;
+                }
+            }
+            return format!("{}{}", " ".repeat(column - marker_end - 1), &after_marker[consumed..]).into();
+        }
+        return after_marker.strip_prefix(' ').unwrap_or(after_marker).into();
     }
-    if parse_setext_underline(line).is_some() {
+    if !fenced && parse_setext_underline(line).is_some() {
         // The container parser admitted this as a lazy continuation. Once we
         // add the quote marker back, it must stay literal paragraph text.
         let text = line.trim_start_matches(' ');
@@ -3100,6 +3122,24 @@ fn markdown_quote_line(line: &str) -> std::borrow::Cow<'_, str> {
         return format!("{indent}\\{text}").into();
     }
     line.into()
+}
+
+fn markdown_quote_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<std::borrow::Cow<'a, str>> {
+    let mut fence = None::<String>;
+    lines.into_iter().map(|source| {
+        let line = markdown_quote_line(source, fence.is_some());
+        if markdown_indent(&line) <= 3 {
+            let trimmed = line.trim_start();
+            if let Some(marker) = &fence {
+                if closes_fence(trimmed, marker) {
+                    fence = None;
+                }
+            } else if let Some((marker, _)) = opening_fence(trimmed) {
+                fence = Some(marker.to_owned());
+            }
+        }
+        line
+    }).collect()
 }
 
 fn parse_blocks(
@@ -3144,8 +3184,8 @@ fn parse_blocks_at_quote_depth(
             continuations.remove(&i);
             let starts_item = i == item_line;
             let blank_before = i > 0 && lines[i - 1].trim().is_empty();
-            let mut quote_lines = vec![markdown_quote_line(&raw[start_column..])];
-            quote_lines.extend(lines[i + 1..next].iter().map(|line| markdown_quote_line(strip_list_item_indent(line, indent))));
+            let quote_lines = markdown_quote_lines(std::iter::once(&raw[start_column..])
+                .chain(lines[i + 1..next].iter().map(|line| strip_list_item_indent(line, indent))));
             let quote_lines = quote_lines.iter().map(|line| line.as_ref()).collect::<Vec<_>>();
             if let Some(mut quoted) = parse_structured_quote(&quote_lines, ctx, quote_depth.max(1), None)? {
                 let list = if starts_item && let Some(item) = parse_list_marker(raw) {
@@ -3691,13 +3731,13 @@ fn parse_blocks_at_quote_depth(
 
         // Blockquote or GitHub Alert: `> ...`
         if trimmed.starts_with('>') {
-            let mut quote_lines = Vec::new();
+            let first = i;
             while i < lines.len()
                 && quote_end.map_or_else(|| lines[i].trim_start().starts_with('>'), |end| i < end)
             {
-                quote_lines.push(markdown_quote_line(lines[i]));
                 i += 1;
             }
+            let quote_lines = markdown_quote_lines(lines[first..i].iter().copied());
             let quote_lines = quote_lines.iter().map(|line| line.as_ref()).collect::<Vec<_>>();
             blocks.extend(build_blockquote_blocks(&quote_lines, ctx, quote_depth)?);
             continue;
@@ -4204,7 +4244,7 @@ fn ordinary_code_fence(info: &str) -> bool {
 
 fn is_code_language(language: &str) -> bool {
     !language.is_empty() && language.len() <= 32
-        && language.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'+' | b'#' | b';'))
+        && language.chars().all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '+' | '#' | ';'))
 }
 
 fn markdown_code_language(style: Option<&str>) -> Option<String> {
@@ -4385,7 +4425,8 @@ fn parse_structured_quote(
             _ => {}
         }
     }
-    if !structured && count < 2 {
+    let empty_quote = source.trim().is_empty();
+    if !structured && count < 2 && !empty_quote {
         return Ok(None);
     }
 
@@ -4393,7 +4434,7 @@ fn parse_structured_quote(
     if !has_nested && blocks.len() != count {
         return Ok(None);
     }
-    if blocks.is_empty() && quote_depth > 0 && callout_style.is_none() {
+    if blocks.is_empty() && (quote_depth > 0 || empty_quote) && callout_style.is_none() {
         blocks.push(Block::Paragraph(FlowParagraph {
             id: ctx.fresh_id(),
             style: ctx.styles.default_paragraph.clone(),
@@ -8636,7 +8677,13 @@ fn serialize_paragraph(
                 code.push('\n');
             }
             let language = markdown_code_language(p.style.as_deref()).unwrap_or_default();
-            write_named_fence(&language, &code, out);
+            if ordinary_code_fence(&language) {
+                write_named_fence(&language, &code, out);
+            } else if let Some(first) = language.chars().next() {
+                // An entity-escaped extension name was imported as ordinary code.
+                let info = format!("&#{};{}", u32::from(first), &language[first.len_utf8()..]);
+                write_named_fence(&info, &code, out);
+            }
         }
         return;
     }
@@ -10815,6 +10862,26 @@ mod tests {
         assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
         let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+    }
+
+    #[test]
+    fn markdown_preserves_empty_quotes_tabs_and_fence_languages_through_docx() {
+        for (source, canonical) in [
+            (">\n", ">\n"),
+            (">\n>  \n> \n", ">\n"),
+            (">\t\tfoo\n", "> ```\n>   foo\n> ```\n"),
+            (">     \tfoo\n", "> ```\n> \tfoo\n> ```\n"),
+            ("```m&#101;rmaid\nordinary text\n```\n", "```&#109;ermaid\nordinary text\n```\n"),
+            ("``` f&ouml;&ouml;\nfoo\n```\n", "```föö\nfoo\n```\n"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, canonical, "{source}");
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), canonical, "{source}");
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), canonical, "{source}");
+        }
     }
 
     #[test]
