@@ -137,3 +137,18 @@ python3 scripts/employment-schema/test_presentation_roundtrip.py target/debug/ex
 - SD-JWT VCでは、同じ提示に対して異なる宛先や `nonce` を指定すると不一致を検出する。mdocの既存診断では発行者署名と開示ダイジェストを確認し、端末認証と申請への束縛の判定は未確認として扱う。
 
 提示比較器は、証明日と合計だけの提示を過不足なしと判定し、合計がない提示と、雇用形態・就労日数も出した提示をそれぞれ不足・余分として報告する。SD-JWT VCではネストしたパスと、名前そのものにドットを含む項目を区別する。実Walletと検証者の間でのOpenID4VPセッションは別途検証する。
+
+## 記入済みXLSXから受け渡し用JSONを確認する
+
+確認対象をibisOfficeで保存してから、承認済み対応表を参照するOKF原稿を指定する。次のコマンドは、ibisOfficeの読み取り専用MCPで保存済みXLSXを開き、確認用HTMLを新しいファイルに生成する。
+
+```sh
+python3 "$tools/workbook_review.py" completed.xlsx "$review_dir/review.html" \
+  --okf "$review_dir/employment.md"
+```
+
+`ibisOffice` の場所を明示する場合は `--ibis-office /path/to/ibisOffice` を指定する。WindowsではMCP用実行ファイル `ibisOffice-mcp.exe` を指定する。
+
+ブラウザーで確認用HTMLを開くと、渡す値と、元のシートのセル番地・入力値が並ぶ。たとえば変則勤務の月間時間は `M31`、週間日数は `P32` のチェックに対応する。確認後に「就労データをJSONで保存」を選ぶ。内容に修正が必要な場合はXLSXを修正・保存し、新しい確認用HTMLを作る。
+
+対応表の対象版は実行前に確認する。試作は指定シートの代表的な見出しを照合し、承認済み対応表の定義に従って抽出する。会社記載部の50行目までを読み、No.19の保護者記載欄は画面とJSONに含まれない。確認用HTMLとJSONには就労データが含まれる。ブラウザーでの確認はローカルで完結する。

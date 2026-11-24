@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
+import base64
 import json
 from pathlib import Path
 import tempfile
@@ -6,7 +7,8 @@ import unittest
 
 from jsonschema import Draft202012Validator
 
-from pilot import extract, schema
+from pilot import MAPPING, extract, schema
+from workbook_review import render_review
 from okf import load_concept
 from presentation import dcql
 from review import load_approved, reviewed_mapping
@@ -20,6 +22,19 @@ VARIABLE = {
 
 
 class EmploymentSchemaTest(unittest.TestCase):
+    def test_workbook_review_shows_only_mapped_values(self):
+        template = {"B1": "就労証明書", "B23": 5, "B25": 6, "I31": "合計時間", "I32": "就労日数"}
+        cells = {**template, **VARIABLE, "Z4": "<架空事業所>", "I52": "除外する児童名"}
+        page = render_review(Path("employment.xlsx"), MAPPING, cells)
+        self.assertIn("&lt;架空事業所&gt;", page)
+        self.assertNotIn("除外する児童名", page)
+        self.assertIn("M31 = ☑", page)
+        self.assertIn("P32 = ☑", page)
+        encoded = page.split("base64,", 1)[1].split('"', 1)[0]
+        self.assertEqual(json.loads(base64.b64decode(encoded)), extract(cells))
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            render_review(Path("employment.xlsx"), MAPPING, {**cells, "B1": "別の様式"})
+
     def test_human_review_and_approved_mapping(self):
         draft = json.loads(Path(__file__).with_name("candidate.example.json").read_text(encoding="utf-8"))
         with self.assertRaisesRegex(ValueError, "approval pending"):
