@@ -12,7 +12,11 @@ use std::path::Path;
 use ibis_formats::structured_preview::{Preview, xml_view};
 
 pub(crate) fn shared_directory() -> Option<std::path::PathBuf> {
-    Some(crate::app_data::base()?.join("ibisOffice").join("xml-views"))
+    Some(
+        crate::app_data::base()?
+            .join("ibisOffice")
+            .join("xml-views"),
+    )
 }
 
 pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<Opened, String> {
@@ -107,21 +111,37 @@ fn read_preview(
             match fs::read_dir(directory) {
                 Ok(entries) => {
                     let definitions = entries.flatten().filter_map(|entry| {
-                        let path = entry.path();
-                        if !entry.file_type().ok()?.is_file()
-                            || !path.file_name()?.to_str()?.ends_with(".view.json")
-                        {
+                        let name = entry.file_name().into_string().ok()?;
+                        if !name.ends_with(".view.json") || !entry.file_type().ok()?.is_file() {
                             return None;
                         }
+                        let path = entry.path();
                         match read_definition(&path) {
-                            Ok(bytes) => Some(bytes),
+                            Ok(bytes) => Some((name, bytes)),
                             Err(error) => {
                                 log::warn!("{}: {error}", path.display());
                                 None
                             }
                         }
                     });
-                    if let Some(preview) = xml_view::select_shared(data, definitions)? {
+                    let selected =
+                        xml_view::select_shared(data, definitions).map_err(
+                            |error| match error {
+                                xml_view::SharedError::Invalid(message) => message,
+                                xml_view::SharedError::Conflict(names) => {
+                                    let files = names
+                                        .iter()
+                                        .map(|name| literal(name))
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    crate::i18n::format(
+                                        "structured-preview.xml-definition-conflict",
+                                        &[("files", &files)],
+                                    )
+                                }
+                            },
+                        )?;
+                    if let Some(preview) = selected {
                         return Ok(preview);
                     }
                 }
@@ -219,13 +239,25 @@ mod tests {
             "生命保険料控除証明書（旧版）"
         );
         fs::write(catalog.join("duplicate.view.json"), &life_profile).unwrap();
+        fs::write(catalog.join("third.view.json"), &life_profile).unwrap();
+        let Err(error) = read(life.as_bytes(), None) else {
+            panic!("conflicting shared definitions must stop the preview");
+        };
         assert!(
-            matches!(read(life.as_bytes(), None), Err(error) if error.contains("Multiple shared"))
+            error.contains("duplicate.view.json, profile-a.view.json, third.view.json"),
+            "{error}"
         );
+        assert!(!error.contains("profile-b.view.json"), "{error}");
         fs::write(&local, life_profile.replace("合成サンプル", "個別定義")).unwrap();
         assert_eq!(
             read(life.as_bytes(), Some(&local)).unwrap().fields[0].name,
             "生命保険料控除証明書（個別定義）"
+        );
+        fs::remove_file(catalog.join("duplicate.view.json")).unwrap();
+        fs::remove_file(catalog.join("third.view.json")).unwrap();
+        assert_eq!(
+            read(life.as_bytes(), None).unwrap().fields[0].name,
+            first.fields[0].name
         );
         fs::remove_dir_all(catalog).unwrap();
     }
