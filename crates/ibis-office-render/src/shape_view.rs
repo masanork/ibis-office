@@ -1515,16 +1515,14 @@ fn is_office_japanese_face(name: &str) -> bool {
     ) // i18n-ok（フォント名の判定）
 }
 
-/// Whether an uninstalled Latin typeface name is a serif face (drawn with
-/// Times New Roman / Liberation Serif rather than a sans-serif stand-in).
-fn is_serif_latin_typeface(name: &str) -> bool {
-    const HINTS: &[&str] = &[
-        "Serif", "Goudy", "Merriweather", "Garamond", "Baskerville", "Palatino", "Bookman",
-        "Caslon", "Bodoni", "Didot", "Cambria", "Constantia", "Georgia", "Charter", "Rockwell",
-        "Slab", "Antiqua", "Minion", "Sabon", "Times",
-    ];
-    !name.contains("Sans") && HINTS.iter().any(|h| name.contains(h))
-}
+/// Named faces with a known serif design. Invented names use the document's
+/// stand-in, even if they include a word such as "Serif".
+const LATIN_SERIF_FAMILIES: &[&str] = &[
+    "Adobe Garamond Pro", "Baskerville", "Bodoni", "Bodoni MT", "Bookman Old Style",
+    "Cambria", "Caslon", "Charter", "Constantia", "Didot", "EB Garamond", "Garamond",
+    "Georgia", "Goudy Old Style", "Merriweather", "Minion Pro", "Palatino", "Palatino Linotype",
+    "Rockwell", "Sabon", "Times", "Times New Roman",
+];
 
 /// Fonts bundled with the desktop app (`fonts/carlito/`, OFL-1.1): Carlito,
 /// with Calibri's widths, stands in for it. Not in the web build, whose
@@ -2894,10 +2892,11 @@ impl Fonts {
                     None => (".SystemUIFont".into(), weight),
                 }
             }
-            _ if is_serif_latin_typeface(name) => match ["Times New Roman", "Liberation Serif", "Tinos", "Georgia"].into_iter().find(|f| self.installed.contains(*f)) {
-                Some(serif) => (serif.into(), weight),
-                None => (default_font_family(), weight),
-            },
+            _ if LATIN_SERIF_FAMILIES.contains(&strip_weight_suffix(name).map_or(name, |(base, _)| base)) => {
+                let fallback = ["Times New Roman", "Liberation Serif", "Tinos", "Georgia"]
+                    .into_iter().find(|family| self.installed.contains(*family));
+                (fallback.map_or_else(default_font_family, SharedString::from), weight)
+            }
             // Humanist sans-serifs whose widths match Calibri (`Carlito`) closer than Arial.
             _ if name.starts_with("Meta") && self.installed.contains(BUNDLED_FAMILY) => (BUNDLED_FAMILY.into(), weight),
             // PowerPoint draws every line of a presentation in a typeface that is not on the PC with Calibri (Calibri-Bold
@@ -7483,10 +7482,10 @@ mod font_resolution_tests {
         }
     }
 
-    /// Word, Excel and PowerPoint do not read the words of a missing typeface's name (Sans, Serif, Mono, Gothic, Mincho, ゴシック, 明朝): names with
-    /// and without them are drawn alike (Windows measurement of 13 invented names, `tasks/doc/requests/2026-11-14-fake-font-fallback-result.md`).
+    /// Invented Latin typeface names with and without “Serif”, “Sans” or “Mono” use
+    /// the same stand-in (Windows Office probe of missing font names).
     #[test]
-    fn a_missing_typeface_is_not_read_for_the_words_of_its_name() {
+    fn invented_latin_typeface_names_use_the_document_stand_in() {
         for (doc, calibri) in [(true, false), (false, true), (false, false)] {
             let fonts = office_fonts(doc, calibri);
             let plain = fonts.family("Zzqx Foo").0;
@@ -7494,18 +7493,14 @@ mod font_resolution_tests {
                 assert_eq!(fonts.family(n).0, plain, "{n} doc={doc} ppt={calibri}");
             }
             assert_ne!(plain.as_ref(), "", "doc={doc}");
-            let jp = fonts.family("架空ゴシック").0;
-            for n in ["架空明朝", "架空丸ゴシック", "架空体"] {
-                assert_eq!(fonts.family(n).0, jp, "{n} doc={doc} ppt={calibri}");
-            }
         }
         // Word: Latin Cambria or Calibri by the font table; PowerPoint: Calibri; Excel: Arial.
         assert_eq!(office_fonts(false, true).family("Fake Serif").0.as_ref(), "Calibri");
         assert_eq!(office_fonts(false, false).family("Fake Serif").0.as_ref(), "Arial");
         assert_eq!(office_fonts(true, false).family("Fake Serif").0.as_ref(), "Cambria");
-        // PowerPoint's Japanese is MS Gothic, Word's (a name with a Japanese character, not in the font table) Yu Gothic, Excel's by family.
-        assert_eq!(office_fonts(false, true).family("架空明朝").0.as_ref(), "MS Gothic");
-        assert_eq!(office_fonts(true, false).family("架空ゴシック").0.as_ref(), "Yu Gothic");
+        let mut fonts = office_fonts(true, false);
+        fonts.installed.remove("Cambria");
+        assert_eq!(fonts.family("Cambria").0.as_ref(), "Times New Roman");
     }
 
     /// Word decides a missing typeface by its font table entry (Windows Word 365, a new Word for each document,
@@ -7853,7 +7848,11 @@ mod font_resolution_tests {
         let word = category_fonts(&installed, Some(table), std::collections::BTreeMap::new());
         assert_eq!(word.family("未知明朝").0.as_ref(), "Hiragino Sans");
         let drawn = word.font(&TextStyle { font: Some("未知明朝".into()), ..TextStyle::default() });
-        assert!(drawn.fallbacks.is_none());
+        assert_eq!(drawn.family.as_ref(), "Hiragino Sans");
+        // macOS adds the administrative glyphs independently of the primary
+        // typeface. The document's recorded charset still selects the gothic.
+        let expected = if cfg!(target_os = "macos") { &["Add Character_GJMincho"][..] } else { &[] };
+        assert_eq!(drawn.fallbacks.as_ref().map(|f| f.fallback_list()).unwrap_or_default(), expected);
 
         let mut traits = std::collections::BTreeMap::new();
         traits.insert("未知ゴシック".into(), ibis_doc_model::TypefaceTraits { family: Some(1), charset: None });

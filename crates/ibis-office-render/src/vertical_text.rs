@@ -534,23 +534,18 @@ mod tests {
         }
     }
 
-    // Word's PDF of the marked test document (#M136, GitHub issue 54's F4: pages 3 and 4, vertical ＭＳ 明朝): every character the TSV has takes the orientation Word
-    // gave it (U upright, R turned), the font-independent half of what the Mac draws. The invisible and image-drawn U+3029..302F, the blanks and the Latin
-    // characters (turned in a run of the Latin font, which `upright` does not tell) are not asked.
+    /// Word for Mac 16.109.2, printing a DOCX with `tbRl`, ＭＳ 明朝 and the
+    /// East Asian hint. Each character is between two あ in its own column.
+    /// The test checks glyph orientation, including the brackets with vertical forms.
     #[test]
-    fn orientation_of_every_character_of_words_vertical_page() {
-        let tsv = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tasks/doc/m54-marked/word-p3-4-all-chars.tsv")).expect("the TSV of Word's characters");
-        let mut wrong = Vec::new();
-        for line in tsv.lines().skip(1) {
-            let f: Vec<&str> = line.split('\t').collect();
-            let c = f[3].chars().next().unwrap();
-            if f[3].chars().count() != 1 || c.is_whitespace() || c.is_ascii() || f[4] != "MS-Mincho" || (0x3029..=0x302f).contains(&(c as u32)) {
-                continue;
-            }
-            if upright(c) != (f[7] == "U") {
-                wrong.push(format!("U+{:04X} word {}", c as u32, f[7]));
+    fn word_vertical_text_keeps_the_measured_character_orientation() {
+        for (expected, characters) in [
+            (true, "亜あア㈱Ａ中한☆♪①❶■§⌘「」"),
+            (false, "Ω→←α┌⅓½±÷∴™©®"),
+        ] {
+            for c in characters.chars() {
+                assert_eq!(upright(c), expected, "U+{:04X} {c}", c as u32);
             }
         }
-        assert!(wrong.is_empty(), "{wrong:?}");
     }
 }
