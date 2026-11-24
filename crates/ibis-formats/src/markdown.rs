@@ -2542,48 +2542,88 @@ fn append_myst_figure(
     true
 }
 
-// Use CommonMark's block boundaries so a list continuation or an indented
-// line inside a paragraph is not promoted to a standalone code block.
-fn indented_code_blocks(text: &str, lines: &[&str]) -> HashMap<usize, (usize, String)> {
+enum MarkdownContinuation {
+    Paragraph { indent: usize },
+    Code { indent: Option<usize>, text: String },
+}
+
+// Use CommonMark's container boundaries to distinguish paragraphs and code
+// belonging to an item from ordinary indentation outside that item.
+fn markdown_continuations(text: &str, lines: &[&str]) -> HashMap<usize, (usize, MarkdownContinuation)> {
     use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
     let mut blocks = HashMap::new();
-    if !lines.iter().any(|line| {
-        line.starts_with("    ") || line.bytes().take(4)
-            .take_while(|byte| matches!(byte, b' ' | b'\t')).any(|byte| byte == b'\t')
-    }) {
+    if !lines.iter().any(|line| line.starts_with([' ', '\t'])) {
         return blocks;
     }
 
     let line_starts: Vec<_> = std::iter::once(0)
         .chain(text.match_indices('\n').map(|(offset, _)| offset + 1))
         .collect();
-    let mut depth = 0;
+    let mut parents = Vec::new();
     let mut code = None;
     for (event, span) in Parser::new_ext(text, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES)
         .into_offset_iter()
     {
         match event {
             Event::Start(tag) => {
-                if depth == 0 && matches!(tag, Tag::CodeBlock(CodeBlockKind::Indented)) {
-                    let first = line_starts.partition_point(|&start| start <= span.start) - 1;
-                    let next = line_starts.partition_point(|&start| start < span.end);
-                    code = Some((first, next, String::new()));
+                let first = line_starts.partition_point(|&start| start <= span.start) - 1;
+                let next = line_starts.partition_point(|&start| start < span.end);
+                let item = match parents.last() {
+                    Some((TagEnd::Item, item)) => *item,
+                    _ => None,
+                };
+                let continuation_indent = item
+                    .filter(|&(item_line, _)| first > item_line && lines[first].starts_with([' ', '\t']))
+                    .map(|(_, indent)| indent);
+                match &tag {
+                    Tag::Paragraph if let Some(indent) = continuation_indent => {
+                        blocks.insert(first, (next, MarkdownContinuation::Paragraph { indent }));
+                    }
+                    Tag::CodeBlock(kind) => {
+                        let indent = match kind {
+                            CodeBlockKind::Indented if parents.is_empty() => Some(None),
+                            CodeBlockKind::Indented => continuation_indent.map(Some),
+                            CodeBlockKind::Fenced(info) if info.is_empty() => continuation_indent.map(Some),
+                            _ => None,
+                        };
+                        if let Some(indent) = indent {
+                            code = Some((first, next, indent, String::new()));
+                        }
+                    }
+                    _ => {}
                 }
-                depth += 1;
+                let item = if matches!(tag, Tag::Item)
+                    && parents.iter().all(|(tag, _)| matches!(tag, TagEnd::List(_) | TagEnd::Item))
+                {
+                    parse_list_marker(lines[first])
+                        .filter(|item| !item.text.trim().is_empty())
+                        .map(|item| {
+                            let marker_width = if item.ordered {
+                                item.start.to_string().len() + 2
+                            } else {
+                                2
+                            };
+                            let level = if item.task_checked.is_some() { 0 } else { item.level };
+                            (first, usize::from(level) * 2 + marker_width)
+                        })
+                } else {
+                    None
+                };
+                parents.push((tag.to_end(), item));
             }
             Event::Text(text) => {
-                if let Some((_, _, content)) = &mut code {
+                if let Some((_, _, _, content)) = &mut code {
                     content.push_str(&text);
                 }
             }
             Event::End(tag) => {
-                depth -= 1;
-                if tag == TagEnd::CodeBlock && let Some((first, next, mut content)) = code.take() {
-                    if content.ends_with('\n') {
-                        content.pop();
+                parents.pop();
+                if tag == TagEnd::CodeBlock && let Some((first, next, indent, mut text)) = code.take() {
+                    if text.ends_with('\n') {
+                        text.pop();
                     }
-                    blocks.insert(first, (next, content));
+                    blocks.insert(first, (next, MarkdownContinuation::Code { indent, text }));
                 }
             }
             _ => {}
@@ -2592,13 +2632,33 @@ fn indented_code_blocks(text: &str, lines: &[&str]) -> HashMap<usize, (usize, St
     blocks
 }
 
+const MARKDOWN_LIST_CONTINUATION_STYLE: &str = "IbisMarkdownListContinuation";
+
+fn markdown_continuation_indent(style: Option<&str>) -> Option<usize> {
+    let indent: usize = style?.strip_prefix(MARKDOWN_LIST_CONTINUATION_STYLE)?.parse().ok()?;
+    (2..=27).contains(&indent).then_some(indent)
+}
+
+fn apply_markdown_continuation(paragraph: &mut FlowParagraph, indent: usize, ctx: &mut ParseContext<'_>) {
+    let id = format!("{MARKDOWN_LIST_CONTINUATION_STYLE}{indent}");
+    ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
+        name: format!("Markdown list continuation ({indent})"),
+        kind: StyleKind::Paragraph,
+        based_on: ctx.styles.default_paragraph.clone(),
+        next: ctx.styles.default_paragraph.clone(),
+        ..FlowStyle::default()
+    });
+    paragraph.style = Some(id);
+    paragraph.direct.left = Some(indent as i64 * 9 * EMU_PER_PT);
+}
+
 fn parse_blocks(
     body_text: &str,
     ctx: &mut ParseContext<'_>,
     footnote_defs: &mut HashMap<String, String>,
 ) -> Result<Vec<Block>, Error> {
     let lines: Vec<&str> = body_text.lines().collect();
-    let mut indented_code = indented_code_blocks(body_text, &lines);
+    let mut continuations = markdown_continuations(body_text, &lines);
     let mut blocks: Vec<Block> = Vec::new();
     let mut i = 0;
 
@@ -2612,8 +2672,30 @@ fn parse_blocks(
             continue;
         }
 
-        if let Some((next, code)) = indented_code.remove(&i) {
-            blocks.push(build_code_block(&code, ctx));
+        if let Some((next, continuation)) = continuations.remove(&i) {
+            let (mut block, indent) = match continuation {
+                MarkdownContinuation::Code { indent, text } => (build_code_block(&text, ctx), indent),
+                MarkdownContinuation::Paragraph { indent } => {
+                    let mut runs = Vec::new();
+                    let mut attrs = BlockAttrs::default();
+                    append_markdown_paragraph_lines(&lines[i..next], ctx, &mut runs, &mut attrs);
+                    (Block::Paragraph(FlowParagraph {
+                        id: ctx.fresh_id(),
+                        direct: attrs.paragraph_format(),
+                        bookmarks: attrs.id.into_iter().collect(),
+                        runs,
+                        ..FlowParagraph::default()
+                    }), Some(indent))
+                }
+            };
+            if let Block::Paragraph(paragraph) = &mut block
+                && let Some(indent) = indent
+            {
+                apply_markdown_continuation(paragraph, indent, ctx);
+                paragraph.resolve(&ctx.styles);
+                paragraph.normalize();
+            }
+            blocks.push(block);
             i = next;
             continue;
         }
@@ -3034,7 +3116,7 @@ fn parse_blocks(
             let l_raw = lines[i];
             let l_trim = l_raw.trim();
             if l_trim.is_empty()
-                || indented_code.contains_key(&i)
+                || continuations.contains_key(&i)
                 || l_trim.starts_with("```")
                 || l_trim.starts_with("~~~")
                 || l_trim.starts_with("$$")
@@ -3072,38 +3154,7 @@ fn parse_blocks(
                 joined_heading = para_lines.iter().map(|line| line.trim()).collect::<Vec<_>>().join(" ");
                 para_lines = vec![&joined_heading];
             }
-            for (li, pline) in para_lines.iter().enumerate() {
-                let has_next_line = li + 1 < para_lines.len();
-                let content = if has_next_line && ends_with_markdown_break_escape(pline) {
-                    &pline[..pline.len() - 1]
-                } else {
-                    pline.trim_end()
-                };
-                let content = content.trim();
-                let content = if li + 1 == para_lines.len() {
-                    let (c, a) = strip_trailing_block_attrs(content);
-                    para_attrs = a;
-                    c
-                } else {
-                    content
-                };
-                if li > 0 && !runs.is_empty() {
-                    let prev_hard = para_lines[li - 1].ends_with("  ")
-                        || ends_with_markdown_break_escape(para_lines[li - 1]);
-                    if prev_hard {
-                        runs.push(FlowRun::new(
-                            FlowRunKind::LineBreak,
-                            FlowRunStyle::default(),
-                        ));
-                    } else {
-                        runs.push(FlowRun::new(
-                            FlowRunKind::Text(" ".into()),
-                            FlowRunStyle::default(),
-                        ));
-                    }
-                }
-                runs.extend(parse_inlines(content, ctx, &RunFormat::default()));
-            }
+            append_markdown_paragraph_lines(&para_lines, ctx, &mut runs, &mut para_attrs);
             let style = setext_level
                 .map(|level| ctx.ensure_heading_style(level))
                 .or_else(|| ctx.styles.default_paragraph.clone());
@@ -3122,6 +3173,46 @@ fn parse_blocks(
     }
 
     Ok(blocks)
+}
+
+fn append_markdown_paragraph_lines(
+    para_lines: &[&str],
+    ctx: &mut ParseContext<'_>,
+    runs: &mut Vec<FlowRun>,
+    para_attrs: &mut BlockAttrs,
+) {
+    for (li, pline) in para_lines.iter().enumerate() {
+        let has_next_line = li + 1 < para_lines.len();
+        let content = if has_next_line && ends_with_markdown_break_escape(pline) {
+            &pline[..pline.len() - 1]
+        } else {
+            pline.trim_end()
+        };
+        let content = content.trim();
+        let content = if li + 1 == para_lines.len() {
+            let (c, a) = strip_trailing_block_attrs(content);
+            *para_attrs = a;
+            c
+        } else {
+            content
+        };
+        if li > 0 && !runs.is_empty() {
+            let prev_hard = para_lines[li - 1].ends_with("  ")
+                || ends_with_markdown_break_escape(para_lines[li - 1]);
+            if prev_hard {
+                runs.push(FlowRun::new(
+                    FlowRunKind::LineBreak,
+                    FlowRunStyle::default(),
+                ));
+            } else {
+                runs.push(FlowRun::new(
+                    FlowRunKind::Text(" ".into()),
+                    FlowRunStyle::default(),
+                ));
+            }
+        }
+        runs.extend(parse_inlines(content, ctx, &RunFormat::default()));
+    }
 }
 
 fn ends_with_markdown_break_escape(line: &str) -> bool {
@@ -7019,6 +7110,28 @@ fn serialize_paragraph(
     source_diagnostics: &mut Vec<SourceDiagnostic>,
     list_label: Option<&str>,
 ) {
+    if let Some(indent) = markdown_continuation_indent(p.style.as_deref()) {
+        let mut paragraph = p.clone();
+        paragraph.style = None;
+        let mut fragment = String::new();
+        serialize_paragraph(&paragraph, doc, media, comments, &mut fragment, form_layout, source_diagnostics, list_label);
+        if !fragment.is_empty() {
+            if !out.is_empty() && !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            let prefix = " ".repeat(indent);
+            for line in fragment.trim_end_matches('\n').lines() {
+                if !line.is_empty() {
+                    out.push_str(&prefix);
+                    out.push_str(line);
+                }
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+        return;
+    }
+
     // 1. Standalone PageBreak / ColumnBreak
     if p.runs.len() == 1 {
         match &p.runs[0].kind {
@@ -10217,6 +10330,19 @@ Front caption
         assert!(output.contains("[[#^block]]"), "{output}");
         assert!(output.contains("![[#Details]]"), "{output}");
         assert!(output.contains("[参照](#%E6"), "{output}");
+    }
+
+    #[test]
+    fn markdown_retains_list_continuations_through_markdown_and_docx() {
+        let input = b"10. First\n\n    More *details*.\n    Second line.\n\n        let x = 1;  \n          x\n\n11. Next\n\nOutside.\n";
+        let opened = open_markdown(input.to_vec()).unwrap();
+        let output = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert!(output.contains("10. First\n\n    More *details*. Second line.\n\n    ```\n    let x = 1;  \n      x\n    ```\n\n11. Next"), "{output}");
+        let docx = import_markdown_to_docx_bytes(output.as_bytes()).unwrap();
+        let saved = export_docx_to_markdown(&docx).unwrap();
+        assert_eq!(saved, output);
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), output);
     }
 
     #[test]
