@@ -2909,21 +2909,34 @@ fn is_preserved_html_block(line: &str) -> bool {
     };
     if let Some(comment) = tag.strip_prefix("!--") {
         let comment = comment.trim_start();
-        return !["fixed-layout-", "pptx-", "xlsx-", "docx-"]
+        return !["fixed-layout-", "pptx-", "xlsx-", "docx-", "ibis-law-", "nested-table:",
+            "colspan:", "vmerge:", "pagebreak -->", "columnbreak -->", "/docx-size"]
             .iter().any(|prefix| comment.starts_with(prefix));
     }
-    let tag = tag.strip_prefix('/').unwrap_or(tag);
-    let name = tag.split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '>' | '/'))
-        .next().unwrap_or_default();
-    [
-        "article", "aside", "blockquote", "details", "summary", "div", "section", "figure", "figcaption",
-        "table", "caption", "colgroup", "col", "thead", "tbody", "tfoot", "tr", "th", "td",
-        "dl", "dt", "dd", "pre",
-    ].iter().any(|tag| name.eq_ignore_ascii_case(tag))
+    true
 }
 
-fn build_html_block(source: &str, ctx: &mut ParseContext<'_>) -> Block {
-    build_markdown_source_block(source, MARKDOWN_HTML_BLOCK_STYLE, "Markdown HTML source", ctx)
+fn markdown_html_boundaries(style: Option<&str>) -> Option<u8> {
+    let suffix = style?.strip_prefix(MARKDOWN_HTML_BLOCK_STYLE)?;
+    if suffix.is_empty() {
+        Some(0)
+    } else {
+        suffix.strip_prefix('-')?.parse().ok().filter(|flags| *flags <= 3)
+    }
+}
+
+fn tight_markdown_html_boundary(current: Option<&str>, next: Option<&str>) -> bool {
+    markdown_html_boundaries(current).is_some_and(|flags| flags & 2 != 0)
+        || markdown_html_boundaries(next).is_some_and(|flags| flags & 1 != 0)
+}
+
+fn build_html_block(source: &str, flags: u8, ctx: &mut ParseContext<'_>) -> Block {
+    let style = if flags == 0 {
+        MARKDOWN_HTML_BLOCK_STYLE.to_owned()
+    } else {
+        format!("{MARKDOWN_HTML_BLOCK_STYLE}-{flags}")
+    };
+    build_markdown_source_block(source, &style, "Markdown HTML source", ctx)
 }
 
 fn build_markdown_source_block(source: &str, style: &str, name: &str, ctx: &mut ParseContext<'_>) -> Block {
@@ -3265,10 +3278,12 @@ fn parse_blocks_at_quote_depth(
                         (indent != 0).then_some(indent), "", false)
                 }
                 MarkdownContinuation::Html { item: None } => {
-                    (build_html_block(&lines[i..next].join("\n"), ctx), None, "", false)
+                    let flags = u8::from(i > 0 && !lines[i - 1].trim().is_empty())
+                        | (u8::from(lines.get(next).is_some_and(|line| !line.trim().is_empty())) << 1);
+                    (build_html_block(&lines[i..next].join("\n"), flags, ctx), None, "", false)
                 }
                 MarkdownContinuation::Html { item: Some((indent, starts_item, text)) } => {
-                    let mut block = build_html_block(&text, ctx);
+                    let mut block = build_html_block(&text, 0, ctx);
                     if starts_item
                         && let Block::Paragraph(paragraph) = &mut block
                         && let Some(item) = parse_list_marker(raw)
@@ -3868,9 +3883,10 @@ fn append_markdown_paragraph_lines(
 ) {
     let joined;
     let joined_lines;
-    let para_lines = if para_lines.len() > 1 && para_lines.iter().any(|line| line.contains('`')) {
-        joined = join_multiline_code_spans(para_lines);
-        joined_lines = joined.split('\n').collect::<Vec<_>>();
+    let mut preserve_soft_breaks = false;
+    let para_lines = if para_lines.len() > 1 && para_lines.iter().any(|line| line.contains(['`', '<'])) {
+        joined = para_lines.join("\n");
+        (joined_lines, preserve_soft_breaks) = markdown_paragraph_lines(&joined);
         &joined_lines
     } else {
         para_lines
@@ -3898,6 +3914,8 @@ fn append_markdown_paragraph_lines(
                     FlowRunKind::LineBreak,
                     FlowRunStyle::default(),
                 ));
+            } else if preserve_soft_breaks {
+                append_markdown_html_runs("\n", &RunFormat::default(), ctx, runs);
             } else {
                 runs.push(FlowRun::new(
                     FlowRunKind::Text(" ".into()),
@@ -3909,22 +3927,32 @@ fn append_markdown_paragraph_lines(
     }
 }
 
-fn join_multiline_code_spans(lines: &[&str]) -> String {
+fn markdown_paragraph_lines(source: &str) -> (Vec<&str>, bool) {
     use pulldown_cmark::{Event, Parser};
-    let source = lines.join("\n");
     let inline = format!("x {source}");
-    let mut output = String::with_capacity(source.len());
-    let mut start = 0;
+    let mut preserve_soft_breaks = false;
+    let mut protected = Vec::new();
     for (event, span) in Parser::new(&inline).into_offset_iter() {
-        if matches!(event, Event::Code(_)) && inline[span.clone()].contains('\n') {
-            let (begin, end) = (span.start - 2, span.end - 2);
-            output.push_str(&source[start..begin]);
-            output.push_str(&source[begin..end].replace('\n', " "));
-            start = end;
+        let html = matches!(event, Event::InlineHtml(_)) && is_preserved_html_block(&inline[span.clone()]);
+        preserve_soft_breaks |= html;
+        if (html || matches!(event, Event::Code(_))) && inline[span.clone()].contains('\n') {
+            protected.push(span.start - 2..span.end - 2);
         }
     }
-    output.push_str(&source[start..]);
-    output
+    let mut protected = protected.into_iter().peekable();
+    let mut lines = Vec::new();
+    let mut begin = 0;
+    for (position, _) in source.match_indices('\n') {
+        while protected.peek().is_some_and(|span| span.end <= position) {
+            protected.next();
+        }
+        if !protected.peek().is_some_and(|span| span.contains(&position)) {
+            lines.push(&source[begin..position]);
+            begin = position + 1;
+        }
+    }
+    lines.push(&source[begin..]);
+    (lines, preserve_soft_breaks)
 }
 
 fn ends_with_markdown_break_escape(line: &str) -> bool {
@@ -5946,10 +5974,12 @@ fn markdown_literal_punctuation(character: char, format: &RunFormat, ctx: &mut P
 
 const MARKDOWN_LINK_START_STYLE: &str = "IbisMarkdownLinkStart";
 const MARKDOWN_EMPTY_LINK: u8 = 16;
+const MARKDOWN_HTML_LINK: u8 = 32;
+const MARKDOWN_INLINE_HTML_STYLE: &str = "IbisMarkdownInlineHtml";
 const MARKDOWN_EMPTY_LINK_TEXT: &str = "\u{200b}";
 
 fn markdown_link_start(style: Option<&str>) -> Option<u8> {
-    style?.strip_prefix(MARKDOWN_LINK_START_STYLE)?.parse::<u8>().ok().filter(|flags| *flags < 32)
+    style?.strip_prefix(MARKDOWN_LINK_START_STYLE)?.parse::<u8>().ok().filter(|flags| *flags < 64)
 }
 
 fn apply_markdown_link(runs: &mut Vec<FlowRun>, link: Link, base: &RunFormat, previous: Option<&FlowRun>, ctx: &mut ParseContext<'_>) {
@@ -5964,7 +5994,8 @@ fn apply_markdown_link(runs: &mut Vec<FlowRun>, link: Link, base: &RunFormat, pr
         let flags = u8::from(base.bold == Some(true))
             | (u8::from(base.italic == Some(true)) << 1)
             | (u8::from(first.char_style.as_deref() == Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE)) << 2)
-            | if empty { MARKDOWN_EMPTY_LINK } else { 0 };
+            | if empty { MARKDOWN_EMPTY_LINK } else { 0 }
+            | if first.char_style.as_deref() == Some(MARKDOWN_INLINE_HTML_STYLE) { MARKDOWN_HTML_LINK } else { 0 };
         // A distinct first run keeps two adjacent links to the same address separate.
         let alternate = previous.and_then(|run| markdown_link_start(run.char_style.as_deref())) == Some(flags);
         let id = format!("{MARKDOWN_LINK_START_STYLE}{}", flags | (u8::from(alternate) << 3));
@@ -5980,11 +6011,34 @@ fn apply_markdown_link(runs: &mut Vec<FlowRun>, link: Link, base: &RunFormat, pr
     }
 }
 
+fn append_markdown_html_runs(source: &str, format: &RunFormat, ctx: &mut ParseContext<'_>, runs: &mut Vec<FlowRun>) {
+    ctx.styles.styles.entry(MARKDOWN_INLINE_HTML_STYLE.to_owned()).or_insert_with(|| FlowStyle {
+        name: "Markdown inline HTML".to_owned(),
+        kind: StyleKind::Character,
+        ..FlowStyle::default()
+    });
+    let mut push = |kind| {
+        let mut run = FlowRun::new(kind, FlowRunStyle::default());
+        run.format = format.clone();
+        run.char_style = Some(MARKDOWN_INLINE_HTML_STYLE.to_owned());
+        runs.push(run);
+    };
+    for (index, line) in source.split('\n').enumerate() {
+        if index != 0 {
+            push(FlowRunKind::LineBreak);
+        }
+        if !line.is_empty() {
+            push(FlowRunKind::Text(line.to_owned()));
+        }
+    }
+}
+
 #[derive(Default)]
 struct MarkdownInlineRanges {
     emphasis: HashMap<usize, (usize, Option<usize>)>,
     code: BTreeMap<usize, (usize, String)>,
     literal: HashMap<usize, usize>,
+    html: HashMap<usize, usize>,
     links: BTreeMap<usize, (usize, String, String)>,
     images: HashMap<usize, (usize, String, ibis_doc_model::AltText)>,
 }
@@ -5992,7 +6046,7 @@ struct MarkdownInlineRanges {
 fn markdown_inline_ranges(text: &str) -> MarkdownInlineRanges {
     use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
     let mut ranges = MarkdownInlineRanges::default();
-    if !text.contains(['*', '_', '`', '[']) {
+    if !text.contains(['*', '_', '`', '[', '<']) {
         return ranges;
     }
     // Force inline context, even for a label starting with a block marker.
@@ -6020,7 +6074,10 @@ fn markdown_inline_ranges(text: &str) -> MarkdownInlineRanges {
                     ranges.emphasis.insert(start - 2, (end - 2, delimiter));
                 }
             }
-            Event::InlineHtml(_) | Event::Start(Tag::Link { link_type: LinkType::Autolink | LinkType::Email, .. })
+            Event::InlineHtml(_) if is_preserved_html_block(&inline[span.clone()]) => {
+                ranges.html.insert(span.start - 2, span.end - 2);
+            }
+            Event::Start(Tag::Link { link_type: LinkType::Autolink | LinkType::Email, .. })
                 if inline[span.clone()].contains('`') =>
             {
                 ranges.literal.insert(span.start - 2, span.end - 2);
@@ -6683,6 +6740,12 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             continue;
         }
 
+        if let Some(&end) = inline.html.get(&i) {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            append_markdown_html_runs(&text[i..end], base_fmt, ctx, &mut out);
+            i = end;
+            continue;
+        }
         if let Some(&end) = inline.literal.get(&i) {
             plain.push_str(&text[i..end]);
             i = end;
@@ -8266,6 +8329,11 @@ fn finish_markdown_quote(block: &Block, next: Option<&Block>, out: &mut String) 
     {
         out.push('\n');
     }
+    if next.is_some() && tight_markdown_html_boundary(block_markdown_style(block), next.and_then(block_markdown_style))
+        && out.ends_with("\n\n")
+    {
+        out.pop();
+    }
     let mut current_base = block_markdown_style(block);
     let mut next_base = next.and_then(block_markdown_style);
     let mut prefix = String::new();
@@ -8296,6 +8364,9 @@ fn finish_markdown_quote(block: &Block, next: Option<&Block>, out: &mut String) 
             continue;
         }
         break;
+    }
+    if shared_quote && tight_markdown_html_boundary(current_base, next_base) {
+        return;
     }
     if let Some((_, _, _, blank)) = markdown_callout_title(current_base)
         && matches!(markdown_quote_style(next_base), Some((true, _)))
@@ -8524,7 +8595,7 @@ fn serialize_paragraph(
                 out.push_str(&code);
                 out.push_str("\n\n");
             }
-        } else if matches!(style, Some(MARKDOWN_HTML_BLOCK_STYLE | MARKDOWN_REFERENCE_BLOCK_STYLE)) {
+        } else if markdown_html_boundaries(style).is_some() || style == Some(MARKDOWN_REFERENCE_BLOCK_STYLE) {
             out.push_str(&code);
             out.push_str("\n\n");
         } else if p.style.as_deref() == Some(MARKDOWN_QUOTED_CODE_STYLE) {
@@ -9307,8 +9378,13 @@ fn markdown_run_has_escape(run: &FlowRun) -> bool {
         || markdown_link_start(run.char_style.as_deref()).is_some_and(|flags| flags & 4 != 0)
 }
 
+fn is_markdown_inline_html(run: &FlowRun) -> bool {
+    run.char_style.as_deref() == Some(MARKDOWN_INLINE_HTML_STYLE)
+        || markdown_link_start(run.char_style.as_deref()).is_some_and(|flags| flags & MARKDOWN_HTML_LINK != 0)
+}
+
 fn markdown_emphasis_flags(run: &FlowRun) -> u8 {
-    if run.revision.is_some() || !matches!(run.kind, FlowRunKind::Text(_)) {
+    if run.revision.is_some() || (!matches!(run.kind, FlowRunKind::Text(_)) && !is_markdown_inline_html(run)) {
         return 0;
     }
     u8::from(run.format.bold == Some(true)) | (u8::from(run.format.italic == Some(true)) << 1)
@@ -9354,6 +9430,13 @@ fn serialize_run_piece(
 ) -> String {
     if is_markdown_empty_link(run) {
         return String::new();
+    }
+    if is_markdown_inline_html(run) {
+        match &run.kind {
+            FlowRunKind::Text(text) => return text.clone(),
+            FlowRunKind::LineBreak => return "\n".to_owned(),
+            _ => {}
+        }
     }
     let mut format = run.format.clone();
     if markdown_emphasis_flags(run) != 0 {
@@ -10718,6 +10801,30 @@ mod tests {
         assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
         let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+    }
+
+    #[test]
+    fn markdown_preserves_html_source_layout_through_docx() {
+        for source in [
+            "<aside data-info=\"x\">\n    <span>text</span>\n</aside>\n",
+            "<Warning>\n*literal*\n</Warning>\n",
+            "<style\n  type=\"text/css\">\n.note { color: red; }\n\n.note strong { color: blue; }\n</style>\nText after.\n",
+            "<?example\n\n  preserve this line\n\n?>\nText after.\n",
+            "<![CDATA[\n  some < and > characters\n]]>\nText after.\n",
+            "Text <a href=\"foo\\\n  bar\">link</a> after.\n",
+            "Text <!-- keep this\n  indentation --> after.\n",
+            "<table><tr><td>\n<pre>\n**literal**\n\n_world_.\n</pre>\n</td></tr></table>\n",
+            "> > <style>p { color: red; }</style>\n> > Text after.\n",
+            "- First\n\n  <details data-mode=\"open\">\n    <summary>Title</summary>\n  </details>\n\n- Second\n",
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, source, "{source}");
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source, "{source}");
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), source, "{source}");
+        }
     }
 
     #[test]
