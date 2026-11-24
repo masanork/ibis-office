@@ -41,8 +41,9 @@ def main():
             "Copyright 2015 The Chromium Authors",
             "Copyright 2015-2025 Brian Smith",
         ]
+    prose = " ".join(text.split())
     for value in required:
-        if value not in text:
+        if " ".join(value.split()) not in prose:
             raise SystemExit(f"Missing notice: {value}")
     if not any(copy in binary for copy in (notice, text.encode("utf-8"))):
         raise SystemExit("The binary and packaged notice differ")
