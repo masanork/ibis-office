@@ -47,40 +47,86 @@ enum Entry {
     },
 }
 
+pub const MAX_DEFINITION_BYTES: usize = MAX_BYTES;
+
 pub fn read(bytes: &[u8], definition: &[u8]) -> Result<Preview, String> {
-    if bytes.len() > MAX_BYTES || definition.len() > MAX_BYTES {
+    if bytes.len() > MAX_BYTES {
         return Err(SIZE_LIMIT_ERROR.into());
     }
-    let definition: Definition = serde_json::from_slice(definition)
-        .map_err(|error| format!("Invalid XML view definition: {error}"))?;
-    if definition.version != 1 || definition.title.trim().is_empty() {
-        return Err("Unsupported XML view definition".into());
+    let definition = Definition::parse(definition)?;
+    let doc = super::parse_xml(bytes)?;
+    let root = doc.root_element();
+    if !definition.root.matches(root) {
+        return Err("XML does not match the root element or version in the view definition".into());
+    }
+    definition.preview(root)
+}
+
+/// Select a unique shared definition for the document. Invalid definitions
+/// and definitions without a root attribute selector are skipped.
+pub fn select_shared(
+    bytes: &[u8],
+    definitions: impl IntoIterator<Item = Vec<u8>>,
+) -> Result<Option<Preview>, String> {
+    let mut definitions = definitions.into_iter().peekable();
+    if definitions.peek().is_none() {
+        return Ok(None);
+    }
+    if bytes.len() > MAX_BYTES {
+        return Err(SIZE_LIMIT_ERROR.into());
     }
     let doc = super::parse_xml(bytes)?;
     let root = doc.root_element();
-    let actual = root.tag_name();
-    if actual.name() != definition.root.name
-        || actual.namespace().unwrap_or_default() != definition.root.namespace
-        || definition
-            .root
-            .attributes
-            .iter()
-            .any(|(key, value)| root.attribute(key.as_str()) != Some(value))
-    {
-        return Err("XML does not match the root element or version in the view definition".into());
+    let mut matches = definitions
+        .filter_map(|bytes| Definition::parse(&bytes).ok())
+        .filter(|definition| {
+            !definition.root.attributes.is_empty() && definition.root.matches(root)
+        });
+    let Some(definition) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Err("Multiple shared XML view definitions match this document".into());
     }
+    definition.preview(root).map(Some)
+}
 
-    let mut fields = Vec::new();
-    push(&mut fields, "", &definition.title, String::new())?;
-    definition.render(root, &definition.entries, 0, &mut fields)?;
-    Ok(Preview {
-        format: "XML",
-        fields,
-        credential: None,
-    })
+impl Root {
+    fn matches(&self, root: Node<'_, '_>) -> bool {
+        let tag = root.tag_name();
+        tag.name() == self.name
+            && tag.namespace().unwrap_or_default() == self.namespace
+            && self
+                .attributes
+                .iter()
+                .all(|(key, value)| root.attribute(key.as_str()) == Some(value.as_str()))
+    }
 }
 
 impl Definition {
+    fn parse(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() > MAX_DEFINITION_BYTES {
+            return Err(SIZE_LIMIT_ERROR.into());
+        }
+        let definition: Self = serde_json::from_slice(bytes)
+            .map_err(|error| format!("Invalid XML view definition: {error}"))?;
+        if definition.version != 1 || definition.title.trim().is_empty() {
+            return Err("Unsupported XML view definition".into());
+        }
+        Ok(definition)
+    }
+
+    fn preview(&self, root: Node<'_, '_>) -> Result<Preview, String> {
+        let mut fields = Vec::new();
+        push(&mut fields, "", &self.title, String::new())?;
+        self.render(root, &self.entries, 0, &mut fields)?;
+        Ok(Preview {
+            format: "XML",
+            fields,
+            credential: None,
+        })
+    }
+
     fn select<'a, 'input>(
         &self,
         root: Node<'a, 'input>,

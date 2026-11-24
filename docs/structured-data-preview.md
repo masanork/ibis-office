@@ -23,6 +23,26 @@ XMLの要素を日本語名などで表示できます。定義の `root` には
 あります。証明書の署名欄には試験用の値を入れています。
 [国税庁の公開仕様](https://www.e-tax.nta.go.jp/shiyo/ksk2/ksk2_shiyo-kojo3.htm)
 
+### 複数のXMLで表示定義を共有する
+
+アプリのデータフォルダーの `ibisOffice/xml-views` に、共有する
+`*.view.json` を置きます。macOSでは標準で
+`~/Library/Application Support/ibisOffice/xml-views` です。
+Windowsでは `%APPDATA%/ibisOffice/xml-views`、Linuxでは
+`$XDG_DATA_HOME/ibisOffice/xml-views`（未設定なら `~/.local/share/ibisOffice/xml-views`）です。
+`IBIS_DATA_DIR` を設定している場合は、その配下の `ibisOffice/xml-views` を使います。
+
+先にXMLと同じ場所の個別定義を確認します。個別定義がなければ、共有定義の
+ルート要素名、名前空間URI、`root.attributes` に指定した版などの属性を照合します。
+共有定義のファイル名は末尾が `.view.json` であれば任意です。
+属性指定が空の定義や読み取れない定義は共有選択から除外し、一致がなければ通常のXML表示になります。
+複数の定義が一致するとエラーを表示します。
+
+試すには、[e-Taxの試用ファイル](../test/fixtures/structured-preview/etax)から
+生命保険（TEG800）と地震保険（TEG810）の表示定義を共通フォルダーにコピーします。
+合成XMLだけを別のフォルダーに移して開くと、どちらも同じ名前空間と版
+（`VR="1.1"`）を使い、ルート要素に応じた表示になります。
+
 ## 連携CSVを定義に沿って確認する
 
 自治体標準仕様の連携CSVと同じフォルダーに、`mrlgss` の

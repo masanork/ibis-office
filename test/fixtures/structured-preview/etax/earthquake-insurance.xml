@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic viewer fixture. The signature below is a schema-shape placeholder. -->
+<TEG810 xmlns="http://xml.e-tax.nta.go.jp/XSD/kyotsu"
+        xmlns:g="http://xml.e-tax.nta.go.jp/XSD/general"
+        xmlns:ds="http://www.w3.org/2000/09/xmldsig#"
+        VR="1.1" softNM="ibisOffice合成サンプル" sakuseiNM="架空保険" sakuseiDay="2026-10-01"
+        id="synthetic-certificate">
+  <WDA00000>架空地震保険株式会社</WDA00000>
+  <WDC00000><g:yyyy>2026</g:yyyy><g:mm>10</g:mm><g:dd>1</g:dd></WDC00000>
+  <WDD00000>架空 太郎</WDD00000>
+  <WDE00000>
+    <WDE00010><g:yyyy>2026</g:yyyy></WDE00010>
+    <WDE00020><kubun_CD>1</kubun_CD></WDE00020>
+    <WDE00030><WDE00040>QUAKE-0001</WDE00040></WDE00030>
+    <WDE00070><kubun_CD>1</kubun_CD><kubun_NM>建物</kubun_NM></WDE00070>
+    <WDE00080>
+      <WDE00090><g:yyyy>2026</g:yyyy><g:mm>1</g:mm><g:dd>1</g:dd></WDE00090>
+      <WDE00100>1</WDE00100>
+    </WDE00080>
+    <WDE00120>
+      <WDE00130><g:yyyy>2026</g:yyyy><g:mm>1</g:mm><g:dd>1</g:dd></WDE00130>
+      <WDE00140>1</WDE00140>
+    </WDE00120>
+    <WDE00160><WDE00170>23500</WDE00170><WDE00180>23500</WDE00180></WDE00160>
+    <WDE00215>所得税法第77条</WDE00215>
+  </WDE00000>
+  <WDE00000>
+    <WDE00010><g:yyyy>2026</g:yyyy></WDE00010>
+    <WDE00020><kubun_CD>1</kubun_CD></WDE00020>
+    <WDE00030><WDE00040>QUAKE-0002</WDE00040></WDE00030>
+    <WDE00070><kubun_CD>1</kubun_CD><kubun_NM>建物</kubun_NM></WDE00070>
+    <WDE00080>
+      <WDE00090><g:yyyy>2026</g:yyyy><g:mm>1</g:mm><g:dd>1</g:dd></WDE00090>
+      <WDE00100>1</WDE00100>
+    </WDE00080>
+    <WDE00120>
+      <WDE00130><g:yyyy>2026</g:yyyy><g:mm>1</g:mm><g:dd>1</g:dd></WDE00130>
+      <WDE00140>1</WDE00140>
+    </WDE00120>
+    <WDE00160><WDE00170>31750</WDE00170><WDE00180>31750</WDE00180></WDE00160>
+    <WDE00215>所得税法第77条</WDE00215>
+  </WDE00000>
+  <ds:Signature Id="synthetic-placeholder">
+    <ds:SignedInfo>
+      <ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+      <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/>
+      <ds:Reference URI="#synthetic-certificate">
+        <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/>
+        <ds:DigestValue>AA==</ds:DigestValue>
+      </ds:Reference>
+    </ds:SignedInfo>
+    <ds:SignatureValue>AA==</ds:SignatureValue>
+  </ds:Signature>
+</TEG810>

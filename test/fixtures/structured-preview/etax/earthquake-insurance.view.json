@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "title": "地震保険料控除証明書（合成サンプル）",
+  "root": {
+    "namespace": "http://xml.e-tax.nta.go.jp/XSD/kyotsu",
+    "name": "TEG810",
+    "attributes": {"VR": "1.1"}
+  },
+  "namespaces": {"g": "http://xml.e-tax.nta.go.jp/XSD/general"},
+  "entries": [
+    {"kind": "field", "path": ["WDA00000"], "label": "保険会社名"},
+    {"kind": "field", "path": ["WDD00000"], "label": "契約者名"},
+    {
+      "kind": "group", "path": ["WDE00000"], "label": "明細",
+      "entries": [
+        {"kind": "field", "path": ["WDE00030", "WDE00040"], "label": "証券番号"},
+        {"kind": "field", "path": ["WDE00010", "g:yyyy"], "label": "証明年"},
+        {"kind": "field", "path": ["WDE00070", "kubun_NM"], "label": "保険の対象"},
+        {"kind": "field", "path": ["WDE00160", "WDE00170"], "label": "地震保険料", "unit": "円", "group_digits": true},
+        {"kind": "field", "path": ["WDE00160", "WDE00180"], "label": "控除対象保険料", "unit": "円", "group_digits": true}
+      ]
+    }
+  ]
+}

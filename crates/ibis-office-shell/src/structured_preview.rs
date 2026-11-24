@@ -5,30 +5,15 @@ use ibis_doc_model::{Block, FlowParagraph, FlowRun, FlowRunKind, FlowRunStyle};
 use ibis_formats::{Kind, Opened, structured_preview};
 use std::sync::Arc;
 
-pub fn open(
-    extension: &str,
-    data: &[u8],
-    definition: Option<&std::path::Path>,
-) -> Result<Opened, String> {
-    use std::io::Read as _;
-    let view = definition
-        .filter(|_| extension.eq_ignore_ascii_case("xml"))
-        .map(std::fs::File::open)
-        .transpose();
-    let preview = match view {
-        Ok(Some(file)) => {
-            let mut bytes = Vec::new();
-            file.take(1024 * 1024 + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|error| error.to_string())?;
-            structured_preview::xml_view::read(data, &bytes)?
-        }
-        Ok(None) => structured_preview::read(extension, data)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            structured_preview::read(extension, data)?
-        }
-        Err(error) => return Err(error.to_string()),
-    };
+use std::fs::{self, File};
+use std::io::{self, Read};
+use std::path::Path;
+
+use ibis_formats::structured_preview::{Preview, xml_view};
+
+pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<Opened, String> {
+    let shared = crate::app_data::base().map(|dir| dir.join("ibisOffice").join("xml-views"));
+    let preview = read_preview(extension, data, definition, shared.as_deref())?;
     let bytes = ibis_formats::blank_file(Kind::Document).map_err(|e| e.to_string())?;
     let mut opened = ibis_formats::open(bytes).map_err(|e| e.to_string())?;
     let flow = opened
@@ -100,6 +85,58 @@ pub fn open(
     Ok(opened)
 }
 
+fn read_preview(
+    extension: &str,
+    data: &[u8],
+    definition: Option<&Path>,
+    shared: Option<&Path>,
+) -> Result<Preview, String> {
+    if extension.eq_ignore_ascii_case("xml") {
+        if let Some(path) = definition {
+            match read_definition(path) {
+                Ok(bytes) => return xml_view::read(data, &bytes),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        if let Some(directory) = shared {
+            match fs::read_dir(directory) {
+                Ok(entries) => {
+                    let definitions = entries.flatten().filter_map(|entry| {
+                        let path = entry.path();
+                        if !entry.file_type().ok()?.is_file()
+                            || !path.file_name()?.to_str()?.ends_with(".view.json")
+                        {
+                            return None;
+                        }
+                        match read_definition(&path) {
+                            Ok(bytes) => Some(bytes),
+                            Err(error) => {
+                                log::warn!("{}: {error}", path.display());
+                                None
+                            }
+                        }
+                    });
+                    if let Some(preview) = xml_view::select_shared(data, definitions)? {
+                        return Ok(preview);
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+    }
+    structured_preview::read(extension, data)
+}
+
+fn read_definition(path: &Path) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(xml_view::MAX_DEFINITION_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 // Show controls visibly, including bidi controls that can disguise a field’s name.
 fn literal(text: &str) -> String {
     let mut result = String::new();
@@ -122,6 +159,72 @@ fn literal(text: &str) -> String {
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn etax_shared_views_match_namespace_root_and_version() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test/fixtures/structured-preview/etax");
+        let catalog = std::env::temp_dir().join(format!("ibis-xml-catalog-{}", std::process::id()));
+        fs::create_dir(&catalog).unwrap();
+        let life = fs::read_to_string(fixture.join("life-insurance.xml")).unwrap();
+        let quake = fs::read(fixture.join("earthquake-insurance.xml")).unwrap();
+        let life_profile = fs::read_to_string(fixture.join("life-insurance.view.json")).unwrap();
+        fs::write(catalog.join("profile-a.view.json"), &life_profile).unwrap();
+        fs::copy(
+            fixture.join("earthquake-insurance.view.json"),
+            catalog.join("profile-b.view.json"),
+        )
+        .unwrap();
+        fs::write(catalog.join("unrelated.view.json"), "{").unwrap();
+        let local = catalog.join("local.json");
+        let read =
+            |xml: &[u8], sidecar: Option<&Path>| read_preview("xml", xml, sidecar, Some(&catalog));
+        let first = read(life.as_bytes(), None).unwrap();
+        let second = read(&quake, None).unwrap();
+        assert_eq!(first.fields[0].name, "生命保険料控除証明書（合成サンプル）");
+        assert_eq!(
+            second.fields[0].name,
+            "地震保険料控除証明書（合成サンプル）"
+        );
+        for (preview, amounts) in [
+            (&first, ["48,000 円", "126,000 円"]),
+            (&second, ["23,500 円", "31,750 円"]),
+        ] {
+            for amount in amounts {
+                assert!(preview.fields.iter().any(|field| field.value == amount));
+            }
+            assert!(preview.fields.iter().any(|field| field.name == "明細 2"));
+        }
+        let older = life.replace("VR=\"1.1\"", "VR=\"1.0\"");
+        let other_namespace = life.replace("/XSD/kyotsu", "/XSD/other");
+        for xml in [&older, &other_namespace] {
+            let fallback = read(xml.as_bytes(), None).unwrap();
+            assert!(
+                !fallback
+                    .fields
+                    .iter()
+                    .any(|field| field.name == "保険会社名")
+            );
+        }
+        let older_profile = life_profile
+            .replace("1.1", "1.0")
+            .replace("合成サンプル", "旧版");
+        fs::write(catalog.join("older.view.json"), older_profile).unwrap();
+        assert_eq!(
+            read(older.as_bytes(), None).unwrap().fields[0].name,
+            "生命保険料控除証明書（旧版）"
+        );
+        fs::write(catalog.join("duplicate.view.json"), &life_profile).unwrap();
+        assert!(
+            matches!(read(life.as_bytes(), None), Err(error) if error.contains("Multiple shared"))
+        );
+        fs::write(&local, life_profile.replace("合成サンプル", "個別定義")).unwrap();
+        assert_eq!(
+            read(life.as_bytes(), Some(&local)).unwrap().fields[0].name,
+            "生命保険料控除証明書（個別定義）"
+        );
+        fs::remove_dir_all(catalog).unwrap();
+    }
 
     #[test]
     fn etax_xml_reopen_uses_the_current_sibling_definition() {
