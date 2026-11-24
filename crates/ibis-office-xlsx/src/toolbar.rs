@@ -2585,21 +2585,30 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("review.accessibility-check").icon("accessibility").on(|this, window, cx| this.open_xlsx_accessibility_panel(window, cx)).into());
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::new("xlsx.ai-assistant", "Assistant...").icon("chat").on(|this, window, cx| this.open_ai_assistant_panel(window, cx)).into());
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    menus.items_mut(crate::shell::chrome::MenuId::Tools).push(
-        MenuItem::tr("xlsx.ai-explain-formula")
-            .icon("chat")
-            .disabled(!editor.assistant_accepts_formula_explanation() || selected_formula(editor).is_none())
-            .on(|this, window, cx| {
-                let Some((sheet, row, column, formula)) = selected_formula(this) else { return };
-                let sheet = sheet.to_owned();
-                let formula = format!("={formula}");
-                let address = ibis_doc_model::ai_sheet::format_range(&CellRange {
-                    first_row: row, last_row: row, first_column: column, last_column: column,
-                });
-                this.explain_spreadsheet_formula(&sheet, &address, &formula, window, cx);
-            })
-            .into(),
-    );
+    {
+        let explain_formula = |this: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>, _acp: bool| {
+            let Some((sheet, row, column, formula)) = selected_formula(this) else { return };
+            let sheet = sheet.to_owned();
+            let formula = format!("={formula}");
+            let address = ibis_doc_model::ai_sheet::format_range(&CellRange {
+                first_row: row, last_row: row, first_column: column, last_column: column,
+            });
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if _acp {
+                this.explain_spreadsheet_formula_with_acp(&sheet, &address, &formula, window, cx);
+                return;
+            }
+            this.explain_spreadsheet_formula(&sheet, &address, &formula, window, cx);
+        };
+        let disabled = !editor.assistant_accepts_formula_explanation() || selected_formula(editor).is_none();
+        let tools = menus.items_mut(crate::shell::chrome::MenuId::Tools);
+        tools.push(MenuItem::tr("xlsx.ai-explain-formula").icon("chat").disabled(disabled)
+            .on(move |this, window, cx| explain_formula(this, window, cx, false)).into());
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        tools.push(MenuItem::new("xlsx.acp-explain-formula", format!("{} (ACP)", crate::shell::i18n::text("xlsx.ai-explain-formula")))
+            .icon("chat").disabled(disabled)
+            .on(move |this, window, cx| explain_formula(this, window, cx, true)).into());
+    }
     menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.date-review.title").icon("rule").on(|this, window, cx| this.open_sheet_date_review(window, cx)).into());
     if ibis_doc_model::variant_clusters::is_embedded() {
         menus.items_mut(crate::shell::chrome::MenuId::Tools).push(MenuItem::tr("xlsx.variant-review.title").icon("rule").on(|this, window, cx| this.open_sheet_variant_review(window, cx)).into());
