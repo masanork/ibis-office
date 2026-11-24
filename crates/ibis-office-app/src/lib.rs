@@ -1615,6 +1615,16 @@ mod web {
         APPLICATION.with(|app| app.borrow().as_ref().map(|handle| handle.update(f)))
     }
 
+    /// Configure the Web start view items and right-hand panel from JSON.
+    /// If the editor window is already open, triggers a re-render so updated
+    /// items appear immediately.
+    #[wasm_bindgen]
+    pub fn set_start_view_config(json: &str) -> Result<(), JsValue> {
+        crate::shell::start_view::set_start_view_config(json).map_err(|err| JsValue::from_str(&err))?;
+        with_app(|cx| crate::shell::host_editor::with_editor(cx, |_, _, cx| cx.notify()));
+        Ok(())
+    }
+
     /// Whether the editor window exists, so the host's calls (`host_load` and the others) act on it. `run` returns before that: the app
     /// starts when the GPU is ready. The page waits for this before it tells the host `ready`.
     #[wasm_bindgen]
