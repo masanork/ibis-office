@@ -5,7 +5,7 @@ use std::{collections::HashMap, ops::Range};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
-use super::{Fields, Source, excerpt, parse_fields};
+use super::{Fields, SearchHit, Source, excerpt, parse_fields};
 
 #[derive(Deserialize)]
 struct Header {
@@ -75,6 +75,11 @@ fn crypto_references(value: &serde_json::Value, refs: &mut Vec<String>) {
     }
 }
 
+struct IndexedItem {
+    hit: SearchHit,
+    terms: String,
+}
+
 pub(super) struct Inventory {
     pub version: String,
     pub subject: String,
@@ -83,6 +88,7 @@ pub(super) struct Inventory {
     pub services: usize,
     pub dependency_entries: usize,
     references: HashMap<String, Option<Target>>,
+    items: Vec<IndexedItem>,
     relationships: HashMap<usize, Vec<(Relation, String)>>,
 }
 
@@ -122,14 +128,15 @@ impl Inventory {
             services: 0,
             dependency_entries: 0,
             references: HashMap::new(),
+            items: Vec::new(),
             relationships: HashMap::new(),
         };
         let Ok(root) = serde_json::from_slice::<&RawValue>(bytes) else {
             return None;
         };
         let mut edges = Vec::new();
-        let mut pending = vec![(root, Entry::Document)];
-        while let Some((raw, entry)) = pending.pop() {
+        let mut pending = vec![(root, Entry::Document, "$".to_owned())];
+        while let Some((raw, entry, path)) = pending.pop() {
             let text = raw.get();
             let fields = parse_fields(
                 text.as_bytes(),
@@ -139,9 +146,9 @@ impl Inventory {
                 },
             );
             if text.starts_with('[') {
-                pending.extend(fields.into_iter().filter_map(|(_, child)| {
+                pending.extend(fields.into_iter().filter_map(|(key, child)| {
                     matches!(child.get().as_bytes().first(), Some(b'{' | b'['))
-                        .then_some((child, entry))
+                        .then(|| (child, entry, format!("{path} / {key}")))
                 }));
                 continue;
             }
@@ -181,6 +188,32 @@ impl Inventory {
                 }
                 _ => {}
             }
+            if matches!(entry, Entry::Component | Entry::Service) {
+                let kind = if matches!(entry, Entry::Service) {
+                    "service".to_owned()
+                } else {
+                    value("type").unwrap_or_else(|| "component".to_owned())
+                };
+                let reference = value("bom-ref").unwrap_or_default();
+                let name = value("name")
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| {
+                        if reference.is_empty() {
+                            kind.clone()
+                        } else {
+                            reference.clone()
+                        }
+                    });
+                inventory.items.push(IndexedItem {
+                    terms: format!("{name} {reference} {kind}").to_lowercase(),
+                    hit: SearchHit {
+                        span: source.span(raw),
+                        label: excerpt(&name, 120),
+                        detail: excerpt(&kind, 100),
+                        path: path.clone(),
+                    },
+                });
+            }
             if let Some(reference) = value("bom-ref").filter(|value| !value.is_empty()) {
                 if matches!(entry, Entry::Component)
                     && let Some(raw) = field("cryptoProperties")
@@ -214,9 +247,12 @@ impl Inventory {
                     (_, _, b'{' | b'[') => Entry::Other,
                     _ => return None,
                 };
-                Some((child, entry))
+                Some((child, entry, format!("{path} / {key}")))
             }));
         }
+        inventory
+            .items
+            .sort_unstable_by_key(|item| item.hit.span.start);
         edges.sort_unstable();
         edges.dedup();
         for (from, kind, to) in edges {
@@ -245,6 +281,19 @@ impl Inventory {
             rows.sort_unstable();
         }
         Some(inventory)
+    }
+
+    pub fn search(&self, query: &str) -> Vec<SearchHit> {
+        self.items
+            .iter()
+            .filter(|item| {
+                query
+                    .split_whitespace()
+                    .all(|word| item.terms.contains(word))
+            })
+            .take(super::SEARCH_LIMIT + 1)
+            .map(|item| item.hit.clone())
+            .collect()
     }
 
     pub fn resolve(&self, reference: &str) -> Option<&Target> {
@@ -288,6 +337,16 @@ mod tests {
         assert_eq!(inventory.crypto_assets, 5);
         let rsa = inventory.target("[0]", Some("dependsOn"), "rsa").unwrap();
         assert_eq!(rsa.label, "RSA-2048");
+        let hits = inventory.search("rsa cryptographic-asset");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].span, rsa.span);
+        assert_eq!(hits[0].path, "$ / components / [0] / components / [0]");
+        assert!(
+            inventory
+                .search("cert cryptographic-asset")
+                .iter()
+                .any(|hit| hit.label == "Demo payment certificate")
+        );
         let raw: serde_json::Value =
             serde_json::from_slice(&source.bytes[rsa.span.clone()]).unwrap();
         assert_eq!(raw["bom-ref"], "rsa");

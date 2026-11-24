@@ -77,6 +77,16 @@ impl<'de> Visitor<'de> for Fields {
     }
 }
 
+const SEARCH_LIMIT: usize = 1000;
+
+#[derive(Clone)]
+struct SearchHit {
+    span: Range<usize>,
+    label: String,
+    detail: String,
+    path: String,
+}
+
 struct Source {
     bytes: Vec<u8>,
     records: Vec<Range<usize>>,
@@ -353,6 +363,7 @@ struct View {
     search: Entity<InputState>,
     matching: Vec<usize>,
     query: String,
+    hits: Option<Vec<SearchHit>>,
     record: usize,
     selected: Option<usize>,
     document_tree: Option<(Tree, Option<usize>)>,
@@ -413,6 +424,7 @@ impl View {
     fn select_record(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(source) = &self.source else { return };
         self.record = index;
+        self.document_tree = None;
         self.selected = None;
         if let Some(csv) = &source.csv {
             self.tree = csv.tree(&source.bytes, index, source.records[index].clone());
@@ -428,6 +440,13 @@ impl View {
 
     fn search(&mut self, cx: &mut Context<Self>) {
         self.query = self.search.read(cx).value().trim().to_lowercase();
+        self.hits = None;
+        if let Some(source) = self.source.clone()
+            && let Some(inventory) = &source.inventory
+            && !self.query.is_empty()
+        {
+            self.hits = Some(inventory.search(&self.query));
+        }
         if let Some(source) = self.source.clone().filter(|source| source.lines) {
             let query = self.query.clone();
             cx.spawn(async move |this, cx| {
@@ -475,6 +494,54 @@ impl Render for View {
             .as_ref()
             .and_then(|source| source.inventory.as_ref());
         let visible = self.tree.visible(if lines { "" } else { &self.query });
+        let show_hits = inventory.is_some() && !self.query.is_empty();
+        let hit_count = self.hits.as_ref().map_or(0, Vec::len);
+        let hit_rows = uniform_list(
+            "structured-search-hits",
+            hit_count.min(SEARCH_LIMIT),
+            cx.processor(|view, range: Range<usize>, _, cx| {
+                range
+                    .filter_map(|position| {
+                        let hit = view.hits.as_ref()?.get(position)?.clone();
+                        let label = hit.label.clone();
+                        let path = hit.path.clone();
+                        Some(
+                            v_flex()
+                                .id(("structured-hit", position))
+                                .h(px(48.))
+                                .px_4()
+                                .justify_center()
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .cursor_pointer()
+                                .hover(|row| row.bg(cx.theme().accent))
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.follow_reference(
+                                        hit.span.clone(),
+                                        path.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }))
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child(div().truncate().child(label))
+                                        .child(div().text_xs().truncate().child(hit.detail)),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .truncate()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(hit.path),
+                                ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .size_full();
         let record_rows = uniform_list(
             "structured-records",
             self.matching.len(),
@@ -785,7 +852,25 @@ impl Render for View {
                                 .child(div().flex_1().min_h_0().child(record_rows)),
                         )
                     })
-                    .child(div().flex_1().min_w_0().h_full().child(rows)),
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .when(!show_hits, |pane| {
+                                pane.child(div().flex_1().min_h_0().child(rows))
+                            })
+                            .when(show_hits, |pane| {
+                                let status = match hit_count {
+                                    0 => crate::i18n::text("structured.no-search-results")
+                                        .to_string(),
+                                    count if count > SEARCH_LIMIT => format!("{SEARCH_LIMIT}+"),
+                                    count => count.to_string(),
+                                };
+                                pane.child(div().px_4().py_2().text_sm().child(status))
+                                    .child(div().flex_1().min_h_0().child(hit_rows))
+                            }),
+                    ),
             )
             .children(self.selected.zip(self.source.as_ref()).map(|(id, source)| {
                 let node = &self.tree.nodes[id];
@@ -962,6 +1047,7 @@ fn open_view(
                 search,
                 matching,
                 query: String::new(),
+                hits: None,
                 record: 0,
                 selected: None,
                 document_tree: None,
