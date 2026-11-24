@@ -418,7 +418,7 @@ pub fn export_blocks_to_markdown(
     for (index, block) in blocks.iter().enumerate() {
         let is_list = is_markdown_list_item(block)
             && !matches!(block, Block::Paragraph(p) if markdown_quote_style(p.style.as_deref()).is_some());
-        if prev_was_list && !is_list && !starts_tight_item_quote(block) && !starts_item_table(block) && !out.ends_with("\n\n") {
+        if prev_was_list && !is_list && !starts_tight_item_quote(block) && !starts_tight_list_continuation(block) && !starts_item_table(block) && !out.ends_with("\n\n") {
             out.push('\n');
         }
         serialize_block(block, doc, media, &comments_by_id, &mut out, &mut Vec::new());
@@ -1456,16 +1456,20 @@ impl<'a> ParseContext<'a> {
     }
 
     fn code_language_style(&mut self, info: &str) -> Option<String> {
-        let mut token = info.split_whitespace().next()?.chars().peekable();
-        let mut language = String::new();
-        while let Some(ch) = token.next() {
-            if ch == '\\' && token.peek().is_some_and(char::is_ascii_punctuation) {
-                language.extend(token.next());
-            } else {
-                language.push(ch);
-            }
-        }
-        if !is_code_language(&language) {
+        let decoded;
+        let info = if info.contains(['&', '\\']) {
+            use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag};
+            let source = format!("~~~ {info}\n~~~\n");
+            let Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) = Parser::new(&source).next()? else {
+                return None;
+            };
+            decoded = info.into_string();
+            decoded.as_str()
+        } else {
+            info
+        };
+        let language = info.split_whitespace().next()?;
+        if !is_code_language(language) {
             return None;
         }
         use std::fmt::Write;
@@ -1512,11 +1516,12 @@ impl<'a> ParseContext<'a> {
             !matches!(block, Block::Table(table) if markdown_item_table_style(table).is_some())
                 && (markdown_item_quote_style(block_markdown_style(block)).is_none() || is_markdown_list_item(block))
         }).map_while(|block| match block {
-            Block::Paragraph(paragraph) => paragraph.list,
+            Block::Paragraph(paragraph) => paragraph.list.map(|list| (list, paragraph.style.as_deref())),
             _ => None,
-        }).find(|list| list.level == 0);
-        if let Some(list) = previous.filter(|list| {
-            self.styles.numbering.level(list.num_id, 0).is_some_and(|level| level.format != "bullet")
+        }).find(|(list, _)| list.level == 0);
+        if let Some((list, _)) = previous.filter(|(list, style)| {
+            markdown_quoted_list_style(*style).is_none_or(|(_, delimiter, _)| delimiter == item.delimiter)
+                && self.styles.numbering.level(list.num_id, 0).is_some_and(|level| level.format != "bullet")
         }) {
             return list.num_id;
         }
@@ -1541,7 +1546,7 @@ impl<'a> ParseContext<'a> {
             let level = &mut definition.levels[spec.level as usize];
             level.format = "decimal".to_owned();
             level.text = format!("%{}.", spec.level + 1);
-            instance.start_overrides.insert(spec.level, start.max(1));
+            instance.start_overrides.insert(spec.level, start);
         }
         let id = numbering.nums.keys().next_back().copied().unwrap_or(0) + 1;
         let abstract_id = numbering.abstracts.keys().next_back().copied().unwrap_or(0) + 1;
@@ -2645,6 +2650,18 @@ struct QuotedList {
     level: u32,
 }
 
+fn needs_markdown_list_spec(raw: &str, item: &ListMarker<'_>, spec: &QuotedList) -> bool {
+    item.delimiter == ')' || spec.start == Some(0)
+        || u32::from(item.level) != spec.level
+        || markdown_indent(raw) != spec.level as usize * 2
+}
+
+fn markdown_indent(line: &str) -> usize {
+    line.bytes().take_while(|byte| matches!(byte, b' ' | b'\t')).fold(0, |column, byte| {
+        if byte == b'\t' { column + 4 - column % 4 } else { column + 1 }
+    })
+}
+
 const MARKDOWN_QUOTED_LIST_STYLE: &str = "IbisMarkdownQuotedList";
 
 fn markdown_quoted_list_style(style: Option<&str>) -> Option<(usize, char, bool)> {
@@ -2659,7 +2676,9 @@ fn markdown_quoted_list_style(style: Option<&str>) -> Option<(usize, char, bool)
 
 enum MarkdownContinuation<'a> {
     Paragraph { indent: usize },
-    Code { indent: Option<usize>, text: String, info: &'a str },
+    Heading { indent: usize, level: u8, column: usize, starts_item: bool },
+    Reference { indent: usize },
+    Code { indent: Option<usize>, starts_item: bool, text: String, info: &'a str },
     Html { item: Option<(usize, bool, String)> },
     Quote,
     ItemQuote { item_line: usize, indent: usize, start_column: usize },
@@ -2671,12 +2690,14 @@ enum MarkdownContinuation<'a> {
 fn markdown_continuations<'a>(
     text: &'a str,
     lines: &[&'a str],
-    quoted_lists: Option<&mut HashMap<usize, QuotedList>>,
+    list_items: &mut HashMap<usize, QuotedList>,
+    in_quote: bool,
+    item_paragraph_ends: &mut HashMap<usize, usize>,
 ) -> HashMap<usize, (usize, MarkdownContinuation<'a>)> {
     use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
     let mut blocks = HashMap::new();
-    if quoted_lists.is_none() && !lines.iter().any(|line| line.starts_with([' ', '\t', '<', '>']) || line.contains('>')) {
+    if !in_quote && !lines.iter().any(|line| line.starts_with([' ', '\t', '<', '>', '[']) || line.contains('>') || parse_list_marker(line).is_some()) {
         return blocks;
     }
 
@@ -2684,12 +2705,22 @@ fn markdown_continuations<'a>(
         .chain(text.match_indices('\n').map(|(offset, _)| offset + 1))
         .collect();
     let mut parents = Vec::new();
-    let mut quoted_lists = quoted_lists;
     let mut code = None;
     let mut html = None;
-    for (event, span) in Parser::new_ext(text, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES)
-        .into_offset_iter()
-    {
+    let mut heading_ends = HashMap::new();
+    let parser = Parser::new_ext(text, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES);
+    let reference_lines: BTreeMap<_, _> = parser.reference_definitions().iter().filter_map(|(_, definition)| {
+        let span = &definition.span;
+        let first = line_starts.partition_point(|&start| start <= span.start) - 1;
+        let next = line_starts.partition_point(|&start| start < span.end);
+        (first < next).then_some((first, (next, span.start - line_starts[first])))
+    }).collect();
+    for (&first, &(next, column)) in &reference_lines {
+        if column <= 3 && (next > first + 1 || lines.get(next).is_some_and(|line| !line.trim().is_empty())) {
+            blocks.insert(first, (next, MarkdownContinuation::Reference { indent: 0 }));
+        }
+    }
+    for (event, span) in parser.into_offset_iter() {
         match event {
             Event::Start(tag) => {
                 let first = line_starts.partition_point(|&start| start <= span.start) - 1;
@@ -2698,9 +2729,9 @@ fn markdown_continuations<'a>(
                     Some((TagEnd::Item, item, _)) => *item,
                     _ => None,
                 };
-                let item = item_start.filter(|&(line, _)| {
-                    parse_list_marker(lines[line]).is_some_and(|marker| !marker.text.trim().is_empty())
-                });
+                let item = item_start;
+                let follows_empty_marker = |item_line: usize| first == item_line + 1
+                    && parse_list_marker(lines[item_line]).is_some_and(|marker| marker.text.trim().is_empty());
                 let continuation_indent = item
                     .filter(|&(item_line, _)| first > item_line && lines[first].starts_with([' ', '\t']))
                     .map(|(_, indent)| indent);
@@ -2719,7 +2750,7 @@ fn markdown_continuations<'a>(
                             }));
                         }
                     }
-                    Tag::Table(_) if parents.is_empty() && quoted_lists.is_some() => {
+                    Tag::Table(_) if parents.is_empty() && in_quote => {
                         blocks.insert(first, (next, MarkdownContinuation::ItemTable {
                             indent: 0, first_content: false, first_column: 0,
                         }));
@@ -2742,27 +2773,45 @@ fn markdown_continuations<'a>(
                     {
                         html = Some((first, next, indent, first == item_line, String::new()));
                     }
+                    Tag::Paragraph if let Some((item_line, _)) = item
+                        && (item_line == first || follows_empty_marker(item_line)) =>
+                    {
+                        item_paragraph_ends.insert(item_line, next);
+                    }
                     Tag::Paragraph if let Some(indent) = continuation_indent => {
                         blocks.insert(first, (next, MarkdownContinuation::Paragraph { indent }));
                     }
+                    Tag::Heading { level, .. } if let Some((item_line, indent)) = item => {
+                        let starts_item = first == item_line || follows_empty_marker(item_line);
+                        let line = if starts_item { item_line } else { first };
+                        let column = span.start - line_starts[first];
+                        blocks.insert(line, (next, MarkdownContinuation::Heading {
+                            indent, level: *level as u8, column, starts_item,
+                        }));
+                        heading_ends.insert(item_line, (next, indent));
+                    }
                     Tag::CodeBlock(kind) => {
+                        let first_item_block = item.filter(|&(item_line, _)| first == item_line || follows_empty_marker(item_line));
                         let details = match kind {
                             CodeBlockKind::Indented if parents.is_empty() => Some((None, "")),
-                            CodeBlockKind::Indented => continuation_indent.map(|indent| (Some(indent), "")),
-                            CodeBlockKind::Fenced(_) => continuation_indent.and_then(|indent| {
-                                let (_, info) = opening_fence(lines[first].trim_start())?;
-                                ordinary_code_fence(info).then_some((Some(indent), info))
+                            CodeBlockKind::Indented => first_item_block.map(|(_, indent)| indent)
+                                .or(continuation_indent).map(|indent| (Some(indent), "")),
+                            CodeBlockKind::Fenced(_) => item.and_then(|(item_line, indent)| {
+                                let fence = &text[span.start..line_starts.get(first + 1).copied().unwrap_or(text.len())];
+                                let (_, info) = opening_fence(fence.trim_end())?;
+                                (ordinary_code_fence(info) && (first == item_line || continuation_indent.is_some()))
+                                    .then_some((Some(indent), info))
                             }),
                         };
                         if let Some((indent, info)) = details {
-                            code = Some((first, next, indent, info, String::new()));
+                            let line = first_item_block.map_or(first, |(item_line, _)| item_line);
+                            code = Some((line, next, indent, first_item_block.is_some(), info, String::new()));
                         }
                     }
                     _ => {}
                 }
                 let list_spec = match tag {
-                    Tag::List(start) if quoted_lists.is_some()
-                        && parents.iter().all(|(tag, _, _)| matches!(tag, TagEnd::List(_) | TagEnd::Item)) => {
+                    Tag::List(start) if parents.iter().all(|(tag, _, _)| matches!(tag, TagEnd::List(_) | TagEnd::Item)) => {
                         Some(QuotedList {
                             offset: span.start,
                             start: start.map(|n| n as u32),
@@ -2772,39 +2821,55 @@ fn markdown_continuations<'a>(
                     _ => None,
                 };
                 if matches!(tag, Tag::Item)
-                    && let Some(quoted_lists) = quoted_lists.as_deref_mut()
                     && let Some((TagEnd::List(_), _, Some(spec))) = parents.last()
                 {
-                    quoted_lists.entry(first).or_insert(*spec);
+                    list_items.entry(first).or_insert(*spec);
                 }
                 let item = if matches!(tag, Tag::Item)
                     && parents.iter().all(|(tag, _, _)| matches!(tag, TagEnd::List(_) | TagEnd::Item))
                 {
                     parse_list_marker(lines[first]).map(|item| {
-                            let marker_width = if item.ordered {
-                                item.start.to_string().len() + 2
-                            } else {
+                            let indent = if item.task_checked.is_some() {
                                 2
-                            };
-                            let level = if item.task_checked.is_some() { 0 } else { item.level };
-                            let indent = if quoted_lists.is_some() && item.task_checked.is_none() {
-                                let content = item.text.trim_start_matches([' ', '\t']);
-                                let prefix = &lines[first][..lines[first].len() - content.len()];
-                                prefix.bytes().fold(0usize, |column, byte| {
-                                    if byte == b'\t' { column + 4 - column % 4 } else { column + 1 }
-                                })
                             } else {
-                                usize::from(level) * 2 + marker_width
+                                markdown_item_content_indent(lines[first], &item)
                             };
                             (first, indent)
                         })
                 } else {
                     None
                 };
+                if let Some((item_line, indent)) = item {
+                    for (&line, &(end, column)) in reference_lines.range(item_line + 1..next) {
+                        if column >= indent && end <= next {
+                            blocks.insert(line, (end, MarkdownContinuation::Reference { indent }));
+                        }
+                    }
+                }
                 parents.push((tag.to_end(), item, list_spec));
             }
+            Event::SoftBreak | Event::HardBreak if let Some((TagEnd::Item, Some((item_line, _)), _)) = parents.last() => {
+                let next = line_starts.partition_point(|&start| start <= span.end);
+                item_paragraph_ends.insert(*item_line, next.min(lines.len()));
+            }
             Event::Text(text) => {
-                if let Some((_, _, _, _, content)) = &mut code {
+                if let Some((TagEnd::Item, Some((item_line, _)), _)) = parents.last()
+                    && let Some(&(first, indent)) = heading_ends.get(item_line)
+                    && line_starts.get(first).is_some_and(|&start| span.start >= start)
+                {
+                    let line = line_starts.partition_point(|&start| start <= span.start) - 1;
+                    if lines[line].starts_with([' ', '\t']) {
+                        blocks.entry(line).or_insert((line + 1, MarkdownContinuation::Paragraph { indent }));
+                    }
+                }
+                if let Some((TagEnd::Item, Some((item_line, _)), _)) = parents.last()
+                    && parse_list_marker(lines[*item_line]).is_some_and(|marker| marker.text.trim().is_empty())
+                    && line_starts.get(*item_line + 1).is_some_and(|&start| span.start >= start)
+                {
+                    let next = line_starts.partition_point(|&start| start < span.end).min(lines.len());
+                    item_paragraph_ends.entry(*item_line).and_modify(|end| *end = (*end).max(next)).or_insert(next);
+                }
+                if let Some((_, _, _, _, _, content)) = &mut code {
                     content.push_str(&text);
                 }
                 if let Some((_, _, _, _, content)) = &mut html {
@@ -2824,11 +2889,11 @@ fn markdown_continuations<'a>(
                     }
                     blocks.insert(first, (next, MarkdownContinuation::Html { item: Some((indent, starts_item, text)) }));
                 }
-                if tag == TagEnd::CodeBlock && let Some((first, next, indent, info, mut text)) = code.take() {
+                if tag == TagEnd::CodeBlock && let Some((first, next, indent, starts_item, info, mut text)) = code.take() {
                     if text.ends_with('\n') {
                         text.pop();
                     }
-                    blocks.insert(first, (next, MarkdownContinuation::Code { indent, text, info }));
+                    blocks.insert(first, (next, MarkdownContinuation::Code { indent, starts_item, text, info }));
                 }
             }
             _ => {}
@@ -2838,6 +2903,7 @@ fn markdown_continuations<'a>(
 }
 
 const MARKDOWN_HTML_BLOCK_STYLE: &str = "IbisMarkdownHtmlBlock";
+const MARKDOWN_REFERENCE_BLOCK_STYLE: &str = "IbisMarkdownReferenceBlock";
 const MARKDOWN_HTML_LIST_ITEM_STYLE: &str = "IbisMarkdownHtmlListItem";
 const MARKDOWN_HTML_LIST_ITEM_BLANK_STYLE: &str = "IbisMarkdownHtmlListItemBlankBefore";
 
@@ -2847,23 +2913,40 @@ fn is_preserved_html_block(line: &str) -> bool {
     };
     if let Some(comment) = tag.strip_prefix("!--") {
         let comment = comment.trim_start();
-        return !["fixed-layout-", "pptx-", "xlsx-", "docx-"]
+        return !["fixed-layout-", "pptx-", "xlsx-", "docx-", "ibis-law-", "nested-table:",
+            "colspan:", "vmerge:", "pagebreak -->", "columnbreak -->", "/docx-size"]
             .iter().any(|prefix| comment.starts_with(prefix));
     }
-    let tag = tag.strip_prefix('/').unwrap_or(tag);
-    let name = tag.split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '>' | '/'))
-        .next().unwrap_or_default();
-    [
-        "article", "aside", "blockquote", "details", "summary", "div", "section", "figure", "figcaption",
-        "table", "caption", "colgroup", "col", "thead", "tbody", "tfoot", "tr", "th", "td",
-        "dl", "dt", "dd", "pre",
-    ].iter().any(|tag| name.eq_ignore_ascii_case(tag))
+    true
 }
 
-fn build_html_block(source: &str, ctx: &mut ParseContext<'_>) -> Block {
-    let id = MARKDOWN_HTML_BLOCK_STYLE.to_owned();
+fn markdown_html_boundaries(style: Option<&str>) -> Option<u8> {
+    let suffix = style?.strip_prefix(MARKDOWN_HTML_BLOCK_STYLE)?;
+    if suffix.is_empty() {
+        Some(0)
+    } else {
+        suffix.strip_prefix('-')?.parse().ok().filter(|flags| *flags <= 3)
+    }
+}
+
+fn tight_markdown_html_boundary(current: Option<&str>, next: Option<&str>) -> bool {
+    markdown_html_boundaries(current).is_some_and(|flags| flags & 2 != 0)
+        || markdown_html_boundaries(next).is_some_and(|flags| flags & 1 != 0)
+}
+
+fn build_html_block(source: &str, flags: u8, ctx: &mut ParseContext<'_>) -> Block {
+    let style = if flags == 0 {
+        MARKDOWN_HTML_BLOCK_STYLE.to_owned()
+    } else {
+        format!("{MARKDOWN_HTML_BLOCK_STYLE}-{flags}")
+    };
+    build_markdown_source_block(source, &style, "Markdown HTML source", ctx)
+}
+
+fn build_markdown_source_block(source: &str, style: &str, name: &str, ctx: &mut ParseContext<'_>) -> Block {
+    let id = style.to_owned();
     ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
-        name: "Markdown HTML source".to_owned(),
+        name: name.to_owned(),
         kind: StyleKind::Paragraph,
         based_on: ctx.styles.default_paragraph.clone(),
         next: ctx.styles.default_paragraph.clone(),
@@ -2879,29 +2962,47 @@ fn build_html_block(source: &str, ctx: &mut ParseContext<'_>) -> Block {
 
 const MARKDOWN_LIST_CONTINUATION_STYLE: &str = "IbisMarkdownListContinuation";
 
-fn markdown_continuation_style(style: Option<&str>) -> Option<(usize, Option<&str>)> {
+fn markdown_continuation_style(style: Option<&str>) -> Option<(usize, Option<&str>, Option<bool>, Option<bool>)> {
     let encoded = style?.strip_prefix(MARKDOWN_LIST_CONTINUATION_STYLE)?;
+    let (encoded, tight) = if let Some(base) = encoded.strip_suffix("-Tight") {
+        (base, Some(true))
+    } else if let Some(base) = encoded.strip_suffix("-Loose") {
+        (base, Some(false))
+    } else {
+        (encoded, None)
+    };
+    let (encoded, first) = if let Some(base) = encoded.strip_suffix("-FirstBlank") {
+        (base, Some(true))
+    } else if let Some(base) = encoded.strip_suffix("-First") {
+        (base, Some(false))
+    } else {
+        (encoded, None)
+    };
     let (indent, code_style) = encoded.split_once('-')
         .map_or((encoded, None), |(indent, code_style)| (indent, Some(code_style)));
     let indent = indent.parse().ok()?;
-    (2..=27).contains(&indent).then_some((indent, code_style))
+    (2..=64).contains(&indent).then_some((indent, code_style, first, tight))
 }
 
 fn apply_markdown_continuation(
     paragraph: &mut FlowParagraph,
     indent: usize,
     info: &str,
+    first: Option<bool>,
+    tight: bool,
     ctx: &mut ParseContext<'_>,
 ) {
     let mut id = format!("{MARKDOWN_LIST_CONTINUATION_STYLE}{indent}");
-    let base_style = if paragraph.style.as_deref() == Some(MARKDOWN_HTML_BLOCK_STYLE) {
-        Some(MARKDOWN_HTML_BLOCK_STYLE.to_owned())
-    } else {
-        ctx.code_language_style(info)
-    };
+    let base_style = ctx.code_language_style(info).or_else(|| paragraph.style.clone());
     if let Some(style) = &base_style {
         id.push('-');
         id.push_str(style);
+    }
+    if let Some(blank_before) = first {
+        id.push_str(if blank_before { "-FirstBlank" } else { "-First" });
+    }
+    if first.is_none() {
+        id.push_str(if tight { "-Tight" } else { "-Loose" });
     }
     ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
         name: match base_style.as_deref() {
@@ -2912,7 +3013,7 @@ fn apply_markdown_continuation(
             ),
         },
         kind: StyleKind::Paragraph,
-        based_on: ctx.styles.default_paragraph.clone(),
+        based_on: base_style.or_else(|| ctx.styles.default_paragraph.clone()),
         next: ctx.styles.default_paragraph.clone(),
         ..FlowStyle::default()
     });
@@ -2934,9 +3035,22 @@ fn markdown_item_quote_style(style: Option<&str>) -> Option<(usize, bool, bool, 
 
 fn markdown_item_content_indent(raw: &str, marker: &ListMarker<'_>) -> usize {
     let content = marker.text.trim_start_matches([' ', '\t']);
-    raw[..raw.len() - content.len()].bytes().fold(0, |column, byte| {
-        if byte == b'\t' { column + 4 - column % 4 } else { column + 1 }
-    })
+    let prefix = &raw[..raw.len() - content.len()];
+    let marker_end = prefix.trim_end_matches([' ', '\t']).len();
+    let column = |text: &str| {
+        text.bytes().fold(0, |column, byte| {
+            if byte == b'\t' { column + 4 - column % 4 } else { column + 1 }
+        })
+    };
+    let marker_column = column(&prefix[..marker_end]);
+    let content_column = column(prefix);
+    // Five or more columns after the marker begin indented code. Only
+    // the first column belongs to the item's continuation indentation.
+    if content.is_empty() || content_column > marker_column + 4 {
+        marker_column + 1
+    } else {
+        content_column
+    }
 }
 
 const MARKDOWN_ITEM_TABLE_STYLE: &str = "IbisMarkdownListTable";
@@ -2973,9 +3087,59 @@ fn strip_list_item_indent(line: &str, indent: usize) -> &str {
     &line[bytes..]
 }
 
-fn strip_quote_marker(line: &str) -> &str {
-    let marked = line.trim_start();
-    marked.strip_prefix("> ").or_else(|| marked.strip_prefix('>')).unwrap_or(line)
+fn markdown_quote_line(line: &str, fenced: bool) -> std::borrow::Cow<'_, str> {
+    if let Some(after_marker) = line.trim_start().strip_prefix('>') {
+        let marker_end = markdown_indent(line) + 1;
+        if fenced {
+            if let Some(rest) = after_marker.strip_prefix('\t') {
+                return format!("{}{rest}", " ".repeat(3 - marker_end % 4)).into();
+            }
+            return after_marker.strip_prefix(' ').unwrap_or(after_marker).into();
+        }
+        let content = after_marker.trim_start_matches([' ', '\t']);
+        let whitespace = &after_marker[..after_marker.len() - content.len()];
+        if whitespace.contains('\t') {
+            // The optional space after > can consume only one column of a tab.
+            let mut column = marker_end;
+            let mut consumed = 0;
+            // Keep tabs beyond the four columns of code indentation literal.
+            for byte in whitespace.bytes() {
+                column += if byte == b'\t' { 4 - column % 4 } else { 1 };
+                consumed += 1;
+                if column >= marker_end + 5 {
+                    break;
+                }
+            }
+            return format!("{}{}", " ".repeat(column - marker_end - 1), &after_marker[consumed..]).into();
+        }
+        return after_marker.strip_prefix(' ').unwrap_or(after_marker).into();
+    }
+    if !fenced && parse_setext_underline(line).is_some() {
+        // The container parser admitted this as a lazy continuation. Once we
+        // add the quote marker back, it must stay literal paragraph text.
+        let text = line.trim_start_matches(' ');
+        let indent = &line[..line.len() - text.len()];
+        return format!("{indent}\\{text}").into();
+    }
+    line.into()
+}
+
+fn markdown_quote_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<std::borrow::Cow<'a, str>> {
+    let mut fence = None::<String>;
+    lines.into_iter().map(|source| {
+        let line = markdown_quote_line(source, fence.is_some());
+        if markdown_indent(&line) <= 3 {
+            let trimmed = line.trim_start();
+            if let Some(marker) = &fence {
+                if closes_fence(trimmed, marker) {
+                    fence = None;
+                }
+            } else if let Some((marker, _)) = opening_fence(trimmed) {
+                fence = Some(marker.to_owned());
+            }
+        }
+        line
+    }).collect()
 }
 
 fn parse_blocks(
@@ -2995,7 +3159,8 @@ fn parse_blocks_at_quote_depth(
     let lines: Vec<&str> = body_text.lines().collect();
     let mut quoted_items = HashMap::new();
     let mut quoted_numbering = HashMap::new();
-    let mut continuations = markdown_continuations(body_text, &lines, (quote_depth > 0).then_some(&mut quoted_items));
+    let mut item_paragraph_ends = HashMap::new();
+    let mut continuations = markdown_continuations(body_text, &lines, &mut quoted_items, quote_depth > 0, &mut item_paragraph_ends);
     let mut blocks: Vec<Block> = Vec::new();
     let mut i = 0;
 
@@ -3019,9 +3184,9 @@ fn parse_blocks_at_quote_depth(
             continuations.remove(&i);
             let starts_item = i == item_line;
             let blank_before = i > 0 && lines[i - 1].trim().is_empty();
-            let first = strip_quote_marker(&raw[start_column..]);
-            let mut quote_lines = vec![first];
-            quote_lines.extend(lines[i + 1..next].iter().map(|line| strip_quote_marker(strip_list_item_indent(line, indent))));
+            let quote_lines = markdown_quote_lines(std::iter::once(&raw[start_column..])
+                .chain(lines[i + 1..next].iter().map(|line| strip_list_item_indent(line, indent))));
+            let quote_lines = quote_lines.iter().map(|line| line.as_ref()).collect::<Vec<_>>();
             if let Some(mut quoted) = parse_structured_quote(&quote_lines, ctx, quote_depth.max(1), None)? {
                 let list = if starts_item && let Some(item) = parse_list_marker(raw) {
                     if let Some(spec) = quoted_items.get(&i) {
@@ -3085,7 +3250,7 @@ fn parse_blocks_at_quote_depth(
             }
         }
         if let Some((next, continuation)) = continuations.remove(&i) {
-            let (mut block, indent, info) = match continuation {
+            let (mut block, indent, info, starts_item) = match continuation {
                 MarkdownContinuation::Quote | MarkdownContinuation::ItemQuote { .. } => {
                     unreachable!("quote boundaries are consumed separately")
                 }
@@ -3132,14 +3297,47 @@ fn parse_blocks_at_quote_depth(
                         style.id = id;
                         table.indent = indent as i64 * 9 * EMU_PER_PT;
                     }
-                    (block, None, "")
+                    (block, None, "", false)
                 }
-                MarkdownContinuation::Code { indent, text, info } => (build_code_block(&text, ctx), indent, info),
+                MarkdownContinuation::Code { indent, starts_item, text, info } => {
+                    (build_code_block(&text, ctx), indent, info, starts_item)
+                }
+                MarkdownContinuation::Heading { indent, level, column, starts_item } => {
+                    let first = i + usize::from(starts_item && parse_list_marker(raw)
+                        .is_some_and(|item| item.text.trim().is_empty()));
+                    let text = &lines[first][column..];
+                    let setext;
+                    let text = if let Some((_, text)) = parse_atx_heading(text) {
+                        text
+                    } else {
+                        setext = std::iter::once(text).chain(lines[first + 1..next.saturating_sub(1).max(first + 1)].iter().copied())
+                            .map(str::trim).collect::<Vec<_>>().join(" ");
+                        &setext
+                    };
+                    let (text, attrs) = strip_trailing_block_attrs(text);
+                    let style = ctx.ensure_heading_style(level);
+                    (Block::Paragraph(FlowParagraph {
+                        id: ctx.fresh_id(),
+                        style: Some(style),
+                        direct: attrs.paragraph_format(),
+                        bookmarks: attrs.id.into_iter().collect(),
+                        runs: parse_inlines(text, ctx, &RunFormat::default()),
+                        ..FlowParagraph::default()
+                    }), Some(indent), "", starts_item)
+                }
+                MarkdownContinuation::Reference { indent } => {
+                    let source = lines[i..next].iter().map(|line| strip_list_item_indent(line, indent))
+                        .collect::<Vec<_>>().join("\n");
+                    (build_markdown_source_block(&source, MARKDOWN_REFERENCE_BLOCK_STYLE, "Markdown reference definition", ctx),
+                        (indent != 0).then_some(indent), "", false)
+                }
                 MarkdownContinuation::Html { item: None } => {
-                    (build_html_block(&lines[i..next].join("\n"), ctx), None, "")
+                    let flags = u8::from(i > 0 && !lines[i - 1].trim().is_empty())
+                        | (u8::from(lines.get(next).is_some_and(|line| !line.trim().is_empty())) << 1);
+                    (build_html_block(&lines[i..next].join("\n"), flags, ctx), None, "", false)
                 }
                 MarkdownContinuation::Html { item: Some((indent, starts_item, text)) } => {
-                    let mut block = build_html_block(&text, ctx);
+                    let mut block = build_html_block(&text, 0, ctx);
                     if starts_item
                         && let Block::Paragraph(paragraph) = &mut block
                         && let Some(item) = parse_list_marker(raw)
@@ -3164,9 +3362,9 @@ fn parse_blocks_at_quote_depth(
                         paragraph.direct.level = Some(u32::from(item.level));
                         paragraph.direct.left = None;
                         paragraph.resolve(&ctx.styles);
-                        (block, None, "")
+                        (block, None, "", false)
                     } else {
-                        (block, Some(indent), "")
+                        (block, Some(indent), "", false)
                     }
                 }
                 MarkdownContinuation::Paragraph { indent } => {
@@ -3179,13 +3377,28 @@ fn parse_blocks_at_quote_depth(
                         bookmarks: attrs.id.into_iter().collect(),
                         runs,
                         ..FlowParagraph::default()
-                    }), Some(indent), "")
+                    }), Some(indent), "", false)
                 }
             };
             if let Block::Paragraph(paragraph) = &mut block
                 && let Some(indent) = indent
             {
-                apply_markdown_continuation(paragraph, indent, info, ctx);
+                let blank_before = i > 0 && lines[i - 1].trim().is_empty();
+                if starts_item && let Some(item) = parse_list_marker(raw) {
+                    let (num_id, level) = if let Some(spec) = quoted_items.get(&i)
+                        && (quote_depth > 0 || needs_markdown_list_spec(raw, &item, spec))
+                    {
+                        let num_id = *quoted_numbering.entry(spec.offset).or_insert_with(|| ctx.new_quoted_list(*spec));
+                        (num_id, spec.level)
+                    } else {
+                        let num_id = if item.ordered { ctx.ordered_list_for(&item, &blocks) } else { ctx.ensure_bullet_list() };
+                        (num_id, u32::from(item.level))
+                    };
+                    paragraph.direct.num_id = Some(num_id);
+                    paragraph.direct.level = Some(level);
+                }
+                apply_markdown_continuation(paragraph, indent, info, starts_item.then_some(blank_before),
+                    !starts_item && !blank_before, ctx);
                 paragraph.resolve(&ctx.styles);
                 paragraph.normalize();
             }
@@ -3518,20 +3731,24 @@ fn parse_blocks_at_quote_depth(
 
         // Blockquote or GitHub Alert: `> ...`
         if trimmed.starts_with('>') {
-            let mut quote_lines = Vec::new();
+            let first = i;
             while i < lines.len()
                 && quote_end.map_or_else(|| lines[i].trim_start().starts_with('>'), |end| i < end)
             {
-                quote_lines.push(strip_quote_marker(lines[i]));
                 i += 1;
             }
+            let quote_lines = markdown_quote_lines(lines[first..i].iter().copied());
+            let quote_lines = quote_lines.iter().map(|line| line.as_ref()).collect::<Vec<_>>();
             blocks.extend(build_blockquote_blocks(&quote_lines, ctx, quote_depth)?);
             continue;
         }
 
         // Bullet / Ordered / Task List item
-        if let Some(item) = parse_list_marker(raw) {
-            let quoted = quoted_items.get(&i).filter(|_| item.task_checked.is_none());
+        if let Some(item) = parse_list_marker(raw)
+            && (!item.text.trim().is_empty() || quoted_items.contains_key(&i))
+        {
+            let quoted = quoted_items.get(&i).filter(|spec| item.task_checked.is_none()
+                && (quote_depth > 0 || needs_markdown_list_spec(raw, &item, spec)));
             let (num_id, level) = if let Some(spec) = quoted {
                 let num_id = *quoted_numbering.entry(spec.offset).or_insert_with(|| ctx.new_quoted_list(*spec));
                 (num_id, spec.level)
@@ -3540,7 +3757,11 @@ fn parse_blocks_at_quote_depth(
             } else {
                 (ctx.ensure_bullet_list(), u32::from(item.level))
             };
-            let (clean_text, attrs) = strip_trailing_block_attrs(item.text);
+            let paragraph_end = item_paragraph_ends.remove(&i).unwrap_or(i + 1);
+            let next = (i + 1..paragraph_end).find(|&line| {
+                continuations.contains_key(&line) || starts_markdown_block(&lines, line)
+            }).unwrap_or(paragraph_end);
+            let (clean_text, mut attrs) = strip_trailing_block_attrs(item.text);
             let mut runs = Vec::new();
             if let Some(checked) = item.task_checked {
                 runs.push(FlowRun::new(
@@ -3556,16 +3777,27 @@ fn parse_blocks_at_quote_depth(
                     FlowRunStyle::default(),
                 ));
             }
-            runs.extend(parse_inlines(clean_text, ctx, &RunFormat::default()));
+            if next > i + 1 {
+                let mut paragraph_lines = vec![item.text];
+                paragraph_lines.extend_from_slice(&lines[i + 1..next]);
+                let padding = item.text.len() - item.text.trim_start_matches(' ').len();
+                let mut text_runs = Vec::new();
+                append_markdown_paragraph_lines(&paragraph_lines, ctx, &mut text_runs, &mut attrs);
+                if padding > 0 {
+                    runs.push(FlowRun::new(FlowRunKind::Text(" ".repeat(padding)), FlowRunStyle::default()));
+                }
+                runs.extend(text_runs);
+            } else {
+                runs.extend(parse_inlines(clean_text, ctx, &RunFormat::default()));
+            }
             let mut style = ctx.styles.default_paragraph.clone();
             let blank_before = i > 0 && lines[i - 1].trim().is_empty()
-                && blocks.last().is_some_and(|block| is_markdown_list_item(block) || is_markdown_item_quote(block));
-            if quoted.is_some() {
-                let content = raw.trim_start_matches([' ', '\t']);
-                let indent = raw[..raw.len() - content.len()].bytes()
-                    .fold(0usize, |column, byte| if byte == b'\t' { column + 4 - column % 4 } else { column + 1 })
-                    .min(64);
-                let marker = content.trim_start_matches(|ch: char| ch.is_ascii_digit()).as_bytes()[0];
+                && blocks.last().is_some_and(|block| is_markdown_list_item(block) || is_markdown_item_quote(block)
+                    || markdown_continuation_style(block_markdown_style(block)).is_some());
+            if quoted.is_some() || (item.task_checked.is_none()
+                && (item.text.trim().is_empty() || matches!(item.delimiter, '+' | '*'))) {
+                let indent = markdown_indent(raw).min(64);
+                let marker = u32::from(item.delimiter);
                 let id = format!("{MARKDOWN_QUOTED_LIST_STYLE}{indent}-{marker}-{}", u8::from(blank_before));
                 ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
                     name: format!("Markdown quoted list ({indent}, {marker}, {})", u8::from(blank_before)),
@@ -3613,7 +3845,7 @@ fn parse_blocks_at_quote_depth(
             p.resolve(&ctx.styles);
             p.normalize();
             blocks.push(Block::Paragraph(p));
-            i += 1;
+            i = next;
             continue;
         }
 
@@ -3635,28 +3867,7 @@ fn parse_blocks_at_quote_depth(
                 setext_eligible = false;
             }
             let l_raw = lines[i];
-            let l_trim = l_raw.trim();
-            if l_trim.is_empty()
-                || continuations.contains_key(&i)
-                || l_trim.starts_with("```")
-                || l_trim.starts_with("~~~")
-                || l_trim.starts_with("$$")
-                || l_trim.starts_with('>')
-                || matches!(l_trim, "::: pagebreak" | "::: columnbreak")
-                || l_trim == "\\newpage"
-                || l_trim == "\\pagebreak"
-                || l_trim == "\\columnbreak"
-                || document_block_field(l_trim).is_some()
-                || myst_heading_target(&lines, i).is_some()
-                || myst::colon_directive(&lines[i..]).is_some()
-                || is_horizontal_rule(l_trim)
-                || parse_atx_heading(l_trim).is_some()
-                || list_interrupts_paragraph(l_raw)
-                || (is_table_row(l_trim)
-                    && i + 1 < lines.len()
-                    && is_table_separator(lines[i + 1].trim()))
-                || (l_trim.starts_with("[^") && l_trim.contains("]:"))
-            {
+            if continuations.contains_key(&i) || starts_markdown_block(&lines, i) {
                 break;
             }
             para_lines.push(l_raw);
@@ -3696,12 +3907,44 @@ fn parse_blocks_at_quote_depth(
     Ok(blocks)
 }
 
+fn starts_markdown_block(lines: &[&str], i: usize) -> bool {
+    let l_raw = lines[i];
+    let l_trim = l_raw.trim();
+    l_trim.is_empty()
+        || opening_fence(l_trim).is_some()
+        || l_trim.starts_with("$$")
+        || l_trim.starts_with('>')
+        || matches!(l_trim, "::: pagebreak" | "::: columnbreak")
+        || l_trim == "\\newpage"
+        || l_trim == "\\pagebreak"
+        || l_trim == "\\columnbreak"
+        || document_block_field(l_trim).is_some()
+        || myst_heading_target(lines, i).is_some()
+        || myst::colon_directive(&lines[i..]).is_some()
+        || (markdown_indent(l_raw) <= 3 && (is_horizontal_rule(l_trim) || parse_atx_heading(l_trim).is_some()))
+        || list_interrupts_paragraph(l_raw)
+        || (is_table_row(l_trim)
+            && i + 1 < lines.len()
+            && is_table_separator(lines[i + 1].trim()))
+        || (l_trim.starts_with("[^") && l_trim.contains("]:"))
+}
+
 fn append_markdown_paragraph_lines(
     para_lines: &[&str],
     ctx: &mut ParseContext<'_>,
     runs: &mut Vec<FlowRun>,
     para_attrs: &mut BlockAttrs,
 ) {
+    let joined;
+    let joined_lines;
+    let mut preserve_soft_breaks = false;
+    let para_lines = if para_lines.len() > 1 && para_lines.iter().any(|line| line.contains(['`', '<'])) {
+        joined = para_lines.join("\n");
+        (joined_lines, preserve_soft_breaks) = markdown_paragraph_lines(&joined);
+        &joined_lines
+    } else {
+        para_lines
+    };
     for (li, pline) in para_lines.iter().enumerate() {
         let has_next_line = li + 1 < para_lines.len();
         let content = if has_next_line && ends_with_markdown_break_escape(pline) {
@@ -3725,6 +3968,8 @@ fn append_markdown_paragraph_lines(
                     FlowRunKind::LineBreak,
                     FlowRunStyle::default(),
                 ));
+            } else if preserve_soft_breaks {
+                append_markdown_html_runs("\n", &RunFormat::default(), ctx, runs);
             } else {
                 runs.push(FlowRun::new(
                     FlowRunKind::Text(" ".into()),
@@ -3734,6 +3979,34 @@ fn append_markdown_paragraph_lines(
         }
         runs.extend(parse_inlines(content, ctx, &RunFormat::default()));
     }
+}
+
+fn markdown_paragraph_lines(source: &str) -> (Vec<&str>, bool) {
+    use pulldown_cmark::{Event, Parser};
+    let inline = format!("x {source}");
+    let mut preserve_soft_breaks = false;
+    let mut protected = Vec::new();
+    for (event, span) in Parser::new(&inline).into_offset_iter() {
+        let html = matches!(event, Event::InlineHtml(_)) && is_preserved_html_block(&inline[span.clone()]);
+        preserve_soft_breaks |= html;
+        if (html || matches!(event, Event::Code(_))) && inline[span.clone()].contains('\n') {
+            protected.push(span.start - 2..span.end - 2);
+        }
+    }
+    let mut protected = protected.into_iter().peekable();
+    let mut lines = Vec::new();
+    let mut begin = 0;
+    for (position, _) in source.match_indices('\n') {
+        while protected.peek().is_some_and(|span| span.end <= position) {
+            protected.next();
+        }
+        if !protected.peek().is_some_and(|span| span.contains(&position)) {
+            lines.push(&source[begin..position]);
+            begin = position + 1;
+        }
+    }
+    lines.push(&source[begin..]);
+    (lines, preserve_soft_breaks)
 }
 
 fn ends_with_markdown_break_escape(line: &str) -> bool {
@@ -3878,6 +4151,7 @@ struct ListMarker<'a> {
     start: u32,
     level: u8,
     task_checked: Option<bool>,
+    delimiter: char,
     text: &'a str,
 }
 
@@ -3923,61 +4197,39 @@ fn parse_list_marker(raw_line: &str) -> Option<ListMarker<'_>> {
     let level = ((indent_spaces / 2) as u8).min(8);
     let rest = &raw_line[byte_idx..];
 
-    // Unordered: `- `, `* `, `+ `
-    if let Some(after_bullet) = rest
-        .strip_prefix("- ")
-        .or_else(|| rest.strip_prefix("* "))
-        .or_else(|| rest.strip_prefix("+ "))
-    {
-        if let Some(task_rest) = after_bullet.strip_prefix("[ ] ") {
-            return Some(ListMarker {
-                ordered: false,
-                start: 1,
-                level,
-                task_checked: Some(false),
-                text: task_rest,
-            });
-        }
-        if let Some(task_rest) = after_bullet
-            .strip_prefix("[x] ")
-            .or_else(|| after_bullet.strip_prefix("[X] "))
-        {
-            return Some(ListMarker {
-                ordered: false,
-                start: 1,
-                level,
-                task_checked: Some(true),
-                text: task_rest,
-            });
-        }
-        return Some(ListMarker {
-            ordered: false,
-            start: 1,
-            level,
-            task_checked: None,
-            text: after_bullet,
-        });
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits > 9 {
+        return None;
     }
-
-    // Ordered: `1. `, `2. `, etc.
-    let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
-    if digits > 0 {
-        let after_digits = &rest[digits..];
-        if let Some(after_dot) = after_digits
-            .strip_prefix(". ")
-            .or_else(|| after_digits.strip_prefix(") "))
-        {
-            return Some(ListMarker {
-                ordered: true,
-                start: rest[..digits].parse().ok().filter(|n| (1..=999_999_999).contains(n)).unwrap_or(1),
-                level,
-                task_checked: None,
-                text: after_dot,
-            });
-        }
+    let marker = rest[digits..].chars().next()?;
+    let ordered = digits != 0;
+    if (ordered && !matches!(marker, '.' | ')')) || (!ordered && !matches!(marker, '-' | '*' | '+')) {
+        return None;
     }
+    let after_marker = &rest[digits + 1..];
+    let text = if after_marker.is_empty() {
+        after_marker
+    } else {
+        after_marker.strip_prefix([' ', '\t'])?
+    };
+    let (task_checked, text) = if ordered {
+        (None, text)
+    } else if let Some(text) = text.strip_prefix("[ ] ") {
+        (Some(false), text)
+    } else if let Some(text) = text.strip_prefix("[x] ").or_else(|| text.strip_prefix("[X] ")) {
+        (Some(true), text)
+    } else {
+        (None, text)
+    };
+    Some(ListMarker {
+        ordered,
+        start: if ordered { rest[..digits].parse().ok()? } else { 1 },
+        level,
+        task_checked,
+        delimiter: marker,
+        text,
+    })
 
-    None
 }
 
 const MARKDOWN_CODE_STYLE_PREFIX: &str = "IbisMarkdownCode";
@@ -3992,7 +4244,7 @@ fn ordinary_code_fence(info: &str) -> bool {
 
 fn is_code_language(language: &str) -> bool {
     !language.is_empty() && language.len() <= 32
-        && language.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'+' | b'#' | b';'))
+        && language.chars().all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '+' | '#' | ';'))
 }
 
 fn markdown_code_language(style: Option<&str>) -> Option<String> {
@@ -4173,7 +4425,8 @@ fn parse_structured_quote(
             _ => {}
         }
     }
-    if !structured && count < 2 {
+    let empty_quote = source.trim().is_empty();
+    if !structured && count < 2 && !empty_quote {
         return Ok(None);
     }
 
@@ -4181,7 +4434,7 @@ fn parse_structured_quote(
     if !has_nested && blocks.len() != count {
         return Ok(None);
     }
-    if blocks.is_empty() && quote_depth > 0 && callout_style.is_none() {
+    if blocks.is_empty() && (quote_depth > 0 || empty_quote) && callout_style.is_none() {
         blocks.push(Block::Paragraph(FlowParagraph {
             id: ctx.fresh_id(),
             style: ctx.styles.default_paragraph.clone(),
@@ -5100,7 +5353,8 @@ fn opening_fence(line: &str) -> Option<(&str, &str)> {
         return None;
     }
     let count = line.bytes().take_while(|&byte| byte == marker).count();
-    (count >= 3).then(|| line.split_at(count))
+    let (fence, info) = line.split_at(count);
+    (count >= 3 && (marker != b'`' || !info.contains('`'))).then_some((fence, info))
 }
 
 fn closes_fence(line: &str, marker: &str) -> bool {
@@ -5759,11 +6013,169 @@ fn collect_markdown_links<'a>(
     output.into()
 }
 
+const MARKDOWN_ESCAPED_PUNCTUATION_STYLE: &str = "IbisMarkdownEscapedPunctuation";
+
+fn markdown_literal_punctuation(character: char, format: &RunFormat, ctx: &mut ParseContext<'_>) -> FlowRun {
+    ctx.styles.styles.entry(MARKDOWN_ESCAPED_PUNCTUATION_STYLE.to_owned()).or_insert_with(|| FlowStyle {
+        name: "Markdown escaped punctuation".to_owned(),
+        kind: StyleKind::Character,
+        ..FlowStyle::default()
+    });
+    let mut run = FlowRun::new(FlowRunKind::Text(character.to_string()), FlowRunStyle::default());
+    run.format = format.clone();
+    run.char_style = Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE.to_owned());
+    run
+}
+
+const MARKDOWN_LINK_START_STYLE: &str = "IbisMarkdownLinkStart";
+const MARKDOWN_EMPTY_LINK: u8 = 16;
+const MARKDOWN_HTML_LINK: u8 = 32;
+const MARKDOWN_INLINE_HTML_STYLE: &str = "IbisMarkdownInlineHtml";
+const MARKDOWN_EMPTY_LINK_TEXT: &str = "\u{200b}";
+
+fn markdown_link_start(style: Option<&str>) -> Option<u8> {
+    style?.strip_prefix(MARKDOWN_LINK_START_STYLE)?.parse::<u8>().ok().filter(|flags| *flags < 64)
+}
+
+fn apply_markdown_link(runs: &mut Vec<FlowRun>, link: Link, base: &RunFormat, previous: Option<&FlowRun>, ctx: &mut ParseContext<'_>) {
+    let empty = runs.is_empty();
+    if empty {
+        let mut run = FlowRun::new(FlowRunKind::Text(MARKDOWN_EMPTY_LINK_TEXT.to_owned()), FlowRunStyle::default());
+        run.format = link_format(base);
+        runs.push(run);
+    }
+    if let Some(first) = runs.first_mut() {
+        // Record emphasis inherited from outside the label separately.
+        let flags = u8::from(base.bold == Some(true))
+            | (u8::from(base.italic == Some(true)) << 1)
+            | (u8::from(first.char_style.as_deref() == Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE)) << 2)
+            | if empty { MARKDOWN_EMPTY_LINK } else { 0 }
+            | if first.char_style.as_deref() == Some(MARKDOWN_INLINE_HTML_STYLE) { MARKDOWN_HTML_LINK } else { 0 };
+        // A distinct first run keeps two adjacent links to the same address separate.
+        let alternate = previous.and_then(|run| markdown_link_start(run.char_style.as_deref())) == Some(flags);
+        let id = format!("{MARKDOWN_LINK_START_STYLE}{}", flags | (u8::from(alternate) << 3));
+        ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
+            name: id.clone(),
+            kind: StyleKind::Character,
+            ..FlowStyle::default()
+        });
+        first.char_style = Some(id);
+    }
+    for run in runs {
+        run.link = Some(link.clone());
+    }
+}
+
+fn append_markdown_html_runs(source: &str, format: &RunFormat, ctx: &mut ParseContext<'_>, runs: &mut Vec<FlowRun>) {
+    ctx.styles.styles.entry(MARKDOWN_INLINE_HTML_STYLE.to_owned()).or_insert_with(|| FlowStyle {
+        name: "Markdown inline HTML".to_owned(),
+        kind: StyleKind::Character,
+        ..FlowStyle::default()
+    });
+    let mut push = |kind| {
+        let mut run = FlowRun::new(kind, FlowRunStyle::default());
+        run.format = format.clone();
+        run.char_style = Some(MARKDOWN_INLINE_HTML_STYLE.to_owned());
+        runs.push(run);
+    };
+    for (index, line) in source.split('\n').enumerate() {
+        if index != 0 {
+            push(FlowRunKind::LineBreak);
+        }
+        if !line.is_empty() {
+            push(FlowRunKind::Text(line.to_owned()));
+        }
+    }
+}
+
+#[derive(Default)]
+struct MarkdownInlineRanges {
+    emphasis: HashMap<usize, (usize, Option<usize>)>,
+    code: BTreeMap<usize, (usize, String)>,
+    literal: HashMap<usize, usize>,
+    html: HashMap<usize, usize>,
+    links: BTreeMap<usize, (usize, String, String)>,
+    images: HashMap<usize, (usize, String, ibis_doc_model::AltText)>,
+}
+
+fn markdown_inline_ranges(text: &str) -> MarkdownInlineRanges {
+    use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
+    let mut ranges = MarkdownInlineRanges::default();
+    if !text.contains(['*', '_', '`', '[', '<']) {
+        return ranges;
+    }
+    // Force inline context, even for a label starting with a block marker.
+    let inline = format!("x {text}");
+    let mut stack = Vec::new();
+    let mut outer = None;
+    let mut images = Vec::new();
+    for (event, span) in Parser::new(&inline).into_offset_iter() {
+        match event {
+            Event::Start(tag @ (Tag::Strong | Tag::Emphasis)) => {
+                let delimiter = if tag == Tag::Strong { 2 } else { 1 };
+                let native = inline.as_bytes()[span.start] == b'*' && !stack.contains(&delimiter);
+                if stack.is_empty() {
+                    outer = Some((span.start, span.end, native.then_some(delimiter)));
+                } else if !native && let Some((_, _, delimiter)) = &mut outer {
+                    // Word can express bold and italic together, but not two
+                    // nested layers of the same formatting. Preserve the markup.
+                    *delimiter = None;
+                }
+                stack.push(delimiter);
+            }
+            Event::End(TagEnd::Strong | TagEnd::Emphasis) => {
+                stack.pop();
+                if stack.is_empty() && let Some((start, end, delimiter)) = outer.take() {
+                    ranges.emphasis.insert(start - 2, (end - 2, delimiter));
+                }
+            }
+            Event::InlineHtml(_) if is_preserved_html_block(&inline[span.clone()]) => {
+                ranges.html.insert(span.start - 2, span.end - 2);
+            }
+            Event::Start(Tag::Link { link_type: LinkType::Autolink | LinkType::Email, .. })
+                if inline[span.clone()].contains('`') =>
+            {
+                ranges.literal.insert(span.start - 2, span.end - 2);
+            }
+            Event::Start(Tag::Link { link_type: LinkType::Inline, dest_url, title, .. }) => {
+                ranges.links.insert(span.start - 2, (span.end - 2, dest_url.into_string(), title.into_string()));
+            }
+            Event::Start(Tag::Image { dest_url, title, .. }) => {
+                images.push(span.start - 2);
+                ranges.images.insert(span.start - 2, (span.end - 2, dest_url.into_string(), ibis_doc_model::AltText {
+                    title: title.into_string(),
+                    description: String::new(),
+                }));
+            }
+            Event::End(TagEnd::Image) => { images.pop(); }
+            Event::Text(text) if !images.is_empty() => {
+                for start in &images {
+                    ranges.images.get_mut(start).unwrap().2.description.push_str(&text);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak if !images.is_empty() => {
+                for start in &images {
+                    ranges.images.get_mut(start).unwrap().2.description.push(' ');
+                }
+            }
+            Event::Code(code) => {
+                for start in &images {
+                    ranges.images.get_mut(start).unwrap().2.description.push_str(&code);
+                }
+                ranges.code.insert(span.start - 2, (span.end - 2, code.into_string()));
+            }
+            _ => {}
+        }
+    }
+    ranges
+}
+
 fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -> Vec<FlowRun> {
     let mut out = Vec::new();
     let mut plain = String::new();
     let mut i = 0;
     let bytes = text.as_bytes();
+    let inline = markdown_inline_ranges(text);
 
     let flush_plain = |plain: &mut String, out: &mut Vec<FlowRun>, fmt: &RunFormat| {
         if !plain.is_empty() {
@@ -5806,7 +6218,8 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
         if bytes[i] == b'\\' && i + 1 < text.len() {
             let next_ch = text[i + 1..].chars().next().unwrap();
             if next_ch.is_ascii_punctuation() {
-                plain.push(next_ch);
+                flush_plain(&mut plain, &mut out, base_fmt);
+                out.push(markdown_literal_punctuation(next_ch, base_fmt, ctx));
                 i += 1 + next_ch.len_utf8();
                 continue;
             }
@@ -6122,138 +6535,132 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             continue;
         }
 
-        // Inline image: `![alt](data:image/...;base64,...){width=... height=...}`
-        if let Some(after_bang) = rest.strip_prefix("![") {
-            if let Some(alt_end) = after_bang.find("](") {
-                let alt = &after_bang[..alt_end];
-                let after_open_paren = &after_bang[alt_end + 2..];
-                if let Some(url_end) = after_open_paren.find(')') {
-                    let raw_target = after_open_paren[..url_end].trim();
-                    let url = strip_markdown_link_title(raw_target);
-                    let mut total_consumed = 2 + alt_end + 2 + url_end + 1;
-                    let mut explicit_w: Option<Emu> = None;
-                    let mut explicit_h: Option<Emu> = None;
-                    let mut anchor = None;
-                    let mut look = PictureLook::default();
-                    let mut title_only = false;
-                    let after_paren = &after_open_paren[url_end + 1..];
-                    if let Some(attr_open) = after_paren.strip_prefix('{') {
-                        if let Some(attr_close) = attr_open.find('}') {
-                            let attr_str = &attr_open[..attr_close];
-                            for part in attr_str.split_whitespace() {
-                                if let Some(w) = part.strip_prefix("width=").and_then(parse_length_emu).filter(|w| *w > 0) {
-                                    explicit_w = Some(w);
-                                } else if let Some(h) = part.strip_prefix("height=").and_then(parse_length_emu).filter(|h| *h > 0) {
-                                    explicit_h = Some(h);
-                                } else if let Some(encoded) = part.strip_prefix(picture_anchor::ATTRIBUTE) {
-                                    anchor = picture_anchor::decode(encoded);
-                                } else if let Some(crop) = part.strip_prefix("docx-crop=").and_then(parse_picture_crop) {
-                                    look.crop = crop;
-                                } else if let Some((rotation, flip_h, flip_v)) =
-                                    part.strip_prefix("docx-transform=").and_then(parse_picture_transform)
-                                {
-                                    look.rotation = rotation;
-                                    look.flip_h = flip_h;
-                                    look.flip_v = flip_v;
-                                } else if let Some((bright, contrast)) =
-                                    part.strip_prefix("docx-lum=").and_then(|value| value.split_once(','))
-                                        .and_then(|(bright, contrast)| {
-                                            let bright: i32 = bright.parse().ok()?;
-                                            let contrast: i32 = contrast.parse().ok()?;
-                                            (-100_000..=100_000).contains(&bright)
-                                                .then_some(())?;
-                                            (-100_000..=100_000).contains(&contrast)
-                                                .then_some((bright, contrast))
-                                        })
-                                {
-                                    look.luminance = Some((bright, contrast));
-                                } else if let Some((dark, light)) =
-                                    part.strip_prefix("docx-duotone=").and_then(|value| value.split_once(','))
-                                        .and_then(|(dark, light)| Some((parse_hex_rgb(dark)?, parse_hex_rgb(light)?)))
-                                {
-                                    look.duotone = Some((dark, light));
-                                } else if let Some(clear) = part.strip_prefix("docx-clear=").and_then(parse_hex_rgb) {
-                                    look.clear = Some(clear);
-                                } else if let Some(opacity) = part.strip_prefix("docx-opacity=")
-                                    .and_then(|value| value.parse().ok()).filter(|value| (0..=100_000).contains(value))
-                                {
-                                    look.effects.opacity = Some(opacity);
-                                } else if let Some(saturation) = part.strip_prefix("docx-saturation=")
-                                    .and_then(|value| value.parse().ok()).filter(|value| (0..=400_000).contains(value))
-                                {
-                                    look.effects.saturation = Some(saturation);
-                                } else if let Some(threshold) = part.strip_prefix("docx-bilevel=")
-                                    .and_then(|value| value.parse().ok()).filter(|value| (0..=100_000).contains(value))
-                                {
-                                    look.effects.bilevel = Some(threshold);
-                                } else if part == "docx-grayscale=true" {
-                                    look.effects.grayscale = true;
-                                } else if let Some(title) = part.strip_prefix("docx-title=")
-                                    .and_then(decode_base64).and_then(|bytes| String::from_utf8(bytes).ok())
-                                {
-                                    look.alt_text.title = title;
-                                } else if part == "docx-alt=title" {
-                                    title_only = true;
-                                } else if part == "docx-decorative=true" {
-                                    look.decorative = true;
-                                }
-                            }
-                            total_consumed += 1 + attr_close + 1;
+        // Images without available media still retain their Markdown source.
+        if let Some((end, url, alt_text)) = inline.images.get(&i) {
+            let mut total_consumed = end - i;
+            let mut explicit_w: Option<Emu> = None;
+            let mut explicit_h: Option<Emu> = None;
+            let mut anchor = None;
+            let mut look = PictureLook { alt_text: alt_text.clone(), ..PictureLook::default() };
+            let mut title_only = false;
+            let after_paren = &text[*end..];
+            if let Some(attr_open) = after_paren.strip_prefix('{') {
+                if let Some(attr_close) = attr_open.find('}') {
+                    let attr_str = &attr_open[..attr_close];
+                    for part in attr_str.split_whitespace() {
+                        if let Some(w) = part.strip_prefix("width=").and_then(parse_length_emu).filter(|w| *w > 0) {
+                            explicit_w = Some(w);
+                        } else if let Some(h) = part.strip_prefix("height=").and_then(parse_length_emu).filter(|h| *h > 0) {
+                            explicit_h = Some(h);
+                        } else if let Some(encoded) = part.strip_prefix(picture_anchor::ATTRIBUTE) {
+                            anchor = picture_anchor::decode(encoded);
+                        } else if let Some(crop) = part.strip_prefix("docx-crop=").and_then(parse_picture_crop) {
+                            look.crop = crop;
+                        } else if let Some((rotation, flip_h, flip_v)) =
+                            part.strip_prefix("docx-transform=").and_then(parse_picture_transform)
+                        {
+                            look.rotation = rotation;
+                            look.flip_h = flip_h;
+                            look.flip_v = flip_v;
+                        } else if let Some((bright, contrast)) =
+                            part.strip_prefix("docx-lum=").and_then(|value| value.split_once(','))
+                                .and_then(|(bright, contrast)| {
+                                    let bright: i32 = bright.parse().ok()?;
+                                    let contrast: i32 = contrast.parse().ok()?;
+                                    (-100_000..=100_000).contains(&bright)
+                                        .then_some(())?;
+                                    (-100_000..=100_000).contains(&contrast)
+                                        .then_some((bright, contrast))
+                                })
+                        {
+                            look.luminance = Some((bright, contrast));
+                        } else if let Some((dark, light)) =
+                            part.strip_prefix("docx-duotone=").and_then(|value| value.split_once(','))
+                                .and_then(|(dark, light)| Some((parse_hex_rgb(dark)?, parse_hex_rgb(light)?)))
+                        {
+                            look.duotone = Some((dark, light));
+                        } else if let Some(clear) = part.strip_prefix("docx-clear=").and_then(parse_hex_rgb) {
+                            look.clear = Some(clear);
+                        } else if let Some(opacity) = part.strip_prefix("docx-opacity=")
+                            .and_then(|value| value.parse().ok()).filter(|value| (0..=100_000).contains(value))
+                        {
+                            look.effects.opacity = Some(opacity);
+                        } else if let Some(saturation) = part.strip_prefix("docx-saturation=")
+                            .and_then(|value| value.parse().ok()).filter(|value| (0..=400_000).contains(value))
+                        {
+                            look.effects.saturation = Some(saturation);
+                        } else if let Some(threshold) = part.strip_prefix("docx-bilevel=")
+                            .and_then(|value| value.parse().ok()).filter(|value| (0..=100_000).contains(value))
+                        {
+                            look.effects.bilevel = Some(threshold);
+                        } else if part == "docx-grayscale=true" {
+                            look.effects.grayscale = true;
+                        } else if let Some(title) = part.strip_prefix("docx-title=")
+                            .and_then(decode_base64).and_then(|bytes| String::from_utf8(bytes).ok())
+                        {
+                            look.alt_text.title = title;
+                        } else if part == "docx-alt=title" {
+                            title_only = true;
+                        } else if part == "docx-decorative=true" {
+                            look.decorative = true;
                         }
                     }
-                    if let Some((format, data)) = decode_data_uri_image(url).or_else(|| load_local_image(url, ctx.base_dir)) {
-                        let img_size = resolve_image_size(&data, format, explicit_w, explicit_h);
-                        flush_plain(&mut plain, &mut out, base_fmt);
-                        let media_id = ctx.fresh_media_id();
-                        ctx.media.push(Media {
-                            id: media_id,
-                            format,
-                            data: data.into(),
-                        });
-                        if title_only {
-                            look.alt_text.title = decode_picture_label(alt);
-                        } else {
-                            look.alt_text.description = decode_picture_label(alt);
-                        }
-                        let kind = if let Some(anchor) = anchor {
-                            let mut picture = ibis_doc_model::Picture::new(media_id);
-                            picture.alt_text = look.alt_text;
-                            picture.decorative = look.decorative;
-                            picture.crop = look.crop;
-                            picture.luminance = look.luminance;
-                            picture.duotone = look.duotone;
-                            picture.clear = look.clear;
-                            picture.effects = look.effects;
-                            let mut shape = Shape::new(
-                                ctx.fresh_shape_id(),
-                                EmuRect::new(anchor.offset_x, anchor.offset_y, img_size.width, img_size.height),
-                                ShapeKind::Picture(picture),
-                            );
-                            shape.floating = Some(anchor);
-                            shape.rotation = look.rotation;
-                            shape.flip_h = look.flip_h;
-                            shape.flip_v = look.flip_v;
-                            FlowRunKind::Shape(Box::new(shape))
-                        } else {
-                            FlowRunKind::Picture { media: media_id, size: img_size, look }
-                        };
-                        out.push(FlowRun {
-                            kind,
-                            style: FlowRunStyle::default(),
-                            format: base_fmt.clone(),
-                            char_style: None,
-                            link: None,
-                            revision: None,
-                            show_field_code: false,
-                            field_locked: false,
-                            control: None,
-                        });
-                        i += total_consumed;
-                        continue;
-                    }
+                    total_consumed += 1 + attr_close + 1;
                 }
             }
+            if let Some((format, data)) = decode_data_uri_image(url).or_else(|| load_local_image(url, ctx.base_dir)) {
+                let img_size = resolve_image_size(&data, format, explicit_w, explicit_h);
+                flush_plain(&mut plain, &mut out, base_fmt);
+                let media_id = ctx.fresh_media_id();
+                ctx.media.push(Media {
+                    id: media_id,
+                    format,
+                    data: data.into(),
+                });
+                if title_only {
+                    look.alt_text.title = std::mem::take(&mut look.alt_text.description);
+                }
+                let kind = if let Some(anchor) = anchor {
+                    let mut picture = ibis_doc_model::Picture::new(media_id);
+                    picture.alt_text = look.alt_text;
+                    picture.decorative = look.decorative;
+                    picture.crop = look.crop;
+                    picture.luminance = look.luminance;
+                    picture.duotone = look.duotone;
+                    picture.clear = look.clear;
+                    picture.effects = look.effects;
+                    let mut shape = Shape::new(
+                        ctx.fresh_shape_id(),
+                        EmuRect::new(anchor.offset_x, anchor.offset_y, img_size.width, img_size.height),
+                        ShapeKind::Picture(picture),
+                    );
+                    shape.floating = Some(anchor);
+                    shape.rotation = look.rotation;
+                    shape.flip_h = look.flip_h;
+                    shape.flip_v = look.flip_v;
+                    FlowRunKind::Shape(Box::new(shape))
+                } else {
+                    FlowRunKind::Picture { media: media_id, size: img_size, look }
+                };
+                out.push(FlowRun {
+                    kind,
+                    style: FlowRunStyle::default(),
+                    format: base_fmt.clone(),
+                    char_style: None,
+                    link: None,
+                    revision: None,
+                    show_field_code: false,
+                    field_locked: false,
+                    control: None,
+                });
+                i += total_consumed;
+                continue;
+            }
+            plain.push_str(&rest[..total_consumed]);
+            i += total_consumed;
+            continue;
         }
+
 
         // Footnote reference: `[^id]`
         if let Some(after) = rest.strip_prefix("[^") {
@@ -6286,7 +6693,10 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
         // Span attributes or Link: `[text]{.tcy}` / `[text]{.em}` / `[text](url)`
         if let Some(after_open) = rest.strip_prefix('[') {
-            if let Some(close_bracket) = find_matching_bracket(after_open) {
+            if let Some(close_bracket) = find_matching_bracket_outside(after_open, |offset| {
+                let position = i + 1 + offset;
+                inline.code.range(..=position).next_back().is_some_and(|(_, (end, _))| position < *end)
+            }) {
                 let inner_text = &after_open[..close_bracket];
                 let after_bracket = &after_open[close_bracket + 1..];
 
@@ -6321,32 +6731,33 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                     let len = entry.source.len();
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut runs = parse_inlines(inner_text, ctx, &link_format(base_fmt));
-                    for run in &mut runs {
-                        run.link = Some(link.clone());
-                    }
+                    apply_markdown_link(&mut runs, link, base_fmt, out.last(), ctx);
                     out.extend(runs);
                     i += len;
                     continue;
                 }
 
-                // `[text](url)`
-                if let Some(paren_after) = after_bracket.strip_prefix('(') {
-                    if let Some(close_paren) = paren_after.find(')') {
-                        let target = paren_after[..close_paren].trim();
-                        flush_plain(&mut plain, &mut out, base_fmt);
-                        let link = if let Some(anchor) = target.strip_prefix('#') {
-                            Link::Anchor(anchor.to_string())
-                        } else {
-                            Link::Url(target.to_string())
-                        };
-                        let mut runs = parse_inlines(inner_text, ctx, &link_format(base_fmt));
-                        for r in &mut runs {
-                            r.link = Some(link.clone());
-                        }
-                        out.extend(runs);
-                        i += 1 + close_bracket + 1 + 1 + close_paren + 1;
-                        continue;
-                    }
+                if let Some((end, target, title)) = inline.links.get(&i) {
+                    flush_plain(&mut plain, &mut out, base_fmt);
+                    let link = if let Some(anchor) = target.strip_prefix('#') {
+                        Link::Anchor(anchor.to_owned())
+                    } else {
+                        Link::Url(target.clone())
+                    };
+                    let link = if title.is_empty() { link } else { link.with_title(title.clone()) };
+                    let mut runs = parse_inlines(inner_text, ctx, &link_format(base_fmt));
+                    apply_markdown_link(&mut runs, link, base_fmt, out.last(), ctx);
+                    out.extend(runs);
+                    i = *end;
+                    continue;
+                }
+                if let Some(target) = after_bracket.strip_prefix("(<")
+                    && !target.contains('>')
+                {
+                    flush_plain(&mut plain, &mut out, base_fmt);
+                    out.push(markdown_literal_punctuation('[', base_fmt, ctx));
+                    i += 1;
+                    continue;
                 }
             }
         }
@@ -6384,31 +6795,35 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             continue;
         }
 
-        // Inline code: `` `code` ``
-        if let Some(after) = rest.strip_prefix('`') {
-            if let Some(end) = after.find('`') {
-                if end > 0 {
-                    flush_plain(&mut plain, &mut out, base_fmt);
-                    let mut fmt = base_fmt.clone();
-                    fmt.font = Some("Consolas".to_string());
-                    fmt.h_ansi_font = Some("Consolas".to_string());
-                    fmt.east_asian_font = Some("ＭＳ ゴシック".to_string());
-                    fmt.highlight = Some(Some(Rgb(0xF2F4F8)));
-                    out.push(FlowRun {
-                        kind: FlowRunKind::Text(after[..end].to_string()),
-                        style: FlowRunStyle::default(),
-                        format: fmt,
-                        char_style: None,
-                        link: None,
-                        revision: None,
-                        show_field_code: false,
-                        field_locked: false,
-                        control: None,
-                    });
-                    i += 1 + end + 1;
-                    continue;
-                }
-            }
+        if let Some(&end) = inline.html.get(&i) {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            append_markdown_html_runs(&text[i..end], base_fmt, ctx, &mut out);
+            i = end;
+            continue;
+        }
+        if let Some(&end) = inline.literal.get(&i) {
+            plain.push_str(&text[i..end]);
+            i = end;
+            continue;
+        }
+        if let Some((end, code)) = inline.code.get(&i) {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            let mut format = base_fmt.clone();
+            format.font = Some("Consolas".to_owned());
+            format.h_ansi_font = Some("Consolas".to_owned());
+            format.east_asian_font = Some("ＭＳ ゴシック".to_owned());
+            format.highlight = Some(Some(Rgb(0xF2F4F8)));
+            let mut run = FlowRun::new(FlowRunKind::Text(code.clone()), FlowRunStyle::default());
+            run.format = format;
+            out.push(run);
+            i = *end;
+            continue;
+        }
+        if bytes[i] == b'`' {
+            flush_plain(&mut plain, &mut out, base_fmt);
+            out.push(markdown_literal_punctuation('`', base_fmt, ctx));
+            i += 1;
+            continue;
         }
 
         // Inline math: `$math$`
@@ -6440,38 +6855,26 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             }
         }
 
-        // Bold + Italic: `***text***`
-        if let Some(after) = rest.strip_prefix("***") {
-            if let Some(end) = after.find("***") {
-                if end > 0 {
-                    flush_plain(&mut plain, &mut out, base_fmt);
-                    let mut fmt = base_fmt.clone();
+        if let Some(&(end, delimiter)) = inline.emphasis.get(&i) {
+            if let Some(delimiter) = delimiter {
+                flush_plain(&mut plain, &mut out, base_fmt);
+                let mut fmt = base_fmt.clone();
+                if delimiter == 2 {
                     fmt.bold = Some(true);
+                } else {
                     fmt.italic = Some(true);
-                    out.extend(parse_inlines(&after[..end], ctx, &fmt));
-                    i += 3 + end + 3;
-                    continue;
                 }
+                out.extend(parse_inlines(&text[i + delimiter..end - delimiter], ctx, &fmt));
+            } else {
+                plain.push_str(&text[i..end]);
             }
-        }
-
-        // Bold: `**text**`
-        if let Some(after) = rest.strip_prefix("**") {
-            if let Some(end) = after.find("**") {
-                if end > 0 {
-                    flush_plain(&mut plain, &mut out, base_fmt);
-                    let mut fmt = base_fmt.clone();
-                    fmt.bold = Some(true);
-                    out.extend(parse_inlines(&after[..end], ctx, &fmt));
-                    i += 2 + end + 2;
-                    continue;
-                }
-            }
+            i = end;
+            continue;
         }
 
         // Strikethrough: `~~text~~`
         if let Some(after) = rest.strip_prefix("~~") {
-            if let Some(end) = after.find("~~") {
+            if let Some(end) = find_unescaped_markdown_delimiter(after, "~~") {
                 if end > 0 {
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut fmt = base_fmt.clone();
@@ -6485,7 +6888,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
         // Underline: `++text++`
         if let Some(after) = rest.strip_prefix("++") {
-            if let Some(end) = after.find("++") {
+            if let Some(end) = find_unescaped_markdown_delimiter(after, "++") {
                 if end > 0 {
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut fmt = base_fmt.clone();
@@ -6499,7 +6902,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
 
         // Highlight: `==text==`
         if let Some(after) = rest.strip_prefix("==") {
-            if let Some(end) = after.find("==") {
+            if let Some(end) = find_unescaped_markdown_delimiter(after, "==") {
                 if end > 0 {
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut fmt = base_fmt.clone();
@@ -6511,25 +6914,9 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             }
         }
 
-        // Italic: `*text*`
-        if let Some(after) = rest.strip_prefix('*') {
-            if !after.starts_with('*') && !after.starts_with(' ') {
-                if let Some(end) = after.find('*') {
-                    if end > 0 {
-                        flush_plain(&mut plain, &mut out, base_fmt);
-                        let mut fmt = base_fmt.clone();
-                        fmt.italic = Some(true);
-                        out.extend(parse_inlines(&after[..end], ctx, &fmt));
-                        i += 1 + end + 1;
-                        continue;
-                    }
-                }
-            }
-        }
-
         // Superscript: `^text^`
         if let Some(after) = rest.strip_prefix('^') {
-            if let Some(end) = after.find('^') {
+            if let Some(end) = find_unescaped_markdown_delimiter(after, "^") {
                 if end > 0 && !after[..end].contains(' ') {
                     flush_plain(&mut plain, &mut out, base_fmt);
                     let mut fmt = base_fmt.clone();
@@ -6544,7 +6931,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
         // Subscript: `~text~`
         if let Some(after) = rest.strip_prefix('~') {
             if !after.starts_with('~') {
-                if let Some(end) = after.find('~') {
+                if let Some(end) = find_unescaped_markdown_delimiter(after, "~") {
                     if end > 0 && !after[..end].contains(' ') {
                         flush_plain(&mut plain, &mut out, base_fmt);
                         let mut fmt = base_fmt.clone();
@@ -6566,10 +6953,23 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
     out
 }
 
+fn find_unescaped_markdown_delimiter(text: &str, delimiter: &str) -> Option<usize> {
+    text.match_indices(&delimiter[..1]).map(|(index, _)| index).find(|&index| {
+        text[index..].starts_with(delimiter) && !ends_with_markdown_break_escape(&text[..index])
+    })
+}
+
 fn find_matching_bracket(s: &str) -> Option<usize> {
+    find_matching_bracket_outside(s, |_| false)
+}
+
+fn find_matching_bracket_outside(s: &str, ignored: impl Fn(usize) -> bool) -> Option<usize> {
     let mut depth = 1usize;
     let mut escaped = false;
     for (idx, ch) in s.char_indices() {
+        if ignored(idx) {
+            continue;
+        }
         if escaped {
             escaped = false;
             continue;
@@ -6597,18 +6997,6 @@ fn split_critic_author(s: &str) -> (String, &str) {
         }
     }
     ("Author".to_string(), s)
-}
-
-fn strip_markdown_link_title(target: &str) -> &str {
-    let trimmed = target.trim();
-    let trimmed = trimmed.strip_prefix('<').and_then(|s| s.strip_suffix('>')).unwrap_or(trimmed);
-    if let Some((path, _)) = trimmed.split_once(" \"") {
-        path.trim()
-    } else if let Some((path, _)) = trimmed.split_once(" '") {
-        path.trim()
-    } else {
-        trimmed
-    }
 }
 
 fn decode_data_uri_image(uri: &str) -> Option<(MediaFormat, Vec<u8>)> {
@@ -6830,7 +7218,8 @@ fn export_markdown_with_positions<'a>(
     let mut out = String::new();
     let list_labels = (doc.styles.numbering.nums.values()
         .any(|list| list.start_overrides.values().any(|&start| start != 1))
-        || doc.body.iter().any(|block| matches!(block, Block::Paragraph(p) if p.list.is_some() && markdown_quote_style(p.style.as_deref()).is_some())))
+        || doc.body.iter().any(|block| matches!(block, Block::Paragraph(p) if p.list.is_some()
+            && (markdown_quote_style(p.style.as_deref()).is_some() || markdown_quoted_list_style(p.style.as_deref()).is_some()))))
         .then(|| ibis_doc_model::flow::list_labels(doc));
 
 
@@ -6900,7 +7289,7 @@ fn export_markdown_with_positions<'a>(
 
         let is_list = is_markdown_list_item(block)
             && !matches!(block, Block::Paragraph(p) if markdown_quote_style(p.style.as_deref()).is_some());
-        if prev_was_list && !is_list && !starts_tight_item_quote(block) && !starts_item_table(block) && !out.ends_with("\n\n") {
+        if prev_was_list && !is_list && !starts_tight_item_quote(block) && !starts_tight_list_continuation(block) && !starts_item_table(block) && !out.ends_with("\n\n") {
             out.push('\n');
         }
 
@@ -7983,7 +8372,23 @@ fn starts_tight_item_quote(block: &Block) -> bool {
     matches!(markdown_item_quote_style(style), Some((_, false, false, _)))
 }
 
+fn starts_tight_list_continuation(block: &Block) -> bool {
+    markdown_continuation_style(block_markdown_style(block)).is_some_and(|(_, _, _, tight)| tight == Some(true))
+}
+
 fn finish_markdown_quote(block: &Block, next: Option<&Block>, out: &mut String) {
+    if markdown_continuation_style(block_markdown_style(block)).is_some_and(|(_, _, first, _)| first.is_none())
+        && next.is_some_and(|next| !is_markdown_list_item(next) && !is_markdown_item_quote(next)
+            && !starts_item_table(next) && markdown_continuation_style(block_markdown_style(next)).is_none())
+        && !out.ends_with("\n\n")
+    {
+        out.push('\n');
+    }
+    if next.is_some() && tight_markdown_html_boundary(block_markdown_style(block), next.and_then(block_markdown_style))
+        && out.ends_with("\n\n")
+    {
+        out.pop();
+    }
     let mut current_base = block_markdown_style(block);
     let mut next_base = next.and_then(block_markdown_style);
     let mut prefix = String::new();
@@ -8015,6 +8420,9 @@ fn finish_markdown_quote(block: &Block, next: Option<&Block>, out: &mut String) 
         }
         break;
     }
+    if shared_quote && tight_markdown_html_boundary(current_base, next_base) {
+        return;
+    }
     if let Some((_, _, _, blank)) = markdown_callout_title(current_base)
         && matches!(markdown_quote_style(next_base), Some((true, _)))
     {
@@ -8030,8 +8438,10 @@ fn finish_markdown_quote(block: &Block, next: Option<&Block>, out: &mut String) 
         return;
     }
     if shared_quote && (
-        markdown_quoted_list_style(current_base).is_some()
-            && matches!(markdown_quoted_list_style(next_base), Some((_, _, false)))
+        (markdown_quoted_list_style(current_base).is_some()
+            || markdown_continuation_style(current_base).is_some_and(|(_, _, first, _)| first.is_some()))
+            && (matches!(markdown_quoted_list_style(next_base), Some((_, _, false)))
+                || markdown_continuation_style(next_base).is_some_and(|(_, _, first, _)| first == Some(false)))
         || block_is_plain_list_item(block, current_base)
             && matches!(markdown_item_quote_style(next_base), Some((_, false, false, _)))
     ) {
@@ -8040,7 +8450,8 @@ fn finish_markdown_quote(block: &Block, next: Option<&Block>, out: &mut String) 
     if shared_quote || markdown_quote_style(block_markdown_style(block)).is_some()
         || markdown_callout_title(block_markdown_style(block)).is_some()
         || is_markdown_item_quote(block)
-            && next.is_some_and(|next| !is_markdown_list_item(next) && !is_markdown_item_quote(next))
+            && next.is_some_and(|next| !is_markdown_list_item(next) && !is_markdown_item_quote(next)
+                && !starts_tight_list_continuation(next))
     {
         out.push_str(&prefix);
         out.push('\n');
@@ -8125,26 +8536,31 @@ fn serialize_paragraph(
         return;
     }
 
-    if let Some((indent, base_style)) = markdown_continuation_style(p.style.as_deref()) {
+    if let Some((indent, base_style, first, tight)) = markdown_continuation_style(p.style.as_deref()) {
         let mut paragraph = p.clone();
-        paragraph.style = base_style.filter(|style| {
-            *style == MARKDOWN_HTML_BLOCK_STYLE || markdown_code_language(Some(style)).is_some()
-        }).map(str::to_owned);
+        let list = first.and_then(|_| paragraph.list.take());
+        paragraph.style = base_style.map(str::to_owned);
         let mut fragment = String::new();
         serialize_paragraph(&paragraph, doc, media, comments, &mut fragment, form_layout, source_diagnostics, list_label);
         if !fragment.is_empty() {
-            if !out.is_empty() && !out.ends_with("\n\n") {
+            if tight != Some(true) && first != Some(false) && !out.is_empty() && !out.ends_with("\n\n") {
                 out.push('\n');
             }
             let prefix = " ".repeat(indent);
-            for line in fragment.trim_end_matches('\n').lines() {
-                if !line.is_empty() {
+            let marker = list.map(|list| markdown_list_prefix(doc, list, list_label, None));
+            for (index, line) in fragment.trim_end_matches('\n').lines().enumerate() {
+                if index == 0 && let Some(marker) = &marker {
+                    out.push_str(marker);
+                    out.push_str(&" ".repeat(indent.saturating_sub(marker.len())));
+                } else if !line.is_empty() {
                     out.push_str(&prefix);
-                    out.push_str(line);
                 }
+                out.push_str(line);
                 out.push('\n');
             }
-            out.push('\n');
+            if first.is_none() && tight.is_none() {
+                out.push('\n');
+            }
         }
         return;
     }
@@ -8234,7 +8650,7 @@ fn serialize_paragraph(
                 out.push_str(&code);
                 out.push_str("\n\n");
             }
-        } else if style == Some(MARKDOWN_HTML_BLOCK_STYLE) {
+        } else if markdown_html_boundaries(style).is_some() || style == Some(MARKDOWN_REFERENCE_BLOCK_STYLE) {
             out.push_str(&code);
             out.push_str("\n\n");
         } else if p.style.as_deref() == Some(MARKDOWN_QUOTED_CODE_STYLE) {
@@ -8261,7 +8677,13 @@ fn serialize_paragraph(
                 code.push('\n');
             }
             let language = markdown_code_language(p.style.as_deref()).unwrap_or_default();
-            write_named_fence(&language, &code, out);
+            if ordinary_code_fence(&language) {
+                write_named_fence(&language, &code, out);
+            } else if let Some(first) = language.chars().next() {
+                // An entity-escaped extension name was imported as ordinary code.
+                let info = format!("&#{};{}", u32::from(first), &language[first.len_utf8()..]);
+                write_named_fence(&info, &code, out);
+            }
         }
         return;
     }
@@ -8336,7 +8758,8 @@ fn serialize_paragraph(
         return;
     }
 
-    if p.style.as_deref() == Some(MARKDOWN_LIST_BLANK_STYLE)
+    if (p.style.as_deref() == Some(MARKDOWN_LIST_BLANK_STYLE)
+        || matches!(markdown_quoted_list_style(p.style.as_deref()), Some((_, _, true))))
         && (p.list.is_some() || p.runs.first().is_some_and(|run| matches!(run.kind, FlowRunKind::CheckBox { .. })))
         && !out.is_empty() && !out.ends_with("\n\n")
     {
@@ -8814,33 +9237,12 @@ fn encode_picture_label(label: &str) -> String {
     use std::fmt::Write as _;
     let mut output = String::new();
     for c in label.chars() {
-        if matches!(c, '&' | '[' | ']' | '<' | '>' | '|' | '\\' | '\r' | '\n' | '\t') {
+        if matches!(c, '&' | '[' | ']' | '<' | '>' | '|' | '*' | '_' | '`' | '\\' | '\r' | '\n' | '\t') {
             let _ = write!(output, "&#{};", u32::from(c));
         } else {
             output.push(c);
         }
     }
-    output
-}
-
-fn decode_picture_label(label: &str) -> String {
-    let mut output = String::new();
-    let mut tail = label;
-    while let Some((before, after)) = tail.split_once("&#") {
-        output.push_str(before);
-        let semicolon = after.as_bytes().iter().take(4).position(|&byte| byte == b';');
-        if let Some(end) = semicolon
-            && let Some(c) = after[..end].parse().ok().and_then(char::from_u32)
-            && matches!(c, '&' | '[' | ']' | '<' | '>' | '|' | '\\' | '\r' | '\n' | '\t')
-        {
-            output.push(c);
-            tail = &after[end + 1..];
-        } else {
-            output.push_str("&#");
-            tail = after;
-        }
-    }
-    output.push_str(tail);
     output
 }
 
@@ -8914,7 +9316,7 @@ fn serialize_picture(
         MediaFormat::Wmf => "x-wmf",
         _ => return String::new(),
     };
-    let alt = encode_picture_label(if alt_text.description.is_empty() { &alt_text.title } else { &alt_text.description });
+    let alt = encode_picture_label(&alt_text.description);
     let b64 = encode_base64(&media.data);
     let mm = |length: Emu| {
         let value = format!("{:.5}", length as f64 / EMU_PER_MM);
@@ -8927,23 +9329,27 @@ fn serialize_picture(
     if decorative {
         attributes.push_str(" docx-decorative=true");
     } else if !alt_text.title.is_empty() {
-        if alt_text.description.is_empty() {
-            attributes.push_str(" docx-alt=title");
-        } else {
-            let _ = write!(attributes, " docx-title={}", encode_base64(alt_text.title.as_bytes()));
-        }
+        let _ = write!(attributes, " docx-title={}", encode_base64(alt_text.title.as_bytes()));
     }
     format!("![{alt}](data:image/{mime};base64,{b64}){{{attributes}}}")
 }
 
 fn format_markdown_link(text: &str, link: &Link) -> String {
     let address = link.address();
-    let Some(title) = link.title() else {
-        return link.external_url().and_then(|url| obsidian::format_file_link(url, text))
-            .unwrap_or_else(|| format!("[{text}]({address})"));
-    };
+    let title = link.title();
+    if title.is_none() {
+        if let Some(wiki) = link.external_url().and_then(|url| obsidian::format_file_link(url, text)) {
+            return wiki;
+        }
+        if !address.contains(['(', ')', '<', '>', '\\', '&']) && !address.chars().any(char::is_whitespace) {
+            return format!("[{text}]({address})");
+        }
+    }
     let address = address.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
         .replace('\\', "&#92;").replace('\n', "&#10;").replace('\r', "&#13;");
+    let Some(title) = title else {
+        return format!("[{text}](<{address}>)");
+    };
     let title = title.replace('&', "&amp;").replace('\\', "&#92;").replace('"', "&quot;")
         .replace('\n', "&#10;").replace('\r', "&#13;");
     format!("[{text}](<{address}> \"{title}\")")
@@ -8954,134 +9360,265 @@ fn serialize_runs(
     media: &[Media],
     comments: &HashMap<u32, &Comment>,
 ) -> String {
-    let mut out = String::new();
-    let mut titled_link: Option<(&Link, String)> = None;
-    for run in runs {
-        if titled_link.as_ref().is_some_and(|(link, _)| Some(*link) != run.link.as_ref() || run.revision.is_some())
-            && let Some((link, text)) = titled_link.take()
-        {
-            out.push_str(&format_markdown_link(&text, link));
-        }
-        let mut piece = match &run.kind {
-            FlowRunKind::Text(t) if t.contains("{{form:")
-                && !(run.format.font.as_deref() == Some("Consolas") && run.format.highlight.is_some_and(|h| h.is_some())) =>
-            {
-                format_text_run(&t.replace("{{form:", r"\{{form:"), &run.format, run.link.is_some())
-            }
-            FlowRunKind::Text(t) => format_text_run(t, &run.format, run.link.is_some()),
-            FlowRunKind::PlainText { .. }
-                if let Some(id) = form_field_id(run) =>
-            {
-                format_text_run(&format!("{{{{form:{id}}}}}"), &run.format, run.link.is_some())
-            }
-            FlowRunKind::Field { instruction, shown } => {
-                if run.field_locked {
-                    shown.clone()
-                } else {
-                    format_markdown_inline_field(instruction, shown)
-                }
-            }
-            FlowRunKind::LineBreak => "  \n".to_string(),
-            FlowRunKind::Tab => "\t".to_string(),
-            FlowRunKind::PageBreak => "\\newpage".to_string(),
-            FlowRunKind::ColumnBreak => "\\columnbreak".to_string(),
-            FlowRunKind::PageNumber => "{{field:page}}".to_string(),
-            FlowRunKind::PageRef { bookmark, shown } => format_markdown_page_ref(bookmark, shown, run.field_locked),
-            FlowRunKind::FileName(_) => "{filename}".to_string(),
-            FlowRunKind::Math { math, display } => {
-                let l = math.to_latex();
-                if *display {
-                    format!("$${l}$$")
-                } else {
-                    format!("${l}$")
-                }
-            }
-            FlowRunKind::Ruby { base, text, .. } => format!("{{{base}|{text}}}"),
-            FlowRunKind::NoteRef { id, endnote } => format!("[^{}]", markdown_note_label(*id, *endnote)),
-            FlowRunKind::CommentRef(cid) => {
-                if let Some(c) = comments.get(cid) {
-                    let body: String = c
-                        .blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            Block::Paragraph(p) => Some(p.text()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    if c.author.is_empty() || c.author == "Author" {
-                        format!("{{>>{body}<<}}")
-                    } else {
-                        format!("{{>>{}: {body}<<}}", c.author)
+    // Drop the escape-only style before joining text with the same formatting.
+    let mut escaped_paragraph;
+    let runs = if runs.iter().any(markdown_run_has_escape) {
+        escaped_paragraph = FlowParagraph { runs: runs.to_vec(), ..FlowParagraph::default() };
+        for run in &mut escaped_paragraph.runs {
+            if markdown_run_has_escape(run) {
+                run.char_style = markdown_link_start(run.char_style.as_deref())
+                    .map(|flags| format!("{MARKDOWN_LINK_START_STYLE}{flags}"));
+                if let FlowRunKind::Text(text) = &mut run.kind
+                    && !(run.format.font.as_deref() == Some("Consolas") && run.format.highlight.is_some_and(|h| h.is_some()))
+                {
+                    let mut escaped = String::with_capacity(text.len());
+                    for character in text.chars() {
+                        if character.is_ascii_punctuation() {
+                            escaped.push('\\');
+                        }
+                        escaped.push(character);
                     }
-                } else {
-                    String::new()
+                    *text = escaped;
                 }
             }
-            FlowRunKind::Picture { media: mid, size, look } => picture_attributes(
-                serialize_picture(media, *mid, *size, &look.alt_text, look.decorative),
-                look, None,
-            ),
-            FlowRunKind::Shape(shape) => match &shape.kind {
-                ShapeKind::Picture(picture) => picture_attributes(
-                    serialize_picture(
-                        media, picture.media,
-                        EmuSize::new(shape.frame.width, shape.frame.height),
-                        &picture.alt_text, picture.decorative,
-                    ),
-                    &PictureLook {
-                        crop: picture.crop,
-                        rotation: shape.rotation,
-                        flip_h: shape.flip_h,
-                        flip_v: shape.flip_v,
-                        luminance: picture.luminance,
-                        duotone: picture.duotone,
-                        clear: picture.clear,
-                        effects: picture.effects,
-                        ..Default::default()
-                    },
-                    shape.floating.as_ref(),
-                ),
-                ShapeKind::Auto(auto) => auto.text_box_pictures.iter()
-                    .map(|picture| serialize_picture(media, picture.media, picture.size, &picture.alt_text, false))
-                    .filter(|image| !image.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        };
-
+        }
+        escaped_paragraph.normalize();
+        escaped_paragraph.runs.as_slice()
+    } else {
+        runs
+    };
+    let mut pieces = Vec::new();
+    let mut index = 0;
+    while index < runs.len() {
+        let run = &runs[index];
+        let (mut end, mut flags) = (index + 1, markdown_emphasis_flags(run));
         if let Some(link) = &run.link
-            && !piece.is_empty()
+            && run.revision.is_none()
         {
-            if link.title().is_some() && run.revision.is_none() {
-                titled_link.get_or_insert_with(|| (link, String::new())).1.push_str(&piece);
-                continue;
+            while let Some(next) = runs.get(end)
+                && next.link.as_ref() == Some(link)
+                && next.revision.is_none()
+                && markdown_link_start(next.char_style.as_deref()).is_none()
+            {
+                end += 1;
             }
-            piece = format_markdown_link(&piece, link);
+            let common = runs[index..end].iter().fold(3, |flags, run| flags & markdown_emphasis_flags(run));
+            flags = markdown_link_start(run.char_style.as_deref()).unwrap_or(0) & common;
+            let label = write_markdown_emphasis(runs[index..end].iter().map(|run| {
+                (markdown_emphasis_flags(run) & !flags, serialize_run_piece(run, media, comments))
+            }).collect());
+            if !label.is_empty() || is_markdown_empty_link(run) {
+                pieces.push((flags, format_markdown_link(&label, link)));
+            }
+        } else {
+            let mut piece = serialize_run_piece(run, media, comments);
+            if let Some(link) = &run.link && !piece.is_empty() {
+                piece = format_markdown_link(&piece, link);
+            }
+            if let Some(rev) = &run.revision && !piece.is_empty() {
+                match rev.kind {
+                    RevisionKind::Insert | RevisionKind::MoveTo => piece = format!("{{++{piece}++}}"),
+                    RevisionKind::Delete | RevisionKind::MoveFrom => piece = format!("{{--{piece}--}}"),
+                    _ => {}
+                }
+            }
+            pieces.push((flags, piece));
         }
+        index = end;
+    }
+    write_markdown_emphasis(pieces)
+}
 
-        if let Some(rev) = &run.revision
-            && !piece.is_empty()
+fn is_markdown_empty_link(run: &FlowRun) -> bool {
+    markdown_link_start(run.char_style.as_deref()).is_some_and(|flags| flags & MARKDOWN_EMPTY_LINK != 0)
+        && matches!(&run.kind, FlowRunKind::Text(text) if text == MARKDOWN_EMPTY_LINK_TEXT)
+}
+
+fn markdown_run_has_escape(run: &FlowRun) -> bool {
+    run.char_style.as_deref() == Some(MARKDOWN_ESCAPED_PUNCTUATION_STYLE)
+        || markdown_link_start(run.char_style.as_deref()).is_some_and(|flags| flags & 4 != 0)
+}
+
+fn is_markdown_inline_html(run: &FlowRun) -> bool {
+    run.char_style.as_deref() == Some(MARKDOWN_INLINE_HTML_STYLE)
+        || markdown_link_start(run.char_style.as_deref()).is_some_and(|flags| flags & MARKDOWN_HTML_LINK != 0)
+}
+
+fn markdown_emphasis_flags(run: &FlowRun) -> u8 {
+    if run.revision.is_some() || (!matches!(run.kind, FlowRunKind::Text(_)) && !is_markdown_inline_html(run)) {
+        return 0;
+    }
+    u8::from(run.format.bold == Some(true)) | (u8::from(run.format.italic == Some(true)) << 1)
+}
+
+fn write_markdown_emphasis(pieces: Vec<(u8, String)>) -> String {
+    let mut output = String::new();
+    let pieces: Vec<_> = pieces.into_iter().filter(|(_, text)| !text.is_empty()).collect();
+    let mut active: &[u8] = &[];
+    let marker = |flag| if flag == 1 { "**" } else { "*" };
+    for (index, (flags, text)) in pieces.iter().enumerate() {
+        let desired: &[u8] = match flags {
+            1 => &[1],
+            2 => &[2],
+            3 => {
+                let outer = active.first().copied().or_else(|| {
+                    pieces[index + 1..].iter().find(|(flags, _)| *flags != 3).map(|(flags, _)| *flags)
+                });
+                if outer == Some(1) { &[1, 2] } else { &[2, 1] }
+            }
+            _ => &[],
+        };
+        let shared = active.iter().zip(desired).take_while(|(left, right)| left == right).count();
+        for &flag in active[shared..].iter().rev() {
+            output.push_str(marker(flag));
+        }
+        for &flag in &desired[shared..] {
+            output.push_str(marker(flag));
+        }
+        output.push_str(text);
+        active = desired;
+    }
+    for &flag in active.iter().rev() {
+        output.push_str(marker(flag));
+    }
+    output
+}
+
+fn serialize_run_piece(
+    run: &FlowRun,
+    media: &[Media],
+    comments: &HashMap<u32, &Comment>,
+) -> String {
+    if is_markdown_empty_link(run) {
+        return String::new();
+    }
+    if is_markdown_inline_html(run) {
+        match &run.kind {
+            FlowRunKind::Text(text) => return text.clone(),
+            FlowRunKind::LineBreak => return "\n".to_owned(),
+            _ => {}
+        }
+    }
+    let mut format = run.format.clone();
+    if markdown_emphasis_flags(run) != 0 {
+        format.bold = None;
+        format.italic = None;
+    }
+    match &run.kind {
+        FlowRunKind::Text(t) if t.contains("{{form:")
+            && !(run.format.font.as_deref() == Some("Consolas") && run.format.highlight.is_some_and(|h| h.is_some())) =>
         {
-            match rev.kind {
-                RevisionKind::Insert | RevisionKind::MoveTo => {
-                    piece = format!("{{++{piece}++}}");
-                }
-                RevisionKind::Delete | RevisionKind::MoveFrom => {
-                    piece = format!("{{--{piece}--}}");
-                }
-                _ => {}
+            format_text_run(&escape_literal_form_markers(t), &format, run.link.is_some())
+        }
+        FlowRunKind::Text(t) => format_text_run(t, &format, run.link.is_some()),
+        FlowRunKind::PlainText { .. }
+            if let Some(id) = form_field_id(run) =>
+        {
+            format_text_run(&format!("{{{{form:{id}}}}}"), &format, run.link.is_some())
+        }
+        FlowRunKind::Field { instruction, shown } => {
+            if run.field_locked {
+                shown.clone()
+            } else {
+                format_markdown_inline_field(instruction, shown)
             }
         }
+        FlowRunKind::LineBreak => "  \n".to_string(),
+        FlowRunKind::Tab => "\t".to_string(),
+        FlowRunKind::PageBreak => "\\newpage".to_string(),
+        FlowRunKind::ColumnBreak => "\\columnbreak".to_string(),
+        FlowRunKind::PageNumber => "{{field:page}}".to_string(),
+        FlowRunKind::PageRef { bookmark, shown } => format_markdown_page_ref(bookmark, shown, run.field_locked),
+        FlowRunKind::FileName(_) => "{filename}".to_string(),
+        FlowRunKind::Math { math, display } => {
+            let l = math.to_latex();
+            if *display {
+                format!("$${l}$$")
+            } else {
+                format!("${l}$")
+            }
+        }
+        FlowRunKind::Ruby { base, text, .. } => format!("{{{base}|{text}}}"),
+        FlowRunKind::NoteRef { id, endnote } => format!("[^{}]", markdown_note_label(*id, *endnote)),
+        FlowRunKind::CommentRef(cid) => {
+            if let Some(c) = comments.get(cid) {
+                let body: String = c
+                    .blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        Block::Paragraph(p) => Some(p.text()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if c.author.is_empty() || c.author == "Author" {
+                    format!("{{>>{body}<<}}")
+                } else {
+                    format!("{{>>{}: {body}<<}}", c.author)
+                }
+            } else {
+                String::new()
+            }
+        }
+        FlowRunKind::Picture { media: mid, size, look } => picture_attributes(
+            serialize_picture(media, *mid, *size, &look.alt_text, look.decorative),
+            look, None,
+        ),
+        FlowRunKind::Shape(shape) => match &shape.kind {
+            ShapeKind::Picture(picture) => picture_attributes(
+                serialize_picture(
+                    media, picture.media,
+                    EmuSize::new(shape.frame.width, shape.frame.height),
+                    &picture.alt_text, picture.decorative,
+                ),
+                &PictureLook {
+                    crop: picture.crop,
+                    rotation: shape.rotation,
+                    flip_h: shape.flip_h,
+                    flip_v: shape.flip_v,
+                    luminance: picture.luminance,
+                    duotone: picture.duotone,
+                    clear: picture.clear,
+                    effects: picture.effects,
+                    ..Default::default()
+                },
+                shape.floating.as_ref(),
+            ),
+            ShapeKind::Auto(auto) => auto.text_box_pictures.iter()
+                .map(|picture| serialize_picture(media, picture.media, picture.size, &picture.alt_text, false))
+                .filter(|image| !image.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    }
+}
 
-        out.push_str(&piece);
+fn escape_literal_form_markers(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut start = 0;
+    for (index, _) in text.match_indices("{{form:") {
+        output.push_str(&text[start..index]);
+        if !ends_with_markdown_break_escape(&text[..index]) {
+            output.push('\\');
+        }
+        start = index;
     }
-    if let Some((link, text)) = titled_link {
-        out.push_str(&format_markdown_link(&text, link));
+    output.push_str(&text[start..]);
+    output
+}
+
+fn format_markdown_code_span(text: &str) -> String {
+    let longest = text.split(|character| character != '`').map(str::len).max().unwrap_or(0);
+    let delimiter = "`".repeat(longest + 1);
+    let needs_padding = text.starts_with('`') || text.ends_with('`')
+        || (text.starts_with(' ') && text.ends_with(' ') && text.bytes().any(|byte| byte != b' '));
+    if needs_padding {
+        format!("{delimiter} {text} {delimiter}")
+    } else {
+        format!("{delimiter}{text}{delimiter}")
     }
-    out
 }
 
 fn format_text_run(text: &str, fmt: &RunFormat, is_link: bool) -> String {
@@ -9090,7 +9627,7 @@ fn format_text_run(text: &str, fmt: &RunFormat, is_link: bool) -> String {
     }
     // Inline code detection
     if fmt.font.as_deref() == Some("Consolas") && fmt.highlight.is_some_and(|h| h.is_some()) {
-        return format!("`{text}`");
+        return format_markdown_code_span(text);
     }
 
     let mut s = text.to_string();
@@ -10325,6 +10862,285 @@ mod tests {
         assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
         let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
         assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+    }
+
+    #[test]
+    fn markdown_preserves_empty_quotes_tabs_and_fence_languages_through_docx() {
+        for (source, canonical) in [
+            (">\n", ">\n"),
+            (">\n>  \n> \n", ">\n"),
+            (">\t\tfoo\n", "> ```\n>   foo\n> ```\n"),
+            (">     \tfoo\n", "> ```\n> \tfoo\n> ```\n"),
+            ("```m&#101;rmaid\nordinary text\n```\n", "```&#109;ermaid\nordinary text\n```\n"),
+            ("``` f&ouml;&ouml;\nfoo\n```\n", "```föö\nfoo\n```\n"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, canonical, "{source}");
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), canonical, "{source}");
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), canonical, "{source}");
+        }
+    }
+
+    #[test]
+    fn markdown_headings_and_rules_keep_their_boundaries_through_docx() {
+        for (source, canonical) in [
+            ("Foo\n    ***\n", "Foo ***\n"),
+            ("foo\n    # bar\n", "foo # bar\n"),
+            ("Foo\n    ---\n", "Foo ---\n"),
+            ("> foo\nbar\n===\n", "> foo bar \\===\n"),
+            ("---\nFoo\n---\nBar\n---\nBaz\n", "---\n\n## Foo\n\n## Bar\n\nBaz\n"),
+            ("---\n---\n", "---\n\n---\n"),
+            ("---\ntitle: Document\nlang: ja\nvfm:\n  theme: print\n---\n\n# Body\n",
+             "---\ntitle: Document\nlang: ja\nvfm:\n  theme: print\n---\n\n# Body\n"),
+            ("---\ntype: Metric\ntitle: Sample\ntags: [one, two]\nmetadata:\n  value: 42\n---\n\nBody.\n",
+             "---\ntype: Metric\ntitle: Sample\ntags: [one, two]\nmetadata:\n  value: 42\n---\n\nBody.\n"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, canonical, "{source}");
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), canonical, "{source}");
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), canonical, "{source}");
+        }
+    }
+
+    #[test]
+    fn markdown_preserves_html_source_layout_through_docx() {
+        for source in [
+            "<aside data-info=\"x\">\n    <span>text</span>\n</aside>\n",
+            "<Warning>\n*literal*\n</Warning>\n",
+            "<style\n  type=\"text/css\">\n.note { color: red; }\n\n.note strong { color: blue; }\n</style>\nText after.\n",
+            "<?example\n\n  preserve this line\n\n?>\nText after.\n",
+            "<![CDATA[\n  some < and > characters\n]]>\nText after.\n",
+            "Text <a href=\"foo\\\n  bar\">link</a> after.\n",
+            "Text <!-- keep this\n  indentation --> after.\n",
+            "<table><tr><td>\n<pre>\n**literal**\n\n_world_.\n</pre>\n</td></tr></table>\n",
+            "> > <style>p { color: red; }</style>\n> > Text after.\n",
+            "- First\n\n  <details data-mode=\"open\">\n    <summary>Title</summary>\n  </details>\n\n- Second\n",
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, source, "{source}");
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source, "{source}");
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), source, "{source}");
+        }
+    }
+
+    #[test]
+    fn markdown_preserves_empty_links_and_unavailable_images_through_docx() {
+        for source in [
+            "[](./target.md)\n",
+            "[]()\n",
+            "[](/url)[](/url)\n",
+            "![](/missing.png)\n",
+            "[![moon](missing.png)](/uri)\n",
+            "[foo [bar](/uri)](/uri)\n",
+            "[foo *[bar [baz](/uri)](/uri)*](/uri)\n",
+            "![[[foo](uri1)](uri2)](uri3)\n",
+            "![foo ![bar](/url)](/url2)\n",
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, source);
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+        }
+    }
+
+    #[test]
+    fn markdown_link_destinations_and_definitions_preserve_their_boundaries() {
+        for (source, canonical) in [
+            ("[link](</my uri>)\n", "[link](</my uri>)\n"),
+            ("[a](<b)c>)\n", "[a](<b)c>)\n"),
+            ("[x](a\\&copy;)\n", "[x](<a&amp;copy;>)\n"),
+            ("[link](foo\\(and\\(bar\\))\n", "[link](<foo(and(bar)>)\n"),
+            ("[link](foo\\)\\:)\n", "[link](<foo):>)\n"),
+            ("[\nfoo\n]: /url\nbar\n", "[\nfoo\n]: /url\n\nbar\n"),
+            ("[foo]: /url\n\"title\" ok\n", "[foo]: /url\n\n\"title\" ok\n"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, canonical);
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), canonical);
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), canonical);
+        }
+    }
+
+    #[test]
+    fn markdown_image_title_does_not_fill_empty_alt_on_docx_round_trip() {
+        let data = encode_base64(include_bytes!("../../ibis-emf/tests/fixtures/shapes.emf"));
+        let source = format!(r#"![](data:image/x-emf;base64,{data} "集計表")"#);
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert!(saved.starts_with("![]("));
+        let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+        let docx_document = crate::read_docx(&docx).unwrap();
+        let flow = docx_document.flow.as_deref().unwrap();
+        let Block::Paragraph(paragraph) = &flow.body[0] else { panic!("expected picture paragraph") };
+        assert!(matches!(&paragraph.runs[0].kind, FlowRunKind::Picture { look, .. }
+            if look.alt_text.description.is_empty() && look.alt_text.title == "集計表"));
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), saved);
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), saved);
+    }
+
+    #[test]
+    fn markdown_code_spans_keep_ticks_spaces_and_line_endings_through_docx() {
+        for (source, canonical, text) in [
+            ("` `` `\n", "``` `` ```\n", "``"),
+            ("`  ``  `\n", "```  ``  ```\n", " `` "),
+            ("``\nfoo \n``\n", "`foo `\n", "foo "),
+            ("` foo `` bar `\n", "```foo `` bar```\n", "foo `` bar"),
+            ("```foo``\n", "\\`\\`\\`foo\\`\\`\n", "```foo``"),
+            ("`foo``bar``\n", "\\`foo`bar`\n", "`foobar"),
+            ("[not a `link](/foo`)\n", "[not a `link](/foo`)\n", "[not a link](/foo)"),
+            ("[foo`](/uri)`\n", "[foo`](/uri)`\n", "[foo](/uri)"),
+            ("<a href=\"`\">`\n", "<a href=\"`\">\\`\n", "<a href=\"`\">`"),
+            ("<https://foo.bar.`baz>`\n", "<https://foo.bar.`baz>\\`\n", "<https://foo.bar.`baz>`"),
+            ("`code\\\nspan`\n", "`code\\ span`\n", "code\\ span"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let flow = opened.presentation.flow.as_deref().unwrap();
+            assert!(matches!(&flow.body[0], Block::Paragraph(p) if p.text() == text), "{source}");
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, canonical, "{source}");
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), canonical, "{source}");
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), canonical, "{source}");
+        }
+    }
+
+    #[test]
+    fn markdown_keeps_emphasis_and_hyperlinks_across_run_boundaries() {
+        for (source, expected) in [
+            ("*foo **bar** baz*\n", "*foo **bar** baz*\n"),
+            ("**foo *bar* baz**\n", "**foo *bar* baz**\n"),
+            ("***foo* bar**\n", "***foo* bar**\n"),
+            ("*(*foo*)*\n", "*(*foo*)*\n"),
+            ("_*foo*_\n", "_*foo*_\n"),
+            ("*foo [*bar*](/url)*\n", "*foo [*bar*](/url)*\n"),
+            ("**foo [*bar*](/url)**\n", "**foo [*bar*](/url)**\n"),
+            ("[link *foo **bar** `#`*](/uri)\n", "[link *foo **bar** `#`*](/uri)\n"),
+            ("[link *foo **bar** `#`*][ref]\n\n[ref]: /uri\n", "[link *foo **bar** `#`*](/uri)\n"),
+            ("[one](/uri)[two](/uri)\n", "[one](/uri)[two](/uri)\n"),
+            ("[\\[label](/uri)\n", "[\\[label](/uri)\n"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, expected, "{source}");
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), expected, "{source}");
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn markdown_preserves_escaped_punctuation_through_docx() {
+        for (source, text) in [
+            ("\\## literal heading\n", "## literal heading"),
+            ("\\[ref]\n\n[ref]: /url\n", "[ref]"),
+            ("\\{{form:example}}\n", "{{form:example}}"),
+            ("# foo *bar* \\*baz\\*\n", "foo bar *baz*"),
+            ("*a \\* b*\n", "a * b"),
+            ("\\\\*emphasis*\n", "\\emphasis"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let flow = opened.presentation.flow.as_deref().unwrap();
+            assert!(matches!(&flow.body[0], Block::Paragraph(p) if p.text() == text), "{source}");
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, source);
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
+        }
+    }
+
+    #[test]
+    fn markdown_lists_preserve_indentation_and_inner_block_boundaries() {
+        for (source, canonical) in [
+            ("  10.  foo\n\n           bar\n", Some("  10.  foo\n\n       ```\n       bar\n       ```\n")),
+            ("- foo\n - bar\n  - baz\n   - boo\n", None),
+            ("- # Foo\n- Bar\n  ---\n  baz\n", Some("- # Foo\n- ## Bar\n  baz\n")),
+            ("- a\n - b\n  - c\n   - d\n  - e\n - f\n- g\n", None),
+            ("- a\n - b\n  - c\n   - d\n    - e\n", None),
+            ("- a\n- b\n\n  [ref]: /url\n- d\n", None),
+            ("- a\n  - b\n\n    c\n- d\n", None),
+            ("- a\n  > b\n  ```\n  c\n  ```\n- d\n", None),
+        ] {
+            let expected = canonical.unwrap_or(source);
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, expected, "{source}");
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), expected, "{source}");
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn markdown_lists_keep_empty_items_zero_starts_and_marker_boundaries() {
+        for (source, expected) in [
+            ("0. Zero\n1. One\n", "0. Zero\n1. One\n"),
+            ("- first\n-\n- last\n", "- first\n- \n- last\n"),
+            ("1. first\n2.\n3. last\n", "1. first\n2. \n1. last\n"),
+            ("- first\n- second\n+ separate\n", "- first\n- second\n+ separate\n"),
+            ("1. first\n2. second\n3) separate\n", "1. first\n1. second\n3) separate\n"),
+            ("1) first\n8. second\n", "1) first\n8. second\n"),
+            ("* first\n*\n\n* last\n", "* first\n* \n\n* last\n"),
+            (
+                "-\n  foo\n-\n  ```\n  bar\n  ```\n-\n      baz\n",
+                "- foo\n- ```\n  bar\n  ```\n- ```\n  baz\n  ```\n",
+            ),
+            ("1234567890. ordinary paragraph\n", "1234567890. ordinary paragraph\n"),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, expected);
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), expected);
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn markdown_list_item_body_keeps_its_blocks_through_docx() {
+        for (source, expected) in [
+            (
+                "- a\n- ```\n  b\n\n\n  ```\n- c\n",
+                "- a\n- ```\n  b\n\n\n  ```\n- c\n",
+            ),
+            (
+                "1. ```sh\n   foo\n   ```\n\n   bar\n",
+                "1. ```sh\n   foo\n   ```\n\n   bar\n",
+            ),
+            (
+                "1.  A paragraph\n    with two lines.\n\n        indented code\n\n    > A block quote.\n",
+                "1.  A paragraph with two lines.\n\n    ```\n    indented code\n    ```\n\n    > A block quote.\n",
+            ),
+        ] {
+            let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+            let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+            assert_eq!(saved, expected);
+            let reopened = open_markdown(saved.into_bytes()).unwrap();
+            assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), expected);
+            let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+            assert_eq!(export_docx_to_markdown(&docx).unwrap(), expected);
+        }
     }
 
     #[test]

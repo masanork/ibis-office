@@ -17,7 +17,7 @@ Markdownの拡張は、次の方針で選びます。拡張を追加するとき
 
 | 仕様・実装 | 対応している範囲 | 変換で注意する点 |
 | --- | --- | --- |
-| [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/) | ATX・Setext見出し、段落、リスト、引用、強調、リンク、画像、コードなどの基本構文 | 公式例を Markdown の読み込みと書き戻しの回帰検証に使う。入れ子、HTML、一部のリンク構文には既知の差がある。 |
+| [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/) | ATX・Setext見出し、段落、リスト、引用、強調、リンク、画像、コードなどの基本構文 | 公式例を Markdown の読み込みと書き戻しの回帰検証に使う。編集可能性と DOCX 往復は個別に確認する。 |
 | [GFM 0.29](https://github.github.com/gfm/) と [GitHubの書式ガイド](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax) | パイプ表、タスクリスト、取り消し線、基本アラート | 表のセル結合やOfficeフィールドはibisOffice拡張。脚注とアラートはGFM形式仕様とは別にGitHubの書式ガイドを参照する。 |
 | [MyST Markdown](https://mystmd.org/guide/syntax-overview) | Word互換の見出し・数式ラベル、表示名付き `{ref}` の同一文書内リンク、コードフェンス・コロンフェンス内の単一段落の基本admonition | コードフェンスとコロンフェンスの図は画像・代替テキスト・単一段落のキャプション・Word互換ラベルを取り込む。自動参照番号、引用、プロジェクトの参照解決は未対応。 |
 | [Obsidian内部リンク](https://obsidian.md/help/links) と [callouts](https://obsidian.md/help/callouts) | 文書内Wikiリンク、開いたフォルダー内の別ファイル・見出しへのWikiリンク、基本callout、原稿からの相対パスで指定した画像埋め込み | Assistantのフォルダー参照は別ノートを名前またはルート基準のパスで引ける。ノート埋め込み、折りたたみは未対応。 |
@@ -125,7 +125,7 @@ Gitワークツリー内のフォルダーでは、Assistantの `git_read` に `
 
 ## 検証
 
-CommonMark の公式例と比較する場合は、ibisOffice で読み込んだ文書を Markdown に書き戻し、参照実装の cmark の描画結果を比較する。この比較には読み込みと書き戻しの両方が含まれる。編集可能性は、文書モデルのリンク先とタイトル、および DOCX 往復でも確認する。
+CommonMark の公式例と比較する場合は、ibisOffice で読み込んだ文書を Markdown に書き戻し、参照実装の cmark の描画結果を比較する。この比較には読み込みと書き戻しの両方が含まれる。CommonMark 0.31.2 の公式652例をこの手順で検証し、cmark 0.31.2 の出力を正規化して比較した結果、652例すべてが一致した。編集可能性は、文書モデルのリンク先とタイトル、および DOCX 往復でも確認する。
 
 単一行の参照形式リンクは編集可能なリンクとして取り込み、書き戻し時はリンク先とタイトルを含むインライン形式にする。DOCX ではタイトルを ScreenTip として保持する。参照形式の画像はデータ URI、またはデスクトップで原稿フォルダー内の相対パスから読み込める。保存時は画像データを Markdown に埋め込み、代替テキストとタイトルを保持する。ネットワーク上の画像は取得しない。複数行にまたがる参照や入れ子のリンクラベルには引き続き制限がある。
 
