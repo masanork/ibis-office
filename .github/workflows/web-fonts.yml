@@ -92,6 +92,11 @@ jobs:
           key: wasm-bindgen-cli-${{ runner.os }}-0.2.128
       - run: wasm-bindgen --version | grep -qx 'wasm-bindgen 0.2.128' || cargo install wasm-bindgen-cli --version 0.2.128 --locked
       - run: scripts/build-web.sh
+      - name: Verify the HEIC worker notices in the Web build
+        run: |
+          test -s www/pkg/heic/ibis_heic_web_bg.wasm
+          python3 scripts/check-third-party-notices.py --web \
+            target/dist/wasm32-unknown-unknown/debug/ibis_office_app.wasm www/license.md
       - name: Exercise touch input in Chrome
         run: |
           export IBIS_CHROME_PATH="$(command -v google-chrome)"
