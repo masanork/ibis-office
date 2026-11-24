@@ -530,6 +530,7 @@ mod tests {
     #[test]
     fn preserves_relative_alignment_for_paragraph_level_float() {
         let manuscript = image_example(&format!("<uof:数据>{IMAGE}</uof:数据>"))
+            .replace(r#"uof:标识符="asset""#, r#"uof:标识符="graphic""#)
             .replace("<w:锚点>", r#"</w:句><w:锚点 w:类型="normal">"#)
             .replace("</w:锚点>", "</w:锚点><w:句>")
             .replace(

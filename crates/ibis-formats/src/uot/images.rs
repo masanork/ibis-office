@@ -83,8 +83,13 @@ impl<'xml, 'input, 'path> Images<'xml, 'input, 'path> {
         };
         let size = EmuSize::new(dimension("宽度")?, dimension("高度")?);
         let reference = word_child(anchor, "图形")?.attribute((WORD, "图形引用"))?;
-        let id = self.graphics.get(reference).copied().unwrap_or(reference);
-        let (&id, &object) = self.objects.get_key_value(id)?;
+        // LibreOffice can store a frame name in 图:其他对象 while the actual
+        // binary object uses the same identifier as the graphic.
+        let (&id, &object) = self.objects.get_key_value(reference).or_else(|| {
+            self.graphics
+                .get(reference)
+                .and_then(|id| self.objects.get_key_value(id))
+        })?;
         let media = if let Some(media) = self.media.get(id) {
             *media
         } else {
