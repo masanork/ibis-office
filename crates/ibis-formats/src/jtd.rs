@@ -264,6 +264,12 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
             styles.defaults_run.bold = Some(defaults.bold);
             styles.defaults_run.italic = Some(defaults.italic);
         }
+        // Use the same font slots as the DOCX template in the directly
+        // rendered model, including when no JTD font reference resolved.
+        defaults.font = styles.defaults_run.font.clone();
+        defaults.east_asian_font = styles.defaults_run.east_asian_font.clone();
+        defaults.h_ansi_font = styles.defaults_run.h_ansi_font.clone();
+        defaults.cs_font = styles.defaults_run.cs_font.clone();
     }
     let segments = table_candidates(extract_decoded(
         &decoded,
@@ -1954,6 +1960,26 @@ mod tests {
         let fonts = inspect_fonts(&data).unwrap();
         assert!(default_font(&font_styles(0, 9), &fonts).is_none());
         assert!(default_font(&font_styles(9, 0xfffe), &fonts).is_none());
+    }
+
+    #[test]
+    fn missing_jtd_font_uses_same_typefaces_before_and_after_docx_conversion() {
+        let model = read(&fixture("甲Aéش")).unwrap();
+        let saved = crate::read(&export_docx(&model).unwrap()).unwrap();
+        let first_paragraph = |doc: &Presentation| {
+            let Block::Paragraph(p) = &doc.flow.as_ref().unwrap().body[0] else {
+                panic!("paragraph");
+            };
+            (p.mark.clone(), p.runs[0].style.clone())
+        };
+        let (original_mark, original_text) = first_paragraph(&model);
+        let (reopened_mark, reopened_text) = first_paragraph(&saved);
+        for character in ['甲', 'A', 'é', 'ش'] {
+            let expected_font = reopened_text.font_for(character);
+            assert!(expected_font.is_some());
+            assert_eq!(original_text.font_for(character), expected_font);
+            assert_eq!(original_mark.font_for(character), reopened_mark.font_for(character));
+        }
     }
 
     #[test]
