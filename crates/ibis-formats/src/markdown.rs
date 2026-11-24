@@ -2542,14 +2542,14 @@ fn append_myst_figure(
     true
 }
 
-enum MarkdownContinuation {
+enum MarkdownContinuation<'a> {
     Paragraph { indent: usize },
-    Code { indent: Option<usize>, text: String },
+    Code { indent: Option<usize>, text: String, info: &'a str },
 }
 
 // Use CommonMark's container boundaries to distinguish paragraphs and code
 // belonging to an item from ordinary indentation outside that item.
-fn markdown_continuations(text: &str, lines: &[&str]) -> HashMap<usize, (usize, MarkdownContinuation)> {
+fn markdown_continuations<'a>(text: &'a str, lines: &[&'a str]) -> HashMap<usize, (usize, MarkdownContinuation<'a>)> {
     use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
     let mut blocks = HashMap::new();
@@ -2581,14 +2581,16 @@ fn markdown_continuations(text: &str, lines: &[&str]) -> HashMap<usize, (usize, 
                         blocks.insert(first, (next, MarkdownContinuation::Paragraph { indent }));
                     }
                     Tag::CodeBlock(kind) => {
-                        let indent = match kind {
-                            CodeBlockKind::Indented if parents.is_empty() => Some(None),
-                            CodeBlockKind::Indented => continuation_indent.map(Some),
-                            CodeBlockKind::Fenced(info) if info.is_empty() => continuation_indent.map(Some),
-                            _ => None,
+                        let details = match kind {
+                            CodeBlockKind::Indented if parents.is_empty() => Some((None, "")),
+                            CodeBlockKind::Indented => continuation_indent.map(|indent| (Some(indent), "")),
+                            CodeBlockKind::Fenced(_) => continuation_indent.and_then(|indent| {
+                                let (_, info) = opening_fence(lines[first].trim_start())?;
+                                ordinary_code_fence(info).then_some((Some(indent), info))
+                            }),
                         };
-                        if let Some(indent) = indent {
-                            code = Some((first, next, indent, String::new()));
+                        if let Some((indent, info)) = details {
+                            code = Some((first, next, indent, info, String::new()));
                         }
                     }
                     _ => {}
@@ -2613,17 +2615,17 @@ fn markdown_continuations(text: &str, lines: &[&str]) -> HashMap<usize, (usize, 
                 parents.push((tag.to_end(), item));
             }
             Event::Text(text) => {
-                if let Some((_, _, _, content)) = &mut code {
+                if let Some((_, _, _, _, content)) = &mut code {
                     content.push_str(&text);
                 }
             }
             Event::End(tag) => {
                 parents.pop();
-                if tag == TagEnd::CodeBlock && let Some((first, next, indent, mut text)) = code.take() {
+                if tag == TagEnd::CodeBlock && let Some((first, next, indent, info, mut text)) = code.take() {
                     if text.ends_with('\n') {
                         text.pop();
                     }
-                    blocks.insert(first, (next, MarkdownContinuation::Code { indent, text }));
+                    blocks.insert(first, (next, MarkdownContinuation::Code { indent, text, info }));
                 }
             }
             _ => {}
@@ -2634,15 +2636,31 @@ fn markdown_continuations(text: &str, lines: &[&str]) -> HashMap<usize, (usize, 
 
 const MARKDOWN_LIST_CONTINUATION_STYLE: &str = "IbisMarkdownListContinuation";
 
-fn markdown_continuation_indent(style: Option<&str>) -> Option<usize> {
-    let indent: usize = style?.strip_prefix(MARKDOWN_LIST_CONTINUATION_STYLE)?.parse().ok()?;
-    (2..=27).contains(&indent).then_some(indent)
+fn markdown_continuation_style(style: Option<&str>) -> Option<(usize, Option<&str>)> {
+    let encoded = style?.strip_prefix(MARKDOWN_LIST_CONTINUATION_STYLE)?;
+    let (indent, code_style) = encoded.split_once('-')
+        .map_or((encoded, None), |(indent, code_style)| (indent, Some(code_style)));
+    let indent = indent.parse().ok()?;
+    (2..=27).contains(&indent).then_some((indent, code_style))
 }
 
-fn apply_markdown_continuation(paragraph: &mut FlowParagraph, indent: usize, ctx: &mut ParseContext<'_>) {
-    let id = format!("{MARKDOWN_LIST_CONTINUATION_STYLE}{indent}");
+fn apply_markdown_continuation(
+    paragraph: &mut FlowParagraph,
+    indent: usize,
+    info: &str,
+    ctx: &mut ParseContext<'_>,
+) {
+    let mut id = format!("{MARKDOWN_LIST_CONTINUATION_STYLE}{indent}");
+    let code_style = ctx.code_language_style(info);
+    if let Some(style) = &code_style {
+        id.push('-');
+        id.push_str(style);
+    }
     ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
-        name: format!("Markdown list continuation ({indent})"),
+        name: markdown_code_language(code_style.as_deref()).map_or_else(
+            || format!("Markdown list continuation ({indent})"),
+            |lang| format!("Markdown list continuation ({indent}, {lang})"),
+        ),
         kind: StyleKind::Paragraph,
         based_on: ctx.styles.default_paragraph.clone(),
         next: ctx.styles.default_paragraph.clone(),
@@ -2673,8 +2691,8 @@ fn parse_blocks(
         }
 
         if let Some((next, continuation)) = continuations.remove(&i) {
-            let (mut block, indent) = match continuation {
-                MarkdownContinuation::Code { indent, text } => (build_code_block(&text, ctx), indent),
+            let (mut block, indent, info) = match continuation {
+                MarkdownContinuation::Code { indent, text, info } => (build_code_block(&text, ctx), indent, info),
                 MarkdownContinuation::Paragraph { indent } => {
                     let mut runs = Vec::new();
                     let mut attrs = BlockAttrs::default();
@@ -2685,13 +2703,13 @@ fn parse_blocks(
                         bookmarks: attrs.id.into_iter().collect(),
                         runs,
                         ..FlowParagraph::default()
-                    }), Some(indent))
+                    }), Some(indent), "")
                 }
             };
             if let Block::Paragraph(paragraph) = &mut block
                 && let Some(indent) = indent
             {
-                apply_markdown_continuation(paragraph, indent, ctx);
+                apply_markdown_continuation(paragraph, indent, info, ctx);
                 paragraph.resolve(&ctx.styles);
                 paragraph.normalize();
             }
@@ -2878,8 +2896,7 @@ fn parse_blocks(
         // Fenced code / math / chart block: ```lang ... ```
         if let Some((fence_marker, fence_info)) = opening_fence(trimmed) {
             let lang = fence_info.trim().to_ascii_lowercase();
-            let ordinary = !lang.starts_with('{')
-                && !matches!(lang.split_whitespace().next(), Some("math" | "latex" | "tex" | "chart" | "mermaid"));
+            let ordinary = ordinary_code_fence(&lang);
             let indent = raw.bytes().take_while(|&byte| byte == b' ').count();
             let commonmark_indent = ordinary && indent <= 3 && !raw[indent..].starts_with('\t');
             i += 1;
@@ -3437,6 +3454,14 @@ fn parse_list_marker(raw_line: &str) -> Option<ListMarker<'_>> {
 }
 
 const MARKDOWN_CODE_STYLE_PREFIX: &str = "IbisMarkdownCode";
+
+fn ordinary_code_fence(info: &str) -> bool {
+    !info.trim_start().starts_with('{')
+        && !info.split_whitespace().next().is_some_and(|language| {
+            ["math", "latex", "tex", "chart", "mermaid"].iter()
+                .any(|special| language.eq_ignore_ascii_case(special))
+        })
+}
 
 fn is_code_language(language: &str) -> bool {
     !language.is_empty() && language.len() <= 32
@@ -7110,9 +7135,9 @@ fn serialize_paragraph(
     source_diagnostics: &mut Vec<SourceDiagnostic>,
     list_label: Option<&str>,
 ) {
-    if let Some(indent) = markdown_continuation_indent(p.style.as_deref()) {
+    if let Some((indent, code_style)) = markdown_continuation_style(p.style.as_deref()) {
         let mut paragraph = p.clone();
-        paragraph.style = None;
+        paragraph.style = code_style.filter(|style| markdown_code_language(Some(style)).is_some()).map(str::to_owned);
         let mut fragment = String::new();
         serialize_paragraph(&paragraph, doc, media, comments, &mut fragment, form_layout, source_diagnostics, list_label);
         if !fragment.is_empty() {
@@ -10330,6 +10355,19 @@ Front caption
         assert!(output.contains("[[#^block]]"), "{output}");
         assert!(output.contains("![[#Details]]"), "{output}");
         assert!(output.contains("[参照](#%E6"), "{output}");
+    }
+
+    #[test]
+    fn markdown_retains_language_fence_under_the_same_list_item() {
+        let source = "1. Prepare\n\n   Keep this note in step one.\n\n   ```sh\n   echo ready\n   ```\n\n2. Publish\n";
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert_eq!(saved, source);
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
+
+        let docx = import_markdown_to_docx_bytes(saved.as_bytes()).unwrap();
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
     }
 
     #[test]
