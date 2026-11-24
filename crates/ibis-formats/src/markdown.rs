@@ -2554,6 +2554,7 @@ fn append_myst_figure(
 enum MarkdownContinuation<'a> {
     Paragraph { indent: usize },
     Code { indent: Option<usize>, text: String, info: &'a str },
+    Html,
 }
 
 // Use CommonMark's container boundaries to distinguish paragraphs and code
@@ -2562,7 +2563,7 @@ fn markdown_continuations<'a>(text: &'a str, lines: &[&'a str]) -> HashMap<usize
     use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
     let mut blocks = HashMap::new();
-    if !lines.iter().any(|line| line.starts_with([' ', '\t'])) {
+    if !lines.iter().any(|line| line.starts_with([' ', '\t', '<'])) {
         return blocks;
     }
 
@@ -2586,6 +2587,9 @@ fn markdown_continuations<'a>(text: &'a str, lines: &[&'a str]) -> HashMap<usize
                     .filter(|&(item_line, _)| first > item_line && lines[first].starts_with([' ', '\t']))
                     .map(|(_, indent)| indent);
                 match &tag {
+                    Tag::HtmlBlock if parents.is_empty() && is_preserved_html_block(lines[first]) => {
+                        blocks.insert(first, (next, MarkdownContinuation::Html));
+                    }
                     Tag::Paragraph if let Some(indent) = continuation_indent => {
                         blocks.insert(first, (next, MarkdownContinuation::Paragraph { indent }));
                     }
@@ -2641,6 +2645,44 @@ fn markdown_continuations<'a>(text: &'a str, lines: &[&'a str]) -> HashMap<usize
         }
     }
     blocks
+}
+
+const MARKDOWN_HTML_BLOCK_STYLE: &str = "IbisMarkdownHtmlBlock";
+
+fn is_preserved_html_block(line: &str) -> bool {
+    let Some(tag) = line.trim_start().strip_prefix('<') else {
+        return false;
+    };
+    if let Some(comment) = tag.strip_prefix("!--") {
+        let comment = comment.trim_start();
+        return !["fixed-layout-", "pptx-", "xlsx-", "docx-"]
+            .iter().any(|prefix| comment.starts_with(prefix));
+    }
+    let tag = tag.strip_prefix('/').unwrap_or(tag);
+    let name = tag.split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '>' | '/'))
+        .next().unwrap_or_default();
+    [
+        "article", "aside", "blockquote", "details", "summary", "div", "section", "figure", "figcaption",
+        "table", "caption", "colgroup", "col", "thead", "tbody", "tfoot", "tr", "th", "td",
+        "dl", "dt", "dd", "pre",
+    ].iter().any(|tag| name.eq_ignore_ascii_case(tag))
+}
+
+fn build_html_block(source: &str, ctx: &mut ParseContext<'_>) -> Block {
+    let id = MARKDOWN_HTML_BLOCK_STYLE.to_owned();
+    ctx.styles.styles.entry(id.clone()).or_insert_with(|| FlowStyle {
+        name: "Markdown HTML source".to_owned(),
+        kind: StyleKind::Paragraph,
+        based_on: ctx.styles.default_paragraph.clone(),
+        next: ctx.styles.default_paragraph.clone(),
+        ..FlowStyle::default()
+    });
+    let Block::Paragraph(mut paragraph) = build_code_block(source, ctx) else {
+        unreachable!("code blocks are paragraphs");
+    };
+    paragraph.style = Some(id);
+    paragraph.resolve(&ctx.styles);
+    Block::Paragraph(paragraph)
 }
 
 const MARKDOWN_LIST_CONTINUATION_STYLE: &str = "IbisMarkdownListContinuation";
@@ -2702,6 +2744,7 @@ fn parse_blocks(
         if let Some((next, continuation)) = continuations.remove(&i) {
             let (mut block, indent, info) = match continuation {
                 MarkdownContinuation::Code { indent, text, info } => (build_code_block(&text, ctx), indent, info),
+                MarkdownContinuation::Html => (build_html_block(&lines[i..next].join("\n"), ctx), None, ""),
                 MarkdownContinuation::Paragraph { indent } => {
                     let mut runs = Vec::new();
                     let mut attrs = BlockAttrs::default();
@@ -7553,7 +7596,10 @@ fn serialize_paragraph(
                 _ => {}
             }
         }
-        if p.style.as_deref() == Some(MARKDOWN_QUOTED_CODE_STYLE) {
+        if p.style.as_deref() == Some(MARKDOWN_HTML_BLOCK_STYLE) {
+            out.push_str(&code);
+            out.push_str("\n\n");
+        } else if p.style.as_deref() == Some(MARKDOWN_QUOTED_CODE_STYLE) {
             if !p.runs.is_empty() {
                 code.push('\n');
             }
@@ -9434,6 +9480,32 @@ mod tests {
             assert_eq!(media.data.as_ref(), original);
             assert_eq!(size, EmuSize::new(width, height));
         }
+    }
+
+    #[test]
+    fn markdown_html_blocks_preserve_source_through_markdown_and_docx() {
+        let source = concat!(
+            "Before.\n\n",
+            "<details open>\n  <summary>FY &amp; Q1</summary>\n  <p>Keep *literal* and &lt;markup&gt;.</p>\n</details>\n\n",
+            "<table>\n  <tr><th>Phase</th><th>Result</th></tr>\n  <tr><td>1</td><td>Ready</td></tr>\n</table>\n\n",
+            "<pre>alpha\n\n  beta\t&amp; gamma  \n</pre>\n\n",
+            "<!-- internal note\n     retain indentation -->\n\n",
+            "After **bold**.\n",
+        );
+        let opened = open_markdown(source.as_bytes().to_vec()).unwrap();
+        let flow = opened.presentation.flow.as_deref().unwrap();
+        assert_eq!(flow.body.iter().filter(|block| matches!(block, Block::Paragraph(p)
+            if p.style.as_deref() == Some(MARKDOWN_HTML_BLOCK_STYLE))).count(), 4);
+        let html = crate::docx_convert::export_docx_to_html(&opened.presentation).unwrap();
+        let html = String::from_utf8(html).unwrap();
+        assert!(html.contains("&lt;details open&gt;"), "{html}");
+        assert!(!html.contains("<details open>"), "{html}");
+        let saved = export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert_eq!(saved, source);
+        let reopened = open_markdown(saved.as_bytes().to_vec()).unwrap();
+        assert_eq!(export_presentation_to_markdown(&reopened.presentation).unwrap(), source);
+        let docx = import_markdown_to_docx_bytes(source.as_bytes()).unwrap();
+        assert_eq!(export_docx_to_markdown(&docx).unwrap(), source);
     }
 
     #[test]
