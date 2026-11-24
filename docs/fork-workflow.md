@@ -98,7 +98,9 @@ Linux AppImage、macOS、Windows の Desktop CI はパッケージから取り�
 
 `masanork` の push、対象タグ、手動実行では、AppImage をビルドしたジョブから
 別の GitHub ホストランナーに成果物を渡し、GitHub Artifact Attestations で署名する。
-署名権限は署名ジョブに付与し、PR 実行では署名ジョブを起動しない。
+Linux のビルドと署名は、コミットを固定した再利用ワークフローが実行する。
+署名権限はその中の署名ジョブに付与し、PR 実行は読み取り専用の呼び出しを使う。
+署名ジョブはコードを checkout せず、同じ実行の AppImage をダウンロードしてハッシュする。
 署名した証跡は `desktop-ci-linux-x64-provenance` に収録し、
 マイルストーン Release では AppImage と同じ場所に置く。
 手動で Linux だけを検証する場合は Desktop build CI の `appimage_only` を選ぶ。
@@ -110,13 +112,14 @@ Linux AppImage、macOS、Windows の Desktop CI はパッケージから取り�
 gh attestation verify desktop-linux-x64-ci.AppImage \
   --bundle desktop-linux-x64-ci.AppImage.intoto.jsonl \
   --repo masanork/ibis-office \
-  --signer-workflow masanork/ibis-office/.github/workflows/desktop-ci.yml \
+  --signer-workflow masanork/ibis-office/.github/workflows/linux-appimage-builder.yml \
+  --signer-digest 2062233a3157023613938c8edc00148cbac3a51b \
   --source-digest "$EXPECTED_SOURCE_SHA" --source-ref "$EXPECTED_REF" \
   --deny-self-hosted-runners
 ```
 
 CI はさらに別のランナーへ AppImage と bundle をダウンロードし、署名、digest、
-出所を検証する。改変した AppImage と異なる ref が拒否されることも確認する。
+出所を検証する。改変した AppImage、異なる ref、異なるビルダーコミットが拒否されることも確認する。
 この段階で検証するのは GitHub ホストランナー上の署名付き来歴と AppImage の結び付きである。
 [SLSA Build L3 の評価項目](supply-chain-fit-gap.md)として、信頼境界と実行間の隔離の確認を続ける。
 
