@@ -421,11 +421,20 @@ impl FormatEditor for PdfDocument {
             );
         }
         #[cfg(not(target_family = "wasm"))]
-        if _editor.can_resume_visio() {
+        if !_editor.read_only && !ibis_office_shell::host::is_connected()
+            && ibis_office_shell::host::export_allowed("vsdx")
+            && viewer_of(_editor).is_some_and(|v| v.lock().expect("pdf viewer lock").is_vsdx())
+        {
             use ibis_office_shell::chrome::{MenuId, MenuItem};
             menus.items_mut(MenuId::Edit).push(
                 MenuItem::tr("vsdx.resume-edit").icon("edit")
-                    .on(|editor, window, cx| editor.resume_visio(window, cx)).into()
+                    .on(|editor, window, cx| {
+                        if editor.can_resume_visio() {
+                            editor.resume_visio(window, cx);
+                        } else {
+                            open_geometry_edit(editor, window, cx);
+                        }
+                    }).into()
             );
         }
         if let Some(item) = menus.find_mut("edit.copy") {
@@ -860,8 +869,8 @@ impl LabelEdit {
 #[cfg(not(target_family = "wasm"))]
 fn open_label_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
     use ibis_office_shell::i18n::text;
-    if let Some(state) = editor.format_state_mut::<State>() {
-        state.geometry_edit = None;
+    if editor.format_state::<State>().is_some_and(|state| state.geometry_edit.is_some()) {
+        return editor.report(Err(text("vsdx.close-geometry-first").to_string()), cx);
     }
     let Some(viewer) = viewer_of(editor) else { return };
     let page = page_at_top(editor).unwrap_or(0);
@@ -944,7 +953,7 @@ fn save_label_copy(editor: &mut SlideEditor, window: &mut Window, cx: &mut Conte
 
 #[cfg(not(target_family = "wasm"))]
 fn save_vsdx_copy(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>, bytes: Vec<u8>) {
-    use ibis_office_shell::{i18n::text, save};
+    use ibis_office_shell::i18n::text;
     let original = editor.file_path();
     let (stem, _) = editor.name_parts();
     let suggested = format!("{stem}-edited.vsdx");
@@ -952,39 +961,53 @@ fn save_vsdx_copy(editor: &mut SlideEditor, window: &mut Window, cx: &mut Contex
     cx.spawn_in(window, async move |this, cx| {
         let Ok(Ok(Some(path))) = picked.await else { return };
         this.update_in(cx, |editor, _, cx| {
-            let result = if !ibis_office_shell::host::export_allowed("vsdx") { return; }
-                else if original.as_deref().is_some_and(|original| save::same_file(original, &path)) {
-                Err(text("vsdx.keep-original").to_string())
-            } else if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("vsdx")) {
-                Err(text("vsdx.export-extension").to_string())
-            } else {
-                save::write_replacing(&path, &bytes)
-                    .map(|()| text("vsdx.label-copy-saved").to_string())
-                    .map_err(|error| error.to_string())
-            };
+            let result = write_vsdx_copy(original.as_deref(), &path, &bytes)
+                .map(|()| text("vsdx.label-copy-saved").to_string());
             editor.report(result, cx);
         }).ok();
     }).detach();
 }
 
 #[cfg(not(target_family = "wasm"))]
+pub fn write_vsdx_copy(original: Option<&std::path::Path>, path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use ibis_office_shell::{i18n::text, save};
+    if !ibis_office_shell::host::export_allowed("vsdx") {
+        return Err(text("vsdx.draft-unsupported").to_string());
+    }
+    if original.is_some_and(|original| save::same_file(original, path)) {
+        return Err(text("vsdx.keep-original").to_string());
+    }
+    if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("vsdx")) {
+        return Err(text("vsdx.export-extension").to_string());
+    }
+    save::write_replacing(path, bytes).map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_family = "wasm"))]
 struct GeometryEditor {
     page: usize,
     input: Entity<InputState>,
+    staged: Option<Arc<[u8]>>,
 }
 
 #[cfg(not(target_family = "wasm"))]
 fn open_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
     let Some(page) = page_at_top(editor) else { return };
-    let input = editor.format_state::<State>().and_then(|s| s.geometry_edit.as_ref())
-        .filter(|mode| mode.page == page)
-        .map(|mode| mode.input.clone())
-        .unwrap_or_else(|| cx.new(|cx| InputState::new(window, cx).placeholder("move 2 0.25 0 / connect 12 end 4")));
-    if let Some(state) = editor.format_state_mut::<State>() {
-        state.geometry_edit = Some(GeometryEditor { page, input: input.clone() });
+    if editor.read_only || !ibis_office_shell::host::export_allowed("vsdx") { return; }
+    if editor.format_state::<State>().is_some_and(|s| s.label_edit.is_some()) {
+        return editor.report(Err(ibis_office_shell::i18n::text("vsdx.close-label-first").to_string()), cx);
+    }
+    let input = if let Some(state) = editor.format_state_mut::<State>() {
+        let mode = state.geometry_edit.get_or_insert_with(|| GeometryEditor {
+            page,
+            input: cx.new(|cx| InputState::new(window, cx).placeholder("move 2 0.25 0 / connect 12 end 4")),
+            staged: None,
+        });
+        mode.page = page;
         state.find_open = false;
         state.page_open = false;
-    }
+        mode.input.clone()
+    } else { return };
     window.focus(&input.read(cx).focus_handle(cx), cx);
     cx.notify();
 }
@@ -1023,6 +1046,51 @@ pub fn geometry_copy_bytes(editor: &SlideEditor, cx: &gpui_kit::App) -> Result<V
     document.edit_geometry(mode.page, edit).map_err(|error| error.to_string())
 }
 
+/// Apply a command to the live preview without writing to the original file.
+#[cfg(not(target_family = "wasm"))]
+fn apply_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> Result<(), String> {
+    let bytes: Arc<[u8]> = geometry_copy_bytes(editor, cx)?.into();
+    let preview = PdfViewerState::open(bytes.clone()).map_err(|error| error.to_string())?;
+    let state = editor.format_state_mut::<State>().expect("Visio editing state");
+    replace_geometry_preview(&state.viewer, preview);
+    let mode = state.geometry_edit.as_mut().expect("Visio geometry editor");
+    mode.staged = Some(bytes);
+    mode.input.update(cx, |field, cx| {
+        field.set_value("", window, cx);
+        field.focus(window, cx);
+    });
+    cx.notify();
+    Ok(())
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub fn staged_geometry_bytes(editor: &SlideEditor) -> Option<Arc<[u8]>> {
+    editor.format_state::<State>()?.geometry_edit.as_ref()?.staged.clone()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn close_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
+    let original = editor.presentation().pdf_bytes.clone();
+    if let Some(state) = editor.format_state_mut::<State>() {
+        if state.geometry_edit.take().is_some_and(|mode| mode.staged.is_some())
+            && let Some(original) = original
+            && let Ok(viewer) = PdfViewerState::open(original)
+        {
+            replace_geometry_preview(&state.viewer, viewer);
+        }
+    }
+    window.focus(&editor.focus_handle, cx);
+    cx.notify();
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn replace_geometry_preview(state: &Mutex<PdfViewerState>, mut preview: PdfViewerState) {
+    let mut viewer = state.lock().expect("pdf viewer lock");
+    preview.zoom = viewer.zoom;
+    preview.current_page = viewer.current_page;
+    *viewer = preview;
+}
+
 #[cfg(not(target_family = "wasm"))]
 fn geometry_edit_bar(mode: &GeometryEditor, cx: &mut Context<SlideEditor>) -> AnyElement {
     use ibis_office_shell::chrome::{action_button, text_field};
@@ -1030,24 +1098,33 @@ fn geometry_edit_bar(mode: &GeometryEditor, cx: &mut Context<SlideEditor>) -> An
     bar_style()
         .id("vsdx-geometry-edit")
         .absolute().top(px(12.0)).right(px(24.0))
+        .child(div().child(text("vsdx.geometry-mode")))
         .child(div().child(format("vsdx.geometry-command-help", &[("page", &(mode.page + 1))])))
         .child(text_field(&mode.input).width(px(265.0)).select_on_focus())
+        .child(action_button("vsdx-geometry-apply").small().label(text("vsdx.geometry-apply"))
+            .on_click(cx.listener(|editor, _, window, cx| {
+                let result = apply_geometry_edit(editor, window, cx)
+                    .map(|()| text("vsdx.geometry-applied").to_string());
+                editor.report(result, cx);
+            })))
         .child(action_button("vsdx-geometry-save").small().label(text("vsdx.save-label-copy"))
             .on_click(cx.listener(|editor, _, window, cx| {
                 if !ibis_office_shell::host::export_allowed("vsdx") { return; }
-                match geometry_copy_bytes(editor, cx) {
-                    Ok(bytes) => save_vsdx_copy(editor, window, cx, bytes),
-                    Err(error) => editor.report(Err(error), cx),
+                let has_command = editor.format_state::<State>().and_then(|s| s.geometry_edit.as_ref())
+                    .is_some_and(|mode| !mode.input.read(cx).value().trim().is_empty());
+                if has_command && let Err(error) = apply_geometry_edit(editor, window, cx) {
+                    return editor.report(Err(error), cx);
+                }
+                if let Some(bytes) = staged_geometry_bytes(editor) {
+                    save_vsdx_copy(editor, window, cx, bytes.to_vec());
                 }
             })))
-        .child(action_button("vsdx-geometry-close").small().label(text("_shell.close"))
-            .on_click(cx.listener(|editor, _, window, cx| {
-                if let Some(state) = editor.format_state_mut::<State>() {
-                    state.geometry_edit = None;
-                }
-                window.focus(&editor.focus_handle, cx);
-                cx.notify();
-            })))
+        .child(action_button("vsdx-geometry-close").small().label(text(if mode.staged.is_some() {
+            "vsdx.geometry-discard"
+        } else {
+            "_shell.close"
+        }))
+            .on_click(cx.listener(|editor, _, window, cx| close_geometry_edit(editor, window, cx))))
         .into_any_element()
 }
 

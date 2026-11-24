@@ -79,3 +79,12 @@ cargo test --locked -p ibis-vsdx --test visio_arc reconnects_a_circular -- --ign
 ```
 
 Omit `VSDX_VISIO_GLUED_ARC_OUTPUT` to use and remove a temporary copy.
+
+The desktop scenario uses the same original drawing to apply a shape move and
+a reconnect in one editing session, save a copy, and compare the untouched
+shapes and package parts after reopening.
+
+```sh
+VSDX_VISIO_GLUED_ARC_SAMPLE=/path/to/original.vsdx \
+cargo test --locked -p ibis-office-app --test scenarios -- shell::vsdx_visio_authored_drawing_edit_mode
+```

@@ -1872,3 +1872,9 @@ structured.schema-choose	JSON Schemaを選択…
 file.save-format.vsdx	Visio 図面 (.vsdx)
 vsdx.resume-edit	図面を編集
 vsdx.resume-error	ファイルが変更されています。開き直してから編集してください。
+vsdx.close-geometry-first	図形の編集を閉じてから、ラベルを編集してください。
+vsdx.close-label-first	ラベルの編集を閉じてから、図形を編集してください。
+vsdx.geometry-mode	図面の編集モード
+vsdx.geometry-apply	適用
+vsdx.geometry-applied	図面に反映しました。変更は別名で保存できます。
+vsdx.geometry-discard	変更を破棄

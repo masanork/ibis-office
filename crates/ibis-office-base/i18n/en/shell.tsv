@@ -1874,3 +1874,9 @@ structured.schema-choose	Choose JSON Schema…
 file.save-format.vsdx	Visio Drawing (.vsdx)
 vsdx.resume-edit	Edit Drawing
 vsdx.resume-error	The file has changed. Reopen it before editing.
+vsdx.close-geometry-first	Close the geometry editor before editing labels.
+vsdx.close-label-first	Close the label editor before editing geometry.
+vsdx.geometry-mode	Drawing editing mode
+vsdx.geometry-apply	Apply
+vsdx.geometry-applied	The preview has been updated. Save a copy to keep the changes.
+vsdx.geometry-discard	Discard changes

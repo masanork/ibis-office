@@ -5,7 +5,7 @@
 use crate::shell::scenario::Scenario;
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
-    vec![
+    let mut scenarios: Vec<(&str, fn())> = vec![
         ("shell::issue235_a_pdf_opens_as_a_screen_of_its_own_with_its_pages", opens),
         ("shell::issue235_the_menus_of_a_pdf_are_those_of_a_file_that_is_looked_at", menus),
         ("shell::issue235_a_copy_and_an_export_of_a_pdf_are_the_file_as_it_is", copies),
@@ -19,7 +19,11 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::vsdx_existing_diagram_updates_a_label_in_a_copy", vsdx_edit_label),
         ("shell::vsdx_label_edits_are_kept_when_switching_pages", vsdx_edit_multiple_pages),
         ("shell::vsdx_existing_geometry_survives_reopening", vsdx_edit_geometry),
-    ]
+    ];
+    if std::env::var_os("VSDX_VISIO_GLUED_ARC_SAMPLE").is_some() {
+        scenarios.push(("shell::vsdx_visio_authored_drawing_edit_mode", vsdx_visio_authored_edit_mode));
+    }
+    scenarios
 }
 
 fn opens() {
@@ -400,28 +404,80 @@ fn vsdx_edit_multiple_pages() {
 }
 
 fn vsdx_edit_geometry() {
-    let mut s = Scenario::open("crates/ibis-vsdx/tests/fixtures/01-basic-flowchart.vsdx");
+    geometry_mode_roundtrip(
+        "crates/ibis-vsdx/tests/fixtures/01-basic-flowchart.vsdx",
+        "move 2 0.25 0",
+        "connect 14 end 6",
+        r#"N="PinX" V="1.322835""#,
+        r#"FromSheet="14" FromCell="EndX" ToSheet="6""#,
+        "reconnected.vsdx",
+        &["2", "12", "14"],
+    );
+}
+
+fn vsdx_visio_authored_edit_mode() {
+    let path = std::env::var("VSDX_VISIO_GLUED_ARC_SAMPLE").unwrap();
+    geometry_mode_roundtrip(
+        &path, "move 250 0.25 0", "connect 614 end 253",
+        "N='PinX' V='9.266713647729857'",
+        "FromSheet='614' FromCell='EndX' FromPart='12' ToSheet='253'",
+        "visio-native-edited.vsdx",
+        &["250", "614"],
+    );
+}
+
+fn geometry_mode_roundtrip(input: &str, move_command: &str, reconnect_command: &str, pin: &str, link: &str, filename: &str, edited_shapes: &[&str]) {
+    use super::button_probe as buttons;
+    use ibis_office_pdf::editor::{staged_geometry_bytes, write_vsdx_copy};
+    let _probe = buttons::Probe::new();
+    let mut s = Scenario::open(input);
+    assert!(s.with(|editor, _| editor.is_read_only()));
     let path = s.with(|editor, _| editor.file_path().unwrap());
     let original = std::fs::read(&path).unwrap();
-    s.menu("vsdx.edit-geometry");
-    s.type_text("move 2 0.25 0");
-    let moved = s.with(|editor, cx| ibis_office_pdf::editor::geometry_copy_bytes(editor, cx)).unwrap();
+    s.menu("vsdx.resume-edit");
+    s.type_text(move_command);
+    buttons::click(&mut s, "vsdx-geometry-apply");
+    assert!(s.with(|editor, _| staged_geometry_bytes(editor).is_some()), "{:?}", s.status_texts());
+    s.type_text(reconnect_command);
+    buttons::click(&mut s, "vsdx-geometry-apply");
+    let updated = s.with(|editor, _| staged_geometry_bytes(editor)).unwrap();
     let dir = crate::shell::scenario::repo_root().join("target/scenario/vsdx-geometry-src");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("moved.vsdx"), moved).unwrap();
+    assert!(write_vsdx_copy(Some(&path), &path, &updated).is_err());
+    write_vsdx_copy(Some(&path), &dir.join(filename), &updated).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), original);
     drop(s);
-    let mut reopened = Scenario::open("target/scenario/vsdx-geometry-src/moved.vsdx");
-    reopened.menu("vsdx.edit-geometry");
-    reopened.type_text("connect 14 end 6");
-    let updated = reopened.with(|editor, cx| ibis_office_pdf::editor::geometry_copy_bytes(editor, cx)).unwrap();
-    std::fs::write(dir.join("reconnected.vsdx"), &updated).unwrap();
-    drop(reopened);
-    let zip = ibis_formats::zip::Archive::new(&updated).unwrap();
-    let page = zip.read_bounded("visio/pages/page1.xml", 100_000).unwrap().unwrap();
-    let xml = String::from_utf8(page).unwrap();
-    assert!(xml.contains(r#"N="PinX" V="1.322835""#));
-    assert!(xml.contains(r#"FromSheet="14" FromCell="EndX" ToSheet="6""#));
-    let mut final_view = Scenario::open("target/scenario/vsdx-geometry-src/reconnected.vsdx");
+    let mut final_view = Scenario::open(&format!("target/scenario/vsdx-geometry-src/{filename}"));
+    let reopened = final_view.with(|editor, _| editor.presentation().pdf_bytes.clone()).unwrap();
+    let before = ibis_formats::zip::Archive::new(&original).unwrap();
+    let after = ibis_formats::zip::Archive::new(&reopened).unwrap();
+    assert_eq!(before.names().len(), after.names().len());
+    for name in before.names() {
+        let original_part = before.read(&name).unwrap();
+        let new_part = after.read(&name).unwrap();
+        if name == "visio/pages/page1.xml" {
+            let xml = String::from_utf8(new_part.unwrap()).unwrap();
+            assert!(xml.contains(pin), "missing moved pin");
+            assert!(xml.contains(link), "missing connection");
+            let shape_parts = |source: &str| {
+                let doc = roxmltree::Document::parse(source).unwrap();
+                doc.descendants().filter(|node| node.has_tag_name("Shape"))
+                    .map(|node| (node.attribute("ID").unwrap().to_owned(), source[node.range()].to_owned()))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            };
+            let old = String::from_utf8(original_part.unwrap()).unwrap();
+            let original_shapes = shape_parts(&old);
+            let new_shapes = shape_parts(&xml);
+            assert_eq!(original_shapes.len(), new_shapes.len());
+            let changed: Vec<_> = original_shapes.iter().filter_map(|(id, shape)| {
+                (new_shapes.get(id) != Some(shape)).then_some(id.as_str())
+            }).collect();
+            let mut expected = edited_shapes.to_vec();
+            expected.sort_unstable();
+            assert_eq!(changed, expected);
+        } else {
+            assert_eq!(original_part, new_part, "{name}");
+        }
+    }
     final_view.screenshot("vsdx-reconnected");
 }
