@@ -80,5 +80,25 @@ fn reads_drawings_saved_by_microsoft_visio() {
         for label in labels {
             assert!(text.contains(label), "{name}: {label}");
         }
+        let editable = document.editable_labels(0).unwrap();
+        let label = editable
+            .iter()
+            .find(|label| label.text == labels[0])
+            .unwrap_or_else(|| panic!("{name}: no editable label for {}", labels[0]));
+        let updated = document
+            .replace_label(0, label.shape_id, "Updated <Visio> & text")
+            .unwrap();
+        let reopened = VsdxContainer::from_bytes(updated.into()).unwrap();
+        let updated_scene = reopened.interpret_page_scene(0).unwrap();
+        assert_eq!(updated_scene.info.crop_box, scene.info.crop_box);
+        let updated_text = updated_scene.text_index.plain_text();
+        assert!(
+            updated_text.contains("Updated <Visio> & text"),
+            "{name}: {updated_text}"
+        );
+        assert!(!updated_text.contains(labels[0]), "{name}");
+        for label in &labels[1..] {
+            assert!(updated_text.contains(label), "{name}: {label}");
+        }
     }
 }

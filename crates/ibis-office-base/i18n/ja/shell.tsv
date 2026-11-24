@@ -1835,3 +1835,9 @@ vsdx.exported	Visio 図面を書き出しました。
 vsdx.export-use-command	VSDXにするには「書き出し」から「Visio 図面（.vsdx）」を選んでください。
 ai.send-acp	ACPエージェント
 ai.acp-cancelled	ACPエージェントの実行を停止しました。
+vsdx.edit-label	図形ラベルを編集…
+vsdx.no-editable-labels	このページに編集できる単一書式のラベルがありません。
+vsdx.label-number	ラベル {n} / {total}
+vsdx.save-label-copy	VSDXを別名保存
+vsdx.keep-original	元の図面を保つため、別の保存先を指定してください。
+vsdx.label-copy-saved	更新したVSDXを別名で保存しました。

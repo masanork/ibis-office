@@ -16,6 +16,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::vsdx_search_highlights_a_wrapped_label", vsdx_search),
         ("shell::vsdx_opens_a_diagram_with_embedded_images", vsdx_embedded_images),
         ("shell::vsdx_new_diagram_exports_glued_shapes", vsdx_new_diagram),
+        ("shell::vsdx_existing_diagram_updates_a_label_in_a_copy", vsdx_edit_label),
     ]
 }
 
@@ -290,4 +291,21 @@ fn vsdx_new_diagram() {
     assert!(xml.contains("ToCell=\"Connections.X2\""));
     assert!(xml.contains("N=\"EndArrow\" V=\"4\""));
     s.screenshot("visio-draft");
+}
+
+fn vsdx_edit_label() {
+    let mut s = Scenario::open("crates/ibis-vsdx/tests/fixtures/01-basic-flowchart.vsdx");
+    let path = s.with(|editor, _| editor.file_path().unwrap());
+    let before = std::fs::read(&path).unwrap();
+    s.menu("vsdx.edit-label");
+    s.key("cmd-a");
+    s.type_text("更新 <Vista>");
+    let bytes = s.with(|editor, cx| ibis_office_pdf::editor::label_copy_bytes(editor, cx)).unwrap();
+    let zip = ibis_formats::zip::Archive::new(&bytes).unwrap();
+    let page = zip.read_bounded("visio/pages/page1.xml", 100_000).unwrap().unwrap();
+    assert!(String::from_utf8(page).unwrap().contains("更新 &lt;Vista&gt;"));
+    let output = s.screenshot_path("updated-copy").with_extension("vsdx");
+    std::fs::write(output, bytes).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), before, "the original file is untouched");
+    s.screenshot("vsdx-label-edit");
 }

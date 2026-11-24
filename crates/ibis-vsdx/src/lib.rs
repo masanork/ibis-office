@@ -15,6 +15,7 @@ use ibis_pdf::{DisplayCmd, Error, ObjectId, PageInfo, PageScene, PdfRect, Result
 use roxmltree::{Document, Node};
 
 mod bitmap;
+pub mod edit;
 mod geometry;
 mod gradient;
 mod theme;

@@ -1837,3 +1837,9 @@ vsdx.exported	Exported the Visio drawing.
 vsdx.export-use-command	Choose Export > Visio Drawing (.vsdx) to create a VSDX file.
 ai.send-acp	ACP agent
 ai.acp-cancelled	ACP run cancelled.
+vsdx.edit-label	Edit Diagram Labels…
+vsdx.no-editable-labels	This page has no editable plain-text labels.
+vsdx.label-number	Label {n} / {total}
+vsdx.save-label-copy	Save VSDX Copy
+vsdx.keep-original	Choose a different path to preserve the original diagram.
+vsdx.label-copy-saved	Saved the updated VSDX copy.
