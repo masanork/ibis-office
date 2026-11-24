@@ -27,8 +27,8 @@ pub struct EmbeddedMetafileInspection {
 /// Validating the WMF envelope does not establish that it can be rendered
 /// correctly, or determine which page and position it belongs to.
 pub fn inspect_embedded_metafiles(data: &[u8]) -> Result<EmbeddedMetafileInspection, Error> {
-    let document = super::source_document(data)?;
-    let entries = ibis_ooxml::cfb::directory(&document).map_err(|e| Error::new(e.to_string()))?;
+    let container = super::source_document(data)?.container;
+    let entries = container.directory().map_err(|e| Error::new(e.to_string()))?;
     let mut result = EmbeddedMetafileInspection::default();
     let mut total = 0usize;
     for entry in entries {
@@ -50,7 +50,11 @@ pub fn inspect_embedded_metafiles(data: &[u8]) -> Result<EmbeddedMetafileInspect
         if result.metafiles.len() + result.rejected >= MAX_CANDIDATES {
             return Err(Error::new("埋め込み画像の数が多すぎます"));
         }
-        let stream = ibis_ooxml::cfb::stream_path(&document, &entry.path)
+        let remaining = MAX_TOTAL_BYTES - total;
+        if container.stream_size(&entry.path).map_err(|e| Error::new(e.to_string()))? > remaining as u64 {
+            return Err(Error::new("埋め込み画像が大きすぎます"));
+        }
+        let stream = container.stream_path_bounded(&entry.path, remaining)
             .map_err(|e| Error::new(e.to_string()))?;
         total = total
             .checked_add(stream.len())

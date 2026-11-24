@@ -32,18 +32,18 @@ pub struct FrameLink {
 
 /// Inspect one observed record shape. No image, geometry or page is reconstructed.
 pub fn inspect_frame_links(data: &[u8]) -> Result<Vec<FrameLink>, Error> {
-    let document = super::source_document(data)?;
-    let entries = ibis_ooxml::cfb::directory(&document).map_err(|e| Error::new(e.to_string()))?;
+    let container = super::source_document(data)?.container;
+    let entries = container.directory().map_err(|e| Error::new(e.to_string()))?;
     let exists = |path: &str| entries.iter().any(|e| !e.is_storage && e.path == path);
     match (exists("EmbedItems/EmbeddingInfo"), exists("Frame")) {
         (false, false) => return Ok(Vec::new()),
         (true, true) => {}
         _ => return Err(bad()),
     }
-    let info = ibis_ooxml::cfb::stream_path(&document, "EmbedItems/EmbeddingInfo")
+    let info = container.stream_path_bounded("EmbedItems/EmbeddingInfo", MAX_INFO)
         .map_err(|e| Error::new(e.to_string()))?;
     let frame =
-        ibis_ooxml::cfb::stream_path(&document, "Frame").map_err(|e| Error::new(e.to_string()))?;
+        container.stream_path_bounded("Frame", MAX_INFO).map_err(|e| Error::new(e.to_string()))?;
     if info.len() > MAX_INFO || frame.len() > MAX_INFO {
         return Err(bad());
     }

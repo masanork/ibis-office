@@ -109,16 +109,19 @@ fn dimension(data: &[u8], offset: usize) -> Result<Emu, Error> {
     Ok(units(i64::from(dword(data, offset)? as i32)))
 }
 
-fn read_stream(data: &[u8], name: &str, compressed: bool, limit: usize) -> Result<Vec<u8>, Error> {
-    let bytes = cfb::stream_path(data, name).map_err(|e| Error::new(e.to_string()))?;
+fn read_stream(container: &cfb::Reader<&[u8]>, name: &str, compressed: bool, limit: usize) -> Result<Vec<u8>, Error> {
     let limit = limit.min(STREAM_LIMIT);
+    let stored_limit = if compressed { BODY_LIMIT } else { limit };
+    let size = container.stream_size(name).map_err(|e| Error::new(e.to_string()))?;
+    if size > stored_limit as u64 {
+        return Err(Error::new(format!("HWP 5.0: {name} が大きすぎます")));
+    }
+    let bytes = container.stream_path_bounded(name, stored_limit).map_err(|e| Error::new(e.to_string()))?;
     if compressed {
         miniz_oxide::inflate::decompress_to_vec_with_limit(&bytes, limit)
             .map_err(|_| Error::new(format!("HWP 5.0: {name} を展開できません")))
-    } else if bytes.len() <= limit {
-        Ok(bytes)
     } else {
-        Err(Error::new(format!("HWP 5.0: {name} が大きすぎます")))
+        Ok(bytes)
     }
 }
 
@@ -171,7 +174,8 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
     if data.len() > BODY_LIMIT {
         return Err(Error::new("HWP 5.0: ファイルが大きすぎます"));
     }
-    let header = cfb::stream_path(data, "FileHeader").map_err(|e| Error::new(e.to_string()))?;
+    let container = cfb::Reader::new(data).map_err(|e| Error::new(e.to_string()))?;
+    let header = container.stream_path_bounded("FileHeader", STREAM_LIMIT).map_err(|e| Error::new(e.to_string()))?;
     if !header.starts_with(SIGNATURE) || header.get(35) != Some(&5) {
         return Err(Error::new("HWP 5.0 のファイルではありません"));
     }
@@ -183,18 +187,18 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
         ));
     }
     let compressed = flags & 1 != 0;
-    let info = read_stream(data, "DocInfo", compressed, STREAM_LIMIT)?;
-    let mut importer = Importer::new(&records(&info)?, version, data, presentation, compressed)?;
-    let mut sections: Vec<_> = cfb::directory(data)
+    let info = read_stream(&container, "DocInfo", compressed, STREAM_LIMIT)?;
+    let mut importer = Importer::new(&records(&info)?, version, &container, presentation, compressed)?;
+    let mut sections: Vec<_> = container.directory()
         .map_err(|e| Error::new(e.to_string()))?
-        .into_iter()
+        .iter()
         .filter_map(|entry| {
             let index = entry
                 .path
                 .strip_prefix("BodyText/Section")?
                 .parse::<u32>()
                 .ok()?;
-            (!entry.is_storage).then_some((index, entry.path))
+            (!entry.is_storage).then_some((index, entry.path.as_str()))
         })
         .collect();
     sections.sort_unstable();
@@ -208,7 +212,7 @@ fn read_document(data: &[u8], presentation: &mut Presentation) -> Result<FlowDoc
     let mut remaining = BODY_LIMIT;
     let mut document = FlowDocument::default();
     for (index, (_, path)) in sections.into_iter().enumerate() {
-        let bytes = read_stream(data, &path, compressed, remaining)?;
+        let bytes = read_stream(&container, path, compressed, remaining)?;
         remaining -= bytes.len();
         let section = records(&bytes)?;
         let page = section
@@ -294,7 +298,7 @@ struct Importer<'a> {
     bullet_ids: Vec<u32>,
     outline: u16,
     fills: Vec<CellFill>,
-    data: &'a [u8],
+    container: &'a cfb::Reader<&'a [u8]>,
     presentation: &'a mut Presentation,
     pictures: Vec<Option<EmbeddedPicture>>,
     media: HashMap<u16, MediaId>,
@@ -308,7 +312,7 @@ impl<'a> Importer<'a> {
     fn new(
         info: &[Record<'_>],
         version: u32,
-        data: &'a [u8],
+        container: &'a cfb::Reader<&'a [u8]>,
         presentation: &'a mut Presentation,
         compressed: bool,
     ) -> Result<Self, Error> {
@@ -335,7 +339,7 @@ impl<'a> Importer<'a> {
             bullet_ids: Vec::new(),
             outline: 0,
             fills: Vec::new(),
-            data,
+            container,
             presentation,
             pictures: Vec::new(),
             media: HashMap::new(),
@@ -947,7 +951,7 @@ impl<'a> Importer<'a> {
             return Ok(None);
         };
         let bytes = read_stream(
-            self.data,
+            self.container,
             &asset.path,
             asset.compressed,
             self.remaining_media,

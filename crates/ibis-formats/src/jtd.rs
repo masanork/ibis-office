@@ -98,37 +98,50 @@ fn import_run(kind: FlowRunKind, style: FlowRunStyle) -> FlowRun {
 
 /// Identify a supported JTD by its container and named document stream.
 pub fn is_jtd(data: &[u8]) -> bool {
-    checked_stream(data).is_ok_and(|s| s.starts_with(b"SsmgV.01"))
-        || (data.len() <= MAX_FILE && ibis_ooxml::cfb::stream_path(data, "JSCompDocument").is_ok_and(|s| compressed::is_wrapper(&s)))
+    if data.len() > MAX_FILE { return false; }
+    let Ok(container) = Container::new(std::borrow::Cow::Borrowed(data)) else { return false };
+    checked_text(&container).is_ok_and(|s| s.starts_with(b"SsmgV.01"))
+        || container.stream_path_bounded("JSCompDocument", MAX_STREAM).is_ok_and(|s| compressed::is_wrapper(&s))
 }
 
-fn source_document(data: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, Error> {
+type Container<'a> = ibis_ooxml::cfb::Reader<std::borrow::Cow<'a, [u8]>>;
+
+struct SourceDocument<'a> {
+    container: Container<'a>,
+    text: Vec<u8>,
+}
+
+fn source_document(data: &[u8]) -> Result<SourceDocument<'_>, Error> {
+    use std::borrow::Cow;
     if data.len() > MAX_FILE { return Err(Error::new("一太郎ファイルが大きすぎます")); }
-    let entries = ibis_ooxml::cfb::directory(data).map_err(|_| Error::new("対応する一太郎コンテナではありません"))?;
-    if entries.iter().any(|entry| !entry.is_storage && entry.path == "DocumentText") {
-        // A malformed or over-limit root stream must not silently fall back
-        // to a second, unrelated compressed document in the same container.
-        checked_stream(data)?;
-        return Ok(std::borrow::Cow::Borrowed(data));
+    let mut container = Container::new(Cow::Borrowed(data))
+        .map_err(|_| Error::new("対応する一太郎コンテナではありません"))?;
+    let entries = container.directory().map_err(|_| Error::new("対応する一太郎コンテナではありません"))?;
+    if !entries.iter().any(|entry| !entry.is_storage && entry.path == "DocumentText") {
+        let name = "JSCompDocument";
+        let size = container.stream_size(name)
+            .map_err(|_| Error::new("一太郎本文がないか、暗号化・未対応の形式です"))?;
+        if size > MAX_STREAM as u64 { return Err(Error::new("圧縮一太郎文書が大きすぎます")); }
+        let stream = container.stream_path_bounded(name, MAX_STREAM)
+            .map_err(|_| Error::new("一太郎本文がないか、暗号化・未対応の形式です"))?;
+        let inner = compressed::decompress(&stream, MAX_FILE)?;
+        container = Container::new(Cow::Owned(inner))
+            .map_err(|_| Error::new("対応するJTDコンテナではありません"))?;
     }
-    let stream = ibis_ooxml::cfb::stream_path(data, "JSCompDocument")
-        .map_err(|_| Error::new("一太郎本文がないか、暗号化・未対応の形式です"))?;
-    if stream.len() > MAX_STREAM { return Err(Error::new("圧縮一太郎文書が大きすぎます")); }
-    let inner = compressed::decompress(&stream, MAX_FILE)?;
-    checked_stream(&inner)?;
-    Ok(std::borrow::Cow::Owned(inner))
+    // A malformed root stream must retain its error, including when a
+    // second compressed document is present in the same container.
+    let text = checked_text(&container)?;
+    Ok(SourceDocument { container, text })
 }
 
 /// Decode the font table without assuming that inline character selectors
 /// use the same index namespace.
 pub fn inspect_fonts(data: &[u8]) -> Result<Vec<FontRecord>, Error> {
-    let data = source_document(data)?;
-    checked_stream(&data)?;
-    font_table(&data)
+    font_table(&source_document(data)?.container)
 }
 
-fn font_table(data: &[u8]) -> Result<Vec<FontRecord>, Error> {
-    let bytes = ibis_ooxml::cfb::stream_path(data, "Font")
+fn font_table(container: &Container<'_>) -> Result<Vec<FontRecord>, Error> {
+    let bytes = container.stream_path_bounded("Font", MAX_STREAM)
         .map_err(|_| Error::new("JTDのフォント表がありません"))?;
     font::parse(&bytes)
 }
@@ -155,23 +168,21 @@ fn default_font<'a>(styles: &[u8], fonts: &'a [FontRecord]) -> Option<&'a FontRe
         .then_some(primary)
 }
 
+#[cfg(test)]
 fn checked_stream(data: &[u8]) -> Result<Vec<u8>, Error> {
-    if data.len() > MAX_FILE {
-        return Err(Error::new("JTDファイルが大きすぎます"));
-    }
-    if data.len() < 512
-        || !ibis_ooxml::cfb::is_cfb(data)
-        || !matches!(u16::from_le_bytes([data[30], data[31]]), 9 | 12)
-        || u16::from_le_bytes([data[32], data[33]]) != 6
-    {
-        return Err(Error::new("対応するJTDコンテナではありません"));
-    }
-    let stream = ibis_ooxml::cfb::stream_path(data, "DocumentText")
-        .map_err(|_| Error::new("JTD本文がないか、暗号化・未対応の形式です"))?;
-    if stream.len() > MAX_STREAM {
+    if data.len() > MAX_FILE { return Err(Error::new("JTDファイルが大きすぎます")); }
+    let container = Container::new(std::borrow::Cow::Borrowed(data))
+        .map_err(|_| Error::new("対応するJTDコンテナではありません"))?;
+    checked_text(&container)
+}
+
+fn checked_text(container: &Container<'_>) -> Result<Vec<u8>, Error> {
+    const NAME: &str = "DocumentText";
+    let missing = |_| Error::new("JTD本文がないか、暗号化・未対応の形式です");
+    if container.stream_size(NAME).map_err(missing)? > MAX_STREAM as u64 {
         return Err(Error::new("JTD本文が大きすぎます"));
     }
-    Ok(stream)
+    container.stream_path_bounded(NAME, MAX_STREAM).map_err(missing)
 }
 
 /// Known content that the preview cannot currently import. Counts report
@@ -183,8 +194,8 @@ pub struct OmittedContent {
 }
 
 pub fn omitted_content(data: &[u8]) -> Result<OmittedContent, Error> {
-    let data = source_document(data)?;
-    let entries = ibis_ooxml::cfb::directory(&data).map_err(|e| Error::new(e.to_string()))?;
+    let container = source_document(data)?.container;
+    let entries = container.directory().map_err(|e| Error::new(e.to_string()))?;
     let mut result = OmittedContent::default();
     for entry in entries {
         let path = entry.path.as_str();
@@ -205,10 +216,9 @@ pub fn omitted_content(data: &[u8]) -> Result<OmittedContent, Error> {
 /// Import only confirmed text into the existing document model. This is lossy
 /// and must never be used as the source of a JTD save.
 pub fn read(data: &[u8]) -> Result<Presentation, Error> {
-    let data = source_document(data)?;
-    let data = data.as_ref();
-    let stream = checked_stream(data)?;
-    let decoded = decode::decode(&stream)?;
+    let SourceDocument { container, text } = source_document(data)?;
+    let decoded = decode::decode(&text)?;
+    drop(text);
     let mut presentation = crate::read(&crate::blank_file(Kind::Document)?)?;
     let flow = std::sync::Arc::make_mut(
         presentation
@@ -222,15 +232,13 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     flow.page.bottom = 30 * 36_000;
     flow.page.left = 30 * 36_000;
     flow.page.right = 30 * 36_000;
-    let mut page_lines = 40;
     // Page geometry must be installed before table widths are derived.
-    if let Ok(styles) = ibis_ooxml::cfb::stream_path(data, "DocumentViewStyles") {
-        apply_view_page(&styles, &mut flow.page);
-        if observed_vertical(&styles) {
-            flow.page.direction = CellDirection::TbRl;
-        }
-        page_lines = view_style_lines(&styles).unwrap_or(40);
+    let typography = container.stream_path_bounded("DocumentViewStyles", MAX_STREAM).unwrap_or_default();
+    apply_view_page(&typography, &mut flow.page);
+    if observed_vertical(&typography) {
+        flow.page.direction = CellDirection::TbRl;
     }
+    let page_lines = view_style_lines(&typography).unwrap_or(40);
     let cross_axis = if flow.page.direction.vertical() {
         flow.page.size.width - flow.page.left - flow.page.right
     } else {
@@ -238,9 +246,8 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     };
     flow.page.line_pitch = Some(cross_axis / i64::from(page_lines));
     flow.page.doc_grid_type = ibis_doc_model::DocGridType::Lines;
-    let typography = ibis_ooxml::cfb::stream_path(data, "DocumentViewStyles").unwrap_or_default();
     let mut defaults = view_typography(&typography, &mut flow.page);
-    if let Ok(fonts) = font_table(data) {
+    if let Ok(fonts) = font_table(&container) {
         if let Some(font) = default_font(&typography, &fonts) {
             defaults.font = Some(font.face.clone());
             defaults.east_asian_font = Some(font.face.clone());
@@ -1356,7 +1363,7 @@ fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
 /// inference. Unknown properties and undecoded style tails remain available.
 pub fn inspect(data: &[u8]) -> Result<DecodedText, Error> {
     let data = source_document(data)?;
-    decode::decode(&checked_stream(&data)?)
+    decode::decode(&data.text)
 }
 
 fn run_style(document: &DecodedText, position: usize, defaults: &FlowRunStyle) -> FlowRunStyle {
