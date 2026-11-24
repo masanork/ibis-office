@@ -1,6 +1,17 @@
 # Markdownの参照仕様と互換性
 
-ibisOfficeが受け付ける構文、通常の入出力での挙動、制限とサンプルは [Markdown構文リファレンス](markdown-reference-ja.md) にまとめています。[Markdown・YAML 入出力仕様](markdown-yaml-spec-ja.md) は各形式の判定と変換で保持する情報を定義します。このページは外部仕様の版、互換性の対象、検証方法を記録します。
+ibisOfficeが受け付ける構文、通常の入出力での挙動、制限とサンプルは [Markdown構文リファレンス](markdown-reference-ja.md) にまとめています。[Markdown・YAML 入出力仕様](markdown-yaml-spec-ja.md) は各形式の判定と変換で保持する情報を定義します。このページは外部仕様の版、互換性の対象、相互運用性の方針、検証方法を記録します。
+
+## 相互運用性の方針
+
+Markdownの拡張は、次の方針で選びます。拡張を追加するときは、この方針に照らして書き方を決め、下の「[拡張の書き方と対応状況](#拡張の書き方と対応状況)」に記録します。
+
+1. **CommonMarkとして正しい原稿にする。** 拡張を使った原稿も、CommonMark 0.31.2 とGFMの解釈で壊れないようにします。拡張を解釈しないビューアーでは、本文が読める形で残るようにします。
+2. **既存の方言の書き方を選ぶ。** 同じ要求に応える記法が他の方言にあれば、新しい記法を作らずにそれを使います。読み込みでは主な変種を受け付け、書き出しでは一つの正規形を使います。正規形は、GitHubなどの表示に加え、VFM（Vivliostyle）で文字のまま描かれないかも確かめて選びます。
+3. **意味を見えない注釈だけに持たせない。** 表のセル結合の `<!-- colspan:2 -->` のように、HTMLコメントは拡張を解釈しないビューアーで意味が隠れます。新しい拡張では、拡張を解釈しないビューアーでも内容と意図が読み取れる書き方を優先します。HTMLコメントは、Officeの書式を往復させるための補助に限ります。
+4. **分野の語彙をibisOfficeに持ち込まない。** 文書の分野ごとの語（要件の種類、注意書きの区分など）は、ibisOfficeに組み込まず、原稿のフロントマターや共有の定義ファイルで利用者が定義します。フロントマターのキーは、既存の `x-ibis-format` と同じく `x-ibis-` を接頭辞にします。
+5. **往復で正規形に戻す。** Markdown → DOCX → Markdown で正規形の原稿に戻り、AI向けJSONにも同じ意味が出るようにします。DOCXでは、意味を段落スタイルなどOfficeの要素に写します。
+6. **曖昧さは規則で解く。** 方言の間で同じ書き方が別の意味を持つ場合（`:` で始まる段落は、Pandocでは表の表題、定義リストでは定義）、どちらに解釈するかの規則をこのページに記録します。
 
 ## 参照仕様
 
@@ -15,8 +26,86 @@ ibisOfficeが受け付ける構文、通常の入出力での挙動、制限と�
 | [Lawtext](https://github.com/yamachig/Lawtext) と [法令標準XML](https://laws.e-gov.go.jp/file/XMLSchemaForJapaneseLaw_v3.xsd) | 法令構造の変換と、元XMLへの限定的な編集反映 | 法令XMLを原本とし、対応を確認できない編集は診断で知らせる。 |
 | [OKF v0.3](https://github.com/open-knowledge-format/open-knowledge-format/blob/main/SPEC.md) と [YAML 1.2.2](https://yaml.org/spec/1.2.2/) | ローカルのフォルダーで知識項目の認識、種類・タグによる絞り込み、信頼状態・鮮度の表示、参照元を指定した相対・ルート基準パスの解決 | 複数行のYAML値の編集は対象外。 |
 | [Office Open XML ECMA-376](https://ecma-international.org/publications-and-standards/standards/ecma-376/) | DOCX、PPTX、XLSXの各変換経路 | アプリ間の見た目、文書モデルの往復、Markdownの元構文の復元は別々に検証する。 |
+| [CommonMark generic directives（提案）](https://talk.commonmark.org/t/generic-directives-plugins-syntax/444) と [remark-directive](https://github.com/remarkjs/remark-directive) | `:::name[label]{attributes}` のコンテナの書き方を、利用者が定義するブロックの変種として読む（計画） | CommonMarkの仕様には採用されていない提案。書き出しの正規形には使わない。 |
+| [Docusaurus admonitions](https://docusaurus.io/docs/markdown-features/admonitions) | `:::type[題名]` と、設定で登録する独自の種類の考え方 | 種類の登録はDocusaurusの設定ファイルで行う。ibisOfficeでは原稿のフロントマターで定義する。 |
+| [Pandoc's Markdown](https://pandoc.org/MANUAL.html#pandocs-markdown) | fenced div `::: {.class}`、属性 `{#id .class key=val}`、パイプ表の区切り行による列幅の比、表の表題 `: …`、定義リスト、DOCXの `custom-style`（いずれも計画） | 区切り行の列幅はPandocでは行が `--columns` を超える場合に効く。ibisOfficeでの適用条件は下の表に記録する。 |
+| [Vivliostyle Flavored Markdown（VFM）](https://github.com/vivliostyle/vfm/blob/main/docs/vfm.md) | ルビ `{漢字\|かんじ}` は同じ書き方。見出しのID `{#id}`、数式、脚注、GFMの表は共通の書き方を使う | 書き方の解釈の水準で互換を取る（下の「[VFMとの関係](#vfmとの関係)」）。 |
+| [Quarto](https://quarto.org/docs/authoring/tables.html) | 表の表題と相互参照の `: 表題 {#tbl-…}`、列幅の `tbl-colwidths`（計画） | Quartoの相互参照はラベルの接頭辞 `tbl-` を要する。ibisOfficeの `{{ref:…}}` とは別に扱う。 |
 
 新旧構文の互換性は、入力時に優先する構文と、変換後に書き出す構文の両方で決まります。OOMarkdownの目次と参考文献は `::: toc` と `::: bibliography` を使用し、Obsidianの二重角括弧にフィールドの意味を割り当てません。同一文書内のWikiリンクは通常のMarkdownアンカーになります。別ファイルへのWikiリンクはMarkdownへの再出力でもWiki記法を使います。
+
+## 拡張の書き方と対応状況
+
+長い構造化文書（仕様書、規程、教材など）で要る表現を、[相互運用性の方針](#相互運用性の方針)に沿って次の書き方で扱います。「拡張を解釈しない場合」は、CommonMarkとGFMだけを解釈するビューアーでの見え方です。
+
+| 表現 | 書き出しの正規形 | 読み込みで受け付ける変種 | 拡張を解釈しない場合 | 状態 |
+| --- | --- | --- | --- | --- |
+| 引用・アラート・calloutの中の複数のブロック | `>` の中に、段落・リスト・コード・見出しをそのまま書く | GitHubのアラート、Obsidianのcallout、MySTのadmonition | 普通の引用（CommonMarkの引用は任意のブロックを含められる） | 対応済み |
+| 利用者が定義するcalloutの種類と題名 | `> [!type] 題名`（Obsidianの形） | `> [!type]`（題名なし）、`> [!type]+` / `> [!type]-`（折りたたみの印は保持する） | 1行目が「[!type] 題名」の普通の引用 | 対応済み |
+| calloutの種類の定義 | フロントマターの `x-ibis-blocks` | — | フロントマターなので本文に出ない | 対応済み |
+| フロントマターの未知のキー | 原稿のとおり保持する | — | — | 対応済み |
+| 表の列幅 | パイプ表の区切り行の `-` の数の比（Pandoc・Quarto） | Quartoの `tbl-colwidths` | 列幅を指定しない普通のパイプ表 | 計画 |
+| 表の表題と番号 | 表に接する `: 表題 {#tbl_…}` の段落（Pandoc・Quarto） | 既存の `表 {{seq:table}} …` の段落 | 表の前後の普通の段落 | 計画 |
+| 図の大きさ | 画像・図のフェンスの後の `{width=…}`（Pandoc） | — | 属性が文字として残る | 計画 |
+| 目次の深さ | フロントマターの `toc-depth`（Pandoc・Quarto） | `::: toc {depth=2}` | フロントマターなので本文に出ない | 計画 |
+| 定義リスト | `用語` の次の行に `: 定義`（Pandoc、PHP Markdown Extra） | — | 用語の段落と、「: 」で始まる段落 | 計画 |
+| 別ファイルへのリンクのDOCX書き出し | 相対リンク `[文](other.md#見出し)` | Obsidianの `[[other#見出し\|文]]` | 普通のリンク | 計画 |
+
+`:` で始まる段落は、表と空行一つ以内で接する場合だけ表の表題とし、それ以外は定義リストの定義として読みます。
+
+### VFMとの関係
+
+ibisOfficeはWord型の組版を第一とし、[VFM](https://github.com/vivliostyle/vfm/blob/main/docs/vfm.md)（Vivliostyle）の組版結果に寄せることはしません。VFMとは書き方の解釈の水準で互換を取り、VFMで書いた原稿をibisOfficeで開いたときに、次の三つが起きないようにします。
+
+- **データを落とす**: 解釈できない書き方も、Markdownへの書き戻しで原稿のとおりに残す
+- **書き方を文字のまま描く**: 解釈できない属性や囲みの印を、本文の文字として描かない
+- **書き方を崩して描く**: 一部だけを別の書き方として解釈して、前後の本文まで崩さない
+
+ibisOfficeの拡張の書き方を選ぶときも、VFMで文字のまま描かれにくい書き方を選びます。VFM向けの書き出しと、Vivliostyleによる組版は対象外です。
+
+| 書き方 | VFMでの意味 | ibisOfficeの今の状態 | 目標 |
+| --- | --- | --- | --- |
+| ルビ `{漢字\|かんじ}` | ルビ | ルビ（同じ書き方） | — |
+| 入れ子のルビ `{{東京\|とうきょう}\|Tokyo}` | 二重のルビ | 崩れて描かれる | VFMの次の版の規則で読む（「[日本語組版の記法とVFM](#日本語組版の記法とvfm)」） |
+| 見出しのID `{#id}` | 見出しのID | Wordのブックマーク | — |
+| 見出しのクラス `{.class}` | 見出しのクラス | 見出しの文字として描かれる（原稿には残る） | 描かず、原稿のとおり保持する |
+| コードフェンスの題名 ```` ```js:app.js ````、`title=app.js` | コードブロックの題名 | 書き戻しで題名が落ちる。`js:app.js` は言語名も落ちる | 言語名と題名を分けて保持する |
+| 画像の属性 `![題名](図.png){id="…"}` | 画像のID | 画像として描かれず、リンクの文字になる | 画像として描き、属性を保持する（`{width=…}` の計画と合わせる） |
+| インラインの脚注 `^[…]` | 脚注 | 上付き文字として崩れ、後ろの脚注の参照も崩れる | 脚注として読む |
+| 生のHTMLの囲み `<div class="…">` | HTMLの要素（中のMarkdownも解釈） | 囲みのタグが文字として描かれる（中のMarkdownは描かれる） | タグを描かず、原稿のとおり保持する |
+| 数式 `$x = y$` | 数式 | 数式。書き戻しで空白が詰められる | 原稿の空白を保つ |
+| フロントマターの `lang`・`class`・`vfm` | 文書の設定 | Markdown の保存と DOCX 往復で原稿のとおり保持する | — |
+| `> [!type] 題名` | 普通の引用 | callout | — |
+| `:::` の囲み | 段落の文字として残る（VFMには囲みの書き方が無い） | `::: toc`・`::: bibliography` など決まった語は正規形として書き出す | 利用者が定義するブロックの正規形には使わない |
+
+この表の「今の状態」は、masanork ブランチ 21d912f7 で、上の書き方を並べた原稿を `--export md` と `--export png` にかけて確かめた結果です。
+
+### 日本語組版の記法とVFM
+
+ibisOfficeのMarkdown記法のうち、日本語組版に関わるもの（ルビ、傍点、縦中横、改行、図の題名）は、VFMに書き方がある場合はVFMに合わせます。VFMに書き方が無い場合はibisOfficeの書き方を使い、VFMの原稿で使われる生のHTMLの書き方も、ibisOfficeの解釈で吸収できる範囲で受け付けます。OOXMLとCSS組版の仕組みの違いから来る差（見出しによる節への分割、CSSのテーマ、改行・改ページの位置）は揃えません。
+
+| 記法 | VFM | ibisOffice | 方針 |
+| --- | --- | --- | --- |
+| ルビ `{親文字\|ルビ}`、区切りのエスケープ `\\|` | あり | あり（同じ書き方。書き出しの正規形） | VFMと同じ意味で使う |
+| 入れ子のルビ `{{東京\|とうきょう}\|Tokyo}` | 次の版で、内側から対にする（今の版は外側から） | 崩れて描かれる | VFMの次の版の規則（内側から）で読む（計画） |
+| 青空文庫のルビ `｜親文字《ルビ》` | なし（文字として残る） | 読み込みで受け付ける | 書き出しはVFMと同じ `{親文字\|ルビ}` にする（今のまま） |
+| 縦中横 `[25]{.tcy}`、傍点 `《《傍点》》`・`[傍点]{.em}` | 書き方なし（生のHTMLかCSSで行う） | ibisOfficeの書き方 | 今の書き方を保つ。生のHTMLの `<span class="tcy">`・`<span class="em">` も同じ意味で受け付ける（計画）。書き出しの正規形を変えるかは、upstreamの既存の原稿への影響を見て決める |
+| 1つの改行 | `vfm: { hardLineBreaks: true }` で改行（既定は段落内の空白） | 段落内の空白 | フロントマターに `vfm.hardLineBreaks: true` があれば改行として読む（計画） |
+| 1行の段落にある代替テキスト付きの画像 | 図と図の題名（`captionlessImagePolicy` で題名の無い画像の扱いを選ぶ） | 画像（代替テキストは表示しない） | 既存の原稿の見た目を変えないよう、フロントマターに `vfm` がある原稿だけVFMの規則で図の題名にする（計画） |
+| インラインの脚注 `^[…]` | 脚注 | 上付き文字として崩れる | 脚注として読む（計画） |
+| 縦書き | CSSのテーマ・クラスで行う | フロントマターの `direction: vertical` | 仕組みが違うので揃えない。`class` などVFMのキーは保持する |
+
+### calloutの種類の定義
+
+calloutの種類は、GitHubの5種（`note`、`tip`、`important`、`warning`、`caution`）と、Obsidianの別名（`hint` は `tip`、`attention` は `warning`）を既定で持ちます。それ以外の種類は、フロントマターの `x-ibis-blocks` で題名と見た目を定義できます。
+
+```yaml
+x-ibis-blocks:
+  must: { title: 実装必須機能, tone: important }
+  option: { title: 標準オプション機能, tone: note }
+```
+
+`title` は題名を省いたときに表示する題名、`tone` は見た目（既定の5種のどれに準じるか）です。定義の無い種類は、Obsidianと同じく `note` の見た目で、種類名を題名として表示します。原稿に題名を書いた場合は、定義の題名より優先します。DOCXでは種類・折りたたみの印・明示した題名を題名段落のスタイルと内容に、本文のまとまりを引用の継続スタイルに保持します。折りたたみの印は保存・再読込で保持し、ibisOffice では本文を展開して表示します。
 
 ## OKFとフォルダーの読み取り
 

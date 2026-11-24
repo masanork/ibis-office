@@ -4,14 +4,36 @@
 
 //! Obsidian constructs that fit a single manuscript.
 
-pub(super) fn callout(line: &str) -> Option<&'static str> {
-    let kind = line.strip_prefix("[!")?.strip_suffix(']')?;
+pub(super) fn callout(line: &str) -> Option<(&str, &str, Option<&str>)> {
+    let content = line.trim_start_matches(' ');
+    if line.len() - content.len() > 3 {
+        return None;
+    }
+    let (kind, rest) = content.strip_prefix("[!")?.split_once(']')?;
+    if !kind.starts_with(|ch: char| ch.is_ascii_alphabetic())
+        || !kind.bytes().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'-' | b'_'))
+    {
+        return None;
+    }
+    let (fold, title) = if rest.starts_with(['+', '-']) {
+        rest.split_at(1)
+    } else {
+        ("", rest)
+    };
+    if !title.is_empty() && !title.starts_with([' ', '\t']) {
+        return None;
+    }
+    let title = title.trim();
+    Some((kind, fold, (!title.is_empty()).then_some(title)))
+}
+
+pub(super) fn canonical_callout_kind(kind: &str) -> Option<&'static str> {
     match kind.to_ascii_lowercase().as_str() {
-        "note" => Some("[!NOTE]"),
-        "tip" | "hint" => Some("[!TIP]"),
-        "important" => Some("[!IMPORTANT]"),
-        "warning" | "attention" => Some("[!WARNING]"),
-        "caution" => Some("[!CAUTION]"),
+        "note" => Some("NOTE"),
+        "tip" | "hint" => Some("TIP"),
+        "important" => Some("IMPORTANT"),
+        "warning" | "attention" => Some("WARNING"),
+        "caution" => Some("CAUTION"),
         _ => None,
     }
 }

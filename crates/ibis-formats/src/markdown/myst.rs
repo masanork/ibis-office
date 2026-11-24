@@ -41,19 +41,13 @@ pub(super) fn colon_directive<'a>(lines: &'a [&'a str]) -> Option<(Directive<'a>
             };
             return Some((directive, index + 1));
         }
-        if (alert.is_some() && !simple_body_line(raw)) || line.starts_with(":::") {
+        if line.starts_with(":::") {
             break;
         }
     }
     None
 }
 
-pub(super) fn admonition(info: &str, lines: &[&str]) -> Option<&'static str> {
-    alert_kind(info)
-        .filter(|_| !lines.is_empty() && lines.iter().all(|line| simple_body_line(line)))
-}
-
-// The shared alert model accepts a single paragraph of inline Markdown.
 fn simple_body_line(raw: &str) -> bool {
     let line = raw.trim();
     !line.is_empty()
@@ -65,7 +59,7 @@ fn simple_body_line(raw: &str) -> bool {
         && !raw.ends_with('\\')
 }
 
-fn alert_kind(info: &str) -> Option<&'static str> {
+pub(super) fn alert_kind(info: &str) -> Option<&'static str> {
     match info {
         "{note}" => Some("[!NOTE]"),
         "{tip}" => Some("[!TIP]"),
