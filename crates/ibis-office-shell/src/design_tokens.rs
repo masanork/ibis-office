@@ -4,7 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use gpui_kit::*;
+#[cfg(not(target_family = "wasm"))]
+use gpui_kit::PathPromptOptions;
+use gpui_kit::{Context, Window};
 use ibis_doc_model::Rgb;
 use serde_json::Value;
 
@@ -194,7 +196,7 @@ impl SlideEditor {
 mod tests {
     use super::*;
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn design_tokens_resolve_named_opaque_colors() {
         let imported = parse(
             br##"{
@@ -221,7 +223,7 @@ mod tests {
         assert!(parse(b"{}").is_none());
     }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn design_tokens_read_official_digital_agency_json() {
         let Some(path) = std::env::var_os("IBIS_DADS_TOKENS") else {
             return;
