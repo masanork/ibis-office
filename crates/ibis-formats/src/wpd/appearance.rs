@@ -53,7 +53,7 @@ impl<'a> Packets<'a> {
         Self { prefix, entries }
     }
 
-    fn packet(self, pid: u16, kind: u8) -> Option<&'a [u8]> {
+    pub(super) fn packet(self, pid: u16, kind: u8) -> Option<&'a [u8]> {
         let index = usize::from(pid.checked_sub(1)?) * 14;
         let entry = self.entries.get(index..index + 14)?;
         if entry[1] != kind {
