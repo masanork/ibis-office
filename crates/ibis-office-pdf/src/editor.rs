@@ -816,33 +816,60 @@ struct LabelEdit {
     document: Arc<ibis_vsdx::VsdxContainer>,
     page: usize,
     labels: Vec<ibis_vsdx::edit::EditableLabel>,
-    changed_labels: std::collections::BTreeMap<usize, String>,
+    changed_labels: std::collections::BTreeMap<(usize, u32), String>,
     selected: usize,
     input: Entity<InputState>,
 }
 
 #[cfg(not(target_family = "wasm"))]
+impl LabelEdit {
+    fn remember_label(&mut self, value: String) {
+        let label = &self.labels[self.selected];
+        let key = (self.page, label.shape_id);
+        if value == label.text {
+            self.changed_labels.remove(&key);
+        } else {
+            self.changed_labels.insert(key, value);
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
 fn open_label_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
     use ibis_office_shell::i18n::text;
-    if let Some(mode) = editor.format_state::<State>().and_then(|state| state.label_edit.as_ref()) {
+    let Some(viewer) = viewer_of(editor) else { return };
+    let page = page_at_top(editor).unwrap_or(0);
+    let document = {
+        let viewer = viewer.lock().expect("pdf viewer lock");
+        let crate::ViewerSource::Vsdx(document) = &viewer.source else { return };
+        document.clone()
+    };
+    if let Some(mode) = editor.format_state::<State>().and_then(|state| state.label_edit.as_ref())
+        && mode.page == page
+    {
         window.focus(&mode.input.read(cx).focus_handle(cx), cx);
         return;
     }
-    let Some(viewer) = viewer_of(editor) else { return };
-    let (document, page) = {
-        let viewer = viewer.lock().expect("pdf viewer lock");
-        let crate::ViewerSource::Vsdx(document) = &viewer.source else { return };
-        (document.clone(), viewer.current_page)
-    };
     let labels = match document.editable_labels(page) {
         Ok(labels) if !labels.is_empty() => labels,
         Ok(_) => return editor.report(Err(text("vsdx.no-editable-labels").to_string()), cx),
         Err(error) => return editor.report(Err(error.to_string()), cx),
     };
-    let input = cx.new(|cx| InputState::new(window, cx).default_value(labels[0].text.clone()));
+    let previous = editor.format_state::<State>().and_then(|state| state.label_edit.as_ref())
+        .map(|mode| mode.input.read(cx).value().to_string());
+    let mut changed_labels = editor.format_state_mut::<State>()
+        .and_then(|state| state.label_edit.take())
+        .map(|mut mode| {
+            mode.remember_label(previous.unwrap_or_default());
+            mode.changed_labels
+        })
+        .unwrap_or_default();
+    let initial = changed_labels.remove(&(page, labels[0].shape_id))
+        .unwrap_or_else(|| labels[0].text.clone());
+    let input = cx.new(|cx| InputState::new(window, cx).default_value(initial));
     if let Some(state) = editor.format_state_mut::<State>() {
         state.find_open = false;
-        state.label_edit = Some(LabelEdit { document, page, labels, changed_labels: Default::default(), selected: 0, input: input.clone() });
+        state.label_edit = Some(LabelEdit { document, page, labels, changed_labels, selected: 0, input: input.clone() });
     }
     window.focus(&input.read(cx).focus_handle(cx), cx);
     cx.notify();
@@ -854,10 +881,11 @@ fn select_label(editor: &mut SlideEditor, forward: bool, window: &mut Window, cx
     let input = mode.input.clone();
     let old = input.read(cx).value().to_string();
     let Some(mode) = editor.format_state_mut::<State>().and_then(|s| s.label_edit.as_mut()) else { return };
-    mode.changed_labels.insert(mode.selected, old);
+    mode.remember_label(old);
     let count = mode.labels.len();
     mode.selected = if forward { (mode.selected + 1) % count } else { (mode.selected + count - 1) % count };
-    let value = mode.changed_labels.get(&mode.selected).unwrap_or(&mode.labels[mode.selected].text).clone();
+    let label = &mode.labels[mode.selected];
+    let value = mode.changed_labels.get(&(mode.page, label.shape_id)).unwrap_or(&label.text).clone();
     input.update(cx, |input, cx| input.set_value(value, window, cx));
     cx.notify();
 }
@@ -868,15 +896,13 @@ pub fn label_copy_bytes(editor: &SlideEditor, cx: &gpui_kit::App) -> Result<Vec<
     let mode = editor.format_state::<State>().and_then(|s| s.label_edit.as_ref())
         .ok_or_else(|| ibis_office_shell::i18n::text("vsdx.no-editable-labels").to_string())?;
     let replacement = mode.input.read(cx).value();
-    let mut edits: Vec<_> = mode.changed_labels.iter().filter_map(|(&idx, text)| {
-        let label = &mode.labels[idx];
-        (idx != mode.selected && label.text != *text).then_some((label.shape_id, text.as_str()))
-    }).collect();
     let label = &mode.labels[mode.selected];
-    if label.text.as_str() != replacement.as_ref() {
-        edits.push((label.shape_id, replacement.as_ref()));
-    }
-    mode.document.replace_labels(mode.page, &edits)
+    let current = (mode.page, label.shape_id);
+    let edits = mode.changed_labels.iter().filter_map(|(&(page, shape), text)| {
+        ((page, shape) != current).then_some((page, shape, text.as_str()))
+    }).chain((label.text.as_str() != replacement.as_ref())
+        .then_some((mode.page, label.shape_id, replacement.as_ref())));
+    mode.document.replace_document_labels(edits)
         .map_err(|error| error.to_string())
 }
 
@@ -914,7 +940,7 @@ fn save_label_copy(editor: &mut SlideEditor, window: &mut Window, cx: &mut Conte
 fn label_edit_bar(mode: &LabelEdit, cx: &mut Context<SlideEditor>) -> AnyElement {
     use ibis_office_shell::chrome::{FindNav, action_button, find_nav_button, text_field};
     use ibis_office_shell::i18n::{format, text};
-    let status = format("vsdx.label-number", &[("n", &(mode.selected + 1)), ("total", &mode.labels.len())]);
+    let status = format("vsdx.label-number", &[("page", &(mode.page + 1)), ("n", &(mode.selected + 1)), ("total", &mode.labels.len())]);
     bar_style()
         .id("vsdx-label-edit")
         .absolute().top(px(12.0)).right(px(24.0))

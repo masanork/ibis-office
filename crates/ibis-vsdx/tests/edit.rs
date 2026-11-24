@@ -152,3 +152,35 @@ fn keeps_mixed_format_labels_out_of_the_edit_list() {
     );
     assert!(mixed.replace_label(1, shape, "replacement").is_err());
 }
+
+#[test]
+fn saves_across_pages_and_can_restore_a_cleared_label() {
+    let original = VsdxContainer::from_bytes(SAMPLE.into()).unwrap();
+    let first = original.editable_labels(0).unwrap().remove(0);
+    let second = original.editable_labels(1).unwrap().remove(0);
+    let updated = original
+        .replace_document_labels([(0, first.shape_id, ""), (1, second.shape_id, "ページ2")])
+        .unwrap();
+    assert!(
+        original
+            .replace_document_labels([(0, first.shape_id, "ok"), (1, u32::MAX, "bad")])
+            .is_err()
+    );
+    let reopened = VsdxContainer::from_bytes(updated.into()).unwrap();
+    assert_eq!(reopened.editable_labels(0).unwrap()[0].text, "");
+    assert_eq!(reopened.editable_labels(1).unwrap()[0].text, "ページ2");
+    assert!(
+        !reopened
+            .interpret_page_scene(0)
+            .unwrap()
+            .text_index
+            .plain_text()
+            .contains(&first.text)
+    );
+    let restored = reopened
+        .replace_label(0, first.shape_id, &first.text)
+        .unwrap();
+    let reopened = VsdxContainer::from_bytes(restored.into()).unwrap();
+    assert_eq!(reopened.editable_labels(0).unwrap()[0], first);
+    assert_eq!(reopened.editable_labels(1).unwrap()[0].text, "ページ2");
+}

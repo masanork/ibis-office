@@ -2,7 +2,7 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use ibis_ooxml::package::{Package, SaveOptions};
 use ibis_pdf::{Error, Result};
@@ -30,7 +30,7 @@ impl VsdxContainer {
             .filter_map(|shape| {
                 Some(EditableLabel {
                     shape_id: shape.attribute("ID")?.parse().ok()?,
-                    text: label_text(plain_text_node(shape)?.text()?).to_owned(),
+                    text: label_text(plain_text_node(shape)?.text().unwrap_or_default()).to_owned(),
                 })
             })
             .collect())
@@ -44,17 +44,29 @@ impl VsdxContainer {
 
     /// Apply several independent label edits on one page in a single save.
     pub fn replace_labels(&self, page: usize, edits: &[(u32, &str)]) -> Result<Vec<u8>> {
-        let mut replacements = HashMap::new();
+        self.replace_document_labels(edits.iter().map(|&(shape, text)| (page, shape, text)))
+    }
+
+    /// Apply label edits across pages atomically, keeping all other package parts.
+    pub fn replace_document_labels<'a>(
+        &self,
+        edits: impl IntoIterator<Item = (usize, u32, &'a str)>,
+    ) -> Result<Vec<u8>> {
+        let mut by_page = BTreeMap::<_, HashMap<_, _>>::new();
         let mut total = 0usize;
-        for &(shape, replacement) in edits {
+        for (page, shape, replacement) in edits {
             total = total.saturating_add(replacement.len());
-            if replacement.is_empty() || total > MAX_LABEL_CHARS || replacements.insert(shape, replacement).is_some()
+            if self.pages.get(page).is_none()
+                || total > MAX_LABEL_CHARS
+                || by_page.entry(page).or_default().insert(shape, replacement).is_some()
                 || replacement.chars().any(|ch| !matches!(ch, '\t' | '\n' | ' '..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}'))
             {
                 return Err(Error::new("Invalid or oversized diagram label"));
             }
         }
-        let page = self.pages.get(page).ok_or_else(invalid)?;
+        if by_page.is_empty() {
+            return Ok(self.bytes.to_vec());
+        }
         let zip = open_archive(&self.bytes)?;
         let root_rels = relationships(&zip, "")?;
         let mut package = Package::open(self.bytes.clone()).map_err(package_error)?;
@@ -67,52 +79,74 @@ impl VsdxContainer {
         {
             return Err(Error::new("Signed Visio drawings cannot be edited"));
         }
-        let mut source = part(&zip, &page.name)?;
-        let mut patches = Vec::new();
-        {
-            let doc = xml(&source)?;
-            let mut targets = HashMap::new();
-            for shape in shapes(doc.root_element()) {
-                if let Some(id) = shape.attribute("ID").and_then(|id| id.parse::<u32>().ok())
-                    && replacements.contains_key(&id)
-                    && targets.insert(id, shape).is_some()
-                {
-                    return Err(invalid());
-                }
-            }
-            for (id, replacement) in replacements {
-                let target = *targets.get(&id).ok_or_else(invalid)?;
-                let label = plain_text_node(target).ok_or_else(|| {
-                    Error::new("This Visio label uses unsupported formatting or fields")
-                })?;
-                if label.text().map(label_text) != Some(replacement) {
-                    let mut range = label.range();
-                    let raw = &source[range.clone()];
-                    // Keep the final paragraph terminator emitted by Visio.
-                    if raw.ends_with("\r\n") {
-                        range.end -= 2;
-                    } else if raw.ends_with(['\n', '\r']) {
-                        range.end -= 1;
-                    }
-                    patches.push((range, ibis_formats::docx_convert::xml_escape(replacement)));
-                }
+        let mut changed = false;
+        for (page, replacements) in by_page {
+            let name = &self.pages[page].name;
+            if let Some(updated) = patch_page(part(&zip, name)?, replacements)? {
+                package.set_bytes(name, updated);
+                changed = true;
             }
         }
-        if patches.is_empty() {
-            return Ok(self.bytes.to_vec());
+        if changed {
+            package.save(SaveOptions::default()).map_err(package_error)
+        } else {
+            Ok(self.bytes.to_vec())
         }
-        let removed = patches.iter().map(|(range, _)| range.len()).sum::<usize>();
-        let added = patches.iter().map(|(_, text)| text.len()).sum::<usize>();
-        if source.len() - removed + added > MAX_PART {
-            return Err(Error::new("Drawing page is too large"));
-        }
-        patches.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
-        for (range, text) in patches {
-            source.replace_range(range, &text);
-        }
-        package.set_bytes(&page.name, source.into_bytes());
-        package.save(SaveOptions::default()).map_err(package_error)
     }
+}
+
+fn patch_page(mut source: String, replacements: HashMap<u32, &str>) -> Result<Option<Vec<u8>>> {
+    let mut patches = Vec::new();
+    {
+        let doc = xml(&source)?;
+        let mut targets = HashMap::new();
+        for shape in shapes(doc.root_element()) {
+            if let Some(id) = shape.attribute("ID").and_then(|id| id.parse::<u32>().ok())
+                && replacements.contains_key(&id)
+                && targets.insert(id, shape).is_some()
+            {
+                return Err(invalid());
+            }
+        }
+        for (id, replacement) in replacements {
+            let target = *targets.get(&id).ok_or_else(invalid)?;
+            let label = plain_text_node(target).ok_or_else(|| {
+                Error::new("This Visio label uses unsupported formatting or fields")
+            })?;
+            if label.text().map(label_text) != Some(replacement) {
+                let mut range = label.range();
+                let raw = &source[range.clone()];
+                // Keep the final paragraph terminator emitted by Visio.
+                if raw.ends_with("\r\n") {
+                    range.end -= 2;
+                } else if raw.ends_with(['\n', '\r']) {
+                    range.end -= 1;
+                }
+                let suffix = if replacement.is_empty() && range.end == label.range().end {
+                    "\n"
+                } else {
+                    ""
+                };
+                patches.push((
+                    range,
+                    ibis_formats::docx_convert::xml_escape(replacement) + suffix,
+                ));
+            }
+        }
+    }
+    if patches.is_empty() {
+        return Ok(None);
+    }
+    let removed = patches.iter().map(|(range, _)| range.len()).sum::<usize>();
+    let added = patches.iter().map(|(_, text)| text.len()).sum::<usize>();
+    if source.len() - removed + added > MAX_PART {
+        return Err(Error::new("Drawing page is too large"));
+    }
+    patches.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    for (range, text) in patches {
+        source.replace_range(range, &text);
+    }
+    Ok(Some(source.into_bytes()))
 }
 
 fn label_text(text: &str) -> &str {

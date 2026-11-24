@@ -17,6 +17,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::vsdx_opens_a_diagram_with_embedded_images", vsdx_embedded_images),
         ("shell::vsdx_new_diagram_exports_glued_shapes", vsdx_new_diagram),
         ("shell::vsdx_existing_diagram_updates_a_label_in_a_copy", vsdx_edit_label),
+        ("shell::vsdx_label_edits_are_kept_when_switching_pages", vsdx_edit_multiple_pages),
     ]
 }
 
@@ -308,4 +309,24 @@ fn vsdx_edit_label() {
     std::fs::write(output, bytes).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), before, "the original file is untouched");
     s.screenshot("vsdx-label-edit");
+}
+
+fn vsdx_edit_multiple_pages() {
+    let mut s = Scenario::open("crates/ibis-vsdx/tests/fixtures/08-multi-page-handbook.vsdx");
+    s.menu("vsdx.edit-label");
+    s.key("cmd-a");
+    s.type_text("First page update");
+    s.menu("edit.go-to");
+    s.type_text("2");
+    s.key("enter");
+    assert!(s.status_texts()[0].contains("2 /"), "{:?}", s.status_texts());
+    s.menu("vsdx.edit-label");
+    s.key("cmd-a");
+    s.type_text("Second page update");
+    let bytes = s.with(|editor, cx| ibis_office_pdf::editor::label_copy_bytes(editor, cx)).unwrap();
+    let zip = ibis_formats::zip::Archive::new(&bytes).unwrap();
+    for (file, label) in [("page1.xml", "First page update"), ("page2.xml", "Second page update")] {
+        let part = zip.read_bounded(&format!("visio/pages/{file}"), 100_000).unwrap().unwrap();
+        assert!(String::from_utf8(part).unwrap().contains(label), "{file}");
+    }
 }
