@@ -17,6 +17,22 @@ pub(crate) fn positive(bytes: &[u8], offset: usize) -> Result<usize> {
     usize::try_from(word(bytes, offset)?).map_err(|_| Error::Invalid)
 }
 
+pub(crate) fn take_record<'a>(input: &mut &'a [u8]) -> Result<(u32, &'a [u8])> {
+    let (kind, record) = ibis_emf::gdi::take_emf_record(input).ok_or(Error::Invalid)?;
+    if record.len() % 4 != 0 {
+        return Err(Error::Invalid);
+    }
+    Ok((kind, record))
+}
+
+pub(crate) fn positive_device_size(header: &[u8]) -> Result<([i32; 2], [i32; 2])> {
+    let (device, millimetres) = ibis_emf::gdi::emf_device_size(header).ok_or(Error::Invalid)?;
+    if device.into_iter().chain(millimetres).any(|v| v <= 0) {
+        return Err(Error::Invalid);
+    }
+    Ok((device, millimetres))
+}
+
 pub(crate) fn render(
     document: &Document<impl AsRef<[u8]>>,
     object: &PageObject<'_>,
@@ -42,11 +58,7 @@ pub(crate) fn render(
     {
         return Err(Error::UnsupportedDrawing);
     }
-    let (device_x, device_y) = (positive(header, 72)?, positive(header, 76)?);
-    let (mm_x, mm_y) = (positive(header, 80)?, positive(header, 84)?);
-    if [device_x, device_y, mm_x, mm_y].contains(&0) {
-        return Err(Error::Invalid);
-    }
+    let ([device_x, device_y], [mm_x, mm_y]) = positive_device_size(header)?;
     let fx = (100 * mm_x as u64) as f32 / device_x as f32;
     let fy = (100 * mm_y as u64) as f32 / device_y as f32;
     let mut rest = &emf[header_size..];
@@ -55,13 +67,8 @@ pub(crate) fn render(
     let mut output = Vec::new();
     let mut decoded_pixels = 16_777_216u64;
     while !rest.is_empty() {
-        let length = positive(rest, 4)?;
-        if length < 8 || length % 4 != 0 {
-            return Err(Error::Invalid);
-        }
-        let (record, tail) = rest.split_at_checked(length).ok_or(Error::Invalid)?;
-        rest = tail;
-        match word(record, 0)? {
+        let (kind, record) = take_record(&mut rest)?;
+        match kind {
             14 if rest.is_empty() && !selected && !output.is_empty() => return Ok(output),
             21 if word(record, 8)? == 3 => {}
             70 => {

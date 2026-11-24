@@ -156,14 +156,8 @@ pub fn wmf_to_svg(wmf: &[u8]) -> Option<String> {
     let mut charset = 0u8;
     let mut window = ((0i32, 0i32), (0i32, 0i32));
     let mut mode_set = false;
-    let mut at = start + header_size;
-    while let Some(words) = u32_at(wmf, at) {
-        let size = usize::try_from(words).ok()?.checked_mul(2)?;
-        if size < 6 || at.checked_add(size)? > wmf.len() {
-            break;
-        }
-        let r = &wmf[at..at + size];
-        let func = u16_at(r, 4).unwrap_or(0);
+    let mut rest = wmf.get(start + header_size..)?;
+    while let Some((func, r)) = crate::gdi::take_wmf_record(&mut rest) {
         let p = |i: usize| i16_at(r, 6 + i * 2).unwrap_or(0);
         match func {
             0 => break,
@@ -336,8 +330,7 @@ pub fn wmf_to_svg(wmf: &[u8]) -> Option<String> {
                     0x0B41 => (26, (p(9), p(8), p(7), p(6)), (p(5), p(4), p(3), p(2))),
                     _ => (22, (p(7), p(6), p(5), p(4)), (p(3), p(2), p(5), p(4))),
                 };
-                if func == 0x0940 && size == (usize::from(func >> 8) + 3) * 2 {
-                    at += size;
+                if func == 0x0940 && r.len() == (usize::from(func >> 8) + 3) * 2 {
                     continue;
                 }
                 if let Some((info, bits)) = r.get(dib_at..).and_then(split_dib) {
@@ -346,7 +339,6 @@ pub fn wmf_to_svg(wmf: &[u8]) -> Option<String> {
             }
             _ => {}
         }
-        at += size;
     }
     {
         // Close the stream and play it.

@@ -171,33 +171,28 @@ fn play(emf: &[u8], use_plus: bool) -> Option<Played> {
         return None;
     }
     let bounds = (i32_at(emf, 8)?, i32_at(emf, 12)?, i32_at(emf, 16)?, i32_at(emf, 20)?);
-    let device = (f64::from(i32_at(emf, 72)?.max(1)), f64::from(i32_at(emf, 76)?.max(1)));
-    let millimetres = (f64::from(i32_at(emf, 80)?.max(1)), f64::from(i32_at(emf, 84)?.max(1)));
+    let (device, millimetres) = crate::gdi::emf_device_size(emf)?;
+    let [dx, dy] = device.map(|v| f64::from(v.max(1)));
+    let [mx, my] = millimetres.map(|v| f64::from(v.max(1)));
     let (l, t, r, b) = bounds;
     let mut player = Player {
         canvas: Canvas::default(),
         dc: Dc::default(),
         stack: Vec::new(),
         objects: HashMap::new(),
-        px_per_mm: (device.0 / millimetres.0, device.1 / millimetres.1),
+        px_per_mm: (dx / mx, dy / my),
         path: None,
         path_start: None,
         use_plus,
         plus: plus::Plus::default(),
         view: (f64::from(l), f64::from(t), f64::from(r - l + 1), f64::from(b - t + 1)),
     };
-    let mut at = 0;
-    while let (Some(kind), Some(size)) = (u32_at(emf, at), u32_at(emf, at + 4)) {
-        let size = size as usize;
-        if size < 8 || at + size > emf.len() {
-            break;
-        }
-        let record = &emf[at..at + size];
+    let mut rest = emf;
+    while let Some((kind, record)) = crate::gdi::take_emf_record(&mut rest) {
         if kind == 14 {
             break;
         }
         player.record(kind, record);
-        at += size;
     }
     let fallback = player.plus.unsupported && player.plus.dual;
     let sole_image = if player.canvas.drawn == 1 && player.plus.draws == 1 { player.plus.sole_image.take() } else { None };
@@ -845,9 +840,8 @@ impl Player {
         self.canvas.text(&IDENTITY, clip, &xs, y + vertical, (x, y), &text, &font, color, 1.0, anchor);
     }
 
-    fn place_dib(&mut self, r: &[u8], dest: (f64, f64, f64, f64), info_at: usize, bits_at: usize, source: Option<(i32, i32, i32, i32)>, rop: u32) {
-        let (Some(off_info), Some(size_info), Some(off_bits), Some(size_bits)) = (u32_at(r, info_at), u32_at(r, info_at + 4), u32_at(r, bits_at), u32_at(r, bits_at + 4)) else { return };
-        let (Some(info), Some(bits)) = (r.get(off_info as usize..(off_info + size_info) as usize), r.get(off_bits as usize..(off_bits + size_bits) as usize)) else { return };
+    fn place_dib(&mut self, r: &[u8], dest: (f64, f64, f64, f64), info_at: usize, source: Option<(i32, i32, i32, i32)>, rop: u32) {
+        let Some((info, bits)) = crate::gdi::dib_parts(r, info_at) else { return };
         let Some(png) = dib_png(info, bits, source, rop) else { return };
         let matrix = self.matrix();
         let extent = [(dest.0, dest.1), (dest.0 + dest.2, dest.1 + dest.3)];
@@ -860,13 +854,13 @@ impl Player {
         let f = |at: usize| i32_at(r, at).unwrap_or(0);
         let dest = (f64::from(f(24)), f64::from(f(28)), f64::from(f(72)), f64::from(f(76)));
         let rop = u32_at(r, 68).unwrap_or(0x00CC_0020);
-        self.place_dib(r, dest, 48, 56, Some((f(32), f(36), f(40), f(44))), rop);
+        self.place_dib(r, dest, 48, Some((f(32), f(36), f(40), f(44))), rop);
     }
 
     fn set_dibits(&mut self, r: &[u8]) {
         let f = |at: usize| i32_at(r, at).unwrap_or(0);
         let dest = (f64::from(f(24)), f64::from(f(28)), f64::from(f(40)), f64::from(f(44)));
-        self.place_dib(r, dest, 48, 56, Some((f(32), f(36), f(40), f(44))), 0x00CC_0020);
+        self.place_dib(r, dest, 48, Some((f(32), f(36), f(40), f(44))), 0x00CC_0020);
     }
 
     /// EMR_BITBLT and STRETCHBLT.
@@ -894,7 +888,7 @@ impl Player {
             return;
         }
         let source = if stretch { Some((f(44), f(48), f(100), f(104))) } else { Some((f(44), f(48), f(32), f(36))) };
-        self.place_dib(r, dest, 84, 92, source, rop);
+        self.place_dib(r, dest, 84, source, rop);
     }
 
     /// EMR_EXTSELECTCLIPRGN: the region's rectangles as the clip.

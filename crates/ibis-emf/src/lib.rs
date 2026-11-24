@@ -11,6 +11,7 @@
 
 mod charset;
 mod emf;
+pub mod gdi;
 mod png;
 mod svg;
 mod wmf;
@@ -64,13 +65,9 @@ pub fn extract_image(emf: &[u8]) -> Option<(ImageFormat, Vec<u8>)> {
     }
     let mut emf_plus = Vec::new();
     let mut gdi_bitmaps = Vec::new();
-    let mut at = 0;
-    while let (Some(kind), Some(size)) = (u32_at(emf, at), u32_at(emf, at + 4)) {
-        let size = size as usize;
-        if size < 8 || at + size > emf.len() {
-            break;
-        }
-        let record = &emf[at..at + size];
+    let mut rest = emf;
+    while let Some((kind, record)) = gdi::take_emf_record(&mut rest) {
+        let size = record.len();
         match kind {
             // EMF+ records travel in comments tagged "EMF+".
             EMR_COMMENT if record.get(12..16) == Some(b"EMF+") => {
@@ -81,7 +78,6 @@ pub fn extract_image(emf: &[u8]) -> Option<(ImageFormat, Vec<u8>)> {
             EMR_EOF => break,
             _ => {}
         }
-        at += size;
     }
     let mut candidates = emf_plus_bitmaps(&emf_plus);
     candidates.extend(gdi_bitmaps);

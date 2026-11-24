@@ -24,15 +24,7 @@ pub(crate) fn stretch_dib(record: &[u8]) -> Result<RgbaImage> {
 }
 
 pub(crate) fn dib(record: &[u8], at: usize, max_pixels: u64) -> Result<RgbaImage> {
-    let subfield = |offset: usize, len: usize| {
-        let start = positive(record, offset)?;
-        let length = positive(record, len)?;
-        record
-            .get(start..start.checked_add(length).ok_or(Error::Invalid)?)
-            .ok_or(Error::Invalid)
-    };
-    let info = subfield(at, at + 4)?;
-    let bits = subfield(at + 8, at + 12)?;
+    let (info, bits) = ibis_emf::gdi::dib_parts(record, at).ok_or(Error::Invalid)?;
     if word(info, 16)? == 2 && word(info, 14)? & 0xffff == 4 {
         return rle4(info, bits, max_pixels);
     }

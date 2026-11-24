@@ -3,8 +3,7 @@
 use ibis_pdf::DisplayCmd;
 
 use crate::scan::POINTS_PER_UNIT;
-use crate::vector_emf::ansi;
-use crate::{Error, PageObject, Result};
+use crate::{Error, PageObject, Result, decode_metafile_text};
 
 fn short(bytes: &[u8], offset: usize) -> Result<i16> {
     let value = bytes
@@ -39,17 +38,9 @@ pub(crate) fn render(object: &PageObject<'_>, data: &[u8]) -> Result<Vec<Display
     let mut transparent = false;
     let mut output = Vec::new();
     while !rest.is_empty() {
-        let length = usize::try_from(crate::scan_emf::word(rest, 0)?)
-            .map_err(|_| Error::Invalid)?
-            .checked_mul(2)
-            .ok_or(Error::Limit)?;
-        if length < 6 {
-            return Err(Error::Invalid);
-        }
-        let (record, next) = rest.split_at_checked(length).ok_or(Error::Invalid)?;
-        rest = next;
+        let (kind, record) = ibis_emf::gdi::take_wmf_record(&mut rest).ok_or(Error::Invalid)?;
         let body = &record[6..];
-        match short(record, 4)? as u16 {
+        match kind {
             0 if rest.is_empty() => return Ok(output),
             0x020b => origin = (f32::from(short(body, 2)?), f32::from(short(body, 0)?)),
             0x020c => {
@@ -69,7 +60,7 @@ pub(crate) fn render(object: &PageObject<'_>, data: &[u8]) -> Result<Vec<Display
                 let names = body.get(18..).ok_or(Error::Invalid)?;
                 let len = names.iter().position(|b| *b == 0).ok_or(Error::Invalid)?;
                 let charset = body[13];
-                let family = ansi(&names[..len], charset)?
+                let family = decode_metafile_text(&names[..len], charset)?
                     .into_iter()
                     .map(|(ch, _)| ch)
                     .collect();
@@ -116,7 +107,7 @@ pub(crate) fn render(object: &PageObject<'_>, data: &[u8]) -> Result<Vec<Display
                 let y = (object.y as f32) * POINTS_PER_UNIT
                     + (f32::from(short(body, 0)?) - origin.1 + font.height * 0.88) * sy;
                 let mut offset = 0;
-                for (ch, units) in ansi(encoded, font.charset)? {
+                for (ch, units) in decode_metafile_text(encoded, font.charset)? {
                     let mut advance = 0.0;
                     for _ in 0..units {
                         advance += f32::from(short(spacing, offset)?) * sx;

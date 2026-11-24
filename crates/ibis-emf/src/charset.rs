@@ -23,6 +23,42 @@ fn encoding(charset: u8) -> &'static Encoding {
     }
 }
 
+/// A rejected GDI text record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrictTextError {
+    Invalid,
+    UnsupportedCharset,
+}
+
+/// Decode the Windows-1252 and Shift_JIS subsets used by DocuWorks, keeping each character's source byte count.
+pub fn decode_text_strict(bytes: &[u8], charset: u8) -> Result<Vec<(char, usize)>, StrictTextError> {
+    if !matches!(charset, 0 | 1 | 128) {
+        return Err(StrictTextError::UnsupportedCharset);
+    }
+    let encoding = encoding(charset);
+    let mut input = bytes;
+    let mut output = Vec::new();
+    while let Some(&lead) = input.first() {
+        let length = if charset == 128 && matches!(lead, 0x81..=0x9f | 0xe0..=0xfc) {
+            2
+        } else {
+            1
+        };
+        let (encoded, rest) = input.split_at_checked(length).ok_or(StrictTextError::Invalid)?;
+        let decoded = encoding
+            .decode_without_bom_handling_and_without_replacement(encoded)
+            .ok_or(StrictTextError::Invalid)?;
+        let mut chars = decoded.chars();
+        let ch = chars.next().ok_or(StrictTextError::Invalid)?;
+        if chars.next().is_some() {
+            return Err(StrictTextError::Invalid);
+        }
+        output.push((ch, length));
+        input = rest;
+    }
+    Ok(output)
+}
+
 /// The characters of `bytes` and how many bytes each took.
 pub(crate) fn decode(bytes: &[u8], charset: u8) -> Vec<(char, usize)> {
     let enc = encoding(charset);
@@ -65,6 +101,14 @@ pub(crate) fn decode_with_spacing(bytes: &[u8], charset: u8, dx: &[f64]) -> (Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strict_text_keeps_source_byte_counts_and_rejects_invalid_input() {
+        assert_eq!(decode_text_strict(&[0x93, 0xfa, b'A'], 128), Ok(vec![('日', 2), ('A', 1)]));
+        assert_eq!(decode_text_strict(&[0x93], 128), Err(StrictTextError::Invalid));
+        assert_eq!(decode_text_strict(&[b'A'], 129), Err(StrictTextError::UnsupportedCharset));
+        assert_eq!(decode_text_strict(&[0xe9], 1), Ok(vec![('é', 1)]));
+    }
 
     #[test]
     fn shift_jis_is_read_by_the_character_set() {

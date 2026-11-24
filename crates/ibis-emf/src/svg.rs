@@ -50,7 +50,8 @@ pub(crate) fn font_metrics(face: &str, bold: bool, italic: bool) -> (f64, f64) {
 }
 
 pub(crate) fn color(c: u32) -> String {
-    format!("#{:02X}{:02X}{:02X}", c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF)
+    let [r, g, b] = crate::gdi::colorref(c);
+    format!("#{r:02X}{g:02X}{b:02X}")
 }
 
 fn num(v: f64) -> String {

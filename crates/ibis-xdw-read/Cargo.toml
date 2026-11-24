@@ -10,5 +10,5 @@ publish = false
 delharc = { version = "0.8", default-features = false }
 ibis-pdf.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "bmp"] }
-encoding_rs = "0.8"
+ibis-emf.workspace = true
 tiny-skia = { version = "0.11", default-features = false, features = ["std"] }

@@ -140,6 +140,14 @@ fn trailing_element<'a>(
     Err(Error::Invalid)
 }
 
+fn decode_metafile_text(bytes: &[u8], charset: u8) -> Result<Vec<(char, usize)>> {
+    use ibis_emf::gdi::StrictTextError;
+    ibis_emf::gdi::decode_text_strict(bytes, charset).map_err(|error| match error {
+        StrictTextError::Invalid => Error::Invalid,
+        StrictTextError::UnsupportedCharset => Error::UnsupportedDrawing,
+    })
+}
+
 pub struct Document<B> {
     storage: B,
     entries: Vec<u8>,

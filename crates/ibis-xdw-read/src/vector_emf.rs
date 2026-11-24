@@ -8,7 +8,7 @@ use ibis_pdf::{DisplayCmd, PdfRect};
 
 use crate::scan::POINTS_PER_UNIT;
 use crate::scan_emf::{positive, word};
-use crate::{Error, Page, PageObject, Result};
+use crate::{Error, Page, PageObject, Result, decode_metafile_text};
 
 #[derive(Clone)]
 struct Font {
@@ -54,7 +54,7 @@ struct State {
 }
 
 fn color(value: i32) -> [u8; 4] {
-    let [r, g, b, _] = value.to_le_bytes();
+    let [r, g, b] = ibis_emf::gdi::colorref(value as u32);
     [r, g, b, 255]
 }
 
@@ -62,35 +62,6 @@ fn utf16(bytes: &[u8]) -> impl Iterator<Item = u16> {
     bytes
         .chunks_exact(2)
         .map(|p| u16::from_le_bytes([p[0], p[1]]))
-}
-
-pub(crate) fn ansi(bytes: &[u8], charset: u8) -> Result<Vec<(char, usize)>> {
-    let encoding = match charset {
-        0 | 1 => encoding_rs::WINDOWS_1252,
-        128 => encoding_rs::SHIFT_JIS,
-        _ => return Err(Error::UnsupportedDrawing),
-    };
-    let mut input = bytes;
-    let mut output = Vec::new();
-    while let Some(&lead) = input.first() {
-        let length = if charset == 128 && matches!(lead, 0x81..=0x9f | 0xe0..=0xfc) {
-            2
-        } else {
-            1
-        };
-        let (encoded, rest) = input.split_at_checked(length).ok_or(Error::Invalid)?;
-        let decoded = encoding
-            .decode_without_bom_handling_and_without_replacement(encoded)
-            .ok_or(Error::Invalid)?;
-        let mut chars = decoded.chars();
-        let ch = chars.next().ok_or(Error::Invalid)?;
-        if chars.next().is_some() {
-            return Err(Error::UnsupportedDrawing);
-        }
-        output.push((ch, length));
-        input = rest;
-    }
-    Ok(output)
 }
 
 impl State {
@@ -348,7 +319,7 @@ impl State {
                 })
                 .collect::<Result<Vec<_>>>()?
         } else {
-            ansi(chars, font.charset)?
+            decode_metafile_text(chars, font.charset)?
         };
         if let Some(advance) = advance {
             let mut index = 0;
@@ -505,13 +476,7 @@ pub(crate) fn render(
     {
         return Err(Error::UnsupportedDrawing);
     }
-    let dx = positive(header, 72)?;
-    let dy = positive(header, 76)?;
-    let mx = positive(header, 80)?;
-    let my = positive(header, 84)?;
-    if [dx, dy, mx, my].contains(&0) {
-        return Err(Error::Invalid);
-    }
+    let ([dx, dy], [mx, my]) = crate::scan_emf::positive_device_size(header)?;
     let mut state = State {
         unit: (
             100.0 * mx as f32 / dx as f32 * POINTS_PER_UNIT,
@@ -555,14 +520,9 @@ pub(crate) fn render(
     let mut picture_selected = false;
     let mut raster_budget = 16_777_216u64;
     while !rest.is_empty() {
-        let size = positive(rest, 4)?;
-        if size < 8 || size % 4 != 0 {
-            return Err(Error::Invalid);
-        }
-        let (record, tail) = rest.split_at_checked(size).ok_or(Error::Invalid)?;
-        rest = tail;
+        let (kind, record) = crate::scan_emf::take_record(&mut rest)?;
         let before = output.len();
-        match word(record, 0)? {
+        match kind {
             9 if !page_content && !has_window && output.is_empty() => {
                 let (width, height) = object.size.ok_or(Error::UnsupportedDrawing)?;
                 let (wx, wy) = (positive(record, 8)?, positive(record, 12)?);
