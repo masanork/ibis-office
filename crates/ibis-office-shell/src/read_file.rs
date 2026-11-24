@@ -132,7 +132,7 @@ pub(crate) fn open_document_bytes(
         return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: false }));
     }
     if let Some(format) = editable_import {
-        let opened = format.open(data).map_err(|e| e.to_string())?;
+        let opened = format.open(data, base_dir).map_err(|e| e.to_string())?;
         return Ok(Some(CommonOpen::Standard { opened, editable_import: Some(format), bom_format: None, is_law: false }));
     }
     if let Some(format) = external_document_format {
@@ -254,7 +254,7 @@ mod stack_tests {
             let detected = EditableImport::detect(None, &bytes).unwrap();
             assert_eq!(detected, EditableImport::OpenDocument(format));
             assert_eq!(detected.save_extension(), extension);
-            assert_eq!(detected.open(&bytes).unwrap().source.kind(), kind);
+            assert_eq!(detected.open(&bytes, None).unwrap().source.kind(), kind);
         }
     }
 
@@ -370,10 +370,10 @@ impl EditableImport {
         ibis_odf::Format::detect(data).map(Self::OpenDocument)
     }
 
-    pub(crate) fn open(self, data: &[u8]) -> Result<ibis_formats::Opened, ibis_formats::Error> {
+    pub(crate) fn open(self, data: &[u8], base_dir: Option<&std::path::Path>) -> Result<ibis_formats::Opened, ibis_formats::Error> {
         match self {
             Self::Hancom(format) => format.open(data),
-            Self::Uot => ibis_formats::uot::open(data),
+            Self::Uot => ibis_formats::uot::open_with_base_dir(data, base_dir),
             Self::WordPerfect => ibis_formats::wpd::open(data),
             Self::OpenDocument(format) => ibis_formats::open(format.to_ooxml(data)?),
         }

@@ -3,15 +3,18 @@
 //! Import the text-document branch of the Chinese Uniform Office Format.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
 use ibis_doc_model::{
     Block, FlowCell, FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowStyle, FlowStyles,
-    FlowTable, ParaFormat, RunFormat, StyleKind, VerticalMerge,
+    FlowTable, ParaFormat, Presentation, RunFormat, StyleKind, VerticalMerge,
 };
 use roxmltree::{Document, Node, ParsingOptions};
 
 use crate::{Error, Kind, Opened, SaveOptions};
+
+mod images;
 
 const UOF: &str = "http://schemas.uof.org/cn/2003/uof";
 const WORD: &str = "http://schemas.uof.org/cn/2003/uof-wordproc";
@@ -65,16 +68,25 @@ pub fn is_uot(data: &[u8]) -> bool {
 }
 
 pub fn open(data: &[u8]) -> Result<Opened, Error> {
-    crate::open(to_docx(data)?)
+    open_with_base_dir(data, None)
 }
 
-/// Generate a Word document with editable paragraphs, headings and basic tables.
+pub fn open_with_base_dir(data: &[u8], base_dir: Option<&Path>) -> Result<Opened, Error> {
+    crate::open(to_docx_with_base_dir(data, base_dir)?)
+}
+
+/// Generate a Word document with editable paragraphs, headings, tables and inline images.
 pub fn to_docx(data: &[u8]) -> Result<Vec<u8>, Error> {
+    to_docx_with_base_dir(data, None)
+}
+
+/// Convert UOT to DOCX, resolving local images relative to the source directory.
+pub fn to_docx_with_base_dir(data: &[u8], base_dir: Option<&Path>) -> Result<Vec<u8>, Error> {
     let xml = parse(data)?;
     let root = xml.root_element();
     let content = body(root).ok_or_else(|| Error::new("UOT text document body not found"))?;
     let mut blank = crate::open(crate::blank_file(Kind::Document)?)?;
-    let flow = Arc::make_mut(blank.presentation.flow.as_mut().expect("blank DOCX flow"));
+    let mut flow = Arc::unwrap_or_clone(blank.presentation.flow.take().expect("blank DOCX flow"));
     let anchor = match flow.body.first() {
         Some(Block::Paragraph(paragraph)) => paragraph.clone(),
         _ => return Err(Error::new("Missing blank DOCX paragraph")),
@@ -84,6 +96,8 @@ pub fn to_docx(data: &[u8]) -> Result<Vec<u8>, Error> {
         paragraph_styles: paragraph_styles(root),
         remaining_continuations: MAX_XML_NODES,
         styles: Arc::make_mut(&mut flow.styles),
+        presentation: &mut blank.presentation,
+        images: images::Images::new(root, base_dir),
     };
     let blocks = importer.blocks(content, 0)?;
     if !blocks.is_empty() {
@@ -99,6 +113,7 @@ pub fn to_docx(data: &[u8]) -> Result<Vec<u8>, Error> {
             flow.body.push(Block::Paragraph(anchor));
         }
     }
+    blank.presentation.flow = Some(flow.into());
     blank
         .source
         .save(&blank.presentation, SaveOptions::default())
@@ -116,14 +131,16 @@ fn paragraph_styles<'a, 'input>(root: Node<'a, 'input>) -> ParagraphStyles<'a, '
         .collect()
 }
 
-struct Importer<'a, 'xml, 'input> {
+struct Importer<'a, 'xml, 'input, 'path> {
     next_id: u32,
     paragraph_styles: ParagraphStyles<'xml, 'input>,
     remaining_continuations: u32,
     styles: &'a mut FlowStyles,
+    presentation: &'a mut Presentation,
+    images: images::Images<'xml, 'input, 'path>,
 }
 
-impl Importer<'_, '_, '_> {
+impl Importer<'_, '_, '_, '_> {
     fn id(&mut self) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
@@ -158,17 +175,20 @@ impl Importer<'_, '_, '_> {
             style,
             ..Default::default()
         };
-        for text in node
+        for item in node
             .children()
             .filter(|run| run.has_tag_name((WORD, "句")))
             .flat_map(|run| run.children())
-            .filter(|text| text.has_tag_name((WORD, "文本串")))
         {
-            if let Some(text) = text.text() {
-                paragraph.runs.push(FlowRun::new(
-                    FlowRunKind::Text(text.into()),
-                    Default::default(),
-                ));
+            let kind = if item.has_tag_name((WORD, "文本串")) {
+                item.text().map(|text| FlowRunKind::Text(text.into()))
+            } else if item.has_tag_name((WORD, "锚点")) {
+                self.images.picture(item, self.presentation)
+            } else {
+                None
+            };
+            if let Some(kind) = kind {
+                paragraph.runs.push(FlowRun::new(kind, Default::default()));
             }
         }
         paragraph.resolve(self.styles);
@@ -368,6 +388,100 @@ fn cell_span(cell: Node<'_, '_>, name: &str) -> Result<usize, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use ibis_doc_model::EmuSize;
+
+    const IMAGE: &str = "iVBORw0KGgoAAAANSUhEUgAAAGAAAAAwCAIAAABhdOiYAAAAl0lEQVR4nO3aMRHCUBAA0R8mrrCAEgShBAtxERGpUyGA8FcA75V33c6Vt+zHOfjtNtkhUBMoCBQECgKF9XJ6fzzH/9ner++hCwoCBYGCQEGgIFAQKAgUBAoCBYGCQEGgIFAQKAgUBAoCBYGCQEGgIFAQKAgUBAoCBYGCQEGgIFAQKAgUBAqLR/I5FxQECgIFgYJAQaAx9wGKmAjtUVq7TgAAAABJRU5ErkJggg==";
+
+    fn image_example(object: &str) -> String {
+        format!(
+            r#"<uof:UOF xmlns:uof="{UOF}" xmlns:w="{WORD}" xmlns:g="http://schemas.uof.org/cn/2003/graph">
+  <uof:对象集>
+    <g:图形 g:标识符="graphic" g:其他对象="asset"/>
+    <uof:其他对象 uof:标识符="asset">{object}</uof:其他对象>
+  </uof:对象集>
+  <uof:文字处理>
+    <w:公用处理规则><w:文档设置><w:度量单位>mm</w:度量单位></w:文档设置></w:公用处理规则>
+    <w:主体><w:段落><w:句><w:文本串>前</w:文本串><w:锚点>
+      <w:锚点属性><w:宽度>50.8</w:宽度><w:高度>25.4</w:高度></w:锚点属性>
+      <w:图形 w:图形引用="graphic"/>
+    </w:锚点><w:文本串>後</w:文本串></w:句></w:段落></w:主体>
+  </uof:文字处理>
+</uof:UOF>"#
+        )
+    }
+
+    fn assert_image(presentation: &Presentation) {
+        let [Block::Paragraph(paragraph)] = presentation.flow.as_ref().unwrap().body.as_slice()
+        else {
+            panic!("expected one paragraph");
+        };
+        let [before, picture, after] = paragraph.runs.as_slice() else {
+            panic!("expected text, image and text");
+        };
+        assert_eq!(before.kind, FlowRunKind::Text("前".into()));
+        assert_eq!(after.kind, FlowRunKind::Text("後".into()));
+        let (media, size, _) = picture.picture().expect("inline image");
+        assert_eq!(size, EmuSize::new(1_828_800, 914_400));
+        assert_eq!(
+            presentation.media(media).unwrap().data.as_ref(),
+            STANDARD.decode(IMAGE).unwrap().as_slice()
+        );
+    }
+
+    #[test]
+    fn preserves_inline_images_through_docx_and_markdown() {
+        let manuscript = image_example(&format!("<uof:数据>{IMAGE}</uof:数据>"));
+        let opened = open(manuscript.as_bytes()).unwrap();
+        assert_image(&opened.presentation);
+        let docx = opened
+            .source
+            .save(&opened.presentation, SaveOptions::default())
+            .unwrap();
+        assert_image(&crate::open(&docx[..]).unwrap().presentation);
+        let markdown =
+            crate::markdown::export_presentation_to_markdown(&opened.presentation).unwrap();
+        assert_image(&crate::markdown::read_markdown(markdown.as_bytes()).unwrap());
+        let from_markdown =
+            crate::markdown::import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        assert_image(&crate::open(&from_markdown[..]).unwrap().presentation);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn resolves_only_images_inside_the_document_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("document");
+        std::fs::create_dir(&base).unwrap();
+        let png = STANDARD.decode(IMAGE).unwrap();
+        std::fs::write(base.join("figure.png"), &png).unwrap();
+        std::fs::write(temp.path().join("outside.png"), &png).unwrap();
+        for reference in ["figure.png", "../document/figure.png"] {
+            let linked = image_example(&format!("<uof:路径>{reference}</uof:路径>"));
+            assert_image(
+                &open_with_base_dir(linked.as_bytes(), Some(&base))
+                    .unwrap()
+                    .presentation,
+            );
+        }
+        for reference in [
+            "../outside.png",
+            "missing.png",
+            "https://example.com/figure.png",
+        ] {
+            let linked = image_example(&format!("<uof:路径>{reference}</uof:路径>"));
+            let presentation = open_with_base_dir(linked.as_bytes(), Some(&base))
+                .unwrap()
+                .presentation;
+            assert!(presentation.media.is_empty());
+            let [Block::Paragraph(paragraph)] = presentation.flow.as_ref().unwrap().body.as_slice()
+            else {
+                panic!("expected one paragraph");
+            };
+            assert_eq!(paragraph.text(), "前後");
+        }
+    }
 
     const SAMPLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <uof:UOF xmlns:uof="http://schemas.uof.org/cn/2003/uof" xmlns:w="http://schemas.uof.org/cn/2003/uof-wordproc">

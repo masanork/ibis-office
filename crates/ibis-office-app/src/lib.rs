@@ -902,12 +902,12 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "md" | "markdown" | "xml" | "lawtext" | "txt"));
+        let is_uot = path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::uot::is_extension)
+            || ibis_formats::uot::is_uot(&data);
         match format {
             "docx" => {
-                let out_bytes = if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::uot::is_extension)
-                    || ibis_formats::uot::is_uot(&data)
-                {
-                    ibis_formats::uot::to_docx(&data)
+                let out_bytes = if is_uot {
+                    ibis_formats::uot::to_docx_with_base_dir(&data, path.parent())
                 } else {
                     ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent())
                         .and_then(|opened| opened.source.save(&opened.presentation, Default::default()))
@@ -954,7 +954,11 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     .map_err(|e| format!("{}: {e}", out_path.display()))?;
             }
             _ => {
-                let presentation = if is_text_md {
+                let presentation = if is_uot {
+                    ibis_formats::uot::open_with_base_dir(&data, path.parent())
+                        .map_err(|e| format!("{}: {e}", path.display()))?
+                        .presentation
+                } else if is_text_md {
                     ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent())
                         .map_err(|e| format!("{}: {e}", path.display()))?
                         .presentation
