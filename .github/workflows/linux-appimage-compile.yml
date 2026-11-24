@@ -1,0 +1,212 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# This workflow is used through a reviewed commit pin. It accepts no caller
+# supplied commands, runner labels, artifact names, secrets, or source inputs.
+name: Linux AppImage compilation
+on:
+  workflow_call:
+    outputs:
+      appimage_artifact_id:
+        description: Immutable artifact ID of this run's Linux AppImage
+        value: ${{ jobs.linux.outputs.appimage_artifact_id }}
+      appimage_sha256:
+        description: SHA-256 of the AppImage before upload
+        value: ${{ jobs.linux.outputs.appimage_sha256 }}
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  IBIS_BUILD_BRANCH: ${{ github.head_ref || github.ref_name }}
+  CARGO_TERM_COLOR: never
+
+jobs:
+  linux:
+    name: Linux x64 AppImage
+    permissions:
+      contents: read
+    outputs:
+      appimage_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      appimage_sha256: ${{ steps.subject.outputs.sha256 }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ubuntu:20.04@sha256:c664f8f86ed5a386b0a340d981b8f81714e21a8b9c73f658c4bea56aa179d54a
+      # Hosted runner DNS can fail inside this container; configure two resolvers.
+      # Mount the runner CA bundle so APT can use HTTPS from its first request.
+      options: >-
+        --dns 1.1.1.1 --dns 8.8.8.8
+        --mount type=bind,source=/etc/ssl/certs/ca-certificates.crt,target=/run/ibis-runner-ca.pem,readonly
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Confirm build has no OIDC signing access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+      - name: Install dependencies
+        run: |
+          test -s /run/ibis-runner-ca.pem
+          apt_retry() {
+            apt-get -o Acquire::Retries=4 -o Acquire::https::Timeout=20 \
+              -o Acquire::https::CaInfo=/run/ibis-runner-ca.pem "$@"
+          }
+          sed -i -e 's|http://archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            -e 's|http://security\.ubuntu\.com/ubuntu|https://security.ubuntu.com/ubuntu|g' /etc/apt/sources.list
+          apt_retry update
+          apt_retry install -y ca-certificates curl git python3 build-essential pkg-config libssl-dev \
+            libfontconfig1-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            fontconfig fonts-noto-cjk poppler-utils unzip
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.98.1
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Trust this checkout inside the container
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --file .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r _ path; do
+            git config --global --add safe.directory "$GITHUB_WORKSPACE/$path"
+          done
+      - name: Confirm fresh build output and record source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e target
+          test ! -e ci-artifact
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          python3 scripts/desktop-ci-info.py source ci-artifact
+      - name: Fetch locked Linux Cargo dependencies
+        shell: bash
+        env:
+          CARGO_NET_RETRY: "6"
+        run: |
+          cargo fetch --locked --target x86_64-unknown-linux-gnu
+          echo "CARGO_NET_OFFLINE=true" >> "$GITHUB_ENV"
+      - name: Test updater and AppImage runtime
+        env:
+          SORANE_UPDATER_PROCESS_TEST: "1"
+        run: cargo test --locked -p ibis-office-updater -p ibis-appimage
+      - name: Test Office 2007 encryption
+        run: cargo test --locked -p ibis-ooxml --test standard_encryption
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned veraPDF CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=1.30.4
+          archive="$RUNNER_TEMP/verapdf.zip"
+          curl --proto '=https' --retry 3 --max-time 120 -fsSL \
+            "https://software.verapdf.org/releases/1.30/verapdf-greenfield-${version}-installer.zip" \
+            -o "$archive"
+          echo "04415ef3f149526a3048b9889723e81320ddf013bd891bcc7f0f297f3eadcc23  $archive" | sha256sum -c -
+          jar="$RUNNER_TEMP/verapdf-installer.jar"
+          unzip -p "$archive" "verapdf-greenfield-${version}/verapdf-izpack-installer-${version}.jar" > "$jar"
+          config="$RUNNER_TEMP/verapdf-install.xml"
+          cat > "$config" <<EOF
+          <AutomatedInstallation langpack="eng">
+            <com.izforge.izpack.panels.htmlhello.HTMLHelloPanel id="welcome"/>
+            <com.izforge.izpack.panels.target.TargetPanel id="install_dir">
+              <installpath>$RUNNER_TEMP/verapdf</installpath>
+            </com.izforge.izpack.panels.target.TargetPanel>
+            <com.izforge.izpack.panels.packs.PacksPanel id="sdk_pack_select">
+              <pack index="0" name="veraPDF GUI" selected="false"/>
+              <pack index="1" name="veraPDF CLI" selected="true"/>
+              <pack index="2" name="veraPDF Documentation" selected="false"/>
+              <pack index="3" name="veraPDF Sample Plugins" selected="false"/>
+            </com.izforge.izpack.panels.packs.PacksPanel>
+            <com.izforge.izpack.panels.install.InstallPanel id="install"/>
+            <com.izforge.izpack.panels.finish.FinishPanel id="finish"/>
+          </AutomatedInstallation>
+          EOF
+          java -Djava.awt.headless=true -jar "$jar" "$config"
+          "$RUNNER_TEMP/verapdf/verapdf" --version
+      - name: Verify form round trips and PDF/A merge
+        run: |
+          export IBIS_TEST_VERAPDF="$RUNNER_TEMP/verapdf/verapdf"
+          IBIS_TEST_JAPANESE_FONT="$(fc-match -f '%{file}' 'Noto Sans CJK JP')"
+          export IBIS_TEST_JAPANESE_FONT
+          test -f "$IBIS_TEST_JAPANESE_FONT"
+          export IBIS_TEST_PDFTOTEXT=pdftotext
+          cargo test --locked -p ibis-formats --test form_template --test pdf_form_template
+      - name: Build and verify AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/bundle-linux.sh --release
+          image=$(find target/dist -maxdepth 1 -name '*.AppImage' -type f -print -quit)
+          test -n "$image"
+          (cd target/dist && sha256sum -c "$(basename "$image").sha256")
+          "$image" --appimage-offset | grep -E '^[0-9]+$'
+          mkdir -p "$RUNNER_TEMP/verify-linux"
+          image=$(realpath "$image")
+          (cd "$RUNNER_TEMP/verify-linux" && "$image" --appimage-extract)
+          test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
+          test -x "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOfficeUpdater"
+          test -z "$(find "$RUNNER_TEMP/verify-linux/squashfs-root" -iname '*onnx*' -print -quit)"
+          python3 scripts/test-appimage-recovery.py "$image"
+          python3 scripts/check-bundled-variant-dictionary.py \
+            "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice" \
+            "$RUNNER_TEMP/verify-linux/squashfs-root/usr/share/doc/ibisOffice/third-party-licenses.md"
+          set +e
+          "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice" --export invalid
+          result=$?
+          set -e
+          test "$result" -eq 1
+          python3 scripts/test-ai-edit-cli.py "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
+          python3 scripts/test-markdown-reference-render.py "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice"
+          python3 scripts/test-pdfa-export.py \
+            "$RUNNER_TEMP/verify-linux/squashfs-root/usr/bin/ibisOffice" \
+            --verapdf "$RUNNER_TEMP/verapdf/verapdf"
+          cp "$image" ci-artifact/desktop-linux-x64-ci.AppImage
+      - name: Generate and open Linux SBOM and CBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          appdir="$RUNNER_TEMP/verify-linux/squashfs-root"
+          python3 scripts/build-bom.py linux-x64-appimage ci-artifact/desktop-linux-x64-ci.AppImage ci-artifact --appdir "$appdir"
+          app="$appdir/usr/bin/ibisOffice"
+          for kind in sbom cbom; do
+            workbook="$RUNNER_TEMP/linux-$kind.xlsx"
+            "$app" --export sbom-table "ci-artifact/linux-x64-appimage.$kind.cdx.json" --out-file "$workbook"
+            unzip -p "$workbook" xl/workbook.xml > "$RUNNER_TEMP/linux-$kind-workbook.xml"
+            grep -F 'name="Components"' "$RUNNER_TEMP/linux-$kind-workbook.xml"
+          done
+          grep -qF 'name="Cryptographic assets"' "$RUNNER_TEMP/linux-cbom-workbook.xml"
+          grep -qF 'name="Crypto relationships"' "$RUNNER_TEMP/linux-cbom-workbook.xml"
+          unzip -p "$RUNNER_TEMP/linux-sbom.xlsx" 'xl/*.xml' > "$RUNNER_TEMP/linux-sbom-cells.xml"
+          unzip -p "$RUNNER_TEMP/linux-cbom.xlsx" 'xl/*.xml' > "$RUNNER_TEMP/linux-cbom-cells.xml"
+          for component in usr/bin/ibisOffice usr/bin/ibisOfficeUpdater libc.so.6; do
+            grep -qF "$component" "$RUNNER_TEMP/linux-sbom-cells.xml"
+          done
+          for algorithm in AES-256-CBC RC4 RSA-PSS-SHA-256 ECDSA-P-256-SHA-256 SM2-with-SM3; do
+            grep -qF "$algorithm" "$RUNNER_TEMP/linux-cbom-cells.xml"
+          done
+      - name: Hash deliverables
+        run: python3 scripts/desktop-ci-info.py artifacts ci-artifact
+      - name: Record the AppImage digest before upload
+        id: subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          checksum=$(sha256sum ci-artifact/desktop-linux-x64-ci.AppImage)
+          echo "sha256=${checksum%% *}" >> "$GITHUB_OUTPUT"
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-ci-linux-x64
+          path: ci-artifact/
+          if-no-files-found: error
+          retention-days: 14

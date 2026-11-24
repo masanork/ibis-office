@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# This workflow is used through a reviewed commit pin. It accepts no caller
+# supplied commands, runner labels, artifact names, secrets, or source inputs.
+name: Isolated Linux AppImage builder
+on:
+  workflow_call:
+    outputs:
+      appimage_artifact_id:
+        description: Immutable artifact ID of this run's Linux AppImage
+        value: ${{ jobs.linux.outputs.appimage_artifact_id }}
+      provenance_artifact_id:
+        description: Immutable artifact ID of this run's provenance bundle
+        value: ${{ jobs.attest-linux.outputs.provenance_artifact_id }}
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  IBIS_BUILD_BRANCH: ${{ github.head_ref || github.ref_name }}
+  CARGO_TERM_COLOR: never
+
+jobs:
+  linux:
+    name: Linux x64 AppImage
+    permissions:
+      contents: read
+    uses: ./.github/workflows/linux-appimage-compile.yml
+
+  attest-linux:
+    name: Sign Linux AppImage provenance
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: linux
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    outputs:
+      provenance_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Require the build's immutable artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.linux.outputs.appimage_artifact_id }}
+        run: '[[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.linux.outputs.appimage_artifact_id }}
+          merge-multiple: true
+          path: linux
+      - name: Check the same-run AppImage subject
+        env:
+          EXPECTED_APPIMAGE_SHA: ${{ needs.linux.outputs.appimage_sha256 }}
+        run: |
+          set -euo pipefail
+          image=linux/desktop-linux-x64-ci.AppImage
+          test -f "$image" && test ! -L "$image" && test -s "$image"
+          [[ "$EXPECTED_APPIMAGE_SHA" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' "$EXPECTED_APPIMAGE_SHA" "$image" | sha256sum -c -
+      - name: Attest Linux AppImage build provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: linux/desktop-linux-x64-ci.AppImage
+      - name: Name the portable provenance bundle
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$ATTESTATION_BUNDLE" desktop-linux-x64-ci.AppImage.intoto.jsonl
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-ci-linux-x64-provenance
+          path: desktop-linux-x64-ci.AppImage.intoto.jsonl
+          if-no-files-found: error
+          retention-days: 14
