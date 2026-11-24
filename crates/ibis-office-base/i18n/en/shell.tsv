@@ -1828,3 +1828,5 @@ structured.document-schema-summary	JSON Schema · {issues} issues
 structured.document-schema-issue	{field} · {message}
 structured.row-schema-contains-few	Too few array items match the condition
 structured.row-schema-contains-many	Too many array items match the condition
+ai.send-opencode	OpenCode (ACP)
+ai.opencode-cancelled	OpenCode run cancelled.
