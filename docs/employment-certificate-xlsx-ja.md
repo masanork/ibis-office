@@ -122,3 +122,18 @@ python3 "$tools/presentation.py" "$review_dir/childcare-request.md" --format mso
 資格情報原稿の `mdoc.doctype` は試作の文書タイプを表す。`mdoc.paths` は論理項目IDを `[名前空間, 要素名]` に対応付ける。`certification_date` は西暦日付の文字列、`work_schedule_total` は単位・時間・分・うち休憩分を含む一つのCBORマップを想定する。合計の一部分だけを要求するには、交付側で要素の設計を変える必要がある。
 
 提示要求の任意の `intent_to_retain` はmdocの各要求要素に反映する。例では `false` を指定している。これは試作用の要求における受け手の保持の意図を表す。実際の保育申込での保持方針は提出先が決める。試作で確認するのはDCQLの生成までで、CBORデータの発行・Walletへの交付・提示検証は実装範囲外。 [OpenID4VP 1.0のmdoc形式](https://openid.net/specs/openid-4-verifiable-presentations-1_0-final.html#appendix-B.2)
+
+## テスト鍵で開示内容を照合する
+
+```sh
+cargo build --locked -p ibis-doc-service --example employment_presentation
+python3 scripts/employment-schema/test_presentation_roundtrip.py target/debug/examples/employment_presentation
+```
+
+架空の変則勤務データ一件から、SD-JWT VCとmdocの試験用データを作る。OKF原稿から生成したDCQLの要求パスを試験コードで確認し、実際に解析した開示項目と照合する。雇用形態と就労日数は発行時のデータに含め、提示時には開示しない。
+
+- SD-JWT VCでは `work_schedule.total` をネストした一つの開示にし、単位・時間・分・休憩分を同時に返す。合計オブジェクトの内部でさらに選択的開示を使う場合は、この試作で確認した開示粒度と異なる。
+- mdocでは同じ合計を名前空間内の一つの要素にし、値をCBORマップにする。単位はテキスト、時間・分・休憩分は整数で、証明日は西暦日付のテキストとして扱う。
+- SD-JWT VCでは、同じ提示に対して異なる宛先や `nonce` を指定すると不一致を検出する。mdocの既存診断では発行者署名と開示ダイジェストを確認し、端末認証と申請への束縛の判定は未確認として扱う。
+
+既存の提示比較器にあるDCQL対応は限定されているため、この試験は生成した要求を試験コードで確認したうえで、比較器の期待パス指定を使う。実Walletと検証者の間でのOpenID4VPセッションは別途検証する。
