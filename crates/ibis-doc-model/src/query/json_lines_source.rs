@@ -164,25 +164,22 @@ impl JsonLinesPreviewCursor {
             file.seek(SeekFrom::Start(bytes as u64))
                 .map_err(|error| error.to_string())?;
             let remaining = current.file_bytes - bytes;
-            let mut reader = BufReader::new(file.take((remaining as u64).saturating_add(1)));
-            while lines < target {
-                let skipped = reader
-                    .skip_until(b'\n')
-                    .map_err(|error| error.to_string())?;
-                if skipped == 0 {
-                    break;
-                }
-                bytes = bytes
-                    .checked_add(skipped)
-                    .ok_or("JSON Lines source changed; reopen the file")?;
-                if bytes > current.file_bytes {
-                    return Err("JSON Lines source changed; reopen the file".into());
-                }
-                lines += 1;
-                if lines.is_multiple_of(JSON_LINES_CHECKPOINT_STEP) {
-                    std::sync::Arc::make_mut(&mut cursor.checkpoints).insert(lines, bytes);
-                }
-            }
+            let reader = BufReader::new(file.take((remaining as u64).saturating_add(1)));
+            let (skipped_lines, skipped_bytes) = skip_physical_lines(
+                reader,
+                target - lines,
+                remaining,
+                "JSON Lines source changed; reopen the file",
+                |skipped_lines, skipped_bytes| {
+                    let line = lines + skipped_lines;
+                    if line.is_multiple_of(JSON_LINES_CHECKPOINT_STEP) {
+                        std::sync::Arc::make_mut(&mut cursor.checkpoints)
+                            .insert(line, bytes + skipped_bytes);
+                    }
+                },
+            )?;
+            lines += skipped_lines;
+            bytes += skipped_bytes;
         }
         cursor.position.lines = lines;
         cursor.position.bytes = bytes;
@@ -191,6 +188,30 @@ impl JsonLinesPreviewCursor {
         }
         cursor.next_page(selected_path)
     }
+}
+
+fn skip_physical_lines(
+    mut reader: impl BufRead,
+    count: usize,
+    max_bytes: usize,
+    changed_error: &str,
+    mut on_line: impl FnMut(usize, usize),
+) -> Result<(usize, usize), String> {
+    let mut bytes = 0;
+    for lines in 0..count {
+        let skipped = reader
+            .skip_until(b'\n')
+            .map_err(|error| error.to_string())?;
+        if skipped == 0 {
+            return Ok((lines, bytes));
+        }
+        if skipped > max_bytes - bytes {
+            return Err(changed_error.into());
+        }
+        bytes += skipped;
+        on_line(lines + 1, bytes);
+    }
+    Ok((count, bytes))
 }
 
 fn same_snapshot(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
@@ -609,27 +630,18 @@ pub(super) fn visit_recoverable_json_lines(
         input
             .seek(SeekFrom::Start(offset as u64))
             .map_err(|error| error.to_string())?;
-        let mut skip_bytes = 0usize;
-        let mut skipped_lines = 0;
-        if let Some(range) = range {
+        let (skipped_lines, skip_bytes) = if let Some(range) = range {
             // Outside the requested range there is no need to decode rows again.
-            for _ in 1..range.first {
-                let remaining = max_bytes - skip_bytes;
-                let skipped = input
-                    .by_ref()
-                    .take((remaining as u64).saturating_add(1))
-                    .skip_until(b'\n')
-                    .map_err(|error| error.to_string())?;
-                if skipped == 0 {
-                    break;
-                }
-                if skipped > remaining {
-                    return Err("JSON Lines file changed during import".into());
-                }
-                skipped_lines += 1;
-                skip_bytes += skipped;
-            }
-        }
+            skip_physical_lines(
+                input.by_ref().take((max_bytes as u64).saturating_add(1)),
+                range.first.saturating_sub(1),
+                max_bytes,
+                "JSON Lines file changed during import",
+                |_, _| {},
+            )?
+        } else {
+            (0, 0)
+        };
         let remaining = max_bytes - skip_bytes;
         let line_limit = range
             .and_then(|range| range.last)
@@ -697,9 +709,7 @@ pub(super) fn visit_recoverable_json_lines(
         metadata: before,
         position,
         max_lines,
-        checkpoints: cursor
-            .map(|cursor| cursor.checkpoints.clone())
-            .unwrap_or_default(),
+        checkpoints,
         total_lines: if position.at_end() {
             Some(position.lines)
         } else {
@@ -1009,6 +1019,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn skipping_counts_physical_lines_and_respects_the_byte_budget() {
+        let input = &b"a\r\n\nb"[..];
+        let mut offsets = Vec::new();
+        let result = skip_physical_lines(input, 4, 5, "changed", |line, offset| {
+            offsets.push((line, offset));
+        });
+        assert_eq!(result, Ok((3, 5)));
+        assert_eq!(offsets, [(1, 3), (2, 4), (3, 5)]);
+        assert_eq!(
+            skip_physical_lines(input, 3, 4, "changed", |_, _| {}),
+            Err("changed".into())
+        );
+    }
+
+    #[test]
     fn preview_pages_preserve_physical_lines_diagnose_boundaries_and_stop_at_eof() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("page.jsonl");
@@ -1065,6 +1090,7 @@ mod tests {
         std::fs::write(&path, &input).unwrap();
         let (_, initial) =
             super::super::DiskDataset::collect_json_lines_sample(&path, 200).unwrap();
+        assert_eq!(initial.checkpoints.get(&200), Some(&(200 * row.len())));
         let start = Instant::now();
         let (far_page, far) = initial.jump_to(&path, 900_001).unwrap();
         let first_time = start.elapsed();
