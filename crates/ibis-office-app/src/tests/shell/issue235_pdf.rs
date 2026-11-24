@@ -258,8 +258,13 @@ fn vsdx_embedded_images() {
 }
 
 fn vsdx_new_diagram() {
+    use super::button_probe as buttons;
+    let _probe = buttons::Probe::new();
     let mut s = Scenario::start_view();
-    s.menu("file.new.visio-draft");
+    let x = |id| buttons::bounds(id).unwrap().center().x;
+    assert!(x("start-new-pptx") < x("start-new-vsdx"));
+    assert!(x("start-new-vsdx") < x("start-new-md"));
+    buttons::click(&mut s, "start-new-vsdx");
     assert_eq!(s.with(|editor, _| editor.kind()), ibis_formats::Kind::Presentation);
     assert!(s.with(|editor, _| editor.slide().shapes.is_empty()));
     let point = |s: &mut Scenario, x, y| {

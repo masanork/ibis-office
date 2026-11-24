@@ -325,10 +325,14 @@ impl SlideEditor {
         let new_files = div()
             .flex()
             .gap_4()
-            .when(narrow, |row| row.flex_wrap())
+            .flex_wrap()
             .ml(px(BADGE_OVERHANG - TILE_PADDING))
-            .children(crate::format::creatable_infos().into_iter().map(|(kind, info)| self.new_file_tile(kind, info.extension, info.new_badge_color, cx)))
-            .child(self.new_markdown_tile(cx));
+            .children(crate::format::creatable_infos().into_iter().map(|(kind, info)| self.new_file_tile(kind, info.extension, info.new_badge_color, cx)));
+        #[cfg(not(target_family = "wasm"))]
+        let new_files = new_files.when(!crate::host::is_connected(), |row| {
+            row.child(self.render_new_tile("vsdx", 0x2563a8, |this, window, cx| this.new_visio_draft(window, cx), cx))
+        });
+        let new_files = new_files.child(self.new_markdown_tile(cx));
 
         div()
             .id("start-view")
@@ -452,15 +456,22 @@ impl SlideEditor {
             .text_size(px(12.))
             .font_weight(FontWeight::BOLD)
             .child(label);
-        div()
-            .id(SharedString::from(format!("start-new-{label}")))
+        let id = SharedString::from(format!("start-new-{label}"));
+        let tile = div()
+            .id(id.clone())
+            .flex_none()
             .p(px(TILE_PADDING))
             .rounded(px(6.))
             .cursor_pointer()
             .hover(|s| s.bg(rgb(0xf0f4f9)))
             .child(div().relative().child(page).child(badge))
-            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
-            .into_any_element()
+            .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)));
+        #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+        let tile = tile.relative().child(gpui_kit::canvas(
+            |_, _, _| (),
+            move |bounds, _, _, _| crate::scenario::button_probe::record_bounds(&id, bounds),
+        ).absolute().inset_0());
+        tile.into_any_element()
     }
 
     #[cfg(not(target_family="wasm"))]
