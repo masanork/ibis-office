@@ -16,6 +16,7 @@ mod csv;
 mod cyclonedx;
 mod hed;
 mod linkage;
+mod row_schema;
 
 const MAX_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_RECORDS: usize = 1_000_000;
@@ -97,6 +98,7 @@ struct Source {
     csv: Option<csv::Csv>,
     notice: Option<hed::Check>,
     linkage_review: Option<Result<linkage::Review, &'static str>>,
+    row_review: Option<Result<row_schema::Review, &'static str>>,
 }
 
 impl Source {
@@ -132,10 +134,13 @@ impl Source {
                 csv: Some(csv),
                 notice: Some(notice),
                 linkage_review,
+                row_review: None,
             });
         }
         let mut source = Self::new(bytes, lines);
-        if !lines {
+        if let Some(schema) = row_schema::sidecar(&path) {
+            source.row_review = Some(row_schema::review(&schema, &source));
+        } else if !lines {
             source.inventory = cyclonedx::Inventory::read(&source);
         }
         Ok(source)
@@ -165,6 +170,7 @@ impl Source {
             csv: None,
             notice: None,
             linkage_review: None,
+            row_review: None,
             lines,
         }
     }
@@ -443,6 +449,8 @@ struct View {
     query: String,
     hits: Option<Vec<SearchHit>>,
     record: usize,
+    record_scroll: UniformListScrollHandle,
+    tree_scroll: UniformListScrollHandle,
     selected: Option<usize>,
     document_tree: Option<(Tree, Option<usize>)>,
     _subscription: Subscription,
@@ -514,6 +522,75 @@ impl View {
         self.tree.roots.push(root);
         self.tree.toggle(root, Some(source));
         self.refresh_hits(cx);
+        cx.notify();
+    }
+
+    fn select_row_issue(
+        &mut self,
+        record: usize,
+        field: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.query.clear();
+        self.search
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.select_record(record, cx);
+        let Some(&root) = self.tree.roots.first() else {
+            return;
+        };
+        self.selected = Some(root);
+        if let Ok(position) = self.matching.binary_search(&record) {
+            self.record_scroll
+                .scroll_to_item(position, ScrollStrategy::Nearest);
+        }
+        if let Some(field) = field {
+            let source = self.source.as_ref().unwrap();
+            let raw: Option<std::collections::HashMap<String, &RawValue>> =
+                serde_json::from_slice(&source.bytes[source.records[record].clone()]).ok();
+            let raw = raw.as_ref().and_then(|fields| fields.get(field));
+            let existing = self.tree.nodes[root]
+                .children
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .copied()
+                .find(|&id| raw.is_some_and(|raw| self.tree.nodes[id].span == source.span(raw)));
+            let selected = existing.unwrap_or_else(|| {
+                let mut node = raw.map_or_else(
+                    || Node {
+                        name: field.into(),
+                        detail: crate::i18n::text("structured.row-schema-required").to_string(),
+                        span: 0..0,
+                        children: Some(Vec::new()),
+                        expanded: false,
+                        paragraph: None,
+                        parent: None,
+                        more: false,
+                    },
+                    |raw| source.node(raw, field.into()),
+                );
+                node.parent = Some(root);
+                let id = self.tree.push(node);
+                if !self.tree.nodes[root].more {
+                    self.tree.nodes[root]
+                        .children
+                        .get_or_insert_with(Vec::new)
+                        .push(id);
+                }
+                id
+            });
+            self.selected = Some(selected);
+        }
+        if let Some(position) = self
+            .tree
+            .visible("")
+            .iter()
+            .position(|(id, _)| Some(*id) == self.selected)
+        {
+            self.tree_scroll
+                .scroll_to_item(position, ScrollStrategy::Nearest);
+        }
         cx.notify();
     }
 
@@ -732,6 +809,7 @@ impl Render for View {
                     .collect::<Vec<_>>()
             }),
         )
+        .track_scroll(&self.record_scroll)
         .size_full();
         let rows = uniform_list(
             "structured-tree",
@@ -835,6 +913,7 @@ impl Render for View {
                     .collect::<Vec<_>>()
             }),
         )
+        .track_scroll(&self.tree_scroll)
         .size_full();
         v_flex()
             .size_full()
@@ -893,6 +972,57 @@ impl Render for View {
                     .text_sm()
                     .text_color(theme.muted_foreground)
                     .child(crate::i18n::text("structured.csv-mode"))
+            }))
+            .children(self.source.as_ref().and_then(|source| {
+                source.row_review.as_ref().map(|result| {
+                    let panel = v_flex().px_4().py_2().gap_1().text_sm();
+                    let review = match result {
+                        Ok(review) => review,
+                        Err(message) => return panel.child(crate::i18n::text(message)),
+                    };
+                    let mut results = v_flex()
+                        .id("row-schema-results")
+                        .max_h(px(140.))
+                        .overflow_y_scroll();
+                    for (index, issue) in review.issues.iter().enumerate() {
+                        let record = issue.record;
+                        let field = issue.field.clone();
+                        let label = crate::i18n::format(
+                            "structured.row-schema-issue",
+                            &[
+                                ("line", &(record + 1)),
+                                ("field", &issue.field.as_deref().unwrap_or("$")),
+                                ("message", &crate::i18n::text(issue.message)),
+                            ],
+                        );
+                        results = results.child(
+                            Button::new(("row-schema-issue", index))
+                                .outline()
+                                .xsmall()
+                                .label(label)
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.select_row_issue(record, field.as_deref(), window, cx)
+                                })),
+                        );
+                    }
+                    for comment in review.comments.iter().take(linkage::DISPLAY_LIMIT) {
+                        results = results.child(
+                            div()
+                                .truncate()
+                                .child(excerpt(comment.lines().next().unwrap_or_default(), 220)),
+                        );
+                    }
+                    panel
+                        .child(div().truncate().child(review.title.clone()))
+                        .child(crate::i18n::format(
+                            "structured.row-schema-summary",
+                            &[
+                                ("rows", &source.records.len()),
+                                ("issues", &review.issue_count),
+                            ],
+                        ))
+                        .child(results)
+                })
             }))
             .children(self.source.as_ref().and_then(|source| {
                 source.linkage_review.as_ref().map(|review| {
@@ -1162,12 +1292,17 @@ impl Render for View {
                         .and_then(|(inventory, reference)| {
                             inventory.target(&node.name, parent, reference)
                         });
-                let body = decoded.unwrap_or_else(|| {
-                    excerpt(
-                        &String::from_utf8_lossy(&raw[..raw.len().min(16_384)]),
-                        16_000,
-                    )
-                });
+                let body = decoded
+                    .filter(|text| source.row_review.is_none() || !text.is_empty())
+                    .unwrap_or_else(|| {
+                        if source.row_review.is_some() && node.span.is_empty() {
+                            return node.detail.clone();
+                        }
+                        excerpt(
+                            &String::from_utf8_lossy(&raw[..raw.len().min(16_384)]),
+                            16_000,
+                        )
+                    });
                 v_flex()
                     .px_4()
                     .py_2()
@@ -1337,6 +1472,8 @@ fn open_view(
                 query: String::new(),
                 hits: None,
                 record: 0,
+                record_scroll: UniformListScrollHandle::default(),
+                tree_scroll: UniformListScrollHandle::default(),
                 selected: None,
                 document_tree: None,
                 _subscription: subscription,
@@ -1352,6 +1489,10 @@ fn open_view(
         });
         cx.new(|cx| Root::new(view, window, cx))
     });
+}
+
+pub(crate) fn has_row_schema(path: &std::path::Path) -> bool {
+    row_schema::sidecar(path).is_some()
 }
 
 impl crate::editor::SlideEditor {

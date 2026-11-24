@@ -1812,3 +1812,12 @@ structured.linkage-unavailable-count	{count} conditional rules could not be chec
 structured.linkage-unavailable-reference	Not checked · {target} · No single reference column · {note}
 structured.linkage-unavailable-rule	Not checked · {target} · {note}
 structured.linkage-missing-reference	Not checked · {target} · Reference column is absent · {note}
+structured.row-schema-invalid	The row schema could not be read or uses unsupported keywords.
+structured.row-schema-type	The value has a different type from the schema
+structured.row-schema-enum	The value is outside the allowed list
+structured.row-schema-length	The value is shorter than required
+structured.row-schema-required	The required field is missing
+structured.row-schema-object	The row must be a JSON object
+structured.row-schema-malformed	The line is not valid JSON
+structured.row-schema-issue	Line {line} · {field} · {message}
+structured.row-schema-summary	JSON Schema · {rows} lines checked · {issues} issues

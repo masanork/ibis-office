@@ -1810,3 +1810,12 @@ structured.linkage-unavailable-count	判定不能の条件付き必須 {count}�
 structured.linkage-unavailable-reference	判定不能 · {target} · 参照列を一意に特定できません · {note}
 structured.linkage-unavailable-rule	判定不能 · {target} · {note}
 structured.linkage-missing-reference	判定不能 · {target} · 参照列がありません · {note}
+structured.row-schema-invalid	行スキーマを読めないか、未対応のキーワードが含まれています。
+structured.row-schema-type	値の型がスキーマと異なります
+structured.row-schema-enum	許容される値の一覧にありません
+structured.row-schema-length	値が必要な長さに達していません
+structured.row-schema-required	必須フィールドがありません
+structured.row-schema-object	行がJSONオブジェクトではありません
+structured.row-schema-malformed	行をJSONとして読み取れません
+structured.row-schema-issue	{line}行目 · {field} · {message}
+structured.row-schema-summary	JSON Schema · {rows}行を検査 · 指摘{issues}件
