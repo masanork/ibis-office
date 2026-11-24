@@ -1570,6 +1570,7 @@ window.minimize	Minimize
 app.services	Services
 app.hide	Hide ibisOffice
 file.copy-download	Save a Copy (Download)
+structured-preview.xml-definition-conflict	Shared XML view definitions conflict ({files}). Use Open View Definitions Folder in Settings to remove the extra definitions, then reopen the XML.
 structured-preview.title	Structured data preview
 structured-preview.read-only	Read-only preview
 structured-preview.credential-type	Credential type

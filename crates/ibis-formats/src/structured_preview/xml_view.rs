@@ -71,34 +71,46 @@ pub fn read(bytes: &[u8], definition: &[u8]) -> Result<Preview, String> {
     definition.preview(root)
 }
 
+#[derive(Debug)]
+pub enum SharedError {
+    Invalid(String),
+    Conflict(Vec<String>),
+}
+
 /// Select a unique shared definition for the document. Invalid definitions
 /// and definitions without an attribute or element selector are skipped.
 pub fn select_shared(
     bytes: &[u8],
-    definitions: impl IntoIterator<Item = Vec<u8>>,
-) -> Result<Option<Preview>, String> {
+    definitions: impl IntoIterator<Item = (String, Vec<u8>)>,
+) -> Result<Option<Preview>, SharedError> {
     let mut definitions = definitions.into_iter().peekable();
     if definitions.peek().is_none() {
         return Ok(None);
     }
     if bytes.len() > MAX_BYTES {
-        return Err(SIZE_LIMIT_ERROR.into());
+        return Err(SharedError::Invalid(SIZE_LIMIT_ERROR.into()));
     }
-    let doc = super::parse_xml(bytes)?;
+    let doc = super::parse_xml(bytes).map_err(SharedError::Invalid)?;
     let root = doc.root_element();
-    let mut matches = definitions
-        .filter_map(|bytes| Definition::parse(&bytes).ok())
-        .filter(|definition| {
-            (!definition.root.attributes.is_empty() || !definition.root.elements.is_empty())
-                && definition.matches(root).unwrap_or(false)
-        });
-    let Some(definition) = matches.next() else {
+    let mut matches = definitions.filter_map(|(name, bytes)| {
+        let definition = Definition::parse(&bytes).ok()?;
+        ((!definition.root.attributes.is_empty() || !definition.root.elements.is_empty())
+            && definition.matches(root).ok()?)
+        .then_some((name, definition))
+    });
+    let Some((name, definition)) = matches.next() else {
         return Ok(None);
     };
-    if matches.next().is_some() {
-        return Err("Multiple shared XML view definitions match this document".into());
+    let mut names = vec![name];
+    names.extend(matches.map(|(name, _)| name));
+    if names.len() > 1 {
+        names.sort_unstable();
+        return Err(SharedError::Conflict(names));
     }
-    definition.preview(root).map(Some)
+    definition
+        .preview(root)
+        .map(Some)
+        .map_err(SharedError::Invalid)
 }
 
 impl Root {
@@ -306,7 +318,14 @@ mod tests {
             let xml = format!(
                 r#"<Report xmlns="http://xml.kishou.go.jp/jmaxml1/" xmlns:i="http://xml.kishou.go.jp/jmaxml1/informationBasis1/"><i:Head>{header}</i:Head></Report>"#
             );
-            super::select_shared(xml.as_bytes(), [WEATHER.to_vec(), PHENOLOGY.to_vec()]).unwrap()
+            super::select_shared(
+                xml.as_bytes(),
+                [
+                    ("weather".into(), WEATHER.to_vec()),
+                    ("phenology".into(), PHENOLOGY.to_vec()),
+                ],
+            )
+            .unwrap()
         };
         for (kind, title) in [
             ("生物季節観測報告気象報", "生物季節観測の項目"),
@@ -324,7 +343,8 @@ mod tests {
 
     #[test]
     fn shared_element_and_attribute_selectors_are_combined() {
-        let select = |profile: Vec<u8>| super::select_shared(XML, [profile]).unwrap();
+        let select =
+            |profile: Vec<u8>| super::select_shared(XML, [("life".into(), profile)]).unwrap();
         assert!(select(DEFINITION.to_vec()).is_some());
 
         let mut profile: serde_json::Value = serde_json::from_slice(DEFINITION).unwrap();
