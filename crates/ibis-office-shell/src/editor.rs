@@ -1658,6 +1658,7 @@ impl SlideEditor {
                 }).ok();
                 return;
             }
+            let converted_hwpx = extension.is_some_and(ibis_formats::hwpx::is_extension) || ibis_formats::hwpx::is_hwpx(&data);
             let mut image_provenance = None;
             let mut law_source = None;
             let mut result = if let Some(markdown) = law_input {
@@ -1666,6 +1667,8 @@ impl SlideEditor {
                     .and_then(|text| ibis_formats::markdown::open_markdown(text.into_bytes()))
                     .map(|opened| (opened, None))
                     .map_err(|e| e.to_string())
+            } else if converted_hwpx {
+                ibis_formats::hwpx::open(&data).map(|opened| (opened, None)).map_err(|e| e.to_string())
             } else if extension.is_some_and(ibis_formats::production_image::is_heic_extension) {
                 crate::web::open_heic(&data).await.map(|opened| (opened, None))
             } else {
@@ -1708,6 +1711,9 @@ impl SlideEditor {
                     let is_tmpl = name.rsplit_once('.').is_some_and(|(_, e)| ibis_formats::is_template(e));
                     let doc_name = if is_tmpl {
                         crate::file_actions::new_file_name(ibis_formats::Kind::of(&opened.presentation))
+                    } else if converted_hwpx {
+                        let stem = name.rsplit_once('.').map_or(name.as_ref(), |(stem, _)| stem);
+                        format!("{stem}.docx").into()
                     } else {
                         name
                     };
@@ -1903,7 +1909,7 @@ impl SlideEditor {
                         this.set_loaded_source(loaded.source);
                         this.path = None;
                         this.document.set_file(None);
-                    } else if production_image
+                    } else if production_image || loaded.converted_hwpx
                         || (ibis_formats::Kind::of(&loaded.presentation) == ibis_formats::Kind::Workbook
                             && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")))
                         || path.extension().is_some_and(|e| ["xls", "ods", "ppt", "pps", "pot", "odp", "otp", "odt", "ott", "doc", "dot", "rtf", "txt", "text", "html", "htm", "pdf"].iter().any(|x| e.eq_ignore_ascii_case(x))) {

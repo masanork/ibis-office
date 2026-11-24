@@ -96,6 +96,7 @@ mod xlsb_formula;
 mod xls;
 mod msdoc;
 /// Read-only Ichitaro text import.
+pub mod hwpx;
 pub mod jtd;
 pub mod slides_html;
 pub mod officeart_xml;
@@ -212,6 +213,7 @@ pub(crate) fn is_opendocument(data: &[u8]) -> bool {
 /// `.docx` document (see [`read_docx`]): which one is told by the package's
 /// main part.
 pub fn read(data: &[u8]) -> Result<Presentation, Error> {
+    if hwpx::is_hwpx(data) { return Ok(hwpx::open(data)?.presentation); }
     if jtd::is_jtd(data) { return jtd::read(data); }
     if is_opendocument(data) { return Err(Error::new(ODF_MESSAGE)); }
     if markdown::is_markdown(data) { return markdown::read_markdown(data); }
@@ -258,14 +260,14 @@ impl Kind {
         match extension.to_ascii_lowercase().as_str() {
             "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "pps" | "pot" | "odp" | "otp" => Some(Kind::Presentation),
             "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" | "ots" | "csv" | "tsv" | "tab" | "xltx" | "xltm" | "xlk" => Some(Kind::Workbook),
-            "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "jtd" | "jtt" | "jttc" | "md" | "markdown" | "cin" | "dpx" | "exr" | "psd" | "tga" | "tif" | "tiff" | "jp2" | "j2k" | "j2c" => Some(Kind::Document),
+            "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "hwpx" | "jtd" | "jtt" | "jttc" | "md" | "markdown" | "cin" | "dpx" | "exr" | "psd" | "tga" | "tif" | "tiff" | "jp2" | "j2k" | "j2c" => Some(Kind::Document),
             "pdf" | "ofd" | "xps" | "oxps" | "xdw" => Some(Kind::Pdf),
             _ => None,
         }
     }
 
     /// The extensions of the files that can be opened (what `from_extension` knows), for the file dialog.
-    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "jtd", "jtt", "jttc", "json", "xml", "sd-jwt", "mdoc", "md", "markdown", "pdf", "ofd", "xps", "oxps", "xdw", "cin", "dpx", "exr", "psd", "tga", "tif", "tiff", "jp2", "j2k", "j2c"];
+    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "docx", "docm", "dotx", "dotm", "doc", "dot", "hwpx", "jtd", "jtt", "jttc", "json", "xml", "sd-jwt", "mdoc", "md", "markdown", "pdf", "ofd", "xps", "oxps", "xdw", "cin", "dpx", "exr", "psd", "tga", "tif", "tiff", "jp2", "j2k", "j2c"];
 
     /// The kind of document contained in `presentation`.
     pub fn of(presentation: &Presentation) -> Self {

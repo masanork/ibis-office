@@ -22,6 +22,7 @@ pub struct Loaded {
     /// The password a protected file was opened with: saving protects it again.
     pub password: Option<String>,
     pub standard_encryption: bool,
+    pub converted_hwpx: bool,
     pub jtd_original: Option<Vec<u8>>,
     pub jtd_gallery: bool,
     pub structured_preview: bool,
@@ -84,7 +85,7 @@ fn load_production_image(
     image_provenance: Option<crate::image_provenance::Report>,
 ) -> Loaded {
     crate::render::preload::Preload::start_for_next(&opened.presentation);
-    Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, cbom_source: None, exr_exposure, image_provenance }
+    Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, converted_hwpx: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, cbom_source: None, exr_exposure, image_provenance }
 }
 
 /// Run `read` for the file at `path`. One file's reader going wrong must close that file only: every window shares this
@@ -234,7 +235,7 @@ fn read_file_data(
         let presentation = format.read(data.into())?;
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, cbom_source: None, exr_exposure: None, image_provenance: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, converted_hwpx: false, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, cbom_source: None, exr_exposure: None, image_provenance: None });
     }
     let extension = path.extension().and_then(|e| e.to_str());
     if let Some((opened, exr_exposure)) = ibis_formats::production_image::open_with_exposure(extension, &data)? {
@@ -246,7 +247,7 @@ fn read_file_data(
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
         crate::render::preload::Preload::start_for_next(&presentation);
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, csv_stream: None, jtd_original: Some(data), jtd_gallery, structured_preview: false, cbom_source: None, exr_exposure: None, image_provenance: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, converted_hwpx: false, csv_stream: None, jtd_original: Some(data), jtd_gallery, structured_preview: false, cbom_source: None, exr_exposure: None, image_provenance: None });
     }
     let standard_encryption = ibis_formats::ibis_ooxml::encryption::is_standard_encrypted(&data);
     let read_fs_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
@@ -260,6 +261,7 @@ fn read_file_data(
     let open_t0 = crate::clock::Instant::now();
     // An old binary file (.xls, .ppt, .doc): read by its content, not by its extension.
     let is_legacy_binary = ibis_formats::is_legacy_binary(&data);
+    let converted_hwpx = extension.is_some_and(ibis_formats::hwpx::is_extension) || ibis_formats::hwpx::is_hwpx(&data);
     let external_document_format = ibis_formats::docx_convert::DocxConvertFormat::from_path(path);
     let mut cbom_source = None;
     let open_result = if let Some(law_md) = ibis_formats::lawtext::path_input_to_markdown(path, &data).map_err(|e| {
@@ -293,7 +295,7 @@ fn read_file_data(
         crate::render::preload::Preload::start_for_next(&opened.presentation);
         return Ok(Loaded {
             presentation: opened.presentation, source: std::sync::Arc::new(opened.source),
-            password: None, standard_encryption: false, csv_stream: None,
+            password: None, standard_encryption: false, converted_hwpx: false, csv_stream: None,
             jtd_original: None, jtd_gallery: false, structured_preview: true, cbom_source: None,
             exr_exposure: None, image_provenance: None,
         });
@@ -303,6 +305,8 @@ fn read_file_data(
         } else {
             ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent()).map(|opened| (opened, None))
         }
+    } else if converted_hwpx {
+        ibis_formats::hwpx::open(&data).map(|opened| (opened, None))
     } else if let Some(format) = external_document_format {
         (if format == ibis_formats::docx_convert::DocxConvertFormat::Odt { ibis_odf::import_odt(&data) } else { ibis_formats::docx_convert::import_docx_format(&data, format) }).map(|opened| (opened, None))
     } else {
@@ -326,7 +330,7 @@ fn read_file_data(
     let total_file_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
     eprintln!("ibisOffice timing: read_file total: {total_file_ms:.1} ms (fs::read: {read_fs_ms:.1} ms, open: {open_ms:.1} ms)");
     crate::render::preload::Preload::start_for_next(&opened.presentation);
-    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, jtd_original: None, jtd_gallery: false, structured_preview: false, cbom_source, exr_exposure: None, image_provenance: None })
+    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, converted_hwpx, jtd_original: None, jtd_gallery: false, structured_preview: false, cbom_source, exr_exposure: None, image_provenance: None })
 }
 
 /// Tell every format that the file at `path` could not be parsed (in the order of their registration, as they were told
