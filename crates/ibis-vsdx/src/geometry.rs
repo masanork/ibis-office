@@ -141,7 +141,9 @@ pub(super) fn elliptical_arc(
     if (theta(b) - start).rem_euclid(turn) > sweep {
         sweep -= turn;
     }
-    let steps = (sweep.abs() / std::f64::consts::FRAC_PI_2).ceil().max(1.0) as usize;
+    let steps = (sweep.abs() / std::f64::consts::FRAC_PI_2 - 1e-10)
+        .ceil()
+        .max(1.0) as usize;
     let step = sweep / steps as f64;
     let k = 4.0 / 3.0 * (step / 4.0).tan();
     let point = |t: f64, tangent: f64| {
