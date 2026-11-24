@@ -373,6 +373,9 @@ impl SlideEditor {
     fn save_formats(&self) -> Vec<SaveFormat> {
         use crate::i18n::text;
         let format = |label: &str, extensions: &[&str]| SaveFormat { label: text(label), extensions: extensions.iter().map(|e| e.to_string()).collect() };
+        if self.visio_draft {
+            return vec![format("file.save-format.vsdx", &["vsdx"])];
+        }
         if self.standard_read_only {
             return if self.is_workbook() {
                 vec![format("file.save-format.xlsx", &["xlsx", "xlsm", "xltx", "xltm"])]
@@ -393,7 +396,11 @@ impl SlideEditor {
         if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::production_image::supports_extension) {
             return Err("Choose a document extension to save the imported image".into());
         }
-        if crate::visio::is_visio_path(&path) {
+        let visio_path = crate::visio::is_visio_path(&path);
+        if self.visio_draft && !visio_path {
+            return Err(crate::i18n::text("vsdx.export-extension").to_string());
+        }
+        if visio_path && !self.visio_draft {
             return Err(crate::i18n::text("vsdx.export-use-command").to_string());
         }
         self.check_standard_copy_format(&path)?;
@@ -416,7 +423,9 @@ impl SlideEditor {
         let source = self.source.clone().ok_or(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").to_string())?;
         // The format's own package, or what the format writes under this extension (a workbook saved as .csv is the sheet shown, as
         // Excel's 「CSV UTF-8」).
-        let (bytes, may_protect) = if saving_original && self.current_csv_format.is_some() {
+        let (bytes, may_protect) = if self.visio_draft {
+            (self.visio_bytes()?, false)
+        } else if saving_original && self.current_csv_format.is_some() {
             (self.tracked_csv_bytes(&path)?, false)
         } else {
             match crate::format::with_format!(self, bytes_for_path(self, &path, &source, false)) {

@@ -1012,7 +1012,8 @@ pptx.size-panel.shapes-scaled-fit-new-size	Shapes are scaled to fit the new size
 pptx.theme-colors	Theme Colors and Fonts…
 pptx.theme.palette	Theme Color Palette
 pptx.theme.palette-selected	Apply Theme Colors to Selected Slides
-pptx.theme.palette.office	Office (Standard)
+pptx.theme.palette.office	Office
+pptx.theme.palette.office_2013_2022	Office (2013–2022)
 pptx.theme.palette.aspect	Aspect
 pptx.theme.palette.apex	Apex
 pptx.theme.palette.slate	Slate

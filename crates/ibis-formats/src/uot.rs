@@ -2,12 +2,12 @@
 
 //! Import the text-document branch of the Chinese Uniform Office Format.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use ibis_doc_model::{
     Block, FlowCell, FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowStyle, FlowStyles,
-    FlowTable, ParaFormat, RunFormat, StyleKind,
+    FlowTable, ParaFormat, RunFormat, StyleKind, VerticalMerge,
 };
 use roxmltree::{Document, Node, ParsingOptions};
 
@@ -16,6 +16,8 @@ use crate::{Error, Kind, Opened, SaveOptions};
 const UOF: &str = "http://schemas.uof.org/cn/2003/uof";
 const WORD: &str = "http://schemas.uof.org/cn/2003/uof-wordproc";
 const MAX_XML_BYTES: usize = 16 * 1024 * 1024;
+const MAX_XML_NODES: u32 = 300_000;
+const MAX_TABLE_COLUMNS: usize = 1024;
 
 fn word_child<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<Node<'a, 'input>> {
     node.children()
@@ -30,7 +32,7 @@ fn parse(data: &[u8]) -> Result<Document<'_>, Error> {
     Document::parse_with_options(
         text.strip_prefix('\u{feff}').unwrap_or(text),
         ParsingOptions {
-            nodes_limit: 300_000,
+            nodes_limit: MAX_XML_NODES,
             ..ParsingOptions::default()
         },
     )
@@ -80,6 +82,7 @@ pub fn to_docx(data: &[u8]) -> Result<Vec<u8>, Error> {
     let mut importer = Importer {
         next_id: flow.new_id(),
         paragraph_styles: paragraph_styles(root),
+        remaining_continuations: MAX_XML_NODES,
         styles: Arc::make_mut(&mut flow.styles),
     };
     let blocks = importer.blocks(content, 0)?;
@@ -116,6 +119,7 @@ fn paragraph_styles<'a, 'input>(root: Node<'a, 'input>) -> ParagraphStyles<'a, '
 struct Importer<'a, 'xml, 'input> {
     next_id: u32,
     paragraph_styles: ParagraphStyles<'xml, 'input>,
+    remaining_continuations: u32,
     styles: &'a mut FlowStyles,
 }
 
@@ -221,14 +225,44 @@ impl Importer<'_, '_, '_> {
     }
 
     fn table(&mut self, node: Node<'_, '_>, depth: usize) -> Result<FlowTable, Error> {
-        let mut rows = Vec::new();
+        let row_nodes: Vec<_> = node
+            .children()
+            .filter(|row| row.has_tag_name((WORD, "行")))
+            .collect();
+        let mut rows = Vec::with_capacity(row_nodes.len());
+        let mut merges = BTreeMap::new();
         let mut width = 0;
-        for row in node.children().filter(|row| row.has_tag_name((WORD, "行"))) {
+        for (row_index, row) in row_nodes.iter().copied().enumerate() {
+            let mut continuing = std::mem::take(&mut merges);
             let mut cells = Vec::new();
+            let mut column = 0;
             for cell in row
                 .children()
                 .filter(|cell| cell.has_tag_name((WORD, "单元格")))
             {
+                self.continue_cells(
+                    &mut continuing,
+                    &mut merges,
+                    row_index,
+                    &mut column,
+                    &mut cells,
+                )?;
+                let span = cell_span(cell, "跨列")?;
+                let down = cell_span(cell, "跨行")?;
+                let end = column + span;
+                if end > MAX_TABLE_COLUMNS
+                    || row_index + down > row_nodes.len()
+                    || continuing
+                        .first_key_value()
+                        .is_some_and(|(&start, _)| start < end)
+                {
+                    return Err(Error::new(
+                        "UOT cell span exceeds or overlaps the table grid",
+                    ));
+                }
+                if down > 1 {
+                    merges.insert(column, (span, row_index + down));
+                }
                 let mut blocks = self.blocks(cell, depth)?;
                 if blocks.is_empty() {
                     blocks.push(Block::Paragraph(FlowParagraph {
@@ -238,17 +272,30 @@ impl Importer<'_, '_, '_> {
                 }
                 cells.push(FlowCell {
                     id: self.id(),
-                    span: 1,
+                    span: span as u32,
+                    merge: if down > 1 {
+                        VerticalMerge::Start
+                    } else {
+                        VerticalMerge::None
+                    },
                     blocks,
                     ..Default::default()
                 });
+                column = end;
             }
-            if cells.is_empty() || (width != 0 && width != cells.len()) {
+            self.continue_cells(
+                &mut continuing,
+                &mut merges,
+                row_index,
+                &mut column,
+                &mut cells,
+            )?;
+            if cells.is_empty() || !continuing.is_empty() || (width != 0 && width != column) {
                 return Err(Error::new(
-                    "UOT table rows must have the same number of cells",
+                    "UOT table rows must cover the same number of columns",
                 ));
             }
-            width = cells.len();
+            width = column;
             let header = word_child(row, "表行属性")
                 .and_then(|properties| word_child(properties, "表头行"))
                 .is_some_and(|flag| flag.attribute((WORD, "值")) != Some("false"));
@@ -269,6 +316,53 @@ impl Importer<'_, '_, '_> {
             ..Default::default()
         })
     }
+
+    fn continue_cells(
+        &mut self,
+        continuing: &mut BTreeMap<usize, (usize, usize)>,
+        merges: &mut BTreeMap<usize, (usize, usize)>,
+        row_index: usize,
+        column: &mut usize,
+        cells: &mut Vec<FlowCell>,
+    ) -> Result<(), Error> {
+        // UOF omits covered cells. DOCX and the Markdown annotations need a
+        // continuation cell of the same width in each of the covered rows.
+        while let Some((span, row_end)) = continuing.remove(column) {
+            self.remaining_continuations = self
+                .remaining_continuations
+                .checked_sub(1)
+                .ok_or_else(|| Error::new("UOT merged cells exceed the import limit"))?;
+            if row_index + 1 < row_end {
+                merges.insert(*column, (span, row_end));
+            }
+            cells.push(FlowCell {
+                id: self.id(),
+                span: span as u32,
+                merge: VerticalMerge::Continue,
+                blocks: vec![Block::Paragraph(FlowParagraph {
+                    id: self.id(),
+                    ..Default::default()
+                })],
+                ..Default::default()
+            });
+            *column += span;
+        }
+        Ok(())
+    }
+}
+
+fn cell_span(cell: Node<'_, '_>, name: &str) -> Result<usize, Error> {
+    let Some(span) =
+        word_child(cell, "单元格属性").and_then(|properties| word_child(properties, name))
+    else {
+        return Ok(1);
+    };
+    // UOF writes 跨列 as a 值 attribute and 跨行 as element text.
+    span.attribute((WORD, "值"))
+        .or_else(|| span.text())
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|value| (1..=MAX_XML_NODES as usize).contains(value))
+        .ok_or_else(|| Error::new(format!("Invalid UOT cell span: {name}")))
 }
 
 #[cfg(test)]
@@ -376,6 +470,124 @@ mod tests {
         assert!(md.contains("## 明細\n"));
         let reopened = crate::markdown::read_markdown(md.as_bytes()).unwrap();
         assert_structure(reopened.flow.as_deref().unwrap());
+    }
+
+    fn merged_example() -> String {
+        let (prefix, after) = SAMPLE.split_once("<w:文字表>").unwrap();
+        let (_, suffix) = after.split_once("</w:文字表>").unwrap();
+        format!(
+            "{prefix}<{table}{suffix}",
+            table = r#"w:文字表>
+          <w:行><w:表行属性><w:表头行 w:值="true"/></w:表行属性>
+            <w:单元格><w:单元格属性><w:跨列 w:值="2"/></w:单元格属性><w:段落><w:句><w:文本串>横結合</w:文本串></w:句></w:段落></w:单元格>
+            <w:单元格><w:段落><w:句><w:文本串>備考</w:文本串></w:句></w:段落></w:单元格>
+          </w:行>
+          <w:行>
+            <w:单元格><w:段落><w:句><w:文本串>左上</w:文本串></w:句></w:段落></w:单元格>
+            <w:单元格><w:单元格属性><w:跨行>2</w:跨行></w:单元格属性><w:段落><w:句><w:文本串>縦結合</w:文本串></w:句></w:段落></w:单元格>
+            <w:单元格><w:段落><w:句><w:文本串>甲</w:文本串></w:句></w:段落></w:单元格>
+          </w:行>
+          <w:行>
+            <w:单元格><w:段落><w:句><w:文本串>左下</w:文本串></w:句></w:段落></w:单元格>
+            <w:单元格><w:段落><w:句><w:文本串>乙</w:文本串></w:句></w:段落></w:单元格>
+          </w:行>
+          <w:行>
+            <w:单元格><w:单元格属性><w:跨行>2</w:跨行><w:跨列 w:值="2"/></w:单元格属性><w:段落><w:句><w:文本串>横と縦</w:文本串></w:句></w:段落></w:单元格>
+            <w:单元格><w:段落><w:句><w:文本串>丙</w:文本串></w:句></w:段落></w:单元格>
+          </w:行>
+          <w:行>
+            <w:单元格><w:段落><w:句><w:文本串>丁</w:文本串></w:句></w:段落></w:单元格>
+          </w:行>
+        </w:文字表>"#
+        )
+    }
+
+    fn assert_merged_table(presentation: &ibis_doc_model::Presentation) {
+        use VerticalMerge::{Continue, None as Unmerged, Start};
+        let flow = presentation.flow.as_deref().unwrap();
+        let Some(Block::Table(table)) = flow.body.get(3) else {
+            panic!("expected table after two headings and a paragraph");
+        };
+        assert_eq!(table.columns.len(), 3);
+        assert!(table.rows[0].header);
+        let expected = [
+            vec![(2, Unmerged, "横結合"), (1, Unmerged, "備考")],
+            vec![
+                (1, Unmerged, "左上"),
+                (1, Start, "縦結合"),
+                (1, Unmerged, "甲"),
+            ],
+            vec![
+                (1, Unmerged, "左下"),
+                (1, Continue, ""),
+                (1, Unmerged, "乙"),
+            ],
+            vec![(2, Start, "横と縦"), (1, Unmerged, "丙")],
+            vec![(2, Continue, ""), (1, Unmerged, "丁")],
+        ];
+        assert_eq!(table.rows.len(), expected.len());
+        for (row, expected) in table.rows.iter().zip(expected) {
+            assert_eq!(row.cells.len(), expected.len());
+            for (cell, (width, merge, text)) in row.cells.iter().zip(expected) {
+                assert_eq!((cell.span, cell.merge), (width, merge));
+                let content: String = cell
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        Block::Paragraph(paragraph) => Some(paragraph.text()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(content, text);
+            }
+        }
+    }
+
+    #[test]
+    fn preserves_horizontal_vertical_and_combined_merges_through_docx_and_markdown() {
+        let manuscript = merged_example();
+        let opened = open(manuscript.as_bytes()).unwrap();
+        assert_merged_table(&opened.presentation);
+        let docx = opened
+            .source
+            .save(&opened.presentation, SaveOptions::default())
+            .unwrap();
+        assert_merged_table(&crate::open(docx.as_slice()).unwrap().presentation);
+        let xml = crate::zip::Archive::new(&docx)
+            .unwrap()
+            .read("word/document.xml")
+            .unwrap()
+            .unwrap();
+        let document = Document::parse(std::str::from_utf8(&xml).unwrap()).unwrap();
+        let word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        assert!(
+            document
+                .descendants()
+                .filter(|node| node.has_tag_name((word, "tc")))
+                .all(|cell| cell.children().any(|node| node.has_tag_name((word, "p"))))
+        );
+        let markdown = crate::markdown::export_docx_to_markdown(&docx).unwrap();
+        assert!(markdown.contains("<!-- colspan:2 --> <!-- vmerge:start -->"));
+        assert!(markdown.contains("<!-- colspan:2 --> <!-- vmerge:continue -->"));
+        assert_merged_table(&crate::markdown::read_markdown(markdown.as_bytes()).unwrap());
+        let from_markdown =
+            crate::markdown::import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+        assert_merged_table(&crate::open(from_markdown.as_slice()).unwrap().presentation);
+    }
+
+    #[test]
+    fn rejects_invalid_and_overlapping_cell_spans() {
+        let source = merged_example();
+        for (old, replacement) in [
+            ("<w:跨行>2</w:跨行>", "<w:跨行>0</w:跨行>"),
+            ("<w:跨行>2</w:跨行>", "<w:跨行>999</w:跨行>"),
+            (
+                "<w:单元格><w:段落><w:句><w:文本串>左下",
+                "<w:单元格><w:单元格属性><w:跨列 w:值=\"2\"/></w:单元格属性><w:段落><w:句><w:文本串>左下",
+            ),
+        ] {
+            assert!(to_docx(source.replacen(old, replacement, 1).as_bytes()).is_err());
+        }
     }
 
     #[test]

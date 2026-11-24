@@ -15,7 +15,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::issue235_a_page_is_gone_to_by_its_number", go_to_page),
         ("shell::vsdx_search_highlights_a_wrapped_label", vsdx_search),
         ("shell::vsdx_opens_a_diagram_with_embedded_images", vsdx_embedded_images),
-        ("shell::vsdx_new_diagram_exports_glued_shapes", vsdx_new_diagram),
+        ("shell::vsdx_new_diagram_saves_and_reopens_glued_shapes", vsdx_new_diagram),
         ("shell::vsdx_existing_diagram_updates_a_label_in_a_copy", vsdx_edit_label),
         ("shell::vsdx_label_edits_are_kept_when_switching_pages", vsdx_edit_multiple_pages),
         ("shell::vsdx_existing_geometry_survives_reopening", vsdx_edit_geometry),
@@ -284,20 +284,37 @@ fn vsdx_new_diagram() {
     let b = point(&mut s, 5_000_000, 2_750_000);
     s.drag(a, b);
     assert_eq!(s.with(|editor, _| editor.slide().shape_glues.len()), 1);
-    assert_eq!(s.menu_state("file.export.vsdx"), Some((true, false)));
-    let path = s.screenshot_path("diagram").with_extension("vsdx");
-    let wrong_path = path.with_file_name("save-as.vsdx");
-    assert!(s.update(|editor, window, _| editor.save_to(wrong_path.clone(), window)).is_err());
-    assert!(!wrong_path.exists());
-    s.with(|editor, _| editor.export_visio_to(&path)).unwrap();
-    let bytes = std::fs::read(&path).expect("Visio file was written");
+    assert!(s.with(|editor, _| editor.name_parts().1 == "vsdx"));
+    let dir = crate::shell::scenario::repo_root().join("target/scenario/vsdx-new-save-src");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("saved-diagram.vsdx");
+    s.update(|editor, window, _| editor.save_to(path.clone(), window)).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    assert_eq!(s.with(|editor, _| editor.file_path()), Some(path.clone()));
+    assert!(!s.with(|editor, _| editor.is_dirty()));
+
+    // The next regular Save must keep writing VSDX to the same file.
+    s.toolbar_menu("insert-shape", "shape.rect");
+    let a = point(&mut s, 1_000_000, 4_000_000);
+    let b = point(&mut s, 2_500_000, 5_000_000);
+    s.drag(a, b);
+    assert!(s.with(|editor, _| editor.is_dirty()));
+    s.key("cmd-s");
+    let bytes = std::fs::read(&path).unwrap();
+    assert_ne!(bytes, before);
+    assert!(!s.with(|editor, _| editor.is_dirty()));
     let zip = ibis_formats::zip::Archive::new(&bytes).unwrap();
     let xml = zip.read_bounded("visio/pages/page1.xml", 100_000).unwrap().unwrap();
     let xml = String::from_utf8(xml).unwrap();
-    assert!(xml.contains("ToCell=\"Connections.X1\""));
-    assert!(xml.contains("ToCell=\"Connections.X2\""));
-    assert!(xml.contains("N=\"EndArrow\" V=\"4\""));
-    s.screenshot("visio-draft");
+    assert_eq!(xml.matches("<Shape ID=").count(), 4);
+    assert!(xml.contains(r#"FromSheet="4" FromCell="BeginX" FromPart="9" ToSheet="1" ToCell="Connections.X2""#));
+    assert!(xml.contains(r#"FromSheet="4" FromCell="EndX" FromPart="12" ToSheet="2" ToCell="Connections.X1""#));
+    assert!(xml.contains(r#"N="EndArrow" V="4""#));
+    drop(s);
+    let mut reopened = Scenario::open("target/scenario/vsdx-new-save-src/saved-diagram.vsdx");
+    assert!(reopened.with(|editor, _| editor.is_read_only()));
+    assert_eq!(reopened.with(|editor, _| editor.presentation().slides.len()), 1);
+    reopened.screenshot("visio-saved-reopened");
 }
 
 fn vsdx_edit_label() {

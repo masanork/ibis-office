@@ -759,7 +759,8 @@ pptx.slide-size.portrait	スライドの向き：縦
 pptx.theme-colors	テーマの色とフォント…
 pptx.theme.palette	テーマの配色
 pptx.theme.palette-selected	選択したスライドにテーマの配色を適用
-pptx.theme.palette.office	Office（標準）
+pptx.theme.palette.office	Office
+pptx.theme.palette.office_2013_2022	Office (2013–2022)
 pptx.theme.palette.aspect	アスペクト
 pptx.theme.palette.apex	アペックス
 pptx.theme.palette.slate	スレート

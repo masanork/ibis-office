@@ -88,10 +88,14 @@ impl SlideEditor {
         slide.backdrop.clear();
         slide.layout = layout;
         let name = crate::i18n::text("vsdx.draft-filename");
+        let show = move |editor: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+            editor.show_new(opened, name, window, cx);
+            editor.visio_draft = true;
+        };
         if self.has_document {
-            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            crate::app::open_window_with(cx, show);
         } else {
-            self.show_new(opened, name, window, cx);
+            show(self, window, cx);
         }
     }
 
@@ -111,13 +115,10 @@ impl SlideEditor {
     /// Write the diagram to a separate VSDX file.
     #[cfg(not(target_family = "wasm"))]
     pub fn export_visio_to(&self, path: &std::path::Path) -> Result<(), String> {
-        if self.kind() != ibis_formats::Kind::Presentation || !crate::host::export_allowed("vsdx") {
-            return Err(crate::i18n::text("vsdx.draft-unsupported").to_string());
-        }
         if !crate::visio::is_visio_path(path) {
             return Err(crate::i18n::text("vsdx.export-extension").to_string());
         }
-        let bytes = crate::visio::from_presentation(self.presentation())?;
+        let bytes = self.visio_bytes()?;
         crate::save::write_replacing(path, &bytes)
             .map_err(|error| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &error)]))
     }
@@ -382,6 +383,14 @@ pub fn reset_new_file_numbers() {
 }
 
 impl SlideEditor {
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn visio_bytes(&self) -> Result<Vec<u8>, String> {
+        if self.kind() != ibis_formats::Kind::Presentation || !crate::host::export_allowed("vsdx") {
+            return Err(crate::i18n::text("vsdx.draft-unsupported").to_string());
+        }
+        crate::visio::from_presentation(self.presentation())
+    }
+
     /// The open file as it would be saved now.
     pub fn current_bytes(&self) -> Result<Vec<u8>, String> {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
@@ -391,6 +400,10 @@ impl SlideEditor {
         }
         if let Some(why) = crate::format::with_format!(self, save_refused(self)) {
             return Err(why);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if self.visio_draft {
+            return self.visio_bytes();
         }
         let source = self.source.clone().ok_or(crate::i18n::text("_shell.this-file-cannot-be-saved-yet").to_string())?;
         let bytes = source.save(&self.presentation_for_save(), ibis_formats::SaveOptions::default()).map_err(|e| e.to_string())?;
@@ -403,6 +416,14 @@ impl SlideEditor {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         if path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::production_image::supports_extension) {
             return Err("Choose a document extension to save the imported image".into());
+        }
+        // AutoRecover still uses the underlying editable presentation for its .pptx snapshot.
+        if self.visio_draft && crate::visio::is_visio_path(path) {
+            if let Some(why) = crate::format::with_format!(self, save_refused(self)) {
+                return Err(why);
+            }
+            let bytes = self.visio_bytes()?;
+            return crate::save::write_replacing(path, &bytes).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &path.display()), ("error", &e)]));
         }
         if crate::visio::is_visio_path(path) {
             return Err(crate::i18n::text("vsdx.export-use-command").to_string());
