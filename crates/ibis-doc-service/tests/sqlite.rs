@@ -1663,7 +1663,7 @@ fn json_lines_errors_only_range_survives_save_and_refresh() {
     let source = std::sync::Arc::new(opened.source);
     let mut draft = Document::new(opened.presentation);
     let name = draft.presentation().workbook.as_ref().unwrap().sheets[0].name.clone();
-    let sql = "SELECT * FROM input WHERE _jsonl_line >= ?1 AND (?2 IS NULL OR _jsonl_line <= ?2) AND (?3 = 0 OR _jsonl_error IS NOT NULL) ORDER BY _jsonl_line LIMIT ?4";
+    let sql = ibis_doc_service::JSON_LINES_RANGE_SQL;
     let params = json!([100_002, 100_003, 1, 25]);
     let files = [path];
     let apply_context = || DraftToolContext { source: Some(source.clone()), workbook: Default::default() };
@@ -1776,4 +1776,77 @@ fn json_lines_preview_samples_physical_lines_and_persists_the_bound() {
     let sheet = sheet_of_slide(&draft.presentation().slides[0]).unwrap();
     assert_eq!(sheet.cell(200, 2).unwrap().text, "updated");
     assert!(sheet.cell(201, 0).is_none());
+}
+
+#[test]
+fn json_lines_range_pushdown_matches_full_dataset_sql() {
+    use ibis_doc_service::{JSON_LINES_RANGE_SQL, run_selected_datasets_tool};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("range.jsonl");
+    std::fs::write(&path, concat!(
+        "{\"event\":\"before\",\"value\":2.5}\r\n",
+        "{broken\n",
+        "{\"event\":\"003\",\"value\":2}\n",
+        "{\"event\":\"004\",\"value\":9007199254740993}\n",
+        "null\n",
+        "{\"event\":\"after\",\"value\":3}",
+    )).unwrap();
+    let files = [path];
+    for params in [
+        json!([2, 5, 0, 3]),
+        json!([2, 5, 1, 1]),
+        json!([3, null, 0, 25]),
+        json!([7, null, 0, 25]),
+    ] {
+        let mut args = json!({
+            "sql":JSON_LINES_RANGE_SQL, "params":params,
+            "datasets":[{"source":"1","alias":"input","paths":["/event","/value"]}],
+        });
+        let actual = run_selected_datasets_tool(&files, "sqlite_query", args.clone()).unwrap();
+        // A spelling outside the generated template retains the normal SQL path.
+        args["sql"] = json!(format!("{JSON_LINES_RANGE_SQL} "));
+        let expected = run_selected_datasets_tool(&files, "sqlite_query", args).unwrap();
+        assert_eq!(actual["columns"], expected["columns"]);
+        assert_eq!(actual["rows"], expected["rows"]);
+        assert_eq!(actual["truncated"], expected["truncated"]);
+    }
+}
+
+#[test]
+fn json_lines_range_reports_refresh_distinct_ranges_from_one_source() {
+    use ibis_doc_model::{CellValue, Document, sheet_calc::sheet_of_slide};
+    use ibis_doc_service::{
+        DraftToolContext, JSON_LINES_RANGE_SQL, batch_query_report_definitions,
+        prepare_selected_datasets_export, prepare_selected_report_batch,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ranges.jsonl");
+    std::fs::write(&path, "{\"value\":1}\n{\"value\":2}\n").unwrap();
+    let files = [path];
+    let opened = ibis_formats::open(
+        ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap(),
+    ).unwrap();
+    let source = std::sync::Arc::new(opened.source);
+    let context = || DraftToolContext { source: Some(source.clone()), workbook: Default::default() };
+    let mut draft = Document::new(opened.presentation);
+    let destination = draft.presentation().workbook.as_ref().unwrap().sheets[0].name.clone();
+    for (anchor, line) in [("A1", 1), ("A5", 2)] {
+        let prepared = prepare_selected_datasets_export(&files, json!({
+            "destination_sheet":destination, "anchor":anchor,
+            "sql":JSON_LINES_RANGE_SQL, "params":[line,line,0,25],
+            "datasets":[{"source":"1","alias":"input","paths":["/value"]}],
+        })).unwrap();
+        prepared.stage(&mut draft, context()).unwrap();
+    }
+
+    std::fs::write(&files[0], "{\"value\":11}\n{\"value\":22}\n").unwrap();
+    let request = json!({"bindings":{"ranges.jsonl":"1"}});
+    let definitions = batch_query_report_definitions(draft.presentation(), &request).unwrap();
+    let prepared = prepare_selected_report_batch(&files, request, definitions).unwrap();
+    prepared.stage(&mut draft, context()).unwrap();
+    let sheet = sheet_of_slide(&draft.presentation().slides[0]).unwrap();
+    assert_eq!(sheet.cell(1, 2).unwrap().value, CellValue::Number(11.0));
+    assert_eq!(sheet.cell(5, 2).unwrap().value, CellValue::Number(22.0));
 }

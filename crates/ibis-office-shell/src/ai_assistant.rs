@@ -1398,7 +1398,7 @@ impl SlideEditor {
         let args = json!({
             "destination_sheet": name,
             "anchor": "A1",
-            "sql": "SELECT * FROM input WHERE _jsonl_line >= ?1 AND (?2 IS NULL OR _jsonl_line <= ?2) AND (?3 = 0 OR _jsonl_error IS NOT NULL) ORDER BY _jsonl_line LIMIT ?4",
+            "sql": ibis_doc_service::JSON_LINES_RANGE_SQL,
             "params": [json!(first), json!(last), json!(u8::from(errors_only)), json!(limit)],
             "datasets": [{"source":"1","alias":"input","paths":paths}],
         });

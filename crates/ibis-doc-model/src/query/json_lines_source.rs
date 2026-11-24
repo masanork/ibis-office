@@ -162,6 +162,18 @@ fn scan_lines_up_to(
     max_lines: usize,
     mut visit: impl FnMut(Option<&[u8]>, usize) -> Result<(), String>,
 ) -> Result<JsonLinesSamplePosition, String> {
+    scan_lines_until(reader, max_bytes, recover, max_lines, |line, number| {
+        visit(line, number).map(|()| true)
+    })
+}
+
+fn scan_lines_until(
+    reader: impl BufRead,
+    max_bytes: usize,
+    recover: bool,
+    max_lines: usize,
+    mut visit: impl FnMut(Option<&[u8]>, usize) -> Result<bool, String>,
+) -> Result<JsonLinesSamplePosition, String> {
     let mut reader = reader.take((max_bytes as u64).saturating_add(1));
     let mut line = Vec::new();
     let mut bytes = 0usize;
@@ -189,8 +201,10 @@ fn scan_lines_up_to(
                 "Line {number}: JSON Lines source exceeds the byte limit"
             ));
         }
-        visit((!oversized).then_some(line.as_slice()), number)?;
         lines = number;
+        if !visit((!oversized).then_some(line.as_slice()), number)? {
+            break;
+        }
     }
     Ok(JsonLinesSamplePosition {
         lines,
@@ -409,6 +423,14 @@ fn recover_cell(raw: &RawValue) -> Result<(CellValue, Option<QType>), String> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct JsonLinesRange {
+    pub first: usize,
+    pub last: Option<usize>,
+    pub errors_only: bool,
+    pub limit: usize,
+}
+
 /// Visit a recoverable dataset. Invalid records remain addressable by physical line.
 pub(super) fn visit_recoverable_json_lines(
     path: &Path,
@@ -416,6 +438,7 @@ pub(super) fn visit_recoverable_json_lines(
     pointers: bool,
     max_lines: usize,
     cursor: Option<&JsonLinesPreviewCursor>,
+    range: Option<JsonLinesRange>,
     schema_only: bool,
     mut visit: impl FnMut(&[QColumn], Option<Vec<CellValue>>) -> Result<(), String>,
 ) -> Result<JsonLinesPreviewCursor, String> {
@@ -520,10 +543,36 @@ pub(super) fn visit_recoverable_json_lines(
         input
             .seek(SeekFrom::Start(offset as u64))
             .map_err(|error| error.to_string())?;
+        let mut skip_bytes = 0usize;
+        let mut skipped_lines = 0;
+        if let Some(range) = range {
+            // Outside the requested range there is no need to decode rows again.
+            for _ in 1..range.first {
+                let remaining = max_bytes - skip_bytes;
+                let skipped = input
+                    .by_ref()
+                    .take((remaining as u64).saturating_add(1))
+                    .skip_until(b'\n')
+                    .map_err(|error| error.to_string())?;
+                if skipped == 0 {
+                    break;
+                }
+                if skipped > remaining {
+                    return Err("JSON Lines file changed during import".into());
+                }
+                skipped_lines += 1;
+                skip_bytes += skipped;
+            }
+        }
+        let remaining = max_bytes - skip_bytes;
+        let line_limit = range
+            .and_then(|range| range.last)
+            .map_or(max_lines, |last| last.saturating_sub(skipped_lines));
+        let mut rows = 0;
         let read_position =
-            scan_lines_up_to(&mut input, max_bytes, true, max_lines, |line, number| {
+            scan_lines_until(&mut input, remaining, true, line_limit, |line, number| {
                 let mut row = vec![CellValue::Empty; columns.len()];
-                row[0] = CellValue::Number((previous_lines + number) as f64);
+                row[0] = CellValue::Number((previous_lines + skipped_lines + number) as f64);
                 match parse(line) {
                     Ok(fields) => {
                         for (name, (value, _)) in fields {
@@ -537,9 +586,18 @@ pub(super) fn visit_recoverable_json_lines(
                     }
                     Err(error) => row[1] = CellValue::Text(error),
                 }
-                visit(&columns, Some(row))
+                if let Some(range) = range {
+                    if range.errors_only && row[1].is_empty() {
+                        return Ok(true);
+                    }
+                    rows += 1;
+                    visit(&columns, Some(row))?;
+                    Ok(rows < range.limit)
+                } else {
+                    visit(&columns, Some(row)).map(|()| true)
+                }
             })?;
-        if read_position != position {
+        if range.is_none() && read_position != position {
             return Err("JSON Lines file changed during import".into());
         }
     }

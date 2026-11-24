@@ -520,7 +520,7 @@ fn run_query(
     max_rows: usize,
     max_bytes: usize,
 ) -> Result<SqliteRows, ToolError> {
-    run_session_query(&query_session(service, args)?, args, max_rows, max_bytes)
+    run_session_query(&report_session(service, args, true)?, args, max_rows, max_bytes)
 }
 
 fn query(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -532,8 +532,66 @@ fn query(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
+/// The saved query used by the desktop JSON Lines range picker.
+pub const JSON_LINES_RANGE_SQL: &str = "SELECT * FROM input WHERE _jsonl_line >= ?1 AND (?2 IS NULL OR _jsonl_line <= ?2) AND (?3 = 0 OR _jsonl_error IS NOT NULL) ORDER BY _jsonl_line LIMIT ?4";
+
+fn json_lines_range(query: &Value) -> Option<(&Value, ibis_doc_model::query::JsonLinesRange)> {
+    use ibis_doc_model::query::JsonLinesRange;
+    if query["sql"] != JSON_LINES_RANGE_SQL || !query[PATH].is_null() {
+        return None;
+    }
+    let [source] = query["datasets"].as_array()?.as_slice() else { return None };
+    if source["alias"] != "input" || !source["table"].is_null()
+        || !source.as_object()?.keys().all(|key| matches!(key.as_str(), "source" | "alias" | "table" | "paths"))
+        || !source["paths"].is_array()
+        || source_kind(Path::new(source["source"].as_str()?)) != "json_lines"
+    {
+        return None;
+    }
+    let [first, last, errors_only, limit] = query["params"].as_array()?.as_slice() else { return None };
+    let positive = |value: &Value| usize::try_from(value.as_u64()?).ok().filter(|&n| n > 0);
+    let first = positive(first)?;
+    let last = if last.is_null() { None } else { Some(positive(last)?) };
+    let errors_only = match errors_only.as_u64()? {
+        0 => false,
+        1 => true,
+        _ => return None,
+    };
+    let limit = positive(limit)?;
+    if last.is_some_and(|last| last < first) || limit > 1_000 {
+        return None;
+    }
+    Some((source, JsonLinesRange { first, last, errors_only, limit }))
+}
+
+fn report_session(
+    service: &Service,
+    query: &Value,
+    allow_range: bool,
+) -> Result<SqliteQuerySession, ToolError> {
+    if allow_range && let Some((source, range)) = json_lines_range(query) {
+        let path = paths::resolve(
+            &service.allow_dirs, source.str_arg("source")?, DATASET_EXTENSIONS, true,
+        )?;
+        if source_kind(&path) == "json_lines" {
+            let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+            if !metadata.is_file() || metadata.len() > dataset_file_limit(&service.limits, "json_lines") {
+                return Err(ToolError::invalid("Dataset exceeds the file size limit"));
+            }
+            let fields = dataset_names(&source["paths"], 254)
+                .ok_or_else(|| ToolError::invalid("paths must contain 1 to 254 non-empty JSON Pointers"))?;
+            match DiskDataset::collect_json_lines_range(&path, &fields, range) {
+                Ok(table) => return SqliteQuerySession::from_datasets(&[("input".into(), table)]).map_err(sqlite_error),
+                Err(error) if error == DATASET_MEMORY_LIMIT => {}
+                Err(error) => return Err(sqlite_error(error)),
+            }
+        }
+    }
+    query_session(service, query)
+}
+
 fn prepare_export(service: &Service, args: &Value) -> Result<(SqliteRows, Value), ToolError> {
-    let session = query_session(service, args)?;
+    let session = report_session(service, args, true)?;
     prepare_session_export(&session, args)
 }
 
@@ -1609,7 +1667,9 @@ fn batch_query_results(
                 bound_query(&definition, &supplied)
             }
         })().map_err(|error| report_error(&name, error))?;
-        let key = json!({"datasets":query["datasets"],"path":query["path"]});
+        let bounded = !arrow_disk && definition.get("checks").is_none() && json_lines_range(&query).is_some();
+        let key = json!({"datasets":query["datasets"],"path":query["path"],
+            "range_params": bounded.then(|| &query["params"]) });
         let entry = (index, name, definition, query);
         if let Some((_, reports)) = groups.iter_mut().find(|(existing, _)| *existing == key) {
             reports.push(entry);
@@ -1623,14 +1683,18 @@ fn batch_query_results(
     }
     let mut results = Vec::new();
     // Finish each source group and drop its session before loading the next.
-    for (_, reports) in groups {
+    for (key, reports) in groups {
         let (_, name, _, query) = &reports[0];
         let session = {
             #[cfg(feature = "report-profiling")]
             let _timer = ibis_doc_model::query::report_profile::Timer::start(
                 ibis_doc_model::query::report_profile::Phase::Stage,
             );
-            batch_session(service, query, arrow_disk).map_err(|error| report_error(name, error))?
+            if key["range_params"].is_null() {
+                batch_session(service, query, arrow_disk)
+            } else {
+                report_session(service, query, true)
+            }.map_err(|error| report_error(name, error))?
         };
         let input = report_input_schema(&session).map_err(|error| report_error(name, error))?;
         for (index, name, definition, query) in reports {
@@ -2014,7 +2078,7 @@ fn refresh_query_result(
     args: &Value,
     definition: &Value,
 ) -> Result<(SqliteRows, RefreshReview), ToolError> {
-    let session = query_session(service, args)?;
+    let session = report_session(service, args, definition.get("checks").is_none())?;
     let (rows, checks) = refresh_query_in_session(&session, args, definition, false)?;
     let input_schema = report_input_schema(&session)?;
     let changed_params = changed_report_params(definition, args)?;
