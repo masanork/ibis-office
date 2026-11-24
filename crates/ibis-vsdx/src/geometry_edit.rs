@@ -110,7 +110,7 @@ fn patch_page(
                     }
                 }
                 for connector in connectors {
-                    let line = editable_route(shapes, &links, connector)?;
+                    let line = editable_route(shapes, &links, connector, &masters)?;
                     let [mut start, mut end] = line.points;
                     for (point, link) in [(&mut start, line.links[0]), (&mut end, line.links[1])] {
                         if id(link, "ToSheet") == Some(shape) {
@@ -132,7 +132,7 @@ fn patch_page(
                 endpoint,
                 target,
             } => {
-                let line = editable_route(shapes, &links, connector)?;
+                let line = editable_route(shapes, &links, connector, &masters)?;
                 let idx = match endpoint {
                     Endpoint::Begin => 0,
                     Endpoint::End => 1,
@@ -146,9 +146,6 @@ fn patch_page(
                 }
                 let old_node = shape_by_id(shapes, old)?;
                 let new_node = shape_by_id(shapes, target)?;
-                if is_group(old_node) || is_group(new_node) {
-                    return Err(unsupported());
-                }
                 let old_master = master_for(old_node, &masters, 0);
                 let new_master = master_for(new_node, &masters, 0);
                 let link = line.links[idx];
@@ -186,6 +183,9 @@ fn patch_page(
                     }
                     new_point
                 } else {
+                    if is_group(old_node) || is_group(new_node) {
+                        return Err(unsupported());
+                    }
                     let trigger = cell(
                         line.shape,
                         if idx == 0 { "BegTrigger" } else { "EndTrigger" },
@@ -371,7 +371,8 @@ struct EditableRoute<'a, 'i> {
     shape: XmlNode<'a, 'i>,
     links: [XmlNode<'a, 'i>; 2],
     points: [(f64, f64); 2],
-    vertices: Vec<([XmlNode<'a, 'i>; 2], [f64; 2])>,
+    vertices: Vec<([Option<XmlNode<'a, 'i>>; 2], [f64; 2])>,
+    signed: bool,
     size: [f64; 2],
 }
 
@@ -466,6 +467,7 @@ fn editable_route<'a, 'i>(
     shapes: XmlNode<'a, 'i>,
     links: &[XmlNode<'a, 'i>],
     connector: u32,
+    masters: &HashMap<&str, roxmltree::Document<'_>>,
 ) -> Result<EditableRoute<'a, 'i>> {
     let shape = shape_by_id(shapes, connector)?;
     if child(shape, "Shapes").is_some()
@@ -529,11 +531,54 @@ fn editable_route<'a, 'i>(
     let low = [start.0.min(end.0), start.1.min(end.1)];
     let flat = [close(start.0, end.0), close(start.1, end.1)];
     let size = [width, height];
-    if width <= 0.0
-        || height <= 0.0
-        || (flat[0] && flat[1])
-        || (!flat[0] && !close((end.0 - start.0).abs(), width))
-        || (!flat[1] && !close((end.1 - start.1).abs(), height))
+    let master = master_for(shape, masters, 0);
+    let signed = cell(shape, "Width")?.attribute("F") == Some("GUARD(EndX-BeginX)")
+        && cell(shape, "Height")?.attribute("F") == Some("GUARD(EndY-BeginY)");
+    let inherited_geometry = if signed {
+        if ![begin, end_link]
+            .into_iter()
+            .all(|link| fixed_row(link).is_some())
+        {
+            return Err(unsupported());
+        }
+        let master = master.ok_or_else(unsupported)?;
+        for (key, formula) in [
+            ("PinX", "GUARD((BeginX+EndX)/2)"),
+            ("PinY", "GUARD((BeginY+EndY)/2)"),
+            ("LocPinX", "GUARD(Width*0.5)"),
+            ("LocPinY", "GUARD(Height*0.5)"),
+        ] {
+            if cell(shape, key)?.attribute("F") != Some("Inh")
+                || cell(master, key)?.attribute("F") != Some(formula)
+            {
+                return Err(unsupported());
+            }
+        }
+        Some(
+            master
+                .children()
+                .find(|&n| {
+                    named(n, "Section")
+                        && n.attribute("N") == Some("Geometry")
+                        && n.attribute("IX") == geometry.attribute("IX")
+                })
+                .ok_or_else(unsupported)?,
+        )
+    } else {
+        None
+    };
+    let expected_size = if signed {
+        [end.0 - start.0, end.1 - start.1]
+    } else {
+        [(end.0 - start.0).abs(), (end.1 - start.1).abs()]
+    };
+    if (if signed {
+        flat[0] || flat[1]
+    } else {
+        width <= 0.0 || height <= 0.0
+    }) || (flat[0] && flat[1])
+        || (!flat[0] && !close(expected_size[0], width))
+        || (!flat[1] && !close(expected_size[1], height))
         || !close(value(shape, "PinX")?, (start.0 + end.0) / 2.0)
         || !close(value(shape, "PinY")?, (start.1 + end.1) / 2.0)
         || !close(value(shape, "LocPinX")?, width / 2.0)
@@ -542,9 +587,10 @@ fn editable_route<'a, 'i>(
             cell(shape, key)
                 .is_ok_and(|c| c.attribute("F").is_some() || value(shape, key).ok() != Some(0.0))
         })
-        || ["PinX", "PinY", "Width", "Height", "LocPinX", "LocPinY"]
-            .into_iter()
-            .any(|key| cell(shape, key).is_ok_and(|c| c.attribute("F").is_some()))
+        || !signed
+            && ["PinX", "PinY", "Width", "Height", "LocPinX", "LocPinY"]
+                .into_iter()
+                .any(|key| cell(shape, key).is_ok_and(|c| c.attribute("F").is_some()))
     {
         return Err(unsupported());
     }
@@ -553,14 +599,61 @@ fn editable_route<'a, 'i>(
     let mut first = None;
     let mut previous: Option<[f64; 2]> = None;
     let mut count = 0;
+    if let Some(base) = inherited_geometry
+        && !geometry
+            .children()
+            .any(|n| named(n, "Row") && id(n, "IX") == Some(1))
+    {
+        let start = base
+            .children()
+            .find(|&n| named(n, "Row") && id(n, "IX") == Some(1))
+            .ok_or_else(unsupported)?;
+        if start.attribute("T") != Some("MoveTo")
+            || ["X", "Y"].into_iter().any(|key| {
+                cell(start, key).map_or(true, |c| {
+                    c.attribute("F").is_some() || value(start, key).ok() != Some(0.0)
+                })
+            })
+        {
+            return Err(unsupported());
+        }
+        first = Some([0.0, 0.0]);
+        previous = first;
+        count = 1;
+    }
+    let mut last_index = count;
     for row in geometry.children().filter(|&node| named(node, "Row")) {
         let kind = match (count, row.attribute("T")) {
             (0, Some("MoveTo")) | (1.., Some("LineTo")) => false,
             (0, Some("RelMoveTo")) | (1.., Some("RelLineTo" | "RelCubBezTo")) => true,
             _ => return Err(unsupported()),
         };
-        let cells = [cell(row, "X")?, cell(row, "Y")?];
-        let raw = [value(row, "X")?, value(row, "Y")?];
+        let cells = [cell(row, "X").ok(), cell(row, "Y").ok()];
+        if signed {
+            let index = id(row, "IX").ok_or_else(unsupported)? as usize;
+            if index != last_index + 1 || kind {
+                return Err(unsupported());
+            }
+            last_index = index;
+        }
+        let coordinate = |axis: usize, key: &str| {
+            if cells[axis].is_some() {
+                return value(row, key);
+            }
+            let base = inherited_geometry
+                .and_then(|geometry| {
+                    geometry.children().find(|&n| {
+                        named(n, "Row") && id(row, "IX").is_some() && id(n, "IX") == id(row, "IX")
+                    })
+                })
+                .ok_or_else(unsupported)?;
+            let base_cell = cell(base, key)?;
+            if base_cell.attribute("F").is_some() || value(base, key)? != 0.0 {
+                return Err(unsupported());
+            }
+            Ok(0.0)
+        };
+        let raw = [coordinate(0, "X")?, coordinate(1, "Y")?];
         let point = if kind {
             [raw[0] * width, raw[1] * height]
         } else {
@@ -575,10 +668,12 @@ fn editable_route<'a, 'i>(
                 value(row, key)?;
             }
         }
-        if cells.iter().any(|cell| cell.attribute("F").is_some())
+        if cells
+            .iter()
+            .flatten()
+            .any(|cell| cell.attribute("F").is_some())
             || (0..2).any(|axis| {
-                point[axis] < -1e-5
-                    || point[axis] > size[axis] + 1e-5
+                (!signed && (point[axis] < -1e-5 || point[axis] > size[axis] + 1e-5))
                     || (flat[axis] && !close(point[axis], size[axis] / 2.0))
             })
             || (!cubic
@@ -594,6 +689,14 @@ fn editable_route<'a, 'i>(
         previous = Some(point);
         count += 1;
     }
+    if let Some(base) = inherited_geometry
+        && base
+            .children()
+            .filter(|&n| named(n, "Row"))
+            .any(|n| id(n, "IX").is_none_or(|ix| ix as usize > last_index))
+    {
+        return Err(unsupported());
+    }
     let locally = |point: (f64, f64)| {
         let value = [point.0, point.1];
         [0, 1].map(|i| {
@@ -606,8 +709,8 @@ fn editable_route<'a, 'i>(
     };
     let first = first.ok_or_else(unsupported)?;
     let last = previous.ok_or_else(unsupported)?;
-    let expected_first = locally(start);
-    let expected_last = locally(end);
+    let expected_first = if signed { [0.0, 0.0] } else { locally(start) };
+    let expected_last = if signed { size } else { locally(end) };
     if count < 2
         || (0..2).any(|i| !close(first[i], expected_first[i]) || !close(last[i], expected_last[i]))
     {
@@ -618,6 +721,7 @@ fn editable_route<'a, 'i>(
         links: [begin, end_link],
         points,
         vertices,
+        signed,
         size,
     })
 }
@@ -640,10 +744,10 @@ impl EditableRoute<'_, '_> {
                     return Err(unsupported());
                 }
             } else {
-                if close(new[i], 0.0) || old[i].signum() != new[i].signum() {
+                if close(new[i], 0.0) || (!self.signed && old[i].signum() != new[i].signum()) {
                     return Err(unsupported());
                 }
-                size[i] = new[i].abs();
+                size[i] = if self.signed { new[i] } else { new[i].abs() };
             }
         }
         let [width, height] = size;
@@ -664,8 +768,12 @@ impl EditableRoute<'_, '_> {
             number_patch(patches, cell(self.shape, name)?, value)?;
         }
         for &([x, y], [local_x, local_y]) in &self.vertices {
-            number_patch(patches, x, local_x * x_scale)?;
-            number_patch(patches, y, local_y * y_scale)?;
+            if let Some(x) = x {
+                number_patch(patches, x, local_x * x_scale)?;
+            }
+            if let Some(y) = y {
+                number_patch(patches, y, local_y * y_scale)?;
+            }
         }
         Ok(())
     }
