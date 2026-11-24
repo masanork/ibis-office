@@ -142,10 +142,14 @@ enum RawCsvEvent {
 
 /// Scan fields without allocating one range per field. Byte values used as
 /// separators cannot occur as trail bytes in UTF-8 or CP932.
-fn scan_raw_csv_checked(data: &[u8], encoding: OriginalEncoding, delimiter: char, mut visit: impl FnMut(RawCsvEvent)) -> Result<(), CsvInPlaceError> {
+fn scan_raw_csv_checked(data: &[u8], encoding: OriginalEncoding, delimiter: char, visit: impl FnMut(RawCsvEvent)) -> Result<(), CsvInPlaceError> {
+    scan_raw_csv_impl(data, encoding, delimiter, false, visit)
+}
+
+fn scan_raw_csv_impl(data: &[u8], encoding: OriginalEncoding, delimiter: char, literal_utf8_bom: bool, mut visit: impl FnMut(RawCsvEvent)) -> Result<(), CsvInPlaceError> {
     if !matches!(delimiter, ',' | ';' | '\t') { return Err(CsvInPlaceError::UnsupportedDelimiter); }
     let (start, width, le, valid) = match encoding {
-        OriginalEncoding::Utf8 => (0, 1, true, !data.starts_with(b"\xef\xbb\xbf") && std::str::from_utf8(data).is_ok()),
+        OriginalEncoding::Utf8 => (0, 1, true, (literal_utf8_bom || !data.starts_with(b"\xef\xbb\xbf")) && std::str::from_utf8(data).is_ok()),
         OriginalEncoding::Utf8Bom => (3, 1, true, data.starts_with(b"\xef\xbb\xbf") && std::str::from_utf8(&data[3..]).is_ok()),
         OriginalEncoding::Utf16LeBom => (2, 2, true, data.starts_with(b"\xff\xfe") && valid_encoded_bytes(&data[2..], encoding_rs::UTF_16LE)),
         OriginalEncoding::Utf16BeBom => (2, 2, false, data.starts_with(b"\xfe\xff") && valid_encoded_bytes(&data[2..], encoding_rs::UTF_16BE)),
@@ -210,6 +214,37 @@ pub fn raw_csv_records(data: &[u8], encoding: OriginalEncoding, delimiter: char)
     scan_raw_csv(data, encoding, delimiter, |event| match event {
         RawCsvEvent::Field(_, _, range) => fields.push(range),
         RawCsvEvent::End(terminator) => records.push(RawCsvRecord { fields: std::mem::take(&mut fields), terminator }),
+    })?;
+    Ok(records)
+}
+
+/// Locate fields in a logical UTF-8 record, after the file BOM if present.
+pub fn raw_utf8_csv_record_fields(data: &[u8]) -> Result<Vec<std::ops::Range<usize>>, Error> {
+    let mut fields = Vec::new();
+    scan_raw_csv_impl(data, OriginalEncoding::Utf8, ',', true, |event| {
+        if let RawCsvEvent::Field(0, _, range) = event {
+            fields.push(range);
+        }
+    })?;
+    Ok(fields)
+}
+
+/// Index up to `limit` logical CSV records, including their terminators.
+pub fn raw_csv_record_ranges(
+    data: &[u8],
+    encoding: OriginalEncoding,
+    delimiter: char,
+    limit: usize,
+) -> Result<Vec<std::ops::Range<usize>>, Error> {
+    let mut records = Vec::new();
+    let mut start = csv_bom_len(encoding);
+    scan_raw_csv(data, encoding, delimiter, |event| {
+        if let RawCsvEvent::End(terminator) = event {
+            if records.len() < limit {
+                records.push(start..terminator.end);
+            }
+            start = terminator.end;
+        }
     })?;
     Ok(records)
 }

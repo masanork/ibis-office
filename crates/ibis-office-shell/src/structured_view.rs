@@ -12,6 +12,7 @@ use gpui_kit::*;
 use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::value::RawValue;
 
+mod csv;
 mod cyclonedx;
 
 const MAX_BYTES: u64 = 128 * 1024 * 1024;
@@ -81,6 +82,7 @@ struct Source {
     lines: bool,
     truncated: bool,
     inventory: Option<cyclonedx::Inventory>,
+    csv: Option<csv::Csv>,
 }
 
 impl Source {
@@ -88,12 +90,26 @@ impl Source {
         let lines = path.extension().is_some_and(|ext| {
             ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson")
         });
+        let is_csv = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("csv"));
         let mut bytes = Vec::new();
         std::fs::File::open(path)
             .and_then(|file| file.take(MAX_BYTES + 1).read_to_end(&mut bytes))
             .map_err(|error| error.to_string())?;
         if bytes.len() as u64 > MAX_BYTES {
             return Err(crate::i18n::text("structured.size-limit").to_string());
+        }
+        if is_csv {
+            let mut csv = csv::Csv::read(&bytes)?;
+            return Ok(Self {
+                bytes,
+                records: std::mem::take(&mut csv.records),
+                lines: true,
+                truncated: csv.truncated,
+                inventory: None,
+                csv: Some(csv),
+            });
         }
         let mut source = Self::new(bytes, lines);
         if !lines {
@@ -123,6 +139,7 @@ impl Source {
             bytes,
             records,
             inventory: None,
+            csv: None,
             lines,
         }
     }
@@ -368,6 +385,11 @@ impl View {
         let Some(source) = &self.source else { return };
         self.record = index;
         self.selected = None;
+        if let Some(csv) = &source.csv {
+            self.tree = csv.tree(&source.bytes, index, source.records[index].clone());
+            cx.notify();
+            return;
+        }
         self.tree = Tree::default();
         let root = self.tree.push(source.record(index));
         self.tree.roots.push(root);
@@ -415,6 +437,10 @@ impl Render for View {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let lines = self.source.as_ref().is_some_and(|source| source.lines);
+        let is_csv = self
+            .source
+            .as_ref()
+            .is_some_and(|source| source.csv.is_some());
         let inventory = self
             .source
             .as_ref()
@@ -575,6 +601,14 @@ impl Render for View {
                     )
                     .child(div().w(px(270.)).child(Input::new(&self.search).small())),
             )
+            .children(is_csv.then(|| {
+                div()
+                    .px_4()
+                    .py_2()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child(crate::i18n::text("structured.csv-mode"))
+            }))
             .children(inventory.map(|inventory| {
                 let caption = format!("CycloneDX {}", inventory.version);
                 v_flex()
@@ -586,7 +620,12 @@ impl Render for View {
                     .child(
                         h_flex()
                             .gap_3()
-                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(caption))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(caption),
+                            )
                             .child(
                                 div()
                                     .flex_1()
@@ -631,7 +670,12 @@ impl Render for View {
                                     .bg(theme.muted)
                                     .px_3()
                                     .py_2()
-                                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(count.to_string()))
+                                    .child(
+                                        div()
+                                            .text_lg()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(count.to_string()),
+                                    )
                                     .child(
                                         div().text_xs().truncate().child(crate::i18n::text(label)),
                                     )
@@ -681,7 +725,7 @@ impl Render for View {
             .children(self.selected.zip(self.source.as_ref()).map(|(id, source)| {
                 let node = &self.tree.nodes[id];
                 let raw = &source.bytes[node.span.clone()];
-                let decoded = (raw.len() <= 16_384)
+                let decoded = (source.csv.is_none() && raw.len() <= 16_384)
                     .then(|| serde_json::from_slice::<String>(raw).ok())
                     .flatten();
                 let parent = node.parent.map(|id| self.tree.nodes[id].name.as_str());
@@ -842,7 +886,7 @@ impl crate::editor::SlideEditor {
             files: true,
             directories: false,
             multiple: false,
-            extensions: vec!["json".into(), "jsonl".into(), "ndjson".into()],
+            extensions: vec!["json".into(), "jsonl".into(), "ndjson".into(), "csv".into()],
             prompt: Some(crate::i18n::text("structured.open")),
         });
         cx.spawn_in(window, async move |this, cx| {

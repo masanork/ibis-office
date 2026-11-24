@@ -1753,3 +1753,7 @@ structured.services	サービス
 structured.dependency-entries	依存関係の項目
 structured.back-to-document	文書全体に戻る
 structured.follow-reference	参照先へ移動
+structured.csv-mode	UTF-8 CSV・先頭レコードを列名として使用
+structured.csv-header-required	ヘッダーのレコードが必要です。
+structured.csv-missing	項目なし
+structured.csv-unquoted-empty	引用符なしの空項目
