@@ -650,9 +650,10 @@ async function fetchWasm(): Promise<Response | WebAssembly.Module> {
     },
     decompress: typeof DecompressionStream === 'undefined' ? undefined : (source: ReadableStream<Uint8Array>) => source.pipeThrough(new DecompressionStream('gzip') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>),
   };
-  // The manifest is read once: for the wasm in parts, and for the blocks of the fonts.
-  const standaloneDocs = !hostLoader && chunkArgument() === undefined && location.pathname.endsWith('/editor.html');
-  const manifest: Manifest | null = standaloneDocs ? null : await readManifest(chunkedEnv);
+  // Upstream path first: read loader-manifest.json once for chunked WASM parts
+  // and static font blocks (subset-fetch.ts). Fall back to legacy single/split
+  // pkg/ibis_office_app_bg.manifest.json only when loader-manifest.json is absent.
+  const manifest: Manifest | null = await readManifest(chunkedEnv);
   const subsets = subsetsOf(manifest);
   if (subsets) {
     subsetLoader = new SubsetLoader(subsets, { fetch: chunkedEnv.fetch, subtle: chunkedEnv.subtle, base: chunkedEnv.base, store: subsetStore(), warn: chunkedEnv.warn });

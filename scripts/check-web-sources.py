@@ -48,7 +48,7 @@ def main():
 
     rust_sources = list((ROOT / "crates").glob("ibis-office-*/js/*.js"))
     rust_sources += list((ROOT / "crates").glob("ibis-office-*/src/*.rs"))
-    names = ("boot", "home-redirect", "main", "host-loader", "ibisoffice-host", "chunked-fetch", "subset-fetch")
+    names = ("boot", "main", "host-loader", "ibisoffice-host", "chunked-fetch", "subset-fetch")
     files = [ROOT / "www" / f"{name}.ts" for name in names] + rust_sources
     if args.dist:
         files = [ROOT / "www" / f"{name}.js" for name in names]
