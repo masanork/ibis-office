@@ -40,6 +40,11 @@ pub fn tags(value: Option<&Value>) -> Option<Vec<&str>> {
     }
 }
 
+/// Parse the YAML frontmatter mapping at the start of a Markdown document, if present.
+pub fn frontmatter_map(text: &str) -> Result<Option<Map<String, Value>>, crate::Error> {
+    Ok(markdown_frontmatter(text)?.map(|(metadata, _)| metadata))
+}
+
 /// Parse the YAML mapping and return the Markdown following it.
 pub(crate) fn markdown_frontmatter(text: &str) -> Result<Option<(Map<String, Value>, &str)>, crate::Error> {
     let Some(after_open) = text

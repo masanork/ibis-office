@@ -20,7 +20,7 @@ Markdownの拡張は、次の方針で選びます。拡張を追加するとき
 | [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/) | ATX・Setext見出し、段落、リスト、引用、強調、リンク、画像、コードなどの基本構文 | 公式例を Markdown の読み込みと書き戻しの回帰検証に使う。編集可能性と DOCX 往復は個別に確認する。 |
 | [GFM 0.29](https://github.github.com/gfm/) と [GitHubの書式ガイド](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax) | パイプ表、タスクリスト、取り消し線、基本アラート | 表のセル結合やOfficeフィールドはibisOffice拡張。脚注とアラートはGFM形式仕様とは別にGitHubの書式ガイドを参照する。 |
 | [MyST Markdown](https://mystmd.org/guide/syntax-overview) | Word互換の見出し・数式ラベル、表示名付き `{ref}` の同一文書内リンク、コードフェンス・コロンフェンス内の単一段落の基本admonition | コードフェンスとコロンフェンスの図は画像・代替テキスト・単一段落のキャプション・Word互換ラベルを取り込む。自動参照番号、引用、プロジェクトの参照解決は未対応。 |
-| [Obsidian内部リンク](https://obsidian.md/help/links) と [callouts](https://obsidian.md/help/callouts) | 文書内Wikiリンク、開いたフォルダー内の別ファイル・見出しへのWikiリンク、基本callout、原稿からの相対パスで指定した画像埋め込み | Assistantのフォルダー参照は別ノートを名前またはルート基準のパスで引ける。ノート埋め込み、折りたたみは未対応。 |
+| [Obsidian内部リンク](https://obsidian.md/help/links) と [callouts](https://obsidian.md/help/callouts) | 文書内Wikiリンク、開いたフォルダー内の別ファイル・見出しへのWikiリンク（大文字小文字無視・`aliases`・Vault内の近傍優先解決・未作成Wikiリンクの新規作成）、基本callout、原稿相対およびObsidian Vault内の画像埋め込み（`attachmentFolderPath`・Vault内探索） | Assistantのフォルダー参照は別ノートを名前またはルート基準のパスで引ける。フォルダーペインは階層ツリー表示・本文検索モード・同一ウィンドウ内の戻る／進む履歴を持ち、`.obsidian/` があるフォルダーは `.git` 併存時もフォルダーペインを優先し、ヘッダーからGitビューへ切り替えられる。ノート埋め込み、折りたたみは未対応。 |
 | [Marpit](https://marpit.marp.app/markdown) と [Marp Core](https://github.com/marp-team/marp-core/blob/main/docs/markdown.md) | スライド分割（ATX見出しの `headingDivider` を含む）、標準サイズ、発表者ノート、編集可能なページ番号のPPTX変換 | CSSテーマ、背景、元原稿への編集差分反映は未対応。 |
 | [Mermaid](https://mermaid.js.org/) と [ZenUML](https://zenuml.com/docs/) | 図種別の描画、対応するグラフのOffice変換、対応する図ソースの再出力 | 図種と個別構文の対応は[構文リファレンス](markdown-reference-ja.md#mermaid)を参照。 |
 | [Lawtext](https://github.com/yamachig/Lawtext) と [法令標準XML](https://laws.e-gov.go.jp/file/XMLSchemaForJapaneseLaw_v3.xsd) | 法令構造の変換と、元XMLへの限定的な編集反映 | 法令XMLを原本とし、対応を確認できない編集は診断で知らせる。 |
@@ -115,7 +115,7 @@ Assistantの `folder_read` は任意の `from` に参照元ファイルを指定
 
 Gitワークツリー内のフォルダーでは、Assistantの `git_read` に `git_log` で得たコミットSHAと参照元を渡せます。参照元とリンク先の両方を同じコミットから読み、リンク先のフラグメントを返します。作業ツリーの内容への切り替えは行いません。履歴ビューで単一コミットのMarkdownを開いた場合も、本文リンクから同じコミットのファイルと見出しに移動できます。Wikiリンクはリポジトリ基準のパス、またはツリー内で一意なファイル名を使えます。
 
-フォルダーを開くときと再読み込みするときに、Markdown本文の検索索引をメモリ上に再構築します。Assistantのフォルダー検索は索引から元の行番号を返します。索引は最大256ファイル・本文と検索用文字列の合計8 MiBです。ファイルの更新時刻やサイズが変わった場合、または索引に収録されなかった場合は元ファイルを直接読みます。
+フォルダーを開くときと再読み込みするときに、Markdownのメタデータ・タグ（フロントマターの `tags` および本文のインライン `#tag`、階層タグ前方一致）・`aliases`・バックリンクの索引をアプリデータ配下の Turso（SQLite）キャッシュで差分更新します（走査上限の10,000ファイルまで対象）。本文の全文検索キャッシュは先頭256ファイル・合計8 MiBをメモリ上に保持し、ファイルの更新時刻やサイズが変わった場合、またはキャッシュに収録されなかった場合は元ファイルを直接読みます。
 
 ## 形式指定と知識項目のメタデータ
 
