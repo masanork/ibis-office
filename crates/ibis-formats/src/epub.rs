@@ -146,56 +146,54 @@ fn root_css_mode(mut css: &str) -> Option<bool> {
         .last()
 }
 
-fn vertical_book(
+fn chapter_writing_modes(
     zip: &Archive<'_>,
     chapters: &[(String, String)],
     docs: &[Document<'_>],
     remaining: &mut usize,
-) -> bool {
+) -> Vec<Option<bool>> {
     let mut styles = HashMap::new();
-    let modes = chapters.iter().zip(docs).filter_map(|((path, _), doc)| {
-        let mut mode = None;
-        for node in doc.descendants().filter(Node::is_element) {
-            let candidate = match node.tag_name().name() {
-                "link"
-                    if node
-                        .attribute("rel")
-                        .is_some_and(|rel| rel.eq_ignore_ascii_case("stylesheet"))
-                        && node
-                            .attribute("media")
-                            .is_none_or(|media| matches!(media.trim(), "" | "all")) =>
-                {
-                    node.attribute("href")
-                        .and_then(|href| local_target(path, href))
-                        .and_then(|(part_name, _)| {
-                            *styles.entry(part_name.clone()).or_insert_with(|| {
-                                part(zip, &part_name, remaining)
-                                    .ok()
-                                    .and_then(|css| root_css_mode(&css))
+    chapters
+        .iter()
+        .zip(docs)
+        .map(|((path, _), doc)| {
+            let mut mode = None;
+            for node in doc.descendants().filter(Node::is_element) {
+                let candidate = match node.tag_name().name() {
+                    "link"
+                        if node
+                            .attribute("rel")
+                            .is_some_and(|rel| rel.eq_ignore_ascii_case("stylesheet"))
+                            && node
+                                .attribute("media")
+                                .is_none_or(|media| matches!(media.trim(), "" | "all")) =>
+                    {
+                        node.attribute("href")
+                            .and_then(|href| local_target(path, href))
+                            .and_then(|(part_name, _)| {
+                                *styles.entry(part_name.clone()).or_insert_with(|| {
+                                    part(zip, &part_name, remaining)
+                                        .ok()
+                                        .and_then(|css| root_css_mode(&css))
+                                })
                             })
-                        })
-                }
-                "style" if node.attribute("media").is_none() => node.text().and_then(root_css_mode),
-                _ => None,
-            };
-            mode = candidate.or(mode);
-        }
-        for node in doc
-            .descendants()
-            .filter(|n| named(*n, "html") || named(*n, "body"))
-        {
-            mode = node.attribute("style").and_then(writing_mode).or(mode);
-        }
-        mode
-    });
-    let mut vertical = false;
-    for mode in modes {
-        if !mode {
-            return false;
-        }
-        vertical = true;
-    }
-    vertical
+                    }
+                    "style" if node.attribute("media").is_none() => {
+                        node.text().and_then(root_css_mode)
+                    }
+                    _ => None,
+                };
+                mode = candidate.or(mode);
+            }
+            for node in doc
+                .descendants()
+                .filter(|n| named(*n, "html") || named(*n, "body"))
+            {
+                mode = node.attribute("style").and_then(writing_mode).or(mode);
+            }
+            mode
+        })
+        .collect()
 }
 
 fn escape_table_pipes(text: &str) -> String {
@@ -256,7 +254,51 @@ impl Renderer<'_> {
             .map(String::as_str)
     }
 
-    fn table(&mut self, table: Node<'_, '_>, path: &str, depth: usize) -> Option<String> {
+    fn table_cell(&mut self, cell: Node<'_, '_>, path: &str, depth: usize) -> String {
+        let mut result = String::new();
+        for child in cell.children() {
+            if named(child, "table")
+                && depth < 88
+                && let Some(table) = self.table(child, path, depth + 1, true)
+            {
+                if let Some(caption) = child.children().find(|n| named(*n, "caption")) {
+                    result.push_str(&format!(
+                        "\n{}\n",
+                        escape_table_pipes(&escaped(&plain(caption)))
+                    ));
+                }
+                let payload = table
+                    .trim()
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('\n', "<br>")
+                    .replace('|', "\\|");
+                let _ = writeln!(
+                    result,
+                    "\n{}{payload}{}",
+                    crate::markdown::NESTED_TABLE_START,
+                    crate::markdown::NESTED_TABLE_END
+                );
+            } else {
+                result.push_str(&escape_table_pipes(&self.render(child, path, depth + 1)));
+            }
+        }
+        result
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("<br>")
+    }
+
+    fn table(
+        &mut self,
+        table: Node<'_, '_>,
+        path: &str,
+        depth: usize,
+        nested: bool,
+    ) -> Option<String> {
         let rows: Vec<_> = table
             .children()
             .flat_map(|node| {
@@ -291,18 +333,7 @@ impl Renderer<'_> {
                 let width = span("colspan");
                 let height = span("rowspan").min(rows.len() - r);
                 let end = c.checked_add(width).filter(|end| *end <= 128)?;
-                let body = if cell.descendants().any(|n| named(n, "table")) {
-                    escaped(&plain(cell))
-                } else {
-                    self.children(cell, path, depth)
-                };
-                let body = body
-                    .lines()
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("<br>");
-                let body = escape_table_pipes(&body);
+                let body = self.table_cell(cell, path, depth);
                 for (offset, target) in grid[r..r + height].iter_mut().enumerate() {
                     target.resize_with(target.len().max(end), || None);
                     if target[c..end].iter().any(Option::is_some) {
@@ -313,6 +344,14 @@ impl Renderer<'_> {
                     } else {
                         String::new()
                     };
+                    if offset == 0
+                        && let Some(anchor) = self.anchor(cell, path)
+                    {
+                        text = format!(
+                            "{}{anchor} --> {text}",
+                            crate::markdown::TABLE_BOOKMARK_MARKER
+                        );
+                    }
                     if width > 1 {
                         let _ = write!(text, " <!-- colspan:{width} -->");
                     }
@@ -333,10 +372,10 @@ impl Renderer<'_> {
         }
         let cols = grid.iter().map(Vec::len).max().filter(|n| *n > 0)?;
         let mut output = String::from("\n\n");
-        if let Some(id) = self.anchor(table, path) {
+        if !nested && let Some(id) = self.anchor(table, path) {
             let _ = write!(output, "\u{200b} {{#{id}}}\n\n");
         }
-        if let Some(caption) = table.children().find(|n| named(*n, "caption")) {
+        if !nested && let Some(caption) = table.children().find(|n| named(*n, "caption")) {
             let text = self.render(caption, path, depth + 1);
             let _ = write!(output, "{}\n\n", text.trim());
         }
@@ -389,12 +428,16 @@ impl Renderer<'_> {
         match tag {
             "script" | "style" | "rt" | "rp" | "nav" => String::new(),
             "br" => "  \n".into(),
-            "strong" | "b" | "em" | "i" => {
+            "strong" | "b" | "em" | "i" | "sup" | "sub" | "u" | "s" | "del" | "mark" => {
                 let content = self.children(node, path, depth);
-                let marker = if matches!(tag, "strong" | "b") {
-                    "**"
-                } else {
-                    "*"
+                let marker = match tag {
+                    "strong" | "b" => "**",
+                    "sup" => "^",
+                    "sub" => "~",
+                    "u" => "++",
+                    "s" | "del" => "~~",
+                    "mark" => "==",
+                    _ => "*",
                 };
                 if content.trim().is_empty() {
                     content
@@ -456,7 +499,22 @@ impl Renderer<'_> {
                     return alt;
                 };
                 self.remaining = remaining;
-                format!("![{alt}]({uri})")
+                let mut attributes = Vec::new();
+                for name in ["width", "height"] {
+                    if let Some(pixels) = node
+                        .attribute(name)
+                        .and_then(|value| value.trim().parse::<u32>().ok())
+                        .filter(|value| (1..=4096).contains(value))
+                    {
+                        attributes.push(format!("{name}={pixels}px"));
+                    }
+                }
+                let attributes = if attributes.is_empty() {
+                    String::new()
+                } else {
+                    format!("{{{}}}", attributes.join(" "))
+                };
+                format!("![{alt}]({uri}){attributes}")
             }
             "a" => {
                 let label = self.children(node, path, depth);
@@ -551,7 +609,7 @@ impl Renderer<'_> {
                 format!("\n\n{fence}\n{text}\n{fence}\n\n")
             }
             "table" => self
-                .table(node, path, depth)
+                .table(node, path, depth, false)
                 .unwrap_or_else(|| self.children(node, path, depth)),
             "section" | "article" | "div" | "figure" | "blockquote" | "tr" | "td" | "th" => {
                 let content = self.children(node, path, depth);
@@ -680,8 +738,10 @@ pub fn to_markdown(data: &[u8]) -> Result<String, Error> {
                     note_nodes.push((path, node, legacy_note));
                     renderer.notes.insert(key, note_nodes.len());
                 } else if !node.ancestors().any(note)
-                    && let Some(block) =
-                        node.ancestors().find(|n| named(*n, "table")).or_else(|| {
+                    && let Some(block) = node
+                        .ancestors()
+                        .find(|n| matches!(n.tag_name().name(), "td" | "th" | "table"))
+                        .or_else(|| {
                             node.ancestors().find(|n| {
                                 n.is_element()
                                     && matches!(
@@ -703,6 +763,14 @@ pub fn to_markdown(data: &[u8]) -> Result<String, Error> {
                             })
                         })
                 {
+                    let block = if named(block, "table") {
+                        block
+                            .ancestors()
+                            .find(|n| matches!(n.tag_name().name(), "td" | "th"))
+                            .unwrap_or(block)
+                    } else {
+                        block
+                    };
                     let index = renderer.anchors.len() + 1;
                     let anchor = renderer
                         .block_anchors
@@ -724,7 +792,10 @@ pub fn to_markdown(data: &[u8]) -> Result<String, Error> {
             let _ = writeln!(output, "{key}: {}", serde_json::Value::String(value));
         }
     }
-    if vertical_book(&zip, &chapters, &docs, &mut renderer.remaining) {
+    let modes = chapter_writing_modes(&zip, &chapters, &docs, &mut renderer.remaining);
+    let default_vertical = modes.iter().flatten().next().copied().unwrap_or(false);
+    let mixed = modes.iter().flatten().any(|mode| *mode != default_vertical);
+    if default_vertical {
         output.push_str("direction: vertical\n");
     }
     output.push_str("---\n\n");
@@ -748,14 +819,24 @@ pub fn to_markdown(data: &[u8]) -> Result<String, Error> {
             output.push_str("\n\n");
         }
     }
-    for ((path, _), doc) in chapters.iter().zip(&docs) {
+    let mut current_vertical = default_vertical;
+    for (((path, _), doc), mode) in chapters.iter().zip(&docs).zip(modes) {
         if let Some(body) = doc.descendants().find(|n| named(*n, "body")) {
             let content = renderer.children(body, path, 0);
             if !content.trim().is_empty() {
+                if let Some(vertical) = mode
+                    && vertical != current_vertical
+                {
+                    write_direction_section(&mut output, "next-page", current_vertical);
+                    current_vertical = vertical;
+                }
                 let anchor = &renderer.anchors[&(path.clone(), String::new())];
                 let _ = write!(output, "\u{200b} {{#{anchor}}}\n\n{}\n\n", content.trim());
             }
         }
+    }
+    if mixed {
+        write_direction_section(&mut output, "end", current_vertical);
     }
     for (index, (path, node, legacy)) in note_nodes.into_iter().enumerate() {
         let backlink = legacy
@@ -773,4 +854,13 @@ pub fn to_markdown(data: &[u8]) -> Result<String, Error> {
         output.push('\n');
     }
     Ok(output)
+}
+
+fn write_direction_section(output: &mut String, boundary: &str, vertical: bool) {
+    let direction = if vertical { "vertical" } else { "horizontal" };
+    let marker = crate::markdown::SECTION_MARKER;
+    let _ = write!(
+        output,
+        "{marker}{{\"break\":\"{boundary}\",\"direction\":\"{direction}\"}}\n\n"
+    );
 }

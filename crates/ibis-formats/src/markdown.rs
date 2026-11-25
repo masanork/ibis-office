@@ -405,6 +405,7 @@ pub fn parse_markdown_fragment_blocks(
     media: &mut Vec<Media>,
 ) -> Result<Vec<Block>, Error> {
     let mut ctx = ParseContext {
+        section_default_direction: doc.page.direction,
         next_id: doc.new_id().max(10),
         next_shape_id: doc.new_shape_id().max(10),
         next_media_id: media.iter().map(|m| m.id.0).max().unwrap_or(0) + 1,
@@ -1380,6 +1381,7 @@ fn export_workbook_markdown_with_positions(
 // ============================================================================
 
 struct ParseContext<'a> {
+    section_default_direction: CellDirection,
     next_id: u32,
     next_shape_id: u64,
     next_media_id: u64,
@@ -1612,6 +1614,7 @@ fn parse_markdown_into(
     let mut body_text = frontmatter.as_ref().map_or(text, |frame| frame.body);
 
     let mut ctx = ParseContext {
+        section_default_direction: doc.page.direction,
         next_id: doc.new_id().max(10),
         next_shape_id: doc.new_shape_id().max(10),
         next_media_id: media.iter().map(|m| m.id.0).max().unwrap_or(0) + 1,
@@ -1642,6 +1645,8 @@ fn parse_markdown_into(
         }
     }
 
+    ctx.section_default_direction = doc.page.direction;
+
     while let Some((xml, rest)) = bibliography_fence(body_text) {
         doc.bibliography_sources.push(xml.to_owned());
         body_text = rest;
@@ -1664,6 +1669,7 @@ fn parse_markdown_into(
             gutter: section.page.gutter,
             columns: section.page.columns,
             first_page: section.page.first_page,
+            direction: section.page.direction,
             ..doc.page
         };
         doc.restart_numbering = section.restart_numbering;
@@ -2507,7 +2513,7 @@ fn parse_hex_rgb(s: &str) -> Option<Rgb> {
 // Block parsing
 // ============================================================================
 
-const SECTION_MARKER: &str = "::: section ";
+pub(crate) const SECTION_MARKER: &str = "::: section ";
 const SECTION_PART_KEYS: [&str; 6] = [
     "header", "footer", "header_first", "footer_first", "header_even", "footer_even",
 ];
@@ -2529,6 +2535,7 @@ fn parse_section_marker(
         _ => return Err(invalid()),
     };
     let mut section = SectionSetup::default();
+    section.page.direction = ctx.section_default_direction;
     let twips = |value: &serde_json::Value| value.as_i64()
         .filter(|value| (-31680..=31680).contains(value)).map(|value| value * 635);
     if let Some(size) = data.get("size") {
@@ -2556,6 +2563,15 @@ fn parse_section_marker(
     }
     if let Some(separator) = data.get("column_separator") {
         section.page.columns.separator = separator.as_bool().ok_or_else(invalid)?;
+    }
+    if let Some(direction) = data.get("direction") {
+        section.page.direction = match direction.as_str() {
+            Some("vertical") => CellDirection::TbRl,
+            Some("horizontal") => CellDirection::LrTb,
+            Some(name @ ("tbRl" | "tbRlV" | "btLr" | "tbLrV" | "lrTbV" | "lrTb")) =>
+                CellDirection::from_section_name(name),
+            _ => return Err(invalid()),
+        };
     }
     if let Some(first_page) = data.get("first_page") {
         section.page.first_page = first_page.as_u64().and_then(|value| u32::try_from(value).ok()).ok_or_else(invalid)?;
@@ -2599,6 +2615,11 @@ fn write_section_marker(
         "column_gap": page.columns.space / 635,
         "column_separator": page.columns.separator,
     });
+    data["direction"] = match page.direction {
+        CellDirection::TbRl => "vertical",
+        CellDirection::LrTb => "horizontal",
+        other => other.name(),
+    }.into();
     if restart_numbering {
         data["first_page"] = page.first_page.into();
     }
@@ -4718,8 +4739,9 @@ fn table_colspan<'a>(cell: &'a str, row: &[String], column: usize) -> (&'a str, 
     (cell, 1)
 }
 
-const NESTED_TABLE_START: &str = "<!-- nested-table: ";
-const NESTED_TABLE_END: &str = " -->";
+pub(crate) const TABLE_BOOKMARK_MARKER: &str = "<!-- docx-bookmark:";
+pub(crate) const NESTED_TABLE_START: &str = "<!-- nested-table: ";
+pub(crate) const NESTED_TABLE_END: &str = " -->";
 
 fn parse_nested_table(payload: &str, ctx: &mut ParseContext<'_>, depth: usize) -> Option<Block> {
     let decode_line = |line: &str| line.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
@@ -4931,6 +4953,13 @@ fn build_table_block(
                 RunFormat::default()
             };
             let paragraph = |text: &str, ctx: &mut ParseContext<'_>| {
+                let mut text = text.trim_start();
+                let mut bookmarks = Vec::new();
+                while let Some((name, tail)) = text.strip_prefix(TABLE_BOOKMARK_MARKER).and_then(|s| s.split_once(" -->")) {
+                    if !is_word_bookmark(name) { break; }
+                    bookmarks.push(name.to_owned());
+                    text = tail.trim_start();
+                }
                 let (text, direct, mark_format) = form_paragraph_format(text, align);
                 let parts: Vec<&str> = text.split("<br>").collect();
                 let mut runs = Vec::new();
@@ -4946,6 +4975,7 @@ fn build_table_block(
                 let mut p = FlowParagraph {
                     id: ctx.fresh_id(),
                     style: ctx.styles.default_paragraph.clone(),
+                    bookmarks,
                     table_style: Some("TableGrid".to_string()),
                     direct,
                     mark_format,
@@ -8896,7 +8926,12 @@ fn serialize_form_runs(
 }
 
 fn serialize_table_paragraph(p: &FlowParagraph, media: &[Media], comments: &HashMap<u32, &Comment>) -> String {
-    escape_table_paragraph(serialize_runs(&p.runs, media, comments))
+    let mut text = String::new();
+    for bookmark in p.bookmarks.iter().filter(|b| is_word_bookmark(b)) {
+        text.push_str(&format!("{TABLE_BOOKMARK_MARKER}{bookmark} --> "));
+    }
+    text.push_str(&serialize_runs(&p.runs, media, comments));
+    escape_table_paragraph(text)
 }
 
 fn markdown_table_columns(table: &FlowTable) -> usize {
