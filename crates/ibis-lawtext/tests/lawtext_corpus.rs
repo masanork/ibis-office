@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use ibis_formats::lawtext::{input_to_markdown, parse_law_xml, parse_lawtext, to_lawtext};
+use ibis_lawtext::{input_to_markdown, parse_law_xml, parse_lawtext, to_lawtext};
 
 #[test]
 fn original_xml_patch_preserves_uneditable_content_and_withholds_structural_edits() {
-    use ibis_formats::lawtext::{
+    use ibis_lawtext::{
         LawEditFormat, apply_law_source_edits, to_markdown,
     };
 
@@ -47,7 +47,7 @@ fn original_xml_patch_preserves_uneditable_content_and_withholds_structural_edit
 
 #[test]
 fn original_xml_patch_applies_an_appendix_cell_without_reserializing_the_table() {
-    use ibis_formats::lawtext::{LawEditFormat, apply_law_source_edits, to_markdown};
+    use ibis_lawtext::{LawEditFormat, apply_law_source_edits, to_markdown};
 
     let original = include_str!("lawtext/food-labeling-table.xml");
     let doc = parse_law_xml(original).unwrap();
@@ -65,7 +65,7 @@ fn original_xml_patch_applies_an_appendix_cell_without_reserializing_the_table()
 
 #[test]
 fn explicit_law_markdown_uses_the_document_type_in_frontmatter() {
-    use ibis_formats::lawtext::{parse_law_input, to_markdown};
+    use ibis_lawtext::{parse_law_input, to_markdown};
 
     let law = parse_law_xml(include_str!("lawtext/supplementary-amendment.xml")).unwrap();
     let markdown = to_markdown(&law)
@@ -103,7 +103,7 @@ fn upstream_lawtext_sample_keeps_the_split_title_and_both_paragraphs() {
 fn verifies_amendment_after_xml_and_lawtext_round_trips() {
     use std::{fs, process::Command};
 
-    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
+    use ibis_lawtext::{parse_markdown_law, to_law_xml, to_markdown};
     use serde_json::Value;
 
     const OLD_XML: &str = include_str!("lawtext/supplementary-amendment.xml");
@@ -260,7 +260,7 @@ fn reads_combined_lawtext_root_attributes_before_a_split_title() {
         "[LawType=\"Act\"][Lang=\"en\"]\r\n\r\n",
         "試験法\r\n（令和七年法律第一号）\r\n\r\n第一条 規定を定める。",
     );
-    assert!(ibis_formats::lawtext::is_lawtext(source.as_bytes()));
+    assert!(ibis_lawtext::is_lawtext(source.as_bytes()));
     let doc = parse_lawtext(source).unwrap();
     assert_eq!(doc.law_title, "試験法");
     assert_eq!(doc.law_num, "令和七年法律第一号");
@@ -275,13 +275,13 @@ fn reads_combined_lawtext_root_attributes_before_a_split_title() {
     let markdown = input_to_markdown(source.as_bytes()).unwrap().unwrap();
     assert_eq!(
         doc,
-        ibis_formats::lawtext::parse_markdown_law(&markdown).unwrap()
+        ibis_lawtext::parse_markdown_law(&markdown).unwrap()
     );
 }
 
 #[test]
 fn markdown_keeps_visible_text_and_discards_stale_sentence_metadata() {
-    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
+    use ibis_lawtext::{parse_markdown_law, to_law_xml, to_markdown};
 
     let source = include_str!("lawtext/supplementary-amendment.xml");
     let markdown = to_markdown(&parse_law_xml(source).unwrap());
@@ -315,7 +315,7 @@ fn markdown_keeps_visible_text_and_discards_stale_sentence_metadata() {
     let columns_xml = to_law_xml(&parse_markdown_law(&edited_columns).unwrap());
     assert!(columns_xml.contains("<ItemSentence><Sentence>給付の区分を編集する。</Sentence>"));
     assert!(!columns_xml.contains("<Column"));
-    let ai = ibis_formats::lawtext::export_ai_law(source.as_bytes())
+    let ai = ibis_lawtext::export_ai_law(source.as_bytes())
         .unwrap()
         .unwrap();
     assert!(
@@ -332,8 +332,8 @@ fn lawtext_title_metadata_keeps_empty_attributes_and_plain_title() {
         ":law-title-attrs: <LawTitle Kana=\"しけんほう\" Abbrev=\"\" AbbrevKana=\"よみ&#10;かた\"/>\n",
         "試験法（令和七年法律第一号）\n\n第一条 規定を定める。",
     );
-    let law = ibis_formats::lawtext::parse_law_input(source).unwrap();
-    assert!(ibis_formats::lawtext::is_lawtext(source.as_bytes()));
+    let law = ibis_lawtext::parse_law_input(source).unwrap();
+    assert!(ibis_lawtext::is_lawtext(source.as_bytes()));
     assert_eq!(law.law_title, "試験法");
     assert_eq!(law.law_title_attributes.abbrev.as_deref(), Some(""));
     assert_eq!(
@@ -345,13 +345,13 @@ fn lawtext_title_metadata_keeps_empty_attributes_and_plain_title() {
     assert!(markdown.contains("# 試験法\n"));
     assert_eq!(
         law,
-        ibis_formats::lawtext::parse_markdown_law(&markdown).unwrap()
+        ibis_lawtext::parse_markdown_law(&markdown).unwrap()
     );
 }
 
 #[test]
 fn public_food_labeling_samples_preserve_table_and_form_markup() {
-    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
+    use ibis_lawtext::{parse_markdown_law, to_law_xml, to_markdown};
 
     let table = include_str!("lawtext/food-labeling-table.xml");
     let form = include_str!("lawtext/food-inspection-form.xml");
@@ -368,7 +368,7 @@ fn public_food_labeling_samples_preserve_table_and_form_markup() {
         let original = parse_law_xml(xml).unwrap();
         assert!(original.enact_statement.is_some());
         let serialized = to_lawtext(&original);
-        assert!(ibis_formats::lawtext::is_lawtext(serialized.as_bytes()));
+        assert!(ibis_lawtext::is_lawtext(serialized.as_bytes()));
         let lawtext = parse_lawtext(&serialized).unwrap();
         let markdown = parse_markdown_law(&to_markdown(&original)).unwrap();
         assert_eq!(lawtext.appdx_tables, original.appdx_tables);
@@ -424,7 +424,7 @@ fn public_food_labeling_samples_preserve_table_and_form_markup() {
 
 #[test]
 fn appendix_style_metadata_keeps_multiple_forms_and_rejects_invalid_fragments() {
-    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml};
+    use ibis_lawtext::{parse_markdown_law, to_law_xml};
 
     let first = "<AppdxStyle><AppdxStyleTitle>様式一</AppdxStyleTitle><FigStruct><Fig src=\"./pict/a.pdf\"/></FigStruct></AppdxStyle>";
     let second = "<AppdxStyle><AppdxStyleTitle>様式二</AppdxStyleTitle><FigStruct><Fig src=\"./pict/b.pdf\"/></FigStruct></AppdxStyle>";
@@ -442,7 +442,7 @@ fn appendix_style_metadata_keeps_multiple_forms_and_rejects_invalid_fragments() 
 
 #[test]
 fn table_anchors_follow_reordered_markdown_and_report_duplicate_references() {
-    use ibis_formats::lawtext::{parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
+    use ibis_lawtext::{parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
     use ibis_formats::markdown::SourceIssue;
 
     let source = include_str!("lawtext/food-labeling-table.xml");
@@ -482,7 +482,7 @@ fn table_anchors_follow_reordered_markdown_and_report_duplicate_references() {
 
 #[test]
 fn legacy_markdown_does_not_reuse_one_snapshot_for_two_tables() {
-    use ibis_formats::lawtext::{parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
+    use ibis_lawtext::{parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
     use ibis_formats::markdown::SourceIssue;
 
     let source = include_str!("lawtext/food-labeling-table.xml");
@@ -508,7 +508,7 @@ fn legacy_markdown_does_not_reuse_one_snapshot_for_two_tables() {
 
 #[test]
 fn broken_markdown_table_sources_are_reported_without_overwriting_edits() {
-    use ibis_formats::lawtext::{parse_law_input, parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
+    use ibis_lawtext::{parse_law_input, parse_markdown_law_with_diagnostics, to_law_xml, to_markdown};
     use ibis_formats::markdown::SourceIssue;
 
     let source = include_str!("lawtext/food-labeling-table.xml");
@@ -559,7 +559,7 @@ fn broken_markdown_table_sources_are_reported_without_overwriting_edits() {
 
 #[test]
 fn mixed_appendices_keep_their_order_even_when_a_table_cell_is_edited() {
-    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
+    use ibis_lawtext::{parse_markdown_law, to_law_xml, to_markdown};
 
     let source = include_str!("lawtext/food-labeling-table.xml");
     let (before, appendix) = source.split_once("<AppdxTable>").unwrap();
@@ -578,7 +578,7 @@ fn mixed_appendices_keep_their_order_even_when_a_table_cell_is_edited() {
     );
     let source = parse_law_xml(&xml).unwrap();
     let lawtext = to_lawtext(&source);
-    assert!(ibis_formats::lawtext::is_lawtext(lawtext.as_bytes()));
+    assert!(ibis_lawtext::is_lawtext(lawtext.as_bytes()));
     let markdown = to_markdown(&source).replacen("| 形質 |", "| 形質区分 |", 1);
     for (roundtrip, expected_cell) in [
         (source, "形質"),
@@ -609,7 +609,7 @@ fn mixed_appendices_keep_their_order_even_when_a_table_cell_is_edited() {
 
 #[test]
 fn downstream_code_can_construct_a_supplement_with_a_struct_literal() {
-    use ibis_formats::lawtext::{LawDoc, SupplProvision, to_law_xml};
+    use ibis_lawtext::{LawDoc, SupplProvision, to_law_xml};
 
     let mut doc = LawDoc::default();
     doc.suppl_provisions.push(SupplProvision {
@@ -625,7 +625,7 @@ fn downstream_code_can_construct_a_supplement_with_a_struct_literal() {
 
 #[test]
 fn supplementary_appendices_roundtrip_under_their_own_headings_in_order() {
-    use ibis_formats::lawtext::{parse_markdown_law, to_law_xml, to_markdown};
+    use ibis_lawtext::{parse_markdown_law, to_law_xml, to_markdown};
 
     let table = concat!(
         "<SupplProvisionAppdxTable Num=\"1\"><SupplProvisionAppdxTableTitle>附則別表</SupplProvisionAppdxTableTitle>",
@@ -660,7 +660,7 @@ fn supplementary_appendices_roundtrip_under_their_own_headings_in_order() {
         supplement(third, &format!("{formula}{style}")),
     );
     let old = parse_law_xml(&before_amendment).unwrap();
-    let verification = ibis_formats::lawtext::verify_aratame_with_bill_supplement(
+    let verification = ibis_lawtext::verify_aratame_with_bill_supplement(
         &old, "", &document, Some(second),
     );
     assert!(verification.diagnostics.is_empty(), "{:?}", verification.diagnostics);
@@ -748,7 +748,7 @@ fn audit_reports_reordered_siblings_without_counting_removals_as_reordering() {
 #[test]
 fn generates_and_reapplies_the_two_food_labeling_tables_added_in_2024() {
     use ibis_doc_model::flow::Block;
-    use ibis_formats::lawtext::{ShinkyuOptions, build_5set_package};
+    use ibis_lawtext::{ShinkyuOptions, build_5set_package};
 
     let old = parse_law_xml(include_str!("lawtext/food-labeling-2024-before.xml")).unwrap();
     let new = parse_law_xml(include_str!("lawtext/food-labeling-2024-after.xml")).unwrap();
@@ -793,7 +793,7 @@ fn generates_and_reapplies_the_two_food_labeling_tables_added_in_2024() {
 
 #[test]
 fn reapplies_nested_quotation_in_the_2024_food_labeling_table_change() {
-    use ibis_formats::lawtext::{generate_aratame_draft, verify_aratame};
+    use ibis_lawtext::{generate_aratame_draft, verify_aratame};
 
     let old = parse_law_xml(include_str!("lawtext/table-twenty-before.xml")).unwrap();
     let new = parse_law_xml(include_str!("lawtext/table-twenty-after.xml")).unwrap();
@@ -813,7 +813,7 @@ fn reapplies_nested_quotation_in_the_2024_food_labeling_table_change() {
 
 #[test]
 fn reapplies_new_subitems_in_the_2024_food_labeling_amendment() {
-    use ibis_formats::lawtext::{generate_aratame_draft, verify_aratame};
+    use ibis_lawtext::{generate_aratame_draft, verify_aratame};
 
     let old = parse_law_xml(include_str!("lawtext/food-subitems-2024-before.xml")).unwrap();
     let new = parse_law_xml(include_str!("lawtext/food-subitems-2024-after.xml")).unwrap();
@@ -828,4 +828,22 @@ fn reapplies_new_subitems_in_the_2024_food_labeling_amendment() {
     let verified = verify_aratame(&old, &draft.full_text, &new);
     assert!(verified.is_exact_match, "{:?}", verified.diagnostics);
     assert_eq!(verified.simulated_new.main_provision, new.main_provision);
+}
+
+#[test]
+fn lawtext_and_bundled_law_xml_have_article_locators() {
+    for input in [
+        include_bytes!("lawtext/administrative-procedure-act.lawtext").as_slice(),
+        include_bytes!("lawtext/321CONSTITUTION.xml").as_slice(),
+    ] {
+        let export = ibis_lawtext::export_ai_source(input).unwrap();
+        let article = &export["articles"][0];
+        assert_eq!(article["source"]["supplementIndex"], serde_json::Value::Null);
+        assert!(!article["source"]["lawNum"].as_str().unwrap().is_empty());
+        let markdown = export["markdown"].as_str().unwrap();
+        let bytes = &article["markdownBytes"];
+        let start = bytes[0].as_u64().unwrap() as usize;
+        let end = bytes[1].as_u64().unwrap() as usize;
+        assert!(markdown[start..end].contains("第一条"));
+    }
 }

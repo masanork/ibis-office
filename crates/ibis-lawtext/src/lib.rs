@@ -9,7 +9,7 @@
 //! legal drafts can be edited in Markdown/Lawtext and exported to DOCX, PPTX,
 //! XLSX, or e-Gov 法令標準XML.
 
-use crate::Error;
+pub use ibis_formats::Error;
 
 pub mod aratame;
 pub mod assistant;
@@ -50,7 +50,6 @@ pub use model::{
 };
 pub use xml::{parse_law_xml, to_law_xml};
 pub use text::{is_lawtext, parse_lawtext, to_lawtext};
-pub(crate) use markdown::{is_law_profile, markdown_profile};
 pub use markdown::{export_ai_law, parse_markdown_law, parse_markdown_law_with_diagnostics, to_markdown};
 pub(crate) use markdown::MARKDOWN_SENTENCE_COMMENT;
 use text::write_lawtext_node;
@@ -64,7 +63,7 @@ pub fn parse_law_input(text: &str) -> Result<LawDoc, Error> {
     let text = text.trim_start_matches('\u{feff}').trim_start();
     let doc = if text.starts_with('<') {
         parse_law_xml(text)?
-    } else if crate::markdown::roundtrip::document_frontmatter(text).is_some_and(|frame| frame.lawtext) {
+    } else if ibis_formats::markdown::roundtrip::document_frontmatter(text).is_some_and(|frame| frame.lawtext) {
         parse_markdown_law(text)?
     } else {
         parse_lawtext(text)?
@@ -116,18 +115,29 @@ pub fn input_to_markdown(data: &[u8]) -> Result<Option<String>, Error> {
     Ok(None)
 }
 
-/// Export an open [`crate::Presentation`] to e-Gov 法令標準XML via its Markdown representation.
-pub fn export_presentation_to_law_xml(p: &crate::Presentation) -> Result<String, Error> {
-    let md = crate::markdown::export_presentation_to_markdown(p)?;
+/// Export an open [`ibis_formats::Presentation`] to e-Gov 法令標準XML via its Markdown representation.
+pub fn export_presentation_to_law_xml(p: &ibis_doc_model::Presentation) -> Result<String, Error> {
+    let md = ibis_formats::markdown::export_presentation_to_markdown(p)?;
     let law = parse_markdown_law(&md)?;
     Ok(to_law_xml(&law))
 }
 
-/// Export an open [`crate::Presentation`] to Lawtext plain text via its Markdown representation.
-pub fn export_presentation_to_lawtext(p: &crate::Presentation) -> Result<String, Error> {
-    let md = crate::markdown::export_presentation_to_markdown(p)?;
+/// Export an open [`ibis_formats::Presentation`] to Lawtext plain text via its Markdown representation.
+pub fn export_presentation_to_lawtext(p: &ibis_doc_model::Presentation) -> Result<String, Error> {
+    let md = ibis_formats::markdown::export_presentation_to_markdown(p)?;
     let law = parse_markdown_law(&md)?;
     Ok(to_lawtext(&law))
+}
+
+/// Create a versioned AI export supporting e-Gov XML / Lawtext in addition to
+/// standard ibisOffice formats.
+pub fn export_ai_source(data: &[u8]) -> Result<serde_json::Value, Error> {
+    if let Some(mut law) = export_ai_law(data)? {
+        use sha2::{Digest, Sha256};
+        law["sourceSha256"] = serde_json::json!(format!("{:x}", Sha256::digest(data)));
+        return Ok(law);
+    }
+    ibis_formats::markdown::export_ai_source(data)
 }
 
 #[cfg(test)]

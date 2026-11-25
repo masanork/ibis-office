@@ -26,24 +26,6 @@ use super::text::{LAWTEXT_SUPPL_APPENDICES, encode_suppl_appendices, is_lawtext,
 
 const TABLE_SOURCE_ANCHOR: &str = " {#ibis_law_table_";
 
-pub(crate) fn is_law_profile(metadata: &str) -> bool {
-    crate::markdown::roundtrip::law_profile_is_declared(metadata)
-}
-
-pub(crate) fn markdown_profile(metadata: &str) -> Option<String> {
-    if !is_law_profile(metadata) {
-        return None;
-    }
-    Some(metadata.lines().filter(|line| {
-        !line.starts_with(char::is_whitespace) && line.split_once(':').is_some_and(|(key, _)| {
-            let key = key.trim_end();
-            key.starts_with("law_") || matches!(
-                key, "type" | "x-ibis-format" | "era" | "year" | "promulgate_month" | "promulgate_day" | "num" | "lang"
-            )
-        })
-    }).collect::<Vec<_>>().join("\n"))
-}
-
 /// Export a [`LawDoc`] to Markdown with YAML frontmatter so it can be edited
 /// in ibisOffice (DOCX / PPTX) and converted back to Lawtext or e-Gov 法令標準XML.
 pub fn to_markdown(doc: &LawDoc) -> String {
@@ -344,14 +326,14 @@ pub fn parse_markdown_law(md: &str) -> Result<LawDoc, Error> {
 /// Parse editable law Markdown and report source fragments that could not be reused.
 pub fn parse_markdown_law_with_diagnostics(
     md: &str,
-) -> Result<(LawDoc, Vec<crate::markdown::SourceDiagnostic>), Error> {
+) -> Result<(LawDoc, Vec<ibis_formats::markdown::SourceDiagnostic>), Error> {
     let mut doc = LawDoc::default();
     let mut table_xml = None;
     let mut source_ids_required = false;
     let mut fragment_positions = None;
     let mut suppl_positions = None;
     let mut body = md.trim_start_matches('\u{feff}');
-    if let Some(frame) = crate::markdown::roundtrip::document_frontmatter(body) {
+    if let Some(frame) = ibis_formats::markdown::roundtrip::document_frontmatter(body) {
         body = frame.body;
         for line in frame.metadata.lines() {
             if let Some((k, v)) = line.split_once(':') {
@@ -435,7 +417,7 @@ pub fn parse_markdown_law_with_diagnostics(
             }
             let (heading, source_id) = heading.strip_suffix('}')
                 .and_then(|heading| heading.rsplit_once(TABLE_SOURCE_ANCHOR))
-                .map(|(heading, id)| (heading, Some(id.parse::<usize>().map_err(|_| crate::markdown::SourceIssue::Invalid))))
+                .map(|(heading, id)| (heading, Some(id.parse::<usize>().map_err(|_| ibis_formats::markdown::SourceIssue::Invalid))))
                 .unwrap_or((heading, None));
             lawtext_lines.push(heading.to_string());
             if heading.starts_with("別表") && !heading.contains('。') {

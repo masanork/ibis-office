@@ -66,7 +66,6 @@ mod bibliography;
 mod docx;
 pub mod docx_convert;
 pub mod html_export;
-pub mod lawtext;
 pub mod markdown;
 pub mod okf;
 pub mod agent_skill;

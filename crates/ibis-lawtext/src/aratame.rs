@@ -880,7 +880,7 @@ fn format_added_table(table: &LawAppdxTable) -> String {
 }
 
 fn parse_added_table(block: &[&str]) -> Option<LawAppdxTable> {
-    use crate::markdown::split_table_row;
+    use ibis_formats::markdown::split_table_row;
 
     let title = block.first()?.trim();
     let mut lines = block[1..].iter().map(|line| line.trim()).peekable();
@@ -1263,7 +1263,7 @@ fn to_kanji_or_num(num: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lawtext::parse_lawtext;
+    use crate::parse_lawtext;
 
     #[test]
     fn resolves_paragraph_text_before_enumerated_items() {

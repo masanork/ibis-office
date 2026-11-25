@@ -6,7 +6,7 @@
 
 use std::process::Command;
 
-use ibis_formats::lawtext::{comparison_docx, parse_law_input};
+use ibis_lawtext::{comparison_docx, parse_law_input};
 use ibis_pdf::{PdfContainer, interpret::visit_text_scenes};
 
 #[test]

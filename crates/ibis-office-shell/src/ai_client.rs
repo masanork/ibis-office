@@ -1903,7 +1903,7 @@ mod tests {
         let law = fetch_egov_law_xml(None, None, Some(revision)).unwrap();
         assert_eq!(law.revision, revision);
         assert_eq!(law.source_url, item["source_url"]);
-        let doc = ibis_formats::lawtext::parse_law_xml(&law.xml).unwrap();
+        let doc = ibis_lawtext::parse_law_xml(&law.xml).unwrap();
         assert_eq!(doc.law_title, law.title);
     }
 

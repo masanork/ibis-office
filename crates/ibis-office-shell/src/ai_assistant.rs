@@ -825,16 +825,16 @@ fn column_letters(mut col: u32) -> String {
     out.into_iter().rev().collect()
 }
 
-pub(crate) fn parse_law_input_str(text: &str) -> Result<ibis_formats::lawtext::LawDoc, String> {
-    ibis_formats::lawtext::parse_law_input(text).map_err(|e| e.to_string())
+pub(crate) fn parse_law_input_str(text: &str) -> Result<ibis_lawtext::LawDoc, String> {
+    ibis_lawtext::parse_law_input(text).map_err(|e| e.to_string())
 }
 
 pub(crate) fn presentation_law(
     presentation: &ibis_doc_model::Presentation,
-) -> Result<ibis_formats::lawtext::LawDoc, String> {
+) -> Result<ibis_lawtext::LawDoc, String> {
     let markdown = ibis_formats::markdown::export_presentation_to_markdown(presentation)
         .map_err(|e| e.to_string())?;
-    let law = ibis_formats::lawtext::parse_markdown_law(&markdown).map_err(|e| e.to_string())?;
+    let law = ibis_lawtext::parse_markdown_law(&markdown).map_err(|e| e.to_string())?;
     if law.main_provision.is_empty() && law.suppl_provisions.is_empty() && law.appdx_tables.is_empty() {
         return Err("作業中の文書に解析できる本則・附則・別表がありません".into());
     }
@@ -5003,8 +5003,8 @@ impl SlideEditor {
         let args = call.function.arguments.as_str();
         match name {
             "export_active_lawtext" => {
-                match ibis_formats::lawtext::export_presentation_to_lawtext(turn.draft.presentation()) {
-                    Ok(lt) => match ibis_formats::lawtext::parse_lawtext(&lt) {
+                match ibis_lawtext::export_presentation_to_lawtext(turn.draft.presentation()) {
+                    Ok(lt) => match ibis_lawtext::parse_lawtext(&lt) {
                         Ok(doc) => (
                             json!({
                                 "law_title": doc.law_title,
@@ -5061,11 +5061,11 @@ impl SlideEditor {
                             .collect::<Result<Vec<_>, _>>();
                         match (parse_law_input_str(old_str), new_doc, sources) {
                             (Ok(old), Ok(new), Ok(sources)) => {
-                                let opts = ibis_formats::lawtext::ShinkyuOptions {
+                                let opts = ibis_lawtext::ShinkyuOptions {
                                     new_on_left: !a.old_on_left.unwrap_or(false),
                                     ..Default::default()
                                 };
-                                let pkg = ibis_formats::lawtext::build_5set_package_with_sources(
+                                let pkg = ibis_lawtext::build_5set_package_with_sources(
                                     &old,
                                     &new,
                                     a.policy_memo.as_deref().unwrap_or(""),
@@ -5119,7 +5119,7 @@ impl SlideEditor {
                         },
                     ) {
                         (Ok(old_doc), Ok(new_doc)) => {
-                            let res = ibis_formats::lawtext::verify_aratame(
+                            let res = ibis_lawtext::verify_aratame(
                                 &old_doc,
                                 &a.aratame_text,
                                 &new_doc,
@@ -5165,9 +5165,9 @@ impl SlideEditor {
                             (Ok(old_opt), Ok(new_doc)) => {
                                 let report = match old_opt.as_ref() {
                                     Some(old_doc) => {
-                                        ibis_formats::lawtext::lint_amendment(old_doc, &new_doc)
+                                        ibis_lawtext::lint_amendment(old_doc, &new_doc)
                                     }
-                                    None => ibis_formats::lawtext::lint_law(&new_doc),
+                                    None => ibis_lawtext::lint_law(&new_doc),
                                 };
                                 let errs = report.error_count;
                                 let warns = report.warning_count;
@@ -5203,9 +5203,9 @@ impl SlideEditor {
                         a.law_num.as_deref(),
                         a.law_revision_id.as_deref().or(a.law_id.as_deref()),
                     ) {
-                        Ok(law) => match ibis_formats::lawtext::parse_law_xml(&law.xml) {
+                        Ok(law) => match ibis_lawtext::parse_law_xml(&law.xml) {
                             Ok(doc) => {
-                                let lt = ibis_formats::lawtext::to_lawtext(&doc);
+                                let lt = ibis_lawtext::to_lawtext(&doc);
                                 let set_baseline = a.set_as_baseline.unwrap_or(true);
                                 if set_baseline {
                                     *baseline = Some((format!("{}.xml", doc.law_title), law.xml));

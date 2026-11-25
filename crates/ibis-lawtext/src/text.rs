@@ -389,7 +389,7 @@ pub fn parse_lawtext(text: &str) -> Result<LawDoc, Error> {
             continue;
         }
         if in_appdx && trimmed.starts_with('|') && trimmed.ends_with('|') {
-            let cells = crate::markdown::split_table_row(trimmed);
+            let cells = ibis_formats::markdown::split_table_row(trimmed);
             let is_sep = !cells.is_empty()
                 && cells
                     .iter()

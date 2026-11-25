@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use crate::markdown::roundtrip::{SourceDiagnostic, SourceIssue, reconcile_source};
+use ibis_formats::markdown::roundtrip::{SourceDiagnostic, SourceIssue, reconcile_source};
 
 use super::model::{LawAppdxTable, LawDoc};
 use super::xml::{child_elem, collect_text, push_xml_escaped};

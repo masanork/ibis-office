@@ -97,7 +97,7 @@ pub(crate) fn open_document_bytes(
             || matches!(external_document_format, None | Some(DocxConvertFormat::Odt))
     });
 
-    if let Some(law_md) = ibis_formats::lawtext::path_input_to_markdown(virtual_path, data)
+    if let Some(law_md) = ibis_lawtext::path_input_to_markdown(virtual_path, data)
         .map_err(|e| e.to_string())?
     {
         let opened = open_markdown_bytes(law_md.into_bytes(), base_dir, false)?;

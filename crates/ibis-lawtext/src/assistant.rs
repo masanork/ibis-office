@@ -271,7 +271,7 @@ fn outline(bill_title: &str, ir: &AmendmentIr) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lawtext::parse_lawtext;
+    use crate::parse_lawtext;
 
     #[test]
     fn builds_complete_5set_package() {

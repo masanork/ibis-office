@@ -37,7 +37,27 @@ mod myst;
 mod obsidian;
 mod okf_metadata;
 mod shape_text;
-pub(crate) mod roundtrip;
+pub mod roundtrip;
+
+pub const LAW_SENTENCE_COMMENT: &str = "<!-- ibis-law-sentences ";
+
+fn is_law_profile(metadata: &str) -> bool {
+    roundtrip::law_profile_is_declared(metadata)
+}
+
+fn markdown_profile(metadata: &str) -> Option<String> {
+    if !is_law_profile(metadata) {
+        return None;
+    }
+    Some(metadata.lines().filter(|line| {
+        !line.starts_with(char::is_whitespace) && line.split_once(':').is_some_and(|(key, _)| {
+            let key = key.trim_end();
+            key.starts_with("law_") || matches!(
+                key, "type" | "x-ibis-format" | "era" | "year" | "promulgate_month" | "promulgate_day" | "num" | "lang"
+            )
+        })
+    }).collect::<Vec<_>>().join("\n"))
+}
 pub use roundtrip::{SourceDiagnostic, SourceIssue};
 mod picture_anchor;
 
@@ -1995,7 +2015,7 @@ fn apply_frontmatter(fm: &str, doc: &mut FlowDocument, ctx: &mut ParseContext<'_
         .and_then(|mut yaml| yaml.as_object_mut()?.remove("x-ibis-blocks"))
         .unwrap_or_default();
     let mut okf_source = false;
-    let law_profile = crate::lawtext::markdown_profile(fm);
+    let law_profile = markdown_profile(fm);
     if let Some(profile) = law_profile.as_ref() {
         roundtrip::store_profile(profile.clone(), &mut doc.properties);
     } else {
@@ -4649,7 +4669,7 @@ fn is_table_separator(s: &str) -> bool {
         })
 }
 
-pub(crate) fn split_table_row(s: &str) -> Vec<String> {
+pub fn split_table_row(s: &str) -> Vec<String> {
     let trimmed = s.trim();
     let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
     let inner = inner.strip_suffix('|').unwrap_or(inner);
@@ -6215,10 +6235,10 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
             continue;
         }
 
-        if let Some(comment) = rest.strip_prefix(crate::lawtext::MARKDOWN_SENTENCE_COMMENT)
+        if let Some(comment) = rest.strip_prefix(LAW_SENTENCE_COMMENT)
             && let Some((payload, _)) = comment.split_once(" -->")
         {
-            i += crate::lawtext::MARKDOWN_SENTENCE_COMMENT.len() + payload.len() + " -->".len();
+            i += LAW_SENTENCE_COMMENT.len() + payload.len() + " -->".len();
             continue;
         }
 
@@ -7399,15 +7419,11 @@ fn source_sha256(data: &[u8]) -> String {
 
 /// Create a versioned AI export tied to the exact input snapshot.
 pub fn export_ai_source(data: &[u8]) -> Result<serde_json::Value, Error> {
-    let mut result = if let Some(law) = crate::lawtext::export_ai_law(data)? {
-        law
+    let presentation = crate::read(data)?;
+    let mut result = if presentation.workbook.is_some() {
+        export_ai_workbook(&presentation)?
     } else {
-        let presentation = crate::read(data)?;
-        if presentation.workbook.is_some() {
-            export_ai_workbook(&presentation)?
-        } else {
-            export_ai_document(&presentation)?
-        }
+        export_ai_document(&presentation)?
     };
     result["sourceSha256"] = serde_json::json!(source_sha256(data));
     Ok(result)
@@ -8153,7 +8169,7 @@ fn serialize_frontmatter(doc: &FlowDocument, diagnostics: &mut Vec<SourceDiagnos
         if let Some((source, editable)) = roundtrip::decode_okf_source(profile) {
             return if editable { okf_metadata::update(source, props, diagnostics) } else { source };
         }
-        if crate::lawtext::is_law_profile(profile) {
+        if is_law_profile(profile) {
             lines.extend(profile.lines().map(str::to_owned));
         }
     }

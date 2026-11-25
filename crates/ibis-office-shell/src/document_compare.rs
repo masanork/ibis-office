@@ -5,7 +5,7 @@
 use gpui_kit::*;
 
 use crate::{editor::SlideEditor, i18n::text};
-use ibis_formats::lawtext::{LawDoc, parse_law_input};
+use ibis_lawtext::{LawDoc, parse_law_input};
 
 #[cfg(not(target_family = "wasm"))]
 fn law_file(path: &std::path::Path) -> bool {
@@ -144,10 +144,10 @@ impl SlideEditor {
             data.truncate(error.valid_up_to());
         }
         if name.ends_with(".xml") {
-            return ibis_formats::lawtext::is_law_xml(&data);
+            return ibis_lawtext::is_law_xml(&data);
         }
         if name.ends_with(".txt") {
-            return ibis_formats::lawtext::is_lawtext(&data);
+            return ibis_lawtext::is_lawtext(&data);
         }
         std::str::from_utf8(&data).is_ok_and(|head| {
             let head = head.trim_start_matches('\u{feff}').trim_start();
@@ -312,7 +312,7 @@ impl SlideEditor {
             let name = format!("{title} {}.docx", text("compare.law-result"));
             #[cfg(target_family = "wasm")]
             {
-                let result = ibis_formats::lawtext::comparison_docx(&old, &new);
+                let result = ibis_lawtext::comparison_docx(&old, &new);
                 let _ = this.update_in(cx, |editor, window, cx| match result {
                     Ok(bytes) => {
                         editor.browser_export(
@@ -330,7 +330,7 @@ impl SlideEditor {
             {
                 let opened = cx
                     .background_executor()
-                    .spawn(async move { ibis_formats::lawtext::open_comparison_document(&old, &new) })
+                    .spawn(async move { ibis_lawtext::open_comparison_document(&old, &new) })
                     .await;
                 let _ = this.update(cx, |editor, cx| match opened {
                     Ok(document) => crate::app::open_window_with(cx, move |editor, window, cx| {

@@ -451,7 +451,7 @@ fn try_parse_article_ref(s: &str) -> Option<(String, Option<String>, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lawtext::parse_lawtext;
+    use crate::parse_lawtext;
 
     #[test]
     fn extracts_internal_external_and_relative_references() {

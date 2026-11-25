@@ -5689,8 +5689,22 @@ name = "ibis-law-viewer"
 version = "0.8.0"
 dependencies = [
  "ibis-formats",
+ "ibis-lawtext",
  "serde_json",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "ibis-lawtext"
+version = "0.8.0"
+dependencies = [
+ "ibis-doc-model",
+ "ibis-formats",
+ "roxmltree 0.21.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
@@ -5756,6 +5770,7 @@ dependencies = [
  "ibis-emf",
  "ibis-eot",
  "ibis-formats",
+ "ibis-lawtext",
  "ibis-mcp",
  "ibis-odf",
  "ibis-office-app",
@@ -5818,6 +5833,7 @@ dependencies = [
  "ibis-doc-model",
  "ibis-emf",
  "ibis-formats",
+ "ibis-lawtext",
  "ibis-odf",
  "ibis-office-base",
  "ibis-office-macros",
@@ -5930,6 +5946,7 @@ dependencies = [
  "ibis-doc-service",
  "ibis-emf",
  "ibis-formats",
+ "ibis-lawtext",
  "ibis-mcp",
  "ibis-odf",
  "ibis-ofd",

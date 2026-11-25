@@ -381,7 +381,7 @@ fn collect_abbreviations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lawtext::parse_lawtext;
+    use crate::parse_lawtext;
 
     #[test]
     fn detects_dangling_and_ripple_references_and_conjunctions() {

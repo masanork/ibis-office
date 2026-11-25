@@ -79,20 +79,6 @@ fn workbook_cells_reference_their_unescaped_coordinates() {
 }
 
 #[test]
-fn lawtext_and_bundled_law_xml_have_article_locators() {
-    for input in [
-        include_bytes!("lawtext/administrative-procedure-act.lawtext").as_slice(),
-        include_bytes!("lawtext/321CONSTITUTION.xml").as_slice(),
-    ] {
-        let export = markdown::export_ai_source(input).unwrap();
-        let article = &export["articles"][0];
-        assert_eq!(article["source"]["supplementIndex"], Value::Null);
-        assert!(!article["source"]["lawNum"].as_str().unwrap().is_empty());
-        assert!(excerpt(&export, article).contains("第一条"));
-    }
-}
-
-#[test]
 fn citations_resolve_against_the_original_document_only() {
     let docx =
         markdown::import_markdown_to_docx_bytes("# 見出し\n\n本文です。\n".as_bytes()).unwrap();

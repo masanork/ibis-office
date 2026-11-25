@@ -909,7 +909,7 @@ impl FormatEditor for Document {
         }
         let law_xml = extension.eq_ignore_ascii_case("xml");
         if law_xml || extension.eq_ignore_ascii_case("lawtext") {
-            let parse = ibis_formats::lawtext::parse_markdown_law_with_diagnostics;
+            let parse = ibis_lawtext::parse_markdown_law_with_diagnostics;
             let parsed = if let Some(markdown) = editor.markdown_source_text() {
                 parse(markdown)
             } else {
@@ -918,9 +918,9 @@ impl FormatEditor for Document {
             };
             return Some(parsed.map(|(law, diagnostics)| {
                 let text = if law_xml {
-                    ibis_formats::lawtext::to_law_xml(&law)
+                    ibis_lawtext::to_law_xml(&law)
                 } else {
-                    ibis_formats::lawtext::to_lawtext(&law)
+                    ibis_lawtext::to_lawtext(&law)
                 };
                 FileBytes { bytes: text.into_bytes(), protect: false, note: source_export_note(&diagnostics) }
             }).map_err(|e| e.to_string()));

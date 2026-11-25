@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::process::ExitCode;
 
-use ibis_formats::lawtext::{parse_law_xml, parse_lawtext, parse_markdown_law_with_diagnostics, to_law_xml, to_lawtext, to_markdown};
+use ibis_lawtext::{parse_law_xml, parse_lawtext, parse_markdown_law_with_diagnostics, to_law_xml, to_lawtext, to_markdown};
 use roxmltree::{Document, Node};
 use serde_json::{Value, json};
 

@@ -13,7 +13,7 @@ use ibis_doc_model::{
 };
 
 use super::{LawDoc, Legislation5SetPackage, generate_shinkyu_markdown};
-use crate::{Error, SaveOptions, markdown};
+use ibis_formats::{Error, SaveOptions, markdown};
 
 const COMPARISON_BOOKMARK: &str = "lawtext_comparison";
 
@@ -150,8 +150,8 @@ impl Legislation5SetPackage {
 }
 
 /// Open an editable DOCX containing just the vertical law comparison.
-pub fn open_comparison_document(old: &LawDoc, new: &LawDoc) -> Result<crate::Opened, Error> {
-    crate::open(comparison_docx(old, new)?)
+pub fn open_comparison_document(old: &LawDoc, new: &LawDoc) -> Result<ibis_formats::Opened, Error> {
+    ibis_formats::open(comparison_docx(old, new)?)
 }
 
 /// Serialize the standalone vertical statute comparison as an editable DOCX.
@@ -359,7 +359,7 @@ fn format_comparison(table: &mut FlowTable, available: ibis_doc_model::Emu) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lawtext::{ShinkyuOptions, build_5set_package, parse_law_input};
+    use crate::{ShinkyuOptions, build_5set_package, parse_law_input};
 
     #[test]
     fn direct_comparison_preserves_visible_statute_metadata_from_editable_document() {
@@ -477,7 +477,7 @@ mod tests {
         let new = parse_law_input("試験法（令和七年法律第一号）\n第一条　青色を用いる。").unwrap();
         let set = build_5set_package(&old, &new, "", &ShinkyuOptions::default());
         let bytes = set.to_print_docx().unwrap();
-        let opened = crate::open(bytes).unwrap();
+        let opened = ibis_formats::open(bytes).unwrap();
         let flow = opened.presentation.flow.unwrap();
         use ibis_doc_model::flow_command::{section_setup, sections};
         let pages: Vec<_> = sections(&flow)

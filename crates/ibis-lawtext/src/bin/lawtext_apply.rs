@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use ibis_formats::lawtext::{LawEditFormat, apply_law_source_edits, parse_law_xml, to_lawtext, to_markdown};
+use ibis_lawtext::{LawEditFormat, apply_law_source_edits, parse_law_xml, to_lawtext, to_markdown};
 use serde_json::json;
 
 const USAGE: &str = "Usage: ibis-lawtext-apply ORIGINAL.xml (EDITED | --prepare) [--format lawtext|markdown]\n    Write the patched XML to stdout, or exit 2 with diagnostics and no XML.";

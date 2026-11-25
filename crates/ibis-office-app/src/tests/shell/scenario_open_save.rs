@@ -141,9 +141,9 @@ fn save_image_preview_keeps_transparent_pixels() {
 
 fn save_reports_markdown_source_loss() {
     use crate::shell::actions::Save;
-    use ibis_formats::lawtext::{parse_law_xml, to_markdown};
+    use ibis_lawtext::{parse_law_xml, to_markdown};
 
-    let xml = include_str!("../../../../ibis-formats/tests/lawtext/food-labeling-table.xml");
+    let xml = include_str!("../../../../ibis-lawtext/tests/lawtext/food-labeling-table.xml");
     let markdown = to_markdown(&parse_law_xml(xml).unwrap())
         .replace(" {#ibis_law_table_0}", "")
         .replace("| 形質 |", "| 形質区分 |");

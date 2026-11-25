@@ -1742,7 +1742,7 @@ fn escape_md_cell(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lawtext::parse_lawtext;
+    use crate::parse_lawtext;
 
     #[test]
     fn table_cells_remain_on_one_markdown_row() {

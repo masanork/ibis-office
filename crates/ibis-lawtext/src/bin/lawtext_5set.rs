@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use ibis_formats::lawtext::{
+use ibis_lawtext::{
     LawDoc, ShinkyuOptions, build_5set_package_with_bill_supplement, parse_law_input,
 };
 

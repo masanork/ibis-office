@@ -259,7 +259,7 @@ fn markdown_block(content: &str, language: &str) -> Vec<u8> {
 fn preview(repo: &Path, path: &Path, id: gix::ObjectId) -> Result<ibis_formats::Opened> {
     let repo = gix::open(repo)?;
     let bytes = blob(&repo, id, path)?;
-    if let Some(markdown) = ibis_formats::lawtext::path_input_to_markdown(path, &bytes)? {
+    if let Some(markdown) = ibis_lawtext::path_input_to_markdown(path, &bytes)? {
         return Ok(ibis_formats::markdown::open_markdown(
             markdown.into_bytes(),
         )?);
@@ -352,13 +352,13 @@ fn compare(
     let old_bytes = blob(&repo, old, old_path)?;
     let new_bytes = blob(&repo, new, new_path)?;
     if let (Some(_), Some(_)) = (
-        ibis_formats::lawtext::path_input_to_markdown(old_path, &old_bytes)?,
-        ibis_formats::lawtext::path_input_to_markdown(new_path, &new_bytes)?,
+        ibis_lawtext::path_input_to_markdown(old_path, &old_bytes)?,
+        ibis_lawtext::path_input_to_markdown(new_path, &new_bytes)?,
     ) {
-        let old_law = ibis_formats::lawtext::parse_law_input(std::str::from_utf8(&old_bytes)?)?;
-        let new_law = ibis_formats::lawtext::parse_law_input(std::str::from_utf8(&new_bytes)?)?;
+        let old_law = ibis_lawtext::parse_law_input(std::str::from_utf8(&old_bytes)?)?;
+        let new_law = ibis_lawtext::parse_law_input(std::str::from_utf8(&new_bytes)?)?;
         return Ok(RevisionPreview::LawComparison(
-            ibis_formats::lawtext::open_comparison_document(&old_law, &new_law)?,
+            ibis_lawtext::open_comparison_document(&old_law, &new_law)?,
         ));
     }
     if old_bytes.len().max(new_bytes.len()) > MAX_TEXT_DIFF_BYTES {

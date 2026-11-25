@@ -15,6 +15,7 @@ ibis-office-base.workspace = true
 ibis-office-render.workspace = true
 ibis-doc-model.workspace = true
 ibis-formats.workspace = true
+ibis-lawtext.workspace = true
 ibis-odf.workspace = true
 ibis-pdf = { path = "../ibis-pdf" }
 ibis-ofd.workspace = true

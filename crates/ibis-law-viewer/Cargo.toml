@@ -13,4 +13,5 @@ ibis-formats.workspace = true
 serde_json = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+ibis-lawtext.workspace = true
 wasm-bindgen = "0.2.128"

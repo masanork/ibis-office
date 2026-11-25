@@ -34,20 +34,20 @@ fn has_recoverable_law_marker(metadata: &str) -> bool {
         .is_some_and(|line| line.trim_end() == "x-ibis-format: lawtext")
 }
 
-pub(crate) fn law_profile_is_declared(metadata: &str) -> bool {
+pub fn law_profile_is_declared(metadata: &str) -> bool {
     yaml_mapping(metadata).as_ref().map_or_else(
         || has_recoverable_law_marker(metadata), law_profile,
     )
 }
 
-pub(crate) struct DocumentFrontmatter<'a> {
+pub struct DocumentFrontmatter<'a> {
     pub metadata: &'a str,
     pub body: &'a str,
     pub lawtext: bool,
     pub damaged: bool,
 }
 
-pub(crate) fn document_frontmatter(text: &str) -> Option<DocumentFrontmatter<'_>> {
+pub fn document_frontmatter(text: &str) -> Option<DocumentFrontmatter<'_>> {
     let (metadata, body) = frontmatter_frame(text)?;
     if let Some(fields) = yaml_mapping(metadata) {
         return Some(DocumentFrontmatter { metadata, body, lawtext: law_profile(&fields), damaged: false });
@@ -170,7 +170,7 @@ pub struct SourceDiagnostic {
 }
 
 /// Reuse or update source only when a single eligible snapshot can be reconciled.
-pub(crate) fn reconcile_source<T, U>(
+pub fn reconcile_source<T, U>(
     candidates: impl IntoIterator<Item = T>,
     reconcile: impl FnOnce(T) -> Option<U>,
 ) -> Result<U, SourceIssue> {

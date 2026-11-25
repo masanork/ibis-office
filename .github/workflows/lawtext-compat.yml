@@ -2,9 +2,9 @@ name: Lawtext compatibility
 on:
   push:
     branches: [sorane]
-    paths: ['crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', 'scripts/check-law-roundtrips.py', '.github/workflows/lawtext-compat.yml']
+    paths: ['crates/ibis-lawtext/**', 'crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', 'scripts/check-law-roundtrips.py', '.github/workflows/lawtext-compat.yml']
   pull_request:
-    paths: ['crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', 'scripts/check-law-roundtrips.py', '.github/workflows/lawtext-compat.yml']
+    paths: ['crates/ibis-lawtext/**', 'crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', 'scripts/check-law-roundtrips.py', '.github/workflows/lawtext-compat.yml']
 permissions:
   contents: read
 jobs:
@@ -20,14 +20,14 @@ jobs:
         with:
           toolchain: nightly-2026-10-28
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked -p ibis-formats --lib lawtext
-      - run: cargo test --locked -p ibis-formats --test lawtext_corpus
+      - run: cargo test --locked -p ibis-lawtext --lib
+      - run: cargo test --locked -p ibis-lawtext --test lawtext_corpus
       - run: cargo test --locked -p ibis-formats --test ai_document_export
       - name: Install the XSD validator
         run: sudo apt-get update && sudo apt-get install -y libxml2-utils
       - name: Check pinned e-Gov revisions
         run: |
-          cargo build --locked -p ibis-formats --bin ibis-lawtext-audit
+          cargo build --locked -p ibis-lawtext --bin ibis-lawtext-audit
           python3 scripts/check-law-roundtrips.py target/debug/ibis-lawtext-audit target/law-audit
       - name: Upload audit reports on failure
         if: failure()

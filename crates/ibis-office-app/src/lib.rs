@@ -856,7 +856,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             .unwrap_or_else(|| "document".into());
         let raw_data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         if format == "ai-json" {
-            let export = ibis_formats::markdown::export_ai_source(&raw_data)
+            let export = ibis_lawtext::export_ai_source(&raw_data)
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             let out_path = out_dir.join(format!("{stem}.ai.json"));
             std::fs::write(&out_path, format!("{export:#}\n"))
@@ -892,7 +892,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
         if args.text_layout_physical.is_some() {
             return Err("--text-layout requires a PDF, XPS or OFD document".into());
         }
-        let data = match ibis_formats::lawtext::input_to_markdown(&raw_data)
+        let data = match ibis_lawtext::input_to_markdown(&raw_data)
             .map_err(|e| format!("{}: {e}", path.display()))?
         {
             Some(md) => md.into_bytes(),
@@ -944,9 +944,9 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     ibis_odf::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 };
                 let (ext, content) = if format == "lawxml" {
-                    ("xml", ibis_formats::lawtext::export_presentation_to_law_xml(&presentation))
+                    ("xml", ibis_lawtext::export_presentation_to_law_xml(&presentation))
                 } else {
-                    ("lawtext", ibis_formats::lawtext::export_presentation_to_lawtext(&presentation))
+                    ("lawtext", ibis_lawtext::export_presentation_to_lawtext(&presentation))
                 };
                 let content = content.map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_path = out_dir.join(format!("{stem}.{ext}"));

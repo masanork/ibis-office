@@ -4,7 +4,7 @@
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use ibis_formats::lawtext::{
+    use ibis_lawtext::{
         diff_laws, generate_shinkyu_markdown, parse_law_input, to_markdown,
     };
     use serde_json::json;

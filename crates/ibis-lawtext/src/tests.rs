@@ -194,7 +194,7 @@ use super::syntax::parse_suppl_header;
         assert!(shinkyu_md.contains("行政指導~~及び~~届出"), "unexpected shinkyu_md:\n{shinkyu_md}");
         assert!(shinkyu_md.contains("（新設）"));
 
-        let docx = crate::markdown::open_markdown(shinkyu_md.as_bytes().to_vec())
+        let docx = ibis_formats::markdown::open_markdown(shinkyu_md.as_bytes().to_vec())
             .expect("open shinkyu markdown as docx");
         assert!(docx.presentation.flow.is_some());
     }
