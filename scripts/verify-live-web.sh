@@ -21,6 +21,9 @@ manifest=pkg/ibis_office_app_bg.manifest.json
 for origin in https://docs.sorane.dev https://ibis.sorane.dev; do
   verify_asset "$origin" manifest.webmanifest
   verify_asset "$origin" "$manifest"
+  if [[ -f www/loader-manifest.json ]]; then
+    verify_asset "$origin" loader-manifest.json
+  fi
 done
 
 chunks=$(jq -er '.chunks | if length > 0 then .[].file else error("No WASM chunks") end' "www/$manifest")
@@ -28,3 +31,10 @@ while IFS= read -r chunk; do
   [[ "$chunk" =~ ^ibis_office_app_bg\.[a-f0-9]{64}\.chunk$ ]]
   verify_asset https://docs.sorane.dev "pkg/$chunk"
 done <<< "$chunks"
+
+if [[ -f www/loader-manifest.json ]]; then
+  boot_fonts=$(jq -er '[.subsets.fonts[].blocks[] | select(.boot == true) | .file] | if length > 0 then .[] else error("No boot font subsets") end' www/loader-manifest.json)
+  while IFS= read -r font_file; do
+    verify_asset https://docs.sorane.dev "$font_file"
+  done <<< "$boot_fonts"
+fi

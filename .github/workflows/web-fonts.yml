@@ -148,10 +148,18 @@ jobs:
             ~/.cargo/bin/wasm2es6js
           key: wasm-bindgen-cli-${{ runner.os }}-0.2.128
       - run: wasm-bindgen --version | grep -qx 'wasm-bindgen 0.2.128' || cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - uses: actions/cache@v4
+        with:
+          path: data/fonts
+          key: web-font-sources-${{ hashFiles('docs/font-list.txt') }}
       - name: Build and record the WASM package and its BOMs
         env:
           IBIS_WEB_BOM_DIR: ci-wasm
-        run: scripts/build-web.sh --release
+          IBIS_WEB_FONT_SUBSETS: '1'
+        run: |
+          scripts/build-web.sh --release
+          test -s www/loader-manifest.json
+          jq -e '(.subsets.fonts | map(.id) | sort) == ["ACGJMincho", "BIZUDGothic", "BIZUDMincho"]' www/loader-manifest.json >/dev/null
       - uses: actions/upload-artifact@v4
         with:
           name: wasm-ci-bom

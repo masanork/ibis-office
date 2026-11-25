@@ -1437,6 +1437,7 @@ fn browser_fallbacks(style: &TextStyle) -> Option<FontFallbacks> {
 pub fn browser_fallback_names(style: &TextStyle) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     let mut east_asian = false;
+    let mut face_hint = None;
     for name in [style.font.as_deref(), style.fallback_font.as_deref()].into_iter().flatten() {
         let base = WEIGHT_SUFFIXES.iter().find_map(|(suffix, _)| name.strip_suffix(suffix)).map_or(name, str::trim_end);
         for n in [name, base] {
@@ -1450,13 +1451,21 @@ pub fn browser_fallback_names(style: &TextStyle) -> Vec<String> {
             }
         }
         east_asian |= is_east_asian_typeface(name);
+        if face_hint.is_none() {
+            face_hint = cjk_face_hint(name);
+        }
     }
     if east_asian {
         names.push(String::new());
-        // Close in widths to Office's Japanese typefaces.
-        for n in ["Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic", "YuGothic", "Meiryo", "Noto Sans JP"] {
+        // Close in widths to Office's Japanese typefaces, matching the requested mincho/gothic class.
+        let stand_ins: &[&str] = if face_hint == Some(CjkFace::Mincho) {
+            &["Hiragino Mincho ProN", "Yu Mincho", "YuMincho", "MS PMincho", "MS Mincho", "Noto Serif CJK JP", "Noto Serif JP", "IPAexMincho"]
+        } else {
+            &["Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic", "YuGothic", "Meiryo", "Noto Sans JP"]
+        };
+        for n in stand_ins {
             if !names.iter().any(|x| x == n) {
-                names.push(n.to_string());
+                names.push((*n).to_string());
             }
         }
     }
@@ -1514,8 +1523,8 @@ fn chain_fallbacks(family: &str, style: &TextStyle) -> Option<FontFallbacks> {
 /// Typefaces made for Japanese (or other East Asian) text.
 pub fn is_east_asian_typeface(name: &str) -> bool {
     const HINTS: &[&str] = &[
-        "M PLUS", "Noto Sans JP", "Noto Serif JP", "Noto Sans CJK", "Yu Gothic", "Yu Mincho",
-        "Meiryo", "Hiragino", "MS Gothic", "MS Mincho", "MS PGothic", "MS PMincho", "MS UI Gothic", "BIZ UD", "Kosugi",
+        "M PLUS", "Noto Sans JP", "Noto Serif JP", "Noto Sans CJK", "Noto Serif CJK", "Yu Gothic", "YuGothic", "Yu Mincho", "YuMincho",
+        "Meiryo", "Hiragino", "MS Gothic", "MS Mincho", "MS PGothic", "MS PMincho", "MS UI Gothic", "BIZ UD", "GJMincho", "Kosugi",
         "Sawarabi", "IPA", "Source Han",
     ];
     name.chars().any(|c| c as u32 >= 0x2e80) || HINTS.iter().any(|h| name.contains(h))
@@ -2412,6 +2421,14 @@ pub fn fonts_generation() -> u64 {
     FONTS_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
+fn is_late_font_installed(family: &str) -> bool {
+    LATE_FONTS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|late| late.contains(family))
+}
+
 /// Fonts downloaded while the app runs (セットアップ, the user's question of 2026-11-12: they were usable only after a restart): given to
 /// the text system now, and the font names, the font list and the documents' font matching take them at once. A collection is split
 /// as at start. In the browser `files` are what the page read from IndexedDB.
@@ -2583,7 +2600,15 @@ impl Fonts {
         // Roman, Arial, Cambria stand in for the ones it names) were never drawn in the browser's own, and its Japanese came
         // out in the browser's default (#126). The system UI font takes them, as it does for a presentation's.
         #[cfg(target_family = "wasm")]
-        let family = if family.starts_with('.') || self.installed.contains(family.as_ref()) || crate::subset_fonts::is_block_family(&family) { family } else { SharedString::from(".SystemUIFont") };
+        let family = if family.starts_with('.')
+            || self.installed.contains(family.as_ref())
+            || is_late_font_installed(family.as_ref())
+            || crate::subset_fonts::is_block_family(&family)
+        {
+            family
+        } else {
+            SharedString::from(".SystemUIFont")
+        };
         // A typeface named for its weight ("Poppins SemiBold", "Segoe UI Semilight")
         // is its own family to PowerPoint, whose bold member is usually the same face,
         // so bold only applies to plain typefaces (or faces lighter than Semibold that are a family of that name). (A Light or Semilight face, bold, is the same face embolden by PowerPoint's PDF
@@ -8071,6 +8096,28 @@ mod eavert_turn_tests {
         // Other kinds of writing are not touched.
         assert!(!set_as_vert(270, 0, VerticalKind::Mongolian));
         assert!(!set_as_vert(270, 0, VerticalKind::WordArt));
+    }
+
+    #[test]
+    fn browser_fallback_names_keeps_mincho_and_gothic_classes_separate() {
+        use super::{TextStyle, browser_fallback_names};
+        for mincho in ["游明朝", "ＭＳ 明朝", "BIZ UD明朝", "Add Character_GJMincho", "Noto Serif CJK JP"] {
+            let style = TextStyle { font: Some(mincho.to_string()), ..TextStyle::default() };
+            let names = browser_fallback_names(&style);
+            let sep = names.iter().position(|n| n.is_empty()).expect("East Asian separator");
+            let stand_ins = &names[sep + 1..];
+            assert!(stand_ins.iter().any(|n| n == "Hiragino Mincho ProN"), "{mincho}: {stand_ins:?}");
+            assert!(names.iter().any(|n| n == "Noto Serif CJK JP"), "{mincho}: {names:?}");
+            assert!(!stand_ins.iter().any(|n| n.contains("Gothic") || n == "Hiragino Sans" || n == "Meiryo"), "{mincho} should not fall back to gothic: {stand_ins:?}");
+        }
+        for gothic in ["游ゴシック", "ＭＳ ゴシック", "BIZ UDゴシック", "メイリオ"] {
+            let style = TextStyle { font: Some(gothic.to_string()), ..TextStyle::default() };
+            let names = browser_fallback_names(&style);
+            let sep = names.iter().position(|n| n.is_empty()).expect("East Asian separator");
+            let stand_ins = &names[sep + 1..];
+            assert!(stand_ins.iter().any(|n| n == "Hiragino Kaku Gothic ProN"), "{gothic}: {stand_ins:?}");
+            assert!(!stand_ins.iter().any(|n| n.contains("Mincho") || n.contains("Serif")), "{gothic} should not fall back to mincho: {stand_ins:?}");
+        }
     }
 }
 
