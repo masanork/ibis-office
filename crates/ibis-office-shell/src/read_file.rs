@@ -427,7 +427,7 @@ pub(crate) enum FixedLayoutFormat {
 impl FixedLayoutFormat {
     pub(crate) fn detect(extension: Option<&str>, data: &[u8]) -> Option<Self> {
         let extension = extension.map(str::to_ascii_lowercase);
-        if extension.as_deref() == Some("xdw") || ibis_xdw::is_xdw(data) {
+        if matches!(extension.as_deref(), Some("xdw" | "xbd")) || ibis_xdw::is_xdw(data) {
             return Some(Self::Xdw);
         }
         if data.starts_with(b"%PDF-") {
