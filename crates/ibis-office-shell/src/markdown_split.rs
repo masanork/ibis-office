@@ -1086,9 +1086,24 @@ pub fn preserve_workbook_frontmatter(prev_text: &str, exported: String) -> Strin
 }
 
 impl SlideEditor {
+    /// Current file path on native platforms (`None` on wasm where `SlideEditor::path` does not exist).
+    pub fn current_path(&self) -> Option<&std::path::Path> {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.path.as_deref()
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            None
+        }
+    }
+
     /// True when this editor's open file path or file name has a `.md` / `.markdown` extension.
     pub fn is_markdown_path(&self) -> bool {
-        let from_path = self.path.as_deref().and_then(|p| p.extension()).and_then(|e| e.to_str());
+        let from_path = self
+            .current_path()
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str());
         let from_name = self
             .file_name
             .as_deref()

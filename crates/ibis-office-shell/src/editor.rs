@@ -4674,12 +4674,11 @@ impl SlideEditor {
             // Windows and Linux: the start window's menus below the title row (macOS has them in the system's menu bar).
             let show_start_title = embedded.is_none_or(|p| p.show_title_row);
             let show_start_menu = embedded.is_none_or(|p| p.show_menu_bar) && crate::start_menu::shows_bar();
-            let show_start_left = embedded.is_none_or(|p| p.show_left_pane);
             let d = d
                 .when(show_start_title, |d| d.child(self.render_title_row(window, cx)))
                 .when(show_start_menu, |d| d.child(self.render_menu_bar(window, cx)));
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            if show_start_left
+            if embedded.is_none_or(|p| p.show_left_pane)
                 && let Some(pane) = self.render_folder_pane(cx).or_else(|| self.render_git_workspace(cx))
             {
                 return d.child(div().flex().flex_1().min_h_0().child(pane).child(
