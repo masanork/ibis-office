@@ -1279,7 +1279,7 @@ mod tests {
 
     #[test]
     fn missing_font_data_prevents_pdf_output() {
-        let mut writer = PdfWriter::new();
+        let mut writer = PdfWriter::new(Arc::new(TextSystem::new(Arc::new(gpui_kit::NoopTextSystem))));
         writer.add_page(
             vec![PaintRecord::Glyph {
                 origin: point(px(12.0), px(24.0)),
@@ -1294,7 +1294,6 @@ mod tests {
             100.0,
             (100.0, 100.0),
             1.0,
-            &mut |_| (None, (false, false), Vec::new()),
         );
         assert!(writer.finish().unwrap_err().contains("1 glyphs have unavailable font data"));
     }
