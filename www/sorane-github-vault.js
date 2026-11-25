@@ -486,6 +486,18 @@ if (!params.has('host')) {
 
   window.addEventListener('sorane:github-file-opened', (event) => {
     openedRepoFile = event.detail || null;
+    if (openedRepoFile && session.loggedIn && session.vault && typeof window.soraneRecordRecent === 'function') {
+      void window.soraneRecordRecent({
+        source: 'github',
+        name: openedRepoFile.name || (openedRepoFile.path || '').split('/').pop(),
+        github: {
+          owner: session.vault.owner,
+          repo: session.vault.repo,
+          ref: session.vault.branch || 'main',
+          path: openedRepoFile.path,
+        },
+      });
+    }
   });
 
   // Intercept save/download when a GitHub repository file is open so the user can commit directly back to GitHub.

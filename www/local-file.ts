@@ -181,16 +181,27 @@ function pickWithInput(accept: string, remember: boolean, doc: Document | undefi
   });
 }
 
-export async function queryWritePermission(handle: FileSystemFileHandle): Promise<boolean> {
+export async function queryHandlePermission(
+  handle: FileSystemFileHandle,
+  mode: 'read' | 'readwrite' = 'read',
+): Promise<boolean> {
   const withPerm = handle as FileSystemFileHandle & {
     queryPermission?: (descriptor: { mode: string }) => Promise<PermissionState>;
     requestPermission?: (descriptor: { mode: string }) => Promise<PermissionState>;
   };
   if (typeof withPerm.queryPermission !== 'function') return true;
-  const current = await withPerm.queryPermission({ mode: 'readwrite' });
+  const current = await withPerm.queryPermission({ mode });
   if (current === 'granted') return true;
   if (typeof withPerm.requestPermission !== 'function') return false;
-  return (await withPerm.requestPermission({ mode: 'readwrite' })) === 'granted';
+  return (await withPerm.requestPermission({ mode })) === 'granted';
+}
+
+export async function queryReadPermission(handle: FileSystemFileHandle): Promise<boolean> {
+  return queryHandlePermission(handle, 'read');
+}
+
+export async function queryWritePermission(handle: FileSystemFileHandle): Promise<boolean> {
+  return queryHandlePermission(handle, 'readwrite');
 }
 
 export async function writeHandle(handle: FileSystemFileHandle, bytes: Uint8Array): Promise<void> {

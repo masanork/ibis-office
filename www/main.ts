@@ -35,6 +35,16 @@ import {
   setCurrentHandle,
   type PickedLocalFile,
 } from './local-file.js';
+import {
+  clearOpened,
+  listStartViewRecents,
+  loadRecents,
+  recordOpened,
+  removeOpened,
+  resolveRecentOpen,
+  type RecentGithub,
+  type RecentOpenInput,
+} from './recent-files.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -86,6 +96,8 @@ declare global {
     ibisOfficeStartAction: (action: string) => void;
     /** Optional runtime updater for the Web start view configuration. */
     ibisOfficeSetStartView?: (config: Record<string, unknown>) => void;
+    /** Record a file in the local recent-files history (no contents). */
+    soraneRecordRecent?: (input: RecentOpenInput) => Promise<void>;
     ibisOfficeDecodeHeic: (bytes: Uint8Array) => Promise<Uint8Array>;
     /** Download a locally generated DOCX without sending the document to a server. */
     ibisOfficeDownloadDocx: (name: string, bytes: Uint8Array) => void;
@@ -565,6 +577,7 @@ async function initialFile(): Promise<PickedFile | null> {
   }
   const launched = await launchedFile;
   if (launched) {
+    await rememberLocalOpen(launched);
     return { name: launched.name, bytes: launched.bytes };
   }
   const url = new URLSearchParams(location.search).get('open');
@@ -876,6 +889,10 @@ window.ibisOfficeDecodeHeic = decodeHeic;
 window.ibisOfficePickFile = () => pickDocumentFile();
 window.ibisOfficeFetchUrl = fetchSameOriginUrl;
 window.ibisOfficeStartAction = (action: string) => {
+  if (action === 'clear-recents' || action.startsWith('open-recent:') || action.startsWith('remove-recent:')) {
+    void handleRecentAction(action);
+    return;
+  }
   window.dispatchEvent(new CustomEvent('sorane:start-action', { detail: { action } }));
 };
 window.ibisOfficePickIcc = pickIcc;
@@ -910,16 +927,100 @@ window.ibisOfficeSaveLocal = async (name, mime, bytes, saveAs) => {
 
 async function pickDocumentFile(): Promise<PickedFile | null> {
   const picked = await pickLocalFile({ remember: true });
-  return picked ? { name: picked.name, bytes: picked.bytes } : null;
+  if (!picked) return null;
+  await rememberLocalOpen(picked);
+  return { name: picked.name, bytes: picked.bytes };
 }
 
 function openLocalPicked(file: PickedLocalFile): void {
+  void rememberLocalOpen(file);
   try {
     open_local_file(file.name, file.bytes);
   } catch (error) {
     console.warn('ibisOffice: could not open the local file', error);
   }
 }
+
+let lastStartViewConfig: Record<string, unknown> | undefined;
+
+async function rememberLocalOpen(file: PickedLocalFile): Promise<void> {
+  await rememberRecent({ source: 'local', name: file.name, handle: file.handle });
+}
+
+async function rememberRecent(input: RecentOpenInput): Promise<void> {
+  try {
+    await recordOpened(input);
+    await refreshStartViewRecents();
+  } catch (error) {
+    console.warn('ibisOffice: could not record recent file', error);
+  }
+}
+
+async function refreshStartViewRecents(): Promise<void> {
+  if (!lastStartViewConfig || typeof window.ibisOfficeSetStartView !== 'function') return;
+  window.ibisOfficeSetStartView(lastStartViewConfig);
+}
+
+async function startViewRecentsPayload(): Promise<unknown[]> {
+  return listStartViewRecents(Date.now(), ja ? 'ja' : 'en');
+}
+
+async function handleRecentAction(action: string): Promise<void> {
+  try {
+    if (action === 'clear-recents') {
+      await clearOpened();
+      await refreshStartViewRecents();
+      return;
+    }
+    if (action.startsWith('remove-recent:')) {
+      await removeOpened(action.slice('remove-recent:'.length));
+      await refreshStartViewRecents();
+      return;
+    }
+    if (action.startsWith('open-recent:')) {
+      const id = action.slice('open-recent:'.length);
+      const entry = (await loadRecents()).find((row) => row.id === id);
+      const resolved = await resolveRecentOpen(entry);
+      if (resolved.mode === 'handle') {
+        await rememberLocalOpen(resolved.file);
+        open_local_file(resolved.file.name, resolved.file.bytes);
+        return;
+      }
+      if (resolved.mode === 'picker') {
+        if (resolved.file) {
+          await rememberLocalOpen(resolved.file);
+          open_local_file(resolved.file.name, resolved.file.bytes);
+        }
+        return;
+      }
+      if (resolved.mode === 'github') {
+        await openGithubRecent(resolved.github);
+      }
+    }
+  } catch (error) {
+    console.warn('ibisOffice: could not apply a recent-files action', error);
+  }
+}
+
+async function openGithubRecent(github: RecentGithub): Promise<void> {
+  let session: { loggedIn?: boolean; vault?: { owner: string; repo: string; branch?: string } } | null = null;
+  try {
+    const response = await fetch('/api/github/session', { credentials: 'same-origin' });
+    if (response.ok) session = await response.json();
+  } catch {
+    session = null;
+  }
+  const vault = session?.vault;
+  if (!session?.loggedIn || !vault || vault.owner !== github.owner || vault.repo !== github.repo) {
+    window.dispatchEvent(new CustomEvent('sorane:start-action', { detail: { action: 'github-vault' } }));
+    return;
+  }
+  const url = `/api/github/file?path=${encodeURIComponent(github.path)}`;
+  const file = await fetchSameOriginUrl(url);
+  open_local_file(file.name, file.bytes);
+}
+
+window.soraneRecordRecent = (input) => rememberRecent(input);
 
 function extensionOf(name: string): string {
   const at = name.lastIndexOf('.');
@@ -1029,11 +1130,20 @@ if (!('gpu' in navigator)) {
     } else {
       const applyStartView = (config?: Record<string, unknown>) => {
         if (!config) return;
-        try {
-          set_start_view_config(JSON.stringify(config));
-        } catch (error) {
-          console.warn('Invalid startView config', error);
-        }
+        lastStartViewConfig = config;
+        void (async () => {
+          try {
+            const recents = await startViewRecentsPayload();
+            set_start_view_config(JSON.stringify({ ...config, recents }));
+          } catch (error) {
+            console.warn('Invalid startView config', error);
+            try {
+              set_start_view_config(JSON.stringify(config));
+            } catch {
+              /* already reported */
+            }
+          }
+        })();
       };
       applyStartView(window.ibisOfficeOptions?.startView);
       window.ibisOfficeSetStartView = applyStartView;
