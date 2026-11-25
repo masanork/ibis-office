@@ -55,6 +55,7 @@ mod ishikawa;
 mod cynefin;
 mod zenuml;
 mod railroad;
+pub mod plantuml;
 mod text;
 #[cfg(test)]
 mod test_support;
@@ -96,6 +97,18 @@ use sankey::*;
 use text::*;
 
 pub use chart::render_chart_spec_svg;
+pub use plantuml::{PlantUmlConversion, PlantUmlUnsupported, convert_plantuml_sequence};
+
+/// Convert a PlantUML basic sequence diagram to Mermaid and render it with the existing
+/// Mermaid sequence renderer when conversion produced a sequence diagram.
+///
+/// Always returns the [`PlantUmlConversion`] (preserving `original` and line-numbered
+/// `unsupported` diagnostics) alongside the rendered [`MermaidOutput`] if available.
+pub fn render_plantuml_sequence(source: &str) -> (PlantUmlConversion, Option<MermaidOutput>) {
+    let conversion = convert_plantuml_sequence(source);
+    let rendered = conversion.mermaid.as_deref().and_then(render_mermaid);
+    (conversion, rendered)
+}
 
 /// Parsed native chart specification from Mermaid `pie` or `xychart-beta`.
 #[derive(Debug, Clone, PartialEq)]
