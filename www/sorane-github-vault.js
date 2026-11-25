@@ -142,6 +142,11 @@ if (!params.has('host')) {
     status.style.cssText = 'font-size:12px;color:#475569';
     dialog.append(status);
 
+    // Guided banner shown when the GitHub App is not yet installed or lacks repo creation approval.
+    const installBanner = document.createElement('div');
+    installBanner.style.cssText = 'display:none;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:12px 14px;flex-direction:column;gap:8px';
+    dialog.append(installBanner);
+
     // Primary section: Create a new private repository (default: soraneDocs)
     const createBox = document.createElement('form');
     createBox.style.cssText = 'background:#f5f8ff;border:1px solid #d5e2fa;border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:8px';
@@ -274,11 +279,12 @@ if (!params.has('host')) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        const needsInstall = data.diagnostics?.installation === null && (data.installUrl || session.installUrl);
         showStatus(
           data.error || `作成に失敗しました (HTTP ${res.status})`,
           true,
-          data.fallbackCreateUrl || null,
-          'GitHub で Private リポジトリを作成 ↗',
+          needsInstall ? (data.installUrl || session.installUrl) : (data.fallbackCreateUrl || null),
+          needsInstall ? 'GitHub App をインストール ↗' : 'GitHub で Private リポジトリを作成 ↗',
         );
         return;
       }
@@ -333,20 +339,103 @@ if (!params.has('host')) {
 
     searchInput.oninput = () => renderRepos(searchInput.value);
 
-    showStatus('リポジトリ一覧を読み込んでいます…');
-    try {
-      const res = await fetch('/api/github/repos', { credentials: 'same-origin' });
-      const data = await res.json();
-      if (res.ok && Array.isArray(data.repos)) {
-        allRepos = data.repos;
-        showStatus(`${allRepos.length} 件の既存リポジトリにアクセスできます。`);
-        renderRepos('');
-      } else {
-        showStatus(data.error || 'リポジトリ一覧の取得に失敗しました。', true);
+    let needsInstallRefresh = false;
+
+    function updateInstallBanner(installed, canCreateRepo, installHref) {
+      const href = installHref || session.installUrl;
+      if (installed === false && href) {
+        needsInstallRefresh = true;
+        installBanner.style.display = 'flex';
+        installBanner.innerHTML = '';
+        const heading = document.createElement('div');
+        heading.style.cssText = 'font-size:13px;font-weight:700;color:#92400e';
+        heading.textContent = 'ステップ 1: GitHub App（soraneDocs）をインストール';
+        const desc = document.createElement('div');
+        desc.style.cssText = 'font-size:12px;color:#78350f';
+        desc.textContent = 'リポジトリの自動作成やファイルの読み書きを行うには、ご自身の GitHub アカウントへのインストールが必要です。インストール後にこの画面へ戻ると自動で反映されます。';
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;align-items:center';
+        const installLink = document.createElement('a');
+        installLink.href = href;
+        installLink.target = '_blank';
+        installLink.rel = 'noopener noreferrer';
+        installLink.textContent = 'GitHub App をインストール ↗';
+        installLink.style.cssText = 'display:inline-block;padding:7px 14px;border-radius:8px;background:#1e50b5;color:#fff;font-weight:700;text-decoration:none;font-size:13px';
+        const reloadBtn = document.createElement('button');
+        reloadBtn.type = 'button';
+        reloadBtn.textContent = 'インストール後に再読み込み';
+        reloadBtn.style.cssText = 'padding:7px 12px;border:1px solid #d97706;border-radius:8px;background:#fff;color:#92400e;font-weight:600;cursor:pointer;font-size:12px';
+        reloadBtn.onclick = () => { void loadRepos(); };
+        actions.append(installLink, reloadBtn);
+        installBanner.append(heading, desc, actions);
+        return;
       }
-    } catch {
-      showStatus('リポジトリ一覧の取得中にネットワークエラーが発生しました。', true);
+      if (installed === true && canCreateRepo === false && href) {
+        needsInstallRefresh = true;
+        installBanner.style.display = 'flex';
+        installBanner.innerHTML = '';
+        const heading = document.createElement('div');
+        heading.style.cssText = 'font-size:13px;font-weight:700;color:#92400e';
+        heading.textContent = 'リポジトリ自動作成の権限承認が必要です';
+        const desc = document.createElement('div');
+        desc.style.cssText = 'font-size:12px;color:#78350f';
+        desc.textContent = '新しい Private リポジトリを自動作成するには、GitHub のアプリ設定画面で権限更新（Repository creation: Write）を承認してください。';
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;align-items:center';
+        const settingsLink = document.createElement('a');
+        settingsLink.href = 'https://github.com/settings/installations';
+        settingsLink.target = '_blank';
+        settingsLink.rel = 'noopener noreferrer';
+        settingsLink.textContent = 'GitHub で権限を確認 ↗';
+        settingsLink.style.cssText = 'display:inline-block;padding:7px 14px;border-radius:8px;background:#1e50b5;color:#fff;font-weight:700;text-decoration:none;font-size:13px';
+        const reloadBtn = document.createElement('button');
+        reloadBtn.type = 'button';
+        reloadBtn.textContent = '承認後に再読み込み';
+        reloadBtn.style.cssText = 'padding:7px 12px;border:1px solid #d97706;border-radius:8px;background:#fff;color:#92400e;font-weight:600;cursor:pointer;font-size:12px';
+        reloadBtn.onclick = () => { void loadRepos(); };
+        actions.append(settingsLink, reloadBtn);
+        installBanner.append(heading, desc, actions);
+        return;
+      }
+      needsInstallRefresh = false;
+      installBanner.style.display = 'none';
+      installBanner.innerHTML = '';
     }
+
+    async function loadRepos() {
+      showStatus('リポジトリ一覧を読み込んでいます…');
+      try {
+        const res = await fetch('/api/github/repos', { credentials: 'same-origin' });
+        const data = await res.json();
+        if (res.ok && Array.isArray(data.repos)) {
+          allRepos = data.repos;
+          updateInstallBanner(data.installed, data.canCreateRepo, data.installUrl);
+          if (data.installed === false) {
+            showStatus('GitHub App がまだインストールされていません。上のボタンからインストールしてください。');
+          } else {
+            showStatus(`${allRepos.length} 件の既存リポジトリにアクセスできます。`);
+          }
+          renderRepos(searchInput.value);
+        } else {
+          showStatus(data.error || 'リポジトリ一覧の取得に失敗しました。', true);
+        }
+      } catch {
+        showStatus('リポジトリ一覧の取得中にネットワークエラーが発生しました。', true);
+      }
+    }
+
+    const onWindowFocus = () => {
+      if (!document.body.contains(overlay)) {
+        window.removeEventListener('focus', onWindowFocus);
+        return;
+      }
+      if (needsInstallRefresh) {
+        void loadRepos();
+      }
+    };
+    window.addEventListener('focus', onWindowFocus);
+
+    await loadRepos();
   }
 
   window.addEventListener('sorane:start-action', (event) => {

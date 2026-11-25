@@ -306,10 +306,23 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     }>();
 
     // 1. Prefer GitHub App installation repositories (fine-grained user selection).
+    let installed = false;
+    let canCreateRepo = false;
     const instRes = await githubFetch('/user/installations?per_page=50', session.accessToken);
     if (instRes.ok) {
-      const instData = (await instRes.json()) as { installations?: Array<{ id: number }> };
+      const instData = (await instRes.json()) as {
+        installations?: Array<{
+          id: number;
+          permissions?: Record<string, string>;
+        }>;
+      };
       const installations = instData.installations ?? [];
+      installed = installations.length > 0;
+      canCreateRepo = installations.some(
+        (inst) =>
+          inst.permissions?.repository_creation === 'write' ||
+          inst.permissions?.administration === 'write',
+      );
       for (const inst of installations.slice(0, 10)) {
         const repoRes = await githubFetch(
           `/user/installations/${inst.id}/repositories?per_page=100`,
@@ -365,7 +378,7 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     }
 
     const repos = [...collected.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    return json({ repos, installUrl });
+    return json({ repos, installUrl, installed, canCreateRepo });
   }
 
   if (pathname === '/api/github/repos/create' && request.method === 'POST') {

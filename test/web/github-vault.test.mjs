@@ -188,3 +188,42 @@ test('POST /api/github/repos/create includes permission diagnostics on 403', asy
     globalThis.fetch = origFetch;
   }
 });
+
+test('GET /api/github/repos reports installed and canCreateRepo flags', async () => {
+  const sealed = await sealSession(
+    { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes('/user/installations')) {
+      return new Response(JSON.stringify({ installations: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/user/repos')) {
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/github/repos', {
+        headers: { Cookie: `sorane_gh_session=${sealed}` },
+      }),
+      TEST_ENV,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.installed, false);
+    assert.equal(body.canCreateRepo, false);
+    assert.equal(body.installUrl, 'https://github.com/apps/soranedocs-vault/installations/new');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
