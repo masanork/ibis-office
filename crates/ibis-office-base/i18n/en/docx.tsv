@@ -261,6 +261,11 @@ docx.view.markdown-source	Markdown Source
 docx.markdown-source.modified	Modified (syncs on return or save)
 docx.markdown-source.synced	Synced
 docx.markdown-source.back-to-preview	Back to Preview
+docx.markdown-source.mode-source	Source
+docx.markdown-source.mode-split	Split
+docx.markdown-source.mode-visual	Preview
+docx.markdown-source.syncing	Syncing…
+docx.status.markdown-split	Markdown Split
 docx.view.focus	Focus
 docx.ruler	Ruler
 docx.vertical-ruler	Vertical Ruler

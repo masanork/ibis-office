@@ -42,6 +42,7 @@ pub(crate) mod link_panel;
 pub(crate) mod picture_crop;
 pub(crate) mod view_mode;
 pub(crate) mod markdown_source;
+pub use markdown_source::MarkdownViewMode;
 pub(crate) mod replace_fonts;
 pub(crate) mod view_state;
 pub(crate) mod prefs;
@@ -609,7 +610,7 @@ fn source_export_note(
 impl FormatEditor for Document {
     fn ai_editable_source(editor: &SlideEditor, kind: crate::shell::ai_tools::EditableSourceKind) -> Result<crate::shell::ai_tools::EditableSource, String> {
         use crate::shell::ai_tools::{EditableSource, EditableSourceKind};
-        if editor.is_markdown_source_mode() {
+        if editor.is_markdown_source_only() || editor.is_markdown_source_dirty() {
             return Err("return to the rendered document before editing source with the assistant".into());
         }
         match kind {
@@ -1282,8 +1283,9 @@ impl FormatEditor for Document {
     }
 
     /// The page in view is the current one (for the status bar).
-    fn before_render(editor: &mut SlideEditor, _: &mut Window, _: &mut Context<SlideEditor>) {
+    fn before_render(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
         editor.relayout_if_changed();
+        editor.poll_markdown_bidirectional_sync(window, cx);
         let index = editor.visible_page();
         if let Some(slide) = editor.presentation().slides.get(index) {
             editor.current_slide = slide.id;
@@ -1307,12 +1309,17 @@ impl FormatEditor for Document {
         if editor.is_repaired {
             pages = pages.child(editor.render_docx_repair_banner(cx));
         }
-        if editor.is_markdown_source_mode() {
+        if editor.is_markdown_source_only() {
             return pages.child(editor.render_markdown_source_view(cx)).into_any_element();
         }
-        let show_v_ruler = !is_focus && editor.doc_prefs().vertical_ruler_open;
+        let is_markdown_split = editor.is_markdown_split_mode();
+        if !is_focus && (is_markdown_split || editor.is_markdown_file()) {
+            pages = pages.child(editor.render_markdown_mode_bar(cx));
+        }
+        let show_v_ruler = !is_focus && !is_markdown_split && editor.doc_prefs().vertical_ruler_open;
         let theme = cx.theme().clone();
-        if !is_focus && editor.doc_prefs().ruler_open {
+        let mut visual_body = div().flex().flex_col().flex_1().min_w_0().min_h_0();
+        if !is_focus && !is_markdown_split && editor.doc_prefs().ruler_open {
             if show_v_ruler {
                 let corner = SlideEditor::render_ruler_corner(theme.border, editor.ruler_unit)
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.cycle_ruler_unit(cx)));
@@ -1324,9 +1331,9 @@ impl FormatEditor for Document {
                     .w_full()
                     .child(corner)
                     .child(div().flex_1().min_w_0().child(h_ruler));
-                pages = pages.child(ruler_row);
+                visual_body = visual_body.child(ruler_row);
             } else {
-                pages = pages.child(editor.render_ruler(theme.border, theme.font_family.clone()));
+                visual_body = visual_body.child(editor.render_ruler(theme.border, theme.font_family.clone()));
             }
         }
         let mut content_row = div().flex().flex_1().min_w_0().min_h_0().relative();
@@ -1346,7 +1353,7 @@ impl FormatEditor for Document {
             (None, None, None)
         };
         if let Some(bg) = imm_bg {
-            pages = pages.bg(bg);
+            visual_body = visual_body.bg(bg);
         }
 
         let doc_ws = editor.render_document_workspace(cx);
@@ -1359,7 +1366,12 @@ impl FormatEditor for Document {
             content_row = content_row.child(overlay);
         }
 
-        let pages = pages.child(content_row);
+        let visual_body = visual_body.child(content_row);
+        let pages = if is_markdown_split {
+            pages.child(editor.render_markdown_split_view(visual_body.into_any_element(), cx))
+        } else {
+            pages.child(visual_body)
+        };
         // Word's Navigation Pane (ナビゲーション ウィンドウ):
         // left of the pages: Headings (見出し), Pages (ページ), Results (検索結果).
         let outline = (!is_focus && editor.outline_open).then(|| {
@@ -1835,16 +1847,20 @@ impl FormatEditor for Document {
             }
             ibis_doc_model::DocumentInteractionMode::Editing => {}
         }
-        if editor.is_markdown_source_mode() {
-            items.push(crate::shell::i18n::text("docx.status.markdown-source"));
-        } else {
-            match editor.document_view_mode() {
+        match editor.markdown_view_mode() {
+            MarkdownViewMode::Source => {
+                items.push(crate::shell::i18n::text("docx.status.markdown-source"));
+            }
+            MarkdownViewMode::Split => {
+                items.push(crate::shell::i18n::text("docx.status.markdown-split"));
+            }
+            MarkdownViewMode::Visual => match editor.document_view_mode() {
                 ibis_doc_model::DocumentViewMode::Reading => items.push(crate::shell::i18n::text("docx.status.read-mode")),
                 ibis_doc_model::DocumentViewMode::Web => items.push(crate::shell::i18n::text("docx.status.web-layout")),
                 ibis_doc_model::DocumentViewMode::Outline => items.push(crate::shell::i18n::text("docx.status.outline")),
                 ibis_doc_model::DocumentViewMode::Draft => items.push(crate::shell::i18n::text("docx.status.draft")),
                 ibis_doc_model::DocumentViewMode::Print => {}
-            }
+            },
         }
         items
     }
