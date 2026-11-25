@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
+/// <reference path="./brand.ts" />
 // Runs before main.js: the page's language, for the words shown while the editor loads. It is a file of its own, not an inline
 // script, so that the page runs under a Content-Security-Policy of `script-src 'self'`.
 (() => {
@@ -18,7 +19,7 @@
     document.documentElement.lang = 'ja';
     const text = document.getElementById('status-text');
     if (text) {
-      text.textContent = 'Docs を読み込んでいます…';
+      text.textContent = `${WebBrand.Name} を読み込んでいます…`;
     }
   }
   if ('serviceWorker' in navigator) {
