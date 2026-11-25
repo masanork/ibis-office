@@ -124,7 +124,7 @@
       links: [
         { label: '保存したファイル', url: '/files' },
         { label: 'リポジトリ', url: '/repos' },
-        { label: 'フォントとライセンス', url: './font-notices.html' },
+        { label: 'ライセンス', url: './license.md' },
         { label: 'GitHub', url: 'https://github.com/masanork/ibis-office' },
       ],
       note: '形式や機能によっては元のアプリと表示・編集が異なる場合があります。大切な文書は原本を残してお使いください。',

@@ -3,7 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
 import init, {
-  configure_fonts, enable_dynamic_fonts, enable_face_fonts, add_dynamic_font, add_face_font, set_phone_viewer, set_phone_editor,
+  set_phone_viewer, set_phone_editor,
   run,
   set_embed_options,
   set_font_prompt,
@@ -22,10 +22,7 @@ import { loadChunkedWasm, readManifest, type ChunkedEnv, type Manifest } from '.
 import { SubsetLoader, subsetsOf, type BlockStore } from './subset-fetch.js';
 import type { IbisOfficeEvent } from './ibisoffice-host.js';
 
-import { loadWebFonts } from './font-loader.js';
 import { loadWasm } from './wasm-loader.js';
-import { DynamicFonts, FaceSubsetProvider } from './dynamic-fonts.js';
-import { fontCoverage } from './font-coverage.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -76,8 +73,6 @@ declare global {
     /** Optional runtime updater for the Web start view configuration. */
     ibisOfficeSetStartView?: (config: Record<string, unknown>) => void;
     ibisOfficeDecodeHeic: (bytes: Uint8Array) => Promise<Uint8Array>;
-    /** Awaited by Rust after parsing the complete model, before layout. */
-    ibisOfficePreloadFonts: (text: string) => Promise<void>;
     /** Download a locally generated DOCX without sending the document to a server. */
     ibisOfficeDownloadDocx: (name: string, bytes: Uint8Array) => void;
     /** Download an exported HTML document without sending it to a server. */
@@ -915,7 +910,6 @@ if (!('gpu' in navigator)) {
 } else {
   try {
     // The wasm is downloaded while the host connects (it does not wait for the host).
-    const fontsReady = hostLoader ? Promise.resolve(null) : loadWebFonts(new URL('./fonts.json', import.meta.url));
     const wasmReady = init({ module_or_path: fetchWasm() });
     let file: PickedFile | null = null;
     let embed = embedOptions();
@@ -928,42 +922,6 @@ if (!('gpu' in navigator)) {
       embed = hostEmbedOptions(hostSession);
     } else {
       [, file] = await Promise.all([wasmReady, initialFile()]);
-    }
-    const fonts = hostSession ? null : await fontsReady;
-    if (fonts) configure_fonts(fonts.data, fonts.aliases, fonts.defaultFamily, fonts.browserFallback, fonts.uiFamily);
-    if (fonts?.dynamic) {
-      if (fonts.dynamic.strategy === 'faces') enable_face_fonts();
-      const provider = fonts.dynamic.strategy === 'faces'
-        ? new FaceSubsetProvider(fonts.dynamic.endpoint, add_face_font)
-        : new DynamicFonts(fonts.dynamic, add_dynamic_font);
-      for (let i = 0; i < fonts.data.length; i++) {
-        const covers = fontCoverage(fonts.data[i]);
-        if (provider instanceof FaceSubsetProvider) {
-          const family = fonts.families[i];
-          const gothic = fonts.aliases['Noto Sans CJK JP'] ?? fonts.uiFamily;
-          if (family === fonts.defaultFamily) provider.seed('ipamjm', covers);
-          if (family === gothic) provider.seed('NotoSansCJKJP', covers);
-          if (family !== fonts.defaultFamily && family !== gothic) {
-            provider.seed('ipamjm', covers); provider.seed('NotoSansCJKJP', covers);
-          }
-        } else provider.seed(covers);
-      }
-      Object.assign(window, {
-        ibisOfficeMissingGlyphs: (glyphs: string[]) => provider.request(glyphs),
-        ibisOfficePreloadFonts: async (text: string) => {
-          showStatus(ja ? '文書のフォントを読み込んでいます…' : 'Loading document fonts…');
-          const missing = await provider.preload(text);
-          if (missing?.length) {
-            const codes = [...new Set(missing.flatMap(glyph => [...glyph].map(char => char.codePointAt(0)!)
-              .filter(code => code >= 0x100000 && code <= 0x10fffd)
-              .map(code => 'U+' + code.toString(16).toUpperCase())))];
-            const shown = codes.slice(0, 8).join(', ') + (codes.length > 8 ? '…' : '');
-            window.alert(ja ? `追加文字行政事務標準明朝に字形がない私用面の文字があります（${shown}）。`
-              : `The administrative font has no glyph for these private-use characters (${shown}).`);
-          }
-        },
-      });
-      enable_dynamic_fonts();
     }
     // Icons load from <base>/assets/icons/*.svg, next to this page (the site
     // may live under a path, as on GitHub Pages). The base must be absolute:

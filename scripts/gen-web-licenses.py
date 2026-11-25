@@ -37,12 +37,12 @@ BUILDS = {
 }
 # What each build ships besides the app: the AppImage's runtime is in the Linux one.
 EXTRA_PACKAGES = {
-    "web": ["ibis-font-subsetter", "ibis-heic-web"],
+    "web": ["ibis-heic-web"],
     "macos": ["ibis-office-updater"],
     "windows": ["ibis-office-updater"],
     "linux": ["ibis-appimage", "ibis-office-updater"],
 }
-OWN = {"ibis-heic-web", "ibis-font-subsetter", "ibis-office-app", "ibis-office-shell", "ibis-office-pptx", "ibis-office-docx", "ibis-office-xlsx", "ibis-office-render", "ibis-office-base", "ibis-office-macros", "ibis-doc-model", "ibis-formats", "ibis-emf", "ibis-eot", "ibis-imgdiff", "ibis-appimage"}
+OWN = {"ibis-heic-web", "ibis-office-app", "ibis-office-shell", "ibis-office-pptx", "ibis-office-docx", "ibis-office-xlsx", "ibis-office-render", "ibis-office-base", "ibis-office-macros", "ibis-doc-model", "ibis-formats", "ibis-emf", "ibis-eot", "ibis-imgdiff", "ibis-appimage"}
 
 
 def run(*args):
@@ -266,7 +266,6 @@ def write(build):
     where = {"web": " Web 版（`www/`）", "macos": " macOS 版（`ibisOffice.app`）", "linux": " Linux 版（AppImage）", "windows": " Windows 版", "android": " Android 版", "ios": " iOS 版"}[build]
     md = [f"# サードパーティのライセンス（{label}）",
           "",
-          *(["ibis.sorane.dev の追加フォントは [フォントのライセンス](./font-notices.html) を参照してください。", ""] if build == "web" else []),
           f"ibisOffice の{where}に含まれる、ibisOffice 以外の部品と、そのライセンスが求める表示です。"
           "このファイルは `scripts/gen-web-licenses.py` で生成しています。",
           "",

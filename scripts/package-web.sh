@@ -33,8 +33,8 @@ WANT=$(awk -F'\t' '$1 == "wasm" { sub(/\r$/, "", $2); print $2 }' version.txt)
 WEB_FILES=(
   editor.html main.js boot.js host-loader.js chunked-fetch.js subset-fetch.js
   build-info.js ibisoffice-host.js ibisoffice-host.d.ts license.md
-  font-loader.js wasm-loader.js dynamic-fonts.js font-coverage.js heic-worker.js
-  sorane-files-save.js sorane-ai.js favicon.svg font-notices.html
+  wasm-loader.js heic-worker.js
+  sorane-files-save.js sorane-ai.js favicon.svg
 )
 for f in "${WEB_FILES[@]}" pkg/ibis_office_app.js pkg/ibis_office_app_bg.manifest.json \
          assets/icons assets/artborders/ECMA-NOTICE.txt; do
@@ -52,7 +52,7 @@ import hashlib, os, sys, zipfile
 out, name, *web_files = sys.argv[1:]
 # The archive's index directly opens the embeddable editor.
 files = [os.path.join("www", f) for f in web_files]
-for top in ("pkg", "assets", "licenses"):
+for top in ("pkg", "assets"):
     for root, _dirs, names in os.walk(os.path.join("www", top)):
         for n in names:
             if n == ".DS_Store" or (top == "pkg" and n.endswith(".d.ts")):
