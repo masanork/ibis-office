@@ -1,249 +1,96 @@
-<p align="center"><b>English</b> | <a href="docs/README-ja.md">日本語</a> | <a href="docs/README-zh-CN.md">简体中文</a></p>
+<p align="center"><b>English</b> | <a href="docs/README-ja.md">日本語</a></p>
 
 <p align="center">
-  <img src="asset/ibisOffice_svg_logo_for_light.svg" alt="ibisOffice" width="480">
+  <img src="crates/ibis-office-app/branding/sorane-docs.svg" alt="soraneDocs" width="84">
+</p>
+
+<h1 align="center">soraneDocs</h1>
+
+<p align="center">
+  <b>An experimental, feature-extended fork of <a href="https://github.com/ibisjp/ibis-office">ibisOffice</a> built with Rust and GPUI.</b><br>
+  Office documents, Markdown knowledge workspaces, diagrams, and civic/enterprise format extensions across Desktop, Web (Wasm/WebGPU), and Mobile.
 </p>
 
 <p align="center">
-  <b>The next-generation office suite, built with Rust and the GPU, that opens your documents exactly as Microsoft Office shows them.</b><br>
-  Word (.docx), Excel (.xlsx) and PowerPoint (.pptx) — fast, accurate, everywhere.
+  <a href="https://docs.sorane.dev">Try the Web App (docs.sorane.dev)</a> ·
+  <a href="docs/fork-feature-differences.md">Feature Differences</a> ·
+  <a href="docs/fork-workflow.md">Fork Workflow</a>
 </p>
 
 ---
 
-<p align="center">
-  <img src="asset/screenshots.png" alt="Word, Excel and PowerPoint documents open in ibisOffice" width="100%">
-</p>
+<!-- TODO: Add soraneDocs screenshots here -->
 
-## What is ibisOffice?
+## What is soraneDocs?
 
-ibisOffice is an office suite for viewing, editing and saving Word, Excel and PowerPoint documents. It is written entirely in Rust and draws everything on the GPU. The same single codebase runs as a desktop app on macOS, Windows and Linux and in the web browser.
+**soraneDocs** is an active fork of [ibisOffice](https://github.com/ibisjp/ibis-office) maintained in `sorane-dev/docs`. While inheriting upstream's Rust + GPUI engine, pixel-accurate OOXML (`.docx`, `.xlsx`, `.pptx`) rendering, and MCP support, this fork serves two purposes:
 
-Our aim is simple: a document made in Microsoft Office should look the same when you open it in ibisOffice. Line breaks, page breaks, table borders, even chart tick marks — we build every part to produce the same result as Office.
+1. **Prototyping & Upstream Contributions**: Developing bug fixes, Japanese typography improvements, and format extensions as verifiable proof-of-concept commits and proposing them to `ibisjp/ibis-office` via Issues.
+2. **Extended Document & Knowledge Workspace**: Integrating Markdown-first knowledge workflows, diagramming, Japanese civic/legal/medical formats, and PWA/GitHub Vault capabilities for personal and organizational use.
 
-## Get started
+For core ibisOffice features, benchmarks, and commercial licensing, please refer to the [upstream repository](https://github.com/ibisjp/ibis-office).
 
-### Download the desktop app
+## Contributions to ibisOffice
 
-<table>
-  <tr>
-    <td align="center">
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Windows.zip">
-        <img src="asset/download-windows.svg" alt="Download for Windows" height="54">
-      </a><br>
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Windows.zip"><code>ibisOffice-0.8.9-Windows.zip</code></a><br>
-      <small>Windows 10 / 11 (64-bit)</small>
-    </td>
-    <td align="center">
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-macOS.zip">
-        <img src="asset/download-mac.svg" alt="Download for Mac" height="54">
-      </a><br>
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-macOS.zip"><code>ibisOffice-0.8.9-macOS.zip</code></a><br>
-      <small>macOS 11 or later (Apple silicon)</small>
-    </td>
-    <td align="center">
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Linux.AppImage">
-        <img src="asset/download-linux.svg" alt="Download for Linux" height="54">
-      </a><br>
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Linux.AppImage"><code>ibisOffice-0.8.9-Linux.AppImage</code></a><br>
-      <small>Linux x86_64</small>
-    </td>
-  </tr>
-</table>
+Because upstream `ibisjp/ibis-office` restricts pull requests to repository collaborators, contributions from this fork are proposed through GitHub Issues backed by working PoC commits. The following proposals and fixes have been adopted into upstream:
 
-- **Windows**: download and unzip `ibisOffice-0.8.9-Windows.zip`, then run `ibisOffice.exe` in the `ibisOffice` folder.
-- **macOS**: download and unzip `ibisOffice-0.8.9-macOS.zip`, then move `ibisOffice.app` to your Applications folder.
-- **Linux**: download `ibisOffice-0.8.9-Linux.AppImage`, allow it to run as a program (`chmod +x`), and double-click. Runs on major desktop Linux distributions (glibc 2.31 or later: Ubuntu, Debian, Fedora, Arch Linux, etc.). No installation or FUSE is needed.
-- **Try the web version**: open the [playground](https://ibisjp.github.io/ibis-office/) in your browser — no installation (a browser with WebGPU). Open the sample Word, Excel and PowerPoint documents and try it right away.
-- **Changelog**: see [CHANGELOG.md](CHANGELOG.md) for release notes and recent updates.
-- **Watch the video**: an introduction to ibisOffice (YouTube).
+- **Japanese Typography & Font Rendering**
+  - IVS (Ideographic Variation Sequences) and Japanese Government Standard Characters support, plus macOS supplementary glyph fix ([#158](https://github.com/ibisjp/ibis-office/issues/158), [#251](https://github.com/ibisjp/ibis-office/issues/251))
+  - Fix MS Mincho font substitution on non-Windows platforms ([#248](https://github.com/ibisjp/ibis-office/issues/248))
+  - Japanese symbol/kana advance width and GPOS positioning improvements for fallback fonts and Web ([#230](https://github.com/ibisjp/ibis-office/issues/230))
+  - Vertical-text emphasis mark placement, vertical table cell direction/merging, and justified bullet list layout fixes in DOCX ([#160](https://github.com/ibisjp/ibis-office/issues/160), [#222](https://github.com/ibisjp/ibis-office/issues/222), [#193](https://github.com/ibisjp/ibis-office/issues/193))
+- **Document Formats, Compatibility & Civic Tech**
+  - Pure-Rust PDF, XPS/OpenXPS, and OFD viewing and signature inspection ([#235](https://github.com/ibisjp/ibis-office/issues/235))
+  - Native Markdown round-trip conversion, clipboard/CLI support, and pure-Rust Mermaid rendering ([#226](https://github.com/ibisjp/ibis-office/issues/226))
+  - Office 2007 Standard encryption decryption for DOCX/XLSX/PPTX ([#190](https://github.com/ibisjp/ibis-office/issues/190))
+  - Preservation of DOCX paragraph IDs (`w14:paraId`) on edit/save ([#221](https://github.com/ibisjp/ibis-office/issues/221))
+  - Spreadsheet machine-readability checker (Digital Agency guidelines) ([#194](https://github.com/ibisjp/ibis-office/issues/194))
+- **Web, Mobile & Linux Desktop**
+  - Chunked Wasm delivery for CDN file-size limits ([#152](https://github.com/ibisjp/ibis-office/issues/152)) and on-demand web font glyph fetching ([#157](https://github.com/ibisjp/ibis-office/issues/157))
+  - Web two-finger pinch-to-zoom and touch timestamp panic fix ([#212](https://github.com/ibisjp/ibis-office/issues/212), [#207](https://github.com/ibisjp/ibis-office/issues/207))
+  - Android file-picker return crash fix ([#256](https://github.com/ibisjp/ibis-office/issues/256)) and Ubuntu AppImage dock icon fix ([#147](https://github.com/ibisjp/ibis-office/issues/147))
 
-  [![ibisOffice introduction video](asset/video-en.jpg)](https://www.youtube.com/watch?v=nk2BRzMC2vw)
+## Current Differences from Upstream
 
-- **Command-line interface**: for batch headless conversion to PDF/PNG, print settings, and performance benchmarking, see [Command-Line Options](docs/cli-options.md).
-- **Japanese legislative drafting**: generate five draft documents from e-Gov XML or Lawtext using the [five-document workflow](docs/lawtext-five-set-ja.md) (Japanese).
-- **Markdown, Mermaid, and Lawtext**: see the [Reference Manual and demo](docs/markdown-reference-ja.md) (Japanese).
-- **Embedding the browser version**: put it on your own web server and open documents from your system, with optional Close and Download buttons that hand your page an event; see [Embedding the browser version](docs/web-embedding.md).
+Detailed tracking of upstream sync status and feature parity is maintained in [docs/fork-feature-differences.md](docs/fork-feature-differences.md). Key additions currently in `soraneDocs`:
 
-## Goals
+- **Knowledge Workspace (`SoraneWorkspace`) & Markdown / PlantUML**
+  - Obsidian-style desktop shell (`crates/sorane-workspace`) with split panes, tab pinning, session persistence, command palette, daily notes, Wiki links, Tag Browser, Outgoing Links, Local Graph, Outline, Office Inspector, and Git dock ([#283](https://github.com/ibisjp/ibis-office/issues/283)).
+  - Block-level Markdown `SourceMap` with surgical WYSIWYG writeback and bidirectional cursor/scroll sync ([#286](https://github.com/ibisjp/ibis-office/issues/286)).
+  - Offline pure-Rust PlantUML SVG rendering sharing Mermaid's diagram IR and assets across UML and non-UML diagrams ([#298](https://github.com/ibisjp/ibis-office/issues/298)).
+- **Additional Document, Diagram & Data Formats**
+  - **Visio (`.vsdx`)**: Viewing, creation, editing, stencil palette, flowchart shapes, and Wasm support ([#292](https://github.com/ibisjp/ibis-office/issues/292)).
+  - **Ichitaro (`.jtd`, `.jtt`, `.jttc`)**: Read-only preview with vertical text, ruby, borders, images, and DOCX/HTML export ([docs/jtd-preview.md](docs/jtd-preview.md)).
+  - **DocuWorks (`.xdw`, `.xbd`) & Hancom (`.hwp`, `.hwpx`)**: Viewing and editable DOCX import ([#254](https://github.com/ibisjp/ibis-office/issues/254), [#288](https://github.com/ibisjp/ibis-office/issues/288)).
+  - **EPUB 3 & Production Images**: Native EPUB 3 import, plus HEIC, DPX, Cineon, OpenEXR, and JPEG 2000 preview ([docs/production-image-preview-ja.md](docs/production-image-preview-ja.md)).
+  - **External Data Sources**: Spreadsheet ingestion for Parquet, JSON Lines, Arrow IPC, Avro, and SQLite, plus encoding-aware CSV save ([#263](https://github.com/ibisjp/ibis-office/issues/263)).
+- **Japanese Civic, Legal, Medical & Trust Extensions**
+  - **Roster & Name Matching**: `FIELDMATCH` functions, variant character dictionaries, date review, and administrative PUP/Gaiji normalization ([#257](https://github.com/ibisjp/ibis-office/issues/257)).
+  - **Legal & Medical**: e-Gov XML / Lawtext bidirectional conversion and comparison tables ([#229](https://github.com/ibisjp/ibis-office/issues/229)); pure-Rust medical document (UKE/DPC, FHIR/CDA/HL7 v2) and non-diagnostic DICOM interoperability ([#246](https://github.com/ibisjp/ibis-office/issues/246)).
+  - **Signatures, Credentials & Supply Chain**: Document signature inspection, image C2PA verification, SD-JWT / mDOC / OID4VP spreadsheet tooling, and CycloneDX SBOM/CBOM + OSV-Scanner review ([#232](https://github.com/ibisjp/ibis-office/issues/232), [#279](https://github.com/ibisjp/ibis-office/issues/279), [#280](https://github.com/ibisjp/ibis-office/issues/280)).
+- **Web, PWA, Mobile & AI Assistant**
+  - **Web (`docs.sorane.dev`)**: Installable PWA with offline local-file support, GitHub App repository (Vault) login/creation/editing, HTML export ([#208](https://github.com/ibisjp/ibis-office/issues/208)), and static Japanese font subset chunks.
+  - **Mobile & Performance**: Android/iOS native GPUI builds ([#247](https://github.com/ibisjp/ibis-office/issues/247)) and hot-path rendering/geometry caching optimizations ([#299](https://github.com/ibisjp/ibis-office/issues/299), [#300](https://github.com/ibisjp/ibis-office/issues/300)).
+  - **AI Assistant**: Cross-format editing sidebar via OpenAI-compatible APIs (Desktop) and Cloudflare Workers AI (Web) ([#231](https://github.com/ibisjp/ibis-office/issues/231)).
+- **Branding, Provenance & Packaging**
+  - Distinct `soraneDocs` branding and app identifiers so builds can coexist with upstream `ibisOffice`.
+  - Upstream update checks and Windows automatic "Open With" registration are disabled to avoid conflicts.
+  - CI generates CycloneDX 1.6 SBOM/CBOM artifacts and GitHub Artifact Attestations for Linux AppImage builds ([#285](https://github.com/ibisjp/ibis-office/issues/285)).
 
-ibisOffice aims to be a world-class open-source office suite.
-
-- **Speed and robustness**: memory-safe Rust code that opens large documents quickly and does not crash.
-- **Looks the same as Microsoft Office**: text positions, line breaks, page breaks, tables, charts and shapes drawn just as Office draws them.
-- **Files that stay Microsoft Office files**: open and save, then reopen in Office — nothing in the content or the layout is lost.
-- **Any OS**: the desktop app works and looks the same on macOS, Windows and Linux.
-- **Native speed in the browser**: with WebAssembly and WebGPU, no installation needed.
-- **Real-time collaboration**: with the server edition, several people edit the same document at the same time.
-
-## Features
-
-### Three formats, one app
-
-- **Documents (.docx)**: paragraphs and styles, bullets and numbering, tables, columns, vertical text, ruby and East Asian typography, footnotes and endnotes, headers and footers, fields (page numbers, tables of contents, indices, cross-references), equations (OMML, LaTeX, UnicodeMath), shapes, images, charts, SmartArt, ink annotations, track changes and comments, mail merge, content controls, document protection, and format conversion (.doc, .rtf, .odt, .html, .txt, .pdf).
-- **Spreadsheets (.xlsx)**: over 500 worksheet functions, dynamic arrays and spilling, `LET` and `LAMBDA`, structured and 3D references, conditional formatting (data bars, color scales, icon sets), number formats (including Japanese era and custom formats), rich text and phonetic guides (furigana) within cells, AutoFilter, multi-column sorting, tables, PivotTables and PivotCharts, slicers and timelines, 2D/3D and Office 2016+ charts (Waterfall, Treemap, Sunburst, Histogram, Pareto, Box & Whisker, Funnel), sparklines, form controls, ink annotations, data validation, Flash Fill, consolidation, subtotals, What-If Analysis (Goal Seek, Data Tables, Scenario Manager, Forecast Sheet, Solver), Power Query data tables, threaded comments and notes, sheet and workbook protection, and format conversion (.xls, .ods, .csv, .tsv, .txt, .html, .dif, .slk, .pdf).
-- **Presentations (.pptx)**: slide masters, layouts, themes and variants, custom slide sizes, sections, headers and footers, speaker notes and handouts; shapes (all 187 ECMA-376 preset geometries, boolean merge operations, vertex editing, 3D rotation, bevel and extrusion), WordArt and text effects, equations, tables, charts, SmartArt, pictures (crop to shape, artistic effects, background removal), 3D models, video and audio (trim, fade, bookmarks, closed captions), ink annotations, action buttons and zoom links; animations (entrance, emphasis, exit, motion paths, triggers, chart/SmartArt build steps), slide transitions (including Morph and sound effects), slide shows and Presenter View (dual-display, teleprompter, laser and pen annotations), custom shows, rehearsal and recording preview, comments, presentation comparison, accessibility checker, password encryption, and format conversion/export (.ppt, .odp, .ppsx, .potx, .pdf, .png, animated .gif).
-- **Macro-enabled files** (.docm, .xlsm, .pptm) open and save too. Macros are never run; they are kept as they are.
-
-### Compatibility, measured — not eyeballed
-
-We verify visual compatibility by measurement. For each feature we build test documents and compare, pixel by pixel, the PDF that real Word, Excel and PowerPoint produce with what ibisOffice draws. Files saved by ibisOffice are checked to open in Office without repair.
-
-### A fast screen, drawn on the GPU
-
-The screen is drawn on the GPU (Metal on macOS, DirectX on Windows, Vulkan on Linux, WebGPU in the browser), so scrolling, zooming and switching sheets are smooth. The UI is built with GPUI, the UI framework created for the high-performance Zed editor.
-
-### Desktop and browser
-
-The same Rust code runs as a native app and, as WebAssembly, inside the browser.
-
-## Strengths
-
-- **A new implementation, written from scratch in Rust**: no legacy code inherited from older office suites. Memory-safe, parallel and fast.
-- **Rendering compatibility, guaranteed by process**: more than 70,000 tests continuously compare ibisOffice with Office's output, pixel by pixel.
-- **Every edit is a "command"**: every change goes through a command that carries only IDs and final values. It is the unit of undo and redo, and also the unit exchanged with the server in collaborative editing.
-- **Faithful to the standard**: files are read and written following the international standard for Office Open XML (ECMA-376 / ISO/IEC 29500 / JIS X 4191). Built-in definitions such as shape outlines use the official ECMA-376 data distributed by Ecma, unmodified.
-- **AI-native, with MCP**: `ibisOffice --mcp` (on Windows, `ibisOffice-mcp.exe`) runs ibisOffice as an MCP (Model Context Protocol) server (see [Using ibisOffice from an AI assistant](docs/mcp.md)). An AI assistant such as Claude can open Word, Excel and PowerPoint files, read and edit their text, cells, tables and slides, undo edits, and save or export them. Only the folders you allow can be reached.
-- **Only components that are safe for commercial use**: every library we depend on is under a license that allows commercial use, such as Apache-2.0, MIT or BSD. No copyleft libraries are used (checked on every change with `cargo deny`).
-
-## Motivation
-
-We provide ibisStorage, a file storage and sharing service like Google Drive. It needs to preview and edit Office files online — fast, accurately, and without putting load on the server. That is why we are building ibisOffice.
-
-## Speed
-
-Smaller is faster. The figures in parentheses show how many times longer each product took than ibisOffice.
-
-### From opening a file to the first screen
-
-With the app already running, the time from telling it to open the file until the first page (the first slide for pptx, the first screen of the first sheet for xlsx) is fully displayed.
-
-<p align="center">
-  <img src="asset/benchmark-open-en.svg" alt="Opening Speed Benchmark: ibisOffice vs Microsoft Office, LibreOffice, ONLYOFFICE" width="100%">
-</p>
-
-| File | ibisOffice | Microsoft Office | LibreOffice | ONLYOFFICE |
-|---|---:|---:|---:|---:|
-| Presentation (.pptx)<br>31 slides, 35.9 MB | **0.59 s** | 2.16 s (3.7×) | 4.40 s (7.5×) | 4.75 s (8.1×) |
-| Document (.docx)<br>140–154 pages in English, 0.12 MB | **0.45 s** | 1.11 s (2.5×) | 1.70 s (3.8×) | 3.15 s (7.0×) |
-| Spreadsheet (.xlsx)<br>22 sheets, 29 charts, 589,000 formulas, 13.7 MB | **0.52 s** | 14.07 s (27.0×) | 6.82 s (13.1×) | 9.36 s (17.9×) |
-
-We recorded the app window (up to 60 frames per second) and measured, from the video, the time from the open request until the screen stopped changing. The final frame was checked by eye.
-
-### 1,000,000-Row CSV: Time to First View
-
-With the app already running, the time from telling it to open a 1,000,000-row CSV file until the first screen is displayed and interactive for viewing, scrolling, and zooming.
-
-<p align="center">
-  <img src="asset/benchmark-csv-en.svg" alt="1,000,000-Row CSV First View Speed Benchmark: ibisOffice vs Microsoft Excel, LibreOffice, ONLYOFFICE" width="100%">
-</p>
-
-| File | ibisOffice | LibreOffice | Microsoft Excel | ONLYOFFICE |
-|---|---:|---:|---:|---:|
-| Large CSV (.csv)<br>1,048,576 rows, 20 columns, 116 MB<br>*(Time to First View)* | **0.78 s** | 11.30 s (14.5×) | 19.04 s (24.4×) | 137.3 s* (176.0×) |
-
-\* ONLYOFFICE failed to open the 1,000,000-row file (timed out after 5 minutes); estimated at 3.3× its 300,000-row load time (41.60 s).
-
-### Converting to PDF
-
-The time from starting a command-line conversion until the PDF is fully written.
-
-<p align="center">
-  <img src="asset/benchmark-pdf-en.svg" alt="PDF Export Speed Benchmark: ibisOffice vs Microsoft Office, LibreOffice, ONLYOFFICE" width="100%">
-</p>
-
-| File | ibisOffice | Microsoft Office | LibreOffice | ONLYOFFICE |
-|---|---:|---:|---:|---:|
-| Presentation (.pptx)<br>31 slides, 35.9 MB | **1.42 s** | 8.40 s (5.9×) | 32.26 s (22.8×) | 5.87 s (4.1×) |
-| Document (.docx)<br>140–154 pages in English, 0.12 MB | **0.69 s** | 12.49 s (18.1×) | 3.45 s (5.0×) | 4.19 s (6.1×) |
-| Spreadsheet (.xlsx)<br>22 sheets, 29 charts, 589,000 formulas, 13.7 MB | **7.26 s** | 42.94 s (5.9×) | 19.46 s (2.7×) | 24.89 s (3.4×) |
-
-Conversion methods: ibisOffice `ibisOffice --export pdf`; Microsoft Office: opened and saved as PDF via AppleScript; LibreOffice `soffice --headless --convert-to pdf`; ONLYOFFICE: the x2t converter bundled with the app.
-
-### Test conditions
-
-- Environment: Apple M2 Pro, 16 GB memory, macOS 26.5.1. Versions: ibisOffice 0.1.0 (development build), Microsoft Office 16.113.2, LibreOffice 26.8.0.3, ONLYOFFICE 9.4.0. Measured on September 29–30, 2026.
-- Each figure is a single run. Every run started with all of the app's processes quit.
-- The files are made from fictional data and from a public document with its metadata removed, and are published in `test/benchmark/`.
-
-## Use cases
-
-### Desktop app (macOS, Windows, Linux)
-
-- **Your everyday office software**: create and edit Word, Excel and PowerPoint documents and save them in the same formats as Office.
-- **Check documents you receive, instantly**: open files from email or chat without waiting, and read them exactly as they were made in Office. Large workbooks and long presentations open fast too.
-- **Export to PDF and images**: export to PDF or PNG from the command line without opening a window — ready for batch conversion and automated processing on servers.
-
-### Web edition (WebAssembly + WebGPU)
-
-- **Use it without installing anything**: just open it in the browser to view and edit documents with the same screen and the same rendering as the desktop app. Works on PCs where you cannot install software and on shared machines.
-- **Build document viewing and editing into web systems**: inside business systems, SaaS products and portals, view and edit attached Word, Excel and PowerPoint documents on the spot, looking just as they do in Office.
-- **Handle documents without sending them to a server**: rendering and editing happen inside the browser, so when you open a local file its content is not sent to any external server.
-
-## Add ibisOffice to your web system
-
-The quickest way is npm. One command puts the browser version into your project:
-
-```sh
-npm install @ibisjp/ibis-office
-```
-
-The package [`@ibisjp/ibis-office`](https://www.npmjs.com/package/@ibisjp/ibis-office) carries the editor and the loader your page imports. `npx ibis-office-copy public/ibisoffice` copies the editor into the folder your server serves, and `npm update` takes the next release. Without npm, use the archive below.
-
-The browser version is a set of static files. Download [`ibisOffice-0.8.9-Web.zip`](https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Web.zip) (the browser version of [v0.8.9](https://github.com/ibisjp/ibis-office/releases/tag/v0.8.9)), check it with [its SHA-256](https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Web.zip.sha256), and put it on your own web server. Your page loads it in an `iframe` and hands ibisOffice a few functions (list, open and save files); your system keeps the files, the sign-in and the permissions, and the editor runs in the visitor's browser.
-
-[Embedding the browser version](docs/web-embedding.md) has the download and check, the minimal setup (where to put the files, the server settings, the smallest page that opens a document) and every option, function and event.
-
-## Building
+## Building & Development
 
 ```bash
-git clone --recurse-submodules https://github.com/ibisjp/ibis-office.git
-cd ibis-office
+git clone --recurse-submodules https://github.com/sorane-dev/docs.git
+cd docs
 cargo build --release
 ```
 
-- On Windows, build with `cargo build --release -p ibis-office-app` (the whole workspace includes a Linux-only crate); the app is `target\release\ibisOffice.exe`.
-- On macOS, `scripts/bundle-macos.sh --release` builds the app at `target/release/ibisOffice.app`.
-- The About dialog shows the Git branch and commit for builds from a checkout. `dirty` means tracked files or submodules have uncommitted changes; untracked files are not included. Set `IBIS_BUILD_BRANCH` to the source branch when building a detached checkout in CI. Source archives without Git show only the version.
-- On Linux, `scripts/bundle-linux.sh --release` builds an AppImage at `target/dist/ibisOffice-<version>-Linux.AppImage`, and `scripts/bundle-flatpak.sh --release` a Flatpak bundle at `target/dist/ibisOffice-<version>-Linux-<arch>.flatpak` (needs `flatpak-builder`).
-- To install the built Linux executable for the current user, run `python3 scripts/install-linux.py`. It installs the binary and the desktop entry and icons needed by the application launcher and window manager.
-- For the browser edition, build with `scripts/build-web.sh --release` and serve `www/` (browsers with WebGPU: Chrome, Edge, Safari 26 or later).
+- **Web edition**: `scripts/build-web.sh --release` (serves `www/` via WebAssembly + WebGPU).
+- **Desktop bundles**: `scripts/bundle-macos.sh --release`, `scripts/bundle-linux.sh --release`, or `cargo build --release -p ibis-office-app` on Windows.
+- **Branch & CI workflow**: `sorane` is the integration branch. See [docs/fork-workflow.md](docs/fork-workflow.md) for testing, CI verification, and deployment details.
 
-  The desktop and browser editions can also open `.jtd`, `.jtt`, and some compressed `.jttc` files as an experimental read-only preview. Image-based and other unsupported documents may not open. Recognized content can be exported to a separate DOCX. See [Ichitaro preview](docs/jtd-preview.md).
+## License & Attribution
 
-  The build requires Python 3 and splits the Wasm into content-addressed files no larger than 20 MiB, which the browser verifies and reassembles. Serve over HTTPS or localhost. For Cloudflare Workers Static Assets, run `python3 scripts/check-web-assets.py` and `npx wrangler deploy --dry-run`, then check the account and Worker name in `wrangler.jsonc` before `npx wrangler deploy`. This publishes the editor, not the separate playground.
-
-## Implemented Features
-
-ibisOffice implements a comprehensive set of features for Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) documents, strictly compliant with the ECMA-376 specification.
-
-For the full list of implemented features across all three formats (over 1,800 items), please see:
-
-<p align="center">
-  <b><a href="docs/implemented-feature.md">Implemented Features</a></b>
-</p>
-
-## License
-
-ibisOffice is **dual-licensed under AGPL-3.0-only and a commercial license**.
-
-- **AGPL-3.0**: free to use, modify and distribute as open source. If you offer a modified version as a service over a network, you must also publish its source under AGPL-3.0. See [LICENSE](LICENSE).
-- **Commercial license**: if you build ibisOffice into a product or service that cannot meet the AGPL-3.0 terms (publishing the source), please use the commercial license. See [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
-
-All copyrights in ibisOffice are held by ibis inc., which is what allows it to be offered under both licenses.
-
-The components we use and the notices their licenses require are listed in [THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md) (for each build: [www/license.md](www/license.md), [crates/ibis-office-app/macos/license.md](crates/ibis-office-app/macos/license.md), [crates/ibis-office-app/linux/license.md](crates/ibis-office-app/linux/license.md)). Our modified forks of GPUI (Apache-2.0) are published as [gpui-pre](https://github.com/ibisjp/gpui-pre), [gpui-pre-macos](https://github.com/ibisjp/gpui-pre-macos), [gpui-pre-windows](https://github.com/ibisjp/gpui-pre-windows), [gpui-pre-linux](https://github.com/ibisjp/gpui-pre-linux), [gpui-pre-wgpu](https://github.com/ibisjp/gpui-pre-wgpu) and [gpui-pre-web](https://github.com/ibisjp/gpui-pre-web).
-
-## Contributing
-
-Bug reports, requests and proposed fixes are welcome in Issues (we do not accept pull requests at the moment). For an issue with code, a one-line reply to our [CLA](docs/CLA.md) lets us use it; see [CONTRIBUTING.md](docs/CONTRIBUTING.md). Please report security issues through the channels in [SECURITY.md](docs/SECURITY.md), not in Issues.
-
-## Trademarks
-
-Microsoft, Microsoft Office, Microsoft 365, Word, Excel and PowerPoint are registered trademarks or trademarks of Microsoft Corporation in the United States and other countries. LibreOffice is a registered trademark or trademark of The Document Foundation, and ONLYOFFICE of Ascensio System SIA. All other company and product names are registered trademarks or trademarks of their respective owners. ibisOffice is not affiliated with, endorsed by or sponsored by any of these companies.
-
-The ibisOffice name and logo are trademarks of ibis inc. See [TRADEMARK.md](docs/TRADEMARK.md) for how to use them. Anything based on ibisOffice must display "Powered by ibisOffice".
-
----
-
-© ibis inc.
+- **Powered by [ibisOffice](https://github.com/ibisjp/ibis-office)** (in accordance with [docs/TRADEMARK.md](docs/TRADEMARK.md)).
+- Licensed under **AGPL-3.0-only** — see [LICENSE](LICENSE).
+- Original copyrights in ibisOffice are held by ibis inc. Third-party notices are listed in [docs/THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md).

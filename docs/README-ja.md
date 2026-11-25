@@ -1,249 +1,96 @@
-<p align="center"><a href="../README.md">English</a> | <b>日本語</b> | <a href="README-zh-CN.md">简体中文</a></p>
+<p align="center"><a href="../README.md">English</a> | <b>日本語</b></p>
 
 <p align="center">
-  <img src="../asset/ibisOffice_svg_logo_for_light.svg" alt="ibisOffice" width="480">
+  <img src="../crates/ibis-office-app/branding/sorane-docs.svg" alt="soraneDocs" width="84">
+</p>
+
+<h1 align="center">soraneDocs</h1>
+
+<p align="center">
+  <b>Rust と GPUI で作られた <a href="https://github.com/ibisjp/ibis-office">ibisOffice</a> の機能拡張フォーク</b><br>
+  デスクトップ・Web（Wasm/WebGPU）・モバイルで動く、Office 文書・Markdown ナレッジワークスペース・図表・行政/実務向け拡張環境。
 </p>
 
 <p align="center">
-  <b>Rust と GPU で作った、Microsoft Office と同じ見た目で開ける次世代のオフィス スイート</b><br>
-  Word（.docx）・Excel（.xlsx）・PowerPoint（.pptx）を、速く、正確に、どこでも。
+  <a href="https://docs.sorane.dev">Web 版を試す (docs.sorane.dev)</a> ·
+  <a href="fork-feature-differences.md">upstream との機能差分</a> ·
+  <a href="fork-workflow.md">フォーク運用</a>
 </p>
 
 ---
 
-<p align="center">
-  <img src="../asset/screenshots.png" alt="ibisOffice で開いた Word・Excel・PowerPoint の文書" width="100%">
-</p>
+<!-- TODO: 追って soraneDocs の画面ショットを追加 -->
 
-## ibisOffice とは
+## soraneDocs とは
 
-ibisOffice は、Word・Excel・PowerPoint の文書を、表示し、編集し、保存するためのオフィス スイートです。すべてを Rust で書き、描画は GPU で行います。macOS・Windows・Linux のデスクトップでも、Web ブラウザでも、同じ 1 つのコードで動きます。
+**soraneDocs** は、[ibisOffice](https://github.com/ibisjp/ibis-office) をベースに `sorane-dev/docs` で開発・運用しているフォークです。upstream の Rust + GPUI エンジン、高精度な OOXML（`.docx`・`.xlsx`・`.pptx`）描画、MCP 対応などを引き継ぎつつ、次の 2 点を目的としています。
 
-目指しているのは、「Microsoft Office で作った文書を開いても、見た目が崩れない」ことです。行の折り返し、ページの区切り、表の罫線、グラフの目盛りまで、Office と同じ結果になるように作っています。
+1. **プロトタイピングと upstream への貢献**：バグ修正、日本語組版の改善、フォーマット拡張などを検証可能な PoC コミットとして実装し、Issue を通じて `ibisjp/ibis-office` へ提案・還元すること。
+2. **拡張ドキュメント／ナレッジワークスペース**：Markdown 中心のナレッジ管理、図表描画、日本の行政・法令・医療向け拡張、PWA / GitHub Vault 連携などを統合した環境を提供すること。
 
-## すぐに始める
+ibisOffice 本来の機能一覧、ベンチマーク、商用ライセンスについては [upstream リポジトリ](https://github.com/ibisjp/ibis-office) をご覧ください。
 
-### デスクトップアプリ版をダウンロード
+## これまでの ibisOffice への貢献
 
-<table>
-  <tr>
-    <td align="center">
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Windows.zip">
-        <img src="../asset/download-windows.svg" alt="Download for Windows" height="54">
-      </a><br>
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Windows.zip"><code>ibisOffice-0.8.9-Windows.zip</code></a><br>
-      <small>Windows 10 / 11（64 ビット）</small>
-    </td>
-    <td align="center">
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-macOS.zip">
-        <img src="../asset/download-mac.svg" alt="Download for Mac" height="54">
-      </a><br>
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-macOS.zip"><code>ibisOffice-0.8.9-macOS.zip</code></a><br>
-      <small>macOS 11 以降（Apple Silicon）</small>
-    </td>
-    <td align="center">
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Linux.AppImage">
-        <img src="../asset/download-linux.svg" alt="Download for Linux" height="54">
-      </a><br>
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Linux.AppImage"><code>ibisOffice-0.8.9-Linux.AppImage</code></a><br>
-      <small>Linux x86_64</small>
-    </td>
-  </tr>
-</table>
+upstream `ibisjp/ibis-office` はコラボレーター以外の Pull Request を受け付けていないため、このフォークでの PoC コミットを添えて GitHub Issue から提案・報告を行い、以下の機能・修正が upstream に採用・統合されています。
 
-- **Windows**：`ibisOffice-0.8.9-Windows.zip` をダウンロードし、展開した `ibisOffice` フォルダの `ibisOffice.exe` を起動してください。
-- **macOS**：`ibisOffice-0.8.9-macOS.zip` をダウンロードし、展開した `ibisOffice.app` をアプリケーション フォルダに移してください。
-- **Linux**：`ibisOffice-0.8.9-Linux.AppImage` をダウンロードし、実行権限を付けて（`chmod +x`）、ダブルクリックしてください。主要なデスクトップ Linux（glibc 2.31 以降：Ubuntu、Debian、Fedora、Arch Linux など）で動作します。インストールも FUSE も不要です。
-- **Web 版を試す**：インストールせずに、ブラウザで [playground](https://ibisjp.github.io/ibis-office/) を開いてください（WebGPU に対応したブラウザ）。見本の文書（Word・Excel・PowerPoint）を開いて、すぐに試せます。
-- **更新履歴**：各バージョンの変更内容は [CHANGELOG.md](../CHANGELOG.md) をご覧ください。
-- **動画で見る**：ibisOffice の紹介動画（YouTube）。
+- **日本語組版・フォント描画**
+  - 行政事務標準文字と異体字シーケンス（IVS）の表示・編集対応、macOS での追加字形欠落修正（[#158](https://github.com/ibisjp/ibis-office/issues/158), [#251](https://github.com/ibisjp/ibis-office/issues/251)）
+  - 非 Windows 環境における「ＭＳ 明朝」フォント代替ルールの修正（[#248](https://github.com/ibisjp/ibis-office/issues/248)）
+  - 代替フォント・Web 版における和文記号・仮名文字送りと GPOS 配置オフセットの改善（[#230](https://github.com/ibisjp/ibis-office/issues/230)）
+  - DOCX 縦書きの傍線位置、縦書き表のセル文字方向と新規表の縦結合保持、両端揃え箇条書きのはみ出し修正（[#160](https://github.com/ibisjp/ibis-office/issues/160), [#222](https://github.com/ibisjp/ibis-office/issues/222), [#193](https://github.com/ibisjp/ibis-office/issues/193)）
+- **文書形式・互換性・シビックテック**
+  - Pure-Rust による PDF・XPS/OpenXPS・OFD の閲覧および署名検査対応（[#235](https://github.com/ibisjp/ibis-office/issues/235)）
+  - Markdown ネイティブ対応強化（往復変換・クリップボード・CLI・pure-Rust Mermaid 描画）（[#226](https://github.com/ibisjp/ibis-office/issues/226)）
+  - Office 2007 Standard 暗号化ファイル（DOCX/XLSX/PPTX）の復号対応（[#190](https://github.com/ibisjp/ibis-office/issues/190)）
+  - DOCX の段落 ID（`w14:paraId`）の編集・保存時保持（[#221](https://github.com/ibisjp/ibis-office/issues/221)）
+  - 表計算の機械可読性チェック（デジタル庁基準）（[#194](https://github.com/ibisjp/ibis-office/issues/194)）
+- **Web 版・モバイル・Linux デスクトップ**
+  - Web 版 Wasm の分割配信（CDN サイズ制限対応）（[#152](https://github.com/ibisjp/ibis-office/issues/152)）とフォント字形のオンデマンド取得（[#157](https://github.com/ibisjp/ibis-office/issues/157)）
+  - Web 版の二本指ピンチズーム対応とタッチ入力時の Wasm パニック修正（[#212](https://github.com/ibisjp/ibis-office/issues/212), [#207](https://github.com/ibisjp/ibis-office/issues/207)）
+  - Android でファイル選択画面から戻る際のクラッシュ修正（[#256](https://github.com/ibisjp/ibis-office/issues/256)）と Ubuntu AppImage のドックアイコン表示修正（[#147](https://github.com/ibisjp/ibis-office/issues/147)）
 
-  [![ibisOffice の紹介動画](../asset/video-ja.jpg)](https://www.youtube.com/watch?v=0yjHdK_Cb_8)
+## 現時点での upstream との主な差異
 
-- **コマンドライン操作**：ターミナルからの起動、ヘッドレスでの PDF/PNG 一括変換、印刷設定、起動ベンチマーク測定については [コマンドラインオプション](cli-options-ja.md) をご覧ください。
-- **制作素材のプレビュー**　JPEG 2000・OpenEXR・DPX・Cineonなどの単体表示、透明度の確認、連番のコマ送りは [制作素材のプレビュー](production-image-preview-ja.md) をご覧ください。
-- **ブラウザー版の組み込み**：自分の Web サーバーに置いて、ご自身のシステムの文書を開く方法と、閉じる・ダウンロードのボタンを出して組み込んだ側のページにイベントで知らせる方法は、[ブラウザー版の組み込み](web-embedding-ja.md) をご覧ください。
+upstream 統合状況や詳細な機能差分は [docs/fork-feature-differences.md](fork-feature-differences.md) に記録しています。現時点で `soraneDocs` に含まれる主な独自機能・拡張は以下のとおりです。
 
-## ゴール
+- **ナレッジワークスペース（`SoraneWorkspace`）・Markdown / PlantUML**
+  - Obsidian 風のデスクトップシェル（`crates/sorane-workspace`）：ペイン分割、タブ固定・履歴、セッション永続化、コマンドパレット、デイリーノート、Wiki リンク、タグブラウザ、Outgoing Links、Local Graph、アウトライン、Office インスペクタ、Git ドック（[#283](https://github.com/ibisjp/ibis-office/issues/283)）。
+  - ブロック単位の Markdown `SourceMap` による WYSIWYG 外科的書き戻しと双方向カーソル／スクロール同期（[#286](https://github.com/ibisjp/ibis-office/issues/286)）。
+  - 内蔵 Mermaid 描画資産・IR を共有したオフライン pure-Rust PlantUML SVG 描画（UML 全般・C4/JSON/YAML/EBNF/nwdiag 等・軽量テーマ対応）（[#298](https://github.com/ibisjp/ibis-office/issues/298)）。
+- **追加の文書・図面・データ形式**
+  - **Visio（`.vsdx`）**：閲覧・新規作成・編集・ステンシルパレット・フローチャート図形・Wasm 版対応（[#292](https://github.com/ibisjp/ibis-office/issues/292)）。
+  - **一太郎（`.jtd`・`.jtt`・`.jttc`）**：縦書き・ルビ・罫線・画像・目次を復元する読み取り専用プレビューと DOCX/HTML 出力（[jtd-preview.md](jtd-preview.md)）。
+  - **DocuWorks（`.xdw`・`.xbd`）・Hancom（`.hwp`・`.hwpx`）**：閲覧および編集可能な DOCX としての読み込み（[#254](https://github.com/ibisjp/ibis-office/issues/254), [#288](https://github.com/ibisjp/ibis-office/issues/288)）。
+  - **EPUB 3・制作素材画像**：EPUB 3 ネイティブ読み込み、HEIC・DPX・Cineon・OpenEXR・JPEG 2000 プレビュー（[production-image-preview-ja.md](production-image-preview-ja.md)）。
+  - **外部データ取り込み**：表計算への Parquet・JSON Lines・Arrow IPC・Avro・SQLite 取り込みと、文字コードを考慮した CSV 上書き保存（[#263](https://github.com/ibisjp/ibis-office/issues/263)）。
+- **日本の実務・法令・医療・トラスト拡張**
+  - **名簿突合**：`FIELDMATCH` 系関数、異体字辞書、日付レビュー、行政 PUP・外字の正規化（[#257](https://github.com/ibisjp/ibis-office/issues/257)）。
+  - **法令・医療**：e-Gov 法令 XML／Lawtext 双方向変換と新旧対照表生成（[#229](https://github.com/ibisjp/ibis-office/issues/229)）、pure-Rust 医療文書（UKE/DPC・FHIR/CDA/HL7 v2）および非診断用 DICOM 相互運用（Non-SaMD 範囲）（[#246](https://github.com/ibisjp/ibis-office/issues/246)）。
+  - **署名・資格情報・サプライチェーン**：文書電子署名検査、画像 C2PA 検証、SD-JWT・mDOC・OID4VP の表計算連携、CycloneDX SBOM/CBOM・OSV-Scanner レビュー（[#232](https://github.com/ibisjp/ibis-office/issues/232), [#279](https://github.com/ibisjp/ibis-office/issues/279), [#280](https://github.com/ibisjp/ibis-office/issues/280)）。
+- **Web・PWA・モバイル・AI アシスタント**
+  - **Web 版（`docs.sorane.dev`）**：オフラインローカルファイル対応の PWA、GitHub App リポジトリ（Vault）ログイン・作成・編集、HTML 書き出し（[#208](https://github.com/ibisjp/ibis-office/issues/208)）、静的日本語フォントサブセット配信。
+  - **モバイル・高速化**：Android / iOS ネイティブ GPUI ビルド（[#247](https://github.com/ibisjp/ibis-office/issues/247)）、描画・行ジオメトリ等のホットパスキャッシュ最適化（[#299](https://github.com/ibisjp/ibis-office/issues/299), [#300](https://github.com/ibisjp/ibis-office/issues/300)）。
+  - **AI アシスタント**：OpenAI 互換 API（デスクトップ）および Workers AI（Web）連携の編集支援サイドバー（[#231](https://github.com/ibisjp/ibis-office/issues/231)）。
+- **ブランディング・来歴検証・配布**
+  - upstream の `ibisOffice` と共存できるよう、独自の `soraneDocs` ブランドおよびアプリ識別子を使用。
+  - upstream との競合・混同を避けるため、自動更新チェックと Windows の「プログラムから開く」自動登録は無効化。
+  - CI で CycloneDX 1.6 SBOM/CBOM と Linux AppImage の GitHub Artifact Attestations（署名付きビルド来歴）を生成（[#285](https://github.com/ibisjp/ibis-office/issues/285)）。
 
-ibisOffice は、世界でトップクラスのオープンソースのオフィス スイートになることを目指しています。
-
-- **速さと堅牢さ**：Rust によるメモリ安全なコードで、大きな文書もすばやく開いて、落ちない。
-- **Microsoft Office と同じ見た目**：文字の位置、改行、改ページ、表、グラフ、図形を、Office と同じに描く。
-- **Microsoft Office と同じファイル**：開いて保存しても、Office で開き直したときに中身も見た目も失われない。
-- **OS を選ばない**：デスクトップアプリ版は、macOS・Windows・Linux で、同じ操作と同じ見た目。
-- **ブラウザで、ネイティブと同じ速さ**：WebAssembly と WebGPU で、インストールせずに使える。
-- **共同編集**：サーバー版で、複数の人が同じ文書を同時に編集できる。
-
-## 特長
-
-### 3 つの形式を 1 つのアプリで
-
-- **文書（.docx）**：段落とスタイル、箇条書きと段落番号、表、段組み、縦書き、ルビ・日本語組版（禁則処理・縦中横・組み文字・囲み文字）、脚注と文末脚注、ヘッダーとフッター、フィールド（ページ番号・目次・索引・相互参照）、数式（OMML・LaTeX・UnicodeMath）、図形・画像・グラフ・SmartArt・インク注釈、変更履歴とコメント、差し込み印刷、コンテンツコントロール、文書の保護、ページ設定、他形式変換（.doc・.rtf・.odt・.html・.txt・.pdf）。
-- **表計算（.xlsx）**：500 種類以上のワークシート関数、動的配列とスピル、`LET`・`LAMBDA`、構造化参照・3D 参照、条件付き書式（データバー・カラースケール・アイコンセット）、表示形式（和暦・カスタム書式を含む）、セル内の部分書式とふりがな（ルビ）、オートフィルター、複数列の並べ替え、テーブル、ピボットテーブルとピボットグラフ、スライサーとタイムライン、2D/3D および Office 2016+ 拡張グラフ（ウォーターフォール・ツリーマップ・サンバースト・ヒストグラム・パレート・箱ひげ図・ファンネル）、スパークライン、フォームコントロール、インク注釈、データの入力規則、フラッシュフィル、統合、小計、What-If 分析（ゴールシーク・データテーブル・シナリオ・予測シート・ソルバー）、Power Query データテーブル、スレッド形式コメントとメモ、シートとブックの保護、他形式変換（.xls・.ods・.csv・.tsv・.txt・.html・.dif・.slk・.pdf）。
-- **プレゼンテーション（.pptx）**：スライドマスター・レイアウト・テーマとバリエーション・カスタムスライドサイズ・セクション・ヘッダーとフッター・発表者ノートと配布資料、図形（ECMA-376 全 187 種のプリセット図形・図形の結合・頂点の編集・3D 回転・面取り・奥行き）、ワードアートと文字の効果、数式、表、グラフ、SmartArt、画像（図形に合わせてトリミング・アート効果・背景の削除）、3D モデル、動画・音声（トリミング・フェード・ブックマーク・字幕）、インク注釈、動作設定ボタンとズームリンク、アニメーション（開始・強調・終了・軌跡・トリガー・グラフ/SmartArt 要素別ビルド）、画面切り替え（変形［Morph］・効果音を含む）、スライドショーと発表者ビュー（2 画面対応・テレプロンプター・レーザーポインターとペン描画）、目的別スライドショー、リハーサルと録画プレビュー、コメント、プレゼンテーションの比較、アクセシビリティ検査、パスワード暗号化、他形式変換・書き出し（.ppt・.odp・.ppsx・.potx・.pdf・.png・アニメーション .gif）。
-- **マクロ付きのファイル**（.docm・.xlsm・.pptm）も開いて保存できます。マクロは実行せず、そのまま残します。
-
-### Office と同じ見た目を、測って確かめる
-
-見た目の互換は、感覚ではなく測定で確かめています。機能ごとに試験用の文書を作り、本物の Word・Excel・PowerPoint が書き出した PDF と ibisOffice の描画を、画素の単位で比べています。保存したファイルは、Office で修復なしに開けることを確かめています。
-
-### GPU で描く、速い画面
-
-画面は GPU で描きます（macOS は Metal、Windows は DirectX、Linux は Vulkan、ブラウザは WebGPU）。スクロール、拡大・縮小、シートの切り替えが滑らかです。UI は、高速なエディター Zed のために作られた UI フレームワーク GPUI で作っています。
-
-### デスクトップでもブラウザでも
-
-同じ Rust のコードが、ネイティブのアプリとしても、WebAssembly としてブラウザの中でも動きます。
-
-## 強み
-
-- **ゼロから Rust で書いた、新しい実装**：既存のオフィス スイートの古いコードを引き継いでいません。メモリ安全で、並列に強く、速い。
-- **描画の互換を、仕組みで保証する**：7 万を超える試験で、Office の出力と画素の単位で比べ続けています。
-- **編集はすべて「コマンド」**：すべての変更は、ID と確定した値だけを持つコマンドを通ります。これは、元に戻す・やり直しの単位であり、共同編集でサーバーとやり取りする単位にもなります。
-- **規格に忠実**：Office Open XML の国際標準（ECMA-376 / ISO/IEC 29500 / JIS X 4191）に沿って読み書きします。図形の輪郭などの組み込みの定義は、Ecma が配布する ECMA-376 の公式のデータをそのまま使っています。
-- **AI ネイティブ（MCP 対応）**：`ibisOffice --mcp`（Windows は `ibisOffice-mcp.exe`）で、ibisOffice が MCP（Model Context Protocol）のサーバーとして動きます（[AI アシスタントから ibisOffice を使う](mcp-ja.md)）。Claude などの AI アシスタントが、Word・Excel・PowerPoint のファイルを開き、文章・セル・表・スライドを読んで書き換え、元に戻し、保存や書き出しをできます。触れるのは、許可したフォルダーのファイルだけです。
-- **商用でも安心して使える部品だけ**：依存するライブラリは、Apache-2.0・MIT・BSD などの商用で使えるライセンスのものだけです。コピーレフトのライブラリは使っていません（`cargo deny` で毎回確かめています）。
-
-## 動機
-
-私たちは、Google Drive のようなファイルの保存・共有のサービス ibisStorage を提供しています。そこでは、Office のファイルのオンラインでのプレビューと編集を、速く、正確に、サーバーに負荷をかけずに行えるようにする必要があります。これが ibisOffice を作る動機です。
-
-## 速さ
-
-小さいほど速く、かっこ内は ibisOffice の何倍かかったかを表します。
-
-### ファイルを開いて最初の画面が出るまで
-
-アプリを起動しておき、ファイルを開かせてから、1 ページ目（pptx は 1 枚目のスライド、xlsx は 1 シート目の最初の画面）が完全に表示されるまでの時間です。
-
-<p align="center">
-  <img src="../asset/benchmark-open-ja.svg" alt="ファイル表示速度ベンチマーク: ibisOffice vs Microsoft Office, LibreOffice, ONLYOFFICE" width="100%">
-</p>
-
-| ファイル | ibisOffice | Microsoft Office | LibreOffice | ONLYOFFICE |
-|---|---:|---:|---:|---:|
-| プレゼンテーション（.pptx）<br>31 スライド、35.9MB | **0.59 秒** | 2.16 秒（3.7 倍） | 4.40 秒（7.5 倍） | 4.75 秒（8.1 倍） |
-| 文書（.docx）<br>英文 140〜154 ページ、0.12MB | **0.45 秒** | 1.11 秒（2.5 倍） | 1.70 秒（3.8 倍） | 3.15 秒（7.0 倍） |
-| 表計算（.xlsx）<br>22 シート、グラフ 29 個、数式 58.9 万個、13.7MB | **0.52 秒** | 14.07 秒（27.0 倍） | 6.82 秒（13.1 倍） | 9.36 秒（17.9 倍） |
-
-アプリのウィンドウを録画し（最大 60 フレーム/秒）、ファイルを開かせた時点から画面の変化が止まるまでを、動画から求めました。終わりのフレームは目で確かめています。
-
-### 100万行のCSVファイルを開いて最初の画面が出るまで（First View）
-
-アプリを起動しておき、100万行のCSVファイルを開かせてから、最初の画面が表示され、閲覧・スクロール・ズームが可能になるまでの時間です。
-
-<p align="center">
-  <img src="../asset/benchmark-csv-ja.svg" alt="100万行 CSV 初回表示（First View）速度ベンチマーク: ibisOffice vs Microsoft Excel, LibreOffice, ONLYOFFICE" width="100%">
-</p>
-
-| ファイル | ibisOffice | LibreOffice | Microsoft Excel | ONLYOFFICE |
-|---|---:|---:|---:|---:|
-| 巨大表計算（.csv）<br>1,048,576行、20列、116MB<br>*(初回画面表示 / First View)* | **0.78 秒** | 11.30 秒（14.5 倍） | 19.04 秒（24.4 倍） | 137.3 秒※（176.0 倍） |
-
-※ ONLYOFFICE は 100 万行のファイルを開けなかった（5 分でタイムアウト）ため、30 万行が 41.60 秒なので、その 3.3 倍と推定した値です。
-
-### PDF への変換
-
-コマンドラインで PDF に変換し、コマンドを始めてから PDF を書き終えるまでの時間です。
-
-<p align="center">
-  <img src="../asset/benchmark-pdf-ja.svg" alt="PDF 変換速度ベンチマーク: ibisOffice vs Microsoft Office, LibreOffice, ONLYOFFICE" width="100%">
-</p>
-
-| ファイル | ibisOffice | Microsoft Office | LibreOffice | ONLYOFFICE |
-|---|---:|---:|---:|---:|
-| プレゼンテーション（.pptx）<br>31 スライド、35.9MB | **1.42 秒** | 8.40 秒（5.9 倍） | 32.26 秒（22.8 倍） | 5.87 秒（4.1 倍） |
-| 文書（.docx）<br>英文 140〜154 ページ、0.12MB | **0.69 秒** | 12.49 秒（18.1 倍） | 3.45 秒（5.0 倍） | 4.19 秒（6.1 倍） |
-| 表計算（.xlsx）<br>22 シート、グラフ 29 個、数式 58.9 万個、13.7MB | **7.26 秒** | 42.94 秒（5.9 倍） | 19.46 秒（2.7 倍） | 24.89 秒（3.4 倍） |
-
-変換に使ったもの：ibisOffice は `ibisOffice --export pdf`、Microsoft Office は AppleScript で開いて PDF で保存、LibreOffice は `soffice --headless --convert-to pdf`、ONLYOFFICE はアプリに入っている変換プログラム x2t。
-
-### 計測の条件
-
-- 計測環境：Apple M2 Pro、メモリ 16GB、macOS 26.5.1。製品の版：ibisOffice 0.1.0（開発版）、Microsoft Office 16.113.2、LibreOffice 26.8.0.3、ONLYOFFICE 9.4.0。計測日：2026 年 9 月 29〜30 日。
-- 各 1 回の計測です。どの計測も、そのアプリのプロセスがすべて終了した状態から始めました。
-- 使ったファイルは、架空のデータと、メタ情報を取り除いた公開の資料から作ったもので、`test/benchmark/` で公開しています。
-
-## 用途
-
-### デスクトップアプリ（macOS・Windows・Linux）
-
-- **毎日のオフィス ソフトとして**：Word・Excel・PowerPoint の文書を作り、編集し、Office と同じ形式で保存する。
-- **受け取った文書をすぐ確かめる**：メールやチャットで届いた文書を、待たずに開いて、Office で作ったとおりの見た目で読む。大きなブックや、スライドの多いプレゼンテーションも速く開く。
-- **PDF・画像への書き出し**：画面を出さずに、コマンドラインから PDF や PNG に書き出す。文書の変換をまとめて行う処理や、サーバーでの自動処理に組み込める。
-
-### Web 版（WebAssembly ＋ WebGPU）
-
-- **インストールせずに使う**：ブラウザで開くだけで、デスクトップアプリと同じ画面・同じ見た目で文書を表示し、編集する。ソフトを入れられない PC や、共有の端末でも使える。
-- **Web システムに文書の表示と編集を組み込む**：業務システム・SaaS・ポータルの中で、添付された Word・Excel・PowerPoint の文書を、その場で Office と同じ見た目で表示・編集する。
-- **文書をサーバーに送らずに扱う**：描画も編集もブラウザの中で行うので、手元のファイルを開くときは、文書の中身を外部のサーバーに送らない。
-
-## Web システムに組み込む
-
-いちばん手軽なのは npm です。次のコマンド 1 つで、ブラウザー版をプロジェクトに入れられます。
-
-```sh
-npm install @ibisjp/ibis-office
-```
-
-パッケージ [`@ibisjp/ibis-office`](https://www.npmjs.com/package/@ibisjp/ibis-office) には、エディターと、ご自身のページが読み込むローダーが入っています。`npx ibis-office-copy public/ibisoffice` でエディターをサーバーが配るフォルダーに写し、新しい版は `npm update` で取り込めます。npm を使わない場合は、次のアーカイブを使います。
-
-ブラウザー版は静的なファイルの集まりです。[`ibisOffice-0.8.9-Web.zip`](https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Web.zip)（[v0.8.9](https://github.com/ibisjp/ibis-office/releases/tag/v0.8.9) のブラウザー版）をダウンロードし、[SHA-256](https://github.com/ibisjp/ibis-office/releases/download/v0.8.9/ibisOffice-0.8.9-Web.zip.sha256) で確かめて、自分の Web サーバーに置きます。ご自身のページが `iframe` で読み込み、ファイルの一覧・開く・保存の関数をいくつか ibisOffice に渡します。ファイル・ログイン・権限はご自身のシステムが持ち、エディターは閲覧者のブラウザーの中で動きます。
-
-ダウンロードと確認、最小限の設置（ファイルの置き場所・サーバーの設定・文書を開く最小のページ）、すべてのオプション・関数・イベントは、[ブラウザー版の組み込み](web-embedding-ja.md)をご覧ください。
-
-## ビルド
+## ビルドと開発
 
 ```bash
-git clone --recurse-submodules https://github.com/ibisjp/ibis-office.git
-cd ibis-office
+git clone --recurse-submodules https://github.com/sorane-dev/docs.git
+cd docs
 cargo build --release
 ```
 
-- Windows では `cargo build --release -p ibis-office-app` でビルドします（ワークスペース全体には Linux 専用の crate が含まれるため）。アプリは `target\release\ibisOffice.exe` にできます。
-- macOS のアプリは `scripts/bundle-macos.sh --release` で、`target/release/ibisOffice.app` に作られます。
-- Linux では `scripts/bundle-linux.sh --release` で AppImage が `target/dist/ibisOffice-<版>-Linux.AppImage` に、`scripts/bundle-flatpak.sh --release` で Flatpak が `target/dist/ibisOffice-<版>-Linux-<アーキテクチャ>.flatpak` に作られます（Flatpak には `flatpak-builder` が要ります）。
-- Linux のビルド済みバイナリをユーザー単位でインストールするには `python3 scripts/install-linux.py` を実行します。実行ファイルと、アプリ一覧・ウィンドウのアイコンに必要なデスクトップ登録を配置します。
-- ブラウザ版は `scripts/build-web.sh --release` でビルドし、`www/` を配信します（WebGPU に対応したブラウザ：Chrome・Edge・Safari 26 以降）。
+- **Web 版**：`scripts/build-web.sh --release`（WebAssembly + WebGPU 版を `www/` に生成）
+- **デスクトップ版**：`scripts/bundle-macos.sh --release` / `scripts/bundle-linux.sh --release` / Windows は `cargo build --release -p ibis-office-app`
+- **ブランチ運用・CI**：統合ブランチは `sorane` です。テスト・CI 検証・配信手順は [docs/fork-workflow.md](fork-workflow.md) をご覧ください。
 
-  デスクトップ版とブラウザー版では `.jtd`・`.jtt` と一部の圧縮 `.jttc` も実験的な読み取り専用プレビューとして開けます。画像主体の文書など、開けない場合があります。認識できた内容は別の DOCX に書き出せます。詳細は [一太郎プレビュー](docs/jtd-preview.md) を参照してください。
-  韓国 Hancom の HWP 5.0 と HWPX は、[Word 文書として取り込めます](hangul-import.md)。
-  WordPerfect 6 系の `.wpd`・`.wp6` は、本文・段落・明示的な改ページ・基本的な文字書式と、行・列、結合セル、罫線とセルの背景色を含む表を編集可能な Word 文書として取り込み、別名で DOCX に保存できます。一部の拡張文字は置換され、表の数式や複雑な罫線パターン、ヘッダー・フッター、用紙設定は引き継がれません。埋め込みのPNGやJPEGなどの画像と、対応するWPG 1・2のビットマップを取り込めます。WPG 2の長方形・角丸長方形・楕円・折れ線・多角形・ベジェ曲線・円弧と、穴のある複合パスは、同じ画像内のビットマップと重なり順を保持してPNGに合成します。WPG 2のグループと子要素に指定された移動・回転・拡大縮小も合成時に適用します。WPGの文字・一部のスプラインや入れ子の複合パス・透視変形や外部リンク画像には未対応です。暗号化と OLE ラッパーには未対応です。
+## ライセンスと帰属表示
 
-  ビルドには Python 3 が必要です。Wasm は20 MiB以下のハッシュ付きファイルに分割され、ブラウザで検証・結合されます。HTTPS または localhost で配信してください。Cloudflare Workers Static Assets で配信する場合は `python3 scripts/check-web-assets.py` と `npx wrangler deploy --dry-run` で確認し、`wrangler.jsonc` の Worker 名とアカウントを確認してから `npx wrangler deploy` を実行してください。配信対象はエディターで、playground は含みません。
-
-## 実装済み機能
-
-ibisOffice は、Word (.docx)・Excel (.xlsx)・PowerPoint (.pptx) の 3 大形式について、ECMA-376 規格に準拠した広範な機能を実装しています。
-
-全フォーマットにわたる詳細な実装済み機能の一覧（1,800 項目以上）は、以下をご覧ください：
-
-<p align="center">
-  <b><a href="implemented-feature-ja.md">実装済み機能一覧</a></b>
-</p>
-
-## ライセンス
-
-ibisOffice は、**AGPL-3.0-only と商用ライセンスのデュアルライセンス**です。
-
-- **AGPL-3.0**：オープンソースとして、自由に使い、改変し、配布できます。改変したものをネットワーク越しにサービスとして提供する場合も、そのソースを AGPL-3.0 で公開する必要があります。本文は [LICENSE](../LICENSE) にあります。
-- **商用ライセンス**：AGPL-3.0 の条件（ソースの公開）を満たせない製品やサービスに組み込む場合は、商用ライセンスをご利用ください。案内は [COMMERCIAL-LICENSE.md](../COMMERCIAL-LICENSE.md) にあります。
-
-ibisOffice の著作権は、すべて株式会社アイビスが持っています。そのため、両方のライセンスで提供できます。
-
-使っている部品と、それぞれのライセンスが求める表示は [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) にあります（ビルドごとに [www/license.md](../www/license.md)・[crates/ibis-office-app/macos/license.md](../crates/ibis-office-app/macos/license.md)・[crates/ibis-office-app/linux/license.md](../crates/ibis-office-app/linux/license.md)）。GPUI（Apache-2.0）は、改変したフォークを [gpui-pre](https://github.com/ibisjp/gpui-pre)・[gpui-pre-macos](https://github.com/ibisjp/gpui-pre-macos)・[gpui-pre-windows](https://github.com/ibisjp/gpui-pre-windows)・[gpui-pre-linux](https://github.com/ibisjp/gpui-pre-linux)・[gpui-pre-wgpu](https://github.com/ibisjp/gpui-pre-wgpu)・[gpui-pre-web](https://github.com/ibisjp/gpui-pre-web) で公開しています。
-
-## 貢献について
-
-不具合の報告・要望・修正の案は、Issues で歓迎します（今はプル リクエストを受け付けていません）。コードを含む issue は、[CLA](CLA-ja.md) への 1 行の返信で取り込めるようになります。くわしくは [CONTRIBUTING.md](CONTRIBUTING.md) を見てください。セキュリティの問題は、Issues に書かず [SECURITY.md](SECURITY.md) の窓口から知らせてください。
-
-## 商標について
-
-Microsoft、Microsoft Office、Microsoft 365、Word、Excel、PowerPoint は、米国 Microsoft Corporation の米国およびその他の国における登録商標または商標です。LibreOffice は The Document Foundation の、ONLYOFFICE は Ascensio System SIA の登録商標または商標です。その他、記載されている会社名・製品名は、各社の登録商標または商標です。ibisOffice は、これらの会社とは関係がなく、承認や後援を受けたものではありません。
-
-「ibisOffice」の名前とロゴは株式会社アイビスの商標です。使い方は [TRADEMARK.md](TRADEMARK.md) をご覧ください。ibisOffice をもとにしたものには「Powered by ibisOffice」の表示が必要です。
-
----
-
-© 株式会社アイビス（ibis inc.）
+- **Powered by [ibisOffice](https://github.com/ibisjp/ibis-office)**（[TRADEMARK.md](TRADEMARK.md) に準拠）
+- ライセンスは **AGPL-3.0-only** です（[LICENSE](../LICENSE)）。
+- ibisOffice 本体の著作権は株式会社アイビス（ibis inc.）に帰属します。サードパーティライセンス表記は [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) をご覧ください。
