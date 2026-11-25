@@ -1176,7 +1176,7 @@ fn indent(blocks: &[(BlockKind, usize)]) -> String {
     "  ".repeat(blocks.len() + 1)
 }
 
-fn excerpt(s: &str, max_chars: usize) -> String {
+pub(super) fn excerpt(s: &str, max_chars: usize) -> String {
     let mut chars = s.chars();
     let taken: String = chars.by_ref().take(max_chars).collect();
     if chars.next().is_some() {
@@ -1186,21 +1186,21 @@ fn excerpt(s: &str, max_chars: usize) -> String {
     }
 }
 
-fn strip_quotes(s: &str) -> &str {
+pub(super) fn strip_quotes(s: &str) -> &str {
     let s = s.trim();
     s.strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
         .unwrap_or(s)
 }
 
-fn sanitize_label(raw: &str) -> String {
+pub(super) fn sanitize_label(raw: &str) -> String {
     raw.trim()
         .replace("\\n", " / ")
         .replace('\r', "")
         .replace('\n', " / ")
 }
 
-fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+pub(super) fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     if s.get(..prefix.len())
         .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
     {
@@ -1211,7 +1211,7 @@ fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
 }
 
 /// Remove PlantUML `/' ... '/` block comments on one line, updating `in_comment`.
-fn strip_block_comments(line: &str, in_comment: &mut bool) -> String {
+pub(super) fn strip_block_comments(line: &str, in_comment: &mut bool) -> String {
     let mut out = String::with_capacity(line.len());
     let mut rest = line;
     while !rest.is_empty() {
@@ -1234,7 +1234,7 @@ fn strip_block_comments(line: &str, in_comment: &mut bool) -> String {
     out
 }
 
-fn is_timing_statement(trimmed: &str, lower: &str) -> bool {
+pub(super) fn is_timing_statement(trimmed: &str, lower: &str) -> bool {
     if trimmed.starts_with('@') && !lower.starts_with("@start") && !lower.starts_with("@end") {
         let after = &trimmed[1..];
         if after
@@ -1289,7 +1289,7 @@ fn is_non_sequence_uml(trimmed: &str, lower: &str) -> bool {
     .any(|kw| lower.starts_with(kw))
 }
 
-fn multi_line_unsupported_block(lower: &str) -> Option<&'static str> {
+pub(super) fn multi_line_unsupported_block(lower: &str) -> Option<&'static str> {
     if lower == "header" || lower.starts_with("header ") {
         Some("end header")
     } else if lower == "footer" || lower.starts_with("footer ") {
@@ -1301,7 +1301,7 @@ fn multi_line_unsupported_block(lower: &str) -> Option<&'static str> {
     }
 }
 
-fn split_trailing_color(s: &str) -> (&str, bool) {
+pub(super) fn split_trailing_color(s: &str) -> (&str, bool) {
     if let Some((head, tail)) = s.rsplit_once('#') {
         let tail = tail.trim();
         let head_trimmed = head.trim_end();
@@ -1477,7 +1477,7 @@ fn is_inside_quotes(prefix: &str) -> bool {
     prefix.chars().filter(|&c| c == '"').count() % 2 == 1
 }
 
-fn split_as_outside_quotes(s: &str) -> Option<(&str, &str)> {
+pub(super) fn split_as_outside_quotes(s: &str) -> Option<(&str, &str)> {
     let bytes = s.as_bytes();
     let mut in_quotes = false;
     for i in 0..bytes.len() {
@@ -1732,7 +1732,7 @@ fn parse_note_line(
     })
 }
 
-fn split_colon_outside_quotes(s: &str) -> Option<(&str, &str)> {
+pub(super) fn split_colon_outside_quotes(s: &str) -> Option<(&str, &str)> {
     let mut in_quotes = false;
     for (i, ch) in s.char_indices() {
         match ch {

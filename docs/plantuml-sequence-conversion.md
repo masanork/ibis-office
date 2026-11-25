@@ -42,7 +42,13 @@
 | --- | --- | --- |
 | `macro` | `!include`、`!define`、`!procedure` / `!function`、`!if` / `!endif`、`!theme`、`!pragma`、`$macro(...)` | テキスト展開言語・外部ファイル参照はオフライン安全性の観点からも展開しない |
 | `timing` | `robust`、`concise`、`clock`、`binary`、`analog`、`mode`、`@0` / `@+100` | 既存 IR とレイアウトモデルが異なるため `output: None`＋行番号診断 |
-| `diagram-type` | `class` / `state` / `usecase` / `er` / `activity` / `@startmindmap` / `@startwbs` / `@startgantt` 等 | Phase 1 のシーケンス IR では `output: None`。Phase 2・3 で既存の `class.rs` / `state.rs` / `usecase.rs` / `er.rs` / `flowchart.rs` / `mindmap.rs` / `treeview.rs` / `gantt.rs` へ段階的に共有 IR 接続する予定 |
+| `diagram-type` | `@startmindmap` / `@startwbs` / `@startgantt` / アクティビティ図・コンポーネント図・配置図等 | Phase 2 で **シーケンス図・クラス図・状態遷移図・ユースケース図・ER 図**（`render_plantuml`、および Markdown の ` ```plantuml ` / ` ```puml ` コードブロックの自動 SVG 描画と原本保持ラウンドトリップ）まで対応済み。構造・計画系 5 図種は Phase 3 で接続予定 |
 | `styling` | `skinparam`、`<style> ... </style>`、`hide`/`show`（`hide footbox` 除く）、参加者/矢印/活性化バー/`else` の `#Color`・`<<stereotype>>`・`bold` | 構造の描画を優先し、未反映装飾を行番号で報告 |
 | `layout` | `\|\|\|`、`newpage`、`header` / `footer` / `legend` / `caption`、`scale`、Teoz 並列 `& ...`、横並び `/ note ...`、`box`/`create` 上の `order N` | 単一 SVG・1 イベント 1 行モデルと構造が異なるため診断を記録 |
 | `syntax` | `autoactivate`、先行活性化のない `return`、対応のない `else` / `end` / 未閉じブロック、その他未解釈行 | 行番号付きで報告 |
+
+## 4. Markdown の `plantuml` / `puml` コードブロック対応
+
+- Markdown 内の ` ```plantuml ` / ` ```puml ` コードブロックは `render_plantuml` で自動判別（シーケンス・クラス・状態遷移・ユースケース・ER）して SVG 図として描画します。
+- マクロ（`macro`）・タイミング図（`timing`）・未対応図種（`diagram-type`）を含むブロックは安全のため通常のコードブロックのまま保持します。
+- SVG 描画された図も `alt_text`（`__plantuml__:<lang>`）に原本ソースを保持しており、Markdown へ再書き出しすると元の ` ```plantuml ` / ` ```puml ` フェンスをそのまま復元します。
