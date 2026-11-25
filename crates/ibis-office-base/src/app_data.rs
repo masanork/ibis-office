@@ -55,6 +55,13 @@ pub fn fonts_dir() -> Option<PathBuf> {
     Some(base()?.join("ibisOffice").join("fonts"))
 }
 
+/// Where user-installed design systems are kept: `ibisOffice/DesignSystems` under [`base`], sibling to
+/// `ibisOffice/ChartTemplates`. One subdirectory per design system (`DesignSystems/<name>/tokens.yaml`, etc.).
+#[cfg(not(target_family = "wasm"))]
+pub fn design_systems_dir() -> Option<PathBuf> {
+    Some(base()?.join("ibisOffice").join("DesignSystems"))
+}
+
 /// The font files in [`fonts_dir`] (`.ttf`, `.otf`, `.ttc` in the folder of each font), sorted. The app gives them to its text
 /// system at start, so they are fonts of the app (a document that names one draws with it).
 #[cfg(not(target_family = "wasm"))]

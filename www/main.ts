@@ -23,6 +23,7 @@ import { loadChunkedWasm, readManifest, type ChunkedEnv, type Manifest } from '.
 import { SubsetLoader, subsetsOf, type BlockStore } from './subset-fetch.js';
 import type { IbisOfficeEvent } from './ibisoffice-host.js';
 
+import { BRAND_NAME } from './brand.js';
 import { loadWasm } from './wasm-loader.js';
 import { registerServiceWorker } from './pwa-register.js';
 import {
@@ -668,7 +669,7 @@ async function fetchWasm(): Promise<Response | WebAssembly.Module> {
       if (loaded >= total) {
         progress?.classList.add('starting');
         if (statusText) {
-          statusText.textContent = ja ? 'ibisOffice を起動しています…' : 'Starting ibisOffice…';
+          statusText.textContent = ja ? `${BRAND_NAME} を起動しています…` : `Starting ${BRAND_NAME}…`;
         }
       }
     },
@@ -725,7 +726,7 @@ async function fetchWasm(): Promise<Response | WebAssembly.Module> {
     progressFill.style.width = '100%';
   }
   progress?.classList.add('starting');
-  if (statusText) statusText.textContent = ja ? 'Docs を起動しています…' : 'Starting Docs…';
+  if (statusText) statusText.textContent = ja ? `${BRAND_NAME} を起動しています…` : `Starting ${BRAND_NAME}…`;
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   return new Response(new Blob(chunks), { headers: { 'Content-Type': 'application/wasm' } });
 }

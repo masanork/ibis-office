@@ -227,3 +227,178 @@ test('GET /api/github/repos reports installed and canCreateRepo flags', async ()
     globalThis.fetch = origFetch;
   }
 });
+
+test('GET /api/github/repos requires repository_selection=all on personal installation for canCreateRepo', async () => {
+  const sealed = await sealSession(
+    { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const origFetch = globalThis.fetch;
+  let selection = 'selected';
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes('/user/installations?')) {
+      return new Response(
+        JSON.stringify({
+          installations: [
+            {
+              id: 42,
+              account: { login: 'masanork' },
+              repository_selection: selection,
+              html_url: 'https://github.com/settings/installations/42',
+              permissions: { contents: 'write', repository_creation: 'write' },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url.includes('/user/installations/42/repositories')) {
+      return new Response(JSON.stringify({ repositories: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/user/repos')) {
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const selectedRes = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/github/repos', {
+        headers: { Cookie: `sorane_gh_session=${sealed}` },
+      }),
+      TEST_ENV,
+    );
+    assert.equal(selectedRes.status, 200);
+    const selectedBody = await selectedRes.json();
+    assert.equal(selectedBody.installed, true);
+    assert.equal(selectedBody.canCreateRepo, false);
+    assert.equal(selectedBody.repoSelection, 'selected');
+    assert.equal(selectedBody.installSettingsUrl, 'https://github.com/settings/installations/42');
+
+    selection = 'all';
+    const allRes = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/github/repos', {
+        headers: { Cookie: `sorane_gh_session=${sealed}` },
+      }),
+      TEST_ENV,
+    );
+    assert.equal(allRes.status, 200);
+    const allBody = await allRes.json();
+    assert.equal(allBody.installed, true);
+    assert.equal(allBody.canCreateRepo, true);
+    assert.equal(allBody.repoSelection, 'all');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('POST /api/github/repos/create fails with initFailed when index.md commit is rejected', async () => {
+  const sealed = await sealSession(
+    { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/user/repos') && init?.method === 'POST') {
+      return new Response(
+        JSON.stringify({
+          name: 'soraneDocs',
+          owner: { login: 'masanork' },
+          default_branch: 'main',
+          html_url: 'https://github.com/masanork/soraneDocs',
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url.includes('/contents/index.md') && init?.method === 'PUT') {
+      return new Response(JSON.stringify({ message: 'Resource not accessible by integration' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('/user/installations')) {
+      return new Response(
+        JSON.stringify({
+          installations: [
+            {
+              account: { login: 'masanork' },
+              html_url: 'https://github.com/settings/installations/42',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/github/repos/create', {
+        method: 'POST',
+        headers: { Cookie: `sorane_gh_session=${sealed}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'soraneDocs' }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.initFailed, true);
+    assert.equal(body.repoUrl, 'https://github.com/masanork/soraneDocs');
+    assert.equal(body.installSettingsUrl, 'https://github.com/settings/installations/42');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('POST /api/github/repos/create succeeds and sets vault cookie when index.md commit succeeds', async () => {
+  const sealed = await sealSession(
+    { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/user/repos') && init?.method === 'POST') {
+      return new Response(
+        JSON.stringify({
+          name: 'soraneDocs',
+          owner: { login: 'masanork' },
+          default_branch: 'main',
+          html_url: 'https://github.com/masanork/soraneDocs',
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url.includes('/contents/index.md') && init?.method === 'PUT') {
+      return new Response(JSON.stringify({ content: { sha: 'abc123' } }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/github/repos/create', {
+        method: 'POST',
+        headers: { Cookie: `sorane_gh_session=${sealed}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'soraneDocs' }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(res.status, 201);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.vault, { owner: 'masanork', repo: 'soraneDocs', branch: 'main', rootPath: '' });
+    assert.match(res.headers.get('Set-Cookie') || '', /sorane_gh_session=/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

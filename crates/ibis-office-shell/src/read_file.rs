@@ -150,10 +150,21 @@ fn open_markdown_bytes(
     presentation: bool,
 ) -> Result<ibis_formats::Opened, String> {
     #[cfg(not(target_family = "wasm"))]
-    let result = if presentation {
-        ibis_formats::markdown::open_markdown_presentation_with_base_dir(bytes, base_dir)
-    } else {
-        ibis_formats::markdown::open_markdown_with_base_dir(bytes, base_dir)
+    let result = {
+        let system_dir = ibis_office_base::app_data::design_systems_dir();
+        if presentation {
+            ibis_formats::markdown::open_markdown_presentation_with_design_system_dirs(
+                bytes,
+                base_dir,
+                system_dir.as_deref(),
+            )
+        } else {
+            ibis_formats::markdown::open_markdown_with_design_system_dirs(
+                bytes,
+                base_dir,
+                system_dir.as_deref(),
+            )
+        }
     };
     #[cfg(target_family = "wasm")]
     let result = {

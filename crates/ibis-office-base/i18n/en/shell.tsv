@@ -724,6 +724,16 @@ shell.read-stopped	Loading stopped
 start.new	New
 start.select	Select
 start.open	Open…
+start.open-file	Open a file
+start.github-open	Open from GitHub
+start.samples-open	Open a sample
+start.samples-hide	Hide samples
+start.new-sheet	New
+start.new-memo	Note
+start.new-word	Word
+start.new-excel	Excel
+start.new-powerpoint	PowerPoint
+start.new-memo-sub	Markdown
 start.recent	Recent Files
 start.recent-none	No Recent Files
 start.request	We Need Your Help

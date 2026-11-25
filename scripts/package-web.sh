@@ -32,7 +32,7 @@ WANT=$(awk -F'\t' '$1 == "wasm" { sub(/\r$/, "", $2); print $2 }' version.txt)
 
 WEB_FILES=(
   editor.html main.js boot.js host-loader.js chunked-fetch.js subset-fetch.js
-  build-info.js ibisoffice-host.js ibisoffice-host.d.ts license.md
+  build-info.js brand.js ibisoffice-host.js ibisoffice-host.d.ts license.md
   wasm-loader.js heic-worker.js
   sorane-files-save.js sorane-ai.js favicon.svg
 )

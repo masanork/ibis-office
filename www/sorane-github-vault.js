@@ -279,12 +279,33 @@ if (!params.has('host')) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (res.status === 401 || data.reauthRequired) {
+          showStatus(
+            data.error || 'GitHub の認証が期限切れです。再ログインしてください。',
+            true,
+            '/auth/github/login',
+            'GitHub で再ログイン ↗',
+          );
+          return;
+        }
+        if (data.initFailed) {
+          showStatus(
+            data.error || `初期ファイルの書き込みに失敗しました (HTTP ${res.status})`,
+            true,
+            data.installSettingsUrl || data.installUrl || data.repoUrl || null,
+            data.installSettingsUrl || data.installUrl ? 'GitHub App 設定を開く ↗' : 'GitHub でリポジトリを確認 ↗',
+          );
+          return;
+        }
         const needsInstall = data.diagnostics?.installation === null && (data.installUrl || session.installUrl);
+        const settingsOrFallback = data.installSettingsUrl || data.fallbackCreateUrl || null;
         showStatus(
           data.error || `作成に失敗しました (HTTP ${res.status})`,
           true,
-          needsInstall ? (data.installUrl || session.installUrl) : (data.fallbackCreateUrl || null),
-          needsInstall ? 'GitHub App をインストール ↗' : 'GitHub で Private リポジトリを作成 ↗',
+          needsInstall ? (data.installUrl || session.installUrl) : settingsOrFallback,
+          needsInstall
+            ? 'GitHub App をインストール ↗'
+            : (data.installSettingsUrl ? 'GitHub App 設定を開く ↗' : 'GitHub で Private リポジトリを作成 ↗'),
         );
         return;
       }
@@ -341,7 +362,7 @@ if (!params.has('host')) {
 
     let needsInstallRefresh = false;
 
-    function updateInstallBanner(installed, canCreateRepo, installHref) {
+    function updateInstallBanner(installed, canCreateRepo, installHref, repoSelection, installSettingsUrl) {
       const href = installHref || session.installUrl;
       if (installed === false && href) {
         needsInstallRefresh = true;
@@ -352,7 +373,7 @@ if (!params.has('host')) {
         heading.textContent = 'ステップ 1: GitHub App（soraneDocs）をインストール';
         const desc = document.createElement('div');
         desc.style.cssText = 'font-size:12px;color:#78350f';
-        desc.textContent = 'リポジトリの自動作成やファイルの読み書きを行うには、ご自身の GitHub アカウントへのインストールが必要です。インストール後にこの画面へ戻ると自動で反映されます。';
+        desc.textContent = 'リポジトリの自動作成やファイルの読み書きを行うには、ご自身の GitHub アカウントへのインストールが必要です（「All repositories」を選択してください）。インストール後にこの画面へ戻ると自動で反映されます。';
         const actions = document.createElement('div');
         actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;align-items:center';
         const installLink = document.createElement('a');
@@ -370,27 +391,31 @@ if (!params.has('host')) {
         installBanner.append(heading, desc, actions);
         return;
       }
-      if (installed === true && canCreateRepo === false && href) {
+      if (installed === true && canCreateRepo === false) {
         needsInstallRefresh = true;
         installBanner.style.display = 'flex';
         installBanner.innerHTML = '';
         const heading = document.createElement('div');
         heading.style.cssText = 'font-size:13px;font-weight:700;color:#92400e';
-        heading.textContent = 'リポジトリ自動作成の権限承認が必要です';
+        heading.textContent = repoSelection === 'selected'
+          ? 'リポジトリ自動作成には「All repositories」の許可が必要です'
+          : 'リポジトリ自動作成の権限承認が必要です';
         const desc = document.createElement('div');
         desc.style.cssText = 'font-size:12px;color:#78350f';
-        desc.textContent = '新しい Private リポジトリを自動作成するには、GitHub のアプリ設定画面で権限更新（Repository creation: Write）を承認してください。';
+        desc.textContent = repoSelection === 'selected'
+          ? '現在「Only select repositories」に設定されているため、新規作成した Private リポジトリを自動初期化できません。GitHub のアプリ設定で「All repositories」に変更し、権限（Repository creation: Write）の承認状況を確認してください。'
+          : '新しい Private リポジトリを自動作成するには、GitHub のアプリ設定画面で権限更新（Repository creation: Write）を承認してください。';
         const actions = document.createElement('div');
         actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;align-items:center';
         const settingsLink = document.createElement('a');
-        settingsLink.href = 'https://github.com/settings/installations';
+        settingsLink.href = installSettingsUrl || 'https://github.com/settings/installations';
         settingsLink.target = '_blank';
         settingsLink.rel = 'noopener noreferrer';
-        settingsLink.textContent = 'GitHub で権限を確認 ↗';
+        settingsLink.textContent = 'GitHub でアプリ設定を開く ↗';
         settingsLink.style.cssText = 'display:inline-block;padding:7px 14px;border-radius:8px;background:#1e50b5;color:#fff;font-weight:700;text-decoration:none;font-size:13px';
         const reloadBtn = document.createElement('button');
         reloadBtn.type = 'button';
-        reloadBtn.textContent = '承認後に再読み込み';
+        reloadBtn.textContent = '設定後に再読み込み';
         reloadBtn.style.cssText = 'padding:7px 12px;border:1px solid #d97706;border-radius:8px;background:#fff;color:#92400e;font-weight:600;cursor:pointer;font-size:12px';
         reloadBtn.onclick = () => { void loadRepos(); };
         actions.append(settingsLink, reloadBtn);
@@ -406,10 +431,25 @@ if (!params.has('host')) {
       showStatus('リポジトリ一覧を読み込んでいます…');
       try {
         const res = await fetch('/api/github/repos', { credentials: 'same-origin' });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401 || data.reauthRequired) {
+          showStatus(
+            data.error || 'GitHub の認証が期限切れです。再ログインしてください。',
+            true,
+            '/auth/github/login',
+            'GitHub で再ログイン ↗',
+          );
+          return;
+        }
         if (res.ok && Array.isArray(data.repos)) {
           allRepos = data.repos;
-          updateInstallBanner(data.installed, data.canCreateRepo, data.installUrl);
+          updateInstallBanner(
+            data.installed,
+            data.canCreateRepo,
+            data.installUrl,
+            data.repoSelection,
+            data.installSettingsUrl,
+          );
           if (data.installed === false) {
             showStatus('GitHub App がまだインストールされていません。上のボタンからインストールしてください。');
           } else {

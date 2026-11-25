@@ -918,6 +918,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "md" | "markdown" | "xml" | "lawtext" | "txt"));
         let is_uot = path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::uot::is_extension)
             || ibis_formats::uot::is_uot(&data);
+        let system_design_systems_dir = ibis_office_base::app_data::design_systems_dir();
         match format {
             "docx" => {
                 let out_bytes = if is_uot {
@@ -929,9 +930,13 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 {
                     Ok(docx)
                 } else {
-                    ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent())
-                        .and_then(|opened| opened.source.save(&opened.presentation, Default::default()))
-                        .map_err(|e| e.to_string())
+                    ibis_formats::markdown::open_markdown_with_design_system_dirs(
+                        data,
+                        path.parent(),
+                        system_design_systems_dir.as_deref(),
+                    )
+                    .and_then(|opened| opened.source.save(&opened.presentation, Default::default()))
+                    .map_err(|e| e.to_string())
                 }.map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_path = out_dir.join(format!("{stem}.docx"));
                 std::fs::write(&out_path, out_bytes)
@@ -939,8 +944,12 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             }
             "pptx" => {
                 let opened =
-                    ibis_formats::markdown::open_markdown_presentation_with_base_dir(data, path.parent())
-                        .map_err(|e| format!("{}: {e}", path.display()))?;
+                    ibis_formats::markdown::open_markdown_presentation_with_design_system_dirs(
+                        data,
+                        path.parent(),
+                        system_design_systems_dir.as_deref(),
+                    )
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
                 let out_bytes = opened
                     .source
                     .save(&opened.presentation, Default::default())
@@ -958,9 +967,13 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             }
             "lawxml" | "lawtext" => {
                 let presentation = if is_text_md {
-                    ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent())
-                        .map_err(|e| format!("{}: {e}", path.display()))?
-                        .presentation
+                    ibis_formats::markdown::open_markdown_with_design_system_dirs(
+                        data,
+                        path.parent(),
+                        system_design_systems_dir.as_deref(),
+                    )
+                    .map_err(|e| format!("{}: {e}", path.display()))?
+                    .presentation
                 } else {
                     ibis_odf::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 };
@@ -980,9 +993,13 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                         .map_err(|e| format!("{}: {e}", path.display()))?
                         .presentation
                 } else if is_text_md {
-                    ibis_formats::markdown::open_markdown_with_base_dir(data, path.parent())
-                        .map_err(|e| format!("{}: {e}", path.display()))?
-                        .presentation
+                    ibis_formats::markdown::open_markdown_with_design_system_dirs(
+                        data,
+                        path.parent(),
+                        system_design_systems_dir.as_deref(),
+                    )
+                    .map_err(|e| format!("{}: {e}", path.display()))?
+                    .presentation
                 } else {
                     ibis_odf::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 };

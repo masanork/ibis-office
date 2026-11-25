@@ -12,7 +12,7 @@ use gpui_kit::component::v_flex;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use crate::palette::rgb;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use crate::actions::Open;
 use crate::editor::SlideEditor;
@@ -139,7 +139,70 @@ pub fn start_view_config() -> Option<StartViewConfig> {
     START_VIEW_CONFIG.with(|slot| slot.borrow().clone())
 }
 
-#[cfg(target_family = "wasm")]
+thread_local! {
+    // Phone start-view UI state (new-document sheet and sample list). Kept off the
+    // editor struct so a layout-only change does not touch its field list.
+    static MOBILE_NEW_SHEET_OPEN: Cell<bool> = const { Cell::new(false) };
+    static MOBILE_SAMPLES_OPEN: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+fn mobile_new_sheet_open() -> bool {
+    MOBILE_NEW_SHEET_OPEN.with(|slot| slot.get())
+}
+
+fn set_mobile_new_sheet_open(open: bool) {
+    MOBILE_NEW_SHEET_OPEN.with(|slot| slot.set(open));
+}
+
+fn mobile_samples_user_override() -> Option<bool> {
+    MOBILE_SAMPLES_OPEN.with(|slot| slot.get())
+}
+
+fn set_mobile_samples_user_override(open: Option<bool>) {
+    MOBILE_SAMPLES_OPEN.with(|slot| slot.set(open));
+}
+
+/// Bottom inset reserved for the home indicator (GPUI has no CSS env() yet).
+const MOBILE_SAFE_BOTTOM: f32 = 24.0;
+/// Minimum height of a mobile start-view action, in pixels.
+const MOBILE_TOUCH: f32 = 56.0;
+
+/// A start-view item fetched from the GitHub vault API (not a bundled sample).
+pub fn is_github_vault_url(url: &str) -> bool {
+    url.starts_with("/api/github/")
+}
+
+/// A bundled sample under `/samples` or `./samples`.
+pub fn is_sample_item_url(url: &str) -> bool {
+    let path = url.split_once('?').map(|(p, _)| p).unwrap_or(url);
+    path.starts_with("/samples/") || path.starts_with("./samples/") || path == "/samples" || path == "./samples"
+}
+
+/// Whether the mobile sample list starts expanded. The user override wins.
+/// Auto-expand only when this platform has a recents source and that list is
+/// empty (first run). Web has no recents, so samples stay behind the link
+/// until the user opens them. A connected GitHub repo list also stays collapsed.
+pub fn mobile_samples_expanded(
+    recents_empty: bool,
+    has_recent_source: bool,
+    has_github_items: bool,
+    user_override: Option<bool>,
+) -> bool {
+    if let Some(open) = user_override {
+        return open;
+    }
+    if has_github_items {
+        return false;
+    }
+    has_recent_source && recents_empty
+}
+
+/// Labels of the mobile new-document sheet, in display order.
+pub fn mobile_new_document_kinds() -> [&'static str; 4] {
+    ["memo", "word", "excel", "powerpoint"]
+}
+
+
 fn badge_color(badge: &str) -> u32 {
     match badge.to_ascii_uppercase().as_str() {
         "DOCX" | "DOC" => 0x185abd,
@@ -324,6 +387,11 @@ fn request_panel(muted: Hsla) -> Div {
 impl SlideEditor {
     /// The white page under the title bar while no file is open.
     pub(crate) fn render_start_view(&self, narrow: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        if narrow {
+            return self.render_mobile_start_view(cx);
+        }
+        // Leaving phone mode must not leave the sheet open for the next visit.
+        set_mobile_new_sheet_open(false);
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let open = div()
@@ -431,6 +499,471 @@ impl SlideEditor {
                         None => request_panel(muted).w_full().mt_0().mr_0(),
                     }
                 )))
+        .into_any_element()
+    }
+
+
+    /// Phone-sized start view (`narrow_phone_editor`: phone editor flag and width under 600 px).
+    fn render_mobile_start_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (foreground, muted, border, hover, background) =
+            (theme.foreground, theme.muted_foreground, theme.border, theme.muted, theme.background);
+        let config = start_view_config();
+        let select_action = config.as_ref().and_then(|c| c.select_action.clone());
+        let all_items = config.as_ref().map(|c| c.items.as_slice()).unwrap_or(&[]);
+        let github_items: Vec<StartViewItem> = all_items
+            .iter()
+            .filter(|item| is_github_vault_url(&item.url))
+            .cloned()
+            .collect();
+        let sample_items: Vec<StartViewItem> = all_items
+            .iter()
+            .filter(|item| is_sample_item_url(&item.url))
+            .cloned()
+            .collect();
+        let has_github_items = !github_items.is_empty();
+
+        #[cfg(not(target_family = "wasm"))]
+        let (recent_paths, has_recent_source) = (self.recent_files.clone(), true);
+        #[cfg(target_family = "wasm")]
+        let (recent_paths, has_recent_source): (Vec<std::path::PathBuf>, bool) = (Vec::new(), false);
+        let recents_empty = recent_paths.is_empty();
+        let samples_open = mobile_samples_expanded(
+            recents_empty,
+            has_recent_source,
+            has_github_items,
+            mobile_samples_user_override(),
+        );
+
+        let mut body = v_flex()
+            .id("start-mobile-scroll")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .px_4()
+            .pt_3()
+            .pb(px(MOBILE_TOUCH + 16.0 + MOBILE_SAFE_BOTTOM + 16.0))
+            .gap_3()
+            .overflow_y_scroll()
+            .track_scroll(&self.recent_scroll);
+
+        if !recents_empty {
+            body = body
+                .child(section_title("start.recent", 0.0, TITLE_GAP))
+                .child(self.mobile_recent_rows(&recent_paths, foreground, muted, border, hover, cx));
+        }
+
+        body = body.child(self.mobile_action_button(
+            "start-open",
+            "folder_open",
+            crate::i18n::text("start.open-file"),
+            None,
+            foreground,
+            muted,
+            border,
+            hover,
+            background,
+            |this, _, window, cx| this.open_file(&Open, window, cx),
+            cx,
+        ));
+
+        if let Some(sa) = select_action {
+            let action = sa.action.clone();
+            let url = sa.url.clone();
+            let default_label = crate::i18n::text("start.github-open");
+            let title = default_label.clone();
+            let subtitle = if sa.label.trim() != default_label.trim() && !sa.label.trim().is_empty() {
+                Some(SharedString::from(sa.label))
+            } else {
+                None
+            };
+            body = body.child(self.mobile_action_button(
+                "start-select-action",
+                "cloud",
+                title,
+                subtitle,
+                foreground,
+                muted,
+                border,
+                hover,
+                background,
+                move |_, _, _, cx| {
+                    if let Some(act) = &action {
+                        #[cfg(target_family = "wasm")]
+                        crate::web::trigger_start_action(act);
+                        let _ = act;
+                    } else if let Some(target_url) = &url {
+                        crate::external::open_url(target_url, cx);
+                    }
+                },
+                cx,
+            ));
+        }
+
+        if has_github_items {
+            let list_title: SharedString = config
+                .as_ref()
+                .and_then(|c| c.list_title.clone())
+                .filter(|t| !t.trim().is_empty())
+                .map(SharedString::from)
+                .unwrap_or_else(|| crate::i18n::text("start.github-open").into());
+            body = body
+                .child(
+                    div()
+                        .mt_2()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(foreground)
+                        .child(list_title),
+                )
+                .child(self.mobile_web_item_rows(github_items, foreground, muted, border, hover, cx));
+        }
+
+        if !sample_items.is_empty() {
+            let toggle_key = if samples_open { "start.samples-hide" } else { "start.samples-open" };
+            body = body.child(
+                div()
+                    .id("start-samples-toggle")
+                    .mt_2()
+                    .py_2()
+                    .flex()
+                    .justify_center()
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(LINK_COLOR))
+                            .child(crate::i18n::text(toggle_key)),
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        set_mobile_samples_user_override(Some(!samples_open));
+                        cx.notify();
+                    })),
+            );
+            if samples_open {
+                body = body.child(self.mobile_web_item_rows(sample_items, foreground, muted, border, hover, cx));
+            }
+        }
+
+        body = body.when_some(self.status.clone(), |d, status| {
+            d.child(div().mt_2().text_sm().text_color(muted).child(status))
+        });
+
+        let fab = div()
+            .id("start-new-fab")
+            .absolute()
+            .right(px(16.))
+            .bottom(px(16. + MOBILE_SAFE_BOTTOM))
+            .w(px(MOBILE_TOUCH))
+            .h(px(MOBILE_TOUCH))
+            .rounded(px(MOBILE_TOUCH / 2.))
+            .bg(rgb(LINK_COLOR))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .shadow_lg()
+            .child(Icon::new(Material("add")).size(px(28.)).text_color(crate::palette::doc(0xffffff)))
+            .on_click(cx.listener(|_, _, _, cx| {
+                set_mobile_new_sheet_open(true);
+                cx.notify();
+            }));
+
+        let sheet = mobile_new_sheet_open().then(|| self.render_mobile_new_sheet(cx));
+
+        div()
+            .id("start-view")
+            .key_context(crate::editor::WORKSPACE_CONTEXT)
+            .track_focus(&self.focus_handle)
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .relative()
+            .bg(background)
+            .overflow_hidden()
+            .child(body.vertical_scrollbar(&self.recent_scroll))
+            .child(fab)
+            .when_some(sheet, |d, s| d.child(s))
+            .into_any_element()
+    }
+
+    fn mobile_action_button(
+        &self,
+        id: &'static str,
+        icon: &'static str,
+        title: impl Into<SharedString>,
+        subtitle: Option<SharedString>,
+        foreground: Hsla,
+        muted: Hsla,
+        border: Hsla,
+        hover: Hsla,
+        background: Hsla,
+        on_click: impl Fn(&mut Self, &gpui_kit::ClickEvent, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let title = title.into();
+        let has_sub = subtitle.as_ref().is_some_and(|s| !s.is_empty());
+        div()
+            .id(id)
+            .w_full()
+            .min_h(px(MOBILE_TOUCH))
+            .px_4()
+            .py_3()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(border)
+            .bg(background)
+            .flex()
+            .items_center()
+            .gap_3()
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .child(Icon::new(Material(icon)).size(px(24.)).text_color(rgb(LINK_COLOR)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().text_base().font_weight(FontWeight::MEDIUM).text_color(foreground).child(title))
+                    .when(has_sub, |d| {
+                        d.child(div().text_xs().text_color(muted).truncate().child(subtitle.clone().unwrap_or_default()))
+                    }),
+            )
+            .on_click(cx.listener(on_click))
+    }
+
+    fn mobile_web_item_rows(
+        &self,
+        items: Vec<StartViewItem>,
+        foreground: Hsla,
+        muted: Hsla,
+        border: Hsla,
+        hover: Hsla,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let rows = items.into_iter().enumerate().map(|(index, item)| {
+            let badge_label = item.badge.unwrap_or_else(|| {
+                item.name
+                    .rsplit_once('.')
+                    .map(|(_, ext)| ext.to_ascii_uppercase())
+                    .unwrap_or_else(|| "FILE".to_string())
+            });
+            let badge_bg = badge_color(&badge_label);
+            let title: SharedString = item.title.into();
+            let subtitle: SharedString = item.subtitle.into();
+            let has_subtitle = !subtitle.is_empty();
+            let url = item.url;
+            let name = item.name;
+            div()
+                .id(("start-mobile-item", index))
+                .w_full()
+                .min_h(px(MOBILE_TOUCH))
+                .px_3()
+                .py_2()
+                .flex()
+                .items_center()
+                .gap_3()
+                .border_b_1()
+                .border_color(border)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    #[cfg(target_family = "wasm")]
+                    this.open_web_url(url.clone(), name.clone(), window, cx);
+                    #[cfg(not(target_family = "wasm"))]
+                    let _ = (this, &url, &name, window, cx);
+                }))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .w(px(44.))
+                        .py(px(2.))
+                        .rounded(px(4.))
+                        .bg(rgb(badge_bg))
+                        .text_color(crate::palette::doc(0xffffff))
+                        .text_size(px(10.))
+                        .font_weight(FontWeight::BOLD)
+                        .flex()
+                        .justify_center()
+                        .child(badge_label),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_sm().font_weight(FontWeight::MEDIUM).text_color(foreground).truncate().child(title))
+                        .when(has_subtitle, |d| d.child(div().text_xs().text_color(muted).truncate().child(subtitle))),
+                )
+        });
+        v_flex()
+            .w_full()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(border)
+            .overflow_hidden()
+            .children(rows)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn mobile_recent_rows(
+        &self,
+        paths: &[std::path::PathBuf],
+        foreground: Hsla,
+        muted: Hsla,
+        border: Hsla,
+        hover: Hsla,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        self.check_recent_exists(cx);
+        let rows = paths.iter().enumerate().map(|(index, path)| {
+            let name: SharedString = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned())
+                .into();
+            let dir: SharedString = path.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default().into();
+            let exists = self.recent_exists.get(path).copied().unwrap_or(true);
+            let path = path.clone();
+            div()
+                .id(("start-mobile-recent", index))
+                .w_full()
+                .min_h(px(MOBILE_TOUCH))
+                .px_3()
+                .py_2()
+                .flex()
+                .flex_col()
+                .justify_center()
+                .gap_1()
+                .border_b_1()
+                .border_color(border)
+                .text_color(if exists { foreground } else { muted })
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_path_or_raise(path.clone(), window, cx);
+                }))
+                .child(div().text_sm().font_weight(FontWeight::MEDIUM).truncate().child(name))
+                .when(!dir.is_empty(), |d| d.child(div().text_xs().text_color(muted).truncate().child(dir)))
+        });
+        v_flex()
+            .w_full()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(border)
+            .overflow_hidden()
+            .children(rows)
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn mobile_recent_rows(
+        &self,
+        _paths: &[std::path::PathBuf],
+        _foreground: Hsla,
+        _muted: Hsla,
+        _border: Hsla,
+        _hover: Hsla,
+        _cx: &mut Context<Self>,
+    ) -> Div {
+        div()
+    }
+
+    fn render_mobile_new_sheet(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (foreground, muted, _border, hover, popover) = (
+            theme.foreground,
+            theme.muted_foreground,
+            theme.border,
+            theme.muted,
+            theme.popover,
+        );
+        let rows: [(&'static str, &'static str, &'static str, Option<&'static str>, fn(&mut Self, &mut Window, &mut Context<Self>)); 4] = [
+            ("start-new-memo", "edit_note", "start.new-memo", Some("start.new-memo-sub"), |this, window, cx| {
+                this.new_markdown_file(window, cx)
+            }),
+            ("start-new-word", "description", "start.new-word", None, |this, window, cx| {
+                this.new_file(ibis_formats::Kind::Document, window, cx)
+            }),
+            ("start-new-excel", "table_chart", "start.new-excel", None, |this, window, cx| {
+                this.new_file(ibis_formats::Kind::Workbook, window, cx)
+            }),
+            ("start-new-powerpoint", "slideshow", "start.new-powerpoint", None, |this, window, cx| {
+                this.new_file(ibis_formats::Kind::Presentation, window, cx)
+            }),
+        ];
+        let sheet_rows = rows.map(|(id, icon, title_key, sub_key, action)| {
+            div()
+                .id(id)
+                .w_full()
+                .min_h(px(MOBILE_TOUCH))
+                .px_4()
+                .flex()
+                .items_center()
+                .gap_3()
+                .rounded(px(10.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(Icon::new(Material(icon)).size(px(24.)).text_color(rgb(LINK_COLOR)))
+                .child(
+                    div()
+                        .flex_1()
+                        .child(div().text_base().font_weight(FontWeight::MEDIUM).text_color(foreground).child(crate::i18n::text(title_key)))
+                        .when_some(sub_key, |d, key| d.child(div().text_xs().text_color(muted).child(crate::i18n::text(key)))),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    set_mobile_new_sheet_open(false);
+                    action(this, window, cx);
+                }))
+        });
+        div()
+            .id("start-new-sheet")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id("start-new-sheet-dismiss")
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .bg(hsla(0.0, 0.0, 0.0, 0.4))
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        set_mobile_new_sheet_open(false);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .bg(popover)
+                    .rounded_tl(px(16.))
+                    .rounded_tr(px(16.))
+                    .px_4()
+                    .pt_3()
+                    .pb(px(12. + MOBILE_SAFE_BOTTOM))
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .mb_2()
+                            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(foreground).child(crate::i18n::text("start.new-sheet")))
+                            .child(
+                                div()
+                                    .id("start-new-sheet-close")
+                                    .p_2()
+                                    .cursor_pointer()
+                                    .child(Icon::new(Material("close")).size(px(20.)).text_color(muted))
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        set_mobile_new_sheet_open(false);
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .children(sheet_rows),
+            )
     }
 
     /// 「ver.0.8.x」 directly under the logo lockup.
@@ -765,6 +1298,32 @@ impl SlideEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[core::prelude::v1::test]
+    fn classifies_sample_and_github_vault_urls() {
+        assert!(is_sample_item_url("/samples/mermaid-showcase.md"));
+        assert!(is_sample_item_url("./samples/a.docx"));
+        assert!(is_github_vault_url("/api/github/file?path=notes.md"));
+        assert!(is_github_vault_url("/api/github/tree"));
+        assert!(!is_sample_item_url("/api/github/file?path=samples/x.md"));
+        assert!(!is_github_vault_url("/samples/a.docx"));
+        assert!(!is_sample_item_url("https://example.com/samples/a.docx"));
+    }
+
+    #[core::prelude::v1::test]
+    fn mobile_samples_expand_only_on_empty_native_recents() {
+        assert!(mobile_samples_expanded(true, true, false, None));
+        assert!(!mobile_samples_expanded(false, true, false, None));
+        assert!(!mobile_samples_expanded(true, false, false, None));
+        assert!(!mobile_samples_expanded(true, true, true, None));
+        assert!(mobile_samples_expanded(false, true, true, Some(true)));
+        assert!(!mobile_samples_expanded(true, true, false, Some(false)));
+    }
+
+    #[core::prelude::v1::test]
+    fn mobile_new_document_puts_memo_first() {
+        assert_eq!(mobile_new_document_kinds(), ["memo", "word", "excel", "powerpoint"]);
+    }
 
     #[core::prelude::v1::test]
     fn start_view_config_filters_unsafe_urls_and_resets() {

@@ -66,6 +66,7 @@ pub mod progress;
 mod bibliography;
 mod docx;
 pub mod docx_convert;
+pub mod design_system;
 pub mod html_export;
 pub mod markdown;
 pub mod epub;

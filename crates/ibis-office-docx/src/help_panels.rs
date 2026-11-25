@@ -1123,7 +1123,7 @@ impl SlideEditor {
         if self.has_selection() {
             let text = self.selected_text();
             let (words, characters_no_spaces, characters_with_spaces) = count_words_and_chars(&text);
-            let lines_geom = self.flow_lines();
+            let lines_geom = self.flow_lines_arc();
             let mut paras = 0;
             let mut lines_count = 0;
             let mut pages_set = std::collections::BTreeSet::new();
@@ -1137,7 +1137,7 @@ impl SlideEditor {
                         paras = 1;
                     }
                 }
-                for l in &lines_geom {
+                for l in lines_geom.iter() {
                     if l.para >= start.para.min(end.para) && l.para <= start.para.max(end.para) {
                         lines_count += 1;
                         pages_set.insert(l.page);
@@ -1194,7 +1194,7 @@ impl SlideEditor {
 
             let (words, characters_no_spaces, characters_with_spaces) = count_words_and_chars(&all_text);
             let pages = self.presentation().slides.len().max(1);
-            let lines = self.flow_lines().len().max(paras);
+            let lines = self.flow_lines_arc().len().max(paras);
 
             DocStatistics {
                 is_selection: false,

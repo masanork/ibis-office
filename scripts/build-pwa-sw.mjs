@@ -41,6 +41,7 @@ const shell = [
   './favicon.svg',
   './favicon.ico',
   './boot.js',
+  './brand.js',
   './main.js',
   './build-info.js',
   './wasm-loader.js',

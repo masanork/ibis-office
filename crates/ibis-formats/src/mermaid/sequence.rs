@@ -86,6 +86,21 @@ pub(super) enum SeqOpen {
     Rect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum SeqNoteShape {
+    #[default]
+    Rect,
+    Hexagon,
+    Box,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SeqAutonumberOp {
+    Start { start: usize, step: usize },
+    Stop,
+    Resume,
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum SeqItem {
     Message {
@@ -108,10 +123,13 @@ pub(super) enum SeqItem {
         to: usize,
         pos: SeqNotePos,
         text: String,
+        shape: SeqNoteShape,
+        color: Option<String>,
     },
     BlockStart {
         kind: String,
         label: String,
+        color: Option<String>,
     },
     BlockElse {
         label: String,
@@ -124,6 +142,43 @@ pub(super) enum SeqItem {
         color: String,
     },
     RectEnd,
+    /// PlantUML `== label ==` section divider.
+    Divider {
+        label: String,
+    },
+    /// PlantUML `... [label] ...` delay break.
+    Delay {
+        label: String,
+    },
+    /// PlantUML `ref over A, B : label` interaction-use frame.
+    Ref {
+        from: usize,
+        to: usize,
+        label: String,
+    },
+    /// PlantUML incoming/outgoing boundary gate arrow (`[-> A`, `A ->]`).
+    Gate {
+        target: usize,
+        incoming: bool,
+        from_left: bool,
+        label: String,
+        dashed: bool,
+        open_arrow: bool,
+        cross_end: bool,
+    },
+    /// PlantUML `autonumber [start] [step]` / `stop` / `resume`.
+    Autonumber(SeqAutonumberOp),
+}
+
+pub(super) struct SeqDiagram {
+    pub(super) participants: Vec<SeqParticipant>,
+    pub(super) items: Vec<SeqItem>,
+    pub(super) autonumber: bool,
+    pub(super) mirror_actors: bool,
+    pub(super) boxes: Vec<SeqBox>,
+    pub(super) title: Option<String>,
+    pub(super) created_at: HashMap<usize, usize>,
+    pub(super) destroyed_at: HashMap<usize, usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +197,11 @@ fn push_seq_autonumber(svg: &mut String, x: f32, y: f32, num: usize) {
 }
 
 pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let diagram = parse_mermaid_sequence(source)?;
+    render_seq_diagram_svg(&diagram)
+}
+
+fn parse_mermaid_sequence(source: &str) -> Option<SeqDiagram> {
     let mut participants: Vec<SeqParticipant> = Vec::new();
     let mut part_map: HashMap<String, usize> = HashMap::new();
     let mut items: Vec<SeqItem> = Vec::new();
@@ -320,6 +380,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 items.push(SeqItem::BlockStart {
                     kind: kw.trim().to_string(),
                     label: rest.trim().to_string(),
+                    color: None,
                 });
                 open.push(SeqOpen::Fragment);
                 break;
@@ -361,8 +422,37 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         return None;
     }
 
+    Some(SeqDiagram {
+        participants,
+        items,
+        autonumber,
+        mirror_actors: true,
+        boxes,
+        title,
+        created_at,
+        destroyed_at,
+    })
+}
+
+pub(super) fn render_seq_diagram_svg(diagram: &SeqDiagram) -> Option<(Vec<u8>, u32, u32)> {
+    let participants = &diagram.participants;
+    let items = &diagram.items;
+    let boxes = &diagram.boxes;
+    let created_at = &diagram.created_at;
+    let destroyed_at = &diagram.destroyed_at;
+    if participants.is_empty() {
+        return None;
+    }
+
     // Layout geometry
-    let margin_x = 32.0f32;
+    let has_left_gate = items
+        .iter()
+        .any(|item| matches!(item, SeqItem::Gate { from_left: true, .. }));
+    let has_right_gate = items
+        .iter()
+        .any(|item| matches!(item, SeqItem::Gate { from_left: false, .. }));
+    let margin_left = if has_left_gate { 76.0f32 } else { 32.0f32 };
+    let margin_right = if has_right_gate { 76.0f32 } else { 32.0f32 };
     let top_y = 24.0f32;
     let box_h = 38.0f32;
     let col_widths: Vec<f32> = participants
@@ -372,7 +462,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
 
     // Compute horizontal centers ensuring message labels have room.
     let mut col_gaps: Vec<f32> = vec![56.0; participants.len().saturating_sub(1)];
-    for item in &items {
+    for item in items {
         if let SeqItem::Message { from, to, label, .. } = item
             && from != to
         {
@@ -390,7 +480,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     }
 
     let mut centers = Vec::with_capacity(participants.len());
-    let mut cursor_x = margin_x;
+    let mut cursor_x = margin_left;
     for (idx, w) in col_widths.iter().enumerate() {
         centers.push(cursor_x + w / 2.0);
         cursor_x += w;
@@ -398,14 +488,14 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             cursor_x += col_gaps[idx];
         }
     }
-    let total_w = (cursor_x + margin_x).ceil() as u32;
+    let total_w = (cursor_x + margin_right).ceil() as u32;
 
     let mut y = top_y + box_h + 28.0;
     let row_step = 44.0f32;
     let self_step = 54.0f32;
     let mut item_y = Vec::with_capacity(items.len());
     let mut block_stack: Vec<(usize, f32)> = Vec::new();
-    let mut block_boxes: Vec<(String, String, f32, f32, usize)> = Vec::new();
+    let mut block_boxes: Vec<(String, String, Option<String>, f32, f32, usize)> = Vec::new();
     let mut rect_stack: Vec<(usize, f32)> = Vec::new();
     // (color, first item, last item, top, bottom, depth)
     let mut rect_boxes: Vec<(String, usize, usize, f32, f32, usize)> = Vec::new();
@@ -425,6 +515,10 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                     y += box_h / 2.0;
                 }
             }
+            SeqItem::Gate { .. } => {
+                item_y.push(y);
+                y += row_step;
+            }
             SeqItem::RectStart { .. } => {
                 item_y.push(y);
                 rect_stack.push((idx, y - 22.0));
@@ -443,11 +537,26 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 item_y.push(y);
                 y += 8.0;
             }
+            SeqItem::Autonumber(_) => {
+                item_y.push(y);
+            }
             SeqItem::Note { .. } => {
                 item_y.push(y);
                 y += 42.0;
             }
-            SeqItem::BlockStart { kind, label } => {
+            SeqItem::Divider { .. } => {
+                item_y.push(y);
+                y += 38.0;
+            }
+            SeqItem::Delay { .. } => {
+                item_y.push(y);
+                y += 36.0;
+            }
+            SeqItem::Ref { .. } => {
+                item_y.push(y);
+                y += 48.0;
+            }
+            SeqItem::BlockStart { kind, label, .. } => {
                 item_y.push(y);
                 block_stack.push((idx, y - 14.0));
                 let _ = (kind, label);
@@ -460,9 +569,9 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
             SeqItem::BlockEnd => {
                 item_y.push(y);
                 if let Some((start_idx, start_y)) = block_stack.pop()
-                    && let SeqItem::BlockStart { kind, label } = &items[start_idx]
+                    && let SeqItem::BlockStart { kind, label, color } = &items[start_idx]
                 {
-                    block_boxes.push((kind.clone(), label.clone(), start_y, y + 6.0, block_stack.len()));
+                    block_boxes.push((kind.clone(), label.clone(), color.clone(), start_y, y + 6.0, block_stack.len()));
                 }
                 y += 22.0;
             }
@@ -470,7 +579,11 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     }
 
     let bottom_box_y = y + 12.0;
-    let total_h = (bottom_box_y + box_h + 24.0).ceil() as u32;
+    let total_h = if diagram.mirror_actors {
+        (bottom_box_y + box_h + 24.0).ceil() as u32
+    } else {
+        (bottom_box_y + 16.0).ceil() as u32
+    };
 
     let mut svg = String::new();
     svg.push_str(&format!(
@@ -490,7 +603,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         r##"<rect width="{total_w}" height="{total_h}" fill="#ffffff"/>"##
     ));
 
-    for seq_box in &boxes {
+    for seq_box in boxes {
         if seq_box.members.is_empty() {
             continue;
         }
@@ -499,7 +612,8 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         let x = centers[min_i] - col_widths[min_i] / 2.0 - 10.0;
         let right = centers[max_i] + col_widths[max_i] / 2.0 + 10.0;
         let y = (top_y - 22.0).max(4.0);
-        let height = bottom_box_y + box_h - y + 8.0;
+        let bottom_extent = if diagram.mirror_actors { bottom_box_y + box_h } else { bottom_box_y };
+        let height = bottom_extent - y + 8.0;
         svg.push_str(&format!(
             r##"<rect x="{x:.1}" y="{y:.1}" width="{:.1}" height="{height:.1}" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2" data-shape="seq-box"/>"##,
             right - x
@@ -522,8 +636,10 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         let mut hi = 0usize;
         for item in &items[*first..=*last] {
             let (a, b) = match item {
-                SeqItem::Message { from, to, .. } | SeqItem::Note { from, to, .. } => (*from, *to),
-                SeqItem::Activate(who) | SeqItem::Deactivate(who) => (*who, *who),
+                SeqItem::Message { from, to, .. }
+                | SeqItem::Note { from, to, .. }
+                | SeqItem::Ref { from, to, .. } => (*from, *to),
+                SeqItem::Activate(who) | SeqItem::Deactivate(who) | SeqItem::Gate { target: who, .. } => (*who, *who),
                 _ => continue,
             };
             lo = lo.min(a.min(b));
@@ -552,14 +668,21 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         ));
     }
 
-    // Combined fragment frames (`alt`, `loop`, etc.)
-    for (kind, label, sy, ey, depth) in &block_boxes {
+    // Combined fragment frames (`alt`, `loop`, `group`, etc.)
+    for (kind, label, color, sy, ey, depth) in &block_boxes {
         let inset = (*depth as f32) * 8.0;
         let bx = 14.0 + inset;
         let bw = (total_w as f32) - 28.0 - inset * 2.0;
         let bh = (ey - sy).max(28.0);
+        let (fill, opacity) = match color.as_deref() {
+            Some(c) => {
+                let (paint, op) = seq_rect_paint(c);
+                (paint, (op * 0.25).clamp(0.10, 0.45))
+            }
+            None => ("#f8fafc".to_string(), 0.55),
+        };
         svg.push_str(&format!(
-            r##"<rect x="{bx:.1}" y="{sy:.1}" width="{bw:.1}" height="{bh:.1}" rx="4" fill="#f8fafc" fill-opacity="0.55" stroke="#64748b" stroke-width="1.2"/>"##
+            r##"<rect x="{bx:.1}" y="{sy:.1}" width="{bw:.1}" height="{bh:.1}" rx="4" fill="{fill}" fill-opacity="{opacity:.2}" stroke="#64748b" stroke-width="1.2"/>"##
         ));
         let tag_w = (estimate_text_width(kind, 11.0) + 18.0).max(46.0);
         svg.push_str(&format!(
@@ -585,11 +708,156 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
         }
     }
 
-    // Messages, notes, else dividers
-    let mut msg_num = 0usize;
+    // Messages, notes, dividers, delays, refs, gates, else dividers
+    let mut autonumber_active = diagram.autonumber;
+    let mut msg_num = 1usize;
+    let mut msg_step = 1usize;
     for (idx, item) in items.iter().enumerate() {
         let y = item_y[idx];
         match item {
+            SeqItem::Autonumber(op) => match *op {
+                SeqAutonumberOp::Start { start, step } => {
+                    autonumber_active = true;
+                    msg_num = start;
+                    msg_step = step.max(1);
+                }
+                SeqAutonumberOp::Stop => {
+                    autonumber_active = false;
+                }
+                SeqAutonumberOp::Resume => {
+                    autonumber_active = true;
+                }
+            },
+            SeqItem::Divider { label } => {
+                let x1 = 16.0f32;
+                let x2 = total_w as f32 - 16.0;
+                svg.push_str(&format!(
+                    r##"<line x1="{x1:.1}" y1="{:.1}" x2="{x2:.1}" y2="{:.1}" stroke="#64748b" stroke-width="1.2" data-shape="seq-divider"/><line x1="{x1:.1}" y1="{:.1}" x2="{x2:.1}" y2="{:.1}" stroke="#64748b" stroke-width="1.2"/>"##,
+                    y - 2.0,
+                    y - 2.0,
+                    y + 2.0,
+                    y + 2.0
+                ));
+                if !label.is_empty() {
+                    let pw = (estimate_text_width(label, 11.5) + 24.0).max(72.0);
+                    let px = total_w as f32 / 2.0 - pw / 2.0;
+                    svg.push_str(&format!(
+                        r##"<rect x="{px:.1}" y="{:.1}" width="{pw:.1}" height="22" rx="4" fill="#e2e8f0" stroke="#64748b" stroke-width="1"/>"##,
+                        y - 11.0
+                    ));
+                    svg.push_str(&format!(
+                        r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="11.5" font-weight="600" fill="#1e293b">{}</text>"##,
+                        total_w as f32 / 2.0,
+                        y + 4.0,
+                        escape_xml(label)
+                    ));
+                }
+            }
+            SeqItem::Delay { label } => {
+                svg.push_str(&format!(
+                    r##"<rect x="12" y="{:.1}" width="{:.1}" height="22" fill="#ffffff" data-shape="seq-delay"/>"##,
+                    y - 11.0,
+                    total_w as f32 - 24.0
+                ));
+                for &cx in &centers {
+                    svg.push_str(&format!(
+                        r##"<line x1="{cx:.1}" y1="{:.1}" x2="{cx:.1}" y2="{:.1}" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="2,4"/>"##,
+                        y - 10.0,
+                        y + 10.0
+                    ));
+                }
+                let text = if label.is_empty() { "..." } else { label.as_str() };
+                svg.push_str(&format!(
+                    r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="11.5" font-style="italic" fill="#475569">{}</text>"##,
+                    total_w as f32 / 2.0,
+                    y + 4.0,
+                    escape_xml(text)
+                ));
+            }
+            SeqItem::Ref { from, to, label } => {
+                let lo = (*from).min(*to);
+                let hi = (*from).max(*to);
+                let min_x = centers[lo] - col_widths[lo] / 2.0;
+                let max_x = centers[hi] + col_widths[hi] / 2.0;
+                let rw = (max_x - min_x).max(estimate_text_width(label, 12.0) + 48.0).max(110.0);
+                let rx = ((min_x + max_x) / 2.0 - rw / 2.0).max(10.0);
+                let ry = y - 16.0;
+                let rh = 36.0f32;
+                svg.push_str(&format!(
+                    r##"<rect x="{rx:.1}" y="{ry:.1}" width="{rw:.1}" height="{rh:.1}" rx="4" fill="#f8fafc" stroke="#475569" stroke-width="1.2" data-shape="seq-ref"/>"##
+                ));
+                let tag_w = 36.0f32;
+                svg.push_str(&format!(
+                    r##"<path d="M {rx:.1} {ry:.1} H {:.1} V {:.1} L {:.1} {:.1} H {rx:.1} Z" fill="#e2e8f0" stroke="#475569" stroke-width="1"/>"##,
+                    rx + tag_w,
+                    ry + 12.0,
+                    rx + tag_w - 5.0,
+                    ry + 17.0
+                ));
+                svg.push_str(&format!(
+                    r##"<text x="{:.1}" y="{:.1}" font-size="10.5" font-weight="bold" fill="#1e293b">ref</text>"##,
+                    rx + 8.0,
+                    ry + 12.0
+                ));
+                svg.push_str(&format!(
+                    r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="12" fill="#0f172a">{}</text>"##,
+                    rx + rw / 2.0,
+                    ry + 25.0,
+                    escape_xml(label)
+                ));
+            }
+            SeqItem::Gate {
+                target,
+                incoming,
+                from_left,
+                label,
+                dashed,
+                open_arrow,
+                cross_end,
+            } => {
+                let edge_x = if *from_left { 14.0f32 } else { total_w as f32 - 14.0 };
+                let target_x = centers[*target];
+                let (x1, x2) = if *incoming {
+                    (edge_x, target_x)
+                } else {
+                    (target_x, edge_x)
+                };
+                let dash_attr = if *dashed { r##" stroke-dasharray="6,4""## } else { "" };
+                let marker_attr = if *cross_end {
+                    ""
+                } else if *open_arrow {
+                    r##" marker-end="url(#seq-open)""##
+                } else {
+                    r##" marker-end="url(#seq-arrow)""##
+                };
+                svg.push_str(&format!(
+                    r##"<line x1="{x1:.1}" y1="{y:.1}" x2="{x2:.1}" y2="{y:.1}" stroke="#334155" stroke-width="1.4"{dash_attr}{marker_attr} data-role="message" data-shape="seq-gate"/>"##
+                ));
+                if autonumber_active {
+                    push_seq_autonumber(&mut svg, (x1 + x2) / 2.0, y - 10.0, msg_num);
+                    msg_num += msg_step;
+                }
+                if *cross_end {
+                    svg.push_str(&format!(
+                        r##"<path d="M {:.1} {:.1} L {:.1} {:.1} M {:.1} {:.1} L {:.1} {:.1}" stroke="#dc2626" stroke-width="1.6"/>"##,
+                        x2 - 5.0, y - 5.0, x2 + 5.0, y + 5.0, x2 + 5.0, y - 5.0, x2 - 5.0, y + 5.0
+                    ));
+                }
+                if !label.is_empty() {
+                    let mid_x = (x1 + x2) / 2.0;
+                    let tw = estimate_text_width(label, 12.0) + 8.0;
+                    svg.push_str(&format!(
+                        r##"<rect x="{:.1}" y="{:.1}" width="{tw:.1}" height="16" fill="#ffffff" fill-opacity="0.88"/>"##,
+                        mid_x - tw / 2.0,
+                        y - 19.0
+                    ));
+                    svg.push_str(&format!(
+                        r##"<text x="{mid_x:.1}" y="{:.1}" text-anchor="middle" font-size="12" fill="#0f172a">{}</text>"##,
+                        y - 7.0,
+                        escape_xml(label)
+                    ));
+                }
+            }
             SeqItem::BlockElse { label } => {
                 svg.push_str(&format!(
                     r##"<line x1="18" y1="{y:.1}" x2="{:.1}" y2="{y:.1}" stroke="#64748b" stroke-width="1" stroke-dasharray="4,4"/>"##,
@@ -603,7 +871,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                     ));
                 }
             }
-            SeqItem::Note { from, to, pos, text } => {
+            SeqItem::Note { from, to, pos, text, shape, color } => {
                 let nw = (estimate_text_width(text, 11.5) + 22.0).max(80.0);
                 let nh = 28.0f32;
                 let nx = match pos {
@@ -612,10 +880,37 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                     SeqNotePos::Over => (centers[*from] + centers[*to]) / 2.0 - nw / 2.0,
                 }
                 .max(8.0);
-                svg.push_str(&format!(
-                    r##"<rect x="{nx:.1}" y="{:.1}" width="{nw:.1}" height="{nh:.1}" rx="3" fill="#fef9c3" stroke="#ca8a04" stroke-width="1.1"/>"##,
-                    y - 14.0
-                ));
+                let fill = match color.as_deref() {
+                    Some(c) => seq_rect_paint(c).0,
+                    None => "#fef9c3".to_string(),
+                };
+                match shape {
+                    SeqNoteShape::Rect => {
+                        svg.push_str(&format!(
+                            r##"<rect x="{nx:.1}" y="{:.1}" width="{nw:.1}" height="{nh:.1}" rx="3" fill="{fill}" stroke="#ca8a04" stroke-width="1.1"/>"##,
+                            y - 14.0
+                        ));
+                    }
+                    SeqNoteShape::Box => {
+                        svg.push_str(&format!(
+                            r##"<rect x="{nx:.1}" y="{:.1}" width="{nw:.1}" height="{nh:.1}" rx="0" fill="{fill}" stroke="#ca8a04" stroke-width="1.1" data-shape="seq-rnote"/>"##,
+                            y - 14.0
+                        ));
+                    }
+                    SeqNoteShape::Hexagon => {
+                        let top = y - 14.0;
+                        let bot = top + nh;
+                        let inset = 8.0f32;
+                        svg.push_str(&format!(
+                            r##"<polygon points="{:.1},{top:.1} {:.1},{top:.1} {:.1},{y:.1} {:.1},{bot:.1} {:.1},{bot:.1} {nx:.1},{y:.1}" fill="{fill}" stroke="#ca8a04" stroke-width="1.1" data-shape="seq-hnote"/>"##,
+                            nx + inset,
+                            nx + nw - inset,
+                            nx + nw,
+                            nx + nw - inset,
+                            nx + inset
+                        ));
+                    }
+                }
                 svg.push_str(&format!(
                     r##"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="11.5" fill="#713f12">{}</text>"##,
                     nx + nw / 2.0,
@@ -638,7 +933,13 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 activate_to: _,
                 deactivate_to: _,
             } => {
-                msg_num += 1;
+                let current_num = if autonumber_active {
+                    let n = msg_num;
+                    msg_num += msg_step;
+                    Some(n)
+                } else {
+                    None
+                };
                 let display_label = label.clone();
                 let x1 = centers[*from];
                 let mut x2 = centers[*to];
@@ -670,15 +971,15 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                         y + loop_h / 2.0 + 4.0,
                         escape_xml(&display_label)
                     ));
-                    if autonumber {
-                        push_seq_autonumber(&mut svg, x1 + loop_w, y - 2.0, msg_num);
+                    if let Some(num) = current_num {
+                        push_seq_autonumber(&mut svg, x1 + loop_w, y - 2.0, num);
                     }
                 } else {
                     svg.push_str(&format!(
                         r##"<line x1="{x1:.1}" y1="{y:.1}" x2="{x2:.1}" y2="{y:.1}" stroke="#334155" stroke-width="1.4"{dash_attr}{start_marker}{marker_attr} data-role="message"/>"##
                     ));
-                    if autonumber {
-                        push_seq_autonumber(&mut svg, (x1 + x2) / 2.0, y - 10.0, msg_num);
+                    if let Some(num) = current_num {
+                        push_seq_autonumber(&mut svg, (x1 + x2) / 2.0, y - 10.0, num);
                     }
                     if *cross_end {
                         svg.push_str(&format!(
@@ -716,7 +1017,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     }
 
     // Activation bars sit on the lifeline from `+` / `activate` until `-` / `deactivate`.
-    for (who, y1, y2, depth) in seq_activations(&items, &item_y, bottom_box_y) {
+    for (who, y1, y2, depth) in seq_activations(items, &item_y, bottom_box_y) {
         let width = 10.0f32;
         let x = centers[who] - width / 2.0 + depth as f32 * 5.0;
         let top = y1.min(y2);
@@ -739,7 +1040,7 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
                 r##"<path d="M {:.1} {:.1} L {:.1} {:.1} M {:.1} {:.1} L {:.1} {:.1}" stroke="#dc2626" stroke-width="2" data-shape="seq-destroy"/>"##,
                 cx - 8.0, dy - 8.0, cx + 8.0, dy + 8.0, cx + 8.0, dy - 8.0, cx - 8.0, dy + 8.0
             ));
-        } else {
+        } else if diagram.mirror_actors {
             rows.push(bottom_box_y);
         }
         for (row_i, by) in rows.iter().copied().enumerate() {
@@ -779,8 +1080,8 @@ pub(super) fn render_sequence_svg(source: &str) -> Option<(Vec<u8>, u32, u32)> {
     }
 
     svg.push_str("</svg>");
-    match title {
-        Some(title) => Some(add_svg_title(svg.into_bytes(), total_w, total_h, &title)),
+    match &diagram.title {
+        Some(title) => Some(add_svg_title(svg.into_bytes(), total_w, total_h, title)),
         None => Some((svg.into_bytes(), total_w, total_h)),
     }
 }
@@ -1054,7 +1355,14 @@ pub(super) fn parse_seq_note(
     if let Some((a, b)) = who.split_once(',') {
         let from = ensure(a.trim(), None, false, participants, part_map);
         let to = ensure(b.trim(), None, false, participants, part_map);
-        Some(SeqItem::Note { from, to, pos, text })
+        Some(SeqItem::Note {
+            from,
+            to,
+            pos,
+            text,
+            shape: SeqNoteShape::Rect,
+            color: None,
+        })
     } else {
         let idx = ensure(who, None, false, participants, part_map);
         Some(SeqItem::Note {
@@ -1062,6 +1370,8 @@ pub(super) fn parse_seq_note(
             to: idx,
             pos,
             text,
+            shape: SeqNoteShape::Rect,
+            color: None,
         })
     }
 }

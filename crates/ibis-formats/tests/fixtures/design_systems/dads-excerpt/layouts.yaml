@@ -1,0 +1,14 @@
+# Slide layout declarations (format definition and loading only in this increment).
+layouts:
+  - name: title
+    master_layout: "タイトル スライド"
+    role: cover
+    description: "表紙スライド"
+  - name: content
+    master_layout: "タイトルとコンテンツ"
+    role: body
+    description: "標準コンテンツスライド"
+  - name: blank
+    master_layout: "白紙"
+    role: blank
+    description: "自由配置スライド"

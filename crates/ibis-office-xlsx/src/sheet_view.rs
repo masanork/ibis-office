@@ -256,77 +256,67 @@ pub fn sheet_element(sheet: &Arc<Sheet>, frame: EmuRect, scale: f32, res: &Resou
                     }
                 }
                 if !print && sheet.grid_lines {
-                    thread_local! {
-                        static GRID_OFFSETS: std::cell::RefCell<Option<(usize, Vec<i64>, Vec<i64>)>> =
-                            const { std::cell::RefCell::new(None) };
-                    }
                     let color = hsla(opaque(ibis_doc_model::Rgb(GRID_COLOR)));
                     let default_row_px = sheet.default_row as f32 * scale;
                     let default_col_px = sheet.default_column as f32 * scale;
-                    let sheet_ptr = Arc::as_ptr(&sheet) as usize;
-                    GRID_OFFSETS.with(|cell| {
-                        let mut guard = cell.borrow_mut();
-                        if guard.as_ref().is_none_or(|(ptr, _, _)| *ptr != sheet_ptr) {
-                            *guard = Some((sheet_ptr, sheet.column_offsets(), sheet.row_offsets()));
-                        }
-                        let (_, xs, ys) = guard.as_ref().expect("grid offsets cached");
-                        let extra_cols = 50u32;
-                        let extra_rows = 1000u32;
-                        let base_max_row = (sheet.rows.len() as u32 + extra_rows).min(1_048_576);
-                        let base_max_col = ((xs.len().saturating_sub(1) as u32) + extra_cols).min(16_384);
+                    let xs = &sheet_layout.column_offsets;
+                    let ys = &sheet_layout.row_offsets;
+                    let extra_cols = 50u32;
+                    let extra_rows = 1000u32;
+                    let base_max_row = (sheet.rows.len() as u32 + extra_rows).min(1_048_576);
+                    let base_max_col = ((xs.len().saturating_sub(1) as u32) + extra_cols).min(16_384);
 
-                        let y_of = |r: u32| -> f32 {
-                            let len = ys.len();
-                            let raw = if (r as usize) < len {
-                                ys[r as usize] as f32 * scale
-                            } else {
-                                let last = ys.last().copied().unwrap_or(0);
-                                (last + (r as usize - (len - 1)) as i64 * sheet.default_row) as f32 * scale
-                            };
-                            raw.round()
+                    let y_of = |r: u32| -> f32 {
+                        let len = ys.len();
+                        let raw = if (r as usize) < len {
+                            ys[r as usize] as f32 * scale
+                        } else {
+                            let last = ys.last().copied().unwrap_or(0);
+                            (last + (r as usize - (len - 1)) as i64 * sheet.default_row) as f32 * scale
                         };
-                        let x_of = |c: u32| -> f32 {
-                            let len = xs.len();
-                            let raw = if (c as usize) < len {
-                                xs[c as usize] as f32 * scale
-                            } else {
-                                let last = xs.last().copied().unwrap_or(0);
-                                (last + (c as usize - (len - 1)) as i64 * sheet.default_column) as f32 * scale
-                            };
-                            raw.round()
+                        raw.round()
+                    };
+                    let x_of = |c: u32| -> f32 {
+                        let len = xs.len();
+                        let raw = if (c as usize) < len {
+                            xs[c as usize] as f32 * scale
+                        } else {
+                            let last = xs.last().copied().unwrap_or(0);
+                            (last + (c as usize - (len - 1)) as i64 * sheet.default_column) as f32 * scale
                         };
+                        raw.round()
+                    };
 
-                        let base_bottom_y = y_of(base_max_row);
-                        let base_right_x = x_of(base_max_col);
+                    let base_bottom_y = y_of(base_max_row);
+                    let base_right_x = x_of(base_max_col);
 
-                        if bottom > base_bottom_y {
-                            let first_r = base_max_row + 1;
-                            let last_r = (base_max_row + ((bottom - base_bottom_y) / default_row_px.max(1.0)).ceil() as u32 + 2).min(1_048_576);
-                            let w_extent = w.max(base_right_x);
-                            for r in first_r..=last_r {
-                                let y = y_of(r);
-                                if y >= top - default_row_px && y <= bottom + default_row_px {
-                                    if let Some(rect) = shown((0.0, y - 1.0, w_extent, 1.0)) {
-                                        window.paint_quad(fill(on_pixels(rect, true), color));
-                                    }
+                    if bottom > base_bottom_y {
+                        let first_r = base_max_row + 1;
+                        let last_r = (base_max_row + ((bottom - base_bottom_y) / default_row_px.max(1.0)).ceil() as u32 + 2).min(1_048_576);
+                        let w_extent = w.max(base_right_x);
+                        for r in first_r..=last_r {
+                            let y = y_of(r);
+                            if y >= top - default_row_px && y <= bottom + default_row_px {
+                                if let Some(rect) = shown((0.0, y - 1.0, w_extent, 1.0)) {
+                                    window.paint_quad(fill(on_pixels(rect, true), color));
                                 }
                             }
-                            let max_col_view = ((right.max(w_extent) / default_col_px.max(1.0)).ceil() as u32 + 2).min(16_384);
-                            let seg_top = top.max(base_bottom_y);
-                            let seg_bottom = bottom.min(y_of(last_r));
-                            let seg_h = (seg_bottom - seg_top).max(0.0);
-                            if seg_h > 0.0 {
-                                for c in 1..=max_col_view {
-                                    let x = x_of(c);
-                                    if x >= left - default_col_px && x <= right + default_col_px {
-                                        if let Some(rect) = shown((x - 1.0, seg_top, 1.0, seg_h)) {
-                                            window.paint_quad(fill(on_pixels(rect, false), color));
-                                        }
+                        }
+                        let max_col_view = ((right.max(w_extent) / default_col_px.max(1.0)).ceil() as u32 + 2).min(16_384);
+                        let seg_top = top.max(base_bottom_y);
+                        let seg_bottom = bottom.min(y_of(last_r));
+                        let seg_h = (seg_bottom - seg_top).max(0.0);
+                        if seg_h > 0.0 {
+                            for c in 1..=max_col_view {
+                                let x = x_of(c);
+                                if x >= left - default_col_px && x <= right + default_col_px {
+                                    if let Some(rect) = shown((x - 1.0, seg_top, 1.0, seg_h)) {
+                                        window.paint_quad(fill(on_pixels(rect, false), color));
                                     }
                                 }
                             }
                         }
-                    });
+                    }
                 }
                 // The spans of text running on past its cell: left, right,
                 // top and bottom, relative to the sheet.
@@ -344,12 +334,13 @@ pub fn sheet_element(sheet: &Arc<Sheet>, frame: EmuRect, scale: f32, res: &Resou
                     if items.len() != layout.cells.len() {
                         items.resize_with(layout.cells.len(), || None);
                     }
+                    let printed_mix = if *sheet.printed { 0xD1B5_4A32_D192_ED03u64 } else { 0 };
                     let measure = |text: &str, font: &Font, size: f32| -> f32 {
                         let key = measured_key(text, font, size) ^ ts_key;
                         // A text shaped before (the same characters, font and size, in this scale) keeps its width and
                         // shaping: the sheet's cells hold few different texts (a printed 5,000-page sheet shaped 590,000
                         // cells, 70 % of its export's time).
-                        let cache_key = key ^ (px_per_point.to_bits() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                        let cache_key = key ^ (px_per_point.to_bits() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ printed_mix;
                         if let Some((width, line)) = SHAPED_TEXTS.with(|c| c.borrow().get(&cache_key).cloned()) {
                             if keep_measured {
                                 layout.measured.borrow_mut().insert(key, line);
@@ -403,6 +394,7 @@ pub fn sheet_element(sheet: &Arc<Sheet>, frame: EmuRect, scale: f32, res: &Resou
                         }
                     }
                 }
+                let printed_mix = if *sheet.printed { 0xD1B5_4A32_D192_ED03u64 } else { 0 };
                 for (ci, t) in found.iter().flat_map(|&i| items[i as usize].as_deref().unwrap_or(&[]).iter().map(move |t| (i as usize, t))) {
                     let Some(clip) = shown(t.clip) else { continue };
                     // Shaped pieces, or room of a fixed width.
@@ -432,7 +424,7 @@ pub fn sheet_element(sheet: &Arc<Sheet>, frame: EmuRect, scale: f32, res: &Resou
                                 strikethrough: piece_strike.then(|| StrikethroughStyle { thickness: px((size / 14.0).max(0.5)), color: Some(piece_color) }),
                             };
                             let key = measured_key(&p.text, font, size) ^ ts_key;
-                            let cache_key = key ^ (px_per_point.to_bits() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                            let cache_key = key ^ (px_per_point.to_bits() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ printed_mix;
                             let cached_line = measured
                                 .get(&key)
                                 .filter(|l| l.text.as_ref() == p.text)
@@ -880,6 +872,7 @@ pub fn release_layouts() {
     LINK_TEXT.with(|m| m.borrow_mut().clear());
     PRINT_REGIONS.with(|cache| cache.borrow_mut().clear());
     SHAPED_TEXTS.with(|cache| cache.borrow_mut().clear());
+    super::sheet_ui::clear_header_cache();
 }
 
 /// The text displayed for a cell on screen: evaluates show_formulas and show_zeros.
@@ -976,6 +969,9 @@ struct SheetLayout {
     scale: f32,
     context: LayoutContext,
     base: Rc<Layout>,
+    /// Cumulative column and row offsets in EMU, matching `source`.
+    column_offsets: Vec<i64>,
+    row_offsets: Vec<i64>,
     /// Each row's top, and the bottom of the last, in pixels.
     row_tops: Vec<f32>,
     /// Merged ranges' first and last rows.
@@ -995,8 +991,9 @@ impl SheetLayout {
         // What the calculation asked IMAGE for, of the cells that still hold a formula.
         let images: Vec<((u32, u32), ibis_calc::eval::ImageSpec)> = source.web_images.iter().filter(|((r, c), _)| source.cell(*r, *c).is_some_and(|x| x.formula.is_some())).map(|(k, v)| (*k, v.clone())).collect();
         let context = LayoutContext { print: res.print, print_scale: res.print_scale.get(), breaks: res.print_breaks.borrow().clone(), fonts, sheets: res.sheets.clone(), images: images.iter().map(|(k, i)| (*k, i.source.clone())).collect() };
-        let row_tops = sheet
-            .row_offsets()
+        let column_offsets = sheet.column_offsets();
+        let row_offsets = sheet.row_offsets();
+        let row_tops = row_offsets
             .iter()
             .map(|&y| {
                 let raw = y as f32 * scale;
@@ -1007,7 +1004,7 @@ impl SheetLayout {
         let overlay = applied.as_ref().as_ref().map(|(_, o)| o);
         let part = if res.print { Part::All } else { Part::Base };
         let base = Rc::new(layout(sheet, scale, &context, overlay, part));
-        Self { source: source.clone(), applied: applied.clone(), scale, context, base, row_tops, merges, parts: Default::default(), images }
+        Self { source: source.clone(), applied: applied.clone(), scale, context, base, column_offsets, row_offsets, row_tops, merges, parts: Default::default(), images }
     }
 
     fn sheet(&self) -> &Sheet {

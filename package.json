@@ -7,7 +7,7 @@
   "scripts": {
     "build:ts": "tsc -p www",
     "build:font-subsets": "node scripts/build-web-font-subsets.mjs --out www",
-    "test:web": "tsc --target es2022 --module esnext --moduleResolution bundler --lib es2022,dom,dom.iterable --strict --skipLibCheck www/wasm-loader.ts www/local-file.ts www/pwa-register.ts www/pwa-sw-logic.ts worker/github-vault.ts worker/wasm-delivery.ts worker/sw-headers.ts && node --test test/web/*.test.mjs",
+    "test:web": "tsc --target es2022 --module esnext --moduleResolution bundler --lib es2022,dom,dom.iterable --strict --skipLibCheck www/brand.ts www/boot.ts www/wasm-loader.ts www/local-file.ts www/pwa-register.ts www/pwa-sw-logic.ts worker/github-vault.ts worker/wasm-delivery.ts worker/sw-headers.ts && node --test test/web/*.test.mjs",
     "check:worker": "wrangler types worker-configuration.d.ts --env-interface CloudflareEnv && tsc -p worker/tsconfig.json",
     "test:touch-browser": "node scripts/touch-browser-smoke.mjs",
     "test:html-browser": "node scripts/test-html-browser.mjs",

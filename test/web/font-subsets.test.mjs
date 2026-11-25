@@ -70,3 +70,17 @@ test('buildLoaderManifest emits a schema-1 subsets-only manifest for subset-fetc
   assert.equal(font.blocks[1].file, 'fonts/ACGJMincho/0001.def.ttf');
   assert.equal('boot' in font.blocks[1], false);
 });
+
+test('TYPEFACE_ALIASES covers common Japanese mincho and gothic names without cross-class mixing', () => {
+  for (const name of ['BIZ UD明朝', 'BIZ UDP明朝', '游明朝', 'ＭＳ 明朝', 'ＭＳ明朝', 'ヒラギノ明朝 ProN', 'Noto Serif JP', 'Noto Serif CJK JP']) {
+    assert.ok(TYPEFACE_ALIASES.BIZUDMincho.includes(name), `BIZUDMincho missing ${name}`);
+  }
+  for (const name of ['BIZ UDゴシック', 'BIZ UDPゴシック', '游ゴシック', 'ＭＳ ゴシック', 'ＭＳゴシック', 'Noto Sans JP', 'Noto Sans CJK JP']) {
+    assert.ok(TYPEFACE_ALIASES.BIZUDGothic.includes(name), `BIZUDGothic missing ${name}`);
+  }
+});
+
+test('Web CI release build enables IBIS_WEB_FONT_SUBSETS=1', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/web-fonts.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /IBIS_WEB_FONT_SUBSETS:\s*['"]?1['"]?/);
+});

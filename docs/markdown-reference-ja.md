@@ -432,7 +432,7 @@ PPTX の表でも横結合・縦結合の印を使えます。横と縦を組み
 | :--- | :--- |
 | 文書情報 | `title`、`subtitle` / `subject`、`author` / `creator`、`keywords` / `tags`、`description` / `summary`、`category`、`company` |
 | ページ | `size` / `paper`、`orientation`、`margins`、`columns`、`column_separator`、`direction` / `text_direction`、`line_numbers`。ページ設定には `page.` 付きの別名もあります。 |
-| 書体・段落 | `font` / `font_family`、`east_asian_font`、`font_size`、`style_set`、`paragraph_spacing` |
+| 書体・段落 | `font` / `font_family`、`east_asian_font`、`font_size`、`style_set`、`paragraph_spacing`、`design_system` |
 | 文書の表示・編集 | `header`、`footer`（`{page}` と `{filename}`）、`watermark`、`page_color`、`track_changes` |
 
 代表値は次のとおりです。寸法には `mm`、`cm`、`in`、`pt` などの単位付き指定を使えます。
@@ -442,6 +442,42 @@ PPTX の表でも横結合・縦結合の印を使えます。横と縦を組み
 - `columns` は 1〜12、`line_numbers` は `true` / `page` / `continuous`。後者はページをまたいで行番号を振ります。
 - `style_set` は `default` / `casual` / `centered` / `formal` / `elegant` / `modern` / `simple` / `minimalist`。
 - `paragraph_spacing` は `default` / `no_space`（`no_paragraph_space`、`none`）/ `compact` / `tight` / `open` / `relaxed` / `double`。
+- `design_system` は適用するデザインシステム名を指定します（下記「[デザインシステムの適用](#デザインシステムの適用)」を参照）。
+
+### デザインシステムの適用
+
+フロントマターに `design_system: <名前>` を書くと、同じ Markdown 原稿から `--export docx` と `--export pptx` で出力する DOCX・PPTX のテーマ配色、フォント、見出し・本文・スライドタイトルのサイズ、グラフの既定配色（`accent1`〜`accent6`）、および PPTX のスライドサイズ（定義されている場合）をデザイントークンで統一できます。出力ファイルは入力と同じベース名（例: `report.md` → `report.docx` と `report.pptx`）になります。
+
+```markdown
+---
+title: 四半期報告
+design_system: dads-excerpt
+---
+
+# 概要
+
+<!-- notes: 発表者ノートは従来どおり抽出されます。 -->
+```
+
+#### フォルダー規約と解決順
+
+デザインシステムは 1 システム = 1 フォルダー（`DesignSystems/<名前>/`）で配置し、次の順に解決します。
+
+1. **プロジェクトフォルダー**: 開いた原稿・プロジェクトフォルダー内の `DesignSystems/<名前>/`（文書と一緒に Git 管理できます）。
+2. **システムフォルダー**: アプリデータ配下の `<app-data>/ibisOffice/DesignSystems/<名前>/`（`ChartTemplates/` と同列。環境変数 `IBIS_DATA_DIR` で基準フォルダーを上書き可能）。
+
+指定した名前が見つからない場合は、検索した場所を列挙したエラーを返します。既定デザインへ暗黙にフォールバックしません。
+
+#### フォルダー内のファイルと現行の対応範囲
+
+| ファイル | 役割 | 現行の対応 |
+| :--- | :--- | :--- |
+| `tokens.yaml` | 配色（テーマ色・グラフ色列）、書体、文字サイズ体系、余白、任意の `slide_size` | 必須。読み込み、DOCX と PPTX のテーマ・書式へ適用します。 |
+| `layouts.yaml` | スライドレイアウト名の宣言 | 任意。書式定義と読み込み・検証のみ（レイアウトへの割り当ては対象外）。 |
+| `styles.yaml` | DOCX スタイル対応の宣言 | 任意。書式定義と読み込み・検証のみ（スタイル再対応付けは対象外）。 |
+| `base.pptx` / `base.docx` | テンプレート母体ファイル | 任意。配置を許容します（生成ベースとしての適用は対象外）。 |
+
+デジタル庁デザインシステム（DADS、`digital-go-jp/design-tokens` / `@digital-go-jp/design-tokens` v2.1.0、MIT）からの取り込みでは、Style Dictionary による解決済みの CSS カスタムプロパティ（`tokens.css` / `tokens-simple.css`）を入力形式として採用しています。参照解決済みの単一ファイルを追加依存なしで直接読み込めるためです。
 
 ### 形式指定と OKF のタグ
 

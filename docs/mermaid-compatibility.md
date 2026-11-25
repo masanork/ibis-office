@@ -11,3 +11,5 @@ Markdown の `mermaid` コードブロックを文書やスライドに読み込
 [図種別デモ](mermaid-demo-ja.md) は Docs で直接開けます。公式例をすべて試す手順は [Markdown Reference](markdown-reference-ja.md) にあります。
 
 テスト対象と既知の構文差は [Mermaid compatibility corpus](../crates/ibis-formats/tests/mermaid/README.md) と [features.txt](../crates/ibis-formats/tests/mermaid/features.txt) に記載しています。コーパスで描画できることや参照実装とのラベル一致は、図の意味やレイアウトの完全な一致を保証しません。
+
+既存の PlantUML 基本シーケンス図を Mermaid `sequenceDiagram` へ機械変換する範囲と非対応構文の境界は [PlantUML 基本シーケンス図の変換](plantuml-sequence-conversion.md) を参照してください。
