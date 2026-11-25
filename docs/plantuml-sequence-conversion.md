@@ -48,7 +48,7 @@
 
 ## 4. 統合ディスパッチャ（`render_plantuml`）と Markdown コードブロック対応
 
-`render_plantuml` は既存の Mermaid レイアウト・SVG 描画器を重複実装せずに再利用し、以下の **12 図種**（UML 2.x 主要図種を全網羅）を自動判別して SVG 描画します。
+`render_plantuml` は既存の Mermaid レイアウト・SVG 描画器を重複実装せずに再利用し、以下の **18 図種**（UML 2.x 主要図種＋仕様書頻出の非 UML 図種）を自動判別して SVG 描画します。
 
 | 導入段階 | PlantUML 図種 | 再利用・追加描画器 |
 | --- | --- | --- |
@@ -56,7 +56,8 @@
 | Phase 2 | クラス図 / 状態遷移図 / ユースケース図 / ER 図（`@startuml`） | `class.rs` / `state.rs` / `usecase.rs` / `er.rs` |
 | Phase 3 | マインドマップ（`@startmindmap`）/ WBS（`@startwbs`）/ ガントチャート（`@startgantt`）/ アクティビティ図 / コンポーネント・配置図（`@startuml`） | `mindmap.rs` / `treeview.rs` / `gantt.rs` / `flowchart.rs` |
 | Phase 4 | オブジェクト・マップ図（`object`/`map`）、タイミング図（`robust`/`concise`/`binary`/`clock`/`analog`）、状態遷移図の並列・選択・分岐・履歴（`--`/`<<choice>>`/`<<fork>>`/`<<join>>`/`[H]`）、アクティビティ図のスイムレーン（`\|Lane\|`）・`switch`/`split`・旧記法 | `class.rs` / `plantuml_timing.rs` / `state.rs` / `swimlanes.rs` / `flowchart.rs` |
+| Phase 5 | C4-PlantUML（`Person`/`System`/`Container`/`Component`/`*_Boundary`/`Rel*`）、JSON（`@startjson`）、YAML（`@startyaml`）、EBNF 文法図（`@startebnf`）、ネットワーク図（`@startnwdiag`）、年表（`@startchronology`） | `c4.rs` / `treeview.rs` / `railroad.rs` / `flowchart.rs` / `timeline.rs` |
 
 - Markdown 内の ` ```plantuml ` / ` ```puml ` コードブロックは `render_plantuml` で自動判別して SVG 図として描画します。
-- マクロ（`macro`）・未対応図種（`diagram-type`）を含むブロックは安全のため通常のコードブロックのまま保持します。
+- マクロ（`macro`、ただし C4 標準 `!include <C4/...>` は静的認識）・未対応図種（`diagram-type`）を含むブロックは安全のため通常のコードブロックのまま保持します。
 - SVG 描画された図も `alt_text`（`__plantuml__:<lang>`）に原本ソースを保持しており、Markdown へ再書き出しすると元の ` ```plantuml ` / ` ```puml ` フェンスをそのまま復元します。

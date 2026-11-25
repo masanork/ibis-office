@@ -29,13 +29,19 @@ pub(super) enum PlantUmlKind {
     Activity,
     Component,
     Timing,
+    C4,
+    Json,
+    Yaml,
+    Ebnf,
+    Nwdiag,
+    Chronology,
     UnsupportedEnvelope,
 }
 
 /// Render a supported PlantUML diagram (Sequence, Class, Object/Map, State, Usecase, ER,
-/// Timing, Mindmap, WBS, Gantt, Activity, or Component/Deployment) into SVG using the shared
-/// internal renderers, preserving the original source verbatim and reporting unsupported
-/// constructs with 1-based line numbers.
+/// Timing, Mindmap, WBS, Gantt, Activity, Component/Deployment, C4, JSON, YAML, EBNF,
+/// nwdiag, or Chronology) into SVG using the shared internal renderers, preserving the
+/// original source verbatim and reporting unsupported constructs with 1-based line numbers.
 pub fn render_plantuml(source: &str) -> PlantUmlNativeRender {
     match detect_plantuml_kind(source) {
         PlantUmlKind::Sequence | PlantUmlKind::UnsupportedEnvelope => {
@@ -63,6 +69,29 @@ pub fn render_plantuml(source: &str) -> PlantUmlNativeRender {
         PlantUmlKind::Component => render_lowered(
             source,
             super::plantuml_extra::convert_plantuml_component(source),
+        ),
+        PlantUmlKind::C4 => {
+            render_lowered(source, super::plantuml_non_uml::convert_plantuml_c4(source))
+        }
+        PlantUmlKind::Json => render_lowered(
+            source,
+            super::plantuml_non_uml::convert_plantuml_json(source),
+        ),
+        PlantUmlKind::Yaml => render_lowered(
+            source,
+            super::plantuml_non_uml::convert_plantuml_yaml(source),
+        ),
+        PlantUmlKind::Ebnf => render_lowered(
+            source,
+            super::plantuml_non_uml::convert_plantuml_ebnf(source),
+        ),
+        PlantUmlKind::Nwdiag => render_lowered(
+            source,
+            super::plantuml_non_uml::convert_plantuml_nwdiag(source),
+        ),
+        PlantUmlKind::Chronology => render_lowered(
+            source,
+            super::plantuml_non_uml::convert_plantuml_chronology(source),
         ),
     }
 }
@@ -107,17 +136,28 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
             let dir = lower.split_whitespace().next().unwrap_or("");
             return match dir {
                 "@startuml" => {
+                    if super::plantuml_non_uml::is_c4_plantuml(source) {
+                        return PlantUmlKind::C4;
+                    }
                     // Inspect body lines to determine diagram kind.
                     continue;
                 }
                 "@startmindmap" => PlantUmlKind::Mindmap,
                 "@startwbs" => PlantUmlKind::Wbs,
                 "@startgantt" => PlantUmlKind::Gantt,
+                "@startjson" => PlantUmlKind::Json,
+                "@startyaml" => PlantUmlKind::Yaml,
+                "@startebnf" => PlantUmlKind::Ebnf,
+                "@startnwdiag" => PlantUmlKind::Nwdiag,
+                "@startchronology" => PlantUmlKind::Chronology,
                 _ => PlantUmlKind::UnsupportedEnvelope,
             };
         }
         if lower.starts_with("@end") {
             break;
+        }
+        if super::plantuml_non_uml::is_c4_plantuml(source) {
+            return PlantUmlKind::C4;
         }
         if t.starts_with('!') || t.starts_with('$') {
             continue;
