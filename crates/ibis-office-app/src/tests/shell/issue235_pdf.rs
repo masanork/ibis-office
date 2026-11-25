@@ -703,11 +703,27 @@ fn geometry_mode_roundtrip(input: &str, move_command: &str, reconnect_command: &
                 ibis_office_pdf::editor::geometry_screen_point(editor, 0, x * 72.0, h - y * 72.0).unwrap()
             })
         };
+        let hint = |s: &mut Scenario, at, expected| {
+            s.hover(at);
+            assert_eq!(s.with(|editor, _| ibis_office_pdf::editor::geometry_hover_hint(editor)), expected);
+        };
+        let blocked = screen(&mut s, 4.382563, 3.939917);
+        hint(&mut s, blocked, Some("vsdx.hover-connections"));
+        s.screenshot("vsdx-hover-blocked");
+        let blocked_drop = screen(&mut s, 4.632563, 3.939917);
+        s.drag(blocked, blocked_drop);
+        assert!(s.with(|editor, _| staged_geometry_bytes(editor).is_none()));
+        let empty = screen(&mut s, 21.0, 8.0);
+        hint(&mut s, empty, None);
         let from = screen(&mut s, 9.016714, 14.057004);
+        hint(&mut s, from, Some("vsdx.hover-move"));
+        s.screenshot("vsdx-hover-shape");
         let to = screen(&mut s, 9.266714, 14.057004);
         s.drag(from, to);
         assert!(s.with(|editor, _| staged_geometry_bytes(editor).is_some()), "{:?}", s.status_texts());
         let from = screen(&mut s, 6.612055, 3.960532);
+        hint(&mut s, from, Some("vsdx.hover-endpoint"));
+        s.screenshot("vsdx-hover-endpoint");
         let to = screen(&mut s, 9.596682, 4.136813);
         s.drag(from, to);
     } else {

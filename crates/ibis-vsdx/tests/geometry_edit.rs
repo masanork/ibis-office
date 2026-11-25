@@ -405,6 +405,26 @@ fn reconnects_relative_cubic_geometry_without_discarding_control_points() {
 }
 
 #[test]
+fn reports_formula_fixed_shape_before_dragging() {
+    use ibis_vsdx::geometry_edit::MoveBlock;
+    let doc = rewrite_flowchart(|mut source| {
+        let xml = roxmltree::Document::parse(&source).unwrap();
+        let pin = xml.descendants()
+            .find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some("1")).unwrap()
+            .children().find(|n| n.attribute("N") == Some("PinX")).unwrap();
+        let at = pin.attribute_node("V").unwrap().range().end;
+        source.insert_str(at, r#" F="GUARD(9.931102)""#);
+        source
+    });
+    let targets = doc.geometry_targets(0).unwrap();
+    assert!(targets.blocked.iter().any(|(shape, reason)|
+        shape.id == 1 && *reason == MoveBlock::PositionFormula
+    ));
+    assert!(!targets.shapes.iter().any(|(id, _)| *id == 1));
+    assert!(doc.edit_geometry(0, GeometryEdit::Move { shape: 1, dx: 0.25, dy: 0.0 }).is_err());
+}
+
+#[test]
 fn moves_an_unconnected_child_in_group_coordinates() {
     let doc = rewrite_flowchart(|mut source| {
         let xml = roxmltree::Document::parse(&source).unwrap();

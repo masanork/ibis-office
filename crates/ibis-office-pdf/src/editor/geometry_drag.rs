@@ -6,12 +6,12 @@ use super::{
     Context, Pixels, Point, SlideEditor, State, Window, cx_report_geometry, page_scale, page_tops,
     pdf_point, point, px,
 };
-use ibis_vsdx::geometry_edit::{Endpoint, GeometryEdit, GeometryTargets};
+use ibis_vsdx::geometry_edit::{Endpoint, GeometryEdit, GeometryTargets, MoveBlock};
 use std::sync::Arc;
 
 const HANDLE_RADIUS: f32 = 8.0;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Object {
     Shape(u32),
     Connector(u32, Endpoint),
@@ -41,6 +41,117 @@ pub(super) fn targets(editor: &SlideEditor, page: usize) -> Arc<GeometryTargets>
     Arc::new(document.geometry_targets(page).unwrap_or_default())
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct Hover {
+    pub bounds: ibis_pdf::PdfRect,
+    object: Option<Object>,
+    reason: Option<MoveBlock>,
+}
+
+impl Hover {
+    pub(super) fn message(self) -> &'static str {
+        match (self.object, self.reason) {
+            (_, Some(MoveBlock::PositionFormula)) => "vsdx.hover-formula",
+            (_, Some(MoveBlock::Connections)) => "vsdx.hover-connections",
+            (Some(Object::Connector(..)), _) => "vsdx.hover-endpoint",
+            (Some(Object::Shape(_)), _) => "vsdx.hover-move",
+            _ => "vsdx.hover-unsupported",
+        }
+    }
+
+    pub(super) fn blocked(self) -> bool {
+        self.reason.is_some()
+    }
+}
+
+fn hit(targets: &GeometryTargets, x: f32, y: f32, radius: f32) -> Option<Hover> {
+    if let Some(&(_, id, end, hx, hy)) = targets
+        .endpoints
+        .iter()
+        .map(|&(id, end, (hx, hy))| ((x - hx).hypot(y - hy), id, end, hx, hy))
+        .filter(|entry| entry.0 <= radius)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .as_ref()
+    {
+        let size = radius * 0.8;
+        return Some(Hover {
+            bounds: ibis_pdf::PdfRect {
+                x0: hx - size,
+                y0: hy - size,
+                x1: hx + size,
+                y1: hy + size,
+            },
+            object: Some(Object::Connector(id, end)),
+            reason: None,
+        });
+    }
+    let children = targets
+        .group_children
+        .iter()
+        .rev()
+        .filter(|child| child.contains(x, y))
+        .map(|child| (child.id, child.bounds));
+    let movable = children
+        .chain(targets.shapes.iter().rev().copied())
+        .filter(|(_, r)| r.x0 <= x && x <= r.x1 && r.y0 <= y && y <= r.y1)
+        .map(|(id, bounds)| Hover {
+            bounds,
+            object: Some(Object::Shape(id)),
+            reason: None,
+        });
+    let blocked = targets
+        .blocked
+        .iter()
+        .rev()
+        .filter(|(child, _)| child.contains(x, y))
+        .map(|(child, reason)| Hover {
+            bounds: child.bounds,
+            object: None,
+            reason: Some(*reason),
+        });
+    let area = |h: &Hover| h.bounds.width() * h.bounds.height();
+    movable
+        .chain(blocked)
+        .min_by(|a, b| area(a).total_cmp(&area(b)))
+}
+
+pub(super) fn hover(
+    editor: &mut SlideEditor,
+    at: Option<Point<Pixels>>,
+    cx: &mut Context<SlideEditor>,
+) {
+    let Some(mode) = editor
+        .format_state::<State>()
+        .and_then(|s| s.geometry_edit.as_ref())
+    else {
+        return;
+    };
+    if mode.drag.is_some() {
+        return;
+    }
+    let position = at.and_then(|at| pdf_point(editor, at));
+    let page = position.map_or(mode.targets_page, |p| p.0);
+    let targets = if mode.targets_page == page {
+        mode.targets.clone()
+    } else {
+        targets(editor, page)
+    };
+    let hover =
+        position.and_then(|(_, x, y)| hit(&targets, x, y, HANDLE_RADIUS / page_scale(editor)));
+    let mode = editor
+        .format_state_mut::<State>()
+        .unwrap()
+        .geometry_edit
+        .as_mut()
+        .unwrap();
+    if mode.targets_page != page || mode.hover != hover {
+        mode.targets_page = page;
+        mode.targets = targets;
+        mode.hover = hover;
+        cx.notify();
+    }
+}
+
 pub(super) fn press(
     editor: &mut SlideEditor,
     page: usize,
@@ -54,33 +165,14 @@ pub(super) fn press(
     else {
         return false;
     };
-    let targets = if mode.page == page {
+    let targets = if mode.targets_page == page {
         mode.targets.clone()
     } else {
         targets(editor, page)
     };
     let radius = HANDLE_RADIUS / page_scale(editor);
-    let object = targets
-        .endpoints
-        .iter()
-        .map(|&(id, end, (a, b))| ((x - a).hypot(y - b), id, end))
-        .filter(|&(distance, _, _)| distance <= radius)
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, id, end)| Object::Connector(id, end))
-        .or_else(|| {
-            shape_at(
-                targets
-                    .group_children
-                    .iter()
-                    .rev()
-                    .filter(|child| child.contains(x, y))
-                    .map(|child| (child.id, child.bounds))
-                    .chain(targets.shapes.iter().rev().copied()),
-                x,
-                y,
-            )
-            .map(Object::Shape)
-        });
+    let hovered = hit(&targets, x, y, radius);
+    let object = hovered.and_then(|h| h.object);
     let mode = editor
         .format_state_mut::<State>()
         .unwrap()
@@ -88,7 +180,9 @@ pub(super) fn press(
         .as_mut()
         .unwrap();
     mode.page = page;
+    mode.targets_page = page;
     mode.targets = targets;
+    mode.hover = hovered;
     mode.drag = object.map(|object| GeometryDrag {
         object,
         start: (x, y),
@@ -182,7 +276,8 @@ pub(super) fn release(
             GeometryEdit::Move { shape, dx, dy }
         }
         Object::Connector(connector, endpoint) => {
-            let Some(target) = shape_at(mode.targets.shapes.iter().rev().copied(), x, y) else {
+            let Some(target) = shape_at(mode.targets.reconnect_targets.iter().rev().copied(), x, y)
+            else {
                 editor.report(
                     Err(ibis_office_shell::i18n::text("vsdx.geometry-drop-target").to_string()),
                     cx,

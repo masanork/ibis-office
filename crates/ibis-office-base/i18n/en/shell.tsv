@@ -1894,3 +1894,8 @@ vsdx.geometry-applied	The preview has been updated. Save a copy to keep the chan
 vsdx.geometry-discard	Discard changes
 vsdx.geometry-drop-target	Drag the endpoint onto a target shape.
 vsdx.geometry-drag-help	Drag a shape or a blue endpoint
+vsdx.hover-move	Drag to move this shape
+vsdx.hover-endpoint	Drag to reconnect this endpoint
+vsdx.hover-formula	A formula fixes this shape’s position
+vsdx.hover-connections	Moving this shape would break an unsupported connection
+vsdx.hover-unsupported	This shape cannot be dragged

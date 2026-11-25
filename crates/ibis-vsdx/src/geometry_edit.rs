@@ -15,7 +15,7 @@ use crate::{VsdxContainer, child, named, open_archive, xml};
 type Patch = (Range<usize>, String);
 type XmlNode<'a, 'i> = Node<'a, 'i>;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Endpoint {
     Begin,
     End,
@@ -93,23 +93,10 @@ fn patch_page(
                         }
                     }
                 } else {
-                    let mut connectors = BTreeSet::new();
-                    for &link in &links {
-                        if id(link, "ToSheet") == Some(shape) {
-                            connectors.insert(id(link, "FromSheet").ok_or_else(unsupported)?);
-                        }
-                    }
-                    for connector in connectors {
-                        let line = editable_route(shapes, &links, connector, &masters)?;
+                    for line in move_routes(node, master, shape, shapes, &links, &masters)? {
                         let [mut start, mut end] = line.points;
                         for (point, link) in [(&mut start, line.links[0]), (&mut end, line.links[1])] {
                             if id(link, "ToSheet") == Some(shape) {
-                                if let Some(row) = fixed_row(link) {
-                                    let saved = connection_point(node, master, row)?;
-                                    if !close(saved.0, point.0) || !close(saved.1, point.1) {
-                                        return Err(unsupported());
-                                    }
-                                }
                                 point.0 += dx;
                                 point.1 += dy;
                             }
@@ -292,16 +279,20 @@ fn inherited_value(
     }
 }
 
+fn position_formula_locked(node: XmlNode<'_, '_>, master: Option<XmlNode<'_, '_>>) -> bool {
+    ["PinX", "PinY"].into_iter().any(|key| {
+        match cell(node, key).ok().and_then(|c| c.attribute("F")) {
+            None => false,
+            Some("Inh") => master.is_none(),
+            Some(_) => parent_pin_scale(node, key).is_none(),
+        }
+    })
+}
+
 fn movable_pin(node: XmlNode<'_, '_>, master: Option<XmlNode<'_, '_>>) -> Result<(f64, f64)> {
     if cell(node, "BeginX").is_ok()
         || master.is_some_and(|m| cell(m, "BeginX").is_ok())
-        || ["PinX", "PinY"].into_iter().any(|key| {
-            match cell(node, key).ok().and_then(|c| c.attribute("F")) {
-                None => false,
-                Some("Inh") => master.is_none(),
-                Some(_) => parent_pin_scale(node, key).is_none(),
-            }
-        })
+        || position_formula_locked(node, master)
         || ["LockMoveX", "LockMoveY"]
             .into_iter()
             .any(|key| inherited_value(node, master, key).is_ok_and(|value| value != 0.0))
@@ -362,6 +353,32 @@ fn move_links<'a, 'i>(
         }
     }
     Ok(crossing)
+}
+
+fn move_routes<'a, 'i>(
+    node: XmlNode<'a, 'i>,
+    master: Option<XmlNode<'_, '_>>,
+    shape: u32,
+    shapes: XmlNode<'a, 'i>,
+    links: &[XmlNode<'a, 'i>],
+    masters: &HashMap<&str, roxmltree::Document<'_>>,
+) -> Result<Vec<EditableRoute<'a, 'i>>> {
+    let connectors = links.iter()
+        .filter(|&&link| id(link, "ToSheet") == Some(shape))
+        .map(|&link| id(link, "FromSheet").ok_or_else(unsupported))
+        .collect::<Result<BTreeSet<_>>>()?;
+    connectors.into_iter().map(|connector| {
+        let line = editable_route(shapes, links, connector, masters)?;
+        for (point, link) in line.points.into_iter().zip(line.links) {
+            if id(link, "ToSheet") == Some(shape) && let Some(row) = fixed_row(link) {
+                let saved = connection_point(node, master, row)?;
+                if !close(saved.0, point.0) || !close(saved.1, point.1) {
+                    return Err(unsupported());
+                }
+            }
+        }
+        Ok(line)
+    }).collect()
 }
 
 // Visio's straight 1-D shape uses a length and angle derived from its endpoints.
@@ -1046,8 +1063,17 @@ impl EditableRoute<'_, '_> {
 #[derive(Default)]
 pub struct GeometryTargets {
     pub shapes: Vec<(u32, ibis_pdf::PdfRect)>,
+    pub reconnect_targets: Vec<(u32, ibis_pdf::PdfRect)>,
+    pub blocked: Vec<(GroupChildTarget, MoveBlock)>,
     pub group_children: Vec<GroupChildTarget>,
     pub endpoints: Vec<(u32, Endpoint, (f32, f32))>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveBlock {
+    PositionFormula,
+    Connections,
+    Unsupported,
 }
 
 pub struct GroupChildTarget {
@@ -1152,15 +1178,26 @@ fn collect_shape_targets<'a, 'i>(
             flip_x,
             flip_y,
         ));
-        let can_drag = if depth == 0 {
-            angle == 0.0 && !flip_x && !flip_y
-        } else {
-            ["PinX", "PinY"].into_iter().all(|key| {
-                cell(shape, key).is_ok_and(|cell| cell.attribute("F").is_none())
-                    || parent_pin_scale(shape, key).is_some()
-            }) && move_links(shape, shape_id, true, page_shapes, links).is_ok()
-        };
-        if can_drag && movable_pin(shape, master).is_ok() {
+        // Master artwork without its own editable position is part of the enclosing shape.
+        let own_position = ["PinX", "PinY"].into_iter().all(|key| {
+            cell(shape, key).is_ok_and(|cell| cell.attribute("F") != Some("Inh"))
+        });
+        let is_line = cell(shape, "BeginX").is_ok()
+            || master.is_some_and(|m| cell(m, "BeginX").is_ok());
+        if !is_line && (depth == 0 || own_position) {
+            let blocked = if position_formula_locked(shape, master) {
+                Some(MoveBlock::PositionFormula)
+            } else if move_links(shape, shape_id, depth != 0, page_shapes, links).is_err()
+                || depth == 0 && move_routes(shape, master, shape_id, page_shapes, links, masters).is_err()
+            {
+                Some(MoveBlock::Connections)
+            } else if movable_pin(shape, master).is_err()
+                || depth == 0 && (angle != 0.0 || flip_x || flip_y)
+            {
+                Some(MoveBlock::Unsupported)
+            } else {
+                None
+            };
             let corners = [(0.0, 0.0), (width, 0.0), (0.0, shape_height), (width, shape_height)];
             let mut bounds = ibis_pdf::PdfRect {
                 x0: f32::INFINITY, y0: f32::INFINITY,
@@ -1174,13 +1211,21 @@ fn collect_shape_targets<'a, 'i>(
                 bounds.y0 = bounds.y0.min(y);
                 bounds.y1 = bounds.y1.max(y);
             }
-            if depth == 0 {
+            let target = GroupChildTarget {
+                id: shape_id, bounds, parent, frame, size: (width, shape_height),
+                page_height: height,
+            };
+            if depth == 0 && angle == 0.0 && !flip_x && !flip_y
+                && movable_pin(shape, master).is_ok()
+            {
+                targets.reconnect_targets.push((shape_id, bounds));
+            }
+            if let Some(reason) = blocked {
+                targets.blocked.push((target, reason));
+            } else if depth == 0 {
                 targets.shapes.push((shape_id, bounds));
             } else {
-                targets.group_children.push(GroupChildTarget {
-                    id: shape_id, bounds, parent, frame, size: (width, shape_height),
-                    page_height: height,
-                });
+                targets.group_children.push(target);
             }
         }
         if let Some(children) = child(shape, "Shapes") {

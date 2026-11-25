@@ -626,7 +626,7 @@ impl FormatEditor for PdfDocument {
             }
         });
         let geometry_handles = editor.format_state::<State>().and_then(|s| s.geometry_edit.as_ref())
-            .map(|mode| (mode.page, mode.targets.clone(), mode.drag.as_ref().map(|drag| geometry_drag::ghost(drag, &mode.targets))));
+            .map(|mode| (mode.targets_page, mode.targets.clone(), mode.drag.as_ref().map(|drag| geometry_drag::ghost(drag, &mode.targets)), mode.hover));
 
         div()
             .relative()
@@ -649,6 +649,10 @@ impl FormatEditor for PdfDocument {
                             .h(content.size.height)
                             // The text is picked by pressing on it and dragging; a press without a drag picks nothing.
                             .on_mouse_down(MouseButton::Left, cx.listener(|editor, event: &MouseDownEvent, window, cx| press(editor, event, window, cx)))
+                            .id("pdf-page-content")
+                            .on_hover(cx.listener(|editor, over: &bool, _, cx| {
+                                if !*over { geometry_drag::hover(editor, None, cx); }
+                            }))
                             .on_mouse_move(cx.listener(|editor, event: &MouseMoveEvent, _, cx| drag(editor, event, cx)))
                             .on_mouse_up(MouseButton::Left, cx.listener(|editor, event: &MouseUpEvent, window, cx| {
                                 if geometry_drag::release(editor, event.position, window, cx) { return; }
@@ -694,15 +698,20 @@ impl FormatEditor for PdfDocument {
                                                     cx,
                                                 );
                                                 paint_marks(&mut guard, idx, x, y, scale, window);
-                                                if let Some((page, targets, ghost)) = &geometry_handles
+                                                if let Some((page, targets, ghost, hover)) = &geometry_handles
                                                     && *page == idx
                                                 {
-                                                    if let Some(rect) = ghost {
+                                                    if let Some(rect) = ghost.or_else(|| hover.map(|h| h.bounds)) {
+                                                        let color = if ghost.is_none() && hover.is_some_and(|h| h.blocked()) {
+                                                            rgb(0xb45309)
+                                                        } else {
+                                                            rgb(0x2563eb)
+                                                        };
                                                         window.paint_quad(fill(Bounds {
                                                             origin: point(px(x + rect.x0 * scale), px(y + rect.y0 * scale)),
                                                             size: size(px(rect.width() * scale), px(rect.height() * scale)),
-                                                        }, hsla(0.61, 0.85, 0.54, 0.12))
-                                                            .border_widths(px(1.0)).border_color(rgb(0x2563eb)));
+                                                        }, gpui_kit::transparent_black())
+                                                            .border_widths(px(if ghost.is_some() { 1.0 } else { 2.0 })).border_color(color));
                                                     }
                                                     for (_, _, (handle_x, handle_y)) in &targets.endpoints {
                                                         window.paint_quad(fill(
@@ -790,6 +799,7 @@ fn drag(editor: &mut SlideEditor, event: &MouseMoveEvent, cx: &mut Context<Slide
         geometry_drag::update(editor, event.position, cx);
         return;
     }
+    geometry_drag::hover(editor, Some(event.position), cx);
     let Some(state) = editor.format_state::<State>() else { return };
     if !state.ui.lock().expect("pdf ui lock").dragging || event.pressed_button != Some(MouseButton::Left) {
         return;
@@ -1013,7 +1023,9 @@ struct GeometryEditor {
     input: Entity<InputState>,
     staged: Option<Arc<[u8]>>,
     targets: Arc<ibis_vsdx::geometry_edit::GeometryTargets>,
+    targets_page: usize,
     drag: Option<geometry_drag::GeometryDrag>,
+    hover: Option<geometry_drag::Hover>,
 }
 
 fn open_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
@@ -1029,10 +1041,14 @@ fn open_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Co
             input: cx.new(|cx| InputState::new(window, cx).placeholder("move 2 0.25 0 / connect 12 end 4")),
             staged: None,
             targets: targets.clone(),
+            targets_page: page,
             drag: None,
+            hover: None,
         });
         mode.page = page;
         mode.targets = targets;
+        mode.targets_page = page;
+        mode.hover = None;
         state.find_open = false;
         state.page_open = false;
         mode.input.clone()
@@ -1095,6 +1111,8 @@ fn stage_geometry_edit(editor: &mut SlideEditor, bytes: Vec<u8>, window: &mut Wi
     let mode = editor.format_state_mut::<State>().unwrap().geometry_edit.as_mut().unwrap();
     mode.staged = Some(bytes);
     mode.targets = targets;
+    mode.targets_page = page;
+    mode.hover = None;
     if focus_input {
         mode.input.update(cx, |field, cx| {
             field.set_value("", window, cx);
@@ -1134,6 +1152,11 @@ fn replace_geometry_preview(state: &Mutex<PdfViewerState>, mut preview: PdfViewe
     *viewer = preview;
 }
 
+/// Current pointer guidance in the VSDX geometry editor.
+pub fn geometry_hover_hint(editor: &SlideEditor) -> Option<&'static str> {
+    editor.format_state::<State>()?.geometry_edit.as_ref()?.hover.map(|hover| hover.message())
+}
+
 fn geometry_edit_bar(mode: &GeometryEditor, cx: &mut Context<SlideEditor>) -> AnyElement {
     use ibis_office_shell::chrome::{action_button, text_field};
     use ibis_office_shell::i18n::{format, text};
@@ -1141,7 +1164,7 @@ fn geometry_edit_bar(mode: &GeometryEditor, cx: &mut Context<SlideEditor>) -> An
         .id("vsdx-geometry-edit")
         .absolute().top(px(12.0)).right(px(24.0))
         .child(div().child(text("vsdx.geometry-mode")))
-        .child(div().child(text("vsdx.geometry-drag-help")))
+        .child(div().child(text(mode.hover.map_or("vsdx.geometry-drag-help", |hover| hover.message()))))
         .child(div().child(format("vsdx.geometry-command-help", &[("page", &(mode.page + 1))])))
         .child(text_field(&mode.input).width(px(265.0)).select_on_focus())
         .child(action_button("vsdx-geometry-apply").small().label(text("vsdx.geometry-apply"))
