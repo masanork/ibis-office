@@ -1350,13 +1350,37 @@ pub(crate) fn brand_logo(id: &'static str, height: f32, full_width: bool) -> Sta
     let root = div().id(id).flex().items_center().gap(px(height * 0.22)).flex_none();
     let root = if full_width { root.w_full().h(px(height)) } else { root.w(px(height * LOGO_ASPECT)).h(px(height)) };
     let mark = img(docs_mark()).size(px(height * 0.9)).flex_none();
+    let wordmark_size = if full_width { height * 0.56 } else { height * 0.62 };
     let wordmark = div()
         .flex()
         .items_baseline()
-        .text_size(px(height * 0.62))
+        .text_size(px(wordmark_size))
+        .line_height(px(wordmark_size * 1.05))
         .child(div().font_weight(FontWeight::NORMAL).child("sorane"))
         .child(div().font_weight(FontWeight::BOLD).child("Docs"));
-    let root = root.child(mark).child(wordmark);
+    let text_block: AnyElement = if full_width {
+        let powered_size = (height * 0.16).clamp(11.0, 14.0);
+        v_flex()
+            .justify_center()
+            .gap(px((height * 0.05).max(2.0)))
+            .child(wordmark)
+            .child(
+                div()
+                    .id((id, 1usize))
+                    .text_size(px(powered_size))
+                    .line_height(px(powered_size * 1.2))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(0x64748b))
+                    .cursor_pointer()
+                    .hover(|s| s.underline())
+                    .child(crate::about::POWERED_BY)
+                    .on_click(|_, _, cx| crate::external::open_url(crate::about::PROJECT_URL, cx)),
+            )
+            .into_any_element()
+    } else {
+        wordmark.into_any_element()
+    };
+    let root = root.child(mark).child(text_block);
     #[cfg(all(feature="scenarios",any(target_os="macos",target_os="linux")))]
     let root = super::scenario::button_probe::observe_control(root,id.into());
     root

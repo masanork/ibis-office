@@ -70,6 +70,8 @@ declare global {
     ibisOfficePickFile: () => Promise<PickedFile | null>;
     /** Called from Rust to open a same-origin URL from the Web start view without reloading WASM. */
     ibisOfficeFetchUrl: (url: string) => Promise<PickedFile>;
+    /** Called from Rust when a host-configured Web start-view action button is clicked. */
+    ibisOfficeStartAction: (action: string) => void;
     /** Optional runtime updater for the Web start view configuration. */
     ibisOfficeSetStartView?: (config: Record<string, unknown>) => void;
     ibisOfficeDecodeHeic: (bytes: Uint8Array) => Promise<Uint8Array>;
@@ -831,13 +833,28 @@ async function fetchSameOriginUrl(url: string): Promise<PickedFile> {
     throw new Error(`HTTP ${response.status}`);
   }
   const path = resolved.pathname;
-  const name = decodeURIComponent(path.slice(path.lastIndexOf('/') + 1));
-  return { name, bytes: new Uint8Array(await response.arrayBuffer()) };
+  const queryPath = resolved.searchParams.get('path');
+  const sourcePath = queryPath && queryPath.trim() ? queryPath.trim() : path;
+  const name = decodeURIComponent(sourcePath.slice(sourcePath.lastIndexOf('/') + 1));
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (path === '/api/github/file' && queryPath) {
+    window.dispatchEvent(new CustomEvent('sorane:github-file-opened', {
+      detail: {
+        path: queryPath,
+        name,
+        etag: response.headers.get('ETag') ?? '',
+      },
+    }));
+  }
+  return { name, bytes };
 }
 
 window.ibisOfficeDecodeHeic = decodeHeic;
 window.ibisOfficePickFile = () => pickFile();
 window.ibisOfficeFetchUrl = fetchSameOriginUrl;
+window.ibisOfficeStartAction = (action: string) => {
+  window.dispatchEvent(new CustomEvent('sorane:start-action', { detail: { action } }));
+};
 window.ibisOfficePickIcc = pickIcc;
 window.ibisOfficePickDesignTokens = (maxBytes) => pickFile('.json', maxBytes);
 window.ibisOfficeIccSave = iccSave;

@@ -28,13 +28,6 @@
       badge: 'JTD',
     },
     {
-      title: '官民データ連携のアクションプラン',
-      subtitle: '図形・接続線・工程表を含む14枚のスライド資料',
-      name: 'data-action-plan-2023.pptx',
-      url: '/samples/data-action-plan-2023.pptx',
-      badge: 'PPTX',
-    },
-    {
       title: 'まちなかの居心地の良さを測る分析ツール',
       subtitle: '複数シートの数式と50個のグラフを含む記入例',
       name: 'urban-comfort-analysis.xlsx',
@@ -56,52 +49,21 @@
       badge: 'VSDX',
     },
     {
-      title: 'Hancom Office サンプル文書',
-      subtitle: 'HWPX 文書の読み込み・表結合・編集および DOCX 保存デモ',
-      name: 'hancom-sample.hwpx',
-      url: '/samples/hancom-sample.hwpx',
-      badge: 'HWPX',
-    },
-    {
-      title: 'OFD 電子帳票サンプル（2ページ）',
-      subtitle: 'GB/T 33190-2016 固定レイアウト文書の直接描画（合成データ）',
-      name: 'ofd-sample.ofd',
-      url: '/samples/ofd-sample.ofd',
-      badge: 'OFD',
-    },
-    {
-      title: 'ODF (LibreOffice) グラフ付き表計算',
-      subtitle: 'OpenDocument Spreadsheet (.ods) の読み込み・編集サンプル',
-      name: 'odf-charts-sample.ods',
-      url: '/samples/odf-charts-sample.ods',
-      badge: 'ODS',
-    },
-    {
       title: 'ibisOffice WASM SBOM（CycloneDX 1.6）',
       subtitle: '本ビルド自身の依存部品目録 JSON を表計算として直接閲覧',
       name: 'ibis-office-wasm.sbom.cdx.json',
       url: '/samples/ibis-office-wasm.sbom.cdx.json',
       badge: 'SBOM',
     },
-    {
-      title: 'ibisOffice WASM CBOM（暗号資産目録）',
-      subtitle: '使用している暗号アルゴリズム・ハッシュ境界の CycloneDX JSON',
-      name: 'ibis-office-wasm.cbom.cdx.json',
-      url: '/samples/ibis-office-wasm.cbom.cdx.json',
-      badge: 'CBOM',
-    },
-    {
-      title: '脆弱性対策レビュー（危ない部品ハイライト）',
-      subtitle: 'SBOM 部品×深刻度（赤/橙/黄/緑）と自動集計サマリー（デモ用架空判定）',
-      name: 'sbom-vulnerability-review.xlsx',
-      url: '/samples/sbom-vulnerability-review.xlsx',
-      badge: 'XLSX',
-    },
   ];
 
   const startView = {
     listTitle: 'サンプル',
     items: [...featuredItems],
+    selectAction: {
+      label: 'GitHub でログイン',
+      action: 'github-vault',
+    },
     panel: {
       heading: '文書をひらく。ひらめきが、広がる。',
       body: [
@@ -110,7 +72,7 @@
       features: [
         {
           title: '幅広い文書形式をブラウザで直接表示',
-          description: 'Word・Excel・PowerPoint に加え、一太郎・DocuWorks・Hancom Office・Visio・Markdown (Mermaid)・自治体連携標準 CSV に対応しています。',
+          description: 'Word・Excel・PowerPoint に加え、一太郎・DocuWorks・Visio・Markdown (Mermaid)・自治体連携標準 CSV に対応しています。',
         },
         {
           title: '端末内完結（WebAssembly + WebGPU）',
@@ -131,6 +93,7 @@
     },
   };
 
+  window.soraneStartBase = startView;
   window.ibisOfficeOptions = {
     ...(window.ibisOfficeOptions || {}),
     startView,

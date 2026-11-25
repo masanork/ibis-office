@@ -676,28 +676,18 @@ fn bundled_mermaid_showcase_renders_all_diagrams() {
 fn bundled_web_samples_open_without_error() {
     let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../www/samples");
 
-    let hwpx = fs::read(samples.join("hancom-sample.hwpx")).expect("read hancom-sample.hwpx");
-    let opened_hwpx = ibis_formats::hwpx::open(&hwpx).expect("hancom-sample.hwpx must open cleanly");
-    assert!(opened_hwpx.presentation.flow.is_some(), "HWPX should produce a flow document");
-
     let csv = fs::read(samples.join("standard-linkage.csv")).expect("read standard-linkage.csv");
     let opened_csv = ibis_formats::open(csv).expect("standard-linkage.csv must open cleanly");
     let wb = opened_csv.presentation.workbook.as_ref().expect("workbook");
     assert_eq!(wb.sheets.len(), 1);
     assert!(!opened_csv.presentation.slides.is_empty());
 
-    let vuln = fs::read(samples.join("sbom-vulnerability-review.xlsx")).expect("read sbom-vulnerability-review.xlsx");
-    let opened_vuln = ibis_formats::open(vuln).expect("sbom-vulnerability-review.xlsx must open cleanly");
-    assert_eq!(opened_vuln.presentation.workbook.as_ref().expect("workbook").sheets.len(), 2);
+    assert!(samples.join("visio-multi-page-handbook.vsdx").is_file(), "visio-multi-page-handbook.vsdx must exist");
 
-    assert!(samples.join("odf-charts-sample.ods").is_file(), "odf-charts-sample.ods must exist");
-    assert!(samples.join("ofd-sample.ofd").is_file(), "ofd-sample.ofd must exist");
-
-    for name in ["ibis-office-wasm.sbom.cdx.json", "ibis-office-wasm.cbom.cdx.json"] {
-        let json = fs::read(samples.join(name)).expect("read bom sample");
-        let opened = ibis_formats::sbom_review::open_table_with_format((name, &json))
-            .unwrap_or_else(|err| panic!("{name} failed: {err}"))
-            .unwrap_or_else(|| panic!("{name} was not recognized as CycloneDX"));
-        assert!(opened.0.presentation.workbook.is_some(), "{name} should produce a workbook");
-    }
+    let name = "ibis-office-wasm.sbom.cdx.json";
+    let json = fs::read(samples.join(name)).expect("read bom sample");
+    let opened = ibis_formats::sbom_review::open_table_with_format((name, &json))
+        .unwrap_or_else(|err| panic!("{name} failed: {err}"))
+        .unwrap_or_else(|| panic!("{name} was not recognized as CycloneDX"));
+    assert!(opened.0.presentation.workbook.is_some(), "{name} should produce a workbook");
 }

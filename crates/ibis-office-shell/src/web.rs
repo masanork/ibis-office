@@ -66,6 +66,14 @@ extern "C" {
     /// resolves to `{ name, bytes }`.
     #[wasm_bindgen(catch, js_name = ibisOfficeFetchUrl)]
     fn fetch_url_js(url: &str) -> Result<js_sys::Promise, JsValue>;
+    /// Defined by `www/main.ts`: triggers a host-provided Web start-view action
+    /// (such as opening the GitHub login / repository picker modal).
+    #[wasm_bindgen(catch, js_name = ibisOfficeStartAction)]
+    fn start_action_js(action: &str) -> Result<(), JsValue>;
+}
+
+pub(crate) fn trigger_start_action(action: &str) {
+    let _ = start_action_js(action);
 }
 
 #[wasm_bindgen]

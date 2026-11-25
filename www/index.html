@@ -3,9 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Docs は、ブラウザで文書をひらいて、読んで、編集できるアプリです。" />
+    <meta name="description" content="soraneDocs は、ブラウザで文書をひらいて、読んで、編集できるアプリです。" />
     <meta name="theme-color" content="#f7f9fc" />
-    <title>Docs — 文書を、もっと身近に。</title>
+    <title>soraneDocs — 文書を、もっと身近に。</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml">
     <link rel="license" href="./license.md">
     <style>
@@ -15,6 +15,12 @@
       body > canvas { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
       #status { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
                 gap: 12px; font: 14px system-ui, sans-serif; color: #555; pointer-events: none; }
+      #status-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+      #status-brand img { width: 44px; height: 44px; display: block; }
+      #status-brand-text { display: flex; flex-direction: column; line-height: 1.15; }
+      #status-brand-name { font-size: 26px; font-weight: 400; color: #0f172a; letter-spacing: -0.01em; }
+      #status-brand-name strong { font-weight: 700; }
+      #status-brand-powered { font-size: 11px; font-weight: 500; color: #64748b; margin-top: 2px; }
       /* Download progress of the app; shown once the size (Content-Length) is known. */
       #progress { display: none; width: min(320px, 70vw); height: 4px; border-radius: 2px; background: #e3e7ee; overflow: hidden; }
       #progress > div { position: relative; width: 0; height: 100%; background: #1a5fd6; transition: width .1s linear; overflow: hidden; }
@@ -29,11 +35,22 @@
     </style>
   </head>
   <body data-phone-editor>
-    <div id="status"><span id="status-text">Docs を読み込んでいます…</span><div id="progress"><div></div></div></div>
+    <div id="status">
+      <div id="status-brand">
+        <img src="./favicon.svg" alt="" />
+        <div id="status-brand-text">
+          <span id="status-brand-name">sorane<strong>Docs</strong></span>
+          <span id="status-brand-powered">Powered by ibisOffice</span>
+        </div>
+      </div>
+      <span id="status-text">soraneDocs を読み込んでいます…</span>
+      <div id="progress"><div></div></div>
+    </div>
     <script src="./boot.js"></script>
     <script src="./sorane-start.js"></script>
     <script type="module" src="./main.js"></script>
     <script type="module" src="./sorane-files-save.js"></script>
+    <script type="module" src="./sorane-github-vault.js"></script>
     <script type="module" src="./sorane-ai.js"></script>
   </body>
 </html>

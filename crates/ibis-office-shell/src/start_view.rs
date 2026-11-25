@@ -65,6 +65,17 @@ pub struct StartViewPanel {
     pub note: Option<String>,
 }
 
+/// Optional secondary action shown beside 「開く…」 in the Web start view (e.g. GitHub login / repository picker).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartViewSelectAction {
+    pub label: String,
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
 /// Host-supplied configuration for the Web start view (`set_start_view_config`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +84,8 @@ pub struct StartViewConfig {
     pub list_title: Option<String>,
     #[serde(default)]
     pub items: Vec<StartViewItem>,
+    #[serde(default)]
+    pub select_action: Option<StartViewSelectAction>,
     #[serde(default)]
     pub panel: Option<StartViewPanel>,
 }
@@ -102,6 +115,13 @@ pub fn set_start_view_config(json: &str) -> Result<(), String> {
             && is_safe_same_origin_url(&item.url)
     });
     config.items.truncate(100);
+    if let Some(sa) = &config.select_action {
+        let valid_action = sa.action.as_deref().is_some_and(|a| !a.trim().is_empty());
+        let valid_url = sa.url.as_deref().is_some_and(is_safe_link_url);
+        if sa.label.trim().is_empty() || (!valid_action && !valid_url) {
+            config.select_action = None;
+        }
+    }
     if let Some(panel) = &mut config.panel {
         panel.body.retain(|p| !p.trim().is_empty());
         panel.body.truncate(8);
@@ -321,6 +341,38 @@ impl SlideEditor {
             .child(Icon::new(Material("folder_open")).size(px(20.)).text_color(rgb(LINK_COLOR)))
             .child(crate::i18n::text("start.open"))
             .on_click(cx.listener(|this, _, window, cx| this.open_file(&Open, window, cx)));
+        let select_action = start_view_config().and_then(|c| c.select_action).map(|sa| {
+            let action = sa.action.clone();
+            let url = sa.url.clone();
+            div()
+                .id("start-select-action")
+                .mt(px(-ICON_EDGE))
+                .px_3()
+                .py_1()
+                .rounded(px(999.))
+                .border_1()
+                .border_color(rgb(0xd0d7e2))
+                .bg(rgb(0xf8fafc))
+                .flex()
+                .items_center()
+                .gap_1()
+                .text_color(rgb(LINK_COLOR))
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .hover(|s| s.bg(rgb(0xe8f0fe)).border_color(rgb(LINK_COLOR)))
+                .child(Icon::new(Material("cloud")).size(px(16.)).text_color(rgb(LINK_COLOR)))
+                .child(sa.label)
+                .on_click(move |_, _, cx| {
+                    if let Some(act) = &action {
+                        #[cfg(target_family = "wasm")]
+                        crate::web::trigger_start_action(act);
+                        let _ = act;
+                    } else if let Some(target_url) = &url {
+                        crate::external::open_url(target_url, cx);
+                    }
+                })
+        });
         // The first badge's left edge under 新規作成's.
         let new_files = div()
             .flex()
@@ -357,7 +409,15 @@ impl SlideEditor {
                     .child(new_files)
                     // The pages' padding (their hover) is part of the space above 選択.
                     .child(section_title("start.select", BOTTOM_MARGIN - TILE_PADDING, TITLE_GAP))
-                    .child(div().flex().child(open))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_4()
+                            .child(open)
+                            .when_some(select_action, |row, btn| row.child(btn)),
+                    )
                     .map(|d| self.recent_files_list(d, cx))
                     .when_some(self.status.clone(), |d, status| d.child(div().mt_3().text_sm().text_color(muted).child(status))),
             )
@@ -373,18 +433,17 @@ impl SlideEditor {
                 )))
     }
 
-    /// 「Powered by ibisOffice」 and 「ver.0.8.x」 directly under the logo.
+    /// 「ver.0.8.x」 directly under the logo lockup.
     fn version_line(muted: Hsla) -> impl IntoElement {
         div()
             .id("start-version")
             .w_full()
             .flex()
             .items_center()
-            .justify_between()
+            .justify_end()
             .text_xs()
             .text_color(muted)
-            .mt(px(-8.))
-            .child(div().font_weight(FontWeight::MEDIUM).child("Powered by ibisOffice"))
+            .mt(px(-10.))
             .child(crate::i18n::format("start.version", &[("version", &env!("IBIS_VERSION"))]))
     }
 
