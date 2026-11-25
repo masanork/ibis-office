@@ -93,7 +93,7 @@ pub(crate) fn open_document_bytes(
     let extension = virtual_path.extension().and_then(|ext| ext.to_str());
     let external_document_format = DocxConvertFormat::from_path(virtual_path);
     let editable_import = EditableImport::detect(extension, data).filter(|format| {
-        matches!(format, EditableImport::Hancom(_) | EditableImport::Uot | EditableImport::WordPerfect)
+        matches!(format, EditableImport::Hancom(_) | EditableImport::Uot | EditableImport::Epub | EditableImport::WordPerfect)
             || matches!(external_document_format, None | Some(DocxConvertFormat::Odt))
     });
 
@@ -351,6 +351,7 @@ pub(crate) enum EditableImport {
     Hancom(ibis_formats::hwp::Format),
     OpenDocument(ibis_odf::Format),
     Uot,
+    Epub,
     WordPerfect,
 }
 
@@ -358,6 +359,9 @@ impl EditableImport {
     pub(crate) fn detect(extension: Option<&str>, data: &[u8]) -> Option<Self> {
         if let Some(format) = ibis_formats::hwp::Format::detect(extension, data) {
             return Some(Self::Hancom(format));
+        }
+        if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("epub")) || ibis_formats::epub::is_epub(data) {
+            return Some(Self::Epub);
         }
         if extension.is_some_and(ibis_formats::uot::is_extension) || ibis_formats::uot::is_uot(data) {
             return Some(Self::Uot);
@@ -375,6 +379,7 @@ impl EditableImport {
     pub(crate) fn open(self, data: &[u8], base_dir: Option<&std::path::Path>) -> Result<ibis_formats::Opened, ibis_formats::Error> {
         match self {
             Self::Hancom(format) => format.open(data),
+            Self::Epub => ibis_formats::epub::open(data),
             Self::Uot => ibis_formats::uot::open_with_base_dir(data, base_dir),
             Self::WordPerfect => ibis_formats::wpd::open(data),
             Self::OpenDocument(format) => ibis_formats::open(format.to_ooxml(data)?),
@@ -383,7 +388,7 @@ impl EditableImport {
 
     pub(crate) fn save_extension(self) -> &'static str {
         match self {
-            Self::Hancom(_) | Self::Uot | Self::WordPerfect | Self::OpenDocument(ibis_odf::Format::Text) => "docx",
+            Self::Hancom(_) | Self::Uot | Self::Epub | Self::WordPerfect | Self::OpenDocument(ibis_odf::Format::Text) => "docx",
             Self::OpenDocument(ibis_odf::Format::Spreadsheet) => "xlsx",
             Self::OpenDocument(ibis_odf::Format::Presentation) => "pptx",
         }

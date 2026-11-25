@@ -855,6 +855,20 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "document".into());
         let raw_data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if matches!(format, "docx" | "md" | "markdown")
+            && (path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("epub"))
+                || ibis_formats::epub::is_epub(&raw_data))
+        {
+            let (extension, bytes) = if format == "docx" {
+                ("docx", ibis_formats::epub::to_docx(&raw_data))
+            } else {
+                ("md", ibis_formats::epub::to_markdown(&raw_data).map(String::into_bytes))
+            };
+            let bytes = bytes.map_err(|e| format!("{}: {e}", path.display()))?;
+            let output = out_dir.join(format!("{stem}.{extension}"));
+            std::fs::write(&output, bytes).map_err(|e| format!("{}: {e}", output.display()))?;
+            return Ok(());
+        }
         if format == "ai-json" {
             let export = ibis_lawtext::export_ai_source(&raw_data)
                 .map_err(|e| format!("{}: {e}", path.display()))?;
