@@ -15,6 +15,21 @@ const browser = await chromium.launch({
     '--use-angle=swiftshader', '--disable-gpu-sandbox',
   ],
 });
+// These pages emulate phones and tablets (`isMobile`). Mobile Chrome has no
+// File System Access pickers, while the desktop Chrome that runs this test
+// does, and Playwright cannot answer `showOpenFilePicker` (no "filechooser"
+// event). Remove them so the page takes the `<input type=file>` path that
+// mobile browsers use.
+async function newMobilePage(options) {
+  const page = await browser.newPage(options);
+  await page.addInitScript(() => {
+    for (const name of ['showOpenFilePicker', 'showSaveFilePicker', 'showDirectoryPicker']) {
+      delete window[name];
+      delete Window.prototype[name];
+    }
+  });
+  return page;
+}
 // `run()` can return before the first GPU frame is presented. Wait for
 // actual pixels rather than assuming that removal of the loading overlay
 // means the editor is already ready for input.
@@ -46,7 +61,7 @@ async function waitForEditorFrame(page) {
   throw new Error('editor did not paint a frame within 60 seconds');
 }
 try {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
+  const page = await newMobilePage({ viewport: { width: 1024, height: 768 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
   const failures = [];
   page.on('pageerror', error => failures.push(error.message));
   page.on('console', message => {
@@ -131,7 +146,7 @@ try {
   assert.deepEqual(failures, [], 'touch interactions must not panic');
 
   await page.context().close();
-  const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
+  const phone = await newMobilePage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
   phone.on('pageerror', error => failures.push(error.message));
   phone.on('console', message => {
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
@@ -238,7 +253,7 @@ try {
   await phone.context().close();
 
   // A standalone phone opens files in viewing mode and can switch to editing.
-  const viewer = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
+  const viewer = await newMobilePage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
   viewer.on('pageerror', error => failures.push(error.message));
   await viewer.addInitScript(version => {
     localStorage.setItem('ibisOffice.app.last-started-version', version);
@@ -314,7 +329,7 @@ with zipfile.ZipFile(buf, 'w') as z:
     z.writestr('Page.fpage', f'<FixedPage {ns} Width="800" Height="1100"><Path Data="M 16,40 L 784,40 L 784,200 L 16,200 Z" Fill="#FFCC0000"/></FixedPage>')
 sys.stdout.buffer.write(buf.getvalue())
 `]);
-  const fixed = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
+  const fixed = await newMobilePage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
   fixed.on('pageerror', error => failures.push(error.message));
   await fixed.addInitScript(version => {
     localStorage.setItem('ibisOffice.app.last-started-version', version);
@@ -368,7 +383,7 @@ sys.stdout.buffer.write(buf.getvalue())
   await fixed.context().close();
 
   // Open from the file picker, whose source is retained for the download action.
-  const editing = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
+  const editing = await newMobilePage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
   editing.on('pageerror', error => failures.push(error.message));
   editing.on('console', message => {
     if (message.type() === 'error' && /panicked|RuntimeError|RefCell already borrowed/.test(message.text())) failures.push(message.text());
