@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::SystemTime;
 
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use serde_json::{Value, json};
 
-use super::{Folder, FolderReference, ReferencePosition, excerpt, extension, read_text};
+use super::{Folder, FolderReference, ReferencePosition, excerpt, extension, read_text, vault_db};
 
-const INDEX_BYTES: usize = 8 * 1024 * 1024;
-const INDEX_FILES: usize = 256;
+const SEARCH_CACHE_BYTES: usize = 8 * 1024 * 1024;
+const SEARCH_CACHE_FILES: usize = 256;
+const METADATA_LIMIT: usize = super::SCAN_LIMIT;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Stamp {
-    size: u64,
-    modified: SystemTime,
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct Stamp {
+    pub(super) size: u64,
+    pub(super) modified: SystemTime,
 }
 
 impl Stamp {
@@ -37,6 +38,24 @@ struct Entry {
 }
 
 #[derive(Clone, Debug)]
+pub(super) struct RawLink {
+    pub(super) target_raw: String,
+    pub(super) is_wiki: bool,
+    pub(super) heading: Option<String>,
+    pub(super) line: usize,
+    pub(super) excerpt: String,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct CachedFile {
+    pub(super) stamp: Stamp,
+    pub(super) partial: bool,
+    pub(super) tags: Vec<String>,
+    pub(super) aliases: Vec<String>,
+    pub(super) links: Vec<RawLink>,
+}
+
+#[derive(Clone, Debug)]
 pub(super) struct Backlink {
     pub(super) source: FolderReference,
     pub(super) line: usize,
@@ -47,21 +66,32 @@ pub(super) struct Backlink {
 pub(super) struct MarkdownIndex {
     entries: BTreeMap<String, Entry>,
     backlinks: BTreeMap<String, Vec<Backlink>>,
+    tags: BTreeMap<String, Vec<String>>,
+    aliases: BTreeMap<String, Vec<String>>,
     pub(super) partial: bool,
+    #[cfg(test)]
+    pub(super) cache_hits: usize,
 }
 
 impl MarkdownIndex {
     pub(super) fn build(folder: &Folder) -> Self {
-        let mut remaining = INDEX_BYTES;
+        let mut cached = vault_db::load_all(&folder.root).unwrap_or_default();
+        let mut remaining_search_bytes = SEARCH_CACHE_BYTES;
+        let mut search_files = 0usize;
         let mut entries = BTreeMap::new();
-        let mut backlinks = BTreeMap::new();
+        let mut current_files = BTreeMap::<String, CachedFile>::new();
+        let mut updated_paths = Vec::<String>::new();
+        let mut incomplete = false;
+        #[cfg(test)]
+        let mut cache_hits = 0usize;
+
         let mut markdown = folder
             .files
             .iter()
             .filter(|path| matches!(extension(Path::new(path)).as_str(), "md" | "markdown"));
-        let mut incomplete = false;
-        for relative in markdown.by_ref().take(INDEX_FILES) {
-            let Some(path) = folder.resolve(relative).ok() else {
+
+        for relative in markdown.by_ref().take(METADATA_LIMIT) {
+            let Ok(path) = folder.resolve(relative) else {
                 incomplete = true;
                 continue;
             };
@@ -69,6 +99,40 @@ impl MarkdownIndex {
                 incomplete = true;
                 continue;
             };
+
+            let maybe_cached = cached.remove(relative).filter(|entry| entry.stamp == stamp);
+            if let Some(entry) = maybe_cached {
+                #[cfg(test)]
+                {
+                    cache_hits += 1;
+                }
+                incomplete |= entry.partial;
+                if search_files < SEARCH_CACHE_FILES && remaining_search_bytes > 0 {
+                    if let Ok((content, partial)) = read_text(&path)
+                        && Stamp::read(&path) == Some(stamp)
+                    {
+                        let normalized = content.to_lowercase();
+                        if let Some(budget) =
+                            remaining_search_bytes.checked_sub(content.len() + normalized.len())
+                        {
+                            remaining_search_bytes = budget;
+                            search_files += 1;
+                            entries.insert(
+                                relative.clone(),
+                                Entry {
+                                    stamp,
+                                    content,
+                                    normalized,
+                                    partial,
+                                },
+                            );
+                        }
+                    }
+                }
+                current_files.insert(relative.clone(), entry);
+                continue;
+            }
+
             let Ok((content, partial)) = read_text(&path) else {
                 incomplete = true;
                 continue;
@@ -77,31 +141,109 @@ impl MarkdownIndex {
                 incomplete = true;
                 continue;
             }
-            let normalized = content.to_lowercase();
-            let Some(budget) = remaining.checked_sub(content.len() + normalized.len()) else {
-                incomplete = true;
-                break;
-            };
-            remaining = budget;
             incomplete |= partial;
-            index_backlinks(folder, relative, &content, &mut backlinks);
-            entries.insert(
+
+            let (tags, aliases, links) = extract_markdown_metadata(relative, &content);
+            current_files.insert(
                 relative.clone(),
-                Entry {
+                CachedFile {
                     stamp,
-                    content,
-                    normalized,
                     partial,
+                    tags,
+                    aliases,
+                    links,
                 },
             );
+            updated_paths.push(relative.clone());
+
+            if search_files < SEARCH_CACHE_FILES && remaining_search_bytes > 0 {
+                let normalized = content.to_lowercase();
+                if let Some(budget) =
+                    remaining_search_bytes.checked_sub(content.len() + normalized.len())
+                {
+                    remaining_search_bytes = budget;
+                    search_files += 1;
+                    entries.insert(
+                        relative.clone(),
+                        Entry {
+                            stamp,
+                            content,
+                            normalized,
+                            partial,
+                        },
+                    );
+                }
+            }
         }
+
+        let removed: Vec<String> = cached.into_keys().collect();
+        let updated: Vec<(String, &CachedFile)> = updated_paths
+            .iter()
+            .filter_map(|path| current_files.get(path).map(|entry| (path.clone(), entry)))
+            .collect();
+        if let Err(err) = vault_db::sync_diff(&folder.root, &removed, &updated) {
+            log::warn!("Failed to persist vault index cache: {err}");
+        }
+
+        let mut tags = BTreeMap::<String, Vec<String>>::new();
+        let mut aliases = BTreeMap::<String, Vec<String>>::new();
+        for (path, entry) in &current_files {
+            if !entry.tags.is_empty() {
+                tags.insert(path.clone(), entry.tags.clone());
+            }
+            for alias in &entry.aliases {
+                aliases.entry(alias.clone()).or_default().push(path.clone());
+            }
+        }
+
+        let mut backlinks = BTreeMap::<String, Vec<Backlink>>::new();
+        for (source, entry) in &current_files {
+            for link in &entry.links {
+                let reference = if link.is_wiki {
+                    format!("[[{}]]", link.target_raw)
+                } else {
+                    link.target_raw.clone()
+                };
+                let Ok(target) =
+                    folder.indexed_reference_path_with_aliases(source, &reference, Some(&aliases))
+                else {
+                    continue;
+                };
+                if target == *source || folder.files.binary_search(&target).is_err() {
+                    continue;
+                }
+                let references = backlinks.entry(target).or_default();
+                if references
+                    .last()
+                    .is_some_and(|existing| existing.source.path == *source)
+                {
+                    continue;
+                }
+                references.push(Backlink {
+                    source: FolderReference {
+                        path: source.clone(),
+                        position: link
+                            .heading
+                            .as_ref()
+                            .map(|title| ReferencePosition::Heading(title.clone())),
+                    },
+                    line: link.line,
+                    excerpt: link.excerpt.clone(),
+                });
+            }
+        }
+
         Self {
             entries,
             backlinks,
+            tags,
+            aliases,
             partial: incomplete
                 || markdown.next().is_some()
                 || folder.truncated
                 || folder.skipped > 0,
+            #[cfg(test)]
+            cache_hits,
         }
     }
 
@@ -110,6 +252,17 @@ impl MarkdownIndex {
             .get(relative)
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    pub(super) fn tags(&self, relative: &str) -> &[String] {
+        self.tags
+            .get(relative)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub(super) fn aliases(&self) -> &BTreeMap<String, Vec<String>> {
+        &self.aliases
     }
 
     pub(super) fn search(
@@ -135,12 +288,105 @@ impl MarkdownIndex {
     }
 }
 
-fn index_backlinks(
-    folder: &Folder,
-    source: &str,
-    content: &str,
-    backlinks: &mut BTreeMap<String, Vec<Backlink>>,
-) {
+fn normalize_tag(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_start_matches('#').trim_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_lowercase())
+}
+
+fn push_yaml_tags(value: Option<&Value>, out: &mut BTreeSet<String>) {
+    match value {
+        Some(Value::String(tag)) => {
+            if let Some(normalized) = normalize_tag(tag) {
+                out.insert(normalized);
+            }
+        }
+        Some(Value::Array(items)) => {
+            for item in items {
+                if let Some(tag) = item.as_str().and_then(normalize_tag) {
+                    out.insert(tag);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn push_yaml_aliases(value: Option<&Value>, out: &mut BTreeSet<String>) {
+    match value {
+        Some(Value::String(alias)) => {
+            let trimmed = alias.trim();
+            if !trimmed.is_empty() {
+                out.insert(trimmed.to_lowercase());
+            }
+        }
+        Some(Value::Array(items)) => {
+            for item in items {
+                if let Some(alias) = item.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                    out.insert(alias.to_lowercase());
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_inline_tags(text: &str, out: &mut BTreeSet<String>) {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let (byte_idx, ch) = chars[i];
+        if ch == '#' {
+            let valid_before = i == 0 || {
+                let prev = chars[i - 1].1;
+                !prev.is_alphanumeric() && !matches!(prev, '_' | '-' | '/' | '#')
+            };
+            if valid_before {
+                let start = byte_idx + 1;
+                let mut j = i + 1;
+                while j < chars.len() {
+                    let c = chars[j].1;
+                    if c.is_alphanumeric() || matches!(c, '_' | '-' | '/') {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let end = chars.get(j).map_or(text.len(), |(idx, _)| *idx);
+                let raw = text[start..end].trim_matches('/');
+                if !raw.is_empty() && !raw.chars().all(|c| c.is_ascii_digit()) {
+                    out.insert(raw.to_lowercase());
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
+fn extract_markdown_metadata(relative: &str, content: &str) -> (Vec<String>, Vec<String>, Vec<RawLink>) {
+    let mut tags = BTreeSet::new();
+    let mut aliases = BTreeSet::new();
+    let mut skip_reserved_okf_tags = false;
+
+    if let Ok(Some(frontmatter)) = ibis_formats::okf::frontmatter_map(content) {
+        let is_reserved_name = matches!(relative.rsplit('/').next(), Some("index.md" | "log.md"));
+        let has_okf_type = frontmatter
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty());
+        skip_reserved_okf_tags = is_reserved_name && has_okf_type;
+        if !skip_reserved_okf_tags {
+            push_yaml_tags(frontmatter.get("tags"), &mut tags);
+            push_yaml_tags(frontmatter.get("tag"), &mut tags);
+        }
+        push_yaml_aliases(frontmatter.get("aliases"), &mut aliases);
+        push_yaml_aliases(frontmatter.get("alias"), &mut aliases);
+    }
+
     let options = Options::ENABLE_WIKILINKS | Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES;
     let body = ibis_formats::markdown::body_without_frontmatter(content);
     let body_offset = content.len() - body.len();
@@ -150,7 +396,11 @@ fn index_backlinks(
         .collect();
     let mut heading = None;
     let mut pending_heading = None::<String>;
-    let mut image_depth = 0;
+    let mut image_depth = 0usize;
+    let mut link_depth = 0usize;
+    let mut code_block_depth = 0usize;
+    let mut links = Vec::new();
+
     for (event, range) in Parser::new_ext(body, options).into_offset_iter() {
         match event {
             Event::Start(Tag::Heading { .. }) => pending_heading = Some(String::new()),
@@ -159,51 +409,60 @@ fn index_backlinks(
                     .take()
                     .filter(|text| !text.trim().is_empty());
             }
-            Event::Text(text) | Event::Code(text) => {
+            Event::Start(Tag::CodeBlock(_)) => code_block_depth += 1,
+            Event::End(TagEnd::CodeBlock) => code_block_depth = code_block_depth.saturating_sub(1),
+            Event::Text(text) => {
+                if let Some(heading) = pending_heading.as_mut() {
+                    heading.push_str(&text);
+                }
+                if !skip_reserved_okf_tags
+                    && image_depth == 0
+                    && link_depth == 0
+                    && code_block_depth == 0
+                {
+                    extract_inline_tags(&text, &mut tags);
+                }
+            }
+            Event::Code(text) => {
                 if let Some(heading) = pending_heading.as_mut() {
                     heading.push_str(&text);
                 }
             }
             Event::Start(Tag::Image { .. }) => image_depth += 1,
-            Event::End(TagEnd::Image) => image_depth -= 1,
+            Event::End(TagEnd::Image) => image_depth = image_depth.saturating_sub(1),
             Event::Start(Tag::Link {
                 link_type,
                 dest_url,
                 ..
-            }) if image_depth == 0 => {
-                let reference = match link_type {
-                    LinkType::WikiLink { .. } => format!("[[{dest_url}]]"),
+            }) => {
+                link_depth += 1;
+                if image_depth > 0 {
+                    continue;
+                }
+                let is_wiki = match link_type {
+                    LinkType::WikiLink { .. } => true,
                     LinkType::Autolink | LinkType::Email => continue,
-                    _ => dest_url.into_string(),
+                    _ => false,
                 };
-                let Ok(target) = folder.indexed_reference_path(source, &reference) else {
-                    continue;
-                };
-                if target == source || folder.files.binary_search(&target).is_err() {
-                    continue;
-                }
-                let references = backlinks.entry(target).or_default();
-                if references
-                    .last()
-                    .is_some_and(|link| link.source.path == source)
-                {
-                    continue;
-                }
                 let line = newlines.partition_point(|offset| *offset < body_offset + range.start);
                 let start = line.checked_sub(1).map_or(0, |index| newlines[index] + 1);
                 let end = newlines.get(line).copied().unwrap_or(content.len());
-                references.push(Backlink {
-                    source: FolderReference {
-                        path: source.to_owned(),
-                        position: heading
-                            .as_ref()
-                            .map(|title| ReferencePosition::Heading(title.clone())),
-                    },
+                links.push(RawLink {
+                    target_raw: dest_url.into_string(),
+                    is_wiki,
+                    heading: heading.clone(),
                     line: line + 1,
                     excerpt: excerpt(content[start..end].trim(), 120),
                 });
             }
+            Event::End(TagEnd::Link) => link_depth = link_depth.saturating_sub(1),
             _ => {}
         }
     }
+
+    (
+        tags.into_iter().collect(),
+        aliases.into_iter().collect(),
+        links,
+    )
 }

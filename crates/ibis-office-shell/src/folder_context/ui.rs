@@ -78,7 +78,9 @@ impl SlideEditor {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    if let Some(workspace) = GitWorkspace::for_selected_folder(&path) {
+                    if !super::is_obsidian_vault(&path)
+                        && let Some(workspace) = GitWorkspace::for_selected_folder(&path)
+                    {
                         Ok(OpenedFolder::Repository(Box::new(workspace)))
                     } else {
                         Folder::scan(&path).map(OpenedFolder::Files)
@@ -95,6 +97,29 @@ impl SlideEditor {
                     cx.notify();
                 }),
                 Err(error) => editor.show_alert(text("folder.error"), error.into(), cx),
+            });
+        })
+        .detach();
+    }
+
+    fn open_folder_git_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::git_workspace::GitWorkspace;
+
+        let Some(pane) = &self.folder_pane else {
+            return;
+        };
+        let root = pane.folder.root.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let workspace = cx
+                .background_executor()
+                .spawn(async move { GitWorkspace::for_selected_folder(&root) })
+                .await;
+            let _ = this.update(cx, |editor, cx| match workspace {
+                Some(workspace) => crate::app::open_window_with(cx, move |editor, _, cx| {
+                    editor.git_workspace = Some(workspace);
+                    cx.notify();
+                }),
+                None => editor.show_alert(text("folder.error"), text("folder.moved"), cx),
             });
         })
         .detach();
@@ -403,6 +428,17 @@ impl SlideEditor {
                                     editor.refresh_folder(window, cx)
                                 })),
                         )
+                        .when(pane.folder.has_git, |bar| {
+                            bar.child(
+                                Button::new("folder-git")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(text("folder.git"))
+                                    .on_click(cx.listener(|editor, _, window, cx| {
+                                        editor.open_folder_git_workspace(window, cx)
+                                    })),
+                            )
+                        })
                         .child(
                             Button::new("folder-close")
                                 .ghost()

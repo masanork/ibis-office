@@ -7076,7 +7076,125 @@ fn decode_data_uri_image(uri: &str) -> Option<(MediaFormat, Vec<u8>)> {
     Some((format, bytes))
 }
 
-/// Load a relative local image path against `base_dir` (non-WASM only, confined within `base_dir`).
+/// Locate the enclosing Obsidian Vault root (a directory containing `.obsidian/`) for `base_dir`.
+#[cfg(not(target_family = "wasm"))]
+fn find_obsidian_vault_root(base_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut current = std::fs::canonicalize(base_dir).ok()?;
+    for _ in 0..16 {
+        if current.join(".obsidian").is_dir() {
+            return Some(current);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    None
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn obsidian_attachment_folder(vault_root: &std::path::Path) -> Option<String> {
+    let app_json = vault_root.join(".obsidian").join("app.json");
+    let raw = std::fs::read_to_string(app_json).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value
+        .get("attachmentFolderPath")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn resolve_confined_file(
+    candidate: &std::path::Path,
+    boundary: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let canon = std::fs::canonicalize(candidate).ok()?;
+    if canon.starts_with(boundary) && canon.is_file() {
+        Some(canon)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn find_image_in_vault(
+    vault_root: &std::path::Path,
+    canon_base: &std::path::Path,
+    file_name: &str,
+) -> Option<std::path::PathBuf> {
+    use std::cmp::Reverse;
+
+    const MAX_ENTRIES: usize = 10_000;
+    let target_lower = file_name.to_lowercase();
+    let mut exact = Vec::new();
+    let mut ci = Vec::new();
+    let mut remaining = MAX_ENTRIES;
+    let mut dirs = vec![vault_root.to_path_buf()];
+
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if remaining == 0 {
+                break;
+            }
+            remaining -= 1;
+            let name = entry.file_name();
+            let Some(name_str) = name.to_str() else {
+                continue;
+            };
+            if name_str.starts_with('.') || name_str.starts_with("~$") {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                dirs.push(path);
+            } else if file_type.is_file() {
+                if name_str == file_name {
+                    exact.push(path);
+                } else if exact.is_empty() && name_str.to_lowercase() == target_lower {
+                    ci.push(path);
+                }
+            }
+        }
+        if remaining == 0 {
+            break;
+        }
+    }
+
+    let candidates = if !exact.is_empty() { exact } else { ci };
+    if candidates.is_empty() {
+        return None;
+    }
+    let base_rel = canon_base.strip_prefix(vault_root).unwrap_or(std::path::Path::new(""));
+    let base_parts: Vec<&std::ffi::OsStr> = base_rel.iter().collect();
+    candidates
+        .into_iter()
+        .filter_map(|path| resolve_confined_file(&path, vault_root))
+        .max_by_key(|canon| {
+            let rel = canon.strip_prefix(vault_root).unwrap_or(std::path::Path::new(""));
+            let parent = rel.parent().unwrap_or(std::path::Path::new(""));
+            let same_dir = parent == base_rel;
+            let common = base_parts
+                .iter()
+                .zip(parent.iter())
+                .take_while(|(a, b)| **a == *b)
+                .count();
+            let depth = rel.components().count();
+            (same_dir, common, Reverse(depth))
+        })
+}
+
+/// Load a relative local image path against `base_dir` (non-WASM only, confined within `base_dir`
+/// or the enclosing Obsidian Vault root when present).
 #[cfg(not(target_family = "wasm"))]
 fn load_local_image(url: &str, base_dir: Option<&std::path::Path>) -> Option<(MediaFormat, Vec<u8>)> {
     let base_dir = base_dir?;
@@ -7093,12 +7211,43 @@ fn load_local_image(url: &str, base_dir: Option<&std::path::Path>) -> Option<(Me
     if rel.is_absolute() {
         return None;
     }
-    let candidate = base_dir.join(rel);
     let canon_base = std::fs::canonicalize(base_dir).ok()?;
-    let canon_file = std::fs::canonicalize(&candidate).ok()?;
-    if !canon_file.starts_with(&canon_base) {
-        return None;
+    let mut resolved = resolve_confined_file(&base_dir.join(rel), &canon_base);
+
+    if resolved.is_none()
+        && let Some(vault_root) = find_obsidian_vault_root(&canon_base)
+    {
+        // 1. Relative to the note inside the vault (e.g. `../attachments/pic.png`).
+        resolved = resolve_confined_file(&base_dir.join(rel), &vault_root);
+
+        // 2. Configured Obsidian attachmentFolderPath in `.obsidian/app.json`.
+        if resolved.is_none()
+            && let Some(folder) = obsidian_attachment_folder(&vault_root)
+        {
+            let folder_base = if folder == "/" {
+                vault_root.clone()
+            } else if let Some(sub) = folder.strip_prefix("./") {
+                canon_base.join(sub)
+            } else if folder == "." {
+                canon_base.clone()
+            } else {
+                vault_root.join(folder.trim_start_matches('/'))
+            };
+            resolved = resolve_confined_file(&folder_base.join(rel), &vault_root);
+        }
+
+        // 3. Vault-root relative path (e.g. `![[assets/pic.png]]` or root-level `![[pic.png]]`).
+        if resolved.is_none() {
+            resolved = resolve_confined_file(&vault_root.join(rel), &vault_root);
+        }
+
+        // 4. Bare file name resolved anywhere inside the vault (nearest folder preferred).
+        if resolved.is_none() && !clean.contains('/') && !clean.contains('\\') {
+            resolved = find_image_in_vault(&vault_root, &canon_base, clean);
+        }
     }
+
+    let canon_file = resolved?;
     let bytes = std::fs::read(&canon_file).ok()?;
     let format = detect_image_format(&bytes, &canon_file)?;
     Some((format, bytes))
@@ -7122,12 +7271,20 @@ fn detect_image_format(bytes: &[u8], path: &std::path::Path) -> Option<MediaForm
     if bytes.starts_with(b"BM") {
         return Some(MediaFormat::Bmp);
     }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some(MediaFormat::Webp);
+    }
+    if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
+        return Some(MediaFormat::Tiff);
+    }
     let ext = path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase());
     match ext.as_deref() {
         Some("png") => Some(MediaFormat::Png),
         Some("jpg" | "jpeg") => Some(MediaFormat::Jpeg),
         Some("gif") => Some(MediaFormat::Gif),
         Some("bmp") => Some(MediaFormat::Bmp),
+        Some("webp") => Some(MediaFormat::Webp),
+        Some("tif" | "tiff") => Some(MediaFormat::Tiff),
         Some("svg") => Some(MediaFormat::Svg),
         Some("emf") => Some(MediaFormat::Emf),
         Some("wmf") => Some(MediaFormat::Wmf),
@@ -14097,5 +14254,57 @@ Page {{field:page}}, section {{field:section}}, section pages {{field:section-pa
         );
         assert!(exported_undone.contains("# Original"));
         assert!(exported_undone.contains("Hello world."));
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn obsidian_vault_image_embeds_resolve_attachment_folder_and_vault_paths() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ibis-md-vault-{}-{nonce}-{id}", std::process::id()));
+        let vault = root.join("vault");
+        let note_dir = vault.join("notes/sub");
+        std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(vault.join("attachments")).unwrap();
+        std::fs::create_dir_all(vault.join("media")).unwrap();
+        std::fs::create_dir_all(vault.join("other/deep")).unwrap();
+        std::fs::create_dir_all(&note_dir).unwrap();
+
+        // Minimal 1x1 PNG header + bytes.
+        const TINY_PNG: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, b'I', b'D', b'A', b'T', 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(
+            vault.join(".obsidian/app.json"),
+            r#"{"attachmentFolderPath":"attachments"}"#,
+        )
+        .unwrap();
+        std::fs::write(vault.join("attachments/hero.png"), TINY_PNG).unwrap();
+        std::fs::write(vault.join("media/nested.png"), TINY_PNG).unwrap();
+        std::fs::write(vault.join("other/deep/found.png"), TINY_PNG).unwrap();
+        std::fs::write(root.join("outside.png"), TINY_PNG).unwrap();
+
+        let md = concat!(
+            "![[hero.png]]\n\n",
+            "![[media/nested.png]]\n\n",
+            "![[found.png]]\n\n",
+            "![rel](../../attachments/hero.png)\n\n",
+            "![escape](../../../outside.png)\n",
+        );
+        let opened = open_markdown_with_base_dir(md.as_bytes().to_vec(), Some(&note_dir))
+            .expect("open_markdown_with_base_dir");
+        // 4 images inside the vault should be loaded; the escaped outside.png must be rejected.
+        assert_eq!(opened.presentation.media.len(), 4);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

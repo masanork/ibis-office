@@ -1722,6 +1722,7 @@ folder.okf.malformed-generation	Invalid generation timestamp
 folder.okf.deadline	Review deadline
 folder.more	Show more
 folder.refresh	Refresh
+folder.git	Git
 folder.close	Close Folder
 folder.error	Could not open folder or file
 folder.moved	The folder location changed. Open it again.

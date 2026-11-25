@@ -15,6 +15,7 @@ mod instructions;
 mod markdown_index;
 mod skills;
 mod ui;
+mod vault_db;
 pub(crate) use ui::FolderPane;
 
 const SCAN_LIMIT: usize = 10_000;
@@ -35,6 +36,42 @@ fn reference_target(reference: &str) -> &str {
         .map_or(reference, |wiki| wiki.split_once('|').map_or(wiki, |(target, _)| target))
 }
 
+fn pick_obsidian_candidate<'a>(from: &str, candidates: &[&'a String]) -> Option<&'a String> {
+    use std::cmp::Reverse;
+
+    let from_dir = from.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let from_parts: Vec<&str> = from_dir.split('/').filter(|part| !part.is_empty()).collect();
+    let score = |candidate: &str| {
+        let cand_dir = candidate.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let same_dir = cand_dir == from_dir;
+        let cand_parts = cand_dir.split('/').filter(|part| !part.is_empty());
+        let common = from_parts
+            .iter()
+            .zip(cand_parts)
+            .take_while(|(a, b)| **a == *b)
+            .count();
+        let depth = candidate.matches('/').count();
+        (same_dir, common, Reverse(depth))
+    };
+    let mut best: Option<(&'a String, (bool, usize, Reverse<usize>))> = None;
+    let mut tied = false;
+    for &candidate in candidates {
+        let current = score(candidate);
+        match best {
+            None => best = Some((candidate, current)),
+            Some((_, best_score)) if current > best_score => {
+                best = Some((candidate, current));
+                tied = false;
+            }
+            Some((_, best_score)) if current == best_score => {
+                tied = true;
+            }
+            _ => {}
+        }
+    }
+    (!tied).then(|| best.map(|(candidate, _)| candidate)).flatten()
+}
+
 pub(crate) fn visible(name: &str) -> bool {
     !name.starts_with('.') && !name.starts_with("~$")
 }
@@ -46,6 +83,10 @@ struct ConceptFilter {
     review: ibis_formats::okf::Review,
 }
 
+pub(crate) fn is_obsidian_vault(path: &Path) -> bool {
+    path.join(".obsidian").is_dir()
+}
+
 #[derive(Clone)]
 pub(crate) struct Folder {
     root: PathBuf,
@@ -53,6 +94,8 @@ pub(crate) struct Folder {
     concepts: BTreeMap<String, ConceptFilter>,
     markdown_index: markdown_index::MarkdownIndex,
     pub(crate) skills: Vec<ibis_formats::agent_skill::Metadata>,
+    pub(crate) is_obsidian_vault: bool,
+    pub(crate) has_git: bool,
     truncated: bool,
     skipped: usize,
 }
@@ -60,6 +103,8 @@ pub(crate) struct Folder {
 impl Folder {
     fn scan(path: &Path) -> Result<Self, String> {
         let root = path.canonicalize().map_err(|err| err.to_string())?;
+        let is_obsidian_vault = is_obsidian_vault(&root);
+        let has_git = crate::git_workspace::GitWorkspace::for_selected_folder(&root).is_some();
         let mut files = Vec::new();
         let mut remaining = SCAN_LIMIT;
         let mut skipped = 0;
@@ -120,6 +165,8 @@ impl Folder {
             concepts: BTreeMap::new(),
             markdown_index: markdown_index::MarkdownIndex::default(),
             skills: Vec::new(),
+            is_obsidian_vault,
+            has_git,
             truncated: remaining == 0,
             skipped,
         };
@@ -219,24 +266,87 @@ impl Folder {
     }
 
     fn indexed_reference_path(&self, from: &str, reference: &str) -> Result<String, String> {
-        if let Some(wiki) = reference.strip_prefix("[[").and_then(|text| text.strip_suffix("]]")) {
+        self.indexed_reference_path_with_aliases(
+            from,
+            reference,
+            Some(self.markdown_index.aliases()),
+        )
+    }
+
+    pub(super) fn indexed_reference_path_with_aliases(
+        &self,
+        from: &str,
+        reference: &str,
+        aliases: Option<&BTreeMap<String, Vec<String>>>,
+    ) -> Result<String, String> {
+        if let Some(wiki) = reference
+            .strip_prefix("[[")
+            .and_then(|text| text.strip_suffix("]]"))
+        {
             let target = wiki.split(['|', '#']).next().unwrap_or("").trim();
             if target.is_empty() {
                 return Ok(from.to_owned());
             }
-            let matches_path = |path: &str| path == target || path.strip_suffix(".md") == Some(target);
+            let matches_path =
+                |path: &str| path == target || path.strip_suffix(".md") == Some(target);
+            let target_lower = target.to_lowercase();
+            let matches_path_ci = |path: &str| {
+                let lower = path.to_lowercase();
+                lower == target_lower || lower.strip_suffix(".md") == Some(target_lower.as_str())
+            };
             if target.contains('/') {
-                return self.files.iter().find(|path| matches_path(path)).cloned()
-                    .ok_or_else(|| "Wiki link target was not found in the open folder.".into());
+                if let Some(exact) = self.files.iter().find(|path| matches_path(path)) {
+                    return Ok(exact.clone());
+                }
+                let ci: Vec<&String> = self
+                    .files
+                    .iter()
+                    .filter(|path| matches_path_ci(path))
+                    .collect();
+                if ci.len() == 1 {
+                    return Ok(ci[0].clone());
+                }
+                if ci.len() > 1 {
+                    return Err("Wiki link is ambiguous or the folder listing is incomplete. Use a root-relative path.".into());
+                }
+                return Err("Wiki link target was not found in the open folder.".into());
             }
-            let mut candidates = self.files.iter().filter(|path| {
-                path.rsplit('/').next().is_some_and(matches_path)
-            });
-            let first = candidates.next().ok_or("Wiki link target was not found in the open folder.")?;
-            if candidates.next().is_some() || self.truncated || self.skipped > 0 {
+
+            let mut candidates: Vec<&String> = self
+                .files
+                .iter()
+                .filter(|path| path.rsplit('/').next().is_some_and(matches_path))
+                .collect();
+            if candidates.is_empty() {
+                candidates = self
+                    .files
+                    .iter()
+                    .filter(|path| path.rsplit('/').next().is_some_and(matches_path_ci))
+                    .collect();
+            }
+            if candidates.is_empty()
+                && let Some(alias_paths) = aliases.and_then(|map| map.get(&target_lower))
+            {
+                candidates = alias_paths
+                    .iter()
+                    .filter(|path| self.files.binary_search(path).is_ok())
+                    .collect();
+            }
+            if candidates.is_empty() {
+                return Err("Wiki link target was not found in the open folder.".into());
+            }
+            if self.truncated || self.skipped > 0 {
                 return Err("Wiki link is ambiguous or the folder listing is incomplete. Use a root-relative path.".into());
             }
-            return Ok(first.clone());
+            if candidates.len() == 1 {
+                return Ok(candidates[0].clone());
+            }
+            if self.is_obsidian_vault
+                && let Some(best) = pick_obsidian_candidate(from, &candidates)
+            {
+                return Ok(best.clone());
+            }
+            return Err("Wiki link is ambiguous or the folder listing is incomplete. Use a root-relative path.".into());
         }
         ibis_formats::okf::resolve(from, reference)
             .map(|(path, _)| path)
@@ -249,9 +359,24 @@ impl Folder {
                 .get(path)
                 .is_some_and(|concept| concept.kind.contains(kind.trim()))
         } else if let Some(tag) = query.strip_prefix("tag:") {
+            let tag_query = tag.trim().trim_start_matches('#').trim_matches('/');
+            if tag_query.is_empty() {
+                return false;
+            }
+            let tag_matches = |actual: &str| {
+                actual == tag_query
+                    || actual
+                        .strip_prefix(tag_query)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            };
             self.concepts
                 .get(path)
-                .is_some_and(|concept| concept.tags.iter().any(|actual| actual == tag.trim()))
+                .is_some_and(|concept| concept.tags.iter().any(|actual| tag_matches(actual)))
+                || self
+                    .markdown_index
+                    .tags(path)
+                    .iter()
+                    .any(|actual| tag_matches(actual))
         } else {
             path.to_lowercase().contains(query)
         }
@@ -1246,5 +1371,95 @@ example: "[ignored](/資料/共通要件.md)"
         assert!(Folder::scan(&fixture.0).unwrap().files.is_empty());
         assert!(folder.resolve("index.md").is_err());
         assert!(folder.resolve("external/notes.md").is_err());
+    }
+
+    #[test]
+    fn obsidian_vault_tags_aliases_and_nearest_wikilinks_work_without_okf_type() {
+        let fixture = Fixture::new();
+        std::fs::create_dir_all(fixture.0.join(".obsidian")).unwrap();
+        std::fs::create_dir_all(fixture.0.join("notes/sub")).unwrap();
+        std::fs::create_dir_all(fixture.0.join("other")).unwrap();
+
+        fixture.write(
+            "notes/sub/guide.md",
+            "---\ntags: [project/2026, '#Review']\naliases: [導入ガイド]\n---\n\n# ガイド\n\n本文に #議事録 と `#ignored` と #123 がある。\n",
+        );
+        fixture.write("notes/sub/readme.md", "# Local readme\n");
+        fixture.write("other/readme.md", "# Other readme\n");
+        fixture.write(
+            "notes/sub/hub.md",
+            "[[導入ガイド]] と [[GUIDE]] と [[readme]] を参照。\n",
+        );
+
+        let folder = Folder::scan(&fixture.0).unwrap();
+        assert!(folder.is_obsidian_vault);
+        assert!(is_obsidian_vault(&fixture.0));
+
+        // Hierarchical, frontmatter, and inline tags work on plain Markdown notes.
+        for (query, expected) in [
+            ("tag:project", json!(["notes/sub/guide.md"])),
+            ("tag:project/2026", json!(["notes/sub/guide.md"])),
+            ("tag:#review", json!(["notes/sub/guide.md"])),
+            ("tag:議事録", json!(["notes/sub/guide.md"])),
+            ("tag:ignored", json!([])),
+            ("tag:123", json!([])),
+            ("tag:proj", json!([])),
+        ] {
+            let list = call(&folder, "folder_list", json!({"query": query})).unwrap();
+            assert_eq!(list.value["files"], expected, "{query}");
+        }
+
+        // Alias, case-insensitive, and nearest-directory Wiki link resolution.
+        assert_eq!(
+            folder.reference_path("notes/sub/hub.md", "[[導入ガイド]]").unwrap(),
+            "notes/sub/guide.md"
+        );
+        assert_eq!(
+            folder.reference_path("notes/sub/hub.md", "[[GUIDE]]").unwrap(),
+            "notes/sub/guide.md"
+        );
+        assert_eq!(
+            folder.reference_path("notes/sub/hub.md", "[[readme]]").unwrap(),
+            "notes/sub/readme.md"
+        );
+        assert_eq!(
+            folder.markdown_index.backlinks("notes/sub/guide.md").len(),
+            1
+        );
+        assert_eq!(
+            folder.markdown_index.backlinks("notes/sub/readme.md").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn turso_vault_index_scales_past_256_files_and_reuses_cache() {
+        let fixture = Fixture::new();
+        fixture.write("target.md", "# Target\n");
+        for i in 0..270 {
+            let body = if i == 0 || i == 269 {
+                format!("# Note {i}\n\nSee [[target]] #batch/item.\n")
+            } else {
+                format!("# Note {i}\n\nPlain body.\n")
+            };
+            fixture.write(&format!("n{i:03}.md"), body);
+        }
+
+        let first = Folder::scan(&fixture.0).unwrap();
+        assert!(!first.markdown_index.partial);
+        assert_eq!(first.markdown_index.backlinks("target.md").len(), 2);
+        let tagged = call(&first, "folder_list", json!({"query": "tag:batch"})).unwrap();
+        assert_eq!(tagged.value["files"], json!(["n000.md", "n269.md"]));
+
+        // Second scan with no changes should hit the Turso cache for all 271 Markdown files.
+        let second = Folder::scan(&fixture.0).unwrap();
+        assert_eq!(second.markdown_index.cache_hits, 271);
+        assert_eq!(second.markdown_index.backlinks("target.md").len(), 2);
+
+        // Updating one file invalidates only that file and refreshes backlinks.
+        fixture.write("n100.md", "# Note 100\n\nNow links to [[target]].\n");
+        let third = Folder::scan(&fixture.0).unwrap();
+        assert_eq!(third.markdown_index.cache_hits, 270);
+        assert_eq!(third.markdown_index.backlinks("target.md").len(), 3);
     }
 }
