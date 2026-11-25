@@ -10973,6 +10973,7 @@ dependencies = [
  "gpui-kit",
  "ibis-doc-model",
  "ibis-formats",
+ "ibis-lawtext",
  "ibis-office-shell",
  "log",
  "serde",

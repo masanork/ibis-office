@@ -979,6 +979,19 @@ impl SoraneWorkspace {
         self.new_tab_in_pane(self.active_pane, Some(Kind::Workbook), window, cx);
     }
 
+    pub(crate) fn new_lawtext_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(vault) = self.vault.clone() {
+            let law_path =
+                crate::session::next_numbered_file_path(vault.root(), "法令案", "lawtext");
+            if std::fs::write(&law_path, crate::session::DEFAULT_LAWTEXT_TEMPLATE).is_ok() {
+                self.refresh_vault_folder(window, cx);
+                self.open_path_in_active_pane(law_path, window, cx);
+                return;
+            }
+        }
+        self.new_tab_in_pane(self.active_pane, Some(Kind::Document), window, cx);
+    }
+
     pub(crate) fn close_tab(
         &mut self,
         pane_id: PaneId,
@@ -2165,6 +2178,15 @@ impl SoraneWorkspace {
                                                 .label("+ 表")
                                                 .on_click(cx.listener(|this, _, window, cx| {
                                                     this.new_workbook_markdown(window, cx);
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("ws-vault-new-law")
+                                                .ghost()
+                                                .xsmall()
+                                                .label("+ 法令")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.new_lawtext_draft(window, cx);
                                                 })),
                                         ),
                                 )

@@ -39,6 +39,7 @@ pub(crate) enum WorkspaceCommand {
     NewMarkdownNote,
     NewMarpDeck,
     NewMarkdownWorkbook,
+    NewLawtextDraft,
     OpenDailyNote,
     OpenVaultFolder,
     RefreshVault,
@@ -146,6 +147,12 @@ const ALL_COMMANDS: &[(WorkspaceCommand, &str, &str, Option<&str>)] = &[
         WorkspaceCommand::NewMarkdownWorkbook,
         "新規ワークブック Markdown を作成 (New Workbook Markdown)",
         "GFM テーブルと数式を含むスプレッドシート (.md) を作成して分割ビューで開く",
+        None,
+    ),
+    (
+        WorkspaceCommand::NewLawtextDraft,
+        "新規法令案 (Lawtext) を作成 (New Lawtext Draft)",
+        "Lawtext (.lawtext) を作成し、法制執務 Lint 付き分割ビューで開く",
         None,
     ),
     (
@@ -445,6 +452,7 @@ impl SoraneWorkspace {
             WorkspaceCommand::NewMarkdownNote => self.new_markdown_note(window, cx),
             WorkspaceCommand::NewMarpDeck => self.new_marp_deck(window, cx),
             WorkspaceCommand::NewMarkdownWorkbook => self.new_workbook_markdown(window, cx),
+            WorkspaceCommand::NewLawtextDraft => self.new_lawtext_draft(window, cx),
             WorkspaceCommand::OpenDailyNote => self.open_daily_note(window, cx),
             WorkspaceCommand::OpenVaultFolder => self.pick_vault_folder(window, cx),
             WorkspaceCommand::RefreshVault => self.refresh_vault_folder(window, cx),

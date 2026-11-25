@@ -270,20 +270,41 @@ pub const DEFAULT_WORKBOOK_MARKDOWN_TEMPLATE: &str = r#"<!-- xlsx-sheet "売上"
 | 合計金額 | 7600 <!-- xlsx-formula:"=SUM(売上!D2:D3)" --> |
 "#;
 
-/// Pick the first non-existent `<stem>.md`, `<stem> 2.md`, `<stem> 3.md`, ... path in `vault_root`.
-pub fn next_numbered_markdown_path(vault_root: &Path, stem: &str) -> PathBuf {
+/// Starter Lawtext statutory draft template for quick legislative drafting in Vaults.
+pub const DEFAULT_LAWTEXT_TEMPLATE: &str = "\
+デジタル手続モデル法（令和七年法律第一号）
+
+第一章 総則
+
+（目的）
+第一条 この法律は、電子手続の標準化に関する基本事項を定めることを目的とする。
+
+（定義）
+第二条 この法律において「電子手続」とは、電子情報処理組織を使用して行う申請又は届出をいう。
+
+附則
+この法律は、公布の日から施行する。
+";
+
+/// Pick the first non-existent `<stem>.<ext>`, `<stem> 2.<ext>`, ... path in `vault_root`.
+pub fn next_numbered_file_path(vault_root: &Path, stem: &str, ext: &str) -> PathBuf {
     let mut index = 1usize;
     loop {
         let candidate = if index == 1 {
-            vault_root.join(format!("{stem}.md"))
+            vault_root.join(format!("{stem}.{ext}"))
         } else {
-            vault_root.join(format!("{stem} {index}.md"))
+            vault_root.join(format!("{stem} {index}.{ext}"))
         };
         if !candidate.exists() {
             return candidate;
         }
         index += 1;
     }
+}
+
+/// Pick the first non-existent `<stem>.md`, `<stem> 2.md`, `<stem> 3.md`, ... path in `vault_root`.
+pub fn next_numbered_markdown_path(vault_root: &Path, stem: &str) -> PathBuf {
+    next_numbered_file_path(vault_root, stem, "md")
 }
 
 /// Howard Hinnant's civil-from-days conversion (`days_since_1970_01_01` -> `YYYY-MM-DD`).
@@ -404,6 +425,13 @@ mod tests {
         )
         .expect("open starter workbook markdown template");
         assert_eq!(wb.presentation.slides.len(), 2);
+
+        let law = ibis_lawtext::parse_lawtext(DEFAULT_LAWTEXT_TEMPLATE)
+            .expect("parse starter lawtext template");
+        let xml = ibis_lawtext::to_law_xml(&law);
+        assert!(ibis_lawtext::is_law_xml(xml.as_bytes()));
+        let report = ibis_lawtext::lint_law(&law);
+        assert_eq!(report.error_count, 0, "starter lawtext should have 0 lint errors: {:?}", report.findings);
     }
 
     #[test]
