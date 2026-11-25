@@ -27,6 +27,20 @@ test('sorane-start.js configures the featured samples and all bundled files exis
   const startView = win.ibisOfficeOptions?.startView;
   assert.ok(startView, 'startView config should be installed');
   assert.equal(startView.items.length, 7);
+  assert.deepEqual(
+    Array.from(startView.items, (item) => item.url),
+    [
+      '/samples/mermaid-showcase.md',
+      '/samples/mynumber-law-2023-comparison.jtd',
+      '/api/samples/bddbceda-c82b-4730-8744-a50e6ccb4600/sample.xlsx',
+      '/samples/urban-comfort-analysis.xlsx',
+      '/samples/standard-linkage.csv',
+      '/samples/visio-multi-page-handbook.vsdx',
+      '/samples/ibis-office-wasm.sbom.cdx.json',
+    ],
+  );
+  assert.equal(startView.items[2].title, '表記揺らぎを含む名簿の照合');
+  assert.equal(startView.items[6].title, 'soraneDocs WASM SBOM（CycloneDX 1.6）');
   for (const name of [
     'mermaid-showcase.md',
     'mynumber-law-2023-comparison.jtd',
@@ -35,12 +49,8 @@ test('sorane-start.js configures the featured samples and all bundled files exis
     'visio-multi-page-handbook.vsdx',
     'ibis-office-wasm.sbom.cdx.json',
   ]) {
-    assert.ok(startView.items.some((item) => item.url === `/samples/${name}`), `missing sample ${name}`);
     assert.ok(existsSync(new URL(`../../www/samples/${name}`, import.meta.url)), `file missing: ${name}`);
   }
-  assert.ok(
-    startView.items.some((item) => item.url === '/api/samples/bddbceda-c82b-4730-8744-a50e6ccb4600/sample.xlsx'),
-  );
   assert.ok(startView.panel?.links?.some((l) => l.url === '/files'));
   assert.ok(startView.panel?.links?.some((l) => l.url === '/repos'));
 });

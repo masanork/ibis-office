@@ -7,13 +7,6 @@
   const FEATURED_IDS = new Set(['bddbceda-c82b-4730-8744-a50e6ccb4600']);
   const featuredItems = [
     {
-      title: '名簿の照合',
-      subtitle: '異体字や伏字を含む名寄せデモ（架空データ）',
-      name: 'sample.xlsx',
-      url: '/api/samples/bddbceda-c82b-4730-8744-a50e6ccb4600/sample.xlsx',
-      badge: 'XLSX',
-    },
-    {
       title: 'Mermaid 構文デモ集',
       subtitle: 'UML を含む主要 24 図種をまとめた Markdown 総集編',
       name: 'mermaid-showcase.md',
@@ -26,6 +19,13 @@
       name: 'mynumber-law-2023-comparison.jtd',
       url: '/samples/mynumber-law-2023-comparison.jtd',
       badge: 'JTD',
+    },
+    {
+      title: '表記揺らぎを含む名簿の照合',
+      subtitle: '異体字や伏字を含む名寄せデモ（架空データ）',
+      name: 'sample.xlsx',
+      url: '/api/samples/bddbceda-c82b-4730-8744-a50e6ccb4600/sample.xlsx',
+      badge: 'XLSX',
     },
     {
       title: 'まちなかの居心地の良さを測る分析ツール',
@@ -49,7 +49,7 @@
       badge: 'VSDX',
     },
     {
-      title: 'ibisOffice WASM SBOM（CycloneDX 1.6）',
+      title: 'soraneDocs WASM SBOM（CycloneDX 1.6）',
       subtitle: '本ビルド自身の依存部品目録 JSON を表計算として直接閲覧',
       name: 'ibis-office-wasm.sbom.cdx.json',
       url: '/samples/ibis-office-wasm.sbom.cdx.json',

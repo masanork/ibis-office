@@ -398,10 +398,12 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     if (!createRes.ok) {
       const fallbackCreateUrl = `https://github.com/new?name=${encodeURIComponent(rawName)}&visibility=private`;
       if (createRes.status === 403 || createRes.status === 404) {
+        const detail = createData.message ? ` (${createData.message})` : '';
         return json(
           {
-            error: 'GitHub App にリポジトリ作成権限（Administration: Read and write）がないため自動作成できませんでした。下のリンクから GitHub で作成してください。',
+            error: `GitHub App でリポジトリを自動作成できませんでした${detail}。アプリ権限（Repository creation: Write）の承認状況とインストール設定を確認するか、下のリンクから GitHub で作成してください。`,
             fallbackCreateUrl,
+            ...(installUrl ? { installUrl } : {}),
           },
           403,
         );
