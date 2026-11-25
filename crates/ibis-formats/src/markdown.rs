@@ -325,6 +325,16 @@ pub fn open_markdown(data: Vec<u8>) -> Result<Opened, Error> {
 
 /// Open a Markdown document resolving relative image paths against `base_dir` (when provided).
 pub fn open_markdown_with_base_dir(data: Vec<u8>, base_dir: Option<&std::path::Path>) -> Result<Opened, Error> {
+    open_markdown_with_design_system_dirs(data, base_dir, None)
+}
+
+/// Open a Markdown document resolving relative image paths and project design systems against `base_dir`,
+/// and system design systems against `system_design_systems_dir` (defaulting to `<app-data>/ibisOffice/DesignSystems`).
+pub fn open_markdown_with_design_system_dirs(
+    data: Vec<u8>,
+    base_dir: Option<&std::path::Path>,
+    system_design_systems_dir: Option<&std::path::Path>,
+) -> Result<Opened, Error> {
     let text = std::str::from_utf8(&data).map_err(|_| Error::new("Markdown ファイルが UTF-8 ではありません"))?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
 
@@ -338,19 +348,24 @@ pub fn open_markdown_with_base_dir(data: Vec<u8>, base_dir: Option<&std::path::P
     .clone();
 
     let mut media_list: Vec<Media> = opened.presentation.media.clone();
-    parse_markdown_into(
+    let ds_theme = parse_markdown_into(
         text,
         &mut doc,
         &mut media_list,
         Some(&opened.source),
         Some(&baseline_pres),
         base_dir,
+        system_design_systems_dir,
     )?;
 
     let page_size = doc.page.size;
     let document = Arc::new(doc);
     opened.presentation.media = media_list;
     opened.presentation.slide_size = page_size;
+    if let Some(theme) = ds_theme {
+        opened.presentation.theme_colors = theme.theme_colors;
+        opened.presentation.theme_fonts = Some(theme.theme_fonts);
+    }
     if let Some(slide) = opened.presentation.slides.first_mut() {
         if let Some(shape) = slide.shapes.first_mut() {
             shape.frame = EmuRect::new(0, 0, page_size.width, page_size.height);
@@ -387,13 +402,14 @@ pub fn reparse_markdown_document(
     doc.view_mode = current_doc.view_mode;
     doc.interaction_mode = current_doc.interaction_mode;
 
-    parse_markdown_into(
+    let _ = parse_markdown_into(
         text,
         &mut doc,
         media,
         source.or(Some(&opened.source)),
         baseline_pres.or(Some(&fallback_baseline)),
         base_dir,
+        None,
     )?;
     Ok(doc)
 }
@@ -1607,7 +1623,8 @@ fn parse_markdown_into(
     source: Option<&crate::Source>,
     baseline_pres: Option<&Presentation>,
     base_dir: Option<&std::path::Path>,
-) -> Result<(), Error> {
+    system_design_systems_dir: Option<&std::path::Path>,
+) -> Result<Option<crate::design_system::DesignSystemTheme>, Error> {
     let text = shape_text::strip(metafile_preview::strip(text));
     let trimmed_start = text.trim_start_matches(['\n', '\r']);
     let frontmatter = roundtrip::document_frontmatter(trimmed_start);
@@ -1635,12 +1652,19 @@ fn parse_markdown_into(
         base_dir,
     };
 
+    let mut resolved_design_system = None;
     if let Some(frame) = frontmatter {
         if frame.damaged {
             // Do not apply unvalidated YAML to the generic document. Keep
             // the original profile for a later format-specific diagnosis.
             roundtrip::store_profile(frame.metadata.trim_end_matches(['\r', '\n']).to_owned(), &mut doc.properties);
         } else {
+            if let Some(ds_name) = extract_design_system_name(frame.metadata) {
+                let ds = crate::design_system::load(&ds_name, base_dir, system_design_systems_dir)?;
+                let theme = ds.theme()?;
+                theme.apply_to_flow_styles(&mut ctx.styles);
+                resolved_design_system = Some(theme);
+            }
             apply_frontmatter(frame.metadata, doc, &mut ctx);
         }
     }
@@ -1847,7 +1871,7 @@ fn parse_markdown_into(
         let _ = ibis_doc_model::flow_command::apply_to(doc, command);
     }
 
-    Ok(())
+    Ok(resolved_design_system)
 }
 
 // Private anchor namespace used only while a MyST reference awaits a target.
@@ -1993,6 +2017,22 @@ fn frontmatter_entries(source: &str) -> impl Iterator<Item = (&str, &str)> {
         let end = starts.peek().map_or(source.len(), |(start, _)| *start);
         Some((key, &source[start..end]))
     })
+}
+
+fn extract_design_system_name(fm: &str) -> Option<String> {
+    for raw_line in fm.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || raw_line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        if let Some((k, v)) = trimmed.split_once(':') {
+            let key = k.trim().to_ascii_lowercase().replace('-', "_");
+            if key == "design_system" {
+                return Some(unquote_yaml(v.trim()));
+            }
+        }
+    }
+    None
 }
 
 fn is_document_frontmatter_key(key: &str) -> bool {
@@ -9980,17 +10020,38 @@ pub fn open_markdown_presentation_with_base_dir(
     data: Vec<u8>,
     base_dir: Option<&std::path::Path>,
 ) -> Result<Opened, Error> {
+    open_markdown_presentation_with_design_system_dirs(data, base_dir, None)
+}
+
+/// Open a Markdown document as a PowerPoint presentation, resolving relative image paths and project
+/// design systems against `base_dir`, and system design systems against `system_design_systems_dir`.
+pub fn open_markdown_presentation_with_design_system_dirs(
+    data: Vec<u8>,
+    base_dir: Option<&std::path::Path>,
+    system_design_systems_dir: Option<&std::path::Path>,
+) -> Result<Opened, Error> {
     let raw_text = String::from_utf8(data)
         .map_err(|_| Error::new("Markdown ファイルが有効な UTF-8 ではありません"))?;
     let raw_text = raw_text.trim_start_matches('\u{feff}');
     let (frontmatter, body) = roundtrip::frontmatter(raw_text.trim_start())
         .map_or((None, raw_text), |(metadata, body)| (Some(metadata), body));
+    let ds_theme = match frontmatter.and_then(extract_design_system_name) {
+        Some(ds_name) => {
+            let ds = crate::design_system::load(&ds_name, base_dir, system_design_systems_dir)?;
+            Some(ds.theme()?)
+        }
+        None => None,
+    };
     let is_marp = frontmatter.is_some_and(marp::enabled);
     let heading_dividers = frontmatter.filter(|_| is_marp)
         .map_or_else(Vec::new, |metadata| marp::heading_dividers(metadata, body));
     let slide_chunks = split_markdown_slides(raw_text, is_marp, &heading_dividers);
     let blank = crate::blank::blank_file(crate::Kind::Presentation)?;
     let mut opened = crate::save::open(blank)?;
+    if let Some(theme) = &ds_theme {
+        opened.presentation.theme_colors = theme.theme_colors.clone();
+        opened.presentation.theme_fonts = Some(theme.theme_fonts.clone());
+    }
     if let Some(size) = frontmatter.and_then(|fm| fm.lines().find_map(|line| line.strip_prefix("pptx_size:"))) {
         let [width, height]: [i64; 2] = serde_json::from_str(size)
             .map_err(|_| Error::new("pptx_size の指定が不正です"))?;
@@ -10001,6 +10062,8 @@ pub fn open_markdown_presentation_with_base_dir(
     } else if is_marp
         && let Some(size) = marp::comment_size(body).or_else(|| frontmatter.and_then(marp::size))
     {
+        opened.presentation.slide_size = size;
+    } else if let Some(size) = ds_theme.as_ref().and_then(|theme| theme.slide_size) {
         opened.presentation.slide_size = size;
     }
 
@@ -10130,7 +10193,7 @@ pub fn open_markdown_presentation_with_base_dir(
                         }
                     }
                     if visuals.is_empty()
-                        && let Some(paragraph) = flow_paragraph_to_slide_paragraph(p)
+                        && let Some(paragraph) = flow_paragraph_to_slide_paragraph(p, ds_theme.as_ref())
                     {
                         if let Some((SlideBlock::Text(paragraphs), _)) = blocks.last_mut() {
                             paragraphs.push(paragraph);
@@ -10171,12 +10234,20 @@ pub fn open_markdown_presentation_with_base_dir(
         if let Some(title_text) = slide_title {
             if let Some(sh) = opened.presentation.slides[idx].shapes.get_mut(0) {
                 if let Some(body) = shape_text_body_mut(&mut sh.kind) {
+                    let title_size = match &ds_theme {
+                        Some(theme) => if idx == 0 { theme.slide_cover_title_hp } else { theme.slide_title_hp },
+                        None => if idx == 0 { 4000 } else { 2800 },
+                    };
+                    let title_font = ds_theme.as_ref().and_then(|theme| theme.heading_font.clone());
+                    let title_color = ds_theme.as_ref().map(|theme| theme.primary);
                     body.paragraphs = vec![ibis_doc_model::Paragraph {
                         runs: vec![ibis_doc_model::Run {
                             text: title_text,
                             style: ibis_doc_model::RunStyle {
-                                font_size: Some(if idx == 0 { 4000 } else { 2800 }),
+                                font_size: Some(title_size),
                                 bold: Some(true),
+                                font: title_font,
+                                color: title_color,
                                 ..ibis_doc_model::RunStyle::default()
                             },
                         }],
@@ -10228,7 +10299,7 @@ pub fn open_markdown_presentation_with_base_dir(
                 }
                 SlideBlock::Table(tbl) => {
                     let sid = fresh_shape_id();
-                    let slide_tbl = flow_table_to_slide_table(tbl, visual_frame.width);
+                    let slide_tbl = flow_table_to_slide_table(tbl, visual_frame.width, ds_theme.as_ref());
                     opened.presentation.slides[idx].shapes.push(ibis_doc_model::Shape {
                         id: sid,
                         frame: visual_frame,
@@ -10569,7 +10640,10 @@ pub(crate) fn flow_paragraph_plain_text(p: &FlowParagraph) -> String {
     out
 }
 
-fn flow_paragraph_to_slide_paragraph(p: &FlowParagraph) -> Option<ibis_doc_model::Paragraph> {
+fn flow_paragraph_to_slide_paragraph(
+    p: &FlowParagraph,
+    ds_theme: Option<&crate::design_system::DesignSystemTheme>,
+) -> Option<ibis_doc_model::Paragraph> {
     let mut code = String::new();
     for run in &p.runs {
         match &run.kind {
@@ -10586,6 +10660,9 @@ fn flow_paragraph_to_slide_paragraph(p: &FlowParagraph) -> Option<ibis_doc_model
         });
     }
 
+    let body_size = ds_theme.map_or(1800, |theme| theme.slide_body_hp);
+    let body_font = ds_theme.and_then(|theme| theme.body_font.clone());
+    let body_color = ds_theme.map(|theme| theme.text);
     let mut runs: Vec<ibis_doc_model::Run> = Vec::new();
     for r in &p.runs {
         if let FlowRunKind::Text(t) = &r.kind {
@@ -10594,7 +10671,9 @@ fn flow_paragraph_to_slide_paragraph(p: &FlowParagraph) -> Option<ibis_doc_model
                 style: ibis_doc_model::RunStyle {
                     bold: r.format.bold,
                     italic: r.format.italic,
-                    font_size: Some(1800),
+                    font_size: Some(body_size),
+                    font: body_font.clone(),
+                    color: r.format.color.or(body_color),
                     ..ibis_doc_model::RunStyle::default()
                 },
             });
@@ -10671,7 +10750,11 @@ fn serialize_slide_table(table: &ibis_doc_model::Table, out: &mut String) {
     out.push('\n');
 }
 
-fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_model::Table {
+fn flow_table_to_slide_table(
+    tbl: &FlowTable,
+    total_width: Emu,
+    ds_theme: Option<&crate::design_system::DesignSystemTheme>,
+) -> ibis_doc_model::Table {
     let cols = tbl.columns.len().max(1);
     let columns = vec![total_width / cols as i64; cols];
     let covered = ibis_doc_model::TableCell {
@@ -10702,7 +10785,7 @@ fn flow_table_to_slide_table(tbl: &FlowTable, total_width: Emu) -> ibis_doc_mode
             cells.push(ibis_doc_model::TableCell {
                 text: ibis_doc_model::TextBody {
                     paragraphs: cell.blocks.iter().filter_map(|block| match block {
-                        Block::Paragraph(paragraph) => flow_paragraph_to_slide_paragraph(paragraph),
+                        Block::Paragraph(paragraph) => flow_paragraph_to_slide_paragraph(paragraph, ds_theme),
                         _ => None,
                     }).collect(),
                     ..ibis_doc_model::TextBody::default()
@@ -11693,7 +11776,7 @@ mod tests {
         assert_eq!(spans(2), [1, 1, 1]);
         assert!(matches!(&table.rows[2].cells[1].blocks[0], Block::Paragraph(p) if p.text() == "Occupied"));
 
-        let slide = flow_table_to_slide_table(table, 6 * EMU_PER_INCH);
+        let slide = flow_table_to_slide_table(table, 6 * EMU_PER_INCH, None);
         assert_eq!(slide.rows[0].cells.len(), 3);
         assert_eq!(slide.rows[0].cells[0].column_span, 2);
         assert!(slide.rows[0].cells[1].merged);

@@ -637,6 +637,20 @@ fn write_theme(package: &mut Package, main: &str, colors: &[(String, ibis_doc_mo
     if parts.is_empty() && package.contains("word/theme/theme1.xml") {
         parts.push("word/theme/theme1.xml".to_string());
     }
+    if parts.is_empty() && (!colors.is_empty() || fonts.is_some() || effects.is_some()) {
+        let dir = main.rsplit_once('/').map_or("", |(d, _)| d);
+        let part = if dir.is_empty() {
+            "theme/theme1.xml".to_string()
+        } else {
+            format!("{dir}/theme/theme1.xml")
+        };
+        let doc = XmlDocument::parse(crate::new_file::theme().as_bytes())
+            .map_err(|_| unsupported("テーマの作成"))?;
+        package.set_xml(&part, doc);
+        package.set_override(&part, "application/vnd.openxmlformats-officedocument.theme+xml")?;
+        package.add_relationship(main, crate::package::REL_THEME, "theme/theme1.xml", false)?;
+        parts.push(part);
+    }
     for part in parts {
         let doc = package.xml_mut(&part)?;
         super::pptx_theme::write_theme_elements(doc, colors, fonts);
