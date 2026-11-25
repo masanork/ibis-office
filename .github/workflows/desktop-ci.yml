@@ -19,7 +19,8 @@ permissions:
 concurrency:
   # Keep an explicit verification run alive when a newer branch build starts.
   group: desktop-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && '-manual' || '' }}
-  cancel-in-progress: true
+  # Let the integration branch finish an active package build while the next push waits.
+  cancel-in-progress: ${{ github.event_name != 'push' || github.ref != 'refs/heads/sorane' }}
 
 env:
   EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
