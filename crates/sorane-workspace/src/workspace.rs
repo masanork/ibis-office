@@ -18,10 +18,12 @@ use gpui_kit::*;
 use ibis_formats::Kind;
 use ibis_office_shell::editor::SlideEditor;
 use ibis_office_shell::folder_context::{ContentSearchHit, Folder};
+use ibis_office_shell::git_workspace::{GitSnapshot, inspect_git_snapshot};
 use ibis_office_shell::window_editors::{WindowSetup, WorkspaceEditorHost};
 
 use crate::actions::*;
 use crate::model::*;
+use crate::outline::{OutlineTarget, extract_outline};
 use crate::quick_switcher::QuickSwitcherState;
 
 const WORKSPACE_CONTEXT: &str = "SoraneWorkspace";
@@ -44,7 +46,7 @@ pub struct SoraneWorkspace {
     pub(crate) left_sidebar_width: f32,
     left_sidebar_drag: Option<(f32, f32)>,
 
-    // Right dock (collapsible/resizable Backlinks panel; Phase 3 extends with Outline / AI)
+    // Right dock (collapsible/resizable Backlinks & Outline panel; triggers AI Assistant & Office inspector)
     pub(crate) right_sidebar_open: bool,
     pub(crate) right_panel: RightPanelKind,
     pub(crate) right_sidebar_width: f32,
@@ -56,6 +58,7 @@ pub struct SoraneWorkspace {
 
     // Vault state (reuses `ibis_office_shell::folder_context::Folder`)
     pub(crate) vault: Option<Arc<Folder>>,
+    pub(crate) git_snapshot: Option<GitSnapshot>,
     vault_filter: Entity<InputState>,
     _vault_filter_sub: Subscription,
     collapsed_dirs: BTreeSet<String>,
@@ -75,7 +78,7 @@ impl SoraneWorkspace {
         let initial_editor = cx.new(|cx| {
             let mut editor = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
             setup(&mut editor, window, cx);
-            let policy = Self::policy_for_editor(&editor, None);
+            let policy = Self::policy_for_editor(&editor, None, None);
             editor.embedded_chrome = Some(policy);
             editor
         });
@@ -89,6 +92,7 @@ impl SoraneWorkspace {
             pinned: false,
             last_used_seq: 1,
             toolbar_override: None,
+            right_sidebar_override: None,
             state: TabState::Resident(initial_editor.clone()),
         };
 
@@ -126,6 +130,7 @@ impl SoraneWorkspace {
             split_drag: None,
             split_container_width: Rc::new(Cell::new(0.0)),
             vault: None,
+            git_snapshot: None,
             vault_filter,
             _vault_filter_sub: vault_filter_sub,
             collapsed_dirs: BTreeSet::new(),
@@ -154,12 +159,30 @@ impl SoraneWorkspace {
         id
     }
 
-    fn policy_for_editor(editor: &SlideEditor, toolbar_override: Option<bool>) -> ibis_office_shell::window_editors::EmbeddedChromePolicy {
+    fn policy_for_editor(
+        editor: &SlideEditor,
+        toolbar_override: Option<bool>,
+        right_sidebar_override: Option<bool>,
+    ) -> ibis_office_shell::window_editors::EmbeddedChromePolicy {
         let path = editor.file_path();
         let file_name = editor.file_name.as_deref();
         let kind = editor.format.kind();
         let read_only = editor.read_only || editor.is_read_only();
-        chrome_policy_for(path.as_deref(), file_name, kind, read_only, toolbar_override)
+        let mut policy = chrome_policy_for(
+            path.as_deref(),
+            file_name,
+            kind,
+            read_only,
+            toolbar_override,
+            right_sidebar_override,
+        );
+        if editor.has_git_workspace() {
+            policy.show_left_pane = true;
+        }
+        if editor.is_ai_assistant_open() {
+            policy.show_right_sidebar = true;
+        }
+        policy
     }
 
     fn editor_metadata(editor: &Entity<SlideEditor>, cx: &App) -> (Option<PathBuf>, String, Kind) {
@@ -204,7 +227,11 @@ impl SoraneWorkspace {
                     }
                     tab.title = title;
                     tab.kind = kind;
-                    let desired = Self::policy_for_editor(editor.read(cx), tab.toolbar_override);
+                    let desired = Self::policy_for_editor(
+                        editor.read(cx),
+                        tab.toolbar_override,
+                        tab.right_sidebar_override,
+                    );
                     if editor.read(cx).embedded_chrome != Some(desired) {
                         editor.update(cx, |e, cx| e.set_embedded_chrome(Some(desired), cx));
                     }
@@ -240,6 +267,117 @@ impl SoraneWorkspace {
         }
     }
 
+    fn sync_vault_to_all_editors(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let vault = self.vault.clone();
+        for editor in self.all_editors(cx) {
+            let folder = vault.clone();
+            editor.update(cx, |e, cx| e.attach_vault_folder(folder, window, cx));
+        }
+    }
+
+    pub(crate) fn refresh_git_snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self
+            .vault
+            .as_ref()
+            .filter(|v| v.has_git())
+            .map(|v| v.root().to_path_buf())
+        else {
+            self.git_snapshot = None;
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let snapshot = cx
+                .background_executor()
+                .spawn(async move { inspect_git_snapshot(&root, 15) })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                ws.git_snapshot = snapshot;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn open_ai_assistant_for_active_pane(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.active_editor(cx) else {
+            return;
+        };
+        let vault = self.vault.clone();
+        let currently_open = editor.read(cx).is_ai_assistant_open();
+        if currently_open {
+            editor.update(cx, |e, cx| e.close_ai_assistant_panel(cx));
+            if let Some(tab) = self.pane_mut(self.active_pane).and_then(|p| p.active_mut()) {
+                tab.right_sidebar_override = None;
+            }
+        } else {
+            if let Some(tab) = self.pane_mut(self.active_pane).and_then(|p| p.active_mut()) {
+                tab.right_sidebar_override = Some(true);
+            }
+            editor.update(cx, |e, cx| {
+                e.attach_vault_folder(vault, window, cx);
+                e.open_ai_assistant_panel(window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_inspector_for_active_pane(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor(cx) else {
+            return;
+        };
+        let currently_shown = {
+            let e = editor.read(cx);
+            e.embedded_chrome.is_none_or(|p| p.show_right_sidebar) && e.sidebar_open
+        };
+        let next = !currently_shown;
+        if let Some(tab) = self.pane_mut(self.active_pane).and_then(|p| p.active_mut()) {
+            tab.right_sidebar_override = Some(next);
+        }
+        editor.update(cx, |e, cx| {
+            e.sidebar_open = next;
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_outline_panel(&mut self, cx: &mut Context<Self>) {
+        if self.right_sidebar_open && self.right_panel == RightPanelKind::Outline {
+            self.right_sidebar_open = false;
+        } else {
+            self.right_sidebar_open = true;
+            self.right_panel = RightPanelKind::Outline;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn jump_to_outline_target(
+        &mut self,
+        target: OutlineTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.active_editor(cx) else {
+            return;
+        };
+        match target {
+            OutlineTarget::Paragraph(id) => {
+                editor.update(cx, |e, cx| e.reveal_body_paragraph(id, cx));
+            }
+            OutlineTarget::Slide(slide_id) => {
+                editor.update(cx, |e, cx| {
+                    e.set_current_slide(slide_id);
+                    cx.notify();
+                });
+            }
+        }
+        self.focus_active_editor(window, cx);
+        cx.notify();
+    }
+
     fn enforce_tab_budget(&mut self, cx: &App) {
         enforce_resident_tab_budget(&mut self.panes, MAX_CLEAN_RESIDENT_TABS, |editor| {
             editor.read(cx).is_dirty()
@@ -253,22 +391,28 @@ impl SoraneWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<SlideEditor>> {
-        let (needs_spawn, path, toolbar_override) = {
+        let (needs_spawn, path, toolbar_override, right_sidebar_override) = {
             let tab = self.pane(pane_id)?.tabs.get(tab_idx)?;
             if let TabState::Resident(ed) = &tab.state {
                 return Some(ed.clone());
             }
-            (true, tab.path.clone(), tab.toolbar_override)
+            (true, tab.path.clone(), tab.toolbar_override, tab.right_sidebar_override)
         };
         if !needs_spawn {
             return None;
         }
+        let vault = self.vault.clone();
         let editor = cx.new(|cx| {
             let mut e = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
             if let Some(path) = path {
                 e.open_path(path, None, window, cx);
             }
-            e.embedded_chrome = Some(Self::policy_for_editor(&e, toolbar_override));
+            e.attach_vault_folder(vault, window, cx);
+            e.embedded_chrome = Some(Self::policy_for_editor(
+                &e,
+                toolbar_override,
+                right_sidebar_override,
+            ));
             e
         });
         if let Some(tab) = self.pane_mut(pane_id).and_then(|p| p.tabs.get_mut(tab_idx)) {
@@ -338,9 +482,11 @@ impl SoraneWorkspace {
             editor.read(cx).replaceable_by_open().then_some((p.active_tab, editor.clone()))
         });
         if let Some((tab_idx, editor)) = reuse_active {
+            let vault = self.vault.clone();
             editor.update(cx, |e, cx| {
                 e.open_path(path.clone(), None, window, cx);
-                e.embedded_chrome = Some(Self::policy_for_editor(e, None));
+                e.attach_vault_folder(vault, window, cx);
+                e.embedded_chrome = Some(Self::policy_for_editor(e, None, None));
             });
             let (p, title, kind) = Self::editor_metadata(&editor, cx);
             let seq = self.next_seq();
@@ -350,6 +496,8 @@ impl SoraneWorkspace {
                     tab.title = title;
                     tab.kind = kind;
                     tab.last_used_seq = seq;
+                    tab.toolbar_override = None;
+                    tab.right_sidebar_override = None;
                 }
             }
             self.active_pane = pane_id;
@@ -362,10 +510,12 @@ impl SoraneWorkspace {
         let tab_id = self.alloc_tab_id();
         let seq = self.next_seq();
         let path_for_open = path.clone();
+        let vault = self.vault.clone();
         let editor = cx.new(|cx| {
             let mut e = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
             e.open_path(path_for_open, None, window, cx);
-            e.embedded_chrome = Some(Self::policy_for_editor(&e, None));
+            e.attach_vault_folder(vault, window, cx);
+            e.embedded_chrome = Some(Self::policy_for_editor(&e, None, None));
             e
         });
         let (p, title, kind) = Self::editor_metadata(&editor, cx);
@@ -377,6 +527,7 @@ impl SoraneWorkspace {
             pinned: false,
             last_used_seq: seq,
             toolbar_override: None,
+            right_sidebar_override: None,
             state: TabState::Resident(editor),
         };
         if let Some(pane) = self.pane_mut(pane_id) {
@@ -398,12 +549,14 @@ impl SoraneWorkspace {
     ) {
         let tab_id = self.alloc_tab_id();
         let seq = self.next_seq();
+        let vault = self.vault.clone();
         let editor = cx.new(|cx| {
             let mut e = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
             if let Some(k) = kind {
                 e.new_file(k, window, cx);
             }
-            e.embedded_chrome = Some(Self::policy_for_editor(&e, None));
+            e.attach_vault_folder(vault, window, cx);
+            e.embedded_chrome = Some(Self::policy_for_editor(&e, None, None));
             e
         });
         let (path, title, resolved_kind) = Self::editor_metadata(&editor, cx);
@@ -415,6 +568,7 @@ impl SoraneWorkspace {
             pinned: false,
             last_used_seq: seq,
             toolbar_override: None,
+            right_sidebar_override: None,
             state: TabState::Resident(editor),
         };
         if let Some(pane) = self.pane_mut(pane_id) {
@@ -507,9 +661,11 @@ impl SoraneWorkspace {
         let new_pane_id = self.alloc_pane_id();
         let tab_id = self.alloc_tab_id();
         let seq = self.next_seq();
+        let vault = self.vault.clone();
         let editor = cx.new(|cx| {
             let mut e = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
-            e.embedded_chrome = Some(Self::policy_for_editor(&e, None));
+            e.attach_vault_folder(vault, window, cx);
+            e.embedded_chrome = Some(Self::policy_for_editor(&e, None, None));
             e
         });
         let (path, title, kind) = Self::editor_metadata(&editor, cx);
@@ -521,6 +677,7 @@ impl SoraneWorkspace {
             pinned: false,
             last_used_seq: seq,
             toolbar_override: None,
+            right_sidebar_override: None,
             state: TabState::Resident(editor),
         };
         let first = self.active_pane;
@@ -580,7 +737,7 @@ impl SoraneWorkspace {
                 .background_executor()
                 .spawn(async move { Folder::scan_dir(&path) })
                 .await;
-            let _ = this.update(cx, |ws, cx| match scanned {
+            let _ = this.update_in(cx, |ws, window, cx| match scanned {
                 Ok(folder) => {
                     ws.vault = Some(Arc::new(folder));
                     ws.collapsed_dirs.clear();
@@ -589,6 +746,8 @@ impl SoraneWorkspace {
                     ws.left_sidebar_open = true;
                     ws.left_panel = LeftPanelKind::Vault;
                     ws.vault_status = None;
+                    ws.sync_vault_to_all_editors(window, cx);
+                    ws.refresh_git_snapshot(window, cx);
                     cx.notify();
                 }
                 Err(err) => {
@@ -609,13 +768,15 @@ impl SoraneWorkspace {
                 .background_executor()
                 .spawn(async move { Folder::scan_dir(&root) })
                 .await;
-            let _ = this.update(cx, |ws, cx| {
+            let _ = this.update_in(cx, |ws, window, cx| {
                 if let Ok(folder) = scanned {
                     ws.vault = Some(Arc::new(folder));
                     if ws.left_panel == LeftPanelKind::Search {
                         let q = ws.cached_search_query.clone();
                         ws.refresh_content_search(&q);
                     }
+                    ws.sync_vault_to_all_editors(window, cx);
+                    ws.refresh_git_snapshot(window, cx);
                     cx.notify();
                 }
             });
@@ -675,6 +836,9 @@ impl SoraneWorkspace {
     fn render_activity_ribbon(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let top_pad = if cfg!(target_os = "macos") { px(32.) } else { px(8.) };
+        let ai_active = self
+            .active_editor(cx)
+            .is_some_and(|e| e.read(cx).is_ai_assistant_open());
 
         let ribbon_btn = |id: &'static str, label: &'static str, tip: &'static str, active: bool| {
             div()
@@ -755,6 +919,24 @@ impl SoraneWorkspace {
                     )
                     .child(
                         ribbon_btn(
+                            "ribbon-git",
+                            "🌿",
+                            "Git 変更・履歴",
+                            self.left_sidebar_open && self.left_panel == LeftPanelKind::Git,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.left_sidebar_open && this.left_panel == LeftPanelKind::Git {
+                                this.left_sidebar_open = false;
+                            } else {
+                                this.left_sidebar_open = true;
+                                this.left_panel = LeftPanelKind::Git;
+                                this.refresh_git_snapshot(window, cx);
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
                             "ribbon-quick-switcher",
                             "⌘",
                             "クイックスイッチャー (⌘O)",
@@ -795,7 +977,7 @@ impl SoraneWorkspace {
                         ribbon_btn(
                             "ribbon-open-folder",
                             "📂",
-                            "フォルダ（Vault）を開く",
+                            "フォルダ（Vault）を開く (⇧⌘O)",
                             false,
                         )
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -804,14 +986,41 @@ impl SoraneWorkspace {
                     )
                     .child(
                         ribbon_btn(
-                            "ribbon-backlinks",
-                            "⇄",
-                            "右サイドバー: バックリンク",
-                            self.right_sidebar_open,
+                            "ribbon-outline",
+                            "☰",
+                            "アウトライン (⇧⌘U)",
+                            self.right_sidebar_open && self.right_panel == RightPanelKind::Outline,
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.right_sidebar_open = !this.right_sidebar_open;
+                            this.toggle_outline_panel(cx);
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
+                            "ribbon-backlinks",
+                            "⇄",
+                            "バックリンク (⇧⌘B)",
+                            self.right_sidebar_open && self.right_panel == RightPanelKind::Backlinks,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.right_sidebar_open && this.right_panel == RightPanelKind::Backlinks {
+                                this.right_sidebar_open = false;
+                            } else {
+                                this.right_sidebar_open = true;
+                                this.right_panel = RightPanelKind::Backlinks;
+                            }
                             cx.notify();
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
+                            "ribbon-ai",
+                            "✨",
+                            "AI アシスタント (⇧⌘L)",
+                            ai_active,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_ai_assistant_for_active_pane(window, cx);
                         })),
                     ),
             )
@@ -1021,21 +1230,178 @@ impl SoraneWorkspace {
                 }
             }
             (Some(vault), LeftPanelKind::Git) => {
-                list = list.child(
-                    v_flex()
-                        .p_3()
-                        .gap_2()
-                        .child(
+                if !vault.has_git() {
+                    list = list.child(
+                        div()
+                            .p_3()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("このフォルダは Git リポジトリではありません。"),
+                    );
+                } else {
+                    let root_for_full_view = vault.root().to_path_buf();
+                    let mut git_col = v_flex().p_2().gap_2();
+
+                    if let Some(snap) = &self.git_snapshot {
+                        git_col = git_col
+                            .child(
+                                v_flex()
+                                    .p_2()
+                                    .gap_1()
+                                    .rounded(px(6.))
+                                    .bg(theme.background)
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .truncate()
+                                            .child(format!("🌿 {} @ {}", snap.branch, snap.head_short)),
+                                    )
+                                    .child(
+                                        Button::new("ws-git-open-full")
+                                            .small()
+                                            .label("履歴・差分ビューを開く")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                if let Some(editor) = this.active_editor(cx) {
+                                                    let root = root_for_full_view.clone();
+                                                    editor.update(cx, |e, cx| {
+                                                        e.open_git_workspace_for_root(root, window, cx);
+                                                    });
+                                                }
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px_1()
+                                    .pt_1()
+                                    .text_size(px(10.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("変更されたファイル ({})", snap.changes.len())),
+                            );
+
+                        if snap.changes.is_empty() {
+                            git_col = git_col.child(
+                                div()
+                                    .px_1()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child("作業ツリーはクリーンです"),
+                            );
+                        } else {
+                            for (idx, change) in snap.changes.iter().enumerate() {
+                                let full_path = vault.root().join(&change.path);
+                                let split_path = full_path.clone();
+                                let badge_color = if change.staged {
+                                    theme.accent
+                                } else {
+                                    theme.muted_foreground
+                                };
+                                git_col = git_col.child(
+                                    h_flex()
+                                        .id(SharedString::from(format!("ws-git-chg:{idx}:{}", change.path)))
+                                        .cursor_pointer()
+                                        .rounded(px(4.))
+                                        .px_1()
+                                        .py(px(3.))
+                                        .gap_1()
+                                        .items_center()
+                                        .hover(|h| h.bg(theme.secondary))
+                                        .child(
+                                            div()
+                                                .w(px(20.))
+                                                .flex_shrink_0()
+                                                .text_size(px(10.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(badge_color)
+                                                .child(change.status.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .text_xs()
+                                                .truncate()
+                                                .child(change.path.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!("ws-git-chg-split:{idx}")))
+                                                .px(px(4.))
+                                                .rounded(px(3.))
+                                                .text_size(px(10.))
+                                                .text_color(theme.muted_foreground)
+                                                .hover(|h| h.bg(theme.background).text_color(theme.foreground))
+                                                .child("◫")
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.open_path_in_split_pane(split_path.clone(), window, cx);
+                                                })),
+                                        )
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_path_in_active_pane(full_path.clone(), window, cx);
+                                        })),
+                                );
+                            }
+                        }
+
+                        git_col = git_col.child(
                             div()
+                                .px_1()
+                                .pt_2()
+                                .text_size(px(10.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.muted_foreground)
+                                .child("最近のコミット"),
+                        );
+
+                        if snap.commits.is_empty() {
+                            git_col = git_col.child(
+                                div()
+                                    .px_1()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child("コミットがありません"),
+                            );
+                        } else {
+                            for (idx, commit) in snap.commits.iter().enumerate() {
+                                git_col = git_col.child(
+                                    v_flex()
+                                        .id(SharedString::from(format!("ws-git-commit:{idx}:{}", commit.short_id)))
+                                        .rounded(px(4.))
+                                        .px_1()
+                                        .py(px(3.))
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .truncate()
+                                                .child(commit.title.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(10.5))
+                                                .text_color(theme.muted_foreground)
+                                                .truncate()
+                                                .child(format!("{} · {}", commit.short_id, commit.date)),
+                                        ),
+                                );
+                            }
+                        }
+                    } else {
+                        git_col = git_col.child(
+                            div()
+                                .p_2()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child(if vault.has_git() {
-                                    "Git リポジトリを検出しました（詳細な履歴・差分統合は Phase 3 で右/左ドック統合予定）。"
-                                } else {
-                                    "このフォルダは Git リポジトリではありません。"
-                                }),
-                        ),
-                );
+                                .child("Git 状態を読み込み中…"),
+                        );
+                    }
+
+                    list = list.child(git_col);
+                }
             }
         }
 
@@ -1127,7 +1493,11 @@ impl SoraneWorkspace {
                                         .xsmall()
                                         .label("↻")
                                         .on_click(cx.listener(|this, _, window, cx| {
-                                            this.refresh_vault_folder(window, cx);
+                                            if this.left_panel == LeftPanelKind::Git {
+                                                this.refresh_git_snapshot(window, cx);
+                                            } else {
+                                                this.refresh_vault_folder(window, cx);
+                                            }
                                         })),
                                 )
                                 .child(
@@ -1141,7 +1511,9 @@ impl SoraneWorkspace {
                                         })),
                                 ),
                         )
-                        .child(div().p_2().child(Input::new(&self.vault_filter).small()))
+                        .when(self.left_panel != LeftPanelKind::Git, |col| {
+                            col.child(div().p_2().child(Input::new(&self.vault_filter).small()))
+                        })
                         .when_some(self.vault_status.clone(), |col, msg| {
                             col.child(
                                 div()
@@ -1166,6 +1538,16 @@ impl SoraneWorkspace {
         let theme = cx.theme().clone();
         let width = clamp_right_sidebar_width(self.right_sidebar_width);
         let active_rel = self.active_vault_relative(cx);
+        let active_editor = self.active_editor(cx);
+        let ai_active = active_editor
+            .as_ref()
+            .is_some_and(|e| e.read(cx).is_ai_assistant_open());
+        let inspector_active = active_editor.as_ref().is_some_and(|e| {
+            let ed = e.read(cx);
+            !ed.is_ai_assistant_open()
+                && ed.embedded_chrome.is_none_or(|p| p.show_right_sidebar)
+                && ed.sidebar_open
+        });
 
         let mut content = v_flex()
             .id("sorane-right-sidebar-list")
@@ -1175,62 +1557,151 @@ impl SoraneWorkspace {
             .p_2()
             .gap_1();
 
-        match (&self.vault, active_rel.as_deref()) {
-            (Some(vault), Some(rel)) => {
-                let backlinks = vault.backlinks_for(rel);
-                if backlinks.is_empty() {
+        match self.right_panel {
+            RightPanelKind::Backlinks => match (&self.vault, active_rel.as_deref()) {
+                (Some(vault), Some(rel)) => {
+                    let backlinks = vault.backlinks_for(rel);
+                    if backlinks.is_empty() {
+                        content = content.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("このファイルへのバックリンクはまだありません。"),
+                        );
+                    } else {
+                        for (idx, bl) in backlinks.into_iter().enumerate() {
+                            let full = vault.root().join(&bl.path);
+                            let split_path = full.clone();
+                            content = content.child(
+                                v_flex()
+                                    .id(SharedString::from(format!("ws-bl:{idx}:{}", bl.path)))
+                                    .cursor_pointer()
+                                    .rounded(px(4.))
+                                    .p(px(6.))
+                                    .hover(|h| h.bg(theme.secondary))
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .text_xs()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .truncate()
+                                                    .child(format!("{} · L{}", bl.path, bl.line)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id(SharedString::from(format!("ws-bl-split:{idx}")))
+                                                    .px(px(4.))
+                                                    .rounded(px(3.))
+                                                    .text_size(px(10.))
+                                                    .text_color(theme.muted_foreground)
+                                                    .hover(|h| h.bg(theme.background).text_color(theme.foreground))
+                                                    .child("◫")
+                                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                                        cx.stop_propagation();
+                                                        this.open_path_in_split_pane(split_path.clone(), window, cx);
+                                                    })),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(theme.muted_foreground)
+                                            .truncate()
+                                            .child(bl.excerpt),
+                                    )
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_path_in_active_pane(full.clone(), window, cx);
+                                    })),
+                            );
+                        }
+                    }
+                }
+                (None, _) => {
                     content = content.child(
                         div()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child("このファイルへのバックリンクはまだありません。"),
+                            .child("Vault フォルダを開くと、アクティブなノートのバックリンクがここに表示されます。"),
                     );
-                } else {
-                    for (idx, bl) in backlinks.into_iter().enumerate() {
-                        let full = vault.root().join(&bl.path);
+                }
+                (Some(_), None) => {
+                    content = content.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("Vault 内のファイルを開くとバックリンクが表示されます。"),
+                    );
+                }
+            },
+            RightPanelKind::Outline => {
+                let items = active_editor.as_ref().and_then(|e| {
+                    let ed = e.read(cx);
+                    ed.has_document.then(|| extract_outline(ed.presentation()))
+                });
+                match items {
+                    None => {
                         content = content.child(
-                            v_flex()
-                                .id(SharedString::from(format!("ws-bl:{idx}:{}", bl.path)))
-                                .cursor_pointer()
-                                .rounded(px(4.))
-                                .p(px(6.))
-                                .hover(|h| h.bg(theme.secondary))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .truncate()
-                                        .child(format!("{} · L{}", bl.path, bl.line)),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(theme.muted_foreground)
-                                        .truncate()
-                                        .child(bl.excerpt),
-                                )
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_path_in_active_pane(full.clone(), window, cx);
-                                })),
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("ドキュメントを開くと見出し・シート・スライドのアウトラインが表示されます。"),
                         );
                     }
+                    Some(items) if items.is_empty() => {
+                        content = content.child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("見出し・シート・スライドが見つかりません。"),
+                        );
+                    }
+                    Some(items) => {
+                        for (idx, item) in items.into_iter().enumerate() {
+                            let indent = (item.level.saturating_sub(1) as f32) * 12.0;
+                            let target = item.target.clone();
+                            let level_badge = match item.target {
+                                OutlineTarget::Paragraph(_) => format!("H{}", item.level),
+                                OutlineTarget::Slide(_) => "•".to_owned(),
+                            };
+                            content = content.child(
+                                h_flex()
+                                    .id(SharedString::from(format!("ws-outline:{idx}")))
+                                    .cursor_pointer()
+                                    .rounded(px(4.))
+                                    .pl(px(6. + indent))
+                                    .pr_2()
+                                    .py(px(4.))
+                                    .gap(px(6.))
+                                    .items_center()
+                                    .hover(|h| h.bg(theme.secondary))
+                                    .child(
+                                        div()
+                                            .text_size(px(9.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(theme.muted_foreground)
+                                            .child(level_badge),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_xs()
+                                            .when(item.level == 1, |d| d.font_weight(FontWeight::MEDIUM))
+                                            .truncate()
+                                            .child(item.label),
+                                    )
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.jump_to_outline_target(target.clone(), window, cx);
+                                    })),
+                            );
+                        }
+                    }
                 }
-            }
-            (None, _) => {
-                content = content.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child("Vault フォルダを開くと、アクティブなノートのバックリンクがここに表示されます。"),
-                );
-            }
-            (Some(_), None) => {
-                content = content.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.muted_foreground)
-                        .child("Vault 内のファイルを開くとバックリンクが表示されます。"),
-                );
             }
         }
 
@@ -1289,6 +1760,26 @@ impl SoraneWorkspace {
                 )
             });
 
+        let dock_tab = |id: &'static str, label: &'static str, active: bool| {
+            div()
+                .id(id)
+                .cursor_pointer()
+                .px(px(6.))
+                .py(px(3.))
+                .rounded(px(4.))
+                .text_size(px(11.))
+                .when(active, |d| {
+                    d.bg(theme.accent)
+                        .text_color(theme.accent_foreground)
+                        .font_weight(FontWeight::SEMIBOLD)
+                })
+                .when(!active, |d| {
+                    d.text_color(theme.muted_foreground)
+                        .hover(|h| h.bg(theme.secondary).text_color(theme.foreground))
+                })
+                .child(label)
+        };
+
         Some(
             h_flex()
                 .flex_shrink_0()
@@ -1302,19 +1793,46 @@ impl SoraneWorkspace {
                         .bg(theme.sidebar)
                         .child(
                             h_flex()
-                                .px_2()
-                                .py(px(6.))
+                                .px_1()
+                                .py(px(5.))
+                                .gap(px(2.))
                                 .items_center()
-                                .justify_between()
                                 .border_b_1()
                                 .border_color(theme.border)
                                 .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(match self.right_panel {
-                                            RightPanelKind::Backlinks => "バックリンク",
-                                        }),
+                                    dock_tab(
+                                        "ws-right-tab-backlinks",
+                                        "リンク",
+                                        self.right_panel == RightPanelKind::Backlinks,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.right_panel = RightPanelKind::Backlinks;
+                                        cx.notify();
+                                    })),
+                                )
+                                .child(
+                                    dock_tab(
+                                        "ws-right-tab-outline",
+                                        "見出し",
+                                        self.right_panel == RightPanelKind::Outline,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.right_panel = RightPanelKind::Outline;
+                                        cx.notify();
+                                    })),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    dock_tab("ws-right-open-ai", "✨ AI", ai_active)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.open_ai_assistant_for_active_pane(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    dock_tab("ws-right-toggle-inspector", "書式", inspector_active)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_inspector_for_active_pane(cx);
+                                        })),
                                 )
                                 .child(
                                     Button::new("ws-right-close")
@@ -1598,11 +2116,12 @@ impl SoraneWorkspace {
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let vault_label = self.vault.as_ref().map(|v| {
-            if v.has_git() {
-                format!("📁 {} · Git", v.display_name())
+        let vault_label = self.vault.as_ref().map(|v| format!("📁 {}", v.display_name()));
+        let git_label = self.git_snapshot.as_ref().map(|snap| {
+            if snap.changes.is_empty() {
+                format!("🌿 {}", snap.branch)
             } else {
-                format!("📁 {}", v.display_name())
+                format!("🌿 {} · {} changes", snap.branch, snap.changes.len())
             }
         });
         let active_info = self.pane(self.active_pane).and_then(|p| p.active()).map(|t| {
@@ -1630,7 +2149,25 @@ impl SoraneWorkspace {
             .child(
                 h_flex()
                     .gap_3()
+                    .items_center()
                     .when_some(vault_label, |row, label| row.child(label))
+                    .when_some(git_label, |row, label| {
+                        row.child(
+                            div()
+                                .id("ws-status-git")
+                                .cursor_pointer()
+                                .px_1()
+                                .rounded(px(3.))
+                                .hover(|h| h.bg(theme.secondary).text_color(theme.foreground))
+                                .child(label)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.left_sidebar_open = true;
+                                    this.left_panel = LeftPanelKind::Git;
+                                    this.refresh_git_snapshot(window, cx);
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(if self.layout.is_split() {
                         format!("2 ペイン · {total_tabs} タブ")
                     } else {
@@ -1640,8 +2177,9 @@ impl SoraneWorkspace {
             .child(
                 h_flex()
                     .gap_3()
+                    .items_center()
                     .when_some(active_info, |row, info| row.child(info))
-                    .child("⌘O 切替 · ⌘\\ 分割"),
+                    .child("⌘O 切替 · ⌘\\ 分割 · ⇧⌘L AI"),
             )
     }
 }
@@ -1734,6 +2272,12 @@ impl Render for SoraneWorkspace {
             .on_action(cx.listener(|this, _: &ToggleRightSidebar, _, cx| {
                 this.right_sidebar_open = !this.right_sidebar_open;
                 cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleOutline, _, cx| {
+                this.toggle_outline_panel(cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenAiAssistant, window, cx| {
+                this.open_ai_assistant_for_active_pane(window, cx);
             }))
             .on_action(cx.listener(|this, _: &CloseActiveTab, window, cx| {
                 let pane_id = this.active_pane;

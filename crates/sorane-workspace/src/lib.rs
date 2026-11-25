@@ -11,6 +11,7 @@ use gpui_kit::*;
 use ibis_office_shell::window_editors::{WindowSetup, WorkspaceWindowFactory};
 
 pub mod model;
+pub mod outline;
 mod quick_switcher;
 pub mod workspace;
 
@@ -24,6 +25,8 @@ pub mod actions {
             ToggleSplitPane,
             ToggleLeftSidebar,
             ToggleRightSidebar,
+            ToggleOutline,
+            OpenAiAssistant,
             CloseActiveTab,
             NextTab,
             PrevTab,
@@ -110,6 +113,8 @@ pub fn install(cx: &mut App) {
         KeyBinding::new(&m("\\"), actions::ToggleSplitPane, ctx),
         KeyBinding::new(&m("b"), actions::ToggleLeftSidebar, ctx),
         KeyBinding::new(&m("shift-b"), actions::ToggleRightSidebar, ctx),
+        KeyBinding::new(&m("shift-u"), actions::ToggleOutline, ctx),
+        KeyBinding::new(&m("shift-l"), actions::OpenAiAssistant, ctx),
         KeyBinding::new(&m("shift-o"), actions::OpenVaultFolder, ctx),
         KeyBinding::new(&m("alt-n"), actions::NewMarkdownNote, ctx),
         KeyBinding::new("ctrl-pagedown", actions::NextTab, ctx),

@@ -622,6 +622,41 @@ impl SlideEditor {
         cx.notify();
     }
 
+    /// Attach or detach a Vault `Folder` on this embedded editor so the AI Assistant
+    /// receives Vault instructions, skills, and folder tools even when the editor's
+    /// own left pane is hidden by `EmbeddedChromePolicy`.
+    pub fn attach_vault_folder(
+        &mut self,
+        folder: Option<Arc<Folder>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match folder {
+            Some(folder) => {
+                let already_same = self
+                    .folder_pane
+                    .as_ref()
+                    .is_some_and(|p| Arc::ptr_eq(&p.folder, &folder));
+                if !already_same {
+                    self.set_folder_pane(folder, window, cx);
+                }
+            }
+            None => {
+                if self.folder_pane.is_some() {
+                    self.reset_ai_folder_context(cx);
+                    self.folder_pane = None;
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    /// Reveal and scroll to body paragraph `id` in a flowing document (`.md` / `.docx` / `.jtd`).
+    pub fn reveal_body_paragraph(&mut self, id: u32, cx: &mut Context<Self>) {
+        with_format!(self, reveal_ai_paragraph(self, id, cx));
+        cx.notify();
+    }
+
     pub(crate) fn render_folder_pane(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let pane = self.folder_pane.as_ref()?;
         let query = pane.filter.read(cx).value().trim().to_lowercase();

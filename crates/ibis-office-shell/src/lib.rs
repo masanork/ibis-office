@@ -60,7 +60,7 @@ pub mod gesture;
 pub mod document_memory;
 mod document_compare;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-mod git_workspace;
+pub mod git_workspace;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub mod folder_context;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_family = "wasm"))]

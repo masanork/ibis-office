@@ -4725,7 +4725,13 @@ impl SlideEditor {
             self.render_sidebar(window, cx)
         };
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        let left_pane = if focus || !show_left_pane { None } else { self.render_folder_pane(cx).or_else(|| self.render_git_workspace(cx)) };
+        let left_pane = if focus || !show_left_pane {
+            None
+        } else if embedded.is_some() {
+            self.render_git_workspace(cx)
+        } else {
+            self.render_folder_pane(cx).or_else(|| self.render_git_workspace(cx))
+        };
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         let left_pane: Option<AnyElement> = {
             let _ = show_left_pane;

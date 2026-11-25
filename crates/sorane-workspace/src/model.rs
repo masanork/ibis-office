@@ -119,6 +119,7 @@ pub enum LeftPanelKind {
 pub enum RightPanelKind {
     #[default]
     Backlinks,
+    Outline,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,6 +152,7 @@ pub struct TabEntry<E> {
     pub pinned: bool,
     pub last_used_seq: u64,
     pub toolbar_override: Option<bool>,
+    pub right_sidebar_override: Option<bool>,
     pub state: TabState<E>,
 }
 
@@ -272,6 +274,7 @@ pub fn chrome_policy_for(
     kind: Kind,
     read_only: bool,
     toolbar_override: Option<bool>,
+    right_sidebar_override: Option<bool>,
 ) -> EmbeddedChromePolicy {
     let ext = path
         .and_then(|p| p.extension())
@@ -298,6 +301,9 @@ pub fn chrome_policy_for(
 
     if let Some(show_toolbar) = toolbar_override {
         policy.show_toolbar = show_toolbar;
+    }
+    if let Some(show_right_sidebar) = right_sidebar_override {
+        policy.show_right_sidebar = show_right_sidebar;
     }
     policy
 }
@@ -480,6 +486,7 @@ mod tests {
             pinned: false,
             last_used_seq: seq,
             toolbar_override: None,
+            right_sidebar_override: None,
             state: TabState::Resident(dirty),
         }
     }
@@ -529,22 +536,30 @@ mod tests {
 
     #[test]
     fn chrome_policy_distinguishes_markdown_office_and_viewer() {
-        let md = chrome_policy_for(Some(Path::new("notes/arch.md")), None, Kind::Document, false, None);
+        let md = chrome_policy_for(Some(Path::new("notes/arch.md")), None, Kind::Document, false, None, None);
         assert!(!md.show_toolbar);
         assert!(!md.show_right_sidebar);
 
-        let md_override = chrome_policy_for(Some(Path::new("notes/arch.md")), None, Kind::Document, false, Some(true));
+        let md_override = chrome_policy_for(
+            Some(Path::new("notes/arch.md")),
+            None,
+            Kind::Document,
+            false,
+            Some(true),
+            Some(true),
+        );
         assert!(md_override.show_toolbar);
+        assert!(md_override.show_right_sidebar);
 
-        let docx = chrome_policy_for(Some(Path::new("spec.docx")), None, Kind::Document, false, None);
+        let docx = chrome_policy_for(Some(Path::new("spec.docx")), None, Kind::Document, false, None, None);
         assert!(docx.show_toolbar);
         assert!(docx.show_right_sidebar);
 
-        let pdf = chrome_policy_for(Some(Path::new("ref.pdf")), None, Kind::Pdf, true, None);
+        let pdf = chrome_policy_for(Some(Path::new("ref.pdf")), None, Kind::Pdf, true, None, None);
         assert!(!pdf.show_toolbar);
         assert!(!pdf.show_right_sidebar);
 
-        let jtd = chrome_policy_for(Some(Path::new("doc.jtd")), None, Kind::Document, true, None);
+        let jtd = chrome_policy_for(Some(Path::new("doc.jtd")), None, Kind::Document, true, None, None);
         assert!(!jtd.show_toolbar);
     }
 

@@ -1180,6 +1180,11 @@ impl SlideEditor {
         Ok(())
     }
 
+    /// Whether the Assistant sidebar is currently open in this editor.
+    pub fn is_ai_assistant_open(&self) -> bool {
+        self.ai_assistant.is_some() && self.sidebar_open
+    }
+
     /// Open or focus the Assistant sidebar.
     pub fn open_ai_assistant_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.ai_assistant.is_none() {
