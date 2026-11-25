@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Experimental reconstruction of a single horizontal OFD page as editable Word content.
+//! Experimental reconstruction of fixed-layout pages as editable Word content.
 
 use std::{cell::Cell, sync::Arc};
 
 use ibis_doc_model::{
     Block, BorderStyle, EMU_PER_POINT, Emu, EmuRect, EmuSize, FloatingAnchor, FlowBorder, FlowCell,
     FlowDocument, FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowTable, MediaFormat, ParaFormat,
-    Picture, Rgb, RowHeight, Shape, ShapeKind,
+    Picture, Presentation, Rgb, RowHeight, SectionBreak, SectionSetup, Shape, ShapeKind,
+    VerticalMerge,
 };
 use ibis_ofd::OfdContainer;
 use ibis_pdf::scene::{CharBox, DisplayCmd, PageScene, PageTextIndex, PathCmd, PdfRect};
@@ -20,28 +21,45 @@ pub fn export_ofd(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
     if !ibis_ofd::is_ofd(bytes) {
         return Ok(None);
     }
-    let ofd = OfdContainer::from_bytes(bytes.to_vec()).map_err(|e| Error::new(e.to_string()))?;
-    if ofd.page_count() != 1 {
-        return Err(Error::new(
-            "experimental OFD-to-DOCX export requires a single page",
-        ));
+    export(bytes).map(Some)
+}
+
+/// Reconstruct editable content from the same scenes used by the fixed-layout viewers.
+pub fn export(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut scenes = Vec::new();
+    if bytes.starts_with(b"%PDF-") {
+        let mut pdf = ibis_pdf::PdfContainer::from_bytes(bytes.to_vec())?;
+        ibis_pdf::interpret::visit_export_scenes(&mut pdf, |scene| {
+            scenes.push(scene);
+            Ok(())
+        })?;
+    } else if ibis_ofd::is_ofd(bytes) {
+        let ofd =
+            OfdContainer::from_bytes(bytes.to_vec()).map_err(|e| Error::new(e.to_string()))?;
+        for i in 0..ofd.page_count() {
+            scenes.push(
+                ofd.interpret_page_scene(i)
+                    .map_err(|e| Error::new(e.to_string()))?,
+            );
+        }
+    } else {
+        let xps = ibis_xps::XpsContainer::from_bytes(bytes.to_vec())
+            .map_err(|e| Error::new(e.to_string()))?;
+        for i in 0..xps.page_infos().len() {
+            scenes.push(
+                xps.interpret_page_scene(i)
+                    .map_err(|e| Error::new(e.to_string()))?,
+            );
+        }
     }
-    let scene = ofd
-        .interpret_page_scene(0)
-        .map_err(|e| Error::new(e.to_string()))?;
-    if scene.text_index.chars.iter().any(|c| c.vertical) {
-        return Err(Error::new(
-            "experimental OFD-to-DOCX export requires horizontal text",
-        ));
-    }
-    export_scene(scene).map(Some)
+    export_scenes(scenes)
 }
 
 fn emu(points: f32) -> Emu {
     (f64::from(points) * EMU_PER_POINT as f64).round() as Emu
 }
 
-fn export_scene(scene: PageScene) -> Result<Vec<u8>> {
+fn export_scenes(scenes: Vec<PageScene>) -> Result<Vec<u8>> {
     let format_error = |e: ibis_formats::Error| Error::new(e.to_string());
     let mut blank = ibis_formats::open(
         ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(format_error)?,
@@ -52,6 +70,53 @@ fn export_scene(scene: PageScene) -> Result<Vec<u8>> {
         return Err(Error::new("missing blank document paragraph"));
     };
     let original_id = original.id;
+    let next_id = Cell::new(flow.new_id());
+    let id = || {
+        let current = next_id.get();
+        next_id.set(current + 1);
+        current
+    };
+    let mut blocks = Vec::new();
+    let total = scenes.len();
+    if total == 0 {
+        return Err(Error::new("document has no pages"));
+    }
+    for (index, scene) in scenes.into_iter().enumerate() {
+        let mut page = append_page(&mut flow, &mut blank.presentation, &id, scene)?;
+        if index + 1 < total {
+            if !matches!(page.last(), Some(Block::Paragraph(_))) {
+                page.push(Block::Paragraph(paragraph(&flow, id(), "", 0, 0)));
+            }
+            if let Some(Block::Paragraph(last)) = page.last_mut() {
+                last.section_break = SectionBreak::NextPage;
+                last.section = Some(Arc::new(SectionSetup {
+                    page: flow.page.clone(),
+                    ..Default::default()
+                }));
+            }
+        }
+        blocks.extend(page);
+    }
+    if let Some(first) = blocks.iter_mut().find_map(|block| match block {
+        Block::Paragraph(p) => Some(p),
+        _ => None,
+    }) {
+        first.id = original_id;
+    }
+    flow.body = blocks;
+    blank.presentation.flow = Some(flow.into());
+    blank
+        .source
+        .save(&blank.presentation, Default::default())
+        .map_err(format_error)
+}
+
+fn append_page(
+    flow: &mut FlowDocument,
+    presentation: &mut Presentation,
+    id: &impl Fn() -> u32,
+    scene: PageScene,
+) -> Result<Vec<Block>> {
     let page = scene.info.crop_box;
     if !page.width().is_finite()
         || !page.height().is_finite()
@@ -80,36 +145,29 @@ fn export_scene(scene: PageScene) -> Result<Vec<u8>> {
     flow.page.right = flow.page.left.min(flow.page.size.width / 4);
     flow.page.bottom = emu(24.0).min(flow.page.size.height / 4);
 
-    let next_id = Cell::new(flow.new_id());
-    let id = || {
-        let current = next_id.get();
-        next_id.set(current + 1);
-        current
-    };
     let mut blocks = if let Some(grid) = grid {
         let bounds = grid.bounds();
         let (inside, outside): (Vec<_>, Vec<_>) =
             chars.iter().cloned().partition(|c| contains(bounds, c));
         let (before, after): (Vec<_>, Vec<_>) =
             outside.into_iter().partition(|c| center(c).1 < bounds.y0);
-        let mut blocks = paragraphs(&flow, &id, before, left, top);
-        blocks.push(Block::Table(grid.table(&flow, &id, &inside, left)));
-        blocks.extend(paragraphs(&flow, &id, after, left, bounds.y1));
+        let mut blocks = paragraphs(flow, id, before, left, top);
+        blocks.push(Block::Table(grid.table(flow, id, &inside, left)));
+        blocks.extend(paragraphs(flow, id, after, left, bounds.y1));
         blocks
     } else {
-        paragraphs(&flow, &id, chars.clone(), left, top)
+        paragraphs(flow, id, chars.clone(), left, top)
     };
     let first = match blocks.iter().position(|b| matches!(b, Block::Paragraph(_))) {
         Some(i) => i,
         None => {
-            blocks.insert(0, Block::Paragraph(FlowParagraph::default()));
+            blocks.insert(0, Block::Paragraph(paragraph(flow, id(), "", 0, 0)));
             0
         }
     };
     let Block::Paragraph(anchor) = &mut blocks[first] else {
         unreachable!()
     };
-    anchor.id = original_id;
     for cmd in scene.display_list {
         let DisplayCmd::DrawImage {
             bounds,
@@ -127,9 +185,9 @@ fn export_scene(scene: PageScene) -> Result<Vec<u8>> {
         PngEncoder::new(&mut png)
             .write_image(&rgba, width, height, ColorType::Rgba8.into())
             .map_err(|e| Error::new(e.to_string()))?;
-        let image = blank.presentation.add_media(MediaFormat::Png, png);
+        let image = presentation.add_media(MediaFormat::Png, png);
         let mut shape = Shape::new(
-            blank.presentation.new_shape_id(),
+            presentation.new_shape_id(),
             EmuRect::new(
                 emu(bounds.x0 - page.x0),
                 emu(bounds.y0 - page.y0),
@@ -151,12 +209,7 @@ fn export_scene(scene: PageScene) -> Result<Vec<u8>> {
             Default::default(),
         ));
     }
-    flow.body = blocks;
-    blank.presentation.flow = Some(flow.into());
-    blank
-        .source
-        .save(&blank.presentation, Default::default())
-        .map_err(format_error)
+    Ok(blocks)
 }
 
 fn center(c: &CharBox) -> (f32, f32) {
@@ -246,7 +299,16 @@ struct Rule {
     end: f32,
 }
 
+#[derive(Clone, Copy)]
+struct CellArea {
+    left: usize,
+    right: usize,
+    top: usize,
+    bottom: usize,
+}
+
 struct Grid {
+    cells: Vec<CellArea>,
     x: Vec<f32>,
     y: Vec<f32>,
     border: FlowBorder,
@@ -272,41 +334,61 @@ impl Grid {
         let rows = self
             .y
             .windows(2)
-            .map(|y| FlowRow {
-                id: id(),
-                height: RowHeight::AtLeast(emu(y[1] - y[0])),
-                cells: self
-                    .x
-                    .windows(2)
-                    .map(|x| {
-                        let bounds = PdfRect {
-                            x0: x[0],
-                            y0: y[0],
-                            x1: x[1],
-                            y1: y[1],
-                        };
-                        let content = text(
-                            chars
-                                .iter()
-                                .filter(|c| contains(bounds, c))
-                                .cloned()
-                                .collect(),
-                        );
-                        FlowCell {
-                            id: id(),
-                            span: 1,
-                            blocks: vec![Block::Paragraph(paragraph(
-                                flow,
-                                id(),
-                                content.trim_end(),
-                                0,
-                                0,
-                            ))],
-                            ..Default::default()
-                        }
-                    })
-                    .collect(),
-                ..Default::default()
+            .enumerate()
+            .map(|(row, y)| {
+                let mut cells: Vec<_> = self
+                    .cells
+                    .iter()
+                    .filter(|cell| cell.top <= row && row < cell.bottom)
+                    .collect();
+                cells.sort_by_key(|cell| cell.left);
+                FlowRow {
+                    id: id(),
+                    height: RowHeight::AtLeast(emu(y[1] - y[0])),
+                    cells: cells
+                        .into_iter()
+                        .map(|cell| {
+                            let bounds = PdfRect {
+                                x0: self.x[cell.left],
+                                x1: self.x[cell.right],
+                                y0: self.y[cell.top],
+                                y1: self.y[cell.bottom],
+                            };
+                            let first_row = cell.top == row;
+                            let content = if first_row {
+                                text(
+                                    chars
+                                        .iter()
+                                        .filter(|c| contains(bounds, c))
+                                        .cloned()
+                                        .collect(),
+                                )
+                            } else {
+                                String::new()
+                            };
+                            FlowCell {
+                                id: id(),
+                                span: (cell.right - cell.left) as u32,
+                                merge: if !first_row {
+                                    VerticalMerge::Continue
+                                } else if cell.bottom > row + 1 {
+                                    VerticalMerge::Start
+                                } else {
+                                    VerticalMerge::None
+                                },
+                                blocks: vec![Block::Paragraph(paragraph(
+                                    flow,
+                                    id(),
+                                    content.trim_end(),
+                                    0,
+                                    0,
+                                ))],
+                                ..Default::default()
+                            }
+                        })
+                        .collect(),
+                    ..Default::default()
+                }
             })
             .collect();
         FlowTable {
@@ -369,28 +451,19 @@ fn ruled_grid(list: &[DisplayCmd], chars: &[CharBox]) -> Option<Grid> {
             prev = next;
         }
     }
+    // Decorative rules such as an underlined title never meet two vertical edges.
+    horizontal.retain(|h| vertical.iter().filter(|v| crosses(h, v)).take(2).count() == 2);
+    vertical.retain(|v| horizontal.iter().filter(|h| crosses(h, v)).take(2).count() == 2);
     let x = axes(&vertical);
     let y = axes(&horizontal);
-    if !(3..=33).contains(&x.len()) || !(3..=129).contains(&y.len()) {
+    if !(2..=33).contains(&x.len()) || !(2..=129).contains(&y.len()) {
         return None;
     }
-    let complete = |rules: &[Rule], axes: &[f32], cross: &[f32]| {
-        axes.iter().all(|a| {
-            cross.windows(2).all(|b| {
-                rules.iter().any(|r| {
-                    (r.axis - a).abs() < TOLERANCE
-                        && r.start <= b[0] + TOLERANCE
-                        && r.end >= b[1] - TOLERANCE
-                })
-            })
-        })
-    };
-    if !complete(&vertical, &x, &y) || !complete(&horizontal, &y, &x) {
-        return None;
-    }
+    let cells = grid_cells(&x, &y, &horizontal, &vertical)?;
     let grid = Grid {
         x,
         y,
+        cells,
         border: border?,
     };
     let rect = grid.bounds();
@@ -403,6 +476,104 @@ fn ruled_grid(list: &[DisplayCmd], chars: &[CharBox]) -> Option<Grid> {
         return None;
     }
     Some(grid)
+}
+
+fn crosses(h: &Rule, v: &Rule) -> bool {
+    (h.start - TOLERANCE..=h.end + TOLERANCE).contains(&v.axis)
+        && (v.start - TOLERANCE..=v.end + TOLERANCE).contains(&h.axis)
+}
+
+fn covers(rules: &[Rule], axis: f32, start: f32, end: f32) -> bool {
+    let mut spans: Vec<_> = rules
+        .iter()
+        .filter(|r| (r.axis - axis).abs() < TOLERANCE)
+        .collect();
+    spans.sort_by(|a, b| a.start.total_cmp(&b.start));
+    let mut covered = start;
+    for rule in spans {
+        if rule.start > covered + TOLERANCE {
+            break;
+        }
+        covered = covered.max(rule.end);
+        if covered >= end - TOLERANCE {
+            return true;
+        }
+    }
+    false
+}
+
+fn grid_cells(x: &[f32], y: &[f32], h: &[Rule], v: &[Rule]) -> Option<Vec<CellArea>> {
+    let (cols, rows) = (x.len() - 1, y.len() - 1);
+    let horizontal: Vec<Vec<_>> = y
+        .iter()
+        .map(|&axis| {
+            x.windows(2)
+                .map(|edge| covers(h, axis, edge[0], edge[1]))
+                .collect()
+        })
+        .collect();
+    let vertical: Vec<Vec<_>> = y
+        .windows(2)
+        .map(|edge| {
+            x.iter()
+                .map(|&axis| covers(v, axis, edge[0], edge[1]))
+                .collect()
+        })
+        .collect();
+    if horizontal[0]
+        .iter()
+        .chain(&horizontal[rows])
+        .any(|covered| !covered)
+        || vertical.iter().any(|row| !row[0] || !row[cols])
+    {
+        return None;
+    }
+    let mut seen = vec![false; rows * cols];
+    let mut areas = Vec::new();
+    for row in 0..rows {
+        for col in 0..cols {
+            if seen[row * cols + col] {
+                continue;
+            }
+            let mut area = CellArea {
+                left: col,
+                right: col + 1,
+                top: row,
+                bottom: row + 1,
+            };
+            let mut pending = vec![(row, col)];
+            let mut count = 0;
+            seen[row * cols + col] = true;
+            while let Some((r, c)) = pending.pop() {
+                area.left = area.left.min(c);
+                area.right = area.right.max(c + 1);
+                area.top = area.top.min(r);
+                area.bottom = area.bottom.max(r + 1);
+                count += 1;
+                for (has_wall, next_r, next_c) in [
+                    (horizontal[r][c], r.wrapping_sub(1), c),
+                    (horizontal[r + 1][c], r + 1, c),
+                    (vertical[r][c], r, c.wrapping_sub(1)),
+                    (vertical[r][c + 1], r, c + 1),
+                ] {
+                    if !has_wall && !seen[next_r * cols + next_c] {
+                        seen[next_r * cols + next_c] = true;
+                        pending.push((next_r, next_c));
+                    }
+                }
+            }
+            if count != (area.right - area.left) * (area.bottom - area.top)
+                || (area.top + 1..area.bottom)
+                    .any(|r| horizontal[r][area.left..area.right].iter().any(|v| *v))
+                || (area.top..area.bottom)
+                    .any(|r| vertical[r][area.left + 1..area.right].iter().any(|v| *v))
+            {
+                return None;
+            }
+            areas.push(area);
+        }
+    }
+    (areas.len() > 1).then_some(areas)
 }
 
 fn axes(rules: &[Rule]) -> Vec<f32> {

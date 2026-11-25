@@ -15,6 +15,8 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::issue235_a_signed_xps_has_the_bar_and_the_report", signed_xps),
         ("shell::issue235_text_of_an_xps_is_picked_and_copied", xps_text),
         ("shell::issue235_text_of_an_ofd_is_picked_and_copied", ofd_text),
+        #[cfg(not(target_family = "wasm"))]
+        ("shell::fixed_layout_edit_button_opens_word_copy", edit_word_copy),
     ]
 }
 
@@ -144,4 +146,41 @@ fn xps_text() {
 fn ofd_text() {
     let file = write("text.ofd", &ofd_bytes());
     picks_and_copies(&file, "OFD", "OFD Signed Text");
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn edit_word_copy() {
+    use crate::shell::open_documents::OpenDocuments;
+    use super::button_probe as buttons;
+    let _probe = buttons::Probe::new();
+    for (name, bytes, expected) in [
+        ("edit-copy.pdf", signed_pdf_bytes(), "Signed PDF text"),
+        ("edit-copy.xps", xps_bytes(), "XPSテスト"),
+    ] {
+        let path = write(name, &bytes);
+        let mut scenario = Scenario::open(&path);
+        let windows = scenario.window_count();
+        let button = buttons::all().into_iter()
+            .find(|id| id == "fixed-layout-edit-docx" || id.starts_with("fixed-layout-edit-docx-"))
+            .expect("visible Edit as Word button");
+        buttons::click(&mut scenario, &button);
+        assert_eq!(scenario.window_count(), windows + 1);
+        let word = scenario.with_app(|app| {
+            OpenDocuments::mru(app).into_iter()
+                .find(|doc| doc.name.as_ref() == "edit-copy.docx")
+                .expect("separate DOCX window")
+        });
+        let view = word.editor.upgrade().unwrap();
+        scenario.update_in(word.window, &view, |editor, _, _| {
+            assert_eq!(editor.kind(), ibis_formats::Kind::Document);
+            assert!(editor.file_path().is_none());
+            let presentation = editor.presentation();
+            let text: Vec<_> = ibis_doc_model::flow_command::all_paragraphs(presentation.flow.as_ref().unwrap())
+                .iter().map(|p| p.text()).collect();
+            assert_eq!(text, [expected]);
+        });
+        assert_eq!(scenario.with(|editor, _| editor.kind()), ibis_formats::Kind::Pdf);
+        scenario.screenshot_of(word.window, &format!("{name}-word-copy"));
+        scenario.close_window(word.window);
+    }
 }

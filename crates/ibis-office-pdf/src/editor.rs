@@ -26,7 +26,7 @@ use ibis_office_shell::format::{
 };
 use ibis_office_shell::menu_context::{ContextMenu, ContextState, ContextTone};
 
-use crate::PdfViewerState;
+use crate::{PdfViewerState, ViewerSource};
 
 /// PDF document format driver.
 pub struct PdfDocument;
@@ -450,8 +450,28 @@ impl FormatEditor for PdfDocument {
         ibis_office_docx::viewer_menu_items(editor, part)
     }
 
-    fn toolbar_left(_: &SlideEditor) -> Vec<ibis_office_shell::chrome::ToolItem> {
-        grey_buttons(ibis_office_docx::viewer_toolbar_left())
+    fn toolbar_left(editor: &SlideEditor) -> Vec<ibis_office_shell::chrome::ToolItem> {
+        use ibis_office_shell::{chrome::ToolButton, i18n::text};
+        let mut items = Vec::new();
+        if !editor.read_only && !ibis_office_shell::host::is_connected()
+            && ibis_office_shell::host::export_allowed("docx")
+            && viewer_of(editor).is_some_and(|viewer| {
+                matches!(viewer.lock().expect("pdf viewer lock").source, ViewerSource::Pdf(_) | ViewerSource::Xps(_))
+            })
+        {
+            items.push(ToolButton::new("fixed-layout-edit-docx", "edit", text("fixed-layout.edit-docx"))
+                .click(|editor, window, cx| {
+                    let Some(bytes) = editor.presentation().pdf_bytes.clone() else { return };
+                    let opened = crate::docx::export(&bytes).map_err(|e| e.to_string())
+                        .and_then(|docx| ibis_formats::open(docx).map_err(|e| e.to_string()));
+                    match opened {
+                        Ok(opened) => editor.show_converted_docx(opened, window, cx),
+                        Err(error) => editor.set_status(error, cx),
+                    }
+                }).into());
+        }
+        items.extend(grey_buttons(ibis_office_docx::viewer_toolbar_left()));
+        items
     }
 
     fn toolbar_right(editor: &SlideEditor) -> Vec<ibis_office_shell::chrome::ToolItem> {

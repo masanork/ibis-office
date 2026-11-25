@@ -213,6 +213,22 @@ impl SlideEditor {
         }
     }
 
+    /// Open a converted document as a new unsaved copy.
+    pub fn show_converted_docx(&mut self, opened: ibis_formats::Opened, window: &mut Window, cx: &mut Context<Self>) {
+        let stem = self.file_name.as_ref()
+            .and_then(|name| std::path::Path::new(name.as_ref()).file_stem())
+            .and_then(|name| name.to_str())
+            .unwrap_or("Document");
+        let name: SharedString = format!("{stem}.docx").into();
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = window;
+            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+        }
+        #[cfg(target_family = "wasm")]
+        self.show_new(opened, name, window, cx);
+    }
+
     /// Show `opened`, a new file named `name` that has no path yet.
     pub(crate) fn show_new(&mut self, opened: ibis_formats::Opened, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.load(opened.presentation, name, window, cx);

@@ -1894,3 +1894,4 @@ vsdx.geometry-applied	The preview has been updated. Save a copy to keep the chan
 vsdx.geometry-discard	Discard changes
 vsdx.geometry-drop-target	Drag the endpoint onto a target shape.
 vsdx.geometry-drag-help	Drag a shape or a blue endpoint
+fixed-layout.edit-docx	Edit a Word copy (DOCX)
