@@ -182,11 +182,7 @@ impl SlideEditor {
             }
         });
         #[cfg(target_family = "wasm")]
-        {
-            let _ = window;
-            self.status = Some(crate::i18n::text("_shell.saving-is-not-yet-available-in-the-browser-versi").into());
-            cx.notify();
-        }
+        self.save_web(false, window, cx, Box::new(|_, _, _| {}));
     }
 
     /// ⌘⇧S: ask where, and save there.
@@ -224,7 +220,44 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         { self.confirm_signature_output(RefusedWay::Save, window, cx, move |this, window, cx| this.save_as_then_confirmed(window, cx, then)); }
         #[cfg(target_family = "wasm")]
-        { let _ = (window, then); self.status = Some(crate::i18n::text("_shell.saving-is-not-yet-available-in-the-browser-versi").into()); cx.notify(); }
+        self.save_web(true, window, cx, Box::new(then));
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn save_web(&mut self, save_as: bool, window: &mut Window, cx: &mut Context<Self>, then: Box<dyn FnOnce(&mut Self, &mut Window, &mut Context<Self>)>) {
+        if self.structured_preview {
+            self.set_status(crate::i18n::text("structured-preview.read-only").to_string(), cx);
+            return;
+        }
+        let name = self.file_name.clone().map(|n| n.to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "document".to_string());
+        let mime = crate::web::mime_for_file_name(&name).to_string();
+        let bytes = match self.host_bytes(window, cx) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.set_status(crate::i18n::format("file.save-failed", &[("error", &error)]), cx);
+                return;
+            }
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let result = crate::web::save_local(&name, &mime, &bytes, save_as).await;
+            this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(Some(saved_name)) => {
+                        if !saved_name.is_empty() {
+                            this.file_name = Some(saved_name.into());
+                        }
+                        this.document.mark_clean();
+                        this.cleanup_active_autorecover_file();
+                        this.set_status(crate::i18n::text("_shell.saved").to_string(), cx);
+                        then(this, window, cx);
+                    }
+                    Ok(None) => {}
+                    Err(error) => this.set_status(crate::i18n::format("file.save-failed", &[("error", &error)]), cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -301,7 +334,7 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         { self.confirm_signature_output(RefusedWay::Save, window, cx, move |this, window, cx| this.save_then_confirmed(window, cx, then)); }
         #[cfg(target_family = "wasm")]
-        { let _ = (window, then); self.status = Some(crate::i18n::text("_shell.saving-is-not-yet-available-in-the-browser-versi").into()); cx.notify(); }
+        self.save_web(false, window, cx, then);
     }
 
     #[cfg(not(target_family = "wasm"))]

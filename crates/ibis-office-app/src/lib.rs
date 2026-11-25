@@ -1404,6 +1404,16 @@ mod web {
         with_app(|cx| crate::shell::host_editor::with_editor(cx, |_, _, _| ()).is_some()).unwrap_or(false)
     }
 
+    /// Open a local file in the running editor (a second launch, a drop, or
+    /// File System Access after startup).
+    #[wasm_bindgen]
+    pub fn open_local_file(name: String, bytes: Vec<u8>) -> Result<(), JsValue> {
+        let opened = with_app(|cx| crate::shell::host_editor::with_editor(cx, |editor, window, cx| {
+            editor.open_web_bytes(name, bytes, false, window, cx);
+        }));
+        if opened.flatten().is_some() { Ok(()) } else { Err(JsValue::from_str("the editor is not running")) }
+    }
+
     /// The host gives a document (`IbisOfficeHandle.load`): shown as the page's document, tied to the host's file when `bound`.
     #[wasm_bindgen]
     pub fn host_load(name: String, bytes: Vec<u8>, version: String, folder_id: Option<String>, read_only: bool, read_only_message: Option<String>, bound: bool) -> Result<(), JsValue> {
