@@ -22,6 +22,7 @@ use ibis_office_shell::git_workspace::{GitSnapshot, inspect_git_snapshot};
 use ibis_office_shell::window_editors::{WindowSetup, WorkspaceEditorHost};
 
 use crate::actions::*;
+use crate::local_graph::{LinkDirection, compute_local_graph_layout};
 use crate::model::*;
 use crate::outline::{OutlineTarget, extract_outline};
 use crate::quick_switcher::QuickSwitcherState;
@@ -46,13 +47,13 @@ pub struct SoraneWorkspace {
     seq: u64,
     closed_tabs: Vec<ClosedTabRecord>,
 
-    // Left dock (Activity Ribbon + collapsible/resizable Vault / Search / Git sidebar)
+    // Left dock (Activity Ribbon + collapsible/resizable Vault / Search / Tags / Git sidebar)
     pub(crate) left_sidebar_open: bool,
     pub(crate) left_panel: LeftPanelKind,
     pub(crate) left_sidebar_width: f32,
     left_sidebar_drag: Option<(f32, f32)>,
 
-    // Right dock (collapsible/resizable Backlinks & Outline panel; triggers AI Assistant & Office inspector)
+    // Right dock (collapsible/resizable Backlinks / Outline / Local Graph panel)
     pub(crate) right_sidebar_open: bool,
     pub(crate) right_panel: RightPanelKind,
     pub(crate) right_sidebar_width: f32,
@@ -68,6 +69,7 @@ pub struct SoraneWorkspace {
     pub(crate) vault_filter: Entity<InputState>,
     _vault_filter_sub: Subscription,
     collapsed_dirs: BTreeSet<String>,
+    selected_tag: Option<String>,
     cached_search_query: String,
     cached_search_hits: Vec<ContentSearchHit>,
     vault_status: Option<SharedString>,
@@ -142,6 +144,7 @@ impl SoraneWorkspace {
             vault_filter,
             _vault_filter_sub: vault_filter_sub,
             collapsed_dirs: BTreeSet::new(),
+            selected_tag: None,
             cached_search_query: String::new(),
             cached_search_hits: Vec::new(),
             vault_status: None,
@@ -1104,6 +1107,7 @@ impl SoraneWorkspace {
                     let new_root = folder.root().to_path_buf();
                     ws.vault = Some(Arc::new(folder));
                     ws.collapsed_dirs.clear();
+                    ws.selected_tag = None;
                     ws.cached_search_hits.clear();
                     ws.cached_search_query.clear();
                     ws.left_sidebar_open = true;
@@ -1290,6 +1294,23 @@ impl SoraneWorkspace {
                     )
                     .child(
                         ribbon_btn(
+                            "ribbon-tags",
+                            "#",
+                            "タグブラウザ",
+                            self.left_sidebar_open && self.left_panel == LeftPanelKind::Tags,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.left_sidebar_open && this.left_panel == LeftPanelKind::Tags {
+                                this.left_sidebar_open = false;
+                            } else {
+                                this.left_sidebar_open = true;
+                                this.left_panel = LeftPanelKind::Tags;
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
                             "ribbon-git",
                             "🌿",
                             "Git 変更・履歴",
@@ -1392,7 +1413,7 @@ impl SoraneWorkspace {
                         ribbon_btn(
                             "ribbon-backlinks",
                             "⇄",
-                            "バックリンク (⇧⌘B)",
+                            "リンク: 被リンク・発リンク (⇧⌘B)",
                             self.right_sidebar_open && self.right_panel == RightPanelKind::Backlinks,
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1401,6 +1422,23 @@ impl SoraneWorkspace {
                             } else {
                                 this.right_sidebar_open = true;
                                 this.right_panel = RightPanelKind::Backlinks;
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
+                            "ribbon-graph",
+                            "◎",
+                            "ローカルリンクグラフ",
+                            self.right_sidebar_open && self.right_panel == RightPanelKind::Graph,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.right_sidebar_open && this.right_panel == RightPanelKind::Graph {
+                                this.right_sidebar_open = false;
+                            } else {
+                                this.right_sidebar_open = true;
+                                this.right_panel = RightPanelKind::Graph;
                             }
                             cx.notify();
                         })),
@@ -1435,6 +1473,7 @@ impl SoraneWorkspace {
                 .map(|v| v.display_name())
                 .unwrap_or_else(|| "Vault".to_owned()),
             LeftPanelKind::Search => "全文検索".to_owned(),
+            LeftPanelKind::Tags => "タグ".to_owned(),
             LeftPanelKind::Git => "Git".to_owned(),
         };
 
@@ -1619,6 +1658,157 @@ impl SoraneWorkspace {
                                     this.open_path_in_active_pane(full_path.clone(), window, cx);
                                 })),
                         );
+                    }
+                }
+            }
+            (Some(vault), LeftPanelKind::Tags) => {
+                if let Some(selected) = self.selected_tag.clone() {
+                    let matching = vault.files_with_tag(&selected);
+                    list = list.child(
+                        h_flex()
+                            .px_2()
+                            .py(px(4.))
+                            .gap_1()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .px(px(6.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .bg(theme.accent)
+                                    .text_color(theme.accent_foreground)
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .truncate()
+                                    .child(format!("#{selected}")),
+                            )
+                            .child(
+                                Button::new("ws-tag-clear")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("すべて")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.selected_tag = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    );
+                    let filtered: Vec<String> = matching
+                        .into_iter()
+                        .filter(|p| query.is_empty() || p.to_lowercase().contains(&query))
+                        .collect();
+                    if filtered.is_empty() {
+                        list = list.child(
+                            div()
+                                .p_2()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("該当するノートがありません"),
+                        );
+                    } else {
+                        for (idx, rel) in filtered.into_iter().take(TREE_ROW_LIMIT).enumerate() {
+                            let is_active = active_rel.as_deref() == Some(rel.as_str());
+                            let full_path = vault.root().join(&rel);
+                            let split_path = full_path.clone();
+                            list = list.child(
+                                h_flex()
+                                    .id(SharedString::from(format!("ws-tag-file:{idx}:{rel}")))
+                                    .cursor_pointer()
+                                    .rounded(px(4.))
+                                    .px_2()
+                                    .py(px(4.))
+                                    .gap_1()
+                                    .items_center()
+                                    .when(is_active, |r| {
+                                        r.bg(theme.accent)
+                                            .text_color(theme.accent_foreground)
+                                            .font_weight(FontWeight::MEDIUM)
+                                    })
+                                    .when(!is_active, |r| {
+                                        r.text_color(theme.foreground)
+                                            .hover(|h| h.bg(theme.secondary))
+                                    })
+                                    .child(div().flex_1().min_w_0().text_xs().truncate().child(rel))
+                                    .child(
+                                        div()
+                                            .id(SharedString::from(format!("ws-tag-file-split:{idx}")))
+                                            .px(px(4.))
+                                            .rounded(px(3.))
+                                            .text_size(px(10.))
+                                            .text_color(theme.muted_foreground)
+                                            .hover(|h| h.bg(theme.background).text_color(theme.foreground))
+                                            .child("◫")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.open_path_in_split_pane(
+                                                    split_path.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_path_in_active_pane(
+                                            full_path.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            );
+                        }
+                    }
+                } else {
+                    let tags: Vec<(String, usize)> = vault
+                        .all_tags()
+                        .into_iter()
+                        .filter(|(t, _)| query.is_empty() || t.to_lowercase().contains(&query))
+                        .collect();
+                    if tags.is_empty() {
+                        list = list.child(
+                            div()
+                                .p_3()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("タグ（#tag または Frontmatter の tags）が見つかりません。"),
+                        );
+                    } else {
+                        for (idx, (tag, count)) in tags.into_iter().take(TREE_ROW_LIMIT).enumerate() {
+                            let chosen = tag.clone();
+                            list = list.child(
+                                h_flex()
+                                    .id(SharedString::from(format!("ws-tag:{idx}:{tag}")))
+                                    .cursor_pointer()
+                                    .rounded(px(4.))
+                                    .px_2()
+                                    .py(px(4.))
+                                    .gap_2()
+                                    .items_center()
+                                    .hover(|h| h.bg(theme.secondary))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_xs()
+                                            .truncate()
+                                            .child(format!("#{tag}")),
+                                    )
+                                    .child(
+                                        div()
+                                            .px(px(5.))
+                                            .py(px(1.))
+                                            .rounded(px(8.))
+                                            .bg(theme.muted)
+                                            .text_size(px(10.))
+                                            .text_color(theme.muted_foreground)
+                                            .child(count.to_string()),
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.selected_tag = Some(chosen.clone());
+                                        cx.notify();
+                                    })),
+                            );
+                        }
                     }
                 }
             }
@@ -1953,13 +2143,51 @@ impl SoraneWorkspace {
         match self.right_panel {
             RightPanelKind::Backlinks => match (&self.vault, active_rel.as_deref()) {
                 (Some(vault), Some(rel)) => {
+                    let note_tags = vault.tags_for(rel);
+                    if !note_tags.is_empty() {
+                        let mut tag_row = div().flex().flex_wrap().gap(px(4.)).pb_2();
+                        for (idx, tag) in note_tags.into_iter().enumerate() {
+                            let tag_for_click = tag.clone();
+                            tag_row = tag_row.child(
+                                div()
+                                    .id(SharedString::from(format!("ws-note-tag:{idx}:{tag}")))
+                                    .cursor_pointer()
+                                    .px(px(6.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .bg(theme.muted)
+                                    .text_size(px(10.5))
+                                    .text_color(theme.muted_foreground)
+                                    .hover(|h| h.bg(theme.accent).text_color(theme.accent_foreground))
+                                    .child(format!("#{tag}"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.left_sidebar_open = true;
+                                        this.left_panel = LeftPanelKind::Tags;
+                                        this.selected_tag = Some(tag_for_click.clone());
+                                        cx.notify();
+                                    })),
+                            );
+                        }
+                        content = content.child(tag_row);
+                    }
+
                     let backlinks = vault.backlinks_for(rel);
+                    content = content.child(
+                        div()
+                            .px_1()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.muted_foreground)
+                            .child(format!("被リンク ({})", backlinks.len())),
+                    );
                     if backlinks.is_empty() {
                         content = content.child(
                             div()
+                                .px_1()
+                                .pb_2()
                                 .text_xs()
                                 .text_color(theme.muted_foreground)
-                                .child("このファイルへのバックリンクはまだありません。"),
+                                .child("このファイルへの被リンクはまだありません。"),
                         );
                     } else {
                         for (idx, bl) in backlinks.into_iter().enumerate() {
@@ -2013,13 +2241,74 @@ impl SoraneWorkspace {
                             );
                         }
                     }
+
+                    let outgoing = vault.outgoing_links_for(rel);
+                    content = content.child(
+                        div()
+                            .px_1()
+                            .pt_2()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.muted_foreground)
+                            .child(format!("発リンク ({})", outgoing.len())),
+                    );
+                    if outgoing.is_empty() {
+                        content = content.child(
+                            div()
+                                .px_1()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("このファイルからの発リンクはありません。"),
+                        );
+                    } else {
+                        for (idx, target_rel) in outgoing.into_iter().enumerate() {
+                            let full = vault.root().join(&target_rel);
+                            let split_path = full.clone();
+                            content = content.child(
+                                h_flex()
+                                    .id(SharedString::from(format!("ws-out:{idx}:{target_rel}")))
+                                    .cursor_pointer()
+                                    .rounded(px(4.))
+                                    .px(px(6.))
+                                    .py(px(4.))
+                                    .gap_1()
+                                    .items_center()
+                                    .hover(|h| h.bg(theme.secondary))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_xs()
+                                            .truncate()
+                                            .child(format!("→ {target_rel}")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(SharedString::from(format!("ws-out-split:{idx}")))
+                                            .px(px(4.))
+                                            .rounded(px(3.))
+                                            .text_size(px(10.))
+                                            .text_color(theme.muted_foreground)
+                                            .hover(|h| h.bg(theme.background).text_color(theme.foreground))
+                                            .child("◫")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.open_path_in_split_pane(split_path.clone(), window, cx);
+                                            })),
+                                    )
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_path_in_active_pane(full.clone(), window, cx);
+                                    })),
+                            );
+                        }
+                    }
                 }
                 (None, _) => {
                     content = content.child(
                         div()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child("Vault フォルダを開くと、アクティブなノートのバックリンクがここに表示されます。"),
+                            .child("Vault フォルダを開くと、アクティブなノートのリンクとタグが表示されます。"),
                     );
                 }
                 (Some(_), None) => {
@@ -2027,7 +2316,7 @@ impl SoraneWorkspace {
                         div()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child("Vault 内のファイルを開くとバックリンクが表示されます。"),
+                            .child("Vault 内のファイルを開くと被リンク・発リンクが表示されます。"),
                     );
                 }
             },
@@ -2096,6 +2385,149 @@ impl SoraneWorkspace {
                     }
                 }
             }
+            RightPanelKind::Graph => match (&self.vault, active_rel.as_deref()) {
+                (Some(vault), Some(rel)) => {
+                    let incoming: Vec<String> = vault
+                        .backlinks_for(rel)
+                        .into_iter()
+                        .map(|b| b.path)
+                        .collect();
+                    let outgoing = vault.outgoing_links_for(rel);
+                    let graph_w = (width - 16.0).max(180.0);
+                    let graph_h = 280.0_f32;
+                    let layout = compute_local_graph_layout(rel, &incoming, &outgoing, graph_w, graph_h);
+
+                    let edges = layout.edges.clone();
+                    let out_color = theme.accent.opacity(0.65);
+                    let in_color = theme.muted_foreground.opacity(0.45);
+                    let edge_canvas = canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            for edge in &edges {
+                                let mut builder = PathBuilder::stroke(px(1.5));
+                                builder.move_to(point(
+                                    bounds.origin.x + px(edge.from_x),
+                                    bounds.origin.y + px(edge.from_y),
+                                ));
+                                builder.line_to(point(
+                                    bounds.origin.x + px(edge.to_x),
+                                    bounds.origin.y + px(edge.to_y),
+                                ));
+                                if let Ok(path) = builder.build() {
+                                    let color = match edge.direction {
+                                        LinkDirection::Incoming => in_color,
+                                        LinkDirection::Outgoing | LinkDirection::Bidirectional => {
+                                            out_color
+                                        }
+                                    };
+                                    window.paint_path(path, color);
+                                }
+                            }
+                        },
+                    )
+                    .absolute()
+                    .inset_0();
+
+                    let mut graph_box = div()
+                        .id("sorane-local-graph-box")
+                        .relative()
+                        .w(px(layout.width))
+                        .h(px(layout.height))
+                        .rounded(px(8.))
+                        .bg(theme.background)
+                        .border_1()
+                        .border_color(theme.border)
+                        .overflow_hidden()
+                        .child(edge_canvas);
+
+                    for (idx, node) in layout.nodes.iter().enumerate() {
+                        let pill_w = if node.is_center { 104.0 } else { 90.0 };
+                        let pill_h = 22.0;
+                        let left = (node.x - pill_w * 0.5).clamp(4.0, (layout.width - pill_w - 4.0).max(4.0));
+                        let top = (node.y - pill_h * 0.5).clamp(4.0, (layout.height - pill_h - 4.0).max(4.0));
+                        let full = vault.root().join(&node.path);
+                        let prefix = match node.direction {
+                            None => "● ",
+                            Some(LinkDirection::Outgoing) => "→ ",
+                            Some(LinkDirection::Incoming) => "← ",
+                            Some(LinkDirection::Bidirectional) => "⇄ ",
+                        };
+                        let is_center = node.is_center;
+                        graph_box = graph_box.child(
+                            div()
+                                .id(SharedString::from(format!("ws-graph-node:{idx}")))
+                                .absolute()
+                                .left(px(left))
+                                .top(px(top))
+                                .w(px(pill_w))
+                                .h(px(pill_h))
+                                .px(px(6.))
+                                .rounded(px(11.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(10.5))
+                                .border_1()
+                                .when(is_center, |d| {
+                                    d.bg(theme.accent)
+                                        .border_color(theme.accent)
+                                        .text_color(theme.accent_foreground)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                })
+                                .when(!is_center, |d| {
+                                    d.cursor_pointer()
+                                        .bg(theme.sidebar)
+                                        .border_color(theme.border)
+                                        .text_color(theme.foreground)
+                                        .hover(|h| h.bg(theme.secondary).border_color(theme.accent))
+                                })
+                                .child(div().truncate().child(format!("{prefix}{}", node.label)))
+                                .when(!is_center, |d| {
+                                    d.on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                        if event.modifiers().platform || event.modifiers().control {
+                                            this.open_path_in_split_pane(full.clone(), window, cx);
+                                        } else {
+                                            this.open_path_in_active_pane(full.clone(), window, cx);
+                                        }
+                                    }))
+                                }),
+                        );
+                    }
+
+                    content = content
+                        .child(graph_box)
+                        .child(
+                            div()
+                                .pt_1()
+                                .px_1()
+                                .text_size(px(10.5))
+                                .text_color(theme.muted_foreground)
+                                .child(if layout.edges.is_empty() {
+                                    "接続されたノートがありません。[[ノート名]] でリンクを作るとここに表示されます。".to_owned()
+                                } else if layout.truncated > 0 {
+                                    format!("● 現在 · → 発 · ← 被 · ⇄ 双方向（他 {} 件 · ⌘クリックで分割）", layout.truncated)
+                                } else {
+                                    "● 現在 · → 発リンク · ← 被リンク · ⇄ 双方向（⌘クリックで分割）".to_owned()
+                                }),
+                        );
+                }
+                (None, _) => {
+                    content = content.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("Vault フォルダを開くとローカルリンクグラフが表示されます。"),
+                    );
+                }
+                (Some(_), None) => {
+                    content = content.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("Vault 内のノートを開くと周囲のリンク関係が表示されます。"),
+                    );
+                }
+            },
         }
 
         let dragging = self.right_sidebar_drag.is_some();
@@ -2157,7 +2589,7 @@ impl SoraneWorkspace {
             div()
                 .id(id)
                 .cursor_pointer()
-                .px(px(6.))
+                .px(px(5.))
                 .py(px(3.))
                 .rounded(px(4.))
                 .text_size(px(11.))
@@ -2214,9 +2646,20 @@ impl SoraneWorkspace {
                                         cx.notify();
                                     })),
                                 )
+                                .child(
+                                    dock_tab(
+                                        "ws-right-tab-graph",
+                                        "グラフ",
+                                        self.right_panel == RightPanelKind::Graph,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.right_panel = RightPanelKind::Graph;
+                                        cx.notify();
+                                    })),
+                                )
                                 .child(div().flex_1())
                                 .child(
-                                    dock_tab("ws-right-open-ai", "✨ AI", ai_active)
+                                    dock_tab("ws-right-open-ai", "✨", ai_active)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.open_ai_assistant_for_active_pane(window, cx);
                                         })),

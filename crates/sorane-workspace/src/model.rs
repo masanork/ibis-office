@@ -114,6 +114,7 @@ pub enum LeftPanelKind {
     #[default]
     Vault,
     Search,
+    Tags,
     Git,
 }
 
@@ -122,6 +123,7 @@ pub enum RightPanelKind {
     #[default]
     Backlinks,
     Outline,
+    Graph,
 }
 
 /// Record of a recently closed file-backed tab for `Cmd/Ctrl+Shift+T` reopen.

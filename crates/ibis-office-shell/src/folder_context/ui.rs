@@ -511,6 +511,33 @@ impl SlideEditor {
             self.open_folder_text(path, window, cx);
             return;
         }
+        // When embedded inside an outer workspace (e.g. SoraneWorkspace), delegate link
+        // navigation to the workspace so it opens cleanly in a tab rather than overwriting
+        // the current editor in place or spawning an extra OS window.
+        if self.embedded_chrome.is_some() {
+            let target_path = path.clone();
+            let target_pos = position.clone();
+            cx.defer(move |cx| {
+                if crate::window_editors::try_open_path_via_factory(&target_path, cx)
+                    && let Some(pos) = target_pos
+                    && let Some(handle) =
+                        crate::open_guard::find_open_window(&target_path, None, cx)
+                    && let Some(root) = handle.downcast::<Root>()
+                {
+                    let _ = root.update(cx, |root, _, cx| {
+                        for editor in crate::window_editors::all_in_root(root, cx) {
+                            if editor.read(cx).shows_path(&target_path) {
+                                editor.update(cx, |ed, cx| {
+                                    ed.reveal_folder_position(Some(&pos), cx)
+                                });
+                                break;
+                            }
+                        }
+                    });
+                }
+            });
+            return;
+        }
         let in_place = self.can_navigate_in_place();
         if in_place && record_history {
             let current = self.current_folder_relative();

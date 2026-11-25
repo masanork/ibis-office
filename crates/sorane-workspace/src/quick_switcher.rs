@@ -43,10 +43,12 @@ pub(crate) enum WorkspaceCommand {
     ToggleLeftSidebar,
     ShowVaultPanel,
     ShowSearchPanel,
+    ShowTagsPanel,
     ShowGitPanel,
     ToggleRightSidebar,
     ShowBacklinksPanel,
     ShowOutlinePanel,
+    ShowGraphPanel,
     OpenAiAssistant,
     ToggleInspectorPanel,
     SaveWorkspaceSession,
@@ -140,7 +142,7 @@ const ALL_COMMANDS: &[(WorkspaceCommand, &str, &str, Option<&str>)] = &[
     (
         WorkspaceCommand::ToggleLeftSidebar,
         "左サイドバーを開閉 (Toggle Left Sidebar)",
-        "Vault / 検索 / Git ドックを表示または隠す",
+        "Vault / 検索 / タグ / Git ドックを表示または隠す",
         Some("⌘B"),
     ),
     (
@@ -156,6 +158,12 @@ const ALL_COMMANDS: &[(WorkspaceCommand, &str, &str, Option<&str>)] = &[
         None,
     ),
     (
+        WorkspaceCommand::ShowTagsPanel,
+        "左ドック: タグ一覧を表示 (Tags)",
+        "#tag / OKF タグからノートを絞り込み",
+        None,
+    ),
+    (
         WorkspaceCommand::ShowGitPanel,
         "左ドック: Git 変更・履歴を表示",
         "ブランチ・変更ファイル・コミット履歴へ切替",
@@ -164,13 +172,13 @@ const ALL_COMMANDS: &[(WorkspaceCommand, &str, &str, Option<&str>)] = &[
     (
         WorkspaceCommand::ToggleRightSidebar,
         "右サイドバーを開閉 (Toggle Right Sidebar)",
-        "バックリンク・アウトラインドックを表示または隠す",
+        "リンク・アウトライン・ローカルグラフを開閉",
         Some("⇧⌘B"),
     ),
     (
         WorkspaceCommand::ShowBacklinksPanel,
-        "右ドック: バックリンクを表示 (Backlinks)",
-        "アクティブノートを参照しているノート一覧",
+        "右ドック: リンク（被リンク・発リンク）を表示 (Links)",
+        "アクティブノートの被リンク・発リンク・タグを表示",
         None,
     ),
     (
@@ -178,6 +186,12 @@ const ALL_COMMANDS: &[(WorkspaceCommand, &str, &str, Option<&str>)] = &[
         "右ドック: アウトラインを表示 (Outline)",
         "見出し・シート・スライド一覧へ切替",
         Some("⇧⌘U"),
+    ),
+    (
+        WorkspaceCommand::ShowGraphPanel,
+        "右ドック: ローカルグラフを表示 (Local Graph)",
+        "アクティブノート周辺のリンク構造を可視化",
+        None,
     ),
     (
         WorkspaceCommand::OpenAiAssistant,
@@ -426,6 +440,11 @@ impl SoraneWorkspace {
                 self.vault_filter.update(cx, |s, cx| s.focus(window, cx));
                 cx.notify();
             }
+            WorkspaceCommand::ShowTagsPanel => {
+                self.left_sidebar_open = true;
+                self.left_panel = LeftPanelKind::Tags;
+                cx.notify();
+            }
             WorkspaceCommand::ShowGitPanel => {
                 self.left_sidebar_open = true;
                 self.left_panel = LeftPanelKind::Git;
@@ -444,6 +463,11 @@ impl SoraneWorkspace {
             WorkspaceCommand::ShowOutlinePanel => {
                 self.right_sidebar_open = true;
                 self.right_panel = RightPanelKind::Outline;
+                cx.notify();
+            }
+            WorkspaceCommand::ShowGraphPanel => {
+                self.right_sidebar_open = true;
+                self.right_panel = RightPanelKind::Graph;
                 cx.notify();
             }
             WorkspaceCommand::OpenAiAssistant => self.open_ai_assistant_for_active_pane(window, cx),

@@ -10974,6 +10974,8 @@ dependencies = [
  "ibis-formats",
  "ibis-office-shell",
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
