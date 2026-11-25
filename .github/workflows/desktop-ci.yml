@@ -97,7 +97,7 @@ jobs:
         run: |
           set -euo pipefail
           for suite in structured_view::csv::tests structured_view::hed::tests read_file::stack_tests::linkage_csv; do
-            cargo test --locked -p ibis-office-shell --lib --no-default-features "$suite" -- --list | grep -q ': test$'
+            cargo test --locked -p ibis-office-shell --lib --no-default-features "$suite" -- --list | grep ': test$' >/dev/null
             cargo test --locked -p ibis-office-shell --lib --no-default-features "$suite"
           done
       - name: Test offline image Content Credentials
