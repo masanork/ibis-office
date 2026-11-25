@@ -643,6 +643,38 @@ pub(crate) fn render(
             kind @ (42 | 43) if has_window => {
                 output.push(state.shape(state.rect(record, 8)?, kind == 42));
             }
+            // EMR_POLYGON16: the outline of each segment of a freehand marker.
+            86 if has_window && !state.building_path => {
+                let count = positive(record, 24)?;
+                if count < 3 {
+                    return Err(Error::Invalid);
+                }
+                if count > 65_536 || state.path_points.saturating_add(count) > 2_000_000 {
+                    return Err(Error::Limit);
+                }
+                let points = record.get(28..28 + count * 4).ok_or(Error::Invalid)?;
+                state.path_points += count;
+                let mut commands = Vec::with_capacity(count + 1);
+                for (i, point) in points.chunks_exact(4).enumerate() {
+                    let raw_x = i16::from_le_bytes([point[0], point[1]]);
+                    let raw_y = i16::from_le_bytes([point[2], point[3]]);
+                    let (x, y) = state.point(f32::from(raw_x), f32::from(raw_y));
+                    commands.push(if i == 0 {
+                        PathCmd::MoveTo(x, y)
+                    } else {
+                        PathCmd::LineTo(x, y)
+                    });
+                }
+                commands.push(PathCmd::Close);
+                output.push(DisplayCmd::DrawPath {
+                    bounds: path_bounds(&commands).ok_or(Error::Invalid)?,
+                    commands,
+                    fill_rule: state.fill_rule,
+                    fill_rgba: state.fill_color(),
+                    stroke_rgba: (state.pen.0[3] != 0).then_some(state.pen.0),
+                    stroke_width: state.pen.1,
+                });
+            }
             4 if has_window => {
                 let count = positive(record, 24)?;
                 if !(2..=65_536).contains(&count) {

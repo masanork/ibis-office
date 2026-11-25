@@ -37,3 +37,39 @@ fn preserves_binder_document_order_pages_and_selection() {
         }
     }
 }
+
+// Save ezpzfile-xdw's tests/data/dw-binder.bin as sample.xbd in XBD_CORPUS_DIR.
+#[test]
+#[ignore = "requires the public marker binder in XBD_CORPUS_DIR"]
+fn renders_freehand_marker_in_second_document() {
+    use ibis_pdf::{DisplayCmd, scene::PathCmd};
+
+    let root = std::path::PathBuf::from(std::env::var_os("XBD_CORPUS_DIR").unwrap());
+    let bytes = std::fs::read(root.join("sample.xbd")).unwrap();
+    let file = XdwContainer::from_bytes(bytes.into()).unwrap();
+    let documents = file.binder_documents().unwrap();
+    assert_eq!(documents[0].name, "blank");
+    assert_eq!(documents[1].name, "marker");
+    assert_eq!(documents[1].pages, 1..2);
+    assert!(
+        file.interpret_page_scene(0)
+            .unwrap()
+            .display_list
+            .is_empty()
+    );
+    let marker = file.interpret_page_scene(1).unwrap();
+    let quadrilaterals = marker
+        .display_list
+        .iter()
+        .filter(|cmd| {
+            matches!(cmd,
+                DisplayCmd::DrawPath { commands, fill_rgba: Some([0, 0, 0, 255]), .. }
+                    if matches!(commands.as_slice(), [
+                        PathCmd::MoveTo(..), PathCmd::LineTo(..), PathCmd::LineTo(..),
+                        PathCmd::LineTo(..), PathCmd::Close
+                    ])
+            )
+        })
+        .count();
+    assert_eq!(quadrilaterals, 4);
+}
