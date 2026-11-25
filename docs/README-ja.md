@@ -54,14 +54,15 @@ ibisOffice 本来のベンチマーク、基本機能一覧、商用ライセン
 - **EPUB 3・制作素材画像** *（Fork）*：EPUB 3 ネイティブ読み込み、HEIC・DPX・Cineon・OpenEXR・JPEG 2000 プレビュー（[production-image-preview-ja.md](production-image-preview-ja.md)）。
 - **OOXML / ODF 互換強化** *（採用済み: [#190](https://github.com/ibisjp/ibis-office/issues/190), [#221](https://github.com/ibisjp/ibis-office/issues/221)）*：Office 2007 Standard 暗号化復号、DOCX 段落 ID（`w14:paraId`）の編集・保存時保持、ODF の入れ子領域・繰り返し列・非表示行列読み込み拡張。
 
-### 4. BI・外部データ取り込み・表計算強化
-- **外部データソース & Power Query 連携** *（提案中: [#263](https://github.com/ibisjp/ibis-office/issues/263)）*：表計算クエリでのローカル Parquet（列選択・複数ファイル追記・Zstandard）・JSON Lines・Arrow IPC・Avro・SQLite 取り込み、文字コードを考慮した CSV 上書き保存。
-- **機械可読性チェック & 名簿突合** *（採用済み: [#194](https://github.com/ibisjp/ibis-office/issues/194) / 提案中: [#257](https://github.com/ibisjp/ibis-office/issues/257)）*：デジタル庁基準の機械可読性チェック（本家パネルへ統合）、`FIELDMATCH` 系関数・異体字辞書・日付レビュー・行政 PUP/外字正規化。
+### 4. BI・データ分析・外部データ連携
+- **クロスフォーマット SQL & クエリパイプライン** *（提案中: [#263](https://github.com/ibisjp/ibis-office/issues/263)）*：CSV・Parquet（列選択・複数ファイル追記・Zstandard）・Arrow IPC・JSON Lines・Avro・SQLite テーブルをインメモリ／ストリーミング SQLite（Turso）で結合クエリし、Excel テーブルへの書き出し、バインド先を指定した一括更新、スキーマ変更検知、品質チェックゲート、文字コードを考慮した CSV 上書き保存を実現。
+- **データ分析・Power Query M 言語・モデリング** *（Fork / 提案中）*：依存ゼロの Power Query M 言語インタプリタ（`crates/ibis-m-lang`）、クエリエディタ／レポート管理、ピボットテーブルの集計フィールド・集計アイテム・ドリルダウン、コホート分析チャート、統計分析パネル、予測シート、ソルバー、クイック分析、プレフィル機能。
+- **Harunobu 互換の機械可読性チェック & 名簿突合** *（採用済み: [#194](https://github.com/ibisjp/ibis-office/issues/194) / 提案中: [#257](https://github.com/ibisjp/ibis-office/issues/257)）*：デジタル庁の機械可読性ルール（Harunobu 0.2.3 相当）に基づくリアルタイム検査（見出し・結合セル・非表示行列・数値文字列・数式等の検出と該当セルへの移動、[machine-readability.md](machine-readability.md)）、および `FIELDMATCH` 系関数・異体字辞書・日付レビュー・行政 PUP/外字正規化。
 - **セキュリティ／コンプライアンス分析** *（提案中: [#279](https://github.com/ibisjp/ibis-office/issues/279), [#280](https://github.com/ibisjp/ibis-office/issues/280)）*：CycloneDX SBOM/CBOM 棚卸し（PQC 移行管理含む）および OSV-Scanner 脆弱性結果の表計算レビュー。
 
-### 5. AI アシスタント & MCP 拡張
+### 5. AI アシスタント & MCP サーバー拡張
 - **AI アシスタントサイドバー** *（提案中: [#231](https://github.com/ibisjp/ibis-office/issues/231)）*：OpenAI 互換 API（デスクトップ）および Cloudflare Workers AI（Web）と連携した DOCX/XLSX/PPTX 共通の編集支援・変更提案。
-- **MCP ツール連携・安全性強化** *（提案中: [#159](https://github.com/ibisjp/ibis-office/issues/159), [#275](https://github.com/ibisjp/ibis-office/issues/275), [#276](https://github.com/ibisjp/ibis-office/issues/276), [#281](https://github.com/ibisjp/ibis-office/issues/281)）*：起動中デスクトップ Assistant への既存 MCP サーバーからの再接続、シート保護の非表示数式尊重、入力展開前のセル数上限チェック、スキル連携。
+- **MCP サーバー拡張（`ibis-mcp` & `ibis-doc-service`）** *（提案中: [#159](https://github.com/ibisjp/ibis-office/issues/159), [#275](https://github.com/ibisjp/ibis-office/issues/275), [#276](https://github.com/ibisjp/ibis-office/issues/276), [#281](https://github.com/ibisjp/ibis-office/issues/281)）*：基本的な OOXML 読み書きに加え、SQLite／クロスフォーマットデータセットクエリ（`sqlite_query`, `sqlite_query_to_table`, `sqlite_refresh_query_reports`, `xlsx_set_query_report_checks`）、ピボットテーブル、チャート、構造化プレフィル、SD-JWT/OID4VP ウォレット用の MCP ツール群を実装。さらに、起動中のデスクトップ Assistant へ外部 MCP クライアントから再接続するライブブリッジ、シート保護の非表示数式尊重、入力展開前のセル数上限チェックを備えています（[mcp-ja.md](mcp-ja.md)）。
 
 ### 6. 日本語組版・行政・法令・医療・トラスト
 - **日本語組版・フォント描画** *（採用済み: [#158](https://github.com/ibisjp/ibis-office/issues/158), [#160](https://github.com/ibisjp/ibis-office/issues/160), [#193](https://github.com/ibisjp/ibis-office/issues/193), [#222](https://github.com/ibisjp/ibis-office/issues/222), [#230](https://github.com/ibisjp/ibis-office/issues/230), [#248](https://github.com/ibisjp/ibis-office/issues/248), [#251](https://github.com/ibisjp/ibis-office/issues/251)）*：行政事務標準文字と異体字シーケンス（IVS）対応および macOS 字形欠落修正、非 Windows 環境での「ＭＳ 明朝」代替ルール修正、和文記号/仮名文字送り・GPOS オフセット改善、縦書き傍線位置・表セル文字方向/縦結合・両端揃え箇条書き修正。
