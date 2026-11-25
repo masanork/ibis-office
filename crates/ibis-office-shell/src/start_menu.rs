@@ -47,7 +47,6 @@ impl SlideEditor {
             .into_iter()
             .map(|(kind, id, key)| item(id, crate::format::info(kind).icon).shortcut(key).on(move |this, window, cx| this.new_file(kind, window, cx)).into())
             .collect();
-        #[cfg(not(target_family = "wasm"))]
         file.push(item("file.new.visio-draft", "draw").on(|this, window, cx| this.new_visio_draft(window, cx)).into());
         file.push(item("file.open", "folder_open").shortcut("⌘O").on(|this, window, cx| this.open_file(&crate::actions::Open, window, cx)).into());
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]

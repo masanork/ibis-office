@@ -328,7 +328,6 @@ impl SlideEditor {
             .flex_wrap()
             .ml(px(BADGE_OVERHANG - TILE_PADDING))
             .children(crate::format::creatable_infos().into_iter().map(|(kind, info)| self.new_file_tile(kind, info.extension, info.new_badge_color, cx)));
-        #[cfg(not(target_family = "wasm"))]
         let new_files = new_files.when(!crate::host::is_connected(), |row| {
             row.child(self.render_new_tile("vsdx", 0x2563a8, |this, window, cx| this.new_visio_draft(window, cx), cx))
         });

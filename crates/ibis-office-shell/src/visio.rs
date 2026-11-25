@@ -8,6 +8,7 @@ use ibis_doc_model::{EMU_PER_POINT, Fill, LineEnd, Presentation, ShapeKind};
 use ibis_pdf::PdfRect;
 use ibis_vsdx::write::{Drawing, ShapeKind as DiagramShape, Side};
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn is_visio_path(path: &std::path::Path) -> bool {
     path.extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("vsdx"))

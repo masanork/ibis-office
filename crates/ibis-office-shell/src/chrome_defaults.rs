@@ -172,7 +172,6 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
             .on(|this, window, cx| this.new_markdown_file(window, cx))
             .into(),
     );
-    #[cfg(not(target_family = "wasm"))]
     if !crate::host::is_connected() {
         new_items.push(item("file.new.visio-draft", "draw").on(|this, window, cx| this.new_visio_draft(window, cx)).into());
     }
@@ -218,7 +217,6 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
                     entries.push(item("jtd.edit-as-docx", "edit").on(|this, window, cx| this.edit_jtd_as_docx(window, cx)).into());
                 }
             }
-            #[cfg(not(target_family = "wasm"))]
             if kind == ibis_formats::Kind::Presentation {
                 entries.push(item("file.export.vsdx", "draw").disabled(!crate::host::export_allowed("vsdx"))
                     .on(|this, window, cx| this.export_visio(window, cx)).into());

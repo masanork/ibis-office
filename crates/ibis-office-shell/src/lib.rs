@@ -73,7 +73,6 @@ pub mod embed;
 pub mod host;
 pub mod host_editor;
 pub mod host_file_dialog;
-#[cfg(not(target_family = "wasm"))]
 mod visio;
 pub mod file_actions;
 mod image_provenance;

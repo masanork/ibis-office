@@ -71,7 +71,6 @@ impl SlideEditor {
     }
 
     /// Open a blank diagram draft in the existing shape editor.
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn new_visio_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if crate::host::is_connected() {
             return;
@@ -92,30 +91,33 @@ impl SlideEditor {
             editor.show_new(opened, name, window, cx);
             editor.visio_draft = true;
         };
+        #[cfg(not(target_family = "wasm"))]
         if self.has_document {
             crate::app::open_window_with(cx, show);
-        } else {
-            show(self, window, cx);
+            return;
         }
+        show(self, window, cx);
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub fn is_visio_draft(&self) -> bool {
         self.visio_draft
     }
 
     /// Offer full editing only when the drawing can be written back losslessly.
-    #[cfg(not(target_family = "wasm"))]
     pub fn can_resume_visio(&self) -> bool {
-        !self.read_only && !crate::host::is_connected() && self.file_path().is_some()
+        #[cfg(not(target_family = "wasm"))]
+        let has_backing = self.file_path().is_some();
+        #[cfg(target_family = "wasm")]
+        let has_backing = true;
+        !self.read_only && !crate::host::is_connected() && has_backing
             && self.presentation().pdf_bytes.as_deref().is_some_and(|bytes| {
                 *self.resumable_visio.get_or_init(|| ibis_vsdx::write::Drawing::from_vsdx(bytes).is_ok())
             })
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub fn resume_visio(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_resume_visio() { return; }
+        #[cfg(not(target_family = "wasm"))]
         let result = (|| {
             let path = self.file_path().ok_or_else(|| crate::i18n::text("vsdx.resume-error").to_string())?;
             let bytes = self.presentation().pdf_bytes.as_deref().unwrap();
@@ -125,7 +127,14 @@ impl SlideEditor {
             }
             let drawing = ibis_vsdx::write::Drawing::from_vsdx(bytes).map_err(|error| error.to_string())?;
             let opened = crate::visio::editable_presentation(&drawing)?;
-            Ok((path, opened))
+            Ok((Some(path), opened))
+        })();
+        #[cfg(target_family = "wasm")]
+        let result = (|| {
+            let bytes = self.presentation().pdf_bytes.as_deref().ok_or_else(|| crate::i18n::text("vsdx.resume-error").to_string())?;
+            let drawing = ibis_vsdx::write::Drawing::from_vsdx(bytes).map_err(|error| error.to_string())?;
+            let opened = crate::visio::editable_presentation(&drawing)?;
+            Ok((None::<()>, opened))
         })();
         let (path, opened) = match result {
             Ok(opened) => opened,
@@ -134,21 +143,32 @@ impl SlideEditor {
         let name = self.file_name.clone().unwrap_or_else(|| crate::i18n::text("vsdx.draft-filename"));
         self.show_new(opened, name, window, cx);
         self.visio_draft = true;
-        self.set_file_path(Some(path));
+        #[cfg(not(target_family = "wasm"))]
+        self.set_file_path(path);
+        #[cfg(target_family = "wasm")]
+        let _ = path;
         cx.notify();
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn export_visio(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !crate::host::export_allowed("vsdx") {
             return;
         }
         self.commit_edit(window, cx);
         let (stem, _) = self.name_parts();
+        #[cfg(not(target_family = "wasm"))]
         self.ask_path(format!("{stem}.vsdx"), window, cx, |this, path, _, cx| {
             let result = this.export_visio_to(&path).map(|()| crate::i18n::text("vsdx.exported").to_string());
             this.report(result, cx);
         });
+        #[cfg(target_family = "wasm")]
+        {
+            let result = self.visio_bytes().map(|bytes| {
+                crate::web::download_bytes(&format!("{stem}.vsdx"), "application/vnd.ms-visio.drawing.main+xml", &bytes);
+                crate::i18n::text("vsdx.exported").to_string()
+            });
+            self.report(result, cx);
+        }
     }
 
     /// Write the diagram to a separate VSDX file.
@@ -422,7 +442,6 @@ pub fn reset_new_file_numbers() {
 }
 
 impl SlideEditor {
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn visio_bytes(&self) -> Result<Vec<u8>, String> {
         if self.kind() != ibis_formats::Kind::Presentation || !crate::host::export_allowed("vsdx") {
             return Err(crate::i18n::text("vsdx.draft-unsupported").to_string());
@@ -440,7 +459,6 @@ impl SlideEditor {
         if let Some(why) = crate::format::with_format!(self, save_refused(self)) {
             return Err(why);
         }
-        #[cfg(not(target_family = "wasm"))]
         if self.visio_draft {
             return self.visio_bytes();
         }

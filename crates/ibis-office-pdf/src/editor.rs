@@ -3,9 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! [`FormatEditor`] implementation for `Kind::Pdf`.
 
-#[cfg(not(target_family = "wasm"))]
 mod geometry_drag;
-#[cfg(not(target_family = "wasm"))]
 pub use geometry_drag::screen_point as geometry_screen_point;
 
 use std::sync::{Arc, Mutex};
@@ -43,9 +41,7 @@ pub struct State {
     pub page_input: Entity<InputState>,
     pub find_open: bool,
     pub page_open: bool,
-    #[cfg(not(target_family = "wasm"))]
     label_edit: Option<LabelEdit>,
-    #[cfg(not(target_family = "wasm"))]
     geometry_edit: Option<GeometryEditor>,
     _subscriptions: Vec<Subscription>,
 }
@@ -361,9 +357,7 @@ impl FormatEditor for PdfDocument {
             page_input,
             find_open: false,
             page_open: false,
-            #[cfg(not(target_family = "wasm"))]
             label_edit: None,
-            #[cfg(not(target_family = "wasm"))]
             geometry_edit: None,
             _subscriptions: subscriptions,
         })
@@ -413,7 +407,6 @@ impl FormatEditor for PdfDocument {
                 entries.insert(at, MenuItem::tr("edit.go-to").icon("arrow_forward").on(|this, window, cx| open_go_to(this, window, cx)).into());
             }
         }
-        #[cfg(not(target_family = "wasm"))]
         if viewer_of(_editor).is_some_and(|v| v.lock().expect("pdf viewer lock").is_vsdx()) && ibis_office_shell::host::export_allowed("vsdx") {
             use ibis_office_shell::chrome::{MenuId, MenuItem};
             menus.items_mut(MenuId::Edit).push(
@@ -425,7 +418,6 @@ impl FormatEditor for PdfDocument {
                     .on(|editor, window, cx| open_geometry_edit(editor, window, cx)).into()
             );
         }
-        #[cfg(not(target_family = "wasm"))]
         if !_editor.read_only && !ibis_office_shell::host::is_connected()
             && ibis_office_shell::host::export_allowed("vsdx")
             && viewer_of(_editor).is_some_and(|v| v.lock().expect("pdf viewer lock").is_vsdx())
@@ -470,7 +462,6 @@ impl FormatEditor for PdfDocument {
     /// but the two small fields; with the cursor in one of them the keys are its own.
     fn format_key(editor: &mut SlideEditor, keystroke: &gpui_kit::Keystroke, window: &mut Window, cx: &mut Context<SlideEditor>) -> bool {
         let in_field = editor.format_state::<State>().is_some_and(|s| s.find_input.read(cx).focus_handle(cx).is_focused(window) || s.page_input.read(cx).focus_handle(cx).is_focused(window));
-        #[cfg(not(target_family = "wasm"))]
         if editor.format_state::<State>().is_some_and(|s| {
             s.label_edit.as_ref().is_some_and(|e| e.input.read(cx).focus_handle(cx).is_focused(window))
                 || s.geometry_edit.as_ref().is_some_and(|mode| mode.input.read(cx).focus_handle(cx).is_focused(window))
@@ -627,7 +618,6 @@ impl FormatEditor for PdfDocument {
         let entity = cx.entity().downgrade();
         let find_bar = find_open.then(|| find_bar(editor, &find_input, cx));
         let page_bar = page_open.then(|| page_bar(editor, &page_input, cx));
-        #[cfg(not(target_family = "wasm"))]
         let label_bar = editor.format_state::<State>().and_then(|s| {
             if let Some(input) = s.geometry_edit.as_ref() {
                 Some(geometry_edit_bar(input, cx))
@@ -635,9 +625,6 @@ impl FormatEditor for PdfDocument {
                 s.label_edit.as_ref().map(|mode| label_edit_bar(mode, cx))
             }
         });
-        #[cfg(target_family = "wasm")]
-        let label_bar: Option<AnyElement> = None;
-        #[cfg(not(target_family = "wasm"))]
         let geometry_handles = editor.format_state::<State>().and_then(|s| s.geometry_edit.as_ref())
             .map(|mode| (mode.page, mode.targets.clone(), mode.drag.as_ref().map(|drag| geometry_drag::ghost(drag, &mode.targets))));
 
@@ -664,9 +651,7 @@ impl FormatEditor for PdfDocument {
                             .on_mouse_down(MouseButton::Left, cx.listener(|editor, event: &MouseDownEvent, window, cx| press(editor, event, window, cx)))
                             .on_mouse_move(cx.listener(|editor, event: &MouseMoveEvent, _, cx| drag(editor, event, cx)))
                             .on_mouse_up(MouseButton::Left, cx.listener(|editor, event: &MouseUpEvent, window, cx| {
-                                #[cfg(not(target_family = "wasm"))]
                                 if geometry_drag::release(editor, event.position, window, cx) { return; }
-                                let _ = (event, window);
                                 release(editor, cx);
                             }))
                             .child(
@@ -709,7 +694,6 @@ impl FormatEditor for PdfDocument {
                                                     cx,
                                                 );
                                                 paint_marks(&mut guard, idx, x, y, scale, window);
-                                                #[cfg(not(target_family = "wasm"))]
                                                 if let Some((page, targets, ghost)) = &geometry_handles
                                                     && *page == idx
                                                 {
@@ -783,7 +767,6 @@ fn paint_marks(viewer: &mut PdfViewerState, page: usize, left: f32, top: f32, sc
 fn press(editor: &mut SlideEditor, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<SlideEditor>) {
     window.focus(&editor.focus_handle, cx);
     let Some((page, x, y)) = pdf_point(editor, event.position) else { return };
-    #[cfg(not(target_family = "wasm"))]
     if geometry_drag::press(editor, page, x, y, cx) { return; }
     let Some(state) = editor.format_state::<State>() else { return };
     {
@@ -801,7 +784,6 @@ fn press(editor: &mut SlideEditor, event: &MouseDownEvent, window: &mut Window, 
 
 /// The drag: the selection reaches to the character under the pointer.
 fn drag(editor: &mut SlideEditor, event: &MouseMoveEvent, cx: &mut Context<SlideEditor>) {
-    #[cfg(not(target_family = "wasm"))]
     if event.pressed_button == Some(MouseButton::Left)
         && editor.format_state::<State>().is_some_and(|s| s.geometry_edit.is_some())
     {
@@ -883,7 +865,6 @@ fn find_bar(editor: &SlideEditor, input: &Entity<InputState>, cx: &mut Context<S
         .into_any_element()
 }
 
-#[cfg(not(target_family = "wasm"))]
 struct LabelEdit {
     document: Arc<ibis_vsdx::VsdxContainer>,
     page: usize,
@@ -893,7 +874,6 @@ struct LabelEdit {
     input: Entity<InputState>,
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl LabelEdit {
     fn remember_label(&mut self, value: String) {
         let label = &self.labels[self.selected];
@@ -906,7 +886,6 @@ impl LabelEdit {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn open_label_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
     use ibis_office_shell::i18n::text;
     if editor.format_state::<State>().is_some_and(|state| state.geometry_edit.is_some()) {
@@ -950,7 +929,6 @@ fn open_label_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Conte
     cx.notify();
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn select_label(editor: &mut SlideEditor, forward: bool, window: &mut Window, cx: &mut Context<SlideEditor>) {
     let Some(mode) = editor.format_state::<State>().and_then(|s| s.label_edit.as_ref()) else { return };
     let input = mode.input.clone();
@@ -966,7 +944,6 @@ fn select_label(editor: &mut SlideEditor, forward: bool, window: &mut Window, cx
 }
 
 /// The current label edit applied to a copy of the original drawing.
-#[cfg(not(target_family = "wasm"))]
 pub fn label_copy_bytes(editor: &SlideEditor, cx: &gpui_kit::App) -> Result<Vec<u8>, String> {
     let mode = editor.format_state::<State>().and_then(|s| s.label_edit.as_ref())
         .ok_or_else(|| ibis_office_shell::i18n::text("vsdx.no-editable-labels").to_string())?;
@@ -981,7 +958,6 @@ pub fn label_copy_bytes(editor: &SlideEditor, cx: &gpui_kit::App) -> Result<Vec<
         .map_err(|error| error.to_string())
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn save_label_copy(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
     if !ibis_office_shell::host::export_allowed("vsdx") { return; }
     let bytes = match label_copy_bytes(editor, cx) {
@@ -989,6 +965,15 @@ fn save_label_copy(editor: &mut SlideEditor, window: &mut Window, cx: &mut Conte
         Err(error) => return editor.report(Err(error), cx),
     };
     save_vsdx_copy(editor, window, cx, bytes);
+}
+
+#[cfg(target_family = "wasm")]
+fn save_vsdx_copy(editor: &mut SlideEditor, _window: &mut Window, cx: &mut Context<SlideEditor>, bytes: Vec<u8>) {
+    use ibis_office_shell::i18n::text;
+    let (stem, _) = editor.name_parts();
+    let suggested = format!("{stem}-edited.vsdx");
+    ibis_office_shell::web::download_bytes(&suggested, "application/vnd.ms-visio.drawing.main+xml", &bytes);
+    editor.report(Ok(text("vsdx.label-copy-saved").to_string()), cx);
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -1023,7 +1008,6 @@ pub fn write_vsdx_copy(original: Option<&std::path::Path>, path: &std::path::Pat
     save::write_replacing(path, bytes).map_err(|error| error.to_string())
 }
 
-#[cfg(not(target_family = "wasm"))]
 struct GeometryEditor {
     page: usize,
     input: Entity<InputState>,
@@ -1032,7 +1016,6 @@ struct GeometryEditor {
     drag: Option<geometry_drag::GeometryDrag>,
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn open_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
     let Some(page) = page_at_top(editor) else { return };
     if editor.read_only || !ibis_office_shell::host::export_allowed("vsdx") { return; }
@@ -1058,7 +1041,6 @@ fn open_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Co
     cx.notify();
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub fn geometry_copy_bytes(editor: &SlideEditor, cx: &gpui_kit::App) -> Result<Vec<u8>, String> {
     use ibis_office_shell::i18n::text;
     use ibis_vsdx::geometry_edit::{Endpoint, GeometryEdit};
@@ -1086,7 +1068,6 @@ pub fn geometry_copy_bytes(editor: &SlideEditor, cx: &gpui_kit::App) -> Result<V
     geometry_edit_bytes(editor, mode.page, edit)
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn geometry_edit_bytes(editor: &SlideEditor, page: usize, edit: ibis_vsdx::geometry_edit::GeometryEdit) -> Result<Vec<u8>, String> {
     let invalid = || ibis_office_shell::i18n::text("vsdx.geometry-command-error").to_string();
     let viewer = viewer_of(editor).ok_or_else(invalid)?;
@@ -1099,13 +1080,11 @@ fn geometry_edit_bytes(editor: &SlideEditor, page: usize, edit: ibis_vsdx::geome
 }
 
 /// Apply a command to the live preview without writing to the original file.
-#[cfg(not(target_family = "wasm"))]
 fn apply_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> Result<(), String> {
     let bytes = geometry_copy_bytes(editor, cx)?;
     stage_geometry_edit(editor, bytes, window, cx, true)
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn stage_geometry_edit(editor: &mut SlideEditor, bytes: Vec<u8>, window: &mut Window, cx: &mut Context<SlideEditor>, focus_input: bool) -> Result<(), String> {
     let bytes: Arc<[u8]> = bytes.into();
     let preview = PdfViewerState::open(bytes.clone()).map_err(|error| error.to_string())?;
@@ -1126,17 +1105,14 @@ fn stage_geometry_edit(editor: &mut SlideEditor, bytes: Vec<u8>, window: &mut Wi
     Ok(())
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn cx_report_geometry(editor: &mut SlideEditor, result: Result<(), String>, cx: &mut Context<SlideEditor>) {
     editor.report(result.map(|()| ibis_office_shell::i18n::text("vsdx.geometry-applied").to_string()), cx);
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub fn staged_geometry_bytes(editor: &SlideEditor) -> Option<Arc<[u8]>> {
     editor.format_state::<State>()?.geometry_edit.as_ref()?.staged.clone()
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn close_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
     let original = editor.presentation().pdf_bytes.clone();
     if let Some(state) = editor.format_state_mut::<State>() {
@@ -1151,7 +1127,6 @@ fn close_geometry_edit(editor: &mut SlideEditor, window: &mut Window, cx: &mut C
     cx.notify();
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn replace_geometry_preview(state: &Mutex<PdfViewerState>, mut preview: PdfViewerState) {
     let mut viewer = state.lock().expect("pdf viewer lock");
     preview.zoom = viewer.zoom;
@@ -1159,7 +1134,6 @@ fn replace_geometry_preview(state: &Mutex<PdfViewerState>, mut preview: PdfViewe
     *viewer = preview;
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn geometry_edit_bar(mode: &GeometryEditor, cx: &mut Context<SlideEditor>) -> AnyElement {
     use ibis_office_shell::chrome::{action_button, text_field};
     use ibis_office_shell::i18n::{format, text};
@@ -1196,7 +1170,6 @@ fn geometry_edit_bar(mode: &GeometryEditor, cx: &mut Context<SlideEditor>) -> An
         .into_any_element()
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn label_edit_bar(mode: &LabelEdit, cx: &mut Context<SlideEditor>) -> AnyElement {
     use gpui_kit::prelude::FluentBuilder;
     use ibis_office_shell::chrome::{FindNav, action_button, find_nav_button, text_field};

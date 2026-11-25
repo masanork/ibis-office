@@ -672,9 +672,7 @@ pub struct SlideEditor {
     /// Whether this document is opened in read-only / viewing mode (--read-only or ?view=1).
     pub read_only: bool,
     vsdx_viewer: bool,
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) visio_draft: bool,
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) resumable_visio: std::sync::OnceLock<bool>,
     #[cfg(any(target_os = "android", target_family = "wasm"))]
     pub(crate) phone_editing: bool,
@@ -1019,9 +1017,7 @@ impl SlideEditor {
             #[cfg(any(target_os = "android", target_family = "wasm"))]
             phone_view_only: false,
             vsdx_viewer,
-            #[cfg(not(target_family = "wasm"))]
             visio_draft: false,
-            #[cfg(not(target_family = "wasm"))]
             resumable_visio: Default::default(),
             standard_read_only: false,
             structured_preview: false,
@@ -1377,9 +1373,11 @@ impl SlideEditor {
         { self.git_preview = None; }
         self.standard_read_only = false;
         self.vsdx_viewer = presentation.pdf_bytes.as_deref().is_some_and(ibis_vsdx::is_vsdx);
+        self.visio_draft = false;
+        self.resumable_visio = Default::default();
         self.structured_preview = false;
         #[cfg(not(target_family = "wasm"))]
-        { self.bom_source = None; self.visio_draft = false; self.resumable_visio = Default::default(); }
+        { self.bom_source = None; }
         #[cfg(target_family = "wasm")]
         { self.web.law_source = None; }
         #[cfg(any(target_os = "android", target_family = "wasm"))]
@@ -4541,10 +4539,7 @@ impl Render for SlideEditor {
             .on_action(cx.listener(|this, _: &crate::actions::StartNewWorkbook, window, cx| this.new_file(ibis_formats::Kind::Workbook, window, cx)))
             .on_action(cx.listener(|this, _: &crate::actions::StartNewPresentation, window, cx| this.new_file(ibis_formats::Kind::Presentation, window, cx)))
             .on_action(cx.listener(|this, _: &crate::actions::StartNewVisioDraft, window, cx| {
-                #[cfg(not(target_family = "wasm"))]
                 this.new_visio_draft(window, cx);
-                #[cfg(target_family = "wasm")]
-                let _ = (this, window, cx);
             }))
             .on_action(cx.listener(|this, action: &crate::actions::OpenRecent, window, cx| {
                 #[cfg(not(target_family = "wasm"))]
