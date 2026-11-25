@@ -5,15 +5,17 @@ use std::{cell::Cell, sync::Arc};
 
 use ibis_doc_model::{
     Block, BorderStyle, EMU_PER_POINT, Emu, EmuRect, EmuSize, FloatingAnchor, FlowBorder, FlowCell,
-    FlowDocument, FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowTable, MediaFormat, ParaFormat,
-    Picture, Presentation, Rgb, RowHeight, SectionBreak, SectionSetup, Shape, ShapeKind,
-    VerticalMerge,
+    FlowDocument, FlowParagraph, FlowRow, FlowRun, FlowRunKind, FlowStyle, FlowTable, MediaFormat,
+    ParaFormat, Picture, Presentation, Rgb, RowHeight, SectionBreak, SectionSetup, Shape,
+    ShapeKind, StyleKind, VerticalMerge,
 };
 use ibis_ofd::OfdContainer;
 use ibis_pdf::scene::{CharBox, DisplayCmd, PageScene, PageTextIndex, PathCmd, PdfRect};
 use ibis_pdf::text_layout::{TextLayout, page_text};
 use ibis_pdf::{Error, Result};
 use image::{ColorType, ImageEncoder, codecs::png::PngEncoder};
+
+use super::docx_tags::{TaggedBlock, Tree};
 
 const TOLERANCE: f32 = 0.75;
 
@@ -27,12 +29,23 @@ pub fn export_ofd(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
 /// Reconstruct editable content from the same scenes used by the fixed-layout viewers.
 pub fn export(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut scenes = Vec::new();
+    let mut tagged = None;
     if bytes.starts_with(b"%PDF-") {
         let mut pdf = ibis_pdf::PdfContainer::from_bytes(bytes.to_vec())?;
-        ibis_pdf::interpret::visit_export_scenes(&mut pdf, |scene| {
-            scenes.push(scene);
-            Ok(())
-        })?;
+        if let Some(tree) = Tree::read(&mut pdf) {
+            let mut marked = Vec::new();
+            ibis_pdf::interpret::visit_marked_export_scenes(&mut pdf, |scene, ids| {
+                marked.push((scene, ids));
+                Ok(())
+            })?;
+            tagged = tree.blocks(&marked);
+            scenes.extend(marked.into_iter().map(|(scene, _)| scene));
+        } else {
+            ibis_pdf::interpret::visit_export_scenes(&mut pdf, |scene| {
+                scenes.push(scene);
+                Ok(())
+            })?;
+        }
     } else if ibis_ofd::is_ofd(bytes) {
         let ofd =
             OfdContainer::from_bytes(bytes.to_vec()).map_err(|e| Error::new(e.to_string()))?;
@@ -52,14 +65,14 @@ pub fn export(bytes: &[u8]) -> Result<Vec<u8>> {
             );
         }
     }
-    export_scenes(scenes)
+    export_scenes(scenes, tagged)
 }
 
 fn emu(points: f32) -> Emu {
     (f64::from(points) * EMU_PER_POINT as f64).round() as Emu
 }
 
-fn export_scenes(scenes: Vec<PageScene>) -> Result<Vec<u8>> {
+fn export_scenes(scenes: Vec<PageScene>, tagged: Option<Vec<Vec<TaggedBlock>>>) -> Result<Vec<u8>> {
     let format_error = |e: ibis_formats::Error| Error::new(e.to_string());
     let mut blank = ibis_formats::open(
         ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(format_error)?,
@@ -76,13 +89,38 @@ fn export_scenes(scenes: Vec<PageScene>) -> Result<Vec<u8>> {
         next_id.set(current + 1);
         current
     };
+    if let Some(pages) = &tagged {
+        for block in pages.iter().flatten() {
+            if let TaggedBlock::Text(_, Some(level)) = block {
+                Arc::make_mut(&mut flow.styles)
+                    .styles
+                    .entry(format!("Heading{level}"))
+                    .or_insert_with(|| FlowStyle {
+                        name: format!("heading {level}"),
+                        kind: StyleKind::Paragraph,
+                        based_on: Some("Normal".into()),
+                        run: ibis_doc_model::RunFormat {
+                            bold: Some(true),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    });
+            }
+        }
+    }
     let mut blocks = Vec::new();
     let total = scenes.len();
     if total == 0 {
         return Err(Error::new("document has no pages"));
     }
     for (index, scene) in scenes.into_iter().enumerate() {
-        let mut page = append_page(&mut flow, &mut blank.presentation, &id, scene)?;
+        let mut page = append_page(
+            &mut flow,
+            &mut blank.presentation,
+            &id,
+            scene,
+            tagged.as_ref().map(|pages| pages[index].as_slice()),
+        )?;
         if index + 1 < total {
             if !matches!(page.last(), Some(Block::Paragraph(_))) {
                 page.push(Block::Paragraph(paragraph(&flow, id(), "", 0, 0)));
@@ -116,6 +154,7 @@ fn append_page(
     presentation: &mut Presentation,
     id: &impl Fn() -> u32,
     scene: PageScene,
+    tagged: Option<&[TaggedBlock]>,
 ) -> Result<Vec<Block>> {
     let page = scene.info.crop_box;
     if !page.width().is_finite()
@@ -123,7 +162,7 @@ fn append_page(
         || page.width() <= 0.0
         || page.height() <= 0.0
     {
-        return Err(Error::new("invalid OFD page dimensions"));
+        return Err(Error::new("invalid fixed-layout page dimensions"));
     }
     flow.page.size = EmuSize::new(emu(page.width()), emu(page.height()));
     let chars = &scene.text_index.chars;
@@ -145,7 +184,9 @@ fn append_page(
     flow.page.right = flow.page.left.min(flow.page.size.width / 4);
     flow.page.bottom = emu(24.0).min(flow.page.size.height / 4);
 
-    let mut blocks = if let Some(grid) = grid {
+    let mut blocks = if let Some(tagged) = tagged {
+        tagged.iter().map(|block| block.to_flow(flow, id)).collect()
+    } else if let Some(grid) = grid {
         let bounds = grid.bounds();
         let (inside, outside): (Vec<_>, Vec<_>) =
             chars.iter().cloned().partition(|c| contains(bounds, c));
@@ -228,7 +269,13 @@ fn text(chars: Vec<CharBox>) -> String {
     page_text(&PageTextIndex { chars }, TextLayout::Reading)
 }
 
-fn paragraph(flow: &FlowDocument, id: u32, text: &str, left: Emu, before: Emu) -> FlowParagraph {
+pub(super) fn paragraph(
+    flow: &FlowDocument,
+    id: u32,
+    text: &str,
+    left: Emu,
+    before: Emu,
+) -> FlowParagraph {
     let mut p = FlowParagraph {
         id,
         direct: ParaFormat {

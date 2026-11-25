@@ -908,6 +908,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             "docx" => {
                 let out_bytes = if is_uot {
                     ibis_formats::uot::to_docx_with_base_dir(&data, path.parent()).map_err(|e| e.to_string())
+                } else if data.starts_with(b"%PDF-") {
+                    ibis_office_pdf::docx::export(&data).map_err(|e| e.to_string())
                 } else if let Some(docx) = ibis_office_pdf::docx::export_ofd(&data)
                     .map_err(|e| format!("{}: {e}", path.display()))?
                 {
