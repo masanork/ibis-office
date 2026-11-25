@@ -134,3 +134,57 @@ test('POST /api/github/repos/create validates auth and repository name', async (
   );
   assert.equal(badName.status, 400);
 });
+
+test('POST /api/github/repos/create includes permission diagnostics on 403', async () => {
+  const sealed = await sealSession(
+    { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith('/user/repos')) {
+      return new Response(JSON.stringify({ message: 'Resource not accessible by integration' }), {
+        status: 403,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Accepted-GitHub-Permissions': 'administration=write',
+        },
+      });
+    }
+    if (url.includes('/user/installations')) {
+      return new Response(
+        JSON.stringify({
+          installations: [
+            {
+              account: { login: 'masanork' },
+              repository_selection: 'selected',
+              permissions: { contents: 'write', repository_creation: 'write' },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/github/repos/create', {
+        method: 'POST',
+        headers: { Cookie: `sorane_gh_session=${sealed}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'soraneDocs' }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(res.status, 403);
+    const body = await res.json();
+    assert.match(body.error, /required: administration=write/);
+    assert.match(body.error, /selection: selected/);
+    assert.match(body.error, /granted: contents:write, repository_creation:write/);
+    assert.equal(body.diagnostics.acceptedPermissions, 'administration=write');
+    assert.equal(body.diagnostics.installation.repositorySelection, 'selected');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});

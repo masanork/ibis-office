@@ -398,11 +398,55 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     if (!createRes.ok) {
       const fallbackCreateUrl = `https://github.com/new?name=${encodeURIComponent(rawName)}&visibility=private`;
       if (createRes.status === 403 || createRes.status === 404) {
-        const detail = createData.message ? ` (${createData.message})` : '';
+        const acceptedPermissions = createRes.headers.get('X-Accepted-GitHub-Permissions')?.trim() || null;
+        let installation: {
+          account: string | null;
+          repositorySelection: string | null;
+          permissions: Record<string, string>;
+        } | null = null;
+        try {
+          const instRes = await githubFetch('/user/installations?per_page=20', session.accessToken);
+          if (instRes.ok) {
+            const instData = (await instRes.json()) as {
+              installations?: Array<{
+                account?: { login?: string };
+                repository_selection?: string;
+                permissions?: Record<string, string>;
+              }>;
+            };
+            const list = instData.installations ?? [];
+            const matched = list.find(i => i.account?.login?.toLowerCase() === session.login.toLowerCase()) ?? list[0];
+            if (matched) {
+              installation = {
+                account: matched.account?.login ?? null,
+                repositorySelection: matched.repository_selection ?? null,
+                permissions: matched.permissions ?? {},
+              };
+            }
+          }
+        } catch {
+          /* Best-effort diagnostics only. */
+        }
+
+        const diagParts: string[] = [];
+        if (createData.message) diagParts.push(createData.message);
+        if (acceptedPermissions) diagParts.push(`required: ${acceptedPermissions}`);
+        if (installation) {
+          if (installation.repositorySelection) diagParts.push(`selection: ${installation.repositorySelection}`);
+          const granted = Object.entries(installation.permissions)
+            .map(([k, v]) => `${k}:${v}`)
+            .sort()
+            .join(', ');
+          diagParts.push(`granted: ${granted || 'none'}`);
+        } else {
+          diagParts.push('installation: none');
+        }
+        const detail = diagParts.length ? ` [${diagParts.join(' / ')}]` : '';
         return json(
           {
             error: `GitHub App でリポジトリを自動作成できませんでした${detail}。アプリ権限（Repository creation: Write）の承認状況とインストール設定を確認するか、下のリンクから GitHub で作成してください。`,
             fallbackCreateUrl,
+            diagnostics: { acceptedPermissions, installation },
             ...(installUrl ? { installUrl } : {}),
           },
           403,
