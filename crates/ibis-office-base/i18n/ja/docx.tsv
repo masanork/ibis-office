@@ -261,6 +261,11 @@ docx.view.markdown-source	Markdown ソース
 docx.markdown-source.modified	編集済み（戻るとき・保存時に反映）
 docx.markdown-source.synced	同期済み
 docx.markdown-source.back-to-preview	プレビューに戻る
+docx.markdown-source.mode-source	ソース
+docx.markdown-source.mode-split	分割
+docx.markdown-source.mode-visual	プレビュー
+docx.markdown-source.syncing	同期中…
+docx.status.markdown-split	Markdown 分割
 docx.view.focus	フォーカス
 docx.ruler	ルーラー
 docx.vertical-ruler	垂直ルーラー

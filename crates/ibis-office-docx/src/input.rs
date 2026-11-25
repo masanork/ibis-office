@@ -229,8 +229,8 @@ impl SlideEditor {
         None
     }
 
-    pub(crate) fn doc_accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
-        if self.is_markdown_source_mode() {
+    pub(crate) fn doc_accepts_text_input(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.is_markdown_source_only() || self.is_markdown_source_focused(window, cx) {
             return false;
         }
         self.doc_state().is_some_and(|s| s.box_edit.is_some() || s.caret.is_some())

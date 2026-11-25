@@ -1143,6 +1143,138 @@ impl SlideEditor {
                 .into_any_element(),
         )
     }
+
+    /// Whether this editor currently hosts an open interactive Git history/diff pane.
+    pub fn has_git_workspace(&self) -> bool {
+        self.git_workspace.is_some()
+    }
+
+    /// Open the full interactive Git history/diff pane for `root` in this editor.
+    pub fn open_git_workspace_for_root(
+        &mut self,
+        root: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn_in(window, async move |this, cx| {
+            let workspace = cx
+                .background_executor()
+                .spawn(async move { GitWorkspace::for_selected_folder(&root) })
+                .await;
+            let _ = this.update(cx, |editor, cx| {
+                if let Some(ws) = workspace {
+                    editor.git_workspace = Some(ws);
+                    if let Some(policy) = editor.embedded_chrome.as_mut() {
+                        policy.show_left_pane = true;
+                    }
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+/// Read-only working-tree change summary for outer workspace Git sidebars.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitChangeSummary {
+    pub path: String,
+    pub status: String,
+    pub staged: bool,
+}
+
+/// Read-only recent commit summary for outer workspace Git sidebars.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitCommitSummary {
+    pub short_id: String,
+    pub title: String,
+    pub date: String,
+}
+
+/// Read-only Git repository snapshot safe to compute on a background thread.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GitSnapshot {
+    pub branch: String,
+    pub head_short: String,
+    pub changes: Vec<GitChangeSummary>,
+    pub commits: Vec<GitCommitSummary>,
+}
+
+/// Inspect branch, working-tree changes, and recent first-parent commits for `root`.
+pub fn inspect_git_snapshot(root: &Path, max_commits: usize) -> Option<GitSnapshot> {
+    let repo = gix::open(root).ok()?;
+    let head = repo.head_id().ok()?.detach();
+    let head_short = short(head);
+    let branch = repo
+        .head_name()
+        .ok()
+        .flatten()
+        .map(|name| name.shorten().to_string())
+        .unwrap_or_else(|| head_short.clone());
+
+    let mut commits = Vec::new();
+    let shallow = repo.shallow_commits().ok().flatten();
+    let mut next = Some(head);
+    for _ in 0..max_commits {
+        let Some(id) = next else { break };
+        let Ok(commit) = repo.find_commit(id) else { break };
+        let raw = String::from_utf8_lossy(commit.message_raw_sloppy());
+        let title = raw.lines().next().unwrap_or_default().to_owned();
+        let date = commit
+            .time()
+            .ok()
+            .and_then(|t| t.format(gix::date::time::format::SHORT).ok())
+            .unwrap_or_default();
+        commits.push(GitCommitSummary {
+            short_id: short(id),
+            title,
+            date,
+        });
+        next = if shallow.as_ref().is_some_and(|s| s.contains(&id)) {
+            None
+        } else {
+            commit.parent_ids().next().map(|p| p.detach())
+        };
+    }
+
+    let mut changes = Vec::new();
+    if let Ok(bytes) = working_tree::git(
+        root,
+        &[
+            std::ffi::OsStr::new("--no-optional-locks"),
+            std::ffi::OsStr::new("status"),
+            std::ffi::OsStr::new("--porcelain=v1"),
+            std::ffi::OsStr::new("-z"),
+        ],
+    ) {
+        let mut iter = bytes.split(|&b| b == 0);
+        while let Some(entry) = iter.next() {
+            if entry.len() < 4 || entry[2] != b' ' {
+                continue;
+            }
+            let x = entry[0] as char;
+            let y = entry[1] as char;
+            let path = String::from_utf8_lossy(&entry[3..]).into_owned();
+            if matches!(x, 'R' | 'C') {
+                // Skip original path in -z rename/copy records.
+                let _ = iter.next();
+            }
+            let staged = x != ' ' && x != '?';
+            let status = format!("{x}{y}").trim().to_owned();
+            changes.push(GitChangeSummary {
+                path,
+                status: if status.is_empty() { "M".to_owned() } else { status },
+                staged,
+            });
+        }
+    }
+
+    Some(GitSnapshot {
+        branch,
+        head_short,
+        changes,
+        commits,
+    })
 }
 
 #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
@@ -1200,8 +1332,8 @@ pub fn save_git_law_comparison(
         let view = window
             .downcast::<Root>()
             .unwrap()
-            .update(app, |root, _, _| {
-                root.view().clone().downcast::<SlideEditor>().unwrap()
+            .update(app, |root, _, app| {
+                crate::window_editors::active_in_root(root, app).unwrap()
             })
             .unwrap();
         (window, view)

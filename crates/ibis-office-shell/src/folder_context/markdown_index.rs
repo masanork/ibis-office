@@ -254,11 +254,31 @@ impl MarkdownIndex {
             .unwrap_or_default()
     }
 
+    pub(super) fn outgoing_links(&self, relative: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .backlinks
+            .iter()
+            .filter_map(|(target, sources)| {
+                sources
+                    .iter()
+                    .any(|b| b.source.path == relative)
+                    .then(|| target.clone())
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     pub(super) fn tags(&self, relative: &str) -> &[String] {
         self.tags
             .get(relative)
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    pub(super) fn all_tags_map(&self) -> &BTreeMap<String, Vec<String>> {
+        &self.tags
     }
 
     pub(super) fn aliases(&self) -> &BTreeMap<String, Vec<String>> {

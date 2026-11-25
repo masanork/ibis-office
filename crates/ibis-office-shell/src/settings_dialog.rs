@@ -103,10 +103,8 @@ pub(crate) fn open_at(category: usize, cx: &mut App) {
 
 /// The editor window to show the dialog in: the active window when it is one, else the first.
 fn editor_window(cx: &mut App) -> Option<(AnyWindowHandle, Entity<SlideEditor>)> {
-    use gpui_kit::component::Root;
     let of = |handle: AnyWindowHandle, cx: &mut App| -> Option<(AnyWindowHandle, Entity<SlideEditor>)> {
-        let root = handle.downcast::<Root>()?;
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten()?;
+        let editor = crate::window_editors::active_in_window(handle, cx)?;
         Some((handle, editor))
     };
     if let Some(found) = cx.active_window().and_then(|w| of(w, cx)) {

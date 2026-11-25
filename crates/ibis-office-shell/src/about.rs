@@ -7,7 +7,7 @@
 //! copyright and the license. The "Powered by ibisOffice" line and its link
 //! are the additional term under AGPL-3.0 section 7(b) (NOTICE,
 //! docs/TRADEMARK.md): a derivative keeps them on its own About screen.
-use gpui_kit::component::{ActiveTheme as _, Root, v_flex};
+use gpui_kit::component::{ActiveTheme as _, v_flex};
 use crate::editor::SlideEditor;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -41,8 +41,7 @@ pub fn open(cx: &mut App) {
 /// The editor window to show the dialog in: the active window when it is one, else the first.
 fn editor_window(cx: &mut App) -> Option<(AnyWindowHandle, Entity<SlideEditor>)> {
     let of = |handle: AnyWindowHandle, cx: &mut App| -> Option<(AnyWindowHandle, Entity<SlideEditor>)> {
-        let root = handle.downcast::<Root>()?;
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten()?;
+        let editor = crate::window_editors::active_in_window(handle, cx)?;
         Some((handle, editor))
     };
     if let Some(found) = cx.active_window().and_then(|w| of(w, cx)) {

@@ -88,7 +88,7 @@ pub(crate) fn is_obsidian_vault(path: &Path) -> bool {
 }
 
 #[derive(Clone)]
-pub(crate) struct Folder {
+pub struct Folder {
     root: PathBuf,
     files: Vec<String>,
     concepts: BTreeMap<String, ConceptFilter>,
@@ -593,10 +593,159 @@ pub(crate) fn tools() -> [ToolDefinition; 8] {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ContentSearchHit {
-    pub(super) path: String,
-    pub(super) line: usize,
-    pub(super) excerpt: String,
+pub struct ContentSearchHit {
+    pub path: String,
+    pub line: usize,
+    pub excerpt: String,
+}
+
+/// Public snapshot of a Markdown backlink inside an open Vault folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultBacklink {
+    pub path: String,
+    pub line: usize,
+    pub excerpt: String,
+}
+
+impl Folder {
+    /// Scan a directory (including `.obsidian` vault detection, Git detection, and Markdown index).
+    pub fn scan_dir(path: &Path) -> Result<Self, String> {
+        Self::scan(path)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn files(&self) -> &[String] {
+        &self.files
+    }
+
+    pub fn display_name(&self) -> String {
+        self.name()
+    }
+
+    pub fn is_obsidian_vault(&self) -> bool {
+        self.is_obsidian_vault
+    }
+
+    pub fn has_git(&self) -> bool {
+        self.has_git
+    }
+
+    pub fn matches_query(&self, path: &str, query: &str) -> bool {
+        self.matches(path, query)
+    }
+
+    pub fn resolve_file_path(&self, relative: &str) -> Result<PathBuf, String> {
+        self.resolve(relative)
+    }
+
+    pub fn search_content(&self, query: &str, limit: usize) -> Vec<ContentSearchHit> {
+        self.search_markdown_content(query, limit)
+    }
+
+    pub fn backlinks_for(&self, relative: &str) -> Vec<VaultBacklink> {
+        self.markdown_index
+            .backlinks(relative)
+            .iter()
+            .map(|b| VaultBacklink {
+                path: b.source.path.clone(),
+                line: b.line,
+                excerpt: b.excerpt.clone(),
+            })
+            .collect()
+    }
+
+    /// Unique Vault-relative paths linked from `relative` via Markdown or Wiki links.
+    pub fn outgoing_links_for(&self, relative: &str) -> Vec<String> {
+        self.markdown_index.outgoing_links(relative)
+    }
+
+    /// Tags attached to `relative` (frontmatter `tags`, inline `#tag`, and OKF concept tags).
+    pub fn tags_for(&self, relative: &str) -> Vec<String> {
+        let mut tags: Vec<String> = self.markdown_index.tags(relative).to_vec();
+        if let Some(concept) = self.concepts.get(relative) {
+            for t in &concept.tags {
+                if !tags.iter().any(|existing| existing.eq_ignore_ascii_case(t)) {
+                    tags.push(t.clone());
+                }
+            }
+        }
+        tags.sort();
+        tags
+    }
+
+    /// Every tag found across the Vault with its file count, sorted by frequency then name.
+    pub fn all_tags(&self) -> Vec<(String, usize)> {
+        let mut counts: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for (path, tags) in self.markdown_index.all_tags_map() {
+            for tag in tags {
+                let normalized = tag.trim_start_matches('#').trim().to_owned();
+                if !normalized.is_empty() {
+                    counts.entry(normalized).or_default().insert(path.clone());
+                }
+            }
+        }
+        for (path, concept) in &self.concepts {
+            for tag in &concept.tags {
+                let normalized = tag.trim_start_matches('#').trim().to_owned();
+                if !normalized.is_empty() {
+                    counts.entry(normalized).or_default().insert(path.clone());
+                }
+            }
+        }
+        let mut items: Vec<(String, usize)> = counts
+            .into_iter()
+            .map(|(tag, files)| (tag, files.len()))
+            .collect();
+        items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        items
+    }
+
+    /// Vault-relative paths carrying `tag` (supports Obsidian hierarchical tag prefixes like `a/b`).
+    pub fn files_with_tag(&self, tag: &str) -> Vec<String> {
+        let needle = tag.trim_start_matches('#').trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let matches_tag = |actual: &str| {
+            let a = actual.trim_start_matches('#').trim().to_lowercase();
+            a == needle || a.starts_with(&format!("{needle}/"))
+        };
+        let mut files: Vec<String> = self
+            .files
+            .iter()
+            .filter(|path| {
+                self.markdown_index
+                    .tags(path)
+                    .iter()
+                    .any(|t| matches_tag(t))
+                    || self
+                        .concepts
+                        .get(path.as_str())
+                        .is_some_and(|c| c.tags.iter().any(|t| matches_tag(t)))
+            })
+            .cloned()
+            .collect();
+        files.sort();
+        files
+    }
+
+    pub fn relative_path_for(&self, path: &Path) -> Option<String> {
+        let canonical = path.canonicalize().ok()?;
+        let rel = canonical.strip_prefix(&self.root).ok()?;
+        let mut parts = Vec::new();
+        for comp in rel.components() {
+            if let Component::Normal(s) = comp {
+                parts.push(s.to_str()?);
+            } else {
+                return None;
+            }
+        }
+        (!parts.is_empty()).then(|| parts.join("/"))
+    }
 }
 
 #[derive(Clone, Debug)]

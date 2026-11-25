@@ -110,6 +110,11 @@ pub struct Source {
     original_csv_format: Option<crate::csv::OriginalCsvFormat>,
     original_csv_bytes: Option<Arc<[u8]>>,
     generated_from_markdown: bool,
+    original_markdown: Option<(
+        Arc<str>,
+        crate::markdown_source_map::MarkdownSourceMap,
+        Arc<ibis_doc_model::FlowDocument>,
+    )>,
     package: Package,
     baseline: Presentation,
     map: SourceMap,
@@ -389,7 +394,7 @@ pub fn open_progressive_with_options(
         let (presentation, map) = crate::reader::read_with_sources(&data)?;
         (Kind::Presentation, presentation, SourceMap::Presentation(map))
     };
-    let source = Source { kind, original_csv_format, original_csv_bytes, generated_from_markdown: false, package, baseline: csv_baseline.unwrap_or_else(|| presentation.clone()), map, new_slides: Default::default(), new_charts: Default::default(), chart_data: Default::default() };
+    let source = Source { kind, original_csv_format, original_csv_bytes, generated_from_markdown: false, original_markdown: None, package, baseline: csv_baseline.unwrap_or_else(|| presentation.clone()), map, new_slides: Default::default(), new_charts: Default::default(), chart_data: Default::default() };
     crate::progress::fraction(1.0);
     #[cfg(not(target_family = "wasm"))]
     std::thread::spawn(move || drop(csv_records));
@@ -458,6 +463,29 @@ impl Source {
 
     pub(crate) fn mark_generated_from_markdown(&mut self) {
         self.generated_from_markdown = true;
+    }
+
+    pub(crate) fn set_original_markdown(
+        &mut self,
+        text: String,
+        map: crate::markdown_source_map::MarkdownSourceMap,
+        doc: Arc<ibis_doc_model::FlowDocument>,
+    ) {
+        self.original_markdown = Some((Arc::from(text), map, doc));
+    }
+
+    /// Original UTF-8 Markdown text, block-level source map, and parsed baseline document
+    /// captured when this document was opened from a `.md` / `.markdown` file.
+    pub fn original_markdown(
+        &self,
+    ) -> Option<(
+        &str,
+        &crate::markdown_source_map::MarkdownSourceMap,
+        &Arc<ibis_doc_model::FlowDocument>,
+    )> {
+        self.original_markdown
+            .as_ref()
+            .map(|(text, map, doc)| (text.as_ref(), map, doc))
     }
 
     /// The model as it was read.

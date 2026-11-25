@@ -50,6 +50,7 @@ mod chart;
 mod chart_ex;
 pub mod csv;
 pub mod dicom;
+pub mod markdown_source_map;
 pub mod production_image;
 pub mod structured_preview;
 pub mod sbom_review;

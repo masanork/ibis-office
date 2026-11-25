@@ -240,10 +240,7 @@ impl SlideEditor {
     }
 
     pub(crate) fn can_fold_markdown_outline(&self) -> bool {
-        !self.is_markdown_source_mode() && self.file_name.as_ref().is_some_and(|name| {
-            std::path::Path::new(name.as_ref()).extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
-        })
+        !self.is_markdown_source_only() && self.is_markdown_file()
     }
 
     pub(crate) fn navigate_markdown_outline(&mut self, id: u32, toggle_body: bool, cx: &mut Context<Self>) {

@@ -30,13 +30,14 @@ pub static QUIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::At
 pub fn native_quit_allowed(cx: &mut App) -> bool {
     let mut unsaved = false;
     for handle in cx.windows() {
-        let Some(root) = handle.downcast::<Root>() else { continue };
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok());
-        match editor {
-            Ok(Some(editor)) => unsaved |= editor.read(cx).is_dirty(),
-            Ok(None) => {},
+        match crate::window_editors::all_in_window(handle, cx) {
+            Ok(editors) => {
+                for editor in editors {
+                    unsaved |= editor.read(cx).is_dirty();
+                }
+            }
             // A borrowed window must never be mistaken for a clean window.
-            Err(_) => unsaved = true,
+            Err(()) => unsaved = true,
         }
     }
     if unsaved {
@@ -61,13 +62,26 @@ pub fn quit_asking_to_save(cx: &mut App) {
 fn quit_asking_to_save_now(cx: &mut App) {
     let mut asking = false;
     for handle in cx.windows() {
-        let Some(root) = handle.downcast::<Root>() else { continue };
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten();
-        let Some(editor) = editor else { continue };
+        let Ok(editors) = crate::window_editors::all_in_window(handle, cx) else {
+            asking = true;
+            continue;
+        };
+        if editors.is_empty() {
+            continue;
+        }
         // A window that may close goes now; one that may not has opened the question.
         // (a window with the question is brought to the front, one after another, issue #201)
-        let close = handle.update(cx, |_, window, cx| editor.update(cx, |editor, cx| editor.window_should_close(window, cx))).unwrap_or(true);
-        if close {
+        let mut can_close = true;
+        for editor in editors {
+            let close = handle
+                .update(cx, |_, window, cx| editor.update(cx, |editor, cx| editor.window_should_close(window, cx)))
+                .unwrap_or(true);
+            if !close {
+                can_close = false;
+                break;
+            }
+        }
+        if can_close {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         } else {
             asking = true;
@@ -244,14 +258,13 @@ fn remembered_bounds(cx: &App) -> Option<Bounds<Pixels>> {
 }
 
 /// Keep `bounds` as the size and place of the next window.
-pub(crate) fn keep_bounds(bounds: Bounds<Pixels>) {
+pub fn keep_bounds(bounds: Bounds<Pixels>) {
     let f = |v: Pixels| f32::from(v).round() as i32;
     crate::settings::set(WINDOW_BOUNDS_KEY, &format!("{},{},{},{}", f(bounds.origin.x), f(bounds.origin.y), f(bounds.size.width), f(bounds.size.height)));
 }
 
-/// A new editor window `width` pixels wide, its editor set up by `setup`. A window that shows a file (`remember`) opens where the last one was,
-/// as large as it was (the start window is as wide as its view and centred).
-fn open_window_sized(width: f32, remember: bool, cx: &mut App, setup: impl FnOnce(&mut SlideEditor, &mut Window, &mut Context<SlideEditor>) + 'static) {
+/// Build platform window options (remembered bounds + transparent titlebar + Linux desktop id).
+pub fn window_options_for(width: f32, remember: bool, cx: &mut App) -> WindowOptions {
     #[cfg(not(target_family = "wasm"))]
     let remembered = if remember { remembered_bounds(cx) } else { None };
     #[cfg(target_family = "wasm")]
@@ -273,6 +286,17 @@ fn open_window_sized(width: f32, remember: bool, cx: &mut App, setup: impl FnOnc
         ..Default::default()
     };
     linux_desktop::identify(&mut options);
+    options
+}
+
+/// A new editor window `width` pixels wide, its editor set up by `setup`. A window that shows a file (`remember`) opens where the last one was,
+/// as large as it was (the start window is as wide as its view and centred).
+fn open_window_sized(width: f32, remember: bool, cx: &mut App, setup: impl FnOnce(&mut SlideEditor, &mut Window, &mut Context<SlideEditor>) + 'static) {
+    let setup = match crate::window_editors::try_open_window_via_factory(width, remember, Box::new(setup), cx) {
+        Ok(()) => return,
+        Err(setup) => setup,
+    };
+    let options = window_options_for(width, remember, cx);
     cx.open_window(options, |window, cx| {
         crate::palette::watch(window, cx);
         let view = cx.new(|cx| {
@@ -313,9 +337,11 @@ pub fn open_path_in_app(path: std::path::PathBuf, cx: &mut App) {
     if crate::open_guard::raise_if_open(&path, None, cx) {
         return;
     }
+    if crate::window_editors::try_open_path_via_factory(&path, cx) {
+        return;
+    }
     for window in cx.windows() {
-        let Some(root) = window.downcast::<Root>() else { continue };
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten();
+        let editor = crate::window_editors::active_in_window(window, cx);
         if let Some(editor) = editor
             && editor.read(cx).replaceable_by_open()
         {
@@ -332,9 +358,7 @@ pub fn open_path_in_app(path: std::path::PathBuf, cx: &mut App) {
 #[cfg(target_family = "wasm")]
 pub fn new_file_in_page(kind: ibis_formats::Kind, cx: &mut App) {
     for window in cx.windows() {
-        let Some(root) = window.downcast::<Root>() else { continue };
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten();
-        if let Some(editor) = editor {
+        if let Some(editor) = crate::window_editors::active_in_window(window, cx) {
             window.update(cx, |_, window, cx| editor.update(cx, |e, cx| e.new_file(kind, window, cx))).ok();
             return;
         }
