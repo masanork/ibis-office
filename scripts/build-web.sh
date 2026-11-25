@@ -117,6 +117,15 @@ mkdir -p www/assets/artborders
 unzip -q -o crates/ibis-formats/data/artborders/OfficeOpenXML-WordprocessingMLArtBorders.zip -d www/assets/artborders
 cp crates/ibis-formats/data/artborders/ECMA-NOTICE.txt www/assets/artborders/
 
+# Optional static SIL OFL font chunks (`tools/ibis-font-subsetter` + `loader-manifest.json`).
+# Set IBIS_WEB_FONT_SUBSETS=1 to download missing fonts listed in docs/font-list.txt;
+# otherwise cached fonts in data/fonts/ are built automatically when present.
+if [[ "${IBIS_WEB_FONT_SUBSETS:-}" == "1" ]]; then
+  node scripts/build-web-font-subsets.mjs --out www
+elif [[ "${IBIS_WEB_FONT_SUBSETS:-}" != "0" ]]; then
+  node scripts/build-web-font-subsets.mjs --out www --if-cached
+fi
+
 python3 scripts/check-web-assets.py www
 
 if [[ -n "${IBIS_WEB_BOM_DIR:-}" ]]; then
