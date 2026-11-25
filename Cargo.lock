@@ -5863,6 +5863,7 @@ dependencies = [
  "ibis-ofd",
  "ibis-office-base",
  "ibis-office-docx",
+ "ibis-office-render",
  "ibis-office-shell",
  "ibis-pdf",
  "ibis-vsdx",

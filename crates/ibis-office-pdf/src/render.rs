@@ -105,7 +105,8 @@ pub fn paint_page_scene(
 
     let origin = page_bounds.origin;
     let mut mask = None;
-    let ts_ptr = std::sync::Arc::as_ptr(window.text_system()) as usize as u64;
+    let ts_gen = (std::sync::Arc::as_ptr(window.text_system()) as usize as u64)
+        ^ ibis_office_render::shape_view::fonts_generation().wrapping_mul(0xA24B_AED4_963E_E407);
     for (cmd_idx, cmd) in scene.display_list.iter().enumerate() {
         if let DisplayCmd::SetClipRect(rect) = cmd {
             mask = rect.map(|rect| ContentMask {
@@ -173,7 +174,7 @@ pub fn paint_page_scene(
                         underline: None,
                         strikethrough: None,
                     };
-                    let shaped = pdf_shape_line_cached(window, ts_ptr, text, px(size_px), &run);
+                    let shaped = pdf_shape_line_cached(window, ts_gen, text, px(size_px), &run);
                     let pos = point(
                         origin.x + px(*gx * scale),
                         origin.y + px(*gy * scale) - shaped.ascent,
@@ -205,7 +206,7 @@ pub fn paint_page_scene(
                 if text.is_empty() || *font_size <= 0.0 {
                     return;
                 }
-                let family = pdf_resolve_font_family(window, ts_ptr, family);
+                let family = pdf_resolve_font_family(window, ts_gen, family);
                 let color = rgba_to_hsla(*rgba);
                 let font_size = px(*font_size * scale);
                 let run = TextRun {
@@ -225,7 +226,7 @@ pub fn paint_page_scene(
                     underline: None,
                     strikethrough: None,
                 };
-                let shaped = pdf_shape_line_cached(window, ts_ptr, text, font_size, &run);
+                let shaped = pdf_shape_line_cached(window, ts_gen, text, font_size, &run);
                 let mut sx = *horizontal_scale;
                 if let Some(width) = max_width
                     && shaped.width > px(0.0)
@@ -287,7 +288,7 @@ pub fn paint_page_scene(
     }
 }
 
-fn pdf_resolve_font_family(window: &Window, ts_ptr: u64, family: &str) -> SharedString {
+fn pdf_resolve_font_family(window: &Window, ts_gen: u64, family: &str) -> SharedString {
     thread_local! {
         static FONT_MAP: std::cell::RefCell<Option<(u64, HashMap<String, SharedString>)>> =
             const { std::cell::RefCell::new(None) };
@@ -295,14 +296,14 @@ fn pdf_resolve_font_family(window: &Window, ts_ptr: u64, family: &str) -> Shared
     let key = family.to_ascii_lowercase();
     FONT_MAP.with(|cell| {
         let mut guard = cell.borrow_mut();
-        if guard.as_ref().is_none_or(|(ptr, _)| *ptr != ts_ptr) {
+        if guard.as_ref().is_none_or(|(cached_gen, _)| *cached_gen != ts_gen) {
             let map: HashMap<String, SharedString> = window
                 .text_system()
                 .all_font_names()
                 .into_iter()
                 .map(|name| (name.to_ascii_lowercase(), SharedString::from(name)))
                 .collect();
-            *guard = Some((ts_ptr, map));
+            *guard = Some((ts_gen, map));
         }
         guard
             .as_ref()
@@ -313,14 +314,14 @@ fn pdf_resolve_font_family(window: &Window, ts_ptr: u64, family: &str) -> Shared
 
 fn pdf_shape_line_cached(
     window: &Window,
-    ts_ptr: u64,
+    ts_gen: u64,
     text: &str,
     font_size: Pixels,
     run: &TextRun,
 ) -> gpui_kit::ShapedLine {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    ts_ptr.hash(&mut hasher);
+    ts_gen.hash(&mut hasher);
     text.hash(&mut hasher);
     run.font.hash(&mut hasher);
     f32::from(font_size).to_bits().hash(&mut hasher);

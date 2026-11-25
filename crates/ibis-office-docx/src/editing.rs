@@ -614,7 +614,7 @@ impl SlideEditor {
     /// Check whether a click on page `page` at `(x, y)` (points) hits a comment marker/bubble in the margin.
     pub(crate) fn comment_at_point(&self, page: usize, x: f32, y: f32) -> Option<u32> {
         let doc = self.flow()?;
-        let lines = self.flow_lines();
+        let lines = self.flow_lines_arc();
         let page_w = doc.page.size.width as f32 / 12_700.0;
         let bubble_x = page_w + 8.0;
         if x < bubble_x - 10.0 || x > bubble_x + 35.0 {
@@ -625,7 +625,7 @@ impl SlideEditor {
                 continue;
             }
             let Some((from, to)) = flow_command::comment_range(doc, c.id) else { continue };
-            for l in &lines {
+            for l in lines.iter() {
                 if l.page != page {
                     continue;
                 }
@@ -745,7 +745,7 @@ impl SlideEditor {
 
     /// The position nearest a point of page `page` (points).
     pub(crate) fn position_at(&self, page: usize, x: f32, y: f32) -> Option<FlowPos> {
-        let lines = self.flow_lines();
+        let lines = self.flow_lines_arc();
         let on_page: Vec<&LineGeom> = lines.iter().filter(|l| l.page == page).collect();
 
         // Horizontal line: if Y is within line height and X is beyond the rightmost character, return the end of line
@@ -977,7 +977,7 @@ impl SlideEditor {
     }
 
     fn vertical(&self, pos: FlowPos, down: bool) -> (FlowPos, f32) {
-        let lines = self.flow_lines();
+        let lines = self.flow_lines_arc();
         let Some(current) = Self::line_of(&lines, pos) else { return (pos, 0.0) };
         let goal = self.doc_state().and_then(|s| s.goal_x).unwrap_or_else(|| {
             if current.vertical {
@@ -1003,7 +1003,7 @@ impl SlideEditor {
     }
 
     fn line_edge(&self, pos: FlowPos, end: bool) -> FlowPos {
-        let lines = self.flow_lines();
+        let lines = self.flow_lines_arc();
         let Some(line) = Self::line_of(&lines, pos) else { return pos };
         let stops = &line.stops;
         let len = self.paragraph_of(pos.para).map_or(0, |p| p.len());
@@ -1037,7 +1037,7 @@ impl SlideEditor {
             }
             return;
         };
-        let lines = self.flow_lines();
+        let lines = self.flow_lines_arc();
         let is_vert = Self::line_of(&lines, caret).is_some_and(|l| l.vertical);
         // Without Shift, a selection collapses to its side.
         if !extend && anchor != caret && matches!(how, Move::Left | Move::Right | Move::Up | Move::Down) {
@@ -1111,7 +1111,7 @@ impl SlideEditor {
         // The pages an edit added are laid out first (they are otherwise on the next frame), or the scroll stops at the old last page (#234).
         self.relayout_if_changed();
         let Some((_, caret)) = self.text_selection() else { return };
-        let lines = self.flow_lines();
+        let lines = self.flow_lines_arc();
         let Some((page, _, y, h)) = self.caret_box(&lines, caret) else { return };
         self.scroll_into_view(page, y, h, cx);
     }
@@ -7272,7 +7272,7 @@ impl SlideEditor {
     fn toc_command(&self, before: u32, replace: bool, instruction: &flow_command::TocInstruction) -> Option<FlowCommand> {
         let doc = self.flow()?;
         let width = doc.page.size.width - doc.page.left - doc.page.right;
-        let lines = self.flow_lines();
+        let lines = self.flow_lines_arc();
         let first = doc.page.first_page;
         let page_of = |id: u32| lines.iter().find(|l| l.para == id).map(|l| first + l.page as u32);
         let (entries, bookmarks) = flow_command::toc_entries_with_instruction(doc, instruction, &page_of, doc.new_id(), width);
@@ -7589,7 +7589,7 @@ impl SlideEditor {
     fn table_of_figures_command(&self, before: u32, replace: bool, label: &str) -> Option<FlowCommand> {
         let doc = self.flow()?;
         let width = doc.page.size.width - doc.page.left - doc.page.right;
-        let lines = self.flow_lines();
+        let lines = self.flow_lines_arc();
         let first = doc.page.first_page;
         let page_of = |id: u32| lines.iter().find(|l| l.para == id).map(|l| first + l.page as u32);
         let (entries, bookmarks) = flow_command::table_of_figures_entries(doc, label, &page_of, doc.new_id(), width);
@@ -7706,7 +7706,7 @@ impl SlideEditor {
             }
         }
 
-        let lines = self.flow_lines();
+        let lines = self.flow_lines_arc();
         let first_page = doc.page.first_page;
         let page_of = |id: u32| lines.iter().find(|l| l.para == id).map(|l| first_page + l.page as u32);
 

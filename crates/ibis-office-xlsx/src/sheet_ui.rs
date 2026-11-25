@@ -1125,59 +1125,16 @@ impl SlideEditor {
         let (shape, sheet) = self.current_sheet()?;
         let show_headings = sheet.headings;
         let scale = content.scale;
-        let to_px = |origin: Pixels, at: i64, offset: i64| f32::from(origin) + ((at + offset) as f32 * scale).round();
-        type HeaderCacheKey = (usize, u32, u32, u32, i64, i64, u32, u32);
-        type HeaderCacheVal = (std::sync::Arc<Vec<f32>>, std::sync::Arc<Vec<f32>>, std::sync::Arc<Vec<bool>>, std::sync::Arc<Vec<bool>>);
-        thread_local! {
-            static HEADER_CACHE: std::cell::RefCell<Option<(HeaderCacheKey, HeaderCacheVal)>> =
-                const { std::cell::RefCell::new(None) };
-        }
-        let cache_key: HeaderCacheKey = (
-            std::ptr::from_ref::<ibis_doc_model::Sheet>(sheet) as usize,
-            scale.to_bits(),
-            f32::from(content.slide_origin.x).to_bits(),
-            f32::from(content.slide_origin.y).to_bits(),
+        let (xs, ys, hidden_columns, hidden_rows) = cached_sheet_headers(
+            sheet,
+            scale,
+            f32::from(content.slide_origin.x),
+            f32::from(content.slide_origin.y),
             shape.frame.x,
             shape.frame.y,
-            f32::from(content.size.width).to_bits(),
-            f32::from(content.size.height).to_bits(),
+            f32::from(content.size.width),
+            f32::from(content.size.height),
         );
-        let (xs, ys, hidden_columns, hidden_rows) = HEADER_CACHE.with(|cell| {
-            let mut guard = cell.borrow_mut();
-            if let Some((k, v)) = guard.as_ref()
-                && *k == cache_key
-            {
-                return v.clone();
-            }
-            let mut xs: Vec<f32> = sheet.column_offsets().into_iter().map(|o| to_px(content.slide_origin.x, shape.frame.x, o)).collect();
-            let mut ys: Vec<f32> = sheet.row_offsets().into_iter().map(|o| to_px(content.slide_origin.y, shape.frame.y, o)).collect();
-            let target_right_px = to_px(content.slide_origin.x, shape.frame.x, 0) + f32::from(content.size.width) + 2000.0;
-            let target_bottom_px = to_px(content.slide_origin.y, shape.frame.y, 0) + f32::from(content.size.height) + 2000.0;
-            let last_column_emu: i64 = sheet.columns.iter().sum();
-            let last_row_emu: i64 = sheet.rows.iter().sum();
-            let mut cur_x = *xs.last().unwrap_or(&0.0);
-            let mut col_count = sheet.columns.len();
-            while cur_x < target_right_px && col_count < 16_384 {
-                let extra = (col_count + 1 - sheet.columns.len()) as i64 * sheet.default_column;
-                cur_x = to_px(content.slide_origin.x, shape.frame.x, last_column_emu + extra);
-                xs.push(cur_x);
-                col_count += 1;
-            }
-            let mut cur_y = *ys.last().unwrap_or(&0.0);
-            let mut row_count = sheet.rows.len();
-            while cur_y < target_bottom_px && row_count < 1_048_576 {
-                let extra = (row_count + 1 - sheet.rows.len()) as i64 * sheet.default_row;
-                cur_y = to_px(content.slide_origin.y, shape.frame.y, last_row_emu + extra);
-                ys.push(cur_y);
-                row_count += 1;
-            }
-            // Hidden columns and rows: where a run of them starts, the headers' line is drawn green and 2 px wide (Excel's own mark is a doubled line).
-            let hidden_columns: Vec<bool> = sheet.columns.iter().map(|&w| w == 0).collect();
-            let hidden_rows: Vec<bool> = sheet.rows.iter().map(|&h| h == 0).collect();
-            let val = (std::sync::Arc::new(xs), std::sync::Arc::new(ys), std::sync::Arc::new(hidden_columns), std::sync::Arc::new(hidden_rows));
-            *guard = Some((cache_key, val.clone()));
-            val
-        });
         let range = self.selected_range().filter(|_| self.selection.is_none() || self.sheet_range_pick_active());
         let all_selected = range.is_some_and(|r| {
             r.first_column == 0
@@ -1245,6 +1202,8 @@ impl SlideEditor {
             *geometry.borrow_mut() = super::headers::HeaderGeometry { scale, origin: (f32::from(o.x), f32::from(o.y)), row_header_width: f32::from(head_w), ..Default::default() };
             let (background, line, text, selected, green) =
                 (rgb(HEADER_BACKGROUND), rgb(HEADER_LINE), rgb(HEADER_TEXT), rgb(HEADER_SELECTED), rgb(SELECTION_COLOR));
+            let ts_gen = (std::sync::Arc::as_ptr(window.text_system()) as usize as u64)
+                ^ crate::render::shape_view::fonts_generation().wrapping_mul(0xA24B_AED4_963E_E407);
             let label = |window: &mut Window, cx: &mut App, s: String, color: Rgba, x: Pixels, y: Pixels, w: Pixels, h: Pixels| {
                 if w < px(1.) || h < px(1.) {
                     return;
@@ -1260,14 +1219,10 @@ impl SlideEditor {
                 let shaped = {
                     use std::hash::{Hash, Hasher};
                     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                    (std::sync::Arc::as_ptr(window.text_system()) as usize).hash(&mut hasher);
+                    ts_gen.hash(&mut hasher);
                     s.hash(&mut hasher);
                     font.hash(&mut hasher);
                     let key = hasher.finish();
-                    thread_local! {
-                        static HEADER_SHAPES: std::cell::RefCell<std::collections::HashMap<u64, std::rc::Rc<ShapedLine>>> =
-                            std::cell::RefCell::new(std::collections::HashMap::new());
-                    }
                     if let Some(cached) = HEADER_SHAPES.with(|c| {
                         c.borrow()
                             .get(&key)
@@ -4411,4 +4366,134 @@ mod tests {
             vec![(expected_range, true)]
         );
     }
+
+    #[test]
+    fn header_cache_tracks_in_place_sheet_mutations_and_release() {
+        let mut sheet = std::sync::Arc::new(ibis_doc_model::Sheet {
+            columns: vec![914_400, 914_400, 914_400],
+            rows: vec![254_000, 254_000],
+            ..Default::default()
+        });
+        super::clear_header_cache();
+        let (xs1, ys1, hidden_c1, hidden_r1) =
+            super::cached_sheet_headers(&sheet, 1.0 / 9_525.0, 0.0, 0.0, 0, 0, 800.0, 600.0);
+        assert_eq!(std::sync::Arc::strong_count(&sheet), 1, "header cache must not force full-sheet copy-on-write");
+        assert_eq!(&hidden_c1[..3], &[false, false, false]);
+        assert_eq!(&hidden_r1[..2], &[false, false]);
+        let col1_before = xs1[1];
+
+        // Even without calling release_layouts(), Arc::make_mut disassociates Weak<Sheet>
+        // so the cache automatically invalidates on the next lookup.
+        {
+            let s = std::sync::Arc::make_mut(&mut sheet);
+            s.columns[0] = 1_828_800;
+            s.columns[1] = 0;
+        }
+        let (xs2, _, hidden_c2, _) =
+            super::cached_sheet_headers(&sheet, 1.0 / 9_525.0, 0.0, 0.0, 0, 0, 800.0, 600.0);
+        assert!(xs2[1] > col1_before, "widened column must invalidate header cache");
+        assert_eq!(&hidden_c2[..3], &[false, true, false]);
+
+        // After release_layouts() clears HEADER_CACHE, Arc::make_mut mutates in place at the same address;
+        // the next lookup must still observe the updated row height and hidden flag.
+        crate::sheet_view::release_layouts();
+        let ptr_before = std::sync::Arc::as_ptr(&sheet);
+        {
+            let s = std::sync::Arc::make_mut(&mut sheet);
+            s.rows[0] = 0;
+        }
+        assert_eq!(std::sync::Arc::as_ptr(&sheet), ptr_before);
+        let (_, ys3, _, hidden_r3) =
+            super::cached_sheet_headers(&sheet, 1.0 / 9_525.0, 0.0, 0.0, 0, 0, 800.0, 600.0);
+        assert_eq!(&hidden_r3[..2], &[true, false]);
+        assert!(ys3[1] < ys1[1], "hidden row must reflect updated geometry after release_layouts()");
+        super::clear_header_cache();
+    }
+}
+
+type HeaderCacheKey = (u32, u32, u32, i64, i64, u32, u32);
+type HeaderCacheVal = (
+    std::sync::Arc<Vec<f32>>,
+    std::sync::Arc<Vec<f32>>,
+    std::sync::Arc<Vec<bool>>,
+    std::sync::Arc<Vec<bool>>,
+);
+
+thread_local! {
+    static HEADER_CACHE: std::cell::RefCell<Option<(std::sync::Weak<ibis_doc_model::Sheet>, HeaderCacheKey, HeaderCacheVal)>> =
+        const { std::cell::RefCell::new(None) };
+    static HEADER_SHAPES: std::cell::RefCell<std::collections::HashMap<u64, std::rc::Rc<ShapedLine>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Drop cached sheet header geometry and shaped header labels. Called from
+/// `sheet_view::release_layouts()` so caches stay in sync with layout clears.
+pub(crate) fn clear_header_cache() {
+    HEADER_CACHE.with(|cell| *cell.borrow_mut() = None);
+    HEADER_SHAPES.with(|cell| cell.borrow_mut().clear());
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cached_sheet_headers(
+    sheet: &std::sync::Arc<ibis_doc_model::Sheet>,
+    scale: f32,
+    origin_x: f32,
+    origin_y: f32,
+    frame_x: i64,
+    frame_y: i64,
+    view_w: f32,
+    view_h: f32,
+) -> HeaderCacheVal {
+    let cache_key: HeaderCacheKey = (
+        scale.to_bits(),
+        origin_x.to_bits(),
+        origin_y.to_bits(),
+        frame_x,
+        frame_y,
+        view_w.to_bits(),
+        view_h.to_bits(),
+    );
+    HEADER_CACHE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        if let Some((cached_weak, k, v)) = guard.as_ref()
+            && *k == cache_key
+            && cached_weak.upgrade().is_some_and(|cached_sheet| std::sync::Arc::ptr_eq(&cached_sheet, sheet))
+        {
+            return v.clone();
+        }
+        let to_px = |origin: f32, at: i64, offset: i64| origin + ((at + offset) as f32 * scale).round();
+        let mut xs: Vec<f32> = sheet.column_offsets().into_iter().map(|o| to_px(origin_x, frame_x, o)).collect();
+        let mut ys: Vec<f32> = sheet.row_offsets().into_iter().map(|o| to_px(origin_y, frame_y, o)).collect();
+        let target_right_px = to_px(origin_x, frame_x, 0) + view_w + 2000.0;
+        let target_bottom_px = to_px(origin_y, frame_y, 0) + view_h + 2000.0;
+        let last_column_emu: i64 = sheet.columns.iter().sum();
+        let last_row_emu: i64 = sheet.rows.iter().sum();
+        let mut cur_x = *xs.last().unwrap_or(&0.0);
+        let mut col_count = sheet.columns.len();
+        while cur_x < target_right_px && col_count < 16_384 {
+            let extra = (col_count + 1 - sheet.columns.len()) as i64 * sheet.default_column;
+            cur_x = to_px(origin_x, frame_x, last_column_emu + extra);
+            xs.push(cur_x);
+            col_count += 1;
+        }
+        let mut cur_y = *ys.last().unwrap_or(&0.0);
+        let mut row_count = sheet.rows.len();
+        while cur_y < target_bottom_px && row_count < 1_048_576 {
+            let extra = (row_count + 1 - sheet.rows.len()) as i64 * sheet.default_row;
+            cur_y = to_px(origin_y, frame_y, last_row_emu + extra);
+            ys.push(cur_y);
+            row_count += 1;
+        }
+        // Hidden columns and rows: where a run of them starts, the headers' line is drawn green and 2 px wide (Excel's own mark is a doubled line).
+        let hidden_columns: Vec<bool> = sheet.columns.iter().map(|&w| w == 0).collect();
+        let hidden_rows: Vec<bool> = sheet.rows.iter().map(|&h| h == 0).collect();
+        let val = (
+            std::sync::Arc::new(xs),
+            std::sync::Arc::new(ys),
+            std::sync::Arc::new(hidden_columns),
+            std::sync::Arc::new(hidden_rows),
+        );
+        *guard = Some((std::sync::Arc::downgrade(sheet), cache_key, val.clone()));
+        val
+    })
 }

@@ -12,6 +12,7 @@ ibis-ofd.workspace = true
 ibis-xps.workspace = true
 ibis-vsdx.workspace = true
 ibis-office-base.workspace = true
+ibis-office-render.workspace = true
 ibis-office-shell.workspace = true
 ibis-office-docx.workspace = true
 ibis-doc-model.workspace = true

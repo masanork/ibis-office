@@ -7,6 +7,7 @@
 //! reordering by drag-and-drop, and overview of the presentation structure.
 
 use gpui_kit::component::{ActiveTheme as _, Icon, h_flex, v_flex};
+use gpui_kit::base::ElementExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -78,10 +79,17 @@ impl SlideEditor {
             .use_keyed_state("pptx-grid-scroll", cx, |_, _| ScrollHandle::new())
             .read(cx)
             .clone();
+        let grid_container_size = window
+            .use_keyed_state("pptx-grid-container-size", cx, |_, _| std::rc::Rc::new(std::cell::Cell::new((0.0f32, 0.0f32))))
+            .read(cx)
+            .clone();
         let viewport = window.viewport_size();
         let scroll_top = (-f32::from(grid_scroll.offset().y)).max(0.0);
-        let view_h = f32::from(viewport.height).max(600.0);
-        let view_w = (f32::from(viewport.width) - 48.0).max(GRID_CARD_WIDTH);
+        let (measured_w, measured_h) = grid_container_size.get();
+        let raw_w = if measured_w > 0.0 { measured_w } else { f32::from(viewport.width) };
+        let raw_h = if measured_h > 0.0 { measured_h } else { f32::from(viewport.height) };
+        let view_h = raw_h.max(600.0);
+        let view_w = (raw_w - 48.0).max(GRID_CARD_WIDTH);
         let cols_per_row = ((view_w + 24.0) / (GRID_CARD_WIDTH + 24.0)).floor().max(1.0) as usize;
         let sample_h = self
             .presentation()
@@ -277,6 +285,12 @@ impl SlideEditor {
                     .flex_1()
                     .overflow_y_scroll()
                     .track_scroll(&grid_scroll)
+                    .on_prepaint({
+                        let grid_container_size = grid_container_size.clone();
+                        move |bounds, _, _| {
+                            grid_container_size.set((f32::from(bounds.size.width), f32::from(bounds.size.height)));
+                        }
+                    })
                     .p_6()
                     .on_mouse_down(
                         MouseButton::Right,
