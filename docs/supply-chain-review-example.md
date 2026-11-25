@@ -1,13 +1,13 @@
 # Linux AppImage の SBOM・CBOM レビュー
 
 同じ配布形式の CI 成果物を2版選び、依存関係と暗号資産の差分を ibisOffice で確認する。
-実例では [旧版の CI](https://github.com/masanork/ibis-office/actions/runs/45313339537) と
-[新版の CI](https://github.com/masanork/ibis-office/actions/runs/45341383033) を使った。
+実例では [旧版の CI](https://github.com/sorane-dev/docs/actions/runs/45313339537) と
+[新版の CI](https://github.com/sorane-dev/docs/actions/runs/45341383033) を使った。
 CI 成果物には保存期限があるため、期限後は取得可能な別の2版を選ぶ。
 
 ```sh
-gh run download 45313339537 -R masanork/ibis-office -n desktop-ci-linux-x64 -D before
-gh run download 45341383033 -R masanork/ibis-office -n desktop-ci-linux-x64 -D after
+gh run download 45313339537 -R sorane-dev/docs -n desktop-ci-linux-x64 -D before
+gh run download 45341383033 -R sorane-dev/docs -n desktop-ci-linux-x64 -D after
 (cd before && shasum -a 256 -c SHA256SUMS)
 (cd after && shasum -a 256 -c SHA256SUMS)
 
@@ -103,7 +103,7 @@ python3 scripts/verify-build-boms.py wasm downloaded-web "$source_sha" \
 から公開 Flatpak 2種を取得し、添付の SHA-256 と照合して OSTree へ展開した。
 両方とも `org.freedesktop.Platform//24.08` を宣言し、アプリの同梱物は各20件だった。
 この Release に BOM は添付されていない。
-[フォークの Flatpak CI](https://github.com/masanork/ibis-office/actions/runs/45345837385)
+[フォークの Flatpak CI](https://github.com/sorane-dev/docs/actions/runs/45345837385)
 にも同じバージョン名の成果物があるため、照合にはバージョン名と併せて
 ハッシュとソースコミットを使用する。
 

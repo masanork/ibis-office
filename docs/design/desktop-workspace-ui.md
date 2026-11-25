@@ -1,5 +1,7 @@
 # soraneDocs デスクトップ Workspace UI 設計書
 
+> **実装状況（2026-11-25 時点）**: 本設計書の Phase 0〜4（および Session 永続化・Command Palette・Wiki リンク・Tag Browser・Local Graph を含む Phase 5A/5B）は、`sorane-dev/docs#224` により `sorane` ブランチへ実装・統合済みです。以下の本文は設計時の計画を記録したものです。
+
 ## 1. コンセプトと設計方針
 
 ### 1.1 目指す体験：「機械可読であることの可視化」
