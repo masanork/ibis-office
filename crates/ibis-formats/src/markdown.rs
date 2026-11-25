@@ -247,6 +247,54 @@ pub fn is_presentation_markdown(data: &[u8]) -> bool {
     })
 }
 
+/// Return `true` when the Markdown bytes represent a spreadsheet workbook:
+/// either via YAML frontmatter (`type: workbook`, `type: spreadsheet`, `type: xlsx`,
+/// `workbook: true`, `x-ibis-format: workbook|spreadsheet|xlsx`) or via ibisOffice
+/// workbook sheet/metadata markers (`<!-- xlsx-sheet ... -->`, `<!-- xlsx-date-system:1904 -->`,
+/// `<!-- xlsx-defined-names ... -->`) outside fenced code blocks.
+pub fn is_workbook_markdown(data: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return false;
+    };
+    let trimmed = text.trim_start_matches('\u{feff}').trim_start();
+    if let Some((fm, _)) = roundtrip::frontmatter(trimmed) {
+        if let Some(format) = roundtrip::metadata_value(fm, "x-ibis-format") {
+            return matches!(format, "workbook" | "spreadsheet" | "xlsx");
+        }
+        if fm.lines().any(|line| {
+            let Some((key, value)) = line.split_once(':') else {
+                return false;
+            };
+            let key = key.trim().to_ascii_lowercase();
+            let value = value.trim().trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase();
+            matches!(
+                (key.as_str(), value.as_str()),
+                ("workbook", "true")
+                    | ("type", "workbook" | "spreadsheet" | "xlsx")
+            )
+        }) {
+            return true;
+        }
+        if is_presentation_markdown(data) {
+            return false;
+        }
+    }
+    let mut fence = None;
+    for line in trimmed.lines() {
+        let line_trimmed = line.trim_end();
+        if is_fenced_line(line_trimmed, &mut fence) {
+            continue;
+        }
+        if line_trimmed.starts_with(XLSX_SHEET_MARKER)
+            || line_trimmed == XLSX_1904_MARKER
+            || line_trimmed.starts_with(XLSX_DEFINED_NAMES_MARKER)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Return the source body after a recognized frontmatter block, without rewriting it.
 pub fn body_without_frontmatter(text: &str) -> &str {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -529,6 +577,10 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
 
     let text = std::str::from_utf8(&data).map_err(|_| Error::new("Markdown ファイルが UTF-8 ではありません"))?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let text = match roundtrip::frontmatter(text.trim_start()) {
+        Some((_, body)) => body.trim_start_matches(['\r', '\n']),
+        None => text,
+    };
     let date1904 = text.lines().next().is_some_and(|line| line == XLSX_1904_MARKER);
     let (defined_names, text) = parse_markdown_defined_names(text)?;
     let sections = markdown_workbook_sections(text)?;
@@ -13812,6 +13864,28 @@ xychart-beta
         assert!(exported.contains("| Product | Qty | Price |"));
         assert!(exported.contains("| Apple | 10 | 120 |"));
         assert!(exported.contains("| Orange | 5 | 80 |"));
+    }
+
+    #[test]
+    fn is_workbook_markdown_detects_frontmatter_and_xlsx_sheet_markers() {
+        let fm_wb = "---\ntype: workbook\n---\n\n| Item | Cost |\n| --- | ---: |\n| A | 10 |\n";
+        assert!(is_workbook_markdown(fm_wb.as_bytes()));
+        assert!(!is_presentation_markdown(fm_wb.as_bytes()));
+        let opened = open_markdown_workbook(fm_wb.as_bytes().to_vec()).expect("open fm workbook");
+        assert!(opened.presentation.workbook.is_some());
+
+        let marker_wb = "<!-- xlsx-sheet \"Sales\" -->\n\n## Sales\n\n| Q | Rev |\n| --- | --- |\n| Q1 | 100 |\n";
+        assert!(is_workbook_markdown(marker_wb.as_bytes()));
+
+        let marp_doc = "---\nmarp: true\n---\n\n# Slide 1\n\n---\n\n# Slide 2\n";
+        assert!(is_presentation_markdown(marp_doc.as_bytes()));
+        assert!(!is_workbook_markdown(marp_doc.as_bytes()));
+
+        let plain_doc = "# Note\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n";
+        assert!(!is_workbook_markdown(plain_doc.as_bytes()));
+
+        let fenced = "# Docs\n\n```markdown\n<!-- xlsx-sheet \"Fake\" -->\n```\n";
+        assert!(!is_workbook_markdown(fenced.as_bytes()));
     }
 
     #[test]

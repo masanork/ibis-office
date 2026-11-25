@@ -129,8 +129,14 @@ pub(crate) fn open_document_bytes(
         return Ok(Some(CommonOpen::StructuredPreview(opened)));
     }
     if external_document_format == Some(DocxConvertFormat::Markdown) {
-        let is_pres = ibis_formats::markdown::is_presentation_markdown(data);
-        let opened = open_markdown_bytes(data.to_vec(), base_dir, is_pres)?;
+        let opened = if ibis_formats::markdown::is_presentation_markdown(data) {
+            open_markdown_bytes(data.to_vec(), base_dir, true)?
+        } else if ibis_formats::markdown::is_workbook_markdown(data) {
+            ibis_formats::markdown::open_markdown_workbook(data.to_vec())
+                .map_err(|e| e.to_string())?
+        } else {
+            open_markdown_bytes(data.to_vec(), base_dir, false)?
+        };
         return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: false }));
     }
     if let Some(format) = editable_import {

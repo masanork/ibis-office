@@ -343,6 +343,23 @@ impl SoraneWorkspace {
         cx.notify();
     }
 
+    pub(crate) fn toggle_markdown_source_for_active_pane(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.active_editor(cx) else {
+            return;
+        };
+        let handle = editor.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+        window.dispatch_action(
+            Box::new(ibis_office_shell::actions::ToggleMarkdownSource),
+            cx,
+        );
+        cx.notify();
+    }
+
     pub(crate) fn toggle_inspector_for_active_pane(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = self.active_editor(cx) else {
             return;

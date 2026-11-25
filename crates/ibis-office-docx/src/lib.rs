@@ -1074,6 +1074,7 @@ impl FormatEditor for Document {
             .on_action(cx.listener(|this, _: &crate::ScrollToStart, _, cx| this.scroll_to_end(false, cx)))
             .on_action(cx.listener(|this, _: &crate::ScrollToEnd, _, cx| this.scroll_to_end(true, cx)))
             .on_action(cx.listener(|this, _: &crate::shell::split_axis::ToggleSplit, _, cx| this.toggle_document_split(cx)))
+            .on_action(cx.listener(|this, _: &crate::shell::actions::ToggleMarkdownSource, window, cx| this.toggle_markdown_source_mode(window, cx)))
     }
 
     fn infobar_kind(editor: &SlideEditor) -> Option<crate::shell::infobar::InfoBarKind> {

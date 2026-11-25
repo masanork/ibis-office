@@ -90,6 +90,7 @@ pub mod comments;
 pub mod open_guard;
 pub mod chrome;
 pub mod links;
+pub mod markdown_split;
 pub mod dialog;
 pub mod color_palette;
 mod design_tokens;

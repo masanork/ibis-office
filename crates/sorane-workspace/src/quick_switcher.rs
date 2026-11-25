@@ -51,6 +51,7 @@ pub(crate) enum WorkspaceCommand {
     ShowGraphPanel,
     OpenAiAssistant,
     ToggleInspectorPanel,
+    ToggleMarkdownSource,
     SaveWorkspaceSession,
 }
 
@@ -79,6 +80,12 @@ pub(crate) struct QuickSwitcherState {
 }
 
 const ALL_COMMANDS: &[(WorkspaceCommand, &str, &str, Option<&str>)] = &[
+    (
+        WorkspaceCommand::ToggleMarkdownSource,
+        "Markdown ソース／分割ビューを切替 (Markdown Split)",
+        "文書・Marp スライド・ワークブックのソースと WYSIWYG 分割表示を切替",
+        Some("⇧⌘M"),
+    ),
     (
         WorkspaceCommand::ToggleSplitPane,
         "左右ペイン分割を切替 (Split Pane)",
@@ -472,6 +479,9 @@ impl SoraneWorkspace {
             }
             WorkspaceCommand::OpenAiAssistant => self.open_ai_assistant_for_active_pane(window, cx),
             WorkspaceCommand::ToggleInspectorPanel => self.toggle_inspector_for_active_pane(cx),
+            WorkspaceCommand::ToggleMarkdownSource => {
+                self.toggle_markdown_source_for_active_pane(window, cx)
+            }
             WorkspaceCommand::SaveWorkspaceSession => self.save_workspace_session(),
         }
     }

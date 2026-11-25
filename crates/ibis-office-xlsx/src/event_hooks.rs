@@ -302,6 +302,9 @@ impl SlideEditor {
             return Some(ibis_odf::write_ods_with_source(self.presentation(), source).map(plain).map_err(|e| e.to_string()));
         }
         if is(&["md", "markdown"]) {
+            if let Some(source_md) = self.xlsx_markdown_source_text() {
+                return Some(Ok(plain(source_md.as_bytes().to_vec())));
+            }
             return Some(
                 ibis_formats::markdown::export_presentation_to_markdown(self.presentation())
                     .map(|md| plain(md.into_bytes()))
