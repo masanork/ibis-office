@@ -8,7 +8,6 @@
 
 pub mod ai_sheet;
 pub mod analysis;
-pub mod repertoire;
 pub mod cmyk;
 pub mod ibis_text;
 pub mod animation;

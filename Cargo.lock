@@ -5768,7 +5768,6 @@ dependencies = [
  "ibis-calc",
  "ibis-doc-model",
  "ibis-emf",
- "ibis-eot",
  "ibis-formats",
  "ibis-lawtext",
  "ibis-mcp",

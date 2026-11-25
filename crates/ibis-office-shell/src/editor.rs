@@ -1150,8 +1150,6 @@ impl SlideEditor {
         let Some(original) = self.jtd.original.clone() else { return; };
         self.jtd.gallery_generation = self.jtd.gallery_generation.wrapping_add(1);
         let generation = self.jtd.gallery_generation;
-        #[cfg(target_family = "wasm")]
-        let name = self.file_name.clone().unwrap_or_else(|| "document.jtd".into());
         self.set_status(crate::i18n::text("jtd.gallery-loading").to_string(), cx);
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
@@ -1164,15 +1162,9 @@ impl SlideEditor {
             #[cfg(not(target_family = "wasm"))]
             let result = cx.background_executor().spawn(async move { crate::jtd_preview::images(&source) }).await;
             #[cfg(target_family = "wasm")]
-            let mut result = crate::jtd_preview::images(&source);
+            let result = crate::jtd_preview::images(&source);
             #[cfg(target_family = "wasm")]
             if !this.update(cx, |this, _| this.jtd.gallery_generation == generation).unwrap_or(false) { return; }
-            #[cfg(target_family = "wasm")]
-            if let Ok(presentation) = &result {
-                if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
-                    result = Err(crate::web::font_preload_error(error));
-                }
-            }
             this.update_in(cx, |this, window, cx| {
                 if this.jtd.gallery_generation != generation || this.jtd.gallery || !this.jtd.original.as_ref().is_some_and(|current| std::sync::Arc::ptr_eq(current, &original)) { return; }
                 match result {
@@ -1199,8 +1191,6 @@ impl SlideEditor {
         let Some(original) = self.jtd.original.clone() else { return; };
         self.jtd.gallery_generation = self.jtd.gallery_generation.wrapping_add(1);
         let generation = self.jtd.gallery_generation;
-        #[cfg(target_family = "wasm")]
-        let name = self.file_name.clone().unwrap_or_else(|| "document.jtd".into());
         self.set_status(crate::i18n::text("jtd.thumbnail-loading").to_string(), cx);
         cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
@@ -1211,15 +1201,9 @@ impl SlideEditor {
             #[cfg(not(target_family = "wasm"))]
             let result = cx.background_executor().spawn(async move { crate::jtd_preview::thumbnail(&source) }).await;
             #[cfg(target_family = "wasm")]
-            let mut result = crate::jtd_preview::thumbnail(&source);
+            let result = crate::jtd_preview::thumbnail(&source);
             #[cfg(target_family = "wasm")]
             if !this.update(cx, |this, _| this.jtd.gallery_generation == generation).unwrap_or(false) { return; }
-            #[cfg(target_family = "wasm")]
-            if let Ok(presentation) = &result {
-                if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
-                    result = Err(crate::web::font_preload_error(error));
-                }
-            }
             this.update_in(cx, |this, window, cx| {
                 if this.jtd.gallery_generation != generation || this.jtd.thumbnail || !this.jtd.original.as_ref().is_some_and(|current| std::sync::Arc::ptr_eq(current, &original)) { return; }
                 match result {
@@ -1711,12 +1695,7 @@ impl SlideEditor {
                 let literal = ibis_formats::csv::workbook_from_literal_fields(text, "Sheet1", None)
                     .and_then(ibis_formats::open)
                     .map_err(|e| e.to_string());
-                let mut result = literal;
-                if let Ok(opened) = &result {
-                    if let Err(error) = crate::web::preload_document_fonts(&opened.presentation, &name).await {
-                        result = Err(crate::web::font_preload_error(error));
-                    }
-                }
+                let result = literal;
                 this.update_in(cx, |this, window, cx| {
                     if this.closed != closed || this.web.open_generation != generation { return; }
                     match result {
@@ -1740,12 +1719,7 @@ impl SlideEditor {
                 return;
             }
             if preview_import == Some(PreviewImport::Jtd) {
-                let mut result = crate::jtd_preview::read(&data);
-                if let Ok((presentation, _)) = &result {
-                    if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
-                        result = Err(crate::web::font_preload_error(error));
-                    }
-                }
+                let result = crate::jtd_preview::read(&data);
                 this.update_in(cx, |this, window, cx| {
                     if this.closed != closed || this.web.open_generation != generation { return; }
                     match result {
@@ -1761,7 +1735,7 @@ impl SlideEditor {
             let mut law_source = None;
             let mut opened_import = None;
             let common = crate::read_file::open_document_bytes(name.as_ref(), None, &data);
-            let mut result = match common {
+            let result = match common {
                 Ok(Some(CommonOpen::Standard { opened, editable_import, is_law, .. })) => {
                     opened_import = editable_import;
                     if is_law {
@@ -1771,12 +1745,7 @@ impl SlideEditor {
                 }
                 Err(err) => Err(err),
                 Ok(None) if initial && !production_image && !crate::embed::show_download() => {
-                    let mut result = ibis_formats::read(&data).map_err(|e| e.to_string());
-                    if let Ok(presentation) = &result {
-                        if let Err(error) = crate::web::preload_document_fonts(presentation, &name).await {
-                            result = Err(crate::web::font_preload_error(error));
-                        }
-                    }
+                    let result = ibis_formats::read(&data).map_err(|e| e.to_string());
                     this.update_in(cx, |this, window, cx| {
                         if this.closed != closed || this.web.open_generation != generation { return; }
                         match result {
@@ -1817,11 +1786,6 @@ impl SlideEditor {
                     }
                 }
             };
-            if let Ok((opened, _)) = &result {
-                if let Err(error) = crate::web::preload_document_fonts(&opened.presentation, &name).await {
-                    result = Err(crate::web::font_preload_error(error));
-                }
-            }
             this.update_in(cx, |this, window, cx| match result {
                 // Closed (ファイル > 閉じる) while it was read.
                 _ if this.closed != closed || this.web.open_generation != generation => {}
