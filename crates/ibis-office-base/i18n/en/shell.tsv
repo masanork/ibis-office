@@ -1846,7 +1846,7 @@ structured.row-schema-contains-many	Too many array items match the condition
 file.new.visio-draft	New Diagram (for Visio)
 file.export.vsdx	Visio Drawing (.vsdx)
 vsdx.draft-filename	Drawing.vsdx
-vsdx.draft-unsupported	Visio export supports one page of rectangles, ellipses, diamonds, and straight connectors attached at both ends.
+vsdx.draft-unsupported	Visio export supports one page of rectangles, rounded rectangles, ellipses, diamonds, parallelograms, and straight connectors attached at both ends.
 vsdx.export-extension	Use the .vsdx file extension.
 vsdx.exported	Exported the Visio drawing.
 vsdx.export-use-command	Choose Export > Visio Drawing (.vsdx) to create a VSDX file.
@@ -1899,3 +1899,38 @@ vsdx.hover-endpoint	Drag to reconnect this endpoint
 vsdx.hover-formula	A formula fixes this shape’s position
 vsdx.hover-connections	Moving this shape would break an unsupported connection
 vsdx.hover-unsupported	This shape cannot be dragged
+vsdx.stencil.title	Stencils
+vsdx.stencil.subtitle	Click to place & connect
+vsdx.stencil.section.shapes	Basic Flowchart
+vsdx.stencil.section.connectors	Connectors & Select
+vsdx.stencil.section.colors	Quick Fill
+vsdx.stencil.section.templates	Starter Templates
+vsdx.stencil.process	Process
+vsdx.stencil.decision	Decision
+vsdx.stencil.terminator	Start / End
+vsdx.stencil.rounded	Rounded Process
+vsdx.stencil.data	Data / I/O
+vsdx.stencil.box	Box
+vsdx.stencil.default.process	Process
+vsdx.stencil.default.decision	Decision
+vsdx.stencil.default.start	Start
+vsdx.stencil.default.end	End
+vsdx.stencil.default.rounded	Subprocess
+vsdx.stencil.default.data	Data
+vsdx.stencil.default.box	Item
+vsdx.stencil.auto-connect	Auto-connect
+vsdx.stencil.tool.select	Select Tool
+vsdx.stencil.tool.arrow	Arrow Connector
+vsdx.stencil.tool.double-arrow	Double-Arrow Connector
+vsdx.stencil.tool.line	Line Connector
+vsdx.template.basic-flow	Basic Flow (4 steps)
+vsdx.template.decision-flow	Decision Flow
+vsdx.template.step1	Step 1
+vsdx.template.step2	Step 2
+vsdx.template.approve	Approve
+vsdx.template.revise	Revise
+vsdx.guide.title	Create a Visio Diagram
+vsdx.guide.step1	Click a stencil on the left to place a shape
+vsdx.guide.step2	Double-click any shape to edit its label
+vsdx.guide.step3	Connect shapes with connectors and save as .vsdx
+shape.parallelogram	Parallelogram

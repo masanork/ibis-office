@@ -159,6 +159,9 @@ fn arrange_menu() -> Vec<MenuEntry> {
 
 /// `FormatEditor::toolbar_left`: 新しいスライド.
 pub(crate) fn toolbar_left(editor: &SlideEditor) -> Vec<ToolItem> {
+    if editor.is_visio_draft() {
+        return Vec::new();
+    }
     vec![
         // A split button as PowerPoint's: the left half adds a slide in the layout of the current one, the ▼ has the
         // layouts to add one in.

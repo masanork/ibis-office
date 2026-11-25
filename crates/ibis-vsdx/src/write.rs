@@ -18,8 +18,10 @@ pub struct ShapeId(usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShapeKind {
     Rectangle,
+    RoundedRectangle,
     Ellipse,
     Diamond,
+    Parallelogram,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,10 +283,18 @@ impl Drawing {
             r##"<Cell N="FillForegnd" V="#{r:02X}{g:02X}{b:02X}"/>"##
         )
         .unwrap();
+        if shape.kind == ShapeKind::RoundedRectangle {
+            cell(out, "Rounding", w.min(h) * 0.166667);
+        }
         out.push_str(r#"<Cell N="FillPattern" V="1"/><Cell N="LinePattern" V="1"/><Section N="Geometry" IX="0">"#);
         match shape.kind {
-            ShapeKind::Rectangle => polygon(out, &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]),
+            ShapeKind::Rectangle | ShapeKind::RoundedRectangle => {
+                polygon(out, &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+            }
             ShapeKind::Diamond => polygon(out, &[(0.0, 0.5), (0.5, 0.0), (1.0, 0.5), (0.5, 1.0)]),
+            ShapeKind::Parallelogram => {
+                polygon(out, &[(0.0, 0.0), (0.85, 0.0), (1.0, 1.0), (0.15, 1.0)])
+            }
             ShapeKind::Ellipse => {
                 out.push_str(r#"<Row T="Ellipse" IX="1">"#);
                 for (key, value, formula) in [
@@ -449,10 +459,20 @@ impl Drawing {
                 .children()
                 .find(|&n| named(n, "Section") && n.attribute("N") == Some("Geometry"))
                 .ok_or_else(super::invalid)?;
-            let first = child(geometry, "Row").ok_or_else(super::invalid)?;
+            let mut rows = geometry.children().filter(|&n| named(n, "Row"));
+            let first = rows.next().ok_or_else(super::invalid)?;
+            let second = rows.next();
             let kind = match first.attribute("T") {
                 Some("Ellipse") => ShapeKind::Ellipse,
-                Some("RelMoveTo") if number(first, "Y")? == 0.0 => ShapeKind::Rectangle,
+                Some("RelMoveTo") if number(first, "Y")? == 0.0 => {
+                    if super::value(Some(node), "Rounding").is_some() {
+                        ShapeKind::RoundedRectangle
+                    } else if second.is_some_and(|row| number(row, "X").is_ok_and(|x| (x - 0.85).abs() < 1e-6)) {
+                        ShapeKind::Parallelogram
+                    } else {
+                        ShapeKind::Rectangle
+                    }
+                }
                 Some("RelMoveTo") => ShapeKind::Diamond,
                 _ => return Err(super::invalid()),
             };
@@ -564,5 +584,77 @@ impl Drawing {
                 c.arrows,
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_all_flowchart_shapes_and_connectors() {
+        let mut drawing = Drawing::new(800.0, 600.0).unwrap();
+        let s1 = drawing
+            .add_shape(
+                ShapeKind::RoundedRectangle,
+                PdfRect { x0: 40.0, y0: 40.0, x1: 180.0, y1: 110.0 },
+                "Subprocess",
+                [0x2e, 0x8b, 0x8b],
+            )
+            .unwrap();
+        let s2 = drawing
+            .add_shape(
+                ShapeKind::Parallelogram,
+                PdfRect { x0: 240.0, y0: 40.0, x1: 380.0, y1: 110.0 },
+                "Input Data",
+                [0x70, 0x30, 0xa0],
+            )
+            .unwrap();
+        let s3 = drawing
+            .add_shape(
+                ShapeKind::Rectangle,
+                PdfRect { x0: 440.0, y0: 40.0, x1: 580.0, y1: 110.0 },
+                "Process",
+                [0x44, 0x72, 0xc4],
+            )
+            .unwrap();
+        let s4 = drawing
+            .add_shape(
+                ShapeKind::Diamond,
+                PdfRect { x0: 240.0, y0: 200.0, x1: 380.0, y1: 290.0 },
+                "Check?",
+                [0xed, 0x7d, 0x31],
+            )
+            .unwrap();
+        let s5 = drawing
+            .add_shape(
+                ShapeKind::Ellipse,
+                PdfRect { x0: 440.0, y0: 200.0, x1: 580.0, y1: 270.0 },
+                "Done",
+                [0x70, 0xad, 0x47],
+            )
+            .unwrap();
+        drawing.connect((s1, Side::Right), (s2, Side::Left)).unwrap();
+        drawing.connect((s2, Side::Right), (s3, Side::Left)).unwrap();
+        drawing.connect((s2, Side::Bottom), (s4, Side::Top)).unwrap();
+        drawing.connect((s4, Side::Right), (s5, Side::Left)).unwrap();
+
+        let bytes = drawing.to_vsdx().unwrap();
+        let parsed = Drawing::from_vsdx(&bytes).unwrap();
+        let kinds: Vec<ShapeKind> = parsed.shapes().map(|(k, _, _, _)| k).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ShapeKind::RoundedRectangle,
+                ShapeKind::Parallelogram,
+                ShapeKind::Rectangle,
+                ShapeKind::Diamond,
+                ShapeKind::Ellipse,
+            ]
+        );
+        assert_eq!(parsed.connectors().count(), 4);
+
+        let container = crate::VsdxContainer::from_bytes(bytes.into()).unwrap();
+        container.interpret_page_scene(0).unwrap();
     }
 }

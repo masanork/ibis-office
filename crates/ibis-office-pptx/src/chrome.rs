@@ -637,6 +637,32 @@ fn icon_menu_items() -> Vec<MenuEntry> {
 }
 
 
+fn visio_shape_items() -> Vec<MenuEntry> {
+    [
+        ("rect", "rectangle", "shape.rect"),
+        ("roundRect", "rounded_corner", "shape.roundRect"),
+        ("ellipse", "circle", "shape.ellipse"),
+        ("diamond", "diamond", "shape.diamond"),
+        ("parallelogram", "input", "shape.parallelogram"),
+    ]
+    .into_iter()
+    .map(|(preset, icon, id)| {
+        MenuItem::tr(id)
+            .icon(icon)
+            .on(move |this, window, cx| this.set_pptx_tool(Tool::Shape(preset), window, cx))
+            .into()
+    })
+    .collect()
+}
+
+fn visio_line_items() -> Vec<MenuEntry> {
+    vec![
+        MenuItem::tr("pptx.line").icon("horizontal_rule").on(|this, window, cx| this.set_pptx_tool(Tool::Line { kind: LineKind::Straight, arrow: ArrowKind::None }, window, cx)).into(),
+        MenuItem::tr("pptx.arrow").icon("arrow_right_alt").on(|this, window, cx| this.set_pptx_tool(Tool::Line { kind: LineKind::Straight, arrow: ArrowKind::Single }, window, cx)).into(),
+        MenuItem::tr("pptx.double-arrow").icon("sync_alt").on(|this, window, cx| this.set_pptx_tool(Tool::Line { kind: LineKind::Straight, arrow: ArrowKind::Double }, window, cx)).into(),
+    ]
+}
+
 fn line_items() -> Vec<MenuEntry> {
     vec![
         MenuItem::tr("pptx.line").icon("horizontal_rule").on(|this, window, cx| this.set_pptx_tool(Tool::Line { kind: LineKind::Straight, arrow: ArrowKind::None }, window, cx)).into(),
@@ -2920,13 +2946,22 @@ pub(crate) fn toolbar_scene(editor: &SlideEditor) -> &'static str {
 
 pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
     let tool = editor.pptx_tool();
-    let mut items: Vec<ToolItem> = vec![
-        ToolButton::new("tool-select", "arrow_selector_tool", crate::shell::i18n::text("_shell.select-esc")).on(tool == Tool::Select).click(|this, window, cx| this.set_pptx_tool(Tool::Select, window, cx)).into(),
-        ToolButton::new("tool-text", "text_fields", crate::shell::i18n::text("_shell.text-box")).on(tool == Tool::TextBox).click(|this, window, cx| this.set_pptx_tool(Tool::TextBox, window, cx)).into(),
-        ToolButton::new("insert-image", "image", crate::shell::i18n::text("_shell.insert-picture")).menu(image_items()).into(),
-        ToolButton::new("insert-shape", "shapes", crate::shell::i18n::text("_shell.shape")).on(matches!(tool, Tool::Shape(_))).menu(shape_items()).into(),
-        ToolButton::new("insert-line", "horizontal_rule", crate::shell::i18n::text("_shell.line-2")).on(matches!(tool, Tool::Line { .. })).menu(line_items()).into(),
-    ];
+    let visio_draft = editor.is_visio_draft();
+    let mut items: Vec<ToolItem> = if visio_draft {
+        vec![
+            ToolButton::new("tool-select", "arrow_selector_tool", crate::shell::i18n::text("_shell.select-esc")).on(tool == Tool::Select).click(|this, window, cx| this.set_pptx_tool(Tool::Select, window, cx)).into(),
+            ToolButton::new("insert-shape", "shapes", crate::shell::i18n::text("_shell.shape")).on(matches!(tool, Tool::Shape(_))).menu(visio_shape_items()).into(),
+            ToolButton::new("insert-line", "horizontal_rule", crate::shell::i18n::text("_shell.line-2")).on(matches!(tool, Tool::Line { .. })).menu(visio_line_items()).into(),
+        ]
+    } else {
+        vec![
+            ToolButton::new("tool-select", "arrow_selector_tool", crate::shell::i18n::text("_shell.select-esc")).on(tool == Tool::Select).click(|this, window, cx| this.set_pptx_tool(Tool::Select, window, cx)).into(),
+            ToolButton::new("tool-text", "text_fields", crate::shell::i18n::text("_shell.text-box")).on(tool == Tool::TextBox).click(|this, window, cx| this.set_pptx_tool(Tool::TextBox, window, cx)).into(),
+            ToolButton::new("insert-image", "image", crate::shell::i18n::text("_shell.insert-picture")).menu(image_items()).into(),
+            ToolButton::new("insert-shape", "shapes", crate::shell::i18n::text("_shell.shape")).on(matches!(tool, Tool::Shape(_))).menu(shape_items()).into(),
+            ToolButton::new("insert-line", "horizontal_rule", crate::shell::i18n::text("_shell.line-2")).on(matches!(tool, Tool::Line { .. })).menu(line_items()).into(),
+        ]
+    };
     let _fill_color = editor.selected_shapes().into_iter().find_map(|s| match &s.kind {
         ShapeKind::Auto(a) => match &a.fill {
             Fill::Solid(c) => Some(crate::render::shape_view::hsla(*c)),
@@ -2958,11 +2993,12 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
                 let change = SHAPES
                     .iter()
                     .zip(CHANGE_SHAPE_IDS)
+                    .filter(|&(&(preset, _, _), _)| !visio_draft || matches!(preset, "rect" | "roundRect" | "ellipse" | "diamond"))
                     .map(|(&(preset, icon, label), id)| MenuItem::new(id, crate::shell::i18n::text(label)).icon(icon).on(move |e, _, cx| e.change_selected_shapes(preset, cx)).into())
                     .collect();
                 items.push(ToolButton::new("change-shape", "shapes", crate::shell::i18n::text("pptx.chrome.change-shape")).menu(change).hidden().into());
             }
-            if editor.selected_shapes().iter().any(|s| crate::shell::ink::stroke_points(s).is_some()) {
+            if !visio_draft && editor.selected_shapes().iter().any(|s| crate::shell::ink::stroke_points(s).is_some()) {
                 let ink_menu = vec![
                     MenuItem::tr("pptx.ink.to-shape").icon("shapes").on(|e, _, cx| e.pptx_ink_to_shape(cx)).into(),
                     MenuItem::tr("pptx.ink.to-text").icon("text_fields").on(|e, _, cx| e.pptx_ink_to_text(cx)).into(),
@@ -2974,7 +3010,11 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
             items.push(fill.into());
             items.extend(outline_buttons(editor, false));
             items.extend(text_buttons(editor));
-            items.extend([sep(), options.into(), motion.into(), anim_options.into(), anim_painter.into()]);
+            if visio_draft {
+                items.extend([sep(), options.into()]);
+            } else {
+                items.extend([sep(), options.into(), motion.into(), anim_options.into(), anim_painter.into()]);
+            }
             items.extend(arrange_buttons(editor));
         }
         SelectionKind::Picture => {
@@ -3095,7 +3135,11 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
             items.extend(outline_buttons(editor, true));
             items.push(ToolButton::new("line-start", "line_start", crate::shell::i18n::text("pptx.chrome.begin-arrow")).menu(line_end_menu(editor, true)).into());
             items.push(ToolButton::new("line-end", "line_end_arrow_notch", crate::shell::i18n::text("pptx.chrome.end-arrow")).menu(line_end_menu(editor, false)).into());
-            items.extend([sep(), options.into(), motion.into(), anim_options.into(), anim_painter.into()]);
+            if visio_draft {
+                items.extend([sep(), options.into()]);
+            } else {
+                items.extend([sep(), options.into(), motion.into(), anim_options.into(), anim_painter.into()]);
+            }
             items.extend(arrange_buttons(editor));
         }
         // A table cell being edited: its text's formats.

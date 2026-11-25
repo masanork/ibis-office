@@ -42,7 +42,13 @@ pub(crate) fn from_presentation(presentation: &Presentation) -> Result<Vec<u8>, 
         }
         let (kind, sites): (_, &[Option<Side>]) = match auto.geometry.preset_name() {
             Some("rect" | "flowChartProcess") => (DiagramShape::Rectangle, &CARDINAL),
+            Some("roundRect" | "flowChartAlternateProcess" | "flowChartTerminator") => {
+                (DiagramShape::RoundedRectangle, &CARDINAL)
+            }
             Some("diamond" | "flowChartDecision") => (DiagramShape::Diamond, &CARDINAL),
+            Some("parallelogram" | "flowChartInputOutput") => {
+                (DiagramShape::Parallelogram, &CARDINAL)
+            }
             Some("ellipse") => (DiagramShape::Ellipse, &ELLIPSE),
             _ => return Err(unsupported()),
         };
@@ -151,8 +157,10 @@ pub(crate) fn editable_presentation(drawing: &Drawing) -> Result<ibis_formats::O
         );
         let preset = match kind {
             DiagramShape::Rectangle => "rect",
+            DiagramShape::RoundedRectangle => "roundRect",
             DiagramShape::Ellipse => "ellipse",
             DiagramShape::Diamond => "diamond",
+            DiagramShape::Parallelogram => "parallelogram",
         };
         let mut shape = crate::shape_items::new_shape(ShapeId(index as u64 + 1), preset, frame);
         if let ShapeKind::Auto(auto) = &mut shape.kind {

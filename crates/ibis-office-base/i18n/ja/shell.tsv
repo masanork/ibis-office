@@ -1844,7 +1844,7 @@ structured.row-schema-contains-many	条件を満たす配列の要素が多す�
 file.new.visio-draft	新規図面（Visio用）
 file.export.vsdx	Visio 図面（.vsdx）
 vsdx.draft-filename	図面.vsdx
-vsdx.draft-unsupported	Visio 書き出しは、1ページの長方形・楕円・ひし形と、両端が図形に接続された直線に対応しています。
+vsdx.draft-unsupported	Visio 書き出しは、1ページの長方形・角丸長方形・楕円・ひし形・平行四辺形と、両端が図形に接続された直線に対応しています。
 vsdx.export-extension	ファイル名の拡張子に .vsdx を指定してください。
 vsdx.exported	Visio 図面を書き出しました。
 vsdx.export-use-command	VSDXにするには「書き出し」から「Visio 図面（.vsdx）」を選んでください。
@@ -1897,3 +1897,38 @@ vsdx.hover-endpoint	ドラッグで端点を付け替えられます
 vsdx.hover-formula	図形の位置が数式で固定されています
 vsdx.hover-connections	配線を保持できないため移動できません
 vsdx.hover-unsupported	この図形はドラッグで移動できません
+vsdx.stencil.title	ステンシル
+vsdx.stencil.subtitle	クリックで配置・続けて接続
+vsdx.stencil.section.shapes	基本フローチャート
+vsdx.stencil.section.connectors	コネクタ・選択
+vsdx.stencil.section.colors	塗りつぶしカラー
+vsdx.stencil.section.templates	テンプレートから開始
+vsdx.stencil.process	処理
+vsdx.stencil.decision	判断
+vsdx.stencil.terminator	開始 / 終了
+vsdx.stencil.rounded	角丸処理
+vsdx.stencil.data	データ / 入出力
+vsdx.stencil.box	汎用ボックス
+vsdx.stencil.default.process	処理
+vsdx.stencil.default.decision	判断
+vsdx.stencil.default.start	開始
+vsdx.stencil.default.end	終了
+vsdx.stencil.default.rounded	サブ処理
+vsdx.stencil.default.data	データ
+vsdx.stencil.default.box	項目
+vsdx.stencil.auto-connect	選択図形に自動接続
+vsdx.stencil.tool.select	選択ツール
+vsdx.stencil.tool.arrow	矢印コネクタ
+vsdx.stencil.tool.double-arrow	双方向コネクタ
+vsdx.stencil.tool.line	直線コネクタ
+vsdx.template.basic-flow	基本フロー（4ステップ）
+vsdx.template.decision-flow	分岐フロー
+vsdx.template.step1	処理 1
+vsdx.template.step2	処理 2
+vsdx.template.approve	承認
+vsdx.template.revise	差戻し
+vsdx.guide.title	Visio 図面を作成
+vsdx.guide.step1	左のステンシルをクリックして図形を配置します
+vsdx.guide.step2	図形をダブルクリックしてラベルを入力できます
+vsdx.guide.step3	コネクタで図形同士を接続し、.vsdx で保存できます
+shape.parallelogram	平行四辺形

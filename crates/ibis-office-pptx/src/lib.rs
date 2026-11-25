@@ -92,6 +92,7 @@ pub(crate) mod audio_record;
 pub(crate) mod media_compress;
 pub(crate) use media_compress::MediaQuality;
 pub(crate) mod threed_and_nav;
+pub(crate) mod visio_stencil;
 
 use gpui_kit::*;
 use ibis_doc_model::Presentation as Model;
@@ -220,11 +221,17 @@ pub struct State {
     pub(crate) ribbon_qat: Option<threed_and_nav::PptxRibbonQatState>,
     /// セキュリティ センター パネル (Trust Center Panel), while open.
     pub(crate) trust_center: Option<threed_and_nav::PptxTrustCenterState>,
+    /// Auto-connect newly clicked Visio stencils to the currently selected shape.
+    pub(crate) visio_auto_connect: bool,
+    /// Optional fill color override for newly placed Visio stencils.
+    pub(crate) visio_fill_override: Option<u32>,
+    /// Currently hovered cardinal connection site `(shape_id, site_index)` in Visio connector mode.
+    pub(crate) visio_hover_site: Option<(u64, u32)>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { mermaid_edit: None, slideshow: None, master_view: None, notes_format: None, animation_copy: None, photo_album: None, section_panel: None, layout_panel: None, print_panel: None, #[cfg(feature = "export")] edit_points: None, path_draw: None, notes_marks_panel: None, print_settings: Default::default(), folded_sections: Default::default(), section_selection: None, cell_size_panel: None, comments: None, animation_pane: false, animation_expanded: Default::default(), animation_drag_folded: Vec::new(), animation_table: Default::default(), animation_dnd: Default::default(), sidebar_settings: None, smartart_text_pane: false, smartart_reorder: Default::default(), animation_options_panel: None, reading_order_pane: None, link_panel: None, clips: Vec::new(), transition_sound: None, clip_hover: None, clip_seek: None, clip_volume: Default::default(), timing_panel: None, show_panel: None, notes_field: None, notes_hidden: false, notes_touched: Default::default(), pane_width: None, notes_height: notes::PANE_HEIGHT, notes_open_percent: None, pane_drag: None, grid_view: false, outline_view: false, outline_edit: None, ink: None, math_panel: None, notes_page_view: false, slide_selection: Vec::new(), properties_panel: None, inspect_panel: None, accessibility_panel: None, compatibility_panel: None, slide_zoom_dialog: None, section_zoom_dialog: None, summary_zoom_dialog: None, compare_panel: None, audio_record: None, threed_panel: None, record_preview: None, screen_reader: None, ribbon_qat: None, trust_center: None }
+        Self { mermaid_edit: None, slideshow: None, master_view: None, notes_format: None, animation_copy: None, photo_album: None, section_panel: None, layout_panel: None, print_panel: None, #[cfg(feature = "export")] edit_points: None, path_draw: None, notes_marks_panel: None, print_settings: Default::default(), folded_sections: Default::default(), section_selection: None, cell_size_panel: None, comments: None, animation_pane: false, animation_expanded: Default::default(), animation_drag_folded: Vec::new(), animation_table: Default::default(), animation_dnd: Default::default(), sidebar_settings: None, smartart_text_pane: false, smartart_reorder: Default::default(), animation_options_panel: None, reading_order_pane: None, link_panel: None, clips: Vec::new(), transition_sound: None, clip_hover: None, clip_seek: None, clip_volume: Default::default(), timing_panel: None, show_panel: None, notes_field: None, notes_hidden: false, notes_touched: Default::default(), pane_width: None, notes_height: notes::PANE_HEIGHT, notes_open_percent: None, pane_drag: None, grid_view: false, outline_view: false, outline_edit: None, ink: None, math_panel: None, notes_page_view: false, slide_selection: Vec::new(), properties_panel: None, inspect_panel: None, accessibility_panel: None, compatibility_panel: None, slide_zoom_dialog: None, section_zoom_dialog: None, summary_zoom_dialog: None, compare_panel: None, audio_record: None, threed_panel: None, record_preview: None, screen_reader: None, ribbon_qat: None, trust_center: None, visio_auto_connect: true, visio_fill_override: None, visio_hover_site: None }
     }
 }
 
@@ -319,6 +326,9 @@ impl crate::shell::format::GestureView for State {
             screen_reader: _,
             ribbon_qat: _,
             trust_center: _,
+            visio_auto_connect: _,
+            visio_fill_override: _,
+            visio_hover_site: _,
         } = self;
         GestureSnapshot {
             slide_selection: slide_selection.clone(),
@@ -897,22 +907,30 @@ impl FormatEditor for Presentation {
                 .children(popup)
                 .into_any_element()
         } else {
+            let visio_draft = editor.is_visio_draft();
+            let left_pane = if visio_draft {
+                visio_stencil::render_stencil_pane(editor, cx)
+            } else {
+                editor.render_thumbnails(cx).into_any_element()
+            };
+            let mut center = gpui_kit::component::v_flex()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .child(editor.render_slide_workspace(window, cx));
+            if !visio_draft {
+                center = center
+                    .children(editor.render_notes_divider(cx))
+                    .children(editor.render_notes_pane(window, cx));
+            }
             div()
                 .flex()
                 .flex_row()
                 .flex_1()
                 .min_h_0()
-                .child(editor.render_thumbnails(cx))
+                .child(left_pane)
                 .child(editor.render_pane_divider(cx))
-                .child(
-                    gpui_kit::component::v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .child(editor.render_slide_workspace(window, cx))
-                        .children(editor.render_notes_divider(cx))
-                        .children(editor.render_notes_pane(window, cx)),
-                )
+                .child(center)
                 .children(popup)
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| this.drag_pane(event, cx)))
                 .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, cx| this.end_pane_drag(cx)))

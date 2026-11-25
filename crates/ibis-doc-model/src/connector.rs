@@ -33,7 +33,7 @@ pub fn sites(shape: &Shape) -> Vec<(Emu, Emu)> {
                 let (dx, dy) = ((w as f64 * 0.146_447) as Emu, (h as f64 * 0.146_447) as Emu);
                 vec![(x + w / 2, y), (x + dx, y + dy), (x, y + h / 2), (x + dx, y + h - dy), (x + w / 2, y + h), (x + w - dx, y + h - dy), (x + w, y + h / 2), (x + w - dx, y + dy)]
             }
-            Some("rect" | "roundRect" | "diamond" | "flowChartProcess" | "flowChartDecision" | "flowChartAlternateProcess") => four,
+            Some("rect" | "roundRect" | "diamond" | "parallelogram" | "flowChartProcess" | "flowChartDecision" | "flowChartAlternateProcess" | "flowChartInputOutput" | "flowChartTerminator") => four,
             _ => Vec::new(),
         },
         ShapeKind::TextBox(_) => four,

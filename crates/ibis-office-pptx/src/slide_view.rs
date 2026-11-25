@@ -359,13 +359,16 @@ impl SlideEditor {
             .h_full()
             .overflow_hidden()
             .bg(theme.muted)
-            .when(self.link_hover,|d|d.cursor_pointer()).on_mouse_move(cx.listener(|e,event:&MouseMoveEvent,_,cx|{e.update_link_hover(event,cx);e.update_clip_hover(event,cx)})).when(placing || self.shape_edit.link_mode.is_some(), |d| d.cursor(crate::shell::insert_band::insert_cursor()))
+            .when(self.link_hover,|d|d.cursor_pointer()).on_mouse_move(cx.listener(|e,event:&MouseMoveEvent,_,cx|{e.update_link_hover(event,cx);e.update_clip_hover(event,cx);super::visio_stencil::update_connector_hover(e,event.position,cx)})).when(placing || self.shape_edit.link_mode.is_some(), |d| d.cursor(crate::shell::insert_band::insert_cursor()))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_slide_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_slide_right_down))
             // The pointer left the workspace: no clip has its control bar for the pointer.
             .on_hover(cx.listener(|e, hovered: &bool, _, cx| {
-                if !*hovered && e.clear_clip_hover() {
-                    cx.notify();
+                if !*hovered {
+                    let changed = e.clear_clip_hover() | super::visio_stencil::clear_connector_hover(e);
+                    if changed {
+                        cx.notify();
+                    }
                 }
             }))
             .child(
@@ -543,8 +546,10 @@ impl SlideEditor {
         }
         slide_div
             .children(shapes)
+            .children(super::visio_stencil::render_empty_canvas_guide(self, cx))
             .children(self.render_comment_marks(scale, cx))
             .child(self.render_selection_overlay(scale, cx))
+            .children(super::visio_stencil::render_connection_points(self, scale, cx))
             .children(self.render_guide_label(cx))
             .children(self.render_clip_bars(cx))
     }
@@ -869,6 +874,27 @@ impl SlideEditor {
                             }
                         }
                         editing::LineKind::Straight => {
+                            if self.is_visio_draft() {
+                                let start_snap = super::visio_stencil::nearest_cardinal_site(
+                                    slide.shown_shapes(),
+                                    a.x,
+                                    a.y,
+                                    super::visio_stencil::VISIO_SNAP_RADIUS,
+                                    None,
+                                );
+                                if let Some((_, _, pt)) = start_snap {
+                                    a = pt;
+                                }
+                                if let Some((_, _, pt)) = super::visio_stencil::nearest_cardinal_site(
+                                    slide.shown_shapes(),
+                                    b.x,
+                                    b.y,
+                                    super::visio_stencil::VISIO_SNAP_RADIUS,
+                                    start_snap.map(|s| s.0),
+                                ) {
+                                    b = pt;
+                                }
+                            }
                             dashed.push(vec![point(px(a.x as f32 * scale), px(a.y as f32 * scale)), point(px(b.x as f32 * scale), px(b.y as f32 * scale))]);
                         }
                         editing::LineKind::Bent => {
@@ -1559,9 +1585,9 @@ impl SlideEditor {
                     };
                     let current_slide = self.slide();
                     let p = layout.to_emu(current);
-                    let target = moved(start, current).then(|| ibis_doc_model::connector::nearest_site_on_slide(
+                    let target = moved(start, current).then(|| super::visio_stencil::nearest_cardinal_site(
                         current_slide.shapes.iter().filter(|item| item.id != *shape),
-                        p.x, p.y, 127_000,
+                        p.x, p.y, super::visio_stencil::VISIO_SNAP_RADIUS, None,
                     )).flatten();
                     let commands = target.and_then(|(id, site, _)| {
                         let (edited, opposite) = if *handle == start_handle {
@@ -1683,17 +1709,33 @@ impl SlideEditor {
                     }
                     Tool::Line { kind, arrow } => {
                         let end = if dragged { b } else { EmuPoint::new(a.x + CLICK_LINE, a.y + if kind == editing::LineKind::Straight { 0 } else { CLICK_LINE }) };
-                        let snap_radius = 127_000;
                         let slide_ref = self.slide();
-                        let (start_pt, start_cxn) = if let Some((target_id, site_idx, pt)) = ibis_doc_model::connector::nearest_site_on_slide(&slide_ref.shapes, a.x, a.y, snap_radius) {
-                            (EmuPoint::new(pt.0, pt.1), Some((target_id, site_idx)))
+                        let (start_pt, start_cxn, end_pt, end_cxn) = if self.is_visio_draft() {
+                            let radius = super::visio_stencil::VISIO_SNAP_RADIUS;
+                            let (s_pt, s_cxn) = if let Some((target_id, site_idx, pt)) = super::visio_stencil::nearest_cardinal_site(slide_ref.shown_shapes(), a.x, a.y, radius, None) {
+                                (pt, Some((target_id, site_idx)))
+                            } else {
+                                (a, None)
+                            };
+                            let (e_pt, e_cxn) = if let Some((target_id, site_idx, pt)) = super::visio_stencil::nearest_cardinal_site(slide_ref.shown_shapes(), end.x, end.y, radius, s_cxn.map(|(id, _)| id)) {
+                                (pt, Some((target_id, site_idx)))
+                            } else {
+                                (end, None)
+                            };
+                            (s_pt, s_cxn, e_pt, e_cxn)
                         } else {
-                            (a, None)
-                        };
-                        let (end_pt, end_cxn) = if let Some((target_id, site_idx, pt)) = ibis_doc_model::connector::nearest_site_on_slide(&slide_ref.shapes, end.x, end.y, snap_radius) {
-                            (EmuPoint::new(pt.0, pt.1), Some((target_id, site_idx)))
-                        } else {
-                            (end, None)
+                            let snap_radius = 127_000;
+                            let (s_pt, s_cxn) = if let Some((target_id, site_idx, pt)) = ibis_doc_model::connector::nearest_site_on_slide(&slide_ref.shapes, a.x, a.y, snap_radius) {
+                                (EmuPoint::new(pt.0, pt.1), Some((target_id, site_idx)))
+                            } else {
+                                (a, None)
+                            };
+                            let (e_pt, e_cxn) = if let Some((target_id, site_idx, pt)) = ibis_doc_model::connector::nearest_site_on_slide(&slide_ref.shapes, end.x, end.y, snap_radius) {
+                                (EmuPoint::new(pt.0, pt.1), Some((target_id, site_idx)))
+                            } else {
+                                (end, None)
+                            };
+                            (s_pt, s_cxn, e_pt, e_cxn)
                         };
                         let (frame, flip_h, flip_v) = interaction::line_frame(start_pt, end_pt, shift && kind == editing::LineKind::Straight);
                         let shape = self.with_defaults(editing::new_connector(id, frame, flip_h, flip_v, kind, arrow));
