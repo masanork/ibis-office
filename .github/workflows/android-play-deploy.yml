@@ -1,0 +1,166 @@
+name: Android Play Console deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      track:
+        description: Google Play track (internal = 内部テスト, alpha = クローズドテスト, beta = オープンテスト)
+        type: choice
+        default: internal
+        options:
+          - internal
+          - alpha
+          - beta
+      release_status:
+        description: Play release status (use draft until the app is published or for manual review)
+        type: choice
+        default: completed
+        options:
+          - completed
+          - draft
+      dry_run:
+        description: Build, sign, validate, and archive the AAB without uploading to Play Console
+        type: boolean
+        default: false
+      version_code_override:
+        description: Optional explicit Android versionCode (defaults to first-parent commit count)
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-play-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy Android AAB (${{ inputs.track }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Validate deployment secrets
+        env:
+          HAS_KEYSTORE: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 != '' }}
+          HAS_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS != '' }}
+          HAS_KEYSTORE_PASS: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASS != '' }}
+          HAS_PLAY_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [[ "$DRY_RUN" != "true" ]]; then
+            for v in HAS_KEYSTORE HAS_KEY_ALIAS HAS_KEYSTORE_PASS HAS_PLAY_JSON; do
+              if [[ "${!v}" != "true" ]]; then
+                echo "Missing required secret ($v). See docs/android-play-beta.md for setup." >&2
+                exit 1
+              fi
+            done
+          fi
+
+      - name: Install pinned Rust and Android target
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --target aarch64-linux-android
+          rustup default 1.98.1
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install cargo-ndk, Android SDK/NDK, and bundletool
+        run: |
+          set -euo pipefail
+          cargo install cargo-ndk --locked
+          ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_HOME
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+          BUNDLETOOL_VERSION="1.18.1"
+          curl -fsSL "https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VERSION}/bundletool-all-${BUNDLETOOL_VERSION}.jar" \
+            -o "${RUNNER_TEMP}/bundletool.jar"
+
+      - name: Prepare upload keystore
+        if: secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 != ''
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "${RUNNER_TEMP}/upload-keystore.jks"
+          chmod 600 "${RUNNER_TEMP}/upload-keystore.jks"
+
+      - name: Build and validate Android AAB
+        id: build
+        env:
+          BUNDLETOOL_JAR: ${{ runner.temp }}/bundletool.jar
+          ANDROID_KEYSTORE_PATH: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 != '' && format('{0}/upload-keystore.jks', runner.temp) || '' }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASS }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_UPLOAD_KEY_PASS != '' && secrets.ANDROID_UPLOAD_KEY_PASS || secrets.ANDROID_UPLOAD_KEYSTORE_PASS }}
+          VERSION_CODE_OVERRIDE: ${{ inputs.version_code_override }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          VERSION_NAME=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); from docs_build import version_for; print(version_for("Android"))')
+          if [[ -n "$VERSION_CODE_OVERRIDE" ]]; then
+            VERSION_CODE="$VERSION_CODE_OVERRIDE"
+          else
+            VERSION_CODE=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); from docs_build import build_number; print(build_number())')
+          fi
+          export ANDROID_VERSION_NAME="$VERSION_NAME"
+          export ANDROID_VERSION_CODE="$VERSION_CODE"
+
+          EXTRA_FLAGS=()
+          if [[ -n "$ANDROID_KEYSTORE_PATH" || "$DRY_RUN" != "true" ]]; then
+            EXTRA_FLAGS+=(--require-release-keystore)
+          fi
+
+          scripts/build-android.sh --release --aab "${EXTRA_FLAGS[@]}"
+
+          AAB="target/android-apk/ibis-office-android-arm64.aab"
+          test -f "$AAB"
+          unzip -l "$AAB" | grep -q "base/lib/arm64-v8a/libibis_office_app.so"
+          unzip -l "$AAB" | grep -q "base/dex/classes.dex"
+          unzip -l "$AAB" | grep -q "base/manifest/AndroidManifest.xml"
+          python3 scripts/check-third-party-notices.py --archive "$AAB" \
+            base/lib/arm64-v8a/libibis_office_app.so base/assets/licenses/third-party-licenses.md \
+            --plex base/assets/licenses/IBM-Plex-OFL.txt
+
+          mkdir -p play-artifact
+          cp "$AAB" "play-artifact/sorane-docs-${VERSION_NAME}-build${VERSION_CODE}-arm64.aab"
+          (cd play-artifact && sha256sum *.aab > SHA256SUMS)
+
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "release_name=docs-v${VERSION_NAME}-build${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-play-aab-${{ steps.build.outputs.version_code }}
+          path: play-artifact/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Deploy AAB to Google Play Console
+        if: ${{ !inputs.dry_run }}
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: dev.sorane.docs
+          releaseFiles: target/android-apk/ibis-office-android-arm64.aab
+          track: ${{ inputs.track }}
+          status: ${{ inputs.release_status }}
+          releaseName: ${{ steps.build.outputs.release_name }}
+
+      - name: Remove temporary upload keystore
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/upload-keystore.jks"

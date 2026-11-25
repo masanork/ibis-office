@@ -1,4 +1,4 @@
-package dev.sorane.ibisoffice;
+package dev.sorane.docs;
 
 import android.app.Activity;
 import android.app.NativeActivity;
