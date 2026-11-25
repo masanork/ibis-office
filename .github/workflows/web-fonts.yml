@@ -6,6 +6,13 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+
+# Keep production builds in order and let GitHub replace older queued pushes.
+# An active deployment must be allowed to finish.
+concurrency:
+  group: web-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   web-fonts:
     runs-on: ubuntu-latest
@@ -167,3 +174,62 @@ jobs:
           name: html-browser-failure-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ibis-html-artifacts
           if-no-files-found: ignore
+
+      - name: Package tested web assets
+        if: github.repository == 'sorane-dev/docs' && github.event_name == 'push' && github.ref == 'refs/heads/sorane'
+        run: tar -czf "$RUNNER_TEMP/web-assets.tar.gz" www
+      - uses: actions/upload-artifact@v4
+        if: github.repository == 'sorane-dev/docs' && github.event_name == 'push' && github.ref == 'refs/heads/sorane'
+        with:
+          name: tested-web-assets
+          path: ${{ runner.temp }}/web-assets.tar.gz
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 3
+
+  deploy-production:
+    name: Deploy soraneDocs to Cloudflare
+    if: github.repository == 'sorane-dev/docs' && github.event_name == 'push' && github.ref == 'refs/heads/sorane'
+    needs: [web-fonts, portable-gestures, touch-browser, html-browser, verify-wasm-boms]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://docs.sorane.dev/
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: tested-web-assets
+          path: ${{ runner.temp }}/web-release
+      - name: Restore the tested assets
+        run: |
+          mv www "$RUNNER_TEMP/www-source"
+          tar -xzf "$RUNNER_TEMP/web-release/web-assets.tar.gz"
+          python3 scripts/check-web-assets.py www
+          npx --no-install wrangler deploy --dry-run
+      - name: Publish and verify the current branch tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/sorane" --jq .object.sha)
+          if [[ "$tip" != "$GITHUB_SHA" ]]; then
+            echo "Skipping deployment: sorane has advanced to $tip."
+            exit 0
+          fi
+          if [[ -z "$CLOUDFLARE_API_TOKEN" ]]; then
+            echo "::error::Set CLOUDFLARE_API_TOKEN in the production environment."
+            exit 1
+          fi
+          npx --no-install wrangler deploy
+          bash scripts/verify-live-web.sh

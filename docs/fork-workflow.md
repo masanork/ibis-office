@@ -63,8 +63,12 @@ python3 scripts/check-web-assets.py
 ```
 
 Web フォントの静的チャンク配信（SIL OFL 1.1: `ACGJMincho`・`BIZUDGothic`・`BIZUDMincho`）は `npm run build:font-subsets`（または `IBIS_WEB_FONT_SUBSETS=1 scripts/build-web.sh --release`）で `tools/ibis-font-subsetter` から `www/fonts/` と `www/loader-manifest.json` を生成する（[Web 埋め込み](web-embedding-ja.md)）。
-配信先は<https://docs.sorane.dev>（既存の<https://ibis.sorane.dev>も維持）。配信時はこのブランチの`wrangler.jsonc`を使い、
-dry-runの後にdeployし、公開されたmanifestとWASMのhash、ブラウザー動作を確認する。
+`sorane-dev/docs` の `sorane` への push は、Web CI のテストと BOM の検証がすべて成功すると、
+テスト済みの Web 資産を同じコミットの `wrangler.jsonc` で配信する。
+`production` 環境に Cloudflare の配信用シークレット `CLOUDFLARE_API_TOKEN` が必要。
+配信直前にブランチ先端を確認し、dry-run を通した構成で配信する。
+配信後は <https://docs.sorane.dev> と <https://ibis.sorane.dev> のマニフェストを照合し、
+`docs.sorane.dev` の WASM チャンクを検証する。
 単なるブランチ整理では、検証中の別作業による配信を上書きしない。
 
 ## デスクトップ CI
