@@ -10,9 +10,7 @@
 
 use std::{env, fs, process};
 
-use ibis_formats::mermaid::{
-    MermaidOutput, render_plantuml_sequence, render_plantuml_sequence_native,
-};
+use ibis_formats::mermaid::{MermaidOutput, render_plantuml, render_plantuml_sequence};
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -48,7 +46,7 @@ fn main() {
     };
 
     let (rendered, unsupported) = if native {
-        let res = render_plantuml_sequence_native(&source);
+        let res = render_plantuml(&source);
         (res.output, res.unsupported)
     } else {
         let (conversion, rendered) = render_plantuml_sequence(&source);

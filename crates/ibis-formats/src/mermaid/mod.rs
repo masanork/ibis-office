@@ -56,6 +56,7 @@ mod cynefin;
 mod zenuml;
 mod railroad;
 pub mod plantuml;
+mod plantuml_uml;
 mod text;
 #[cfg(test)]
 mod test_support;
@@ -101,6 +102,7 @@ pub use plantuml::{
     PlantUmlConversion, PlantUmlNativeRender, PlantUmlUnsupported, convert_plantuml_sequence,
     render_plantuml_sequence_native,
 };
+pub use plantuml_uml::render_plantuml;
 
 /// Convert a PlantUML basic sequence diagram to Mermaid and render it with the existing
 /// Mermaid sequence renderer when conversion produced a sequence diagram.

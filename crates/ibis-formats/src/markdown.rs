@@ -3732,6 +3732,10 @@ fn parse_blocks_at_quote_depth(
                 "mermaid" => {
                     blocks.push(build_mermaid_block(&content, ctx)?);
                 }
+                "plantuml" | "puml" => {
+                    let fence_lang = lang.split_whitespace().next().unwrap_or("plantuml");
+                    blocks.push(build_plantuml_block(fence_lang, fence_info, &content, ctx));
+                }
                 _ => {
                     let mut block = build_code_block(&content, ctx);
                     if let Block::Paragraph(paragraph) = &mut block
@@ -5485,10 +5489,52 @@ fn is_literal_mermaid_fence(text: &str) -> bool {
     closes_fence(last, marker) && !lines.any(|line| closes_fence(line.trim(), marker))
 }
 
+fn build_plantuml_block(
+    fence_lang: &str,
+    fence_info: &str,
+    content: &str,
+    ctx: &mut ParseContext<'_>,
+) -> Block {
+    let rendered = crate::mermaid::render_plantuml(content);
+    let has_blocking = rendered
+        .unsupported
+        .iter()
+        .any(|u| matches!(u.kind, "macro" | "timing" | "diagram-type"));
+    if !has_blocking
+        && let Some(crate::mermaid::MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        }) = rendered.output
+    {
+        let marker = format!("__plantuml__:{fence_lang}");
+        return build_diagram_svg_paragraph(bytes, width_px, height_px, &marker, content, ctx);
+    }
+    let mut block = build_code_block(content, ctx);
+    if let Block::Paragraph(paragraph) = &mut block
+        && let Some(style) = ctx.code_language_style(fence_info)
+    {
+        paragraph.style = Some(style);
+        paragraph.resolve(&ctx.styles);
+    }
+    block
+}
+
 fn build_mermaid_svg_paragraph(
     bytes: Vec<u8>,
     width_px: u32,
     height_px: u32,
+    content: &str,
+    ctx: &mut ParseContext<'_>,
+) -> Block {
+    build_diagram_svg_paragraph(bytes, width_px, height_px, "__mermaid__", content, ctx)
+}
+
+fn build_diagram_svg_paragraph(
+    bytes: Vec<u8>,
+    width_px: u32,
+    height_px: u32,
+    marker_title: &str,
     content: &str,
     ctx: &mut ParseContext<'_>,
 ) -> Block {
@@ -5509,7 +5555,7 @@ fn build_mermaid_svg_paragraph(
         data: bytes.into(),
     });
     let mut look = PictureLook::default();
-    look.alt_text.title = "__mermaid__".to_string();
+    look.alt_text.title = marker_title.to_string();
     look.alt_text.description = content.to_string();
     let mut p = FlowParagraph {
         id: ctx.fresh_id(),
@@ -8856,6 +8902,19 @@ fn serialize_paragraph(
                 write_mermaid_fence(&look.alt_text.description, out);
                 return;
             }
+            FlowRunKind::Picture { look, .. }
+                if look.alt_text.title == "__plantuml__"
+                    || look.alt_text.title.starts_with("__plantuml__:") =>
+            {
+                let fence = look
+                    .alt_text
+                    .title
+                    .strip_prefix("__plantuml__:")
+                    .filter(|lang| !lang.is_empty())
+                    .unwrap_or("plantuml");
+                write_named_fence(fence, &look.alt_text.description, out);
+                return;
+            }
             _ => {}
         }
     }
@@ -10476,6 +10535,13 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                         .unwrap_or(&pic.alt_text);
                     if alt.title == "__mermaid__" {
                         write_mermaid_fence(&alt.description, &mut out);
+                    } else if alt.title == "__plantuml__" || alt.title.starts_with("__plantuml__:") {
+                        let fence = alt
+                            .title
+                            .strip_prefix("__plantuml__:")
+                            .filter(|lang| !lang.is_empty())
+                            .unwrap_or("plantuml");
+                        write_named_fence(fence, &alt.description, &mut out);
                     } else if let Some(media) = p.media(pic.media) {
                         use base64::Engine as _;
                         let mime = match media.format {

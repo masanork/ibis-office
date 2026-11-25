@@ -323,9 +323,13 @@ pub(crate) struct DocxScreenReaderState {
     pub(crate) last_announcement: String,
 }
 
-/// `__mermaid__` marks a diagram whose source is the description. It is not a name.
+fn is_diagram_export_marker(title: &str) -> bool {
+    title == "__mermaid__" || title == "__plantuml__" || title.starts_with("__plantuml__:")
+}
+
+/// `__mermaid__` / `__plantuml__` marks a diagram whose source is the description. It is not a name.
 fn picture_has_alt(title: &str, description: &str) -> bool {
-    !description.trim().is_empty() || (!title.trim().is_empty() && title != "__mermaid__")
+    !description.trim().is_empty() || (!title.trim().is_empty() && !is_diagram_export_marker(title))
 }
 
 /// What a reader hears for a picture. A Mermaid diagram uses `accTitle` when the fence has one.
@@ -340,7 +344,7 @@ fn picture_spoken_label(title: &str, description: &str) -> Option<String> {
         return Some(description.to_string());
     }
     let title = title.trim();
-    ( !title.is_empty() && title != "__mermaid__").then(|| title.to_string())
+    (!title.is_empty() && !is_diagram_export_marker(title)).then(|| title.to_string())
 }
 
 fn mermaid_acc_title(source: &str) -> Option<String> {
