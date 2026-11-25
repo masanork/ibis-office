@@ -9,16 +9,19 @@ use std::collections::HashMap;
 
 use super::plantuml::{
     PlantUmlUnsupported, excerpt, sanitize_label, split_as_outside_quotes,
-    split_colon_outside_quotes, split_trailing_color, strip_block_comments, strip_prefix_ci,
-    strip_quotes,
+    split_colon_outside_quotes, strip_block_comments, strip_prefix_ci, strip_quotes,
 };
 use super::plantuml_uml::{
     UmlSkip, advance_skip, handle_common_ignored_or_unsupported, normalize_directional_arrows,
     parse_uml_entity_head, prepend_frontmatter_title, safe_id, strip_stereotype,
 };
 
+use super::plantuml_style::{
+    normalize_creole_inline, normalize_plantuml_color, split_and_normalize_color,
+};
+
 fn escape_flow_label(s: &str) -> String {
-    sanitize_label(s).replace('"', "'")
+    normalize_creole_inline(&sanitize_label(s)).replace('"', "'")
 }
 
 // ============================================================================
@@ -798,8 +801,9 @@ pub(super) fn convert_plantuml_activity(
             lines_out.push("  end".to_string());
             continue;
         }
-        // Action `:text;` (single-line or multi-line)
-        if let Some(after_colon) = trimmed.strip_prefix(':') {
+        // Action `:text;` or colored `#Color:text;` (single-line or multi-line)
+        if let Some((action_color, after_colon)) = split_activity_action_prefix(trimmed) {
+            let fill_hex = action_color.and_then(normalize_plantuml_color);
             if let Some(inner) = after_colon.strip_suffix(';') {
                 let lbl = escape_flow_label(inner);
                 let id = fresh("A");
@@ -810,6 +814,11 @@ pub(super) fn convert_plantuml_activity(
                     &mut pre_lane_nodes,
                     &mut lines_out,
                 );
+                if let Some(hex) = fill_hex {
+                    let st = format!("  style {id} fill:{hex}");
+                    lines_out.push(st.clone());
+                    edge_lines.push(st);
+                }
                 connect_to(&id, &mut tails, &mut lines_out, &mut edge_lines);
                 tails.push(FlowTail {
                     node: id,
@@ -1202,6 +1211,22 @@ fn parse_swimlane_header(line: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Match `:action;` or `#Color:action;` and return `(optional_color_token, after_colon)`.
+fn split_activity_action_prefix(line: &str) -> Option<(Option<&str>, &str)> {
+    if let Some(after) = line.strip_prefix(':') {
+        return Some((None, after));
+    }
+    if line.starts_with('#')
+        && let Some(colon) = line.find(':')
+    {
+        let col = line[..colon].trim();
+        if col.len() > 1 && !col.contains(char::is_whitespace) {
+            return Some((Some(col), &line[colon + 1..]));
+        }
+    }
+    None
+}
+
 fn is_legacy_activity(source: &str) -> bool {
     let mut saw_star_paren = false;
     let mut saw_new_syntax = false;
@@ -1531,8 +1556,8 @@ pub(super) fn convert_plantuml_component(
         {
             let opens = rest.trim_end().ends_with('{');
             let head = rest.trim_end().trim_end_matches('{').trim();
-            let (head_clean, had_color) = split_trailing_color(head);
-            if had_color {
+            let (head_clean, fill_hex, had_color) = split_and_normalize_color(head);
+            if had_color && (opens || fill_hex.is_none()) {
                 unsupported.push(PlantUmlUnsupported {
                     line: line_no,
                     kind: "styling",
@@ -1578,6 +1603,9 @@ pub(super) fn convert_plantuml_component(
                     _ => format!("{id}[\"{lbl}\"]"),
                 };
                 lines_out.push(format!("{ind}{node_decl}"));
+                if let Some(hex) = fill_hex {
+                    lines_out.push(format!("{ind}style {id} fill:{hex}"));
+                }
             }
             has_content = true;
             continue;

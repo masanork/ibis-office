@@ -43,7 +43,7 @@ pub(super) enum PlantUmlKind {
 /// nwdiag, or Chronology) into SVG using the shared internal renderers, preserving the
 /// original source verbatim and reporting unsupported constructs with 1-based line numbers.
 pub fn render_plantuml(source: &str) -> PlantUmlNativeRender {
-    match detect_plantuml_kind(source) {
+    let rendered = match detect_plantuml_kind(source) {
         PlantUmlKind::Sequence | PlantUmlKind::UnsupportedEnvelope => {
             render_plantuml_sequence_native(source)
         }
@@ -93,7 +93,8 @@ pub fn render_plantuml(source: &str) -> PlantUmlNativeRender {
             source,
             super::plantuml_non_uml::convert_plantuml_chronology(source),
         ),
-    }
+    };
+    super::plantuml_style::apply_plantuml_lightweight_theme(source, rendered)
 }
 
 fn render_lowered(
@@ -192,6 +193,7 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
             || lower.starts_with("while ")
             || lower.starts_with("while(")
             || (t.starts_with(':') && t.ends_with(';') && t.len() >= 2)
+            || (t.starts_with('#') && t.ends_with(';') && t.contains(':'))
             || (t.starts_with('|') && t.ends_with('|') && t.len() >= 3 && t != "|||")
             || t.starts_with("(*)")
             || t.contains("--> (*)")
@@ -568,6 +570,7 @@ pub(super) fn parse_uml_entity_head(raw: &str) -> (String, Option<String>) {
 fn convert_plantuml_class(source: &str) -> (Option<String>, Vec<PlantUmlUnsupported>) {
     let mut unsupported = Vec::new();
     let mut lines_out: Vec<String> = Vec::new();
+    let mut style_lines: Vec<String> = Vec::new();
     let mut title: Option<String> = None;
     let mut in_comment = false;
     let mut skip_until: Option<UmlSkip> = None;
@@ -708,8 +711,9 @@ fn convert_plantuml_class(source: &str) -> (Option<String>, Vec<PlantUmlUnsuppor
         {
             let opens = rest.trim_end().ends_with('{');
             let head = rest.trim_end().trim_end_matches('{').trim();
-            let (head_clean, had_color) = split_trailing_color(head);
-            if had_color {
+            let (head_clean, fill_hex, had_color) =
+                super::plantuml_style::split_and_normalize_color(head);
+            if had_color && fill_hex.is_none() {
                 unsupported.push(PlantUmlUnsupported {
                     line: line_no,
                     kind: "styling",
@@ -736,6 +740,9 @@ fn convert_plantuml_class(source: &str) -> (Option<String>, Vec<PlantUmlUnsuppor
                 if let Some(st) = stereo {
                     lines_out.push(format!("{ind}<<{st}>> {id}"));
                 }
+            }
+            if let Some(hex) = fill_hex {
+                style_lines.push(format!("  style {id} fill:{hex}"));
             }
             has_content = true;
             continue;
@@ -816,6 +823,7 @@ fn convert_plantuml_class(source: &str) -> (Option<String>, Vec<PlantUmlUnsuppor
         open_namespaces -= 1;
         lines_out.push(format!("{}}}", "  ".repeat(open_namespaces + 1)));
     }
+    lines_out.extend(style_lines);
 
     if !has_content {
         return (None, unsupported);
@@ -846,6 +854,8 @@ fn has_class_relation(line: &str) -> bool {
 fn convert_plantuml_state(source: &str) -> (Option<String>, Vec<PlantUmlUnsupported>) {
     let mut unsupported = Vec::new();
     let mut lines_out: Vec<String> = Vec::new();
+    let mut style_lines: Vec<String> = Vec::new();
+    let mut color_class_seq: usize = 0;
     let mut title: Option<String> = None;
     let mut in_comment = false;
     let mut skip_until: Option<UmlSkip> = None;
@@ -930,8 +940,9 @@ fn convert_plantuml_state(source: &str) -> (Option<String>, Vec<PlantUmlUnsuppor
         if let Some(rest) = strip_prefix_ci(trimmed, "state ") {
             let opens = rest.trim_end().ends_with('{');
             let body = rest.trim_end().trim_end_matches('{').trim();
-            let (body_clean, had_color) = split_trailing_color(body);
-            if had_color {
+            let (body_clean, fill_hex, had_color) =
+                super::plantuml_style::split_and_normalize_color(body);
+            if had_color && fill_hex.is_none() {
                 unsupported.push(PlantUmlUnsupported {
                     line: line_no,
                     kind: "styling",
@@ -945,6 +956,13 @@ fn convert_plantuml_state(source: &str) -> (Option<String>, Vec<PlantUmlUnsuppor
                 open_composites += 1;
             } else {
                 lines_out.push(format!("{ind}state {body_clean}"));
+            }
+            if let Some(hex) = fill_hex {
+                let (state_id, _) = parse_uml_entity_head(body_clean);
+                color_class_seq += 1;
+                let cname = format!("puml_st_{color_class_seq}");
+                style_lines.push(format!("  classDef {cname} fill:{hex}"));
+                style_lines.push(format!("  class {state_id} {cname}"));
             }
             has_content = true;
             continue;
@@ -1033,6 +1051,7 @@ fn convert_plantuml_state(source: &str) -> (Option<String>, Vec<PlantUmlUnsuppor
         open_composites -= 1;
         lines_out.push(format!("{}}}", "  ".repeat(open_composites + 1)));
     }
+    lines_out.extend(style_lines);
     if !has_content {
         return (None, unsupported);
     }
@@ -1144,8 +1163,9 @@ fn convert_plantuml_object(source: &str) -> (Option<String>, Vec<PlantUmlUnsuppo
         {
             let opens = rest.trim_end().ends_with('{');
             let head = rest.trim_end().trim_end_matches('{').trim();
-            let (head_clean, had_color) = split_trailing_color(head);
-            if had_color {
+            let (head_clean, fill_hex, had_color) =
+                super::plantuml_style::split_and_normalize_color(head);
+            if had_color && fill_hex.is_none() {
                 unsupported.push(PlantUmlUnsupported {
                     line: line_no,
                     kind: "styling",
@@ -1161,6 +1181,9 @@ fn convert_plantuml_object(source: &str) -> (Option<String>, Vec<PlantUmlUnsuppo
             };
             let default_st = if is_map { "map" } else { "object" };
             let st = stereotype.unwrap_or(default_st);
+            if let Some(hex) = fill_hex {
+                extra_links.push(format!("  style {id} fill:{hex}"));
+            }
             if opens {
                 lines_out.push(format!("  {decl} {{"));
                 lines_out.push(format!("    <<{st}>>"));
