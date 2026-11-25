@@ -308,21 +308,39 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     // 1. Prefer GitHub App installation repositories (fine-grained user selection).
     let installed = false;
     let canCreateRepo = false;
+    let repoSelection: string | null = null;
+    let installSettingsUrl: string | null = null;
     const instRes = await githubFetch('/user/installations?per_page=50', session.accessToken);
+    if (instRes.status === 401) {
+      return json(
+        { error: 'GitHub の認証トークンが期限切れです。再ログインしてください。', reauthRequired: true },
+        401,
+        { 'Set-Cookie': `${SESSION_COOKIE}=; Max-Age=0; ${cookieFlags(request)}` },
+      );
+    }
     if (instRes.ok) {
       const instData = (await instRes.json()) as {
         installations?: Array<{
           id: number;
+          account?: { login?: string };
+          repository_selection?: string;
+          html_url?: string;
           permissions?: Record<string, string>;
         }>;
       };
       const installations = instData.installations ?? [];
       installed = installations.length > 0;
-      canCreateRepo = installations.some(
-        (inst) =>
-          inst.permissions?.repository_creation === 'write' ||
-          inst.permissions?.administration === 'write',
-      );
+      const personalInst =
+        installations.find(i => i.account?.login?.toLowerCase() === session.login.toLowerCase()) ??
+        installations[0];
+      if (personalInst) {
+        repoSelection = personalInst.repository_selection ?? null;
+        installSettingsUrl = personalInst.html_url ?? null;
+        const hasCreatePerm =
+          personalInst.permissions?.repository_creation === 'write' ||
+          personalInst.permissions?.administration === 'write';
+        canCreateRepo = hasCreatePerm && personalInst.repository_selection !== 'selected';
+      }
       for (const inst of installations.slice(0, 10)) {
         const repoRes = await githubFetch(
           `/user/installations/${inst.id}/repositories?per_page=100`,
@@ -355,6 +373,13 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     // 2. Fallback to /user/repos if installation list is empty (e.g., OAuth App mode).
     if (collected.size === 0) {
       const userReposRes = await githubFetch('/user/repos?sort=updated&per_page=50', session.accessToken);
+      if (userReposRes.status === 401) {
+        return json(
+          { error: 'GitHub の認証トークンが期限切れです。再ログインしてください。', reauthRequired: true },
+          401,
+          { 'Set-Cookie': `${SESSION_COOKIE}=; Max-Age=0; ${cookieFlags(request)}` },
+        );
+      }
       if (userReposRes.ok) {
         const list = (await userReposRes.json()) as Array<{
           full_name: string;
@@ -378,7 +403,7 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     }
 
     const repos = [...collected.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    return json({ repos, installUrl, installed, canCreateRepo });
+    return json({ repos, installUrl, installed, canCreateRepo, repoSelection, installSettingsUrl });
   }
 
   if (pathname === '/api/github/repos/create' && request.method === 'POST') {
@@ -409,6 +434,13 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
       message?: string;
     };
     if (!createRes.ok) {
+      if (createRes.status === 401) {
+        return json(
+          { error: 'GitHub の認証トークンが期限切れです。再ログインしてください。', reauthRequired: true },
+          401,
+          { 'Set-Cookie': `${SESSION_COOKIE}=; Max-Age=0; ${cookieFlags(request)}` },
+        );
+      }
       const fallbackCreateUrl = `https://github.com/new?name=${encodeURIComponent(rawName)}&visibility=private`;
       if (createRes.status === 403 || createRes.status === 404) {
         const acceptedPermissions = createRes.headers.get('X-Accepted-GitHub-Permissions')?.trim() || null;
@@ -417,6 +449,7 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
           repositorySelection: string | null;
           permissions: Record<string, string>;
         } | null = null;
+        let installSettingsUrl: string | null = null;
         try {
           const instRes = await githubFetch('/user/installations?per_page=20', session.accessToken);
           if (instRes.ok) {
@@ -424,12 +457,14 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
               installations?: Array<{
                 account?: { login?: string };
                 repository_selection?: string;
+                html_url?: string;
                 permissions?: Record<string, string>;
               }>;
             };
             const list = instData.installations ?? [];
             const matched = list.find(i => i.account?.login?.toLowerCase() === session.login.toLowerCase()) ?? list[0];
             if (matched) {
+              installSettingsUrl = matched.html_url ?? null;
               installation = {
                 account: matched.account?.login ?? null,
                 repositorySelection: matched.repository_selection ?? null,
@@ -457,9 +492,10 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
         const detail = diagParts.length ? ` [${diagParts.join(' / ')}]` : '';
         return json(
           {
-            error: `GitHub App でリポジトリを自動作成できませんでした${detail}。アプリ権限（Repository creation: Write）の承認状況とインストール設定を確認するか、下のリンクから GitHub で作成してください。`,
+            error: `GitHub App でリポジトリを自動作成できませんでした${detail}。アプリ権限（Repository creation: Write）の承認と「All repositories」設定を確認するか、リンク先から GitHub で作成してください。`,
             fallbackCreateUrl,
             diagnostics: { acceptedPermissions, installation },
+            ...(installSettingsUrl ? { installSettingsUrl } : {}),
             ...(installUrl ? { installUrl } : {}),
           },
           403,
@@ -477,6 +513,7 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     const owner = createData.owner?.login || session.login;
     const repo = createData.name || rawName;
     const branch = createData.default_branch || 'main';
+    const repoUrl = createData.html_url || `https://github.com/${owner}/${repo}`;
 
     // Initialize with an OKF-compliant index.md so the repository is ready to open immediately.
     const initialIndex = [
@@ -492,24 +529,65 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
       'soraneDocs で作成したプライベートドキュメントリポジトリです。',
       '',
     ].join('\n');
-    await githubFetch(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/index.md`,
-      session.accessToken,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: 'Initialize soraneDocs repository with OKF index.md',
-          content: toBase64(new TextEncoder().encode(initialIndex)),
-          branch,
-        }),
-      },
-    );
+    const initPayload = JSON.stringify({
+      message: 'Initialize soraneDocs repository with OKF index.md',
+      content: toBase64(new TextEncoder().encode(initialIndex)),
+      branch,
+    });
+
+    let initRes: Response | null = null;
+    const retryDelaysMs = [300, 700];
+    for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+      initRes = await githubFetch(
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/index.md`,
+        session.accessToken,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: initPayload,
+        },
+      );
+      if (initRes.ok) break;
+      if (initRes.status !== 404 && initRes.status !== 502 && initRes.status !== 503) break;
+      if (attempt < retryDelaysMs.length) {
+        await new Promise(resolve => setTimeout(resolve, retryDelaysMs[attempt]));
+      }
+    }
+
+    if (!initRes || !initRes.ok) {
+      const initErr = (await initRes?.json().catch(() => ({}))) as { message?: string };
+      let installSettingsUrl: string | null = null;
+      try {
+        const instRes = await githubFetch('/user/installations?per_page=20', session.accessToken);
+        if (instRes.ok) {
+          const instData = (await instRes.json()) as {
+            installations?: Array<{ account?: { login?: string }; html_url?: string }>;
+          };
+          const list = instData.installations ?? [];
+          const matched = list.find(i => i.account?.login?.toLowerCase() === session.login.toLowerCase()) ?? list[0];
+          installSettingsUrl = matched?.html_url ?? null;
+        }
+      } catch {
+        /* Best-effort link lookup. */
+      }
+      const status = initRes?.status ?? 502;
+      const reason = initErr?.message ? ` (${initErr.message})` : '';
+      return json(
+        {
+          error: `リポジトリ ${owner}/${repo} は作成されましたが、初期ファイル index.md の書き込みに失敗しました${reason}。GitHub App のリポジトリアクセス設定が「Only select repositories」の場合は「All repositories」に変更するか、作成したリポジトリを許可リストに追加してから選択してください。`,
+          initFailed: true,
+          repoUrl,
+          ...(installSettingsUrl ? { installSettingsUrl } : {}),
+          ...(installUrl ? { installUrl } : {}),
+        },
+        status === 403 || status === 404 ? 409 : status,
+      );
+    }
 
     const nextVault: VaultSelection = { owner, repo, branch, rootPath: '' };
     const sealed = await sealSession({ ...session, vault: nextVault }, env.GITHUB_SESSION_SECRET!);
     return json(
-      { ok: true, vault: nextVault, repoUrl: createData.html_url || `https://github.com/${owner}/${repo}` },
+      { ok: true, vault: nextVault, repoUrl },
       201,
       { 'Set-Cookie': `${SESSION_COOKIE}=${sealed}; Max-Age=${SESSION_MAX_AGE}; ${cookieFlags(request)}` },
     );
