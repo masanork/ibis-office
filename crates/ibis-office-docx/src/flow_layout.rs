@@ -2480,14 +2480,15 @@ impl<'r> Layouter<'r> {
     fn ruby_items(&self, s: &FlowRunStyle, kind: &FlowRunKind, x0: f32, y: f32, width: f32, color: Hsla) -> Vec<Item> {
         use ibis_doc_model::RubyAlign;
         let FlowRunKind::Ruby { text, size, raise, align, .. } = kind else { return Vec::new() };
+        let (size, raise) = ruby_layout_metrics(s.size, *size, *raise, *align);
         if text.is_empty() {
             return Vec::new();
         }
         if *align == RubyAlign::RightVertical && !self.vertical.get() {
-            return self.right_vertical_items(s, text, *size, x0, y, width, color);
+            return self.right_vertical_items(s, text, size, x0, y, width, color);
         }
-        let style = FlowRunStyle { size: *size, ..s.clone() };
-        let rs = *size as f32 / 100.0;
+        let style = FlowRunStyle { size, ..s.clone() };
+        let rs = size as f32 / 100.0;
         let font = self.font(&style, style.font_for(text.chars().next().unwrap_or('あ')));
         let widths: Vec<f32> = text.chars().map(|c| self.res.text_width(&c.to_string(), &font, rs)).collect();
         let total: f32 = widths.iter().sum();
@@ -2511,7 +2512,7 @@ impl<'r> Layouter<'r> {
         // ruby's size, its alignment and the base's length (Word's PDFs of GitHub issue #188, D5a, ＭＳ 明朝 10.5 pt: hpsRaise 0..36 half points of hps 8..21:
         // 0, 4.9, 9.0, 13.0 and 18.0 pt; 17, 19, 25 and 35 half points 8, 9, 12 and 17 pt), so the baseline is lifted by that less the difference of the two
         // boxes' centres from their baselines.
-        let lift = if self.vertical.get() { (*raise as f32 / 100.0).floor() - 0.35 * (rs - s.size as f32 / 100.0) } else { *raise as f32 / 100.0 };
+        let lift = if self.vertical.get() { (raise as f32 / 100.0).floor() - 0.35 * (rs - s.size as f32 / 100.0) } else { raise as f32 / 100.0 };
         vec![Item::Text { x: x0, y: y - lift, text: text.clone().into(), offsets: offsets.into(), font, size: rs, color }]
     }
 
@@ -3343,11 +3344,12 @@ impl<'r> Layouter<'r> {
                 if let Some(Unit::Char { width, .. }) = out.last_mut() {
                     *width += column;
                 }
-            } else if let FlowRunKind::Ruby { text, size: ruby_size, .. } = &run.kind
+            } else if let FlowRunKind::Ruby { text, size: ruby_size, raise, align, .. } = &run.kind
                 && out.len() > before
             {
                 let base: f32 = out[before..].iter().map(unit_width).sum();
-                let pad = self.ruby_text_width(style, text, *ruby_size) - base;
+                let (ruby_size, _) = ruby_layout_metrics(style.size, *ruby_size, *raise, *align);
+                let pad = self.ruby_text_width(style, text, ruby_size) - base;
                 if pad > 0.0 {
                     if let Some(Unit::Char { width, inset, .. }) = out.get_mut(before) {
                         *width += pad / 2.0;
@@ -5814,6 +5816,16 @@ fn unit_char(u: &Unit) -> Option<char> {
     }
 }
 
+fn ruby_layout_metrics(base: u32, size: u32, raise: u32, align: ibis_doc_model::RubyAlign) -> (u32, u32) {
+    // Older ibisOffice Markdown exports wrote a 10 pt, zero-lift,
+    // distributed-space ruby, regardless of the base size.
+    if size == 1000 && raise == 0 && align == ibis_doc_model::RubyAlign::DistributeSpace {
+        ibis_doc_model::flow::default_ruby_metrics(base)
+    } else {
+        (size, raise)
+    }
+}
+
 /// A character's line height and ascent with room for its ruby above it (`raise`; Word's PDF of DW14). The room of a 傍点 (`w:em`) is not here: it goes
 /// by the line's height and line spacing (`emphasis_adjust`).
 fn mark_room(vertical: bool, p: &FlowParagraph, _c: char, style: usize, size: f32, line: f32, ascent: f32) -> (f32, f32) {
@@ -5824,7 +5836,8 @@ fn mark_room(vertical: bool, p: &FlowParagraph, _c: char, style: usize, size: f3
         if !vertical && *align == ibis_doc_model::RubyAlign::RightVertical {
             return (line, ascent);
         }
-        let raised = ascent.max(*raise as f32 / 100.0 + ascent * (*rs as f32 / 100.0) / size);
+        let (rs, raise) = ruby_layout_metrics(p.runs[style].style.size, *rs, *raise, *align);
+        let raised = ascent.max(raise as f32 / 100.0 + ascent * (rs as f32 / 100.0) / size);
         return (line + raised - ascent, raised);
     }
     (line, ascent)

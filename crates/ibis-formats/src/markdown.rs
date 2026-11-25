@@ -6575,7 +6575,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                             base: base.to_string(),
                             text: ruby.to_string(),
                             align: RubyAlign::DistributeSpace,
-                            size: 1000,
+                            size: 0,
                             raise: 0,
                         },
                         style: FlowRunStyle::default(),
@@ -6607,7 +6607,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                                     base: base.to_string(),
                                     text: ruby.to_string(),
                                     align: RubyAlign::DistributeSpace,
-                                    size: 1000,
+                                    size: 0,
                                     raise: 0,
                                 },
                                 style: FlowRunStyle::default(),
@@ -12113,6 +12113,25 @@ Table {{seq:table}} {#tbl_results}
         paragraph.direct.borders[3] = Some(Some(markdown_quote_border(Rgb(0x0969DA))));
         let docx = opened.source.save(&presentation, SaveOptions::default()).unwrap();
         assert_eq!(export_docx_to_markdown(&docx).unwrap(), "> [!NOTE]\n> Old callout.\n");
+    }
+
+    #[test]
+    fn markdown_rubies_save_a_smaller_annotation_above_the_base() {
+        let bytes = super::import_markdown_to_docx_bytes("# {山路|やまみち}\n\n｜漢字《かんじ》\n".as_bytes()).unwrap();
+        let opened = crate::open(bytes).unwrap();
+        let flow = opened.presentation.flow.unwrap();
+        let paragraphs = ibis_doc_model::flow_command::all_paragraphs(&flow);
+        let mut found = 0;
+        for paragraph in paragraphs {
+            for run in &paragraph.runs {
+                if let FlowRunKind::Ruby { size, raise, .. } = &run.kind {
+                    assert!(*size > 0 && *size < run.style.size);
+                    assert!(*raise >= run.style.size);
+                    found += 1;
+                }
+            }
+        }
+        assert_eq!(found, 2);
     }
 
     #[test]

@@ -94,7 +94,11 @@ fn three_lines(rpr: &str, text: &str) -> String {
 
 /// Ruby over a base of `base_half` half points: its `w:rubyPr` and `w:rt`'s run properties as given; (the ruby's size, its raise).
 fn ruby_of(name: &str, d_half: u32, base_half: u32, ruby_pr: &str, rt_rpr: &str) -> (f32, f32) {
-    let body = format!(r#"<w:p><w:r><w:ruby><w:rubyPr><w:rubyAlign w:val="center"/>{ruby_pr}<w:lid w:val="ja-JP"/></w:rubyPr><w:rt><w:r><w:rPr>{rt_rpr}</w:rPr><w:t>か</w:t></w:r></w:rt><w:rubyBase><w:r><w:rPr><w:sz w:val="{base_half}"/></w:rPr><w:t>漢</w:t></w:r></w:rubyBase></w:ruby></w:r></w:p>"#);
+    ruby_of_aligned(name, d_half, base_half, ruby_pr, rt_rpr, "center")
+}
+
+fn ruby_of_aligned(name: &str, d_half: u32, base_half: u32, ruby_pr: &str, rt_rpr: &str, align: &str) -> (f32, f32) {
+    let body = format!(r#"<w:p><w:r><w:ruby><w:rubyPr><w:rubyAlign w:val="{align}"/>{ruby_pr}<w:lid w:val="ja-JP"/></w:rubyPr><w:rt><w:r><w:rPr>{rt_rpr}</w:rPr><w:t>か</w:t></w:r></w:rt><w:rubyBase><w:r><w:rPr><w:sz w:val="{base_half}"/></w:rPr><w:t>漢</w:t></w:r></w:rubyBase></w:ruby></w:r></w:p>"#);
     let t = texts(&pages_of(&make(name, &mincho(), d_half, "", &body)));
     let ruby = t.iter().find(|i| i.3 == "か").unwrap_or_else(|| panic!("no ruby: {t:?}"));
     let base = t.iter().find(|i| i.3 == "漢").unwrap_or_else(|| panic!("no base: {t:?}"));
@@ -105,6 +109,13 @@ fn ruby_of(name: &str, d_half: u32, base_half: u32, ruby_pr: &str, rt_rpr: &str)
 /// base's own), else half the base's, in half points rounded down; its raise is `w:hpsRaise` over two (whole points rounded down), else half the base's
 /// less one point. (Word's XPS, ＭＳ 明朝, docDefaults 10.5 pt and 14 pt: every size from 6 to 72 pt, 320 and 136 cases; ±0.12 pt.)
 fn ruby_default_size_and_raise() {
+    let old_export = r#"<w:hps w:val="20"/><w:hpsRaise w:val="0"/>"#;
+    let (size, lift) = ruby_of_aligned("ruby-legacy-export", 21, 21, old_export, "", "distributeSpace");
+    near(size, 5.0, 0.12, "legacy ruby is half the base");
+    near(lift, 11.0, 0.12, "legacy ruby clears the base");
+    let (size, lift) = ruby_of("ruby-explicit-zero", 21, 21, old_export, "");
+    near(size, 10.0, 0.12, "explicit centered ruby keeps its size");
+    near(lift, 0.0, 0.12, "explicit centered ruby keeps its lift");
     // Docdefaults 10.5 pt, nothing written: the base's sizes 6 to 72 pt.
     for (base, size, raise) in [(12u32, 3.0f32, 5.0f32), (14, 3.5, 6.0), (16, 4.0, 7.0), (18, 4.5, 8.0), (20, 5.0, 9.0), (21, 5.0, 9.0), (22, 10.5, 10.0), (24, 10.5, 11.0), (28, 10.5, 13.0), (48, 10.5, 23.0), (72, 10.5, 35.0), (144, 10.5, 71.0)] {
         let (s, r) = ruby_of(&format!("ruby-a-{base}"), 21, base, "", "");
