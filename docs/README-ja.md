@@ -8,7 +8,7 @@
 
 <p align="center">
   <b>Rust と GPUI で作られた <a href="https://github.com/ibisjp/ibis-office">ibisOffice</a> の機能拡張フォーク</b><br>
-  デスクトップ・Web（Wasm/WebGPU）・モバイルで動く、Office 文書・Markdown ナレッジワークスペース・図表・行政/実務向け拡張環境。
+  iOS / Android 移植、Markdown・Mermaid・PlantUML ナレッジワークスペース、多形式ドキュメント/図表対応、BI/外部データ連携、AI アシスタント。
 </p>
 
 <p align="center">
@@ -23,59 +23,63 @@
 
 ## soraneDocs とは
 
-**soraneDocs** は、[ibisOffice](https://github.com/ibisjp/ibis-office) をベースに `sorane-dev/docs` で開発・運用しているフォークです。upstream の Rust + GPUI エンジン、高精度な OOXML（`.docx`・`.xlsx`・`.pptx`）描画、MCP 対応などを引き継ぎつつ、次の 2 点を目的としています。
+**soraneDocs** は、[ibisOffice](https://github.com/ibisjp/ibis-office) をベースに `sorane-dev/docs` で開発・運用しているフォークです。upstream の Rust + GPUI 描画エンジン、高精度な OOXML（`.docx`・`.xlsx`・`.pptx`）互換、MCP 基盤を引き継ぎつつ、次の 2 軸で開発を進めています。
 
-1. **プロトタイピングと upstream への貢献**：バグ修正、日本語組版の改善、フォーマット拡張などを検証可能な PoC コミットとして実装し、Issue を通じて `ibisjp/ibis-office` へ提案・還元すること。
-2. **拡張ドキュメント／ナレッジワークスペース**：Markdown 中心のナレッジ管理、図表描画、日本の行政・法令・医療向け拡張、PWA / GitHub Vault 連携などを統合した環境を提供すること。
+- **upstream への貢献（採用済み・提案中）**：`ibisjp/ibis-office` はコラボレーター以外の Pull Request を受け付けていないため、本フォークで検証可能な PoC コミットとして実装し、GitHub Issue を通じて提案しています。多くがすでに **本家へ採用・統合** されており、残る拡張も **提案中（Open）** として共有しています。
+- **拡張ワークスペースとプラットフォーム展開**：iOS / Android へのネイティブ移植、Obsidian 風 Markdown／図表ワークスペース、各種レガシー・行政/医療・図面フォーマット、BI/外部データ取り込み、AI アシスタント、PWA・GitHub Vault 連携などを `docs.sorane.dev` およびデスクトップ/モバイル向けに統合しています。
 
-ibisOffice 本来の機能一覧、ベンチマーク、商用ライセンスについては [upstream リポジトリ](https://github.com/ibisjp/ibis-office) をご覧ください。
+ibisOffice 本来のベンチマーク、基本機能一覧、商用ライセンスについては [upstream リポジトリ](https://github.com/ibisjp/ibis-office) をご覧ください。
 
-## これまでの ibisOffice への貢献
+## 主な寄与と開発領域
 
-upstream `ibisjp/ibis-office` はコラボレーター以外の Pull Request を受け付けていないため、このフォークでの PoC コミットを添えて GitHub Issue から提案・報告を行い、以下の機能・修正が upstream に採用・統合されています。
+各領域について、本家に **採用済み（Adopted）** のもの、本家へ **提案中（Proposed）** のもの、**フォーク独自（Fork）** として先行実装しているものを包括的にまとめています。
 
-- **日本語組版・フォント描画**
-  - 行政事務標準文字と異体字シーケンス（IVS）の表示・編集対応、macOS での追加字形欠落修正（[#158](https://github.com/ibisjp/ibis-office/issues/158), [#251](https://github.com/ibisjp/ibis-office/issues/251)）
-  - 非 Windows 環境における「ＭＳ 明朝」フォント代替ルールの修正（[#248](https://github.com/ibisjp/ibis-office/issues/248)）
-  - 代替フォント・Web 版における和文記号・仮名文字送りと GPOS 配置オフセットの改善（[#230](https://github.com/ibisjp/ibis-office/issues/230)）
-  - DOCX 縦書きの傍線位置、縦書き表のセル文字方向と新規表の縦結合保持、両端揃え箇条書きのはみ出し修正（[#160](https://github.com/ibisjp/ibis-office/issues/160), [#222](https://github.com/ibisjp/ibis-office/issues/222), [#193](https://github.com/ibisjp/ibis-office/issues/193)）
-- **文書形式・互換性・シビックテック**
-  - Pure-Rust による PDF・XPS/OpenXPS・OFD の閲覧および署名検査対応（[#235](https://github.com/ibisjp/ibis-office/issues/235)）
-  - Markdown ネイティブ対応強化（往復変換・クリップボード・CLI・pure-Rust Mermaid 描画）（[#226](https://github.com/ibisjp/ibis-office/issues/226)）
-  - Office 2007 Standard 暗号化ファイル（DOCX/XLSX/PPTX）の復号対応（[#190](https://github.com/ibisjp/ibis-office/issues/190)）
-  - DOCX の段落 ID（`w14:paraId`）の編集・保存時保持（[#221](https://github.com/ibisjp/ibis-office/issues/221)）
-  - 表計算の機械可読性チェック（デジタル庁基準）（[#194](https://github.com/ibisjp/ibis-office/issues/194)）
-- **Web 版・モバイル・Linux デスクトップ**
-  - Web 版 Wasm の分割配信（CDN サイズ制限対応）（[#152](https://github.com/ibisjp/ibis-office/issues/152)）とフォント字形のオンデマンド取得（[#157](https://github.com/ibisjp/ibis-office/issues/157)）
-  - Web 版の二本指ピンチズーム対応とタッチ入力時の Wasm パニック修正（[#212](https://github.com/ibisjp/ibis-office/issues/212), [#207](https://github.com/ibisjp/ibis-office/issues/207)）
-  - Android でファイル選択画面から戻る際のクラッシュ修正（[#256](https://github.com/ibisjp/ibis-office/issues/256)）と Ubuntu AppImage のドックアイコン表示修正（[#147](https://github.com/ibisjp/ibis-office/issues/147)）
+### 1. モバイル移植（iOS / Android）とクロスプラットフォーム GPUI
+- **iOS / Android ネイティブ移植** *（提案中: [#247](https://github.com/ibisjp/ibis-office/issues/247)）*：GPUI + `gpui-pre-wgpu` スタックを Android（`crates/gpui-android`）および iOS（`crates/gpui-ios`）へ移植し、モバイル向けスタートビュー、タッチ操作・サーフェス復帰対応、Google Play 内部トラックへの自動 AAB 配信を整備。
+- **プラットフォーム修正** *（採用済み: [#256](https://github.com/ibisjp/ibis-office/issues/256), [#147](https://github.com/ibisjp/ibis-office/issues/147)）*：Android でファイル選択画面から戻る際のクラッシュ修正、Ubuntu AppImage のドックアイコン表示修正。
 
-## 現時点での upstream との主な差異
+### 2. Markdown・Mermaid・PlantUML 統合 / ナレッジワークスペース
+- **Markdown & Mermaid 基盤** *（採用済み: [#226](https://github.com/ibisjp/ibis-office/issues/226)）*：Markdown ネイティブ往復変換、クリップボード/CLI 対応、pure-Rust によるオフライン Mermaid 描画。
+- **CommonMark 互換強化と双方向同期** *（提案中: [#286](https://github.com/ibisjp/ibis-office/issues/286)）*：CommonMark 0.31.2 全 652 例での検証に基づく往復互換性改善、ブロック単位の `SourceMap` による WYSIWYG 外科的書き戻しと双方向カーソル／スクロール同期。
+- **PlantUML 統合** *（提案中: [#298](https://github.com/ibisjp/ibis-office/issues/298)）*：内蔵 Mermaid 描画資産・IR を共有したオフライン pure-Rust PlantUML SVG 描画（シーケンス・クラス・ステート・ユースケース・オブジェクト/マップ・タイミング・アクティビティ・コンポーネント等の UML 全般、Mindmap/WBS/Gantt、C4/JSON/YAML/EBNF/nwdiag/chronology、軽量テーマ・Creole 書式）。
+- **Obsidian 風 `SoraneWorkspace`** *（提案中: [#283](https://github.com/ibisjp/ibis-office/issues/283)）*：ペイン分割、タブ固定・履歴、セッション永続化、コマンドパレット、デイリーノート、Wiki リンク、OKF v0.3 知識項目、タグブラウザ、Outgoing Links、Local Graph、アウトライン、Office インスペクタ、Git ドックを備えたデスクトップシェル（`crates/sorane-workspace`）。
 
-upstream 統合状況や詳細な機能差分は [docs/fork-feature-differences.md](fork-feature-differences.md) に記録しています。現時点で `soraneDocs` に含まれる主な独自機能・拡張は以下のとおりです。
+### 3. ドキュメント・図面・レガシー形式の拡張
+- **Pure-Rust PDF・XPS/OpenXPS・OFD** *（採用済み: [#235](https://github.com/ibisjp/ibis-office/issues/235) / 提案中: [#272](https://github.com/ibisjp/ibis-office/issues/272)）*：Pure-Rust による固定レイアウト閲覧および署名検査対応、図を保持した Markdown 書き出し。
+- **一太郎（`.jtd`・`.jtt`・`.jttc`）** *（Fork）*：論理レコード・縦書き・ルビ・罫線・画像・サムネイル・目次を復元する読み取り専用プレビューと DOCX/HTML 出力（[jtd-preview.md](jtd-preview.md)）。
+- **Microsoft Visio（`.vsdx`）** *（提案中: [#292](https://github.com/ibisjp/ibis-office/issues/292)）*：閲覧・新規作成・編集、ステンシルパレット、フローチャート図形、スナップハイライト、Web/Wasm 版対応。
+- **Unified Office Format（UOF / `.uot`）** *（Fork）*：UOT 文書および埋め込み画像のネイティブ読み込み。
+- **WordPerfect（`.wpd`）& WPG 2** *（Fork）*：WordPerfect 文書（テキスト・表）および WPG 2 ベクタ・ビットマップ・曲線・複合パス画像の読み込み。
+- **DocuWorks（`.xdw`・`.xbd`）& Hancom（`.hwp`・`.hwpx`）** *（提案中: [#254](https://github.com/ibisjp/ibis-office/issues/254), [#288](https://github.com/ibisjp/ibis-office/issues/288)）*：DocuWorks 閲覧および HWP 5.0 / HWPX の編集可能な DOCX としての読み込み。
+- **EPUB 3・制作素材画像** *（Fork）*：EPUB 3 ネイティブ読み込み、HEIC・DPX・Cineon・OpenEXR・JPEG 2000 プレビュー（[production-image-preview-ja.md](production-image-preview-ja.md)）。
+- **OOXML / ODF 互換強化** *（採用済み: [#190](https://github.com/ibisjp/ibis-office/issues/190), [#221](https://github.com/ibisjp/ibis-office/issues/221)）*：Office 2007 Standard 暗号化復号、DOCX 段落 ID（`w14:paraId`）の編集・保存時保持、ODF の入れ子領域・繰り返し列・非表示行列読み込み拡張。
 
-- **ナレッジワークスペース（`SoraneWorkspace`）・Markdown / PlantUML**
-  - Obsidian 風のデスクトップシェル（`crates/sorane-workspace`）：ペイン分割、タブ固定・履歴、セッション永続化、コマンドパレット、デイリーノート、Wiki リンク、タグブラウザ、Outgoing Links、Local Graph、アウトライン、Office インスペクタ、Git ドック（[#283](https://github.com/ibisjp/ibis-office/issues/283)）。
-  - ブロック単位の Markdown `SourceMap` による WYSIWYG 外科的書き戻しと双方向カーソル／スクロール同期（[#286](https://github.com/ibisjp/ibis-office/issues/286)）。
-  - 内蔵 Mermaid 描画資産・IR を共有したオフライン pure-Rust PlantUML SVG 描画（UML 全般・C4/JSON/YAML/EBNF/nwdiag 等・軽量テーマ対応）（[#298](https://github.com/ibisjp/ibis-office/issues/298)）。
-- **追加の文書・図面・データ形式**
-  - **Visio（`.vsdx`）**：閲覧・新規作成・編集・ステンシルパレット・フローチャート図形・Wasm 版対応（[#292](https://github.com/ibisjp/ibis-office/issues/292)）。
-  - **一太郎（`.jtd`・`.jtt`・`.jttc`）**：縦書き・ルビ・罫線・画像・目次を復元する読み取り専用プレビューと DOCX/HTML 出力（[jtd-preview.md](jtd-preview.md)）。
-  - **DocuWorks（`.xdw`・`.xbd`）・Hancom（`.hwp`・`.hwpx`）**：閲覧および編集可能な DOCX としての読み込み（[#254](https://github.com/ibisjp/ibis-office/issues/254), [#288](https://github.com/ibisjp/ibis-office/issues/288)）。
-  - **EPUB 3・制作素材画像**：EPUB 3 ネイティブ読み込み、HEIC・DPX・Cineon・OpenEXR・JPEG 2000 プレビュー（[production-image-preview-ja.md](production-image-preview-ja.md)）。
-  - **外部データ取り込み**：表計算への Parquet・JSON Lines・Arrow IPC・Avro・SQLite 取り込みと、文字コードを考慮した CSV 上書き保存（[#263](https://github.com/ibisjp/ibis-office/issues/263)）。
-- **日本の実務・法令・医療・トラスト拡張**
-  - **名簿突合**：`FIELDMATCH` 系関数、異体字辞書、日付レビュー、行政 PUP・外字の正規化（[#257](https://github.com/ibisjp/ibis-office/issues/257)）。
-  - **法令・医療**：e-Gov 法令 XML／Lawtext 双方向変換と新旧対照表生成（[#229](https://github.com/ibisjp/ibis-office/issues/229)）、pure-Rust 医療文書（UKE/DPC・FHIR/CDA/HL7 v2）および非診断用 DICOM 相互運用（Non-SaMD 範囲）（[#246](https://github.com/ibisjp/ibis-office/issues/246)）。
-  - **署名・資格情報・サプライチェーン**：文書電子署名検査、画像 C2PA 検証、SD-JWT・mDOC・OID4VP の表計算連携、CycloneDX SBOM/CBOM・OSV-Scanner レビュー（[#232](https://github.com/ibisjp/ibis-office/issues/232), [#279](https://github.com/ibisjp/ibis-office/issues/279), [#280](https://github.com/ibisjp/ibis-office/issues/280)）。
-- **Web・PWA・モバイル・AI アシスタント**
-  - **Web 版（`docs.sorane.dev`）**：オフラインローカルファイル対応の PWA、GitHub App リポジトリ（Vault）ログイン・作成・編集、HTML 書き出し（[#208](https://github.com/ibisjp/ibis-office/issues/208)）、静的日本語フォントサブセット配信。
-  - **モバイル・高速化**：Android / iOS ネイティブ GPUI ビルド（[#247](https://github.com/ibisjp/ibis-office/issues/247)）、描画・行ジオメトリ等のホットパスキャッシュ最適化（[#299](https://github.com/ibisjp/ibis-office/issues/299), [#300](https://github.com/ibisjp/ibis-office/issues/300)）。
-  - **AI アシスタント**：OpenAI 互換 API（デスクトップ）および Workers AI（Web）連携の編集支援サイドバー（[#231](https://github.com/ibisjp/ibis-office/issues/231)）。
-- **ブランディング・来歴検証・配布**
-  - upstream の `ibisOffice` と共存できるよう、独自の `soraneDocs` ブランドおよびアプリ識別子を使用。
-  - upstream との競合・混同を避けるため、自動更新チェックと Windows の「プログラムから開く」自動登録は無効化。
-  - CI で CycloneDX 1.6 SBOM/CBOM と Linux AppImage の GitHub Artifact Attestations（署名付きビルド来歴）を生成（[#285](https://github.com/ibisjp/ibis-office/issues/285)）。
+### 4. BI・外部データ取り込み・表計算強化
+- **外部データソース & Power Query 連携** *（提案中: [#263](https://github.com/ibisjp/ibis-office/issues/263)）*：表計算クエリでのローカル Parquet（列選択・複数ファイル追記・Zstandard）・JSON Lines・Arrow IPC・Avro・SQLite 取り込み、文字コードを考慮した CSV 上書き保存。
+- **機械可読性チェック & 名簿突合** *（採用済み: [#194](https://github.com/ibisjp/ibis-office/issues/194) / 提案中: [#257](https://github.com/ibisjp/ibis-office/issues/257)）*：デジタル庁基準の機械可読性チェック（本家パネルへ統合）、`FIELDMATCH` 系関数・異体字辞書・日付レビュー・行政 PUP/外字正規化。
+- **セキュリティ／コンプライアンス分析** *（提案中: [#279](https://github.com/ibisjp/ibis-office/issues/279), [#280](https://github.com/ibisjp/ibis-office/issues/280)）*：CycloneDX SBOM/CBOM 棚卸し（PQC 移行管理含む）および OSV-Scanner 脆弱性結果の表計算レビュー。
+
+### 5. AI アシスタント & MCP 拡張
+- **AI アシスタントサイドバー** *（提案中: [#231](https://github.com/ibisjp/ibis-office/issues/231)）*：OpenAI 互換 API（デスクトップ）および Cloudflare Workers AI（Web）と連携した DOCX/XLSX/PPTX 共通の編集支援・変更提案。
+- **MCP ツール連携・安全性強化** *（提案中: [#159](https://github.com/ibisjp/ibis-office/issues/159), [#275](https://github.com/ibisjp/ibis-office/issues/275), [#276](https://github.com/ibisjp/ibis-office/issues/276), [#281](https://github.com/ibisjp/ibis-office/issues/281)）*：起動中デスクトップ Assistant への既存 MCP サーバーからの再接続、シート保護の非表示数式尊重、入力展開前のセル数上限チェック、スキル連携。
+
+### 6. 日本語組版・行政・法令・医療・トラスト
+- **日本語組版・フォント描画** *（採用済み: [#158](https://github.com/ibisjp/ibis-office/issues/158), [#160](https://github.com/ibisjp/ibis-office/issues/160), [#193](https://github.com/ibisjp/ibis-office/issues/193), [#222](https://github.com/ibisjp/ibis-office/issues/222), [#230](https://github.com/ibisjp/ibis-office/issues/230), [#248](https://github.com/ibisjp/ibis-office/issues/248), [#251](https://github.com/ibisjp/ibis-office/issues/251)）*：行政事務標準文字と異体字シーケンス（IVS）対応および macOS 字形欠落修正、非 Windows 環境での「ＭＳ 明朝」代替ルール修正、和文記号/仮名文字送り・GPOS オフセット改善、縦書き傍線位置・表セル文字方向/縦結合・両端揃え箇条書き修正。
+- **法令・医療・構造化フォーム** *（提案中: [#229](https://github.com/ibisjp/ibis-office/issues/229), [#246](https://github.com/ibisjp/ibis-office/issues/246), [#270](https://github.com/ibisjp/ibis-office/issues/270)）*：e-Gov 法令 XML／Lawtext 双方向変換と新旧対照表生成、pure-Rust 医療文書（UKE/DPC・FHIR/CDA/HL7 v2）・非診断用 DICOM 相互運用（Non-SaMD 範囲）、DOCX フォーム作成と構造化データからの生成。
+- **電子署名・デジタル資格情報** *（提案中: [#232](https://github.com/ibisjp/ibis-office/issues/232)）*：文書電子署名検査、画像 C2PA 検証、SD-JWT・mDOC・OID4VP の表計算連携。
+
+### 7. Web（Wasm/WebGPU）・PWA・高速化・サプライチェーン
+- **Web 配信・タッチ操作** *（採用済み: [#152](https://github.com/ibisjp/ibis-office/issues/152), [#157](https://github.com/ibisjp/ibis-office/issues/157), [#207](https://github.com/ibisjp/ibis-office/issues/207), [#212](https://github.com/ibisjp/ibis-office/issues/212)）*：CDN サイズ制限対応の Wasm 分割配信、フォント字形のオンデマンド取得、二本指ピンチズーム、タッチ入力時パニック修正。
+- **PWA・GitHub Vault・HTML 出力** *（提案中: [#208](https://github.com/ibisjp/ibis-office/issues/208)）*：`https://docs.sorane.dev` でのオフラインローカルファイル対応 PWA、GitHub App リポジトリ（Vault）ログイン・作成・編集、構造化 HTML 書き出し、静的日本語フォントサブセット配信。
+- **高速化・ビルド来歴** *（提案中: [#285](https://github.com/ibisjp/ibis-office/issues/285), [#299](https://github.com/ibisjp/ibis-office/issues/299), [#300](https://github.com/ibisjp/ibis-office/issues/300)）*：GPUI 描画・設定・メニューバー・DOCX/XLSX ジオメトリのホットパスキャッシュ最適化、CycloneDX 1.6 SBOM/CBOM 生成と Linux AppImage の GitHub Artifact Attestations（署名付き来歴）。
+
+## 現時点での upstream との差異・運用方針
+
+upstream `main` とのコミット・機能単位の対比は [docs/fork-feature-differences.md](fork-feature-differences.md) にまとめています。
+
+上記の先行実装・提案中の機能に加え、`soraneDocs` では安全性と共存のため次の点でも upstream と差別化しています：
+- **独自ブランディング**：`ibisOffice` と共存できるよう、独自の `soraneDocs` ブランドおよびアプリ識別子を使用。
+- **更新・関連付けの分離**：upstream 側のリリースフィード参照や既定アプリ登録を上書きしないよう、自動更新チェックと Windows の「プログラムから開く」自動登録は無効化。
 
 ## ビルドと開発
 

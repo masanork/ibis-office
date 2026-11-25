@@ -8,7 +8,7 @@
 
 <p align="center">
   <b>An experimental, feature-extended fork of <a href="https://github.com/ibisjp/ibis-office">ibisOffice</a> built with Rust and GPUI.</b><br>
-  Office documents, Markdown knowledge workspaces, diagrams, and civic/enterprise format extensions across Desktop, Web (Wasm/WebGPU), and Mobile.
+  Mobile porting (iOS &amp; Android), Markdown/Mermaid/PlantUML knowledge workspaces, extended document &amp; diagram formats, BI/data ingestion, and AI assistance.
 </p>
 
 <p align="center">
@@ -23,59 +23,63 @@
 
 ## What is soraneDocs?
 
-**soraneDocs** is an active fork of [ibisOffice](https://github.com/ibisjp/ibis-office) maintained in `sorane-dev/docs`. While inheriting upstream's Rust + GPUI engine, pixel-accurate OOXML (`.docx`, `.xlsx`, `.pptx`) rendering, and MCP support, this fork serves two purposes:
+**soraneDocs** is an active fork of [ibisOffice](https://github.com/ibisjp/ibis-office) maintained in `sorane-dev/docs`. Inheriting upstream's Rust + GPUI rendering engine, OOXML (`.docx`, `.xlsx`, `.pptx`) compatibility, and MCP foundation, this fork drives both **upstream contributions** and **domain/platform extensions**:
 
-1. **Prototyping & Upstream Contributions**: Developing bug fixes, Japanese typography improvements, and format extensions as verifiable proof-of-concept commits and proposing them to `ibisjp/ibis-office` via Issues.
-2. **Extended Document & Knowledge Workspace**: Integrating Markdown-first knowledge workflows, diagramming, Japanese civic/legal/medical formats, and PWA/GitHub Vault capabilities for personal and organizational use.
+- **Upstream Contributions (Adopted & Proposed)**: Because `ibisjp/ibis-office` restricts pull requests to repository collaborators, improvements are developed here as verifiable proof-of-concept commits and proposed via GitHub Issues. Many have already been **adopted into upstream**, while others remain **proposed (open)** for review.
+- **Extended Workspace & Platform**: Brings mobile native support (iOS & Android), an Obsidian-style Markdown/diagram workspace, legacy & regional document formats, BI/external data ingestion, AI assistance, and PWA/GitHub Vault integration to `docs.sorane.dev` and desktop/mobile builds.
 
-For core ibisOffice features, benchmarks, and commercial licensing, please refer to the [upstream repository](https://github.com/ibisjp/ibis-office).
+For core ibisOffice benchmarks, baseline features, and commercial licensing, see the [upstream repository](https://github.com/ibisjp/ibis-office).
 
-## Contributions to ibisOffice
+## Key Contributions & Fork Capabilities
 
-Because upstream `ibisjp/ibis-office` restricts pull requests to repository collaborators, contributions from this fork are proposed through GitHub Issues backed by working PoC commits. The following proposals and fixes have been adopted into upstream:
+Each area below summarizes what this fork has built and contributed — noting items **Adopted** in upstream `ibisOffice`, **Proposed** via upstream Issues, and **Fork** extensions.
 
-- **Japanese Typography & Font Rendering**
-  - IVS (Ideographic Variation Sequences) and Japanese Government Standard Characters support, plus macOS supplementary glyph fix ([#158](https://github.com/ibisjp/ibis-office/issues/158), [#251](https://github.com/ibisjp/ibis-office/issues/251))
-  - Fix MS Mincho font substitution on non-Windows platforms ([#248](https://github.com/ibisjp/ibis-office/issues/248))
-  - Japanese symbol/kana advance width and GPOS positioning improvements for fallback fonts and Web ([#230](https://github.com/ibisjp/ibis-office/issues/230))
-  - Vertical-text emphasis mark placement, vertical table cell direction/merging, and justified bullet list layout fixes in DOCX ([#160](https://github.com/ibisjp/ibis-office/issues/160), [#222](https://github.com/ibisjp/ibis-office/issues/222), [#193](https://github.com/ibisjp/ibis-office/issues/193))
-- **Document Formats, Compatibility & Civic Tech**
-  - Pure-Rust PDF, XPS/OpenXPS, and OFD viewing and signature inspection ([#235](https://github.com/ibisjp/ibis-office/issues/235))
-  - Native Markdown round-trip conversion, clipboard/CLI support, and pure-Rust Mermaid rendering ([#226](https://github.com/ibisjp/ibis-office/issues/226))
-  - Office 2007 Standard encryption decryption for DOCX/XLSX/PPTX ([#190](https://github.com/ibisjp/ibis-office/issues/190))
-  - Preservation of DOCX paragraph IDs (`w14:paraId`) on edit/save ([#221](https://github.com/ibisjp/ibis-office/issues/221))
-  - Spreadsheet machine-readability checker (Digital Agency guidelines) ([#194](https://github.com/ibisjp/ibis-office/issues/194))
-- **Web, Mobile & Linux Desktop**
-  - Chunked Wasm delivery for CDN file-size limits ([#152](https://github.com/ibisjp/ibis-office/issues/152)) and on-demand web font glyph fetching ([#157](https://github.com/ibisjp/ibis-office/issues/157))
-  - Web two-finger pinch-to-zoom and touch timestamp panic fix ([#212](https://github.com/ibisjp/ibis-office/issues/212), [#207](https://github.com/ibisjp/ibis-office/issues/207))
-  - Android file-picker return crash fix ([#256](https://github.com/ibisjp/ibis-office/issues/256)) and Ubuntu AppImage dock icon fix ([#147](https://github.com/ibisjp/ibis-office/issues/147))
+### 1. Mobile Porting (iOS & Android) & Cross-Platform GPUI
+- **iOS & Android Native Port** *(Proposed: [#247](https://github.com/ibisjp/ibis-office/issues/247))*: Ported the GPUI + `gpui-pre-wgpu` stack to native Android (`crates/gpui-android`) and iOS (`crates/gpui-ios`), adding mobile start views, touch/surface lifecycle handling, and automated Android App Bundle deployment to Google Play internal testing.
+- **Platform Fixes** *(Adopted: [#256](https://github.com/ibisjp/ibis-office/issues/256), [#147](https://github.com/ibisjp/ibis-office/issues/147))*: Fixed Android file-picker return crashes and Ubuntu AppImage dock icon registration.
 
-## Current Differences from Upstream
+### 2. Markdown, Mermaid & PlantUML Integration / Knowledge Workspace
+- **Markdown & Mermaid Foundation** *(Adopted: [#226](https://github.com/ibisjp/ibis-office/issues/226))*: Native Markdown round-trip conversion, clipboard/CLI integration, and offline pure-Rust Mermaid diagram rendering.
+- **CommonMark Fidelity & Bidirectional Sync** *(Proposed: [#286](https://github.com/ibisjp/ibis-office/issues/286))*: Round-trip improvements validated against all 652 CommonMark 0.31.2 examples, plus block-level `SourceMap`, surgical WYSIWYG writeback, and bidirectional cursor/scroll sync.
+- **PlantUML Integration** *(Proposed: [#298](https://github.com/ibisjp/ibis-office/issues/298))*: Offline pure-Rust PlantUML SVG rendering sharing Mermaid's diagram IR and assets — covering UML (Sequence, Class, State, Usecase, Object/Map, Timing, Activity, Component), planning/structure (Mindmap, WBS, Gantt), C4/JSON/YAML/EBNF/nwdiag/chronology, and lightweight themes/Creole formatting.
+- **Obsidian-Style `SoraneWorkspace`** *(Proposed: [#283](https://github.com/ibisjp/ibis-office/issues/283))*: Desktop knowledge shell (`crates/sorane-workspace`) with split panes, tab pinning, session persistence, command palette, daily notes, Wiki links, OKF v0.3 knowledge items, Tag Browser, Outgoing Links, Local Graph, Outline, Office Inspector, and Git dock.
 
-Detailed tracking of upstream sync status and feature parity is maintained in [docs/fork-feature-differences.md](docs/fork-feature-differences.md). Key additions currently in `soraneDocs`:
+### 3. Extended Document, Diagram & Legacy Formats
+- **Pure-Rust PDF, XPS/OpenXPS & OFD** *(Adopted: [#235](https://github.com/ibisjp/ibis-office/issues/235); Proposed: [#272](https://github.com/ibisjp/ibis-office/issues/272))*: Pure-Rust fixed-layout viewing and signature inspection, plus Markdown export with figure preservation.
+- **Ichitaro (`.jtd`, `.jtt`, `.jttc`)** *(Fork)*: Read-only preview restoring logical records, vertical text, ruby, borders, images, thumbnails, and TOC, with DOCX/HTML export ([docs/jtd-preview.md](docs/jtd-preview.md)).
+- **Microsoft Visio (`.vsdx`)** *(Proposed: [#292](https://github.com/ibisjp/ibis-office/issues/292))*: Viewing, creation, editing, stencil palette, flowchart shapes, snap highlights, and Web/Wasm support.
+- **Unified Office Format (UOF / `.uot`)** *(Fork)*: Native UOT document and embedded image import.
+- **WordPerfect (`.wpd`) & WPG 2** *(Fork)*: WordPerfect text/table import with WPG 2 vector, bitmap, curve, arc, and compound-path image composition.
+- **DocuWorks (`.xdw`, `.xbd`) & Hancom (`.hwp`, `.hwpx`)** *(Proposed: [#254](https://github.com/ibisjp/ibis-office/issues/254), [#288](https://github.com/ibisjp/ibis-office/issues/288))*: Fixed-layout DocuWorks viewing and editable DOCX import for HWP 5.0 / HWPX.
+- **EPUB 3 & Production Images** *(Fork)*: Native EPUB 3 import, plus HEIC, DPX, Cineon, OpenEXR, and JPEG 2000 preview ([docs/production-image-preview-ja.md](docs/production-image-preview-ja.md)).
+- **OOXML & ODF Compatibility** *(Adopted: [#190](https://github.com/ibisjp/ibis-office/issues/190), [#221](https://github.com/ibisjp/ibis-office/issues/221))*: Office 2007 Standard encryption decryption, DOCX `w14:paraId` preservation, and extended ODF nested/hidden-row/column import.
 
-- **Knowledge Workspace (`SoraneWorkspace`) & Markdown / PlantUML**
-  - Obsidian-style desktop shell (`crates/sorane-workspace`) with split panes, tab pinning, session persistence, command palette, daily notes, Wiki links, Tag Browser, Outgoing Links, Local Graph, Outline, Office Inspector, and Git dock ([#283](https://github.com/ibisjp/ibis-office/issues/283)).
-  - Block-level Markdown `SourceMap` with surgical WYSIWYG writeback and bidirectional cursor/scroll sync ([#286](https://github.com/ibisjp/ibis-office/issues/286)).
-  - Offline pure-Rust PlantUML SVG rendering sharing Mermaid's diagram IR and assets across UML and non-UML diagrams ([#298](https://github.com/ibisjp/ibis-office/issues/298)).
-- **Additional Document, Diagram & Data Formats**
-  - **Visio (`.vsdx`)**: Viewing, creation, editing, stencil palette, flowchart shapes, and Wasm support ([#292](https://github.com/ibisjp/ibis-office/issues/292)).
-  - **Ichitaro (`.jtd`, `.jtt`, `.jttc`)**: Read-only preview with vertical text, ruby, borders, images, and DOCX/HTML export ([docs/jtd-preview.md](docs/jtd-preview.md)).
-  - **DocuWorks (`.xdw`, `.xbd`) & Hancom (`.hwp`, `.hwpx`)**: Viewing and editable DOCX import ([#254](https://github.com/ibisjp/ibis-office/issues/254), [#288](https://github.com/ibisjp/ibis-office/issues/288)).
-  - **EPUB 3 & Production Images**: Native EPUB 3 import, plus HEIC, DPX, Cineon, OpenEXR, and JPEG 2000 preview ([docs/production-image-preview-ja.md](docs/production-image-preview-ja.md)).
-  - **External Data Sources**: Spreadsheet ingestion for Parquet, JSON Lines, Arrow IPC, Avro, and SQLite, plus encoding-aware CSV save ([#263](https://github.com/ibisjp/ibis-office/issues/263)).
-- **Japanese Civic, Legal, Medical & Trust Extensions**
-  - **Roster & Name Matching**: `FIELDMATCH` functions, variant character dictionaries, date review, and administrative PUP/Gaiji normalization ([#257](https://github.com/ibisjp/ibis-office/issues/257)).
-  - **Legal & Medical**: e-Gov XML / Lawtext bidirectional conversion and comparison tables ([#229](https://github.com/ibisjp/ibis-office/issues/229)); pure-Rust medical document (UKE/DPC, FHIR/CDA/HL7 v2) and non-diagnostic DICOM interoperability ([#246](https://github.com/ibisjp/ibis-office/issues/246)).
-  - **Signatures, Credentials & Supply Chain**: Document signature inspection, image C2PA verification, SD-JWT / mDOC / OID4VP spreadsheet tooling, and CycloneDX SBOM/CBOM + OSV-Scanner review ([#232](https://github.com/ibisjp/ibis-office/issues/232), [#279](https://github.com/ibisjp/ibis-office/issues/279), [#280](https://github.com/ibisjp/ibis-office/issues/280)).
-- **Web, PWA, Mobile & AI Assistant**
-  - **Web (`docs.sorane.dev`)**: Installable PWA with offline local-file support, GitHub App repository (Vault) login/creation/editing, HTML export ([#208](https://github.com/ibisjp/ibis-office/issues/208)), and static Japanese font subset chunks.
-  - **Mobile & Performance**: Android/iOS native GPUI builds ([#247](https://github.com/ibisjp/ibis-office/issues/247)) and hot-path rendering/geometry caching optimizations ([#299](https://github.com/ibisjp/ibis-office/issues/299), [#300](https://github.com/ibisjp/ibis-office/issues/300)).
-  - **AI Assistant**: Cross-format editing sidebar via OpenAI-compatible APIs (Desktop) and Cloudflare Workers AI (Web) ([#231](https://github.com/ibisjp/ibis-office/issues/231)).
-- **Branding, Provenance & Packaging**
-  - Distinct `soraneDocs` branding and app identifiers so builds can coexist with upstream `ibisOffice`.
-  - Upstream update checks and Windows automatic "Open With" registration are disabled to avoid conflicts.
-  - CI generates CycloneDX 1.6 SBOM/CBOM artifacts and GitHub Artifact Attestations for Linux AppImage builds ([#285](https://github.com/ibisjp/ibis-office/issues/285)).
+### 4. BI, External Data Ingestion & Spreadsheet Enhancements
+- **External Data Sources & Power Query** *(Proposed: [#263](https://github.com/ibisjp/ibis-office/issues/263))*: Spreadsheet query ingestion for local Parquet (with column selection, multi-file append, Zstandard), JSON Lines, Arrow IPC, Avro, and SQLite, alongside encoding-aware CSV in-place saving.
+- **Machine-Readability & Roster Matching** *(Adopted: [#194](https://github.com/ibisjp/ibis-office/issues/194); Proposed: [#257](https://github.com/ibisjp/ibis-office/issues/257))*: Digital Agency machine-readability checker (adopted and unified with upstream's panel), plus `FIELDMATCH` functions, variant-character dictionaries, date review, and administrative PUP/Gaiji normalization.
+- **Security & Compliance Analytics** *(Proposed: [#279](https://github.com/ibisjp/ibis-office/issues/279), [#280](https://github.com/ibisjp/ibis-office/issues/280))*: Spreadsheet workflows for reviewing CycloneDX SBOM/CBOM inventories (including PQC migration tracking) and OSV-Scanner vulnerability results.
+
+### 5. AI Assistant & MCP Extensions
+- **AI Assistant Sidebar** *(Proposed: [#231](https://github.com/ibisjp/ibis-office/issues/231))*: Cross-format editing assistance and change proposals for DOCX, XLSX, and PPTX backed by OpenAI-compatible APIs (Desktop) and Cloudflare Workers AI (Web).
+- **MCP Tooling & Safety** *(Proposed: [#159](https://github.com/ibisjp/ibis-office/issues/159), [#275](https://github.com/ibisjp/ibis-office/issues/275), [#276](https://github.com/ibisjp/ibis-office/issues/276), [#281](https://github.com/ibisjp/ibis-office/issues/281))*: Reconnecting to a running Desktop Assistant from external MCP servers, respecting sheet protection hidden-formula settings, pre-expansion cell-limit checks, and skill integration.
+
+### 6. Japanese Typography, Civic, Legal, Medical & Trust
+- **Japanese Typography & Fonts** *(Adopted: [#158](https://github.com/ibisjp/ibis-office/issues/158), [#160](https://github.com/ibisjp/ibis-office/issues/160), [#193](https://github.com/ibisjp/ibis-office/issues/193), [#222](https://github.com/ibisjp/ibis-office/issues/222), [#230](https://github.com/ibisjp/ibis-office/issues/230), [#248](https://github.com/ibisjp/ibis-office/issues/248), [#251](https://github.com/ibisjp/ibis-office/issues/251))*: IVS / Japanese Government Standard Characters rendering & macOS glyph fixes, MS Mincho substitution fix on non-Windows, Japanese symbol/kana advance width & GPOS offset tuning, vertical emphasis mark placement, vertical table cell orientation/merging, and justified bullet layout fixes.
+- **Legal, Medical & Structured Forms** *(Proposed: [#229](https://github.com/ibisjp/ibis-office/issues/229), [#246](https://github.com/ibisjp/ibis-office/issues/246), [#270](https://github.com/ibisjp/ibis-office/issues/270))*: e-Gov XML / Lawtext bidirectional conversion and comparison tables; pure-Rust medical document (UKE/DPC, FHIR/CDA/HL7 v2) and non-diagnostic DICOM interoperability (Non-SaMD scope); DOCX form templates and structured-data generation.
+- **Signatures & Digital Credentials** *(Proposed: [#232](https://github.com/ibisjp/ibis-office/issues/232))*: Document electronic signature inspection, image C2PA verification, and spreadsheet SD-JWT / mDOC / OID4VP creation and verification.
+
+### 7. Web (Wasm/WebGPU), PWA, Performance & Supply Chain
+- **Web Delivery & Touch** *(Adopted: [#152](https://github.com/ibisjp/ibis-office/issues/152), [#157](https://github.com/ibisjp/ibis-office/issues/157), [#207](https://github.com/ibisjp/ibis-office/issues/207), [#212](https://github.com/ibisjp/ibis-office/issues/212))*: Chunked Wasm delivery for CDN limits, on-demand font glyph fetching, two-finger pinch-to-zoom, and touch timestamp panic fix.
+- **PWA, GitHub Vault & HTML Export** *(Proposed: [#208](https://github.com/ibisjp/ibis-office/issues/208))*: Installable PWA at `https://docs.sorane.dev` with offline local-file support, GitHub App repository (Vault) login/creation/editing, structured HTML export, and static Japanese font subset chunks.
+- **Performance & Provenance** *(Proposed: [#285](https://github.com/ibisjp/ibis-office/issues/285), [#299](https://github.com/ibisjp/ibis-office/issues/299), [#300](https://github.com/ibisjp/ibis-office/issues/300))*: Hot-path caching for GPUI rendering, settings, menu bar, and DOCX/XLSX geometry; CycloneDX 1.6 SBOM/CBOM generation and GitHub Artifact Attestations for Linux AppImage builds.
+
+## Upstream vs. Fork Summary
+
+For a commit-level and module-level breakdown of what is shared with upstream `main` versus what remains fork-specific, see [docs/fork-feature-differences.md](docs/fork-feature-differences.md).
+
+In addition to the proposed/fork-only capabilities above, `soraneDocs` intentionally diverges from upstream in packaging and safety:
+- Uses distinct `soraneDocs` branding and app identifiers so desktop/mobile builds can coexist with `ibisOffice`.
+- Disables inherited auto-update checks and Windows automatic "Open With" registration to avoid pointing at upstream feeds or overwriting upstream associations.
 
 ## Building & Development
 
@@ -85,7 +89,7 @@ cd docs
 cargo build --release
 ```
 
-- **Web edition**: `scripts/build-web.sh --release` (serves `www/` via WebAssembly + WebGPU).
+- **Web edition**: `scripts/build-web.sh --release` (outputs static Wasm/WebGPU assets in `www/`).
 - **Desktop bundles**: `scripts/bundle-macos.sh --release`, `scripts/bundle-linux.sh --release`, or `cargo build --release -p ibis-office-app` on Windows.
 - **Branch & CI workflow**: `sorane` is the integration branch. See [docs/fork-workflow.md](docs/fork-workflow.md) for testing, CI verification, and deployment details.
 
