@@ -7,6 +7,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+encoding_rs = "0.8"
 delharc = { version = "0.8", default-features = false }
 ibis-pdf.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "bmp"] }
