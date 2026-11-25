@@ -39,7 +39,6 @@ ibis-lawtext.workspace = true
 ibis-ooxml = { workspace = true, optional = true }
 ibis-odf.workspace = true
 ibis-emf.workspace = true
-ibis-eot.workspace = true
 gpui-kit.workspace = true
 lyon_tessellation = "1.0"
 log = "0.4"
