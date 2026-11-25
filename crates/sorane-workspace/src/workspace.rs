@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ibis_formats::Kind;
@@ -21,7 +21,12 @@ use ibis_office_shell::folder_context::{ContentSearchHit, Folder};
 use ibis_office_shell::git_workspace::{GitSnapshot, inspect_git_snapshot};
 use ibis_office_shell::window_editors::{WindowSetup, WorkspaceEditorHost};
 
+use sorane_github::{
+    DeviceCodeResponse, DeviceTokenPoll, GITHUB_APP_INSTALL_URL, GitHubRepo, RepoCatalog,
+};
+
 use crate::actions::*;
+use crate::github::{self, GitHubSession};
 use crate::local_graph::{LinkDirection, compute_local_graph_layout};
 use crate::model::*;
 use crate::outline::{OutlineTarget, extract_outline};
@@ -77,6 +82,14 @@ pub struct SoraneWorkspace {
     // Quick Switcher / Command Palette overlay (`Cmd/Ctrl+O` / `Cmd/Ctrl+P`)
     pub(crate) quick_switcher: Option<QuickSwitcherState>,
 
+    // GitHub App Vault integration (Device Flow + GIT_ASKPASS sync)
+    github_session: Option<GitHubSession>,
+    github_catalog: Option<RepoCatalog>,
+    github_device_flow: Option<DeviceCodeResponse>,
+    github_busy: bool,
+    github_status: Option<(String, bool)>,
+    github_auth_generation: u64,
+
     // Last OS window title applied
     last_window_title: String,
 }
@@ -120,6 +133,8 @@ impl SoraneWorkspace {
             }
         });
 
+        let saved_github_session = github::load_session();
+
         let mut ws = Self {
             panes: vec![initial_pane],
             layout: SplitLayout::Single(PaneId(0)),
@@ -149,12 +164,22 @@ impl SoraneWorkspace {
             cached_search_hits: Vec::new(),
             vault_status: None,
             quick_switcher: None,
+            github_session: saved_github_session,
+            github_catalog: None,
+            github_device_flow: None,
+            github_busy: false,
+            github_status: None,
+            github_auth_generation: 0,
             last_window_title: String::new(),
         };
 
         // Restore the last workspace session automatically only when launched without an explicit file.
         if launched_empty && let Some(session) = load_last_session() {
             ws.restore_session(session, window, cx);
+        }
+
+        if ws.github_session.is_some() {
+            ws.refresh_github_catalog(window, cx);
         }
 
         ws
@@ -1086,17 +1111,8 @@ impl SoraneWorkspace {
         }
     }
 
-    pub(crate) fn pick_vault_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            extensions: Vec::new(),
-            prompt: Some(ibis_office_shell::i18n::text("file.open-folder")),
-        });
+    pub(crate) fn open_vault_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else { return };
-            let Some(path) = paths.into_iter().next() else { return };
             let scanned = cx
                 .background_executor()
                 .spawn(async move { Folder::scan_dir(&path) })
@@ -1121,6 +1137,14 @@ impl SoraneWorkspace {
                     }
                     ws.sync_vault_to_all_editors(window, cx);
                     ws.refresh_git_snapshot(window, cx);
+                    let index_path = new_root.join("index.md");
+                    if index_path.is_file()
+                        && ws
+                            .active_editor(cx)
+                            .is_some_and(|e| e.read(cx).replaceable_by_open())
+                    {
+                        ws.open_path_in_active_pane(index_path, window, cx);
+                    }
                     ws.save_workspace_session();
                     cx.notify();
                 }
@@ -1131,6 +1155,625 @@ impl SoraneWorkspace {
             });
         })
         .detach();
+    }
+
+    pub(crate) fn pick_vault_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            extensions: Vec::new(),
+            prompt: Some(ibis_office_shell::i18n::text("file.open-folder")),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let _ = this.update_in(cx, |ws, window, cx| {
+                ws.open_vault_path(path, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn start_github_login(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.github_busy {
+            return;
+        }
+        self.github_auth_generation = self.github_auth_generation.wrapping_add(1);
+        let auth_gen = self.github_auth_generation;
+        self.github_busy = true;
+        self.github_status = Some(("GitHub 認証コードを取得しています…".to_string(), false));
+        cx.notify();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let flow_res = cx
+                .background_executor()
+                .spawn(async move { github::start_device_flow() })
+                .await;
+            let flow = match flow_res {
+                Ok(f) => f,
+                Err(err) => {
+                    let _ = this.update_in(cx, |ws, _, cx| {
+                        ws.github_busy = false;
+                        ws.github_status = Some((err, true));
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+
+            let verify_url = flow.verification_uri.clone();
+            let device_code = flow.device_code.clone();
+            let mut interval_secs = flow.interval.max(5);
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(flow.expires_in.min(900));
+
+            let _ = this.update_in(cx, |ws, _, cx| {
+                if ws.github_auth_generation != auth_gen {
+                    return;
+                }
+                ws.github_device_flow = Some(flow);
+                ws.github_busy = false;
+                ws.github_status = Some((
+                    "ブラウザでコードを入力して認証を完了してください。".to_string(),
+                    false,
+                ));
+                ibis_office_shell::external::open_url(&verify_url, cx);
+                cx.notify();
+            });
+
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    let _ = this.update_in(cx, |ws, _, cx| {
+                        if ws.github_auth_generation == auth_gen {
+                            ws.github_device_flow = None;
+                            ws.github_status = Some((
+                                "認証コードの有効期限が切れました。もう一度お試しください。".to_string(),
+                                true,
+                            ));
+                            cx.notify();
+                        }
+                    });
+                    return;
+                }
+
+                let code_clone = device_code.clone();
+                let wait = std::time::Duration::from_secs(interval_secs);
+                let poll_res = cx
+                    .background_executor()
+                    .spawn(async move {
+                        std::thread::sleep(wait);
+                        github::poll_device_token(&code_clone)
+                    })
+                    .await;
+
+                let still_active = this
+                    .update_in(cx, |ws, _, _| ws.github_auth_generation == auth_gen)
+                    .unwrap_or(false);
+                if !still_active {
+                    return;
+                }
+
+                match poll_res {
+                    Ok(DeviceTokenPoll::Pending) => continue,
+                    Ok(DeviceTokenPoll::SlowDown) => {
+                        interval_secs = (interval_secs + 5).min(30);
+                        continue;
+                    }
+                    Ok(DeviceTokenPoll::Authorized { access_token }) => {
+                        let finish_res = cx
+                            .background_executor()
+                            .spawn(async move {
+                                let user = github::fetch_user(&access_token)?;
+                                let session = GitHubSession {
+                                    access_token: access_token.clone(),
+                                    login: user.login.clone(),
+                                    name: user.name.clone(),
+                                };
+                                github::save_session(&session)?;
+                                let catalog =
+                                    github::fetch_repo_catalog(&access_token, &user.login)?;
+                                Ok::<_, String>((session, catalog))
+                            })
+                            .await;
+
+                        let _ = this.update_in(cx, |ws, _, cx| {
+                            if ws.github_auth_generation != auth_gen {
+                                return;
+                            }
+                            ws.github_device_flow = None;
+                            match finish_res {
+                                Ok((session, catalog)) => {
+                                    ws.github_status = Some((
+                                        format!("@{} でログインしました。", session.login),
+                                        false,
+                                    ));
+                                    ws.github_session = Some(session);
+                                    ws.github_catalog = Some(catalog);
+                                }
+                                Err(err) => {
+                                    ws.github_status = Some((err, true));
+                                }
+                            }
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    Ok(DeviceTokenPoll::Expired) => {
+                        let _ = this.update_in(cx, |ws, _, cx| {
+                            ws.github_device_flow = None;
+                            ws.github_status = Some((
+                                "認証コードの有効期限が切れました。".to_string(),
+                                true,
+                            ));
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    Ok(DeviceTokenPoll::AccessDenied) => {
+                        let _ = this.update_in(cx, |ws, _, cx| {
+                            ws.github_device_flow = None;
+                            ws.github_status = Some(("認証がキャンセルされました。".to_string(), true));
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    Ok(DeviceTokenPoll::Error(err)) | Err(err) => {
+                        let _ = this.update_in(cx, |ws, _, cx| {
+                            ws.github_device_flow = None;
+                            ws.github_status = Some((err, true));
+                            cx.notify();
+                        });
+                        return;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn cancel_github_login(&mut self, cx: &mut Context<Self>) {
+        self.github_auth_generation = self.github_auth_generation.wrapping_add(1);
+        self.github_device_flow = None;
+        self.github_busy = false;
+        self.github_status = None;
+        cx.notify();
+    }
+
+    pub(crate) fn logout_github(&mut self, cx: &mut Context<Self>) {
+        self.github_auth_generation = self.github_auth_generation.wrapping_add(1);
+        github::clear_session();
+        self.github_session = None;
+        self.github_catalog = None;
+        self.github_device_flow = None;
+        self.github_busy = false;
+        self.github_status = None;
+        cx.notify();
+    }
+
+    pub(crate) fn refresh_github_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.github_session.clone() else {
+            return;
+        };
+        self.github_busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move {
+                    github::fetch_repo_catalog(&session.access_token, &session.login)
+                })
+                .await;
+            let _ = this.update_in(cx, |ws, _, cx| {
+                ws.github_busy = false;
+                match res {
+                    Ok(catalog) => {
+                        ws.github_catalog = Some(catalog);
+                    }
+                    Err(err) => {
+                        ws.github_status = Some((err, true));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn create_github_soranedocs_repo(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.github_session.clone() else {
+            return;
+        };
+        self.github_busy = true;
+        self.github_status = Some((
+            format!("Private リポジトリ {}/soraneDocs を作成しています…", session.login),
+            false,
+        ));
+        cx.notify();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move {
+                    let repo = github::create_private_vault_repo(
+                        &session.access_token,
+                        &session.login,
+                        sorane_github::DEFAULT_VAULT_REPO_NAME,
+                    )?;
+                    let target = github::default_clone_target(&repo.repo);
+                    let cloned =
+                        github::clone_or_open_repo(&session.access_token, &repo, &target)?;
+                    let catalog =
+                        github::fetch_repo_catalog(&session.access_token, &session.login).ok();
+                    Ok::<_, String>((cloned, catalog))
+                })
+                .await;
+
+            let _ = this.update_in(cx, |ws, window, cx| {
+                ws.github_busy = false;
+                match res {
+                    Ok((path, catalog)) => {
+                        if let Some(c) = catalog {
+                            ws.github_catalog = Some(c);
+                        }
+                        ws.github_status = Some((
+                            format!("{} を開きました。", path.display()),
+                            false,
+                        ));
+                        ws.open_vault_path(path, window, cx);
+                    }
+                    Err(err) => {
+                        ws.github_status = Some((err, true));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn connect_github_repo(
+        &mut self,
+        repo: GitHubRepo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.github_session.clone() else {
+            return;
+        };
+        let target = github::default_clone_target(&repo.repo);
+        self.github_busy = true;
+        self.github_status = Some((
+            format!("{} を {} へ同期しています…", repo.full_name, target.display()),
+            false,
+        ));
+        cx.notify();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move {
+                    github::clone_or_open_repo(&session.access_token, &repo, &target)
+                })
+                .await;
+            let _ = this.update_in(cx, |ws, window, cx| {
+                ws.github_busy = false;
+                match res {
+                    Ok(path) => {
+                        ws.github_status = Some((
+                            format!("{} を開きました。", path.display()),
+                            false,
+                        ));
+                        ws.open_vault_path(path, window, cx);
+                    }
+                    Err(err) => {
+                        ws.github_status = Some((err, true));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn github_pull_current_vault(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(session), Some(root)) = (
+            self.github_session.clone(),
+            self.vault.as_ref().map(|v| v.root().to_path_buf()),
+        ) else {
+            return;
+        };
+        self.github_busy = true;
+        self.github_status = Some(("GitHub から Pull しています…".to_string(), false));
+        cx.notify();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move { github::git_pull(&session.access_token, &root) })
+                .await;
+            let _ = this.update_in(cx, |ws, window, cx| {
+                ws.github_busy = false;
+                match res {
+                    Ok(msg) => {
+                        let summary = if msg.is_empty() {
+                            "最新の状態です。".to_string()
+                        } else {
+                            msg
+                        };
+                        ws.github_status = Some((summary, false));
+                        ws.refresh_vault_folder(window, cx);
+                        ws.refresh_git_snapshot(window, cx);
+                    }
+                    Err(err) => {
+                        ws.github_status = Some((err, true));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn github_push_current_vault(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(session), Some(root)) = (
+            self.github_session.clone(),
+            self.vault.as_ref().map(|v| v.root().to_path_buf()),
+        ) else {
+            return;
+        };
+        self.github_busy = true;
+        self.github_status = Some(("変更をコミットして GitHub へ Push しています…".to_string(), false));
+        cx.notify();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move {
+                    github::git_commit_and_push(
+                        &session.access_token,
+                        &root,
+                        &session.login,
+                        "Update documents via soraneDocs Desktop",
+                    )
+                })
+                .await;
+            let _ = this.update_in(cx, |ws, window, cx| {
+                ws.github_busy = false;
+                match res {
+                    Ok(msg) => {
+                        ws.github_status = Some((msg, false));
+                        ws.refresh_git_snapshot(window, cx);
+                    }
+                    Err(err) => {
+                        ws.github_status = Some((err, true));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_github_panel(&self, has_open_git_vault: bool, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme();
+        let mut card = v_flex()
+            .p_2()
+            .gap_2()
+            .rounded(px(6.))
+            .bg(theme.background)
+            .border_1()
+            .border_color(theme.border);
+
+        let header_label = match &self.github_session {
+            Some(s) => format!("GitHub (@{})", s.login),
+            None => "GitHub 連携".to_string(),
+        };
+        card = card.child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.foreground)
+                .child(header_label),
+        );
+
+        if let Some((msg, is_err)) = &self.github_status {
+            card = card.child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(if *is_err {
+                        theme.danger
+                    } else {
+                        theme.muted_foreground
+                    })
+                    .child(msg.clone()),
+            );
+        }
+
+        if let Some(flow) = &self.github_device_flow {
+            let verify_url = flow.verification_uri.clone();
+            card = card
+                .child(
+                    div()
+                        .p_2()
+                        .rounded(px(4.))
+                        .bg(theme.secondary)
+                        .text_sm()
+                        .font_weight(FontWeight::BOLD)
+                        .child(format!("認証コード: {}", flow.user_code)),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("ws-gh-open-verify")
+                                .xsmall()
+                                .primary()
+                                .label("ブラウザを開く")
+                                .on_click(move |_, _, cx| {
+                                    ibis_office_shell::external::open_url(&verify_url, cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("ws-gh-cancel-login")
+                                .xsmall()
+                                .label("キャンセル")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.cancel_github_login(cx);
+                                })),
+                        ),
+                );
+            return card;
+        }
+
+        let Some(_session) = &self.github_session else {
+            return card.child(
+                Button::new("ws-gh-login")
+                    .small()
+                    .primary()
+                    .disabled(self.github_busy)
+                    .label("GitHub でログイン")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.start_github_login(window, cx);
+                    })),
+            );
+        };
+
+        if has_open_git_vault {
+            card = card.child(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("ws-gh-pull")
+                            .xsmall()
+                            .disabled(self.github_busy)
+                            .label("Pull")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.github_pull_current_vault(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("ws-gh-push")
+                            .xsmall()
+                            .primary()
+                            .disabled(self.github_busy)
+                            .label("Commit & Push")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.github_push_current_vault(window, cx);
+                            })),
+                    ),
+            );
+        }
+
+        if let Some(catalog) = &self.github_catalog {
+            if !catalog.installed {
+                card = card.child(
+                    Button::new("ws-gh-install-app")
+                        .xsmall()
+                        .label("GitHub App をインストール ↗")
+                        .on_click(|_, _, cx| {
+                            ibis_office_shell::external::open_url(GITHUB_APP_INSTALL_URL, cx);
+                        }),
+                );
+            } else if !catalog.can_create_repo && !catalog.has_sorane_docs_repo {
+                let settings_url = catalog
+                    .install_settings_url
+                    .clone()
+                    .unwrap_or_else(|| "https://github.com/settings/installations".to_string());
+                card = card.child(
+                    Button::new("ws-gh-app-settings")
+                        .xsmall()
+                        .label("アプリ設定 (All repos) ↗")
+                        .on_click(move |_, _, cx| {
+                            ibis_office_shell::external::open_url(&settings_url, cx);
+                        }),
+                );
+            }
+
+            if !has_open_git_vault {
+                if !catalog.has_sorane_docs_repo {
+                    card = card.child(
+                        Button::new("ws-gh-create-soranedocs")
+                            .small()
+                            .primary()
+                            .disabled(self.github_busy)
+                            .label("soraneDocs (Private) を作成して開く")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.create_github_soranedocs_repo(window, cx);
+                            })),
+                    );
+                }
+
+                if !catalog.repos.is_empty() {
+                    card = card.child(
+                        div()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.muted_foreground)
+                            .child("接続するリポジトリを選択"),
+                    );
+                    for (idx, repo) in catalog.repos.iter().take(8).enumerate() {
+                        let repo_clone = repo.clone();
+                        let label = format!(
+                            "{}{}",
+                            repo.full_name,
+                            if repo.private { " (Private)" } else { "" }
+                        );
+                        card = card.child(
+                            div()
+                                .id(SharedString::from(format!("ws-gh-repo:{idx}")))
+                                .cursor_pointer()
+                                .rounded(px(4.))
+                                .px_2()
+                                .py(px(4.))
+                                .text_xs()
+                                .truncate()
+                                .hover(|h| h.bg(theme.secondary))
+                                .child(label)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if !this.github_busy {
+                                        this.connect_github_repo(repo_clone.clone(), window, cx);
+                                    }
+                                })),
+                        );
+                    }
+                }
+            }
+        }
+
+        card.child(
+            h_flex()
+                .gap_1()
+                .child(
+                    Button::new("ws-gh-refresh")
+                        .xsmall()
+                        .disabled(self.github_busy)
+                        .label("更新")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.refresh_github_catalog(window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("ws-gh-logout")
+                        .xsmall()
+                        .label("ログアウト")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.logout_github(cx);
+                        })),
+                ),
+        )
     }
 
     pub(crate) fn refresh_vault_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1504,7 +2147,8 @@ impl SoraneWorkspace {
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.pick_vault_folder(window, cx);
                                 })),
-                        ),
+                        )
+                        .child(self.render_github_panel(false, cx)),
                 );
             }
             (Some(vault), LeftPanelKind::Vault) => {
@@ -1815,15 +2459,23 @@ impl SoraneWorkspace {
             (Some(vault), LeftPanelKind::Git) => {
                 if !vault.has_git() {
                     list = list.child(
-                        div()
+                        v_flex()
                             .p_3()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child("このフォルダは Git リポジトリではありません。"),
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child("このフォルダは Git リポジトリではありません。"),
+                            )
+                            .child(self.render_github_panel(false, cx)),
                     );
                 } else {
                     let root_for_full_view = vault.root().to_path_buf();
-                    let mut git_col = v_flex().p_2().gap_2();
+                    let mut git_col = v_flex()
+                        .p_2()
+                        .gap_2()
+                        .child(self.render_github_panel(true, cx));
 
                     if let Some(snap) = &self.git_snapshot {
                         git_col = git_col

@@ -10967,6 +10967,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b8a731ed60e89177c8a7ab05fe0f1511cedd3e70e773f288f9de33a9cfdc21e"
 
 [[package]]
+name = "sorane-github"
+version = "0.8.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "sorane-workspace"
 version = "0.8.0"
 dependencies = [
@@ -10977,6 +10986,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "sorane-github",
 ]
 
 [[package]]
