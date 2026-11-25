@@ -22,13 +22,19 @@ pub(super) enum PlantUmlKind {
     State,
     Usecase,
     Er,
+    Mindmap,
+    Wbs,
+    Gantt,
+    Activity,
+    Component,
     Timing,
     UnsupportedEnvelope,
 }
 
-/// Render a supported PlantUML diagram (Sequence, Class, State, Usecase, or ER) into SVG
-/// using the shared internal renderers, preserving the original source verbatim and
-/// reporting unsupported constructs with 1-based line numbers.
+/// Render a supported PlantUML diagram (Sequence, Class, State, Usecase, ER, Mindmap, WBS,
+/// Gantt, Activity, or Component/Deployment) into SVG using the shared internal renderers,
+/// preserving the original source verbatim and reporting unsupported constructs with
+/// 1-based line numbers.
 pub fn render_plantuml(source: &str) -> PlantUmlNativeRender {
     match detect_plantuml_kind(source) {
         PlantUmlKind::Sequence | PlantUmlKind::Timing | PlantUmlKind::UnsupportedEnvelope => {
@@ -38,6 +44,23 @@ pub fn render_plantuml(source: &str) -> PlantUmlNativeRender {
         PlantUmlKind::State => render_lowered(source, convert_plantuml_state(source)),
         PlantUmlKind::Usecase => render_lowered(source, convert_plantuml_usecase(source)),
         PlantUmlKind::Er => render_lowered(source, convert_plantuml_er(source)),
+        PlantUmlKind::Mindmap => {
+            render_lowered(source, super::plantuml_extra::convert_plantuml_mindmap(source))
+        }
+        PlantUmlKind::Wbs => {
+            render_lowered(source, super::plantuml_extra::convert_plantuml_wbs(source))
+        }
+        PlantUmlKind::Gantt => {
+            render_lowered(source, super::plantuml_extra::convert_plantuml_gantt(source))
+        }
+        PlantUmlKind::Activity => render_lowered(
+            source,
+            super::plantuml_extra::convert_plantuml_activity(source),
+        ),
+        PlantUmlKind::Component => render_lowered(
+            source,
+            super::plantuml_extra::convert_plantuml_component(source),
+        ),
     }
 }
 
@@ -61,8 +84,11 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
     let mut saw_usecase = false;
     let mut saw_er = false;
     let mut saw_state = false;
-    let mut saw_class = false;
-    let mut saw_sequence = false;
+    let mut saw_class_strong = false;
+    let mut saw_interface = false;
+    let mut saw_seq_strong = false;
+    let mut saw_activity = false;
+    let mut saw_component = false;
     let mut saw_actor = false;
     let mut saw_box_container = false;
 
@@ -75,10 +101,16 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
         let lower = t.to_ascii_lowercase();
         if lower.starts_with("@start") {
             let dir = lower.split_whitespace().next().unwrap_or("");
-            if dir != "@startuml" {
-                return PlantUmlKind::UnsupportedEnvelope;
-            }
-            continue;
+            return match dir {
+                "@startuml" => {
+                    // Inspect body lines to determine diagram kind.
+                    continue;
+                }
+                "@startmindmap" => PlantUmlKind::Mindmap,
+                "@startwbs" => PlantUmlKind::Wbs,
+                "@startgantt" => PlantUmlKind::Gantt,
+                _ => PlantUmlKind::UnsupportedEnvelope,
+            };
         }
         if lower.starts_with("@end") {
             break;
@@ -89,9 +121,45 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
         if is_timing_statement(t, &lower) {
             return PlantUmlKind::Timing;
         }
+        if lower == "start"
+            || lower == "stop"
+            || lower == "endif"
+            || lower == "endwhile"
+            || lower.starts_with("endwhile ")
+            || lower.starts_with("endwhile(")
+            || lower == "fork"
+            || lower == "fork again"
+            || lower == "end fork"
+            || lower == "end merge"
+            || lower == "repeat"
+            || lower.starts_with("repeat while")
+            || lower.starts_with("partition ")
+            || ((lower.starts_with("if ") || lower.starts_with("if(")) && lower.contains("then"))
+            || lower.starts_with("elseif ")
+            || lower.starts_with("elseif(")
+            || lower.starts_with("while ")
+            || lower.starts_with("while(")
+            || (t.starts_with(':') && t.ends_with(';') && t.len() >= 2)
+        {
+            saw_activity = true;
+        }
+        if lower.starts_with("component ")
+            || lower.starts_with("node ")
+            || lower.starts_with("cloud ")
+            || lower.starts_with("storage ")
+            || lower.starts_with("artifact ")
+            || lower.starts_with("folder ")
+            || lower.starts_with("frame ")
+            || lower.starts_with("card ")
+            || lower.starts_with("agent ")
+            || (lower.starts_with("database ") && t.ends_with('{'))
+            || has_bracket_component(t)
+        {
+            saw_component = true;
+        }
         if lower.starts_with("usecase ")
             || (t.starts_with('(') && t.contains(')'))
-            || (t.starts_with(':') && t[1..].contains(':'))
+            || (t.starts_with(':') && !t.ends_with(';') && t[1..].contains(':'))
         {
             saw_usecase = true;
         }
@@ -104,7 +172,6 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
         if lower.starts_with("class ")
             || lower.starts_with("abstract class ")
             || lower.starts_with("abstract ")
-            || lower.starts_with("interface ")
             || lower.starts_with("enum ")
             || lower.starts_with("struct ")
             || lower.starts_with("annotation ")
@@ -117,14 +184,15 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
             || t.contains("..|>")
             || t.contains("<|..")
         {
-            saw_class = true;
+            saw_class_strong = true;
+        }
+        if lower.starts_with("interface ") {
+            saw_interface = true;
         }
         if lower.starts_with("participant ")
             || lower.starts_with("boundary ")
             || lower.starts_with("control ")
-            || lower.starts_with("database ")
             || lower.starts_with("collections ")
-            || lower.starts_with("queue ")
             || lower == "autonumber"
             || lower.starts_with("autonumber ")
             || lower == "hide footbox"
@@ -139,7 +207,7 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
             || t.starts_with("[->")
             || t.contains("->]")
         {
-            saw_sequence = true;
+            saw_seq_strong = true;
         }
         if lower.starts_with("actor ") {
             saw_actor = true;
@@ -149,19 +217,58 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
         }
     }
 
-    if saw_usecase || (saw_actor && saw_box_container && !saw_sequence && !saw_class) {
+    if saw_activity && !saw_seq_strong {
+        return PlantUmlKind::Activity;
+    }
+    if saw_component && !saw_seq_strong && !saw_class_strong && !saw_usecase {
+        return PlantUmlKind::Component;
+    }
+    if saw_usecase
+        || (saw_actor && saw_box_container && !saw_seq_strong && !saw_class_strong && !saw_component)
+    {
         return PlantUmlKind::Usecase;
     }
-    if saw_er && !saw_sequence {
+    if saw_er && !saw_seq_strong {
         return PlantUmlKind::Er;
     }
-    if saw_state && !saw_sequence {
+    if saw_state && !saw_seq_strong {
         return PlantUmlKind::State;
     }
-    if saw_class && !saw_sequence {
+    if (saw_class_strong || saw_interface) && !saw_seq_strong {
         return PlantUmlKind::Class;
     }
     PlantUmlKind::Sequence
+}
+
+fn has_bracket_component(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut in_quotes = false;
+    for i in 0..bytes.len() {
+        if bytes[i] == b'"' {
+            in_quotes = !in_quotes;
+            continue;
+        }
+        if in_quotes || bytes[i] != b'[' {
+            continue;
+        }
+        // Ignore arrow styling brackets (`-[dashed]->`, `-[#red]->`) and sequence gates (`[->`).
+        if i > 0 && !bytes[i - 1].is_ascii_whitespace() {
+            continue;
+        }
+        let rest = &line[i + 1..];
+        if let Some(close) = rest.find(']') {
+            let inner = rest[..close].trim();
+            if !inner.is_empty()
+                && inner != "*"
+                && !inner.starts_with('#')
+                && !inner.contains("->")
+                && !inner.contains("<-")
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn contains_crows_foot(line: &str) -> bool {
@@ -173,14 +280,14 @@ fn contains_crows_foot(line: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UmlSkip {
+pub(super) enum UmlSkip {
     MacroProc,
     StyleTag,
     BraceBlock,
     EndKeyword(&'static str),
 }
 
-fn handle_common_ignored_or_unsupported(
+pub(super) fn handle_common_ignored_or_unsupported(
     line_no: usize,
     trimmed: &str,
     lower: &str,
@@ -252,7 +359,7 @@ fn handle_common_ignored_or_unsupported(
     false
 }
 
-fn advance_skip(trimmed: &str, skip_until: &mut Option<UmlSkip>) -> bool {
+pub(super) fn advance_skip(trimmed: &str, skip_until: &mut Option<UmlSkip>) -> bool {
     let Some(mode) = *skip_until else {
         return false;
     };
@@ -273,7 +380,7 @@ fn advance_skip(trimmed: &str, skip_until: &mut Option<UmlSkip>) -> bool {
 
 /// Normalize PlantUML directional arrow hints (`-up->`, `-right->`, `-d->`, `.down.>`, etc.)
 /// outside double quotes into standard `--` / `..` arrow shafts.
-fn normalize_directional_arrows(line: &str) -> String {
+pub(super) fn normalize_directional_arrows(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut in_quotes = false;
     let bytes = line.as_bytes();
@@ -316,7 +423,11 @@ fn normalize_directional_arrows(line: &str) -> String {
     out
 }
 
-fn prepend_frontmatter_title(header: &str, title: Option<&str>, body_lines: &[String]) -> String {
+pub(super) fn prepend_frontmatter_title(
+    header: &str,
+    title: Option<&str>,
+    body_lines: &[String],
+) -> String {
     let mut out = String::new();
     if let Some(t) = title {
         let escaped = t.replace('"', "\\\"");
@@ -331,7 +442,7 @@ fn prepend_frontmatter_title(header: &str, title: Option<&str>, body_lines: &[St
     out
 }
 
-fn safe_id(raw: &str) -> String {
+pub(super) fn safe_id(raw: &str) -> String {
     let s = strip_quotes(raw.trim());
     let cleaned: String = s
         .chars()
@@ -351,7 +462,7 @@ fn safe_id(raw: &str) -> String {
     }
 }
 
-fn strip_stereotype(s: &str) -> (&str, Option<&str>) {
+pub(super) fn strip_stereotype(s: &str) -> (&str, Option<&str>) {
     let s = s.trim();
     if s.ends_with(">>")
         && let Some(open) = s.rfind("<<")
@@ -363,7 +474,7 @@ fn strip_stereotype(s: &str) -> (&str, Option<&str>) {
 }
 
 /// Parse `"Label" as Alias` or `Alias` into `(id, optional_display_label)`.
-fn parse_uml_entity_head(raw: &str) -> (String, Option<String>) {
+pub(super) fn parse_uml_entity_head(raw: &str) -> (String, Option<String>) {
     let (clean, _) = split_trailing_color(raw.trim());
     if let Some((lhs, rhs)) = split_as_outside_quotes(clean) {
         let lhs = lhs.trim();
