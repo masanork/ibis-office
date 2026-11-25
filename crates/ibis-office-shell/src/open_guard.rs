@@ -12,7 +12,6 @@
 
 use std::path::Path;
 
-use gpui_kit::component::Root;
 use gpui_kit::*;
 
 use crate::editor::SlideEditor;
@@ -38,15 +37,15 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
 /// The window (other than the one whose editor is `skip`) that shows or is loading `path`.
 pub(crate) fn find_open_window(path: &Path, skip: Option<EntityId>, cx: &mut App) -> Option<AnyWindowHandle> {
     for window in cx.windows() {
-        let Some(root) = window.downcast::<Root>() else { continue };
         // A window that is being updated right now (the caller's own) cannot be read: it is not another window.
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten();
-        let Some(editor) = editor else { continue };
-        if Some(editor.entity_id()) == skip {
-            continue;
-        }
-        if editor.read(cx).shows_path(path) {
-            return Some(window);
+        let Ok(editors) = crate::window_editors::all_in_window(window, cx) else { continue };
+        for editor in editors {
+            if Some(editor.entity_id()) == skip {
+                continue;
+            }
+            if editor.read(cx).shows_path(path) {
+                return Some(window);
+            }
         }
     }
     None
@@ -62,6 +61,7 @@ pub(crate) fn raise(window: AnyWindowHandle, cx: &mut App) {
 pub(crate) fn raise_if_open(path: &Path, skip: Option<EntityId>, cx: &mut App) -> bool {
     match find_open_window(path, skip, cx) {
         Some(window) => {
+            let _ = crate::window_editors::activate_path_in_window(window, path, cx);
             raise(window, cx);
             true
         }

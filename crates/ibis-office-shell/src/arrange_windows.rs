@@ -58,7 +58,7 @@ impl SlideEditor {
             } else if let Some(root) = w.downcast::<gpui_kit::component::Root>() {
                 let is_target = root
                     .update(cx, |root, _, app| {
-                        if let Ok(editor_entity) = root.view().clone().downcast::<SlideEditor>() {
+                        if let Some(editor_entity) = crate::window_editors::active_in_root(root, app) {
                             let ed = editor_entity.read(app);
                             only.as_ref().is_none_or(|file| ed.shows_file(file))
                         } else {

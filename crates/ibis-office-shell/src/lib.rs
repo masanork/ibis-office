@@ -181,6 +181,7 @@ pub mod menu_context;
 pub mod open_documents;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod window_switcher;
+pub mod window_editors;
 pub mod commands;
 pub mod menu_layout;
 mod menu_layout_data;

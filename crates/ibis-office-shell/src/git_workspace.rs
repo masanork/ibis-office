@@ -1200,8 +1200,8 @@ pub fn save_git_law_comparison(
         let view = window
             .downcast::<Root>()
             .unwrap()
-            .update(app, |root, _, _| {
-                root.view().clone().downcast::<SlideEditor>().unwrap()
+            .update(app, |root, _, app| {
+                crate::window_editors::active_in_root(root, app).unwrap()
             })
             .unwrap();
         (window, view)

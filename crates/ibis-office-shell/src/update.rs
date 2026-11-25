@@ -694,12 +694,11 @@ fn unpack(log: &Log, version: &str, zip: &Path) -> Result<Unpacked, String> {
 
 /// Whether any window has edits not yet saved (the same sign the close confirmation uses).
 fn any_unsaved(cx: &mut App) -> bool {
-    use crate::editor::SlideEditor;
     let mut unsaved = false;
     for window in cx.windows() {
         if let Some(root) = window.downcast::<gpui_kit::component::Root>() {
             let _ = root.update(cx, |root, _, app| {
-                if let Ok(editor) = root.view().clone().downcast::<SlideEditor>() {
+                for editor in crate::window_editors::all_in_root(root, app) {
                     let editor = editor.read(app);
                     unsaved |= editor.has_document && editor.document.can_undo();
                 }

@@ -12,7 +12,6 @@
 //! Everything here is for every platform, so the scenario tests of the desktop build (with a `MemoryHost`) run it; the browser's
 //! `www/main.ts` reaches it through `ibis-office-app`'s `host_*` exports.
 
-use gpui_kit::component::Root;
 use gpui_kit::*;
 
 use crate::editor::SlideEditor;
@@ -78,9 +77,7 @@ pub struct EditorHost {
 /// The editor of the (one) window, if there is one: what the browser's exports act on.
 pub fn with_editor<R>(cx: &mut App, f: impl FnOnce(&mut SlideEditor, &mut Window, &mut Context<SlideEditor>) -> R) -> Option<R> {
     for window in cx.windows() {
-        let Some(root) = window.downcast::<Root>() else { continue };
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten();
-        if let Some(editor) = editor {
+        if let Some(editor) = crate::window_editors::active_in_window(window, cx) {
             return window.update(cx, |_, window, cx| editor.update(cx, |e, cx| f(e, window, cx))).ok();
         }
     }
@@ -345,7 +342,9 @@ impl SlideEditor {
                             // The document is the new file now (and writable: the host gave the lock with the file).
                             this.host.read_only = None;
                             this.file_name = Some(saved.file_name.clone().into());
-                            window.set_window_title(&format!("{} - ibisOffice", saved.file_name));
+                            if this.manages_window_title() {
+                                window.set_window_title(&format!("{} - ibisOffice", saved.file_name));
+                            }
                             this.document.mark_clean();
                             this.cleanup_active_autorecover_file();
                             this.set_status(text("_shell.saved").to_string(), cx);

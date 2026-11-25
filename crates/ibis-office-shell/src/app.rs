@@ -30,13 +30,14 @@ pub static QUIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::At
 pub fn native_quit_allowed(cx: &mut App) -> bool {
     let mut unsaved = false;
     for handle in cx.windows() {
-        let Some(root) = handle.downcast::<Root>() else { continue };
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok());
-        match editor {
-            Ok(Some(editor)) => unsaved |= editor.read(cx).is_dirty(),
-            Ok(None) => {},
+        match crate::window_editors::all_in_window(handle, cx) {
+            Ok(editors) => {
+                for editor in editors {
+                    unsaved |= editor.read(cx).is_dirty();
+                }
+            }
             // A borrowed window must never be mistaken for a clean window.
-            Err(_) => unsaved = true,
+            Err(()) => unsaved = true,
         }
     }
     if unsaved {
@@ -61,13 +62,26 @@ pub fn quit_asking_to_save(cx: &mut App) {
 fn quit_asking_to_save_now(cx: &mut App) {
     let mut asking = false;
     for handle in cx.windows() {
-        let Some(root) = handle.downcast::<Root>() else { continue };
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten();
-        let Some(editor) = editor else { continue };
+        let Ok(editors) = crate::window_editors::all_in_window(handle, cx) else {
+            asking = true;
+            continue;
+        };
+        if editors.is_empty() {
+            continue;
+        }
         // A window that may close goes now; one that may not has opened the question.
         // (a window with the question is brought to the front, one after another, issue #201)
-        let close = handle.update(cx, |_, window, cx| editor.update(cx, |editor, cx| editor.window_should_close(window, cx))).unwrap_or(true);
-        if close {
+        let mut can_close = true;
+        for editor in editors {
+            let close = handle
+                .update(cx, |_, window, cx| editor.update(cx, |editor, cx| editor.window_should_close(window, cx)))
+                .unwrap_or(true);
+            if !close {
+                can_close = false;
+                break;
+            }
+        }
+        if can_close {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         } else {
             asking = true;
@@ -314,8 +328,7 @@ pub fn open_path_in_app(path: std::path::PathBuf, cx: &mut App) {
         return;
     }
     for window in cx.windows() {
-        let Some(root) = window.downcast::<Root>() else { continue };
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten();
+        let editor = crate::window_editors::active_in_window(window, cx);
         if let Some(editor) = editor
             && editor.read(cx).replaceable_by_open()
         {
@@ -332,9 +345,7 @@ pub fn open_path_in_app(path: std::path::PathBuf, cx: &mut App) {
 #[cfg(target_family = "wasm")]
 pub fn new_file_in_page(kind: ibis_formats::Kind, cx: &mut App) {
     for window in cx.windows() {
-        let Some(root) = window.downcast::<Root>() else { continue };
-        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten();
-        if let Some(editor) = editor {
+        if let Some(editor) = crate::window_editors::active_in_window(window, cx) {
             window.update(cx, |_, window, cx| editor.update(cx, |e, cx| e.new_file(kind, window, cx))).ok();
             return;
         }

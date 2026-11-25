@@ -360,7 +360,9 @@ impl SlideEditor {
                         binding.version = renamed.version;
                     }
                     this.file_name = Some(renamed.name.clone().into());
-                    window.set_window_title(&format!("{} - ibisOffice", renamed.name));
+                    if this.manages_window_title() {
+                        window.set_window_title(&format!("{} - ibisOffice", renamed.name));
+                    }
                     this.close_dialog(window, cx);
                     this.set_status(text("shell.file-name-menu.renamed").to_string(), cx);
                 }
@@ -401,7 +403,9 @@ impl SlideEditor {
         // Updates the document's file, the stamp the watching compares with (a rename keeps the file's time and size) and the folder watched.
         self.set_file_path(Some(new.to_path_buf()));
         self.watch.asked = None;
-        window.set_window_title(&format!("{} - ibisOffice", self.display_title_formatted()));
+        if self.manages_window_title() {
+            window.set_window_title(&format!("{} - ibisOffice", self.display_title_formatted()));
+        }
         cx.notify();
     }
 

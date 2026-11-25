@@ -485,13 +485,17 @@ impl SlideEditor {
             return;
         }
         if let Some(handle) = crate::open_guard::find_open_window(&path, Some(cx.entity_id()), cx) {
+            let _ = crate::window_editors::activate_path_in_window(handle, &path, cx);
             crate::open_guard::raise(handle, cx);
             if let Some(root) = handle.downcast::<Root>() {
                 let _ = root.update(cx, |root, _, cx| {
-                    if let Ok(editor) = root.view().clone().downcast::<SlideEditor>() {
-                        editor.update(cx, |editor, cx| {
-                            editor.reveal_folder_position(reference.position.as_ref(), cx)
-                        });
+                    for editor in crate::window_editors::all_in_root(root, cx) {
+                        if editor.read(cx).shows_path(&path) {
+                            editor.update(cx, |editor, cx| {
+                                editor.reveal_folder_position(reference.position.as_ref(), cx)
+                            });
+                            break;
+                        }
                     }
                 });
             }
