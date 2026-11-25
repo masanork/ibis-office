@@ -13,6 +13,7 @@ use ibis_office_shell::window_editors::{WindowSetup, WorkspaceWindowFactory};
 pub mod model;
 pub mod outline;
 mod quick_switcher;
+pub mod session;
 pub mod workspace;
 
 pub use workspace::SoraneWorkspace;
@@ -22,16 +23,23 @@ pub mod actions {
         sorane_workspace,
         [
             QuickSwitcher,
+            CommandPalette,
             ToggleSplitPane,
             ToggleLeftSidebar,
             ToggleRightSidebar,
             ToggleOutline,
             OpenAiAssistant,
             CloseActiveTab,
+            ReopenClosedTab,
+            NavigateBack,
+            NavigateForward,
+            TogglePinActiveTab,
+            MoveTabToOtherPane,
             NextTab,
             PrevTab,
             OpenVaultFolder,
             NewMarkdownNote,
+            OpenDailyNote,
         ]
     );
 }
@@ -110,11 +118,16 @@ pub fn install(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new(&m("o"), actions::QuickSwitcher, ctx),
         KeyBinding::new(&m("k"), actions::QuickSwitcher, ctx),
+        KeyBinding::new(&m("p"), actions::CommandPalette, ctx),
+        KeyBinding::new(&m("shift-p"), actions::CommandPalette, ctx),
         KeyBinding::new(&m("\\"), actions::ToggleSplitPane, ctx),
         KeyBinding::new(&m("b"), actions::ToggleLeftSidebar, ctx),
         KeyBinding::new(&m("shift-b"), actions::ToggleRightSidebar, ctx),
         KeyBinding::new(&m("shift-u"), actions::ToggleOutline, ctx),
         KeyBinding::new(&m("shift-l"), actions::OpenAiAssistant, ctx),
+        KeyBinding::new(&m("shift-t"), actions::ReopenClosedTab, ctx),
+        KeyBinding::new(&m("["), actions::NavigateBack, ctx),
+        KeyBinding::new(&m("]"), actions::NavigateForward, ctx),
         KeyBinding::new(&m("shift-o"), actions::OpenVaultFolder, ctx),
         KeyBinding::new(&m("alt-n"), actions::NewMarkdownNote, ctx),
         KeyBinding::new("ctrl-pagedown", actions::NextTab, ctx),

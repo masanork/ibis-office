@@ -107,7 +107,9 @@ pub fn clamp_right_sidebar_width(width: f32) -> f32 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum LeftPanelKind {
     #[default]
     Vault,
@@ -115,11 +117,19 @@ pub enum LeftPanelKind {
     Git,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum RightPanelKind {
     #[default]
     Backlinks,
     Outline,
+}
+
+/// Record of a recently closed file-backed tab for `Cmd/Ctrl+Shift+T` reopen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClosedTabRecord {
+    pub path: PathBuf,
+    pub pane_id: PaneId,
+    pub pinned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,19 +172,31 @@ impl<E> TabEntry<E> {
     }
 }
 
+const MAX_PANE_HISTORY: usize = 50;
+
 #[derive(Clone, Debug)]
 pub struct PaneGroup<E> {
     pub id: PaneId,
     pub tabs: Vec<TabEntry<E>>,
     pub active_tab: usize,
+    pub history: Vec<PathBuf>,
+    pub history_index: Option<usize>,
 }
 
 impl<E> PaneGroup<E> {
     pub fn new(id: PaneId, initial: TabEntry<E>) -> Self {
+        let mut history = Vec::new();
+        let mut history_index = None;
+        if let Some(path) = initial.path.clone() {
+            history.push(path);
+            history_index = Some(0);
+        }
         Self {
             id,
             tabs: vec![initial],
             active_tab: 0,
+            history,
+            history_index,
         }
     }
 
@@ -184,6 +206,77 @@ impl<E> PaneGroup<E> {
 
     pub fn active_mut(&mut self) -> Option<&mut TabEntry<E>> {
         self.tabs.get_mut(self.active_tab)
+    }
+
+    pub fn record_history(&mut self, path: PathBuf) {
+        if let Some(idx) = self.history_index {
+            if self.history.get(idx).is_some_and(|cur| cur == &path) {
+                return;
+            }
+            self.history.truncate(idx + 1);
+        }
+        self.history.push(path);
+        if self.history.len() > MAX_PANE_HISTORY {
+            let excess = self.history.len() - MAX_PANE_HISTORY;
+            self.history.drain(0..excess);
+        }
+        self.history_index = Some(self.history.len() - 1);
+    }
+
+    pub fn can_go_back(&self) -> bool {
+        self.history_index.is_some_and(|i| i > 0)
+    }
+
+    pub fn can_go_forward(&self) -> bool {
+        self.history_index
+            .is_some_and(|i| i + 1 < self.history.len())
+    }
+
+    pub fn go_back(&mut self) -> Option<PathBuf> {
+        let idx = self.history_index?;
+        if idx == 0 {
+            return None;
+        }
+        let next = idx - 1;
+        self.history_index = Some(next);
+        self.history.get(next).cloned()
+    }
+
+    pub fn go_forward(&mut self) -> Option<PathBuf> {
+        let idx = self.history_index?;
+        let next = idx + 1;
+        if next >= self.history.len() {
+            return None;
+        }
+        self.history_index = Some(next);
+        self.history.get(next).cloned()
+    }
+
+    pub fn toggle_pin(&mut self, index: usize) -> Option<usize> {
+        if index >= self.tabs.len() {
+            return None;
+        }
+        let active_id = self.active().map(|t| t.id);
+        let target_id = self.tabs[index].id;
+        let new_pinned = !self.tabs[index].pinned;
+        self.tabs[index].pinned = new_pinned;
+
+        // Keep pinned tabs grouped on the left of unpinned tabs (Obsidian convention).
+        let mut tab = self.tabs.remove(index);
+        tab.pinned = new_pinned;
+        let dest = if new_pinned {
+            self.tabs.iter().take_while(|t| t.pinned).count()
+        } else {
+            self.tabs.iter().take_while(|t| t.pinned).count()
+        };
+        self.tabs.insert(dest, tab);
+
+        if let Some(aid) = active_id
+            && let Some(pos) = self.tabs.iter().position(|t| t.id == aid)
+        {
+            self.active_tab = pos;
+        }
+        self.tabs.iter().position(|t| t.id == target_id)
     }
 
     pub fn activate_index(&mut self, index: usize, seq: u64) -> bool {
@@ -592,5 +685,47 @@ mod tests {
         assert!(matches!(&rows[1], VaultTreeRow::Dir { path, collapsed: true, .. } if path == "docs"));
         assert!(!rows.iter().any(|r| matches!(r, VaultTreeRow::File { path, .. } if path == "docs/a.md")));
         assert!(rows.iter().any(|r| matches!(r, VaultTreeRow::File { path, .. } if path == "notes/c.md")));
+    }
+
+    #[test]
+    fn pane_history_back_forward_and_truncation() {
+        let mut pane = PaneGroup::new(PaneId(0), tab(0, Some("a.md"), 1, false));
+        assert!(!pane.can_go_back());
+        assert!(!pane.can_go_forward());
+
+        pane.record_history(PathBuf::from("b.md"));
+        pane.record_history(PathBuf::from("c.md"));
+        assert!(pane.can_go_back());
+        assert!(!pane.can_go_forward());
+
+        assert_eq!(pane.go_back(), Some(PathBuf::from("b.md")));
+        assert!(pane.can_go_back());
+        assert!(pane.can_go_forward());
+        assert_eq!(pane.go_back(), Some(PathBuf::from("a.md")));
+        assert!(!pane.can_go_back());
+        assert_eq!(pane.go_forward(), Some(PathBuf::from("b.md")));
+
+        // Visiting a new path truncates forward history.
+        pane.record_history(PathBuf::from("d.md"));
+        assert!(!pane.can_go_forward());
+        assert_eq!(pane.go_back(), Some(PathBuf::from("b.md")));
+    }
+
+    #[test]
+    fn pinned_tabs_group_on_left_and_preserve_active_tab() {
+        let mut pane = PaneGroup::new(PaneId(0), tab(0, Some("a.md"), 1, false));
+        pane.tabs.push(tab(1, Some("b.md"), 2, false));
+        pane.tabs.push(tab(2, Some("c.md"), 3, false));
+        pane.active_tab = 2;
+
+        // Pinning tab 2 moves it to index 0 and keeps it active.
+        assert_eq!(pane.toggle_pin(2), Some(0));
+        assert_eq!(pane.tabs[0].id, TabId(2));
+        assert!(pane.tabs[0].pinned);
+        assert_eq!(pane.active_tab, 0);
+
+        // Unpinning moves it right after pinned tabs (index 0 here since none left).
+        assert_eq!(pane.toggle_pin(0), Some(0));
+        assert!(!pane.tabs[0].pinned);
     }
 }

@@ -25,12 +25,17 @@ use crate::actions::*;
 use crate::model::*;
 use crate::outline::{OutlineTarget, extract_outline};
 use crate::quick_switcher::QuickSwitcherState;
+use crate::session::{
+    PersistedPane, PersistedTab, WorkspaceSession, load_last_session, load_vault_session,
+    save_session, today_iso_date,
+};
 
 const WORKSPACE_CONTEXT: &str = "SoraneWorkspace";
 const RIBBON_WIDTH: f32 = 40.0;
 const DIVIDER_WIDTH: f32 = 5.0;
 const SEARCH_HIT_LIMIT: usize = 80;
 const TREE_ROW_LIMIT: usize = 200;
+const MAX_CLOSED_TABS: usize = 20;
 
 pub struct SoraneWorkspace {
     pub(crate) panes: Vec<PaneGroup<Entity<SlideEditor>>>,
@@ -39,6 +44,7 @@ pub struct SoraneWorkspace {
     next_pane_id: usize,
     next_tab_id: usize,
     seq: u64,
+    closed_tabs: Vec<ClosedTabRecord>,
 
     // Left dock (Activity Ribbon + collapsible/resizable Vault / Search / Git sidebar)
     pub(crate) left_sidebar_open: bool,
@@ -59,14 +65,14 @@ pub struct SoraneWorkspace {
     // Vault state (reuses `ibis_office_shell::folder_context::Folder`)
     pub(crate) vault: Option<Arc<Folder>>,
     pub(crate) git_snapshot: Option<GitSnapshot>,
-    vault_filter: Entity<InputState>,
+    pub(crate) vault_filter: Entity<InputState>,
     _vault_filter_sub: Subscription,
     collapsed_dirs: BTreeSet<String>,
     cached_search_query: String,
     cached_search_hits: Vec<ContentSearchHit>,
     vault_status: Option<SharedString>,
 
-    // Quick Switcher overlay (`Cmd/Ctrl+O`)
+    // Quick Switcher / Command Palette overlay (`Cmd/Ctrl+O` / `Cmd/Ctrl+P`)
     pub(crate) quick_switcher: Option<QuickSwitcherState>,
 
     // Last OS window title applied
@@ -83,6 +89,7 @@ impl SoraneWorkspace {
             editor
         });
 
+        let launched_empty = initial_editor.read(cx).replaceable_by_open();
         let (path, title, kind) = Self::editor_metadata(&initial_editor, cx);
         let initial_tab = TabEntry {
             id: TabId(0),
@@ -111,13 +118,14 @@ impl SoraneWorkspace {
             }
         });
 
-        Self {
+        let mut ws = Self {
             panes: vec![initial_pane],
             layout: SplitLayout::Single(PaneId(0)),
             active_pane: PaneId(0),
             next_pane_id: 1,
             next_tab_id: 1,
             seq: 1,
+            closed_tabs: Vec::new(),
             // Single-file startup keeps left sidebar collapsed (per approved design decision).
             left_sidebar_open: false,
             left_panel: LeftPanelKind::Vault,
@@ -139,7 +147,14 @@ impl SoraneWorkspace {
             vault_status: None,
             quick_switcher: None,
             last_window_title: String::new(),
+        };
+
+        // Restore the last workspace session automatically only when launched without an explicit file.
+        if launched_empty && let Some(session) = load_last_session() {
+            ws.restore_session(session, window, cx);
         }
+
+        ws
     }
 
     fn next_seq(&mut self) -> u64 {
@@ -470,8 +485,22 @@ impl SoraneWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_path_in_pane_inner(pane_id, path, true, window, cx);
+    }
+
+    fn open_path_in_pane_inner(
+        &mut self,
+        pane_id: PaneId,
+        path: PathBuf,
+        record_history: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Deduplicate: if any tab in this workspace already shows `path`, activate it.
         if self.activate_editor_by_path(&path, window, cx) {
+            if record_history && let Some(pane) = self.pane_mut(self.active_pane) {
+                pane.record_history(path);
+            }
             return;
         }
 
@@ -489,15 +518,19 @@ impl SoraneWorkspace {
                 e.embedded_chrome = Some(Self::policy_for_editor(e, None, None));
             });
             let (p, title, kind) = Self::editor_metadata(&editor, cx);
+            let resolved_path = p.unwrap_or(path);
             let seq = self.next_seq();
             if let Some(pane) = self.pane_mut(pane_id) {
                 if let Some(tab) = pane.tabs.get_mut(tab_idx) {
-                    tab.path = p.or(Some(path));
+                    tab.path = Some(resolved_path.clone());
                     tab.title = title;
                     tab.kind = kind;
                     tab.last_used_seq = seq;
                     tab.toolbar_override = None;
                     tab.right_sidebar_override = None;
+                }
+                if record_history {
+                    pane.record_history(resolved_path);
                 }
             }
             self.active_pane = pane_id;
@@ -519,9 +552,10 @@ impl SoraneWorkspace {
             e
         });
         let (p, title, kind) = Self::editor_metadata(&editor, cx);
+        let resolved_path = p.unwrap_or(path);
         let tab = TabEntry {
             id: tab_id,
-            path: p.or(Some(path)),
+            path: Some(resolved_path.clone()),
             title,
             kind,
             pinned: false,
@@ -533,11 +567,314 @@ impl SoraneWorkspace {
         if let Some(pane) = self.pane_mut(pane_id) {
             pane.tabs.push(tab);
             pane.active_tab = pane.tabs.len() - 1;
+            if record_history {
+                pane.record_history(resolved_path);
+            }
         }
         self.active_pane = pane_id;
         self.enforce_tab_budget(cx);
         self.focus_active_editor(window, cx);
         cx.notify();
+    }
+
+    pub(crate) fn navigate_pane_back(
+        &mut self,
+        pane_id: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(target) = self.pane_mut(pane_id).and_then(|p| p.go_back()) else {
+            return;
+        };
+        self.open_path_in_pane_inner(pane_id, target, false, window, cx);
+    }
+
+    pub(crate) fn navigate_pane_forward(
+        &mut self,
+        pane_id: PaneId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(target) = self.pane_mut(pane_id).and_then(|p| p.go_forward()) else {
+            return;
+        };
+        self.open_path_in_pane_inner(pane_id, target, false, window, cx);
+    }
+
+    pub(crate) fn toggle_pin_tab(
+        &mut self,
+        pane_id: PaneId,
+        tab_idx: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(pane) = self.pane_mut(pane_id) {
+            let _ = pane.toggle_pin(tab_idx);
+            self.save_workspace_session();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn toggle_pin_active_tab(&mut self, cx: &mut Context<Self>) {
+        let pane_id = self.active_pane;
+        if let Some(idx) = self.pane(pane_id).map(|p| p.active_tab) {
+            self.toggle_pin_tab(pane_id, idx, cx);
+        }
+    }
+
+    pub(crate) fn move_active_tab_to_other_pane(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let src_id = self.active_pane;
+        let tab_count = self.pane(src_id).map_or(0, |p| p.tabs.len());
+        if tab_count <= 1 && !self.layout.is_split() {
+            return;
+        }
+        let dst_id = match self.layout.other_pane(src_id) {
+            Some(other) => other,
+            None => {
+                // Split and then move the original tab into the new pane, dropping its empty placeholder.
+                let new_pane = self.split_pane(window, cx);
+                self.active_pane = src_id;
+                new_pane
+            }
+        };
+        let Some(src_idx) = self.pane(src_id).map(|p| p.active_tab) else {
+            return;
+        };
+        let Some(tab) = self.pane_mut(src_id).and_then(|p| p.remove_tab(src_idx)) else {
+            return;
+        };
+        let src_empty = self.pane(src_id).is_some_and(|p| p.tabs.is_empty());
+        let seq = self.next_seq();
+        if let Some(dst) = self.pane_mut(dst_id) {
+            // Drop replaceable start placeholder in destination pane if it's the sole tab.
+            if dst.tabs.len() == 1
+                && dst.tabs[0].path.is_none()
+                && dst.tabs[0]
+                    .state
+                    .resident()
+                    .is_some_and(|e| e.read(cx).replaceable_by_open())
+            {
+                dst.tabs.clear();
+            }
+            let mut moved = tab;
+            moved.last_used_seq = seq;
+            dst.tabs.push(moved);
+            dst.active_tab = dst.tabs.len() - 1;
+            if let Some(path) = dst.active().and_then(|t| t.path.clone()) {
+                dst.record_history(path);
+            }
+        }
+        if src_empty {
+            self.panes.retain(|p| p.id != src_id);
+            self.layout = SplitLayout::Single(dst_id);
+        }
+        self.active_pane = dst_id;
+        self.focus_active_editor(window, cx);
+        self.save_workspace_session();
+        cx.notify();
+    }
+
+    pub(crate) fn reopen_last_closed_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        while let Some(record) = self.closed_tabs.pop() {
+            if !record.path.is_file() {
+                continue;
+            }
+            let target_pane = if self.pane(record.pane_id).is_some() {
+                record.pane_id
+            } else {
+                self.active_pane
+            };
+            self.open_path_in_pane(target_pane, record.path, window, cx);
+            if record.pinned
+                && let Some(idx) = self.pane(target_pane).map(|p| p.active_tab)
+            {
+                self.toggle_pin_tab(target_pane, idx, cx);
+            }
+            return;
+        }
+    }
+
+    pub(crate) fn create_and_open_vault_note(
+        &mut self,
+        full_path: PathBuf,
+        rel_label: &str,
+        open_in_split: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !full_path.exists() {
+            if let Some(parent) = full_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let stem = full_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(rel_label);
+            if let Err(err) = std::fs::write(&full_path, format!("# {stem}\n\n")) {
+                self.vault_status = Some(format!("ノートを作成できません: {err}").into());
+                cx.notify();
+                return;
+            }
+            self.refresh_vault_folder(window, cx);
+        }
+        if open_in_split {
+            self.open_path_in_split_pane(full_path, window, cx);
+        } else {
+            self.open_path_in_active_pane(full_path, window, cx);
+        }
+    }
+
+    pub(crate) fn open_daily_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(vault) = self.vault.clone() else {
+            self.pick_vault_folder(window, cx);
+            return;
+        };
+        let today = today_iso_date();
+        let rel = format!("{today}.md");
+        let full_path = vault.root().join(&rel);
+        self.create_and_open_vault_note(full_path, &today, false, window, cx);
+    }
+
+    pub(crate) fn snapshot_session(&self) -> WorkspaceSession {
+        let split_ratio = match self.layout {
+            SplitLayout::Single(_) => None,
+            SplitLayout::Split { ratio, .. } => Some(ratio),
+        };
+        let mut panes = Vec::new();
+        let mut active_pane_index = 0usize;
+        for pane in &self.panes {
+            let mut tabs = Vec::new();
+            let mut mapped_active = 0usize;
+            for (idx, tab) in pane.tabs.iter().enumerate() {
+                if let Some(path) = &tab.path {
+                    if idx == pane.active_tab {
+                        mapped_active = tabs.len();
+                    }
+                    tabs.push(PersistedTab {
+                        path: path.clone(),
+                        pinned: tab.pinned,
+                    });
+                }
+            }
+            if !tabs.is_empty() {
+                if pane.id == self.active_pane {
+                    active_pane_index = panes.len();
+                }
+                panes.push(PersistedPane {
+                    tabs,
+                    active_tab: mapped_active,
+                });
+            }
+        }
+        WorkspaceSession {
+            vault_root: self.vault.as_ref().map(|v| v.root().to_path_buf()),
+            left_sidebar_open: self.left_sidebar_open,
+            left_panel: self.left_panel,
+            left_sidebar_width: self.left_sidebar_width,
+            right_sidebar_open: self.right_sidebar_open,
+            right_panel: self.right_panel,
+            right_sidebar_width: self.right_sidebar_width,
+            split_ratio: (panes.len() >= 2).then_some(split_ratio).flatten(),
+            active_pane_index,
+            panes,
+        }
+    }
+
+    pub(crate) fn save_workspace_session(&self) {
+        let snap = self.snapshot_session();
+        if snap.vault_root.is_some() || !snap.panes.is_empty() {
+            save_session(&snap);
+        }
+    }
+
+    fn restore_session(
+        &mut self,
+        session: WorkspaceSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.left_sidebar_open = session.left_sidebar_open;
+        self.left_panel = session.left_panel;
+        self.left_sidebar_width = clamp_left_sidebar_width(session.left_sidebar_width);
+        self.right_sidebar_open = session.right_sidebar_open;
+        self.right_panel = session.right_panel;
+        self.right_sidebar_width = clamp_right_sidebar_width(session.right_sidebar_width);
+
+        if let Some(root) = session.vault_root {
+            if let Ok(folder) = Folder::scan_dir(&root) {
+                self.vault = Some(Arc::new(folder));
+                self.sync_vault_to_all_editors(window, cx);
+                self.refresh_git_snapshot(window, cx);
+            }
+        }
+
+        if session.panes.is_empty() {
+            return;
+        }
+
+        // Populate pane 0 (and pane 1 if split was saved).
+        let first_pane_id = self.active_pane;
+        if let Some(p0) = session.panes.first() {
+            for t in &p0.tabs {
+                self.open_path_in_pane(first_pane_id, t.path.clone(), window, cx);
+                if t.pinned
+                    && let Some(idx) = self.pane(first_pane_id).map(|p| p.active_tab)
+                {
+                    if let Some(tab) = self
+                        .pane_mut(first_pane_id)
+                        .and_then(|p| p.tabs.get_mut(idx))
+                    {
+                        tab.pinned = true;
+                    }
+                }
+            }
+            let seq = self.next_seq();
+            if let Some(pane) = self.pane_mut(first_pane_id) {
+                let target = p0.active_tab.min(pane.tabs.len().saturating_sub(1));
+                pane.activate_index(target, seq);
+            }
+        }
+
+        if session.panes.len() >= 2
+            && let Some(p1) = session.panes.get(1)
+            && !p1.tabs.is_empty()
+        {
+            let second_pane_id = self.split_pane(window, cx);
+            if let Some(ratio) = session.split_ratio {
+                self.layout.set_ratio(ratio);
+            }
+            for t in &p1.tabs {
+                self.open_path_in_pane(second_pane_id, t.path.clone(), window, cx);
+                if t.pinned
+                    && let Some(idx) = self.pane(second_pane_id).map(|p| p.active_tab)
+                {
+                    if let Some(tab) = self
+                        .pane_mut(second_pane_id)
+                        .and_then(|p| p.tabs.get_mut(idx))
+                    {
+                        tab.pinned = true;
+                    }
+                }
+            }
+            let seq = self.next_seq();
+            if let Some(pane) = self.pane_mut(second_pane_id) {
+                let target = p1.active_tab.min(pane.tabs.len().saturating_sub(1));
+                pane.activate_index(target, seq);
+            }
+            self.active_pane = if session.active_pane_index == 1 {
+                second_pane_id
+            } else {
+                first_pane_id
+            };
+        }
+
+        if let Some(active_idx) = self.pane(self.active_pane).map(|p| p.active_tab) {
+            let _ = self.ensure_tab_resident(self.active_pane, active_idx, window, cx);
+        }
+        self.focus_active_editor(window, cx);
     }
 
     pub(crate) fn new_tab_in_pane(
@@ -611,6 +948,15 @@ impl SoraneWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Protect pinned tabs from accidental closure (Obsidian behavior: unpin first).
+        if self
+            .pane(pane_id)
+            .and_then(|p| p.tabs.get(tab_idx))
+            .is_some_and(|t| t.pinned)
+        {
+            return;
+        }
+
         // Ask the editor before closing if it has unsaved edits.
         if let Some(editor) = self
             .pane(pane_id)
@@ -625,12 +971,26 @@ impl SoraneWorkspace {
             }
         }
 
-        let pane_became_empty = if let Some(pane) = self.pane_mut(pane_id) {
-            pane.remove_tab(tab_idx);
-            pane.tabs.is_empty()
-        } else {
-            false
-        };
+        let removed = self
+            .pane_mut(pane_id)
+            .and_then(|pane| pane.remove_tab(tab_idx));
+        if let Some(tab) = removed
+            && let Some(path) = tab.path
+        {
+            self.closed_tabs.push(ClosedTabRecord {
+                path,
+                pane_id,
+                pinned: tab.pinned,
+            });
+            if self.closed_tabs.len() > MAX_CLOSED_TABS {
+                let excess = self.closed_tabs.len() - MAX_CLOSED_TABS;
+                self.closed_tabs.drain(0..excess);
+            }
+        }
+
+        let pane_became_empty = self
+            .pane(pane_id)
+            .is_some_and(|pane| pane.tabs.is_empty());
 
         if pane_became_empty {
             if let Some(other) = self.layout.other_pane(pane_id) {
@@ -639,6 +999,7 @@ impl SoraneWorkspace {
                 self.active_pane = other;
             } else {
                 // Closing the last tab in the sole pane closes the window cleanly.
+                self.save_workspace_session();
                 window.remove_window();
                 return;
             }
@@ -739,6 +1100,8 @@ impl SoraneWorkspace {
                 .await;
             let _ = this.update_in(cx, |ws, window, cx| match scanned {
                 Ok(folder) => {
+                    ws.save_workspace_session();
+                    let new_root = folder.root().to_path_buf();
                     ws.vault = Some(Arc::new(folder));
                     ws.collapsed_dirs.clear();
                     ws.cached_search_hits.clear();
@@ -746,8 +1109,15 @@ impl SoraneWorkspace {
                     ws.left_sidebar_open = true;
                     ws.left_panel = LeftPanelKind::Vault;
                     ws.vault_status = None;
+                    if let Some(prev) = load_vault_session(&new_root) {
+                        ws.left_sidebar_width = clamp_left_sidebar_width(prev.left_sidebar_width);
+                        ws.right_sidebar_width = clamp_right_sidebar_width(prev.right_sidebar_width);
+                        ws.right_sidebar_open = prev.right_sidebar_open;
+                        ws.right_panel = prev.right_panel;
+                    }
                     ws.sync_vault_to_all_editors(window, cx);
                     ws.refresh_git_snapshot(window, cx);
+                    ws.save_workspace_session();
                     cx.notify();
                 }
                 Err(err) => {
@@ -819,6 +1189,7 @@ impl SoraneWorkspace {
                 return false;
             }
         }
+        self.save_workspace_session();
         true
     }
 
@@ -961,11 +1332,33 @@ impl SoraneWorkspace {
                         ribbon_btn(
                             "ribbon-new-md",
                             "✎",
-                            "新規 Markdown ノート",
+                            "新規 Markdown ノート (⌥⌘N)",
                             false,
                         )
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.new_markdown_note(window, cx);
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
+                            "ribbon-daily-note",
+                            "📅",
+                            "デイリーノートを開く",
+                            false,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_daily_note(window, cx);
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
+                            "ribbon-command-palette",
+                            "⚡",
+                            "コマンドパレット (⌘P)",
+                            false,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_command_palette(window, cx);
                         })),
                     ),
             )
@@ -1858,6 +2251,9 @@ impl SoraneWorkspace {
         let theme = cx.theme().clone();
         let is_active_pane = self.active_pane == pane_id;
 
+        let can_back = pane.can_go_back();
+        let can_forward = pane.can_go_forward();
+
         let mut tab_strip = h_flex()
             .id(SharedString::from(format!("pane-tabs-{}", pane_id.0)))
             .h(px(34.))
@@ -1867,10 +2263,47 @@ impl SoraneWorkspace {
             .items_center()
             .bg(theme.title_bar)
             .border_b_1()
-            .border_color(theme.border);
+            .border_color(theme.border)
+            .child(
+                div()
+                    .id(SharedString::from(format!("pane-back-{}", pane_id.0)))
+                    .px(px(4.))
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .text_xs()
+                    .when(can_back, |d| {
+                        d.cursor_pointer()
+                            .text_color(theme.foreground)
+                            .hover(|h| h.bg(theme.secondary))
+                    })
+                    .when(!can_back, |d| d.text_color(theme.muted_foreground.opacity(0.4)))
+                    .child("←")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.navigate_pane_back(pane_id, window, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("pane-fwd-{}", pane_id.0)))
+                    .px(px(4.))
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .text_xs()
+                    .when(can_forward, |d| {
+                        d.cursor_pointer()
+                            .text_color(theme.foreground)
+                            .hover(|h| h.bg(theme.secondary))
+                    })
+                    .when(!can_forward, |d| d.text_color(theme.muted_foreground.opacity(0.4)))
+                    .child("→")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.navigate_pane_forward(pane_id, window, cx);
+                    })),
+            );
 
         for (idx, tab) in pane.tabs.iter().enumerate() {
             let is_active_tab = idx == pane.active_tab;
+            let is_pinned = tab.pinned;
             let dirty = tab
                 .state
                 .resident()
@@ -1910,7 +2343,20 @@ impl SoraneWorkspace {
                             .child(badge),
                     )
                     .child(div().flex_1().min_w_0().text_xs().truncate().child(title))
-                    .child(
+                    .child(if is_pinned {
+                        div()
+                            .id(SharedString::from(format!("tab-unpin-{}-{}", pane_id.0, tab.id.0)))
+                            .px(px(3.))
+                            .rounded(px(3.))
+                            .text_size(px(10.))
+                            .text_color(theme.accent)
+                            .hover(|h| h.bg(theme.muted))
+                            .child("📌")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.toggle_pin_tab(pane_id, idx, cx);
+                            }))
+                    } else {
                         div()
                             .id(SharedString::from(format!("tab-close-{}-{}", pane_id.0, tab.id.0)))
                             .px(px(3.))
@@ -1922,8 +2368,8 @@ impl SoraneWorkspace {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.close_tab(pane_id, idx, window, cx);
-                            })),
-                    )
+                            }))
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.activate_tab(pane_id, idx, window, cx);
                     })),
@@ -2179,7 +2625,7 @@ impl SoraneWorkspace {
                     .gap_3()
                     .items_center()
                     .when_some(active_info, |row, info| row.child(info))
-                    .child("⌘O 切替 · ⌘\\ 分割 · ⇧⌘L AI"),
+                    .child("⌘O 開く · ⌘P コマンド · ⌘\\ 分割"),
             )
     }
 }
@@ -2262,6 +2708,9 @@ impl Render for SoraneWorkspace {
             .on_action(cx.listener(|this, _: &QuickSwitcher, window, cx| {
                 this.open_quick_switcher(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
+                this.open_command_palette(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &ToggleSplitPane, window, cx| {
                 this.toggle_split_pane(window, cx);
             }))
@@ -2284,6 +2733,23 @@ impl Render for SoraneWorkspace {
                 if let Some(tab_idx) = this.pane(pane_id).map(|p| p.active_tab) {
                     this.close_tab(pane_id, tab_idx, window, cx);
                 }
+            }))
+            .on_action(cx.listener(|this, _: &ReopenClosedTab, window, cx| {
+                this.reopen_last_closed_tab(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NavigateBack, window, cx| {
+                let pane_id = this.active_pane;
+                this.navigate_pane_back(pane_id, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NavigateForward, window, cx| {
+                let pane_id = this.active_pane;
+                this.navigate_pane_forward(pane_id, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &TogglePinActiveTab, _, cx| {
+                this.toggle_pin_active_tab(cx);
+            }))
+            .on_action(cx.listener(|this, _: &MoveTabToOtherPane, window, cx| {
+                this.move_active_tab_to_other_pane(window, cx);
             }))
             .on_action(cx.listener(|this, _: &ibis_office_shell::actions::CloseFile, window, cx| {
                 let pane_id = this.active_pane;
@@ -2321,6 +2787,9 @@ impl Render for SoraneWorkspace {
             }))
             .on_action(cx.listener(|this, _: &NewMarkdownNote, window, cx| {
                 this.new_markdown_note(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenDailyNote, window, cx| {
+                this.open_daily_note(window, cx);
             }))
             .child(
                 h_flex()
