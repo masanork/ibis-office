@@ -1,6 +1,21 @@
 name: Android Play Console deploy
 
 on:
+  push:
+    branches:
+      - sorane
+    paths:
+      - "apps/android/**"
+      - "crates/**"
+      - "forks/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "version.txt"
+      - "scripts/build-android.sh"
+      - "scripts/docs_build.py"
+      - "scripts/gen-web-licenses.py"
+      - "scripts/check-third-party-notices.py"
+      - ".github/workflows/android-play-deploy.yml"
   workflow_dispatch:
     inputs:
       track:
@@ -33,11 +48,11 @@ permissions:
 
 concurrency:
   group: android-play-deploy-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   build-and-deploy:
-    name: Build & Deploy Android AAB (${{ inputs.track }})
+    name: Build & Deploy Android AAB (${{ inputs.track || 'internal' }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -53,7 +68,7 @@ jobs:
           HAS_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS != '' }}
           HAS_KEYSTORE_PASS: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASS != '' }}
           HAS_PLAY_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != '' }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
         run: |
           set -euo pipefail
           if [[ "$DRY_RUN" != "true" ]]; then
@@ -105,9 +120,9 @@ jobs:
           ANDROID_KEYSTORE_PATH: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 != '' && format('{0}/upload-keystore.jks', runner.temp) || '' }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
           ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASS }}
-          ANDROID_KEY_PASS: ${{ secrets.ANDROID_UPLOAD_KEY_PASS != '' && secrets.ANDROID_UPLOAD_KEY_PASS || secrets.ANDROID_UPLOAD_KEYSTORE_PASS }}
-          VERSION_CODE_OVERRIDE: ${{ inputs.version_code_override }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS != '' && secrets.ANDROID_KEY_PASS || secrets.ANDROID_UPLOAD_KEYSTORE_PASS }}
+          VERSION_CODE_OVERRIDE: ${{ inputs.version_code_override || '' }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
         run: |
           set -euo pipefail
           VERSION_NAME=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); from docs_build import version_for; print(version_for("Android"))')
@@ -158,8 +173,8 @@ jobs:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: dev.sorane.docs
           releaseFiles: target/android-apk/ibis-office-android-arm64.aab
-          track: ${{ inputs.track }}
-          status: ${{ inputs.release_status }}
+          track: ${{ inputs.track || 'internal' }}
+          status: ${{ inputs.release_status || vars.ANDROID_PLAY_RELEASE_STATUS || 'completed' }}
           releaseName: ${{ steps.build.outputs.release_name }}
 
       - name: Remove temporary upload keystore
