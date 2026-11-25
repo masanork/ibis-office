@@ -58,6 +58,7 @@ mod railroad;
 pub mod plantuml;
 mod plantuml_uml;
 mod plantuml_extra;
+mod plantuml_timing;
 mod text;
 #[cfg(test)]
 mod test_support;

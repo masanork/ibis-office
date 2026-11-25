@@ -19,6 +19,7 @@ use super::{MermaidOutput, render_mermaid};
 pub(super) enum PlantUmlKind {
     Sequence,
     Class,
+    Object,
     State,
     Usecase,
     Er,
@@ -31,16 +32,18 @@ pub(super) enum PlantUmlKind {
     UnsupportedEnvelope,
 }
 
-/// Render a supported PlantUML diagram (Sequence, Class, State, Usecase, ER, Mindmap, WBS,
-/// Gantt, Activity, or Component/Deployment) into SVG using the shared internal renderers,
-/// preserving the original source verbatim and reporting unsupported constructs with
-/// 1-based line numbers.
+/// Render a supported PlantUML diagram (Sequence, Class, Object/Map, State, Usecase, ER,
+/// Timing, Mindmap, WBS, Gantt, Activity, or Component/Deployment) into SVG using the shared
+/// internal renderers, preserving the original source verbatim and reporting unsupported
+/// constructs with 1-based line numbers.
 pub fn render_plantuml(source: &str) -> PlantUmlNativeRender {
     match detect_plantuml_kind(source) {
-        PlantUmlKind::Sequence | PlantUmlKind::Timing | PlantUmlKind::UnsupportedEnvelope => {
+        PlantUmlKind::Sequence | PlantUmlKind::UnsupportedEnvelope => {
             render_plantuml_sequence_native(source)
         }
+        PlantUmlKind::Timing => super::plantuml_timing::render_plantuml_timing_native(source),
         PlantUmlKind::Class => render_lowered(source, convert_plantuml_class(source)),
+        PlantUmlKind::Object => render_lowered(source, convert_plantuml_object(source)),
         PlantUmlKind::State => render_lowered(source, convert_plantuml_state(source)),
         PlantUmlKind::Usecase => render_lowered(source, convert_plantuml_usecase(source)),
         PlantUmlKind::Er => render_lowered(source, convert_plantuml_er(source)),
@@ -85,6 +88,7 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
     let mut saw_er = false;
     let mut saw_state = false;
     let mut saw_class_strong = false;
+    let mut saw_object = false;
     let mut saw_interface = false;
     let mut saw_seq_strong = false;
     let mut saw_activity = false;
@@ -131,6 +135,14 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
             || lower == "fork again"
             || lower == "end fork"
             || lower == "end merge"
+            || lower == "split"
+            || lower == "split again"
+            || lower == "end split"
+            || lower == "endswitch"
+            || lower.starts_with("switch ")
+            || lower.starts_with("switch(")
+            || lower.starts_with("case ")
+            || lower.starts_with("case(")
             || lower == "repeat"
             || lower.starts_with("repeat while")
             || lower.starts_with("partition ")
@@ -140,6 +152,9 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
             || lower.starts_with("while ")
             || lower.starts_with("while(")
             || (t.starts_with(':') && t.ends_with(';') && t.len() >= 2)
+            || (t.starts_with('|') && t.ends_with('|') && t.len() >= 3 && t != "|||")
+            || t.starts_with("(*)")
+            || t.contains("--> (*)")
         {
             saw_activity = true;
         }
@@ -158,7 +173,7 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
             saw_component = true;
         }
         if lower.starts_with("usecase ")
-            || (t.starts_with('(') && t.contains(')'))
+            || (t.starts_with('(') && t.contains(')') && !t.starts_with("(*)"))
             || (t.starts_with(':') && !t.ends_with(';') && t[1..].contains(':'))
         {
             saw_usecase = true;
@@ -168,6 +183,9 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
         }
         if t.starts_with("[*]") || lower.starts_with("state ") {
             saw_state = true;
+        }
+        if lower.starts_with("object ") || lower.starts_with("map ") {
+            saw_object = true;
         }
         if lower.starts_with("class ")
             || lower.starts_with("abstract class ")
@@ -220,7 +238,10 @@ pub(super) fn detect_plantuml_kind(source: &str) -> PlantUmlKind {
     if saw_activity && !saw_seq_strong {
         return PlantUmlKind::Activity;
     }
-    if saw_component && !saw_seq_strong && !saw_class_strong && !saw_usecase {
+    if saw_object && !saw_seq_strong && !saw_class_strong {
+        return PlantUmlKind::Object;
+    }
+    if saw_component && !saw_seq_strong && !saw_class_strong && !saw_usecase && !saw_state {
         return PlantUmlKind::Component;
     }
     if saw_usecase
@@ -259,7 +280,7 @@ fn has_bracket_component(line: &str) -> bool {
         if let Some(close) = rest.find(']') {
             let inner = rest[..close].trim();
             if !inner.is_empty()
-                && inner != "*"
+                && !matches!(inner, "*" | "H" | "H*")
                 && !inner.starts_with('#')
                 && !inner.contains("->")
                 && !inner.contains("<-")
@@ -899,13 +920,49 @@ fn convert_plantuml_state(source: &str) -> (Option<String>, Vec<PlantUmlUnsuppor
             has_content = true;
             continue;
         }
-        // Transitions (`[*] --> Idle`, `A -right-> B : trigger`) and state descriptions (`S : desc`)
+        // Transitions (`[*] --> Idle`, `A -right-> B : trigger`, `A <-- B`, `[H]` / `[H*]`)
         let norm = normalize_directional_arrows(trimmed);
-        if norm.contains("-->") || norm.contains("->") {
-            let mermaid_line = if !norm.contains("-->") {
-                norm.replacen("->", "-->", 1)
+        let (norm_h, used_h, used_h_star) = rewrite_state_history(&norm);
+        if used_h {
+            let ind = "  ".repeat(open_composites + 1);
+            let decl = format!("{ind}state \"H\" as __H__");
+            if !lines_out.contains(&decl) {
+                lines_out.push(decl);
+            }
+        }
+        if used_h_star {
+            let ind = "  ".repeat(open_composites + 1);
+            let decl = format!("{ind}state \"H*\" as __H_STAR__");
+            if !lines_out.contains(&decl) {
+                lines_out.push(decl);
+            }
+        }
+        if norm_h.contains("<--") || norm_h.contains("<-") {
+            let (expr, lbl) = match split_colon_outside_quotes(&norm_h) {
+                Some((e, l)) => (e.trim(), Some(l.trim())),
+                None => (norm_h.trim(), None),
+            };
+            let sep = if expr.contains("<--") { "<--" } else { "<-" };
+            if let Some((lhs, rhs)) = expr.split_once(sep) {
+                let ind = "  ".repeat(open_composites + 1);
+                match lbl {
+                    Some(l) if !l.is_empty() => lines_out.push(format!(
+                        "{ind}{} --> {} : {}",
+                        rhs.trim(),
+                        lhs.trim(),
+                        sanitize_label(l)
+                    )),
+                    _ => lines_out.push(format!("{ind}{} --> {}", rhs.trim(), lhs.trim())),
+                }
+                has_content = true;
+                continue;
+            }
+        }
+        if norm_h.contains("-->") || norm_h.contains("->") {
+            let mermaid_line = if !norm_h.contains("-->") {
+                norm_h.replacen("->", "-->", 1)
             } else {
-                norm
+                norm_h
             };
             lines_out.push(format!("{}{mermaid_line}", "  ".repeat(open_composites + 1)));
             has_content = true;
@@ -942,6 +999,172 @@ fn convert_plantuml_state(source: &str) -> (Option<String>, Vec<PlantUmlUnsuppor
     (
         Some(prepend_frontmatter_title(
             "stateDiagram-v2",
+            title.as_deref(),
+            &lines_out,
+        )),
+        unsupported,
+    )
+}
+
+fn rewrite_state_history(line: &str) -> (String, bool, bool) {
+    let used_star = line.contains("[H*]");
+    let tmp = if used_star {
+        line.replace("[H*]", "__H_STAR__")
+    } else {
+        line.to_string()
+    };
+    let used_h = tmp.contains("[H]");
+    let out = if used_h {
+        tmp.replace("[H]", "__H__")
+    } else {
+        tmp
+    };
+    (out, used_h, used_star)
+}
+
+// ============================================================================
+// 2b. PlantUML Object / Map Diagram -> Mermaid `classDiagram`
+// ============================================================================
+
+fn convert_plantuml_object(source: &str) -> (Option<String>, Vec<PlantUmlUnsupported>) {
+    let mut unsupported = Vec::new();
+    let mut lines_out: Vec<String> = Vec::new();
+    let mut extra_links: Vec<String> = Vec::new();
+    let mut title: Option<String> = None;
+    let mut in_comment = false;
+    let mut skip_until: Option<UmlSkip> = None;
+    let mut saw_enduml = false;
+    let mut active_body: Option<(String, bool)> = None; // (id, is_map)
+    let mut has_content = false;
+
+    for (idx, raw) in source.lines().enumerate() {
+        let line_no = idx + 1;
+        if saw_enduml {
+            continue;
+        }
+        let cleaned = strip_block_comments(raw, &mut in_comment);
+        let trimmed = cleaned.trim();
+        if advance_skip(trimmed, &mut skip_until) {
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('\'') {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("@start") {
+            continue;
+        }
+        if lower.starts_with("@end") {
+            saw_enduml = true;
+            continue;
+        }
+        if handle_common_ignored_or_unsupported(
+            line_no,
+            trimmed,
+            &lower,
+            &mut skip_until,
+            &mut unsupported,
+        ) {
+            continue;
+        }
+        if let Some((ref cur_id, is_map)) = active_body {
+            if trimmed == "}" {
+                lines_out.push("  }".to_string());
+                active_body = None;
+                continue;
+            }
+            if is_map && let Some((k, target)) = trimmed.split_once("*->") {
+                let key = sanitize_label(k.trim());
+                let tgt = safe_id(target.trim());
+                lines_out.push(format!("    {key} => {tgt}"));
+                extra_links.push(format!("  {cur_id} --> {tgt} : {key}"));
+                continue;
+            }
+            lines_out.push(format!("    {}", sanitize_label(trimmed)));
+            continue;
+        }
+        if lower == "left to right direction" {
+            lines_out.push("  direction LR".to_string());
+            continue;
+        }
+        if lower == "top to bottom direction" {
+            lines_out.push("  direction TB".to_string());
+            continue;
+        }
+        if let Some(rest) = strip_prefix_ci(trimmed, "title ") {
+            let t = sanitize_label(rest);
+            if !t.is_empty() {
+                title = Some(t);
+            }
+            continue;
+        }
+        if let Some((is_map, rest)) = strip_prefix_ci(trimmed, "object ")
+            .map(|r| (false, r))
+            .or_else(|| strip_prefix_ci(trimmed, "map ").map(|r| (true, r)))
+        {
+            let opens = rest.trim_end().ends_with('{');
+            let head = rest.trim_end().trim_end_matches('{').trim();
+            let (head_clean, had_color) = split_trailing_color(head);
+            if had_color {
+                unsupported.push(PlantUmlUnsupported {
+                    line: line_no,
+                    kind: "styling",
+                    source: excerpt(trimmed, 120),
+                    reason: "Object/map color is not preserved.".to_string(),
+                });
+            }
+            let (head_no_st, stereotype) = strip_stereotype(head_clean);
+            let (id, label) = parse_uml_entity_head(head_no_st);
+            let decl = match label {
+                Some(lbl) => format!("class {id}[\"{}\"]", lbl.replace('"', "'")),
+                None => format!("class {id}"),
+            };
+            let default_st = if is_map { "map" } else { "object" };
+            let st = stereotype.unwrap_or(default_st);
+            if opens {
+                lines_out.push(format!("  {decl} {{"));
+                lines_out.push(format!("    <<{st}>>"));
+                active_body = Some((id, is_map));
+            } else {
+                lines_out.push(format!("  {decl}"));
+                lines_out.push(format!("  <<{st}>> {id}"));
+            }
+            has_content = true;
+            continue;
+        }
+        let norm = normalize_directional_arrows(trimmed);
+        if has_class_relation(&norm) {
+            lines_out.push(format!("  {norm}"));
+            has_content = true;
+            continue;
+        }
+        if let Some((lhs, rhs)) = split_colon_outside_quotes(trimmed)
+            && !lhs.trim().is_empty()
+            && !rhs.trim().is_empty()
+        {
+            let id = safe_id(lhs.trim());
+            lines_out.push(format!("  {id} : {}", sanitize_label(rhs)));
+            has_content = true;
+            continue;
+        }
+        unsupported.push(PlantUmlUnsupported {
+            line: line_no,
+            kind: "syntax",
+            source: excerpt(trimmed, 120),
+            reason: "Unsupported PlantUML object/map diagram syntax.".to_string(),
+        });
+    }
+
+    if active_body.is_some() {
+        lines_out.push("  }".to_string());
+    }
+    lines_out.extend(extra_links);
+    if !has_content {
+        return (None, unsupported);
+    }
+    (
+        Some(prepend_frontmatter_title(
+            "classDiagram",
             title.as_deref(),
             &lines_out,
         )),
@@ -1603,7 +1826,62 @@ CUSTOMER ||--o{ ORDER : places
     }
 
     #[test]
-    fn unified_render_plantuml_dispatches_sequence_and_rejects_timing() {
+    fn renders_plantuml_object_map_and_advanced_state_diagrams() {
+        let obj = "\
+@startuml
+title 実行時スナップショット
+object \"ユーザー1\" as u1 {
+  name = \"田中\"
+  role = admin
+}
+map \"接続設定\" as cfg {
+  host => db.local
+  primary *-> u1
+}
+u1 --> cfg : uses
+@enduml
+";
+        let res_obj = render_plantuml(obj);
+        assert!(res_obj.is_lossless(), "unexpected diagnostics: {:?}", res_obj.unsupported);
+        let Some(MermaidOutput::Svg { bytes, .. }) = res_obj.output else {
+            panic!("expected SVG for PlantUML object/map diagram");
+        };
+        let svg_obj = std::str::from_utf8(&bytes).unwrap();
+        assert!(roxmltree::Document::parse(svg_obj).is_ok(), "invalid SVG");
+        assert!(svg_obj.contains("ユーザー1") && svg_obj.contains("接続設定"), "{svg_obj}");
+        assert!(svg_obj.contains("db.local") && svg_obj.contains("primary"), "{svg_obj}");
+
+        let adv_state = "\
+@startuml
+[*] --> Active
+state Active {
+  state check <<choice>>
+  state split <<fork>>
+  state merge <<join>>
+  [*] --> check
+  check --> split : OK
+  split --> WorkerA
+  split --> WorkerB
+  WorkerA --> merge
+  WorkerB --> merge
+  --
+  [*] --> Monitor
+  Monitor --> [H] : resume
+}
+@enduml
+";
+        let res_st = render_plantuml(adv_state);
+        assert!(res_st.is_lossless(), "unexpected diagnostics: {:?}", res_st.unsupported);
+        let Some(MermaidOutput::Svg { bytes, .. }) = res_st.output else {
+            panic!("expected SVG for advanced PlantUML state diagram");
+        };
+        let svg_st = std::str::from_utf8(&bytes).unwrap();
+        assert!(roxmltree::Document::parse(svg_st).is_ok(), "invalid SVG");
+        assert!(svg_st.contains("WorkerA") && svg_st.contains("Monitor"), "{svg_st}");
+    }
+
+    #[test]
+    fn unified_render_plantuml_dispatches_sequence_timing_and_rejects_salt() {
         let seq = "@startuml\nhide footbox\nAlice -> Bob : hi\n== part 2 ==\nBob --> Alice : ok\n@enduml\n";
         let res = render_plantuml(seq);
         assert!(res.is_lossless(), "unexpected diagnostics: {:?}", res.unsupported);
@@ -1613,10 +1891,15 @@ CUSTOMER ||--o{ ORDER : places
         let svg = std::str::from_utf8(&bytes).unwrap();
         assert!(svg.contains(r#"data-shape="seq-divider""#), "{svg}");
 
-        let timing = "@startuml\nrobust \"Browser\" as B\n@0\nB is Idle\n@enduml\n";
+        let timing = "@startuml\nrobust \"Browser\" as B\n@0\nB is Idle\n@100\nB is Busy\n@enduml\n";
         let timing_res = render_plantuml(timing);
-        assert!(timing_res.output.is_none());
-        assert!(timing_res.unsupported.iter().any(|u| u.kind == "timing"));
+        assert!(timing_res.is_lossless(), "unexpected diagnostics: {:?}", timing_res.unsupported);
+        assert!(matches!(timing_res.output, Some(MermaidOutput::Svg { .. })));
+
+        let salt = "@startsalt\n{ [OK] | [Cancel] }\n@endsalt\n";
+        let salt_res = render_plantuml(salt);
+        assert!(salt_res.output.is_none());
+        assert!(salt_res.unsupported.iter().any(|u| u.kind == "diagram-type"));
     }
 
     #[test]
@@ -1644,15 +1927,13 @@ Order *-- Item
 ```
 
 ```plantuml
-@startuml
-robust \"Web\" as W
-@0
-W is Idle
-@enduml
+@startsalt
+{ [OK] | [Cancel] }
+@endsalt
 ```
 ";
         let pres = crate::markdown::read_markdown(md.as_bytes()).expect("read markdown");
-        // Sequence and Class blocks render as SVG pictures; Timing falls back to code block.
+        // Sequence and Class blocks render as SVG pictures; Salt falls back to code block.
         let svg_count = pres
             .media
             .iter()
@@ -1664,6 +1945,6 @@ W is Idle
             crate::markdown::export_presentation_to_markdown(&pres).expect("export markdown");
         assert!(exported.contains("```plantuml\n@startuml\nhide footbox\n"), "{exported}");
         assert!(exported.contains("```puml\n@startuml\nclass Order {\n"), "{exported}");
-        assert!(exported.contains("robust \"Web\" as W"), "{exported}");
+        assert!(exported.contains("@startsalt"), "{exported}");
     }
 }

@@ -576,6 +576,11 @@ enum ActFrame {
         exits: Vec<FlowTail>,
         in_else: bool,
     },
+    Switch {
+        cond_node: String,
+        exits: Vec<FlowTail>,
+        in_case: bool,
+    },
     While {
         cond_node: String,
     },
@@ -586,13 +591,27 @@ enum ActFrame {
         fork_node: String,
         branch_exits: Vec<FlowTail>,
     },
+    Split {
+        entry_tails: Vec<FlowTail>,
+        branch_exits: Vec<FlowTail>,
+    },
 }
 
 pub(super) fn convert_plantuml_activity(
     source: &str,
 ) -> (Option<String>, Vec<PlantUmlUnsupported>) {
+    // Detect legacy activity syntax (`(*) --> ...` without new-syntax `start`/`:...;`).
+    if is_legacy_activity(source) {
+        return convert_plantuml_activity_legacy(source);
+    }
+
     let mut unsupported = Vec::new();
     let mut lines_out: Vec<String> = Vec::new();
+    let mut edge_lines: Vec<String> = Vec::new();
+    let mut lanes: Vec<(String, String, Vec<String>)> = Vec::new();
+    let mut lane_map: HashMap<String, usize> = HashMap::new();
+    let mut current_lane: Option<usize> = None;
+    let mut pre_lane_nodes: Vec<String> = Vec::new();
     let mut title: Option<String> = None;
     let mut in_comment = false;
     let mut skip_until: Option<UmlSkip> = None;
@@ -611,15 +630,33 @@ pub(super) fn convert_plantuml_activity(
         id
     };
 
-    let connect_to = |target: &str, tails: &mut Vec<FlowTail>, lines: &mut Vec<String>| {
+    let push_node = |decl: String,
+                     current_lane: Option<usize>,
+                     lanes: &mut [(String, String, Vec<String>)],
+                     pre_lane_nodes: &mut Vec<String>,
+                     lines_out: &mut Vec<String>| {
+        lines_out.push(format!("  {decl}"));
+        if let Some(li) = current_lane {
+            lanes[li].2.push(format!("    {decl}"));
+        } else {
+            pre_lane_nodes.push(format!("    {decl}"));
+        }
+    };
+
+    let connect_to = |target: &str,
+                      tails: &mut Vec<FlowTail>,
+                      lines: &mut Vec<String>,
+                      edges: &mut Vec<String>| {
         for tail in tails.drain(..) {
-            match tail.edge_label.filter(|l| !l.is_empty()) {
+            let line = match tail.edge_label.filter(|l| !l.is_empty()) {
                 Some(lbl) => {
                     let clean = lbl.replace('|', "/");
-                    lines.push(format!("  {} -->|\"{clean}\"| {target}", tail.node));
+                    format!("  {} -->|\"{clean}\"| {target}", tail.node)
                 }
-                None => lines.push(format!("  {} --> {target}", tail.node)),
-            }
+                None => format!("  {} --> {target}", tail.node),
+            };
+            lines.push(line.clone());
+            edges.push(line);
         }
     };
 
@@ -647,8 +684,14 @@ pub(super) fn convert_plantuml_activity(
                 }
                 let lbl = escape_flow_label(&act_lines.join(" / "));
                 let id = fresh("A");
-                lines_out.push(format!("  {id}(\"{lbl}\")"));
-                connect_to(&id, &mut tails, &mut lines_out);
+                push_node(
+                    format!("{id}(\"{lbl}\")"),
+                    current_lane,
+                    &mut lanes,
+                    &mut pre_lane_nodes,
+                    &mut lines_out,
+                );
+                connect_to(&id, &mut tails, &mut lines_out, &mut edge_lines);
                 tails.push(FlowTail {
                     node: id,
                     edge_label: None,
@@ -689,10 +732,35 @@ pub(super) fn convert_plantuml_activity(
             }
             continue;
         }
+        // Swimlane switch: `|Lane Name|` or `|#AntiqueWhite|Lane Name|`
+        if let Some(lane_title) = parse_swimlane_header(trimmed) {
+            let lbl = escape_flow_label(lane_title);
+            let li = if let Some(&existing) = lane_map.get(&lbl) {
+                existing
+            } else {
+                let idx = lanes.len();
+                let lid = format!("Lane{}", idx + 1);
+                let mut init_nodes = Vec::new();
+                if idx == 0 && !pre_lane_nodes.is_empty() {
+                    init_nodes.append(&mut pre_lane_nodes);
+                }
+                lanes.push((lid, lbl.clone(), init_nodes));
+                lane_map.insert(lbl, idx);
+                idx
+            };
+            current_lane = Some(li);
+            continue;
+        }
         if lower == "start" {
             let id = fresh("S");
-            lines_out.push(format!("  {id}@{{ shape: start }}"));
-            connect_to(&id, &mut tails, &mut lines_out);
+            push_node(
+                format!("{id}@{{ shape: start }}"),
+                current_lane,
+                &mut lanes,
+                &mut pre_lane_nodes,
+                &mut lines_out,
+            );
+            connect_to(&id, &mut tails, &mut lines_out, &mut edge_lines);
             tails.push(FlowTail {
                 node: id,
                 edge_label: None,
@@ -702,8 +770,14 @@ pub(super) fn convert_plantuml_activity(
         }
         if lower == "stop" || lower == "end" || lower == "detach" || lower == "kill" {
             let id = fresh("E");
-            lines_out.push(format!("  {id}@{{ shape: stop }}"));
-            connect_to(&id, &mut tails, &mut lines_out);
+            push_node(
+                format!("{id}@{{ shape: stop }}"),
+                current_lane,
+                &mut lanes,
+                &mut pre_lane_nodes,
+                &mut lines_out,
+            );
+            connect_to(&id, &mut tails, &mut lines_out, &mut edge_lines);
             has_content = true;
             continue;
         }
@@ -729,8 +803,14 @@ pub(super) fn convert_plantuml_activity(
             if let Some(inner) = after_colon.strip_suffix(';') {
                 let lbl = escape_flow_label(inner);
                 let id = fresh("A");
-                lines_out.push(format!("  {id}(\"{lbl}\")"));
-                connect_to(&id, &mut tails, &mut lines_out);
+                push_node(
+                    format!("{id}(\"{lbl}\")"),
+                    current_lane,
+                    &mut lanes,
+                    &mut pre_lane_nodes,
+                    &mut lines_out,
+                );
+                connect_to(&id, &mut tails, &mut lines_out, &mut edge_lines);
                 tails.push(FlowTail {
                     node: id,
                     edge_label: None,
@@ -744,8 +824,14 @@ pub(super) fn convert_plantuml_activity(
         // `if (cond) then (yes)`
         if let Some((cond, yes_lbl)) = parse_act_if(trimmed, "if") {
             let d = fresh("D");
-            lines_out.push(format!("  {d}{{\"{}\"}}", escape_flow_label(cond)));
-            connect_to(&d, &mut tails, &mut lines_out);
+            push_node(
+                format!("{d}{{\"{}\"}}", escape_flow_label(cond)),
+                current_lane,
+                &mut lanes,
+                &mut pre_lane_nodes,
+                &mut lines_out,
+            );
+            connect_to(&d, &mut tails, &mut lines_out, &mut edge_lines);
             frames.push(ActFrame::If {
                 cond_node: d.clone(),
                 false_label: None,
@@ -769,8 +855,16 @@ pub(super) fn convert_plantuml_activity(
             {
                 exits.extend(tails.drain(..));
                 let next_d = fresh("D");
-                lines_out.push(format!("  {next_d}{{\"{}\"}}", escape_flow_label(cond)));
-                lines_out.push(format!("  {cond_node} -->|\"no\"| {next_d}"));
+                push_node(
+                    format!("{next_d}{{\"{}\"}}", escape_flow_label(cond)),
+                    current_lane,
+                    &mut lanes,
+                    &mut pre_lane_nodes,
+                    &mut lines_out,
+                );
+                let edge = format!("  {cond_node} -->|\"no\"| {next_d}");
+                lines_out.push(edge.clone());
+                edge_lines.push(edge);
                 *cond_node = next_d.clone();
                 tails.push(FlowTail {
                     node: next_d,
@@ -818,11 +912,61 @@ pub(super) fn convert_plantuml_activity(
             }
             continue;
         }
+        // `switch (expr)` / `case (val)` / `endswitch`
+        if let Some((expr, _)) = parse_act_if(trimmed, "switch") {
+            let sw = fresh("SW");
+            push_node(
+                format!("{sw}{{\"{}\"}}", escape_flow_label(expr)),
+                current_lane,
+                &mut lanes,
+                &mut pre_lane_nodes,
+                &mut lines_out,
+            );
+            connect_to(&sw, &mut tails, &mut lines_out, &mut edge_lines);
+            frames.push(ActFrame::Switch {
+                cond_node: sw,
+                exits: Vec::new(),
+                in_case: false,
+            });
+            has_content = true;
+            continue;
+        }
+        if let Some((val, _)) = parse_act_if(trimmed, "case") {
+            if let Some(ActFrame::Switch {
+                cond_node,
+                exits,
+                in_case,
+            }) = frames.last_mut()
+            {
+                if *in_case {
+                    exits.extend(tails.drain(..));
+                }
+                *in_case = true;
+                tails.push(FlowTail {
+                    node: cond_node.clone(),
+                    edge_label: Some(escape_flow_label(val)),
+                });
+            }
+            continue;
+        }
+        if lower == "endswitch" {
+            if let Some(ActFrame::Switch { mut exits, .. }) = frames.pop() {
+                exits.extend(tails.drain(..));
+                tails = exits;
+            }
+            continue;
+        }
         // `while (cond) is (yes)` / `endwhile (no)`
         if let Some((cond, yes_lbl)) = parse_act_while(trimmed) {
             let w = fresh("W");
-            lines_out.push(format!("  {w}{{\"{}\"}}", escape_flow_label(cond)));
-            connect_to(&w, &mut tails, &mut lines_out);
+            push_node(
+                format!("{w}{{\"{}\"}}", escape_flow_label(cond)),
+                current_lane,
+                &mut lanes,
+                &mut pre_lane_nodes,
+                &mut lines_out,
+            );
+            connect_to(&w, &mut tails, &mut lines_out, &mut edge_lines);
             frames.push(ActFrame::While {
                 cond_node: w.clone(),
             });
@@ -837,7 +981,7 @@ pub(super) fn convert_plantuml_activity(
             let exit_lbl =
                 extract_paren_text(trimmed.get(8..).unwrap_or("")).map(escape_flow_label);
             if let Some(ActFrame::While { cond_node }) = frames.pop() {
-                connect_to(&cond_node, &mut tails, &mut lines_out);
+                connect_to(&cond_node, &mut tails, &mut lines_out, &mut edge_lines);
                 tails.push(FlowTail {
                     node: cond_node,
                     edge_label: exit_lbl,
@@ -848,8 +992,14 @@ pub(super) fn convert_plantuml_activity(
         // `repeat` ... `repeat while (cond) is (yes) not (no)`
         if lower == "repeat" {
             let r = fresh("R");
-            lines_out.push(format!("  {r}@{{ shape: junction }}"));
-            connect_to(&r, &mut tails, &mut lines_out);
+            push_node(
+                format!("{r}@{{ shape: junction }}"),
+                current_lane,
+                &mut lanes,
+                &mut pre_lane_nodes,
+                &mut lines_out,
+            );
+            connect_to(&r, &mut tails, &mut lines_out, &mut edge_lines);
             frames.push(ActFrame::Repeat {
                 entry_node: r.clone(),
             });
@@ -864,9 +1014,17 @@ pub(super) fn convert_plantuml_activity(
             let cond = extract_paren_text(trimmed.get(12..).unwrap_or("")).unwrap_or("continue?");
             if let Some(ActFrame::Repeat { entry_node }) = frames.pop() {
                 let d = fresh("D");
-                lines_out.push(format!("  {d}{{\"{}\"}}", escape_flow_label(cond)));
-                connect_to(&d, &mut tails, &mut lines_out);
-                lines_out.push(format!("  {d} -->|\"yes\"| {entry_node}"));
+                push_node(
+                    format!("{d}{{\"{}\"}}", escape_flow_label(cond)),
+                    current_lane,
+                    &mut lanes,
+                    &mut pre_lane_nodes,
+                    &mut lines_out,
+                );
+                connect_to(&d, &mut tails, &mut lines_out, &mut edge_lines);
+                let back_edge = format!("  {d} -->|\"yes\"| {entry_node}");
+                lines_out.push(back_edge.clone());
+                edge_lines.push(back_edge);
                 tails.push(FlowTail {
                     node: d,
                     edge_label: Some("no".to_string()),
@@ -877,8 +1035,14 @@ pub(super) fn convert_plantuml_activity(
         // `fork` / `fork again` / `end fork` / `end merge`
         if lower == "fork" {
             let f = fresh("F");
-            lines_out.push(format!("  {f}@{{ shape: fork }}"));
-            connect_to(&f, &mut tails, &mut lines_out);
+            push_node(
+                format!("{f}@{{ shape: fork }}"),
+                current_lane,
+                &mut lanes,
+                &mut pre_lane_nodes,
+                &mut lines_out,
+            );
+            connect_to(&f, &mut tails, &mut lines_out, &mut edge_lines);
             frames.push(ActFrame::Fork {
                 fork_node: f.clone(),
                 branch_exits: Vec::new(),
@@ -911,12 +1075,48 @@ pub(super) fn convert_plantuml_activity(
             {
                 branch_exits.extend(tails.drain(..));
                 let j = fresh("J");
-                lines_out.push(format!("  {j}@{{ shape: join }}"));
-                connect_to(&j, &mut branch_exits, &mut lines_out);
+                push_node(
+                    format!("{j}@{{ shape: join }}"),
+                    current_lane,
+                    &mut lanes,
+                    &mut pre_lane_nodes,
+                    &mut lines_out,
+                );
+                connect_to(&j, &mut branch_exits, &mut lines_out, &mut edge_lines);
                 tails.push(FlowTail {
                     node: j,
                     edge_label: None,
                 });
+            }
+            continue;
+        }
+        // `split` / `split again` / `end split`
+        if lower == "split" {
+            let saved = tails.clone();
+            frames.push(ActFrame::Split {
+                entry_tails: saved,
+                branch_exits: Vec::new(),
+            });
+            continue;
+        }
+        if lower == "split again" {
+            if let Some(ActFrame::Split {
+                entry_tails,
+                branch_exits,
+            }) = frames.last_mut()
+            {
+                branch_exits.extend(tails.drain(..));
+                tails = entry_tails.clone();
+            }
+            continue;
+        }
+        if lower == "end split" {
+            if let Some(ActFrame::Split {
+                mut branch_exits, ..
+            }) = frames.pop()
+            {
+                branch_exits.extend(tails.drain(..));
+                tails = branch_exits;
             }
             continue;
         }
@@ -925,11 +1125,19 @@ pub(super) fn convert_plantuml_activity(
             if let Some((_, text)) = split_colon_outside_quotes(rest) {
                 if let Some(last) = tails.last() {
                     let n = fresh("N");
-                    lines_out.push(format!(
-                        "  {n}@{{ shape: comment, label: \"{}\" }}",
-                        escape_flow_label(text)
-                    ));
-                    lines_out.push(format!("  {} -.- {n}", last.node));
+                    push_node(
+                        format!(
+                            "{n}@{{ shape: comment, label: \"{}\" }}",
+                            escape_flow_label(text)
+                        ),
+                        current_lane,
+                        &mut lanes,
+                        &mut pre_lane_nodes,
+                        &mut lines_out,
+                    );
+                    let edge = format!("  {} -.- {n}", last.node);
+                    lines_out.push(edge.clone());
+                    edge_lines.push(edge);
                 }
             } else {
                 pending_note = true;
@@ -948,6 +1156,219 @@ pub(super) fn convert_plantuml_activity(
         open_partitions -= 1;
         lines_out.push("  end".to_string());
     }
+    if !has_content {
+        return (None, unsupported);
+    }
+    if !lanes.is_empty() {
+        let mut sw_lines = Vec::new();
+        for (lid, ltitle, nodes) in lanes {
+            sw_lines.push(format!("  subgraph {lid}[\"{ltitle}\"]"));
+            sw_lines.extend(nodes);
+            sw_lines.push("  end".to_string());
+        }
+        sw_lines.extend(edge_lines);
+        return (
+            Some(prepend_frontmatter_title(
+                "swimlane-beta TB",
+                title.as_deref(),
+                &sw_lines,
+            )),
+            unsupported,
+        );
+    }
+    (
+        Some(prepend_frontmatter_title(
+            "flowchart TD",
+            title.as_deref(),
+            &lines_out,
+        )),
+        unsupported,
+    )
+}
+
+fn parse_swimlane_header(line: &str) -> Option<&str> {
+    if !line.starts_with('|') || !line.ends_with('|') || line.len() < 3 || line == "|||" {
+        return None;
+    }
+    let inner = &line[1..line.len() - 1];
+    // Handle `|#Color|Lane Name|` by taking the segment after the second `|`.
+    let name = if let Some(after_col) = inner.strip_prefix('#')
+        && let Some((_, rest)) = after_col.split_once('|')
+    {
+        rest.trim()
+    } else {
+        inner.trim()
+    };
+    (!name.is_empty()).then_some(name)
+}
+
+fn is_legacy_activity(source: &str) -> bool {
+    let mut saw_star_paren = false;
+    let mut saw_new_syntax = false;
+    for raw in source.lines() {
+        let t = raw.trim();
+        let lower = t.to_ascii_lowercase();
+        if lower == "start" || lower == "stop" || (t.starts_with(':') && t.ends_with(';')) {
+            saw_new_syntax = true;
+        }
+        if t.starts_with("(*)") || t.contains("--> (*)") {
+            saw_star_paren = true;
+        }
+    }
+    saw_star_paren && !saw_new_syntax
+}
+
+/// Convert legacy PlantUML Activity syntax (`(*) --> "Step"`, `--> [yes] "A"`, `===B1===`, `--> (*)`).
+fn convert_plantuml_activity_legacy(
+    source: &str,
+) -> (Option<String>, Vec<PlantUmlUnsupported>) {
+    let mut unsupported = Vec::new();
+    let mut lines_out: Vec<String> = Vec::new();
+    let mut title: Option<String> = None;
+    let mut in_comment = false;
+    let mut skip_until: Option<UmlSkip> = None;
+    let mut saw_enduml = false;
+    let mut node_map: HashMap<String, String> = HashMap::new();
+    let mut last_node: Option<String> = None;
+    let mut next_id: usize = 1;
+    let mut has_content = false;
+
+    let mut resolve_legacy_node = |raw: &str,
+                                   is_target: bool,
+                                   node_map: &mut HashMap<String, String>,
+                                   lines: &mut Vec<String>|
+     -> String {
+        let s = raw.trim();
+        if s == "(*)" {
+            let id = if is_target {
+                format!("E{next_id}")
+            } else {
+                format!("S{next_id}")
+            };
+            next_id += 1;
+            let shape = if is_target { "stop" } else { "start" };
+            lines.push(format!("  {id}@{{ shape: {shape} }}"));
+            return id;
+        }
+        if s.starts_with("===") && s.ends_with("===") && s.len() > 6 {
+            let key = s.trim_matches('=').trim();
+            if let Some(id) = node_map.get(key) {
+                return id.clone();
+            }
+            let id = format!("B{next_id}");
+            next_id += 1;
+            node_map.insert(key.to_string(), id.clone());
+            lines.push(format!("  {id}@{{ shape: fork }}"));
+            return id;
+        }
+        if let Some(rest) = strip_prefix_ci(s, "if ") {
+            let cond = rest.trim().trim_end_matches("then").trim();
+            let lbl = escape_flow_label(strip_quotes(cond));
+            if let Some(id) = node_map.get(&lbl) {
+                return id.clone();
+            }
+            let id = format!("D{next_id}");
+            next_id += 1;
+            node_map.insert(lbl.clone(), id.clone());
+            lines.push(format!("  {id}{{\"{lbl}\"}}"));
+            return id;
+        }
+        let lbl = escape_flow_label(strip_quotes(s));
+        if let Some(id) = node_map.get(&lbl) {
+            return id.clone();
+        }
+        let id = format!("A{next_id}");
+        next_id += 1;
+        node_map.insert(lbl.clone(), id.clone());
+        lines.push(format!("  {id}(\"{lbl}\")"));
+        id
+    };
+
+    for (idx, raw) in source.lines().enumerate() {
+        let line_no = idx + 1;
+        if saw_enduml {
+            continue;
+        }
+        let cleaned = strip_block_comments(raw, &mut in_comment);
+        let trimmed = cleaned.trim();
+        if advance_skip(trimmed, &mut skip_until) {
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('\'') {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("@start") {
+            continue;
+        }
+        if lower.starts_with("@end") {
+            saw_enduml = true;
+            continue;
+        }
+        if handle_common_ignored_or_unsupported(
+            line_no,
+            trimmed,
+            &lower,
+            &mut skip_until,
+            &mut unsupported,
+        ) {
+            continue;
+        }
+        if let Some(rest) = strip_prefix_ci(trimmed, "title ") {
+            let t = sanitize_label(rest);
+            if !t.is_empty() {
+                title = Some(t);
+            }
+            continue;
+        }
+        if lower == "endif" || lower == "else" {
+            continue;
+        }
+        let norm = normalize_directional_arrows(trimmed);
+        if let Some((lhs_raw, rhs_raw)) = norm.split_once("-->").or_else(|| norm.split_once("->")) {
+            let lhs_trim = lhs_raw.trim();
+            let from_id = if lhs_trim.is_empty() {
+                if let Some(prev) = last_node.clone() {
+                    prev
+                } else {
+                    resolve_legacy_node("(*)", false, &mut node_map, &mut lines_out)
+                }
+            } else {
+                resolve_legacy_node(lhs_trim, false, &mut node_map, &mut lines_out)
+            };
+            let mut rhs_trim = rhs_raw.trim();
+            let mut edge_lbl: Option<String> = None;
+            if let Some(after_b) = rhs_trim.strip_prefix('[')
+                && let Some(close) = after_b.find(']')
+            {
+                let lbl = escape_flow_label(&after_b[..close]);
+                if !lbl.is_empty() {
+                    edge_lbl = Some(lbl);
+                }
+                rhs_trim = after_b[close + 1..].trim();
+            }
+            let to_id = resolve_legacy_node(rhs_trim, true, &mut node_map, &mut lines_out);
+            match edge_lbl {
+                Some(lbl) => lines_out.push(format!(
+                    "  {from_id} -->|\"{}\"| {to_id}",
+                    lbl.replace('|', "/")
+                )),
+                None => lines_out.push(format!("  {from_id} --> {to_id}")),
+            }
+            if rhs_trim != "(*)" {
+                last_node = Some(to_id);
+            }
+            has_content = true;
+            continue;
+        }
+        unsupported.push(PlantUmlUnsupported {
+            line: line_no,
+            kind: "syntax",
+            source: excerpt(trimmed, 120),
+            reason: "Unsupported legacy PlantUML activity syntax.".to_string(),
+        });
+    }
+
     if !has_content {
         return (None, unsupported);
     }
@@ -1432,5 +1853,60 @@ stop
         assert!(saved.contains("```plantuml\n@startmindmap"), "{saved}");
         assert!(saved.contains("```puml\n@startuml\nstart"), "{saved}");
         assert!(saved.contains(":データ確認: 1次チェック;"), "{saved}");
+    }
+
+    #[test]
+    fn renders_activity_swimlanes_switch_split_and_legacy_syntax() {
+        let swim = "\
+@startuml
+|営業部|
+start
+:受注入力;
+|#AntiqueWhite|システム|
+switch (在庫状況)
+case (あり)
+  :在庫引当;
+case (なし)
+  :発注手配;
+endswitch
+|営業部|
+split
+  :納品書発行;
+split again
+  :請求書発行;
+end split
+stop
+@enduml
+";
+        let res = render_plantuml(swim);
+        assert!(res.is_lossless(), "unexpected diagnostics: {:?}", res.unsupported);
+        let Some(MermaidOutput::Svg { bytes, .. }) = res.output else {
+            panic!("expected SVG for swimlane activity diagram");
+        };
+        let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(roxmltree::Document::parse(svg).is_ok(), "invalid SVG");
+        assert!(svg.contains("営業部") && svg.contains("システム"), "{svg}");
+        assert!(svg.contains("在庫引当") && svg.contains("請求書発行"), "{svg}");
+
+        let legacy = "\
+@startuml
+(*) --> \"初期化\"
+\"初期化\" --> if \"設定あり?\" then
+  --> [はい] \"本処理\"
+  --> (*)
+else
+  --> [いいえ] \"デフォルト適用\"
+  --> (*)
+endif
+@enduml
+";
+        let res_leg = render_plantuml(legacy);
+        assert!(res_leg.is_lossless(), "unexpected diagnostics: {:?}", res_leg.unsupported);
+        let Some(MermaidOutput::Svg { bytes, .. }) = res_leg.output else {
+            panic!("expected SVG for legacy activity diagram");
+        };
+        let svg_leg = std::str::from_utf8(&bytes).unwrap();
+        assert!(roxmltree::Document::parse(svg_leg).is_ok(), "invalid SVG");
+        assert!(svg_leg.contains("初期化") && svg_leg.contains("デフォルト適用"), "{svg_leg}");
     }
 }
