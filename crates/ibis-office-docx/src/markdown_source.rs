@@ -21,7 +21,8 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use ibis_doc_model::{Block, FlowCommand, FlowDocument, FlowRunKind, MediaId};
+use ibis_doc_model::{Block, FlowCommand, FlowDocument, FlowPos, FlowRunKind, MediaId};
+use ibis_formats::markdown::MarkdownSourceMap;
 
 use crate::ext::*;
 use crate::shell::editor::SlideEditor;
@@ -69,6 +70,8 @@ pub(crate) struct MarkdownSourceState {
     /// Cached latest UTF-8 text of `editor` so save paths without `App` context
     /// (`FormatEditor::bytes_for_path`) can write the exact source directly.
     pub(crate) current_text: String,
+    /// Block-level source map linking `current_text` lines/bytes to `last_synced_flow.body`.
+    pub(crate) source_map: MarkdownSourceMap,
     /// True once the user has modified the source since entering source view or last sync.
     pub(crate) dirty: bool,
     /// True while the WYSIWYG `FlowDocument` has edits pending export back to `editor`.
@@ -83,6 +86,14 @@ pub(crate) struct MarkdownSourceState {
     pub(crate) sync_generation: u64,
     /// Guard flag to suppress `InputEvent::Change` emitted during programmatic `Visual -> Source` sync.
     pub(crate) suppress_source_event: bool,
+    /// Whether cursor/scroll synchronization across the Split divider is enabled.
+    pub(crate) sync_scroll_enabled: bool,
+    /// Last 0-based source line already synced to the WYSIWYG viewport.
+    pub(crate) last_synced_source_line: Option<usize>,
+    /// Last WYSIWYG caret paragraph ID already synced to the Source editor.
+    pub(crate) last_synced_visual_para: Option<u32>,
+    /// Active top-level `FlowDocument::body` block index under the current cursor.
+    pub(crate) active_block_index: Option<usize>,
     /// Left pane width ratio in Split mode (`MIN_SPLIT_RATIO..=MAX_SPLIT_RATIO`).
     pub(crate) split_ratio: f32,
     /// Active divider drag state: `(start_pointer_x, start_ratio)`.
@@ -892,7 +903,26 @@ impl SlideEditor {
         let Some(flow_arc) = self.presentation().flow.clone() else {
             return;
         };
-        let initial = ibis_formats::markdown::export_markdown(&flow_arc, &self.presentation().media);
+        // Preserve original hand-formatted Markdown when opening Split/Source on a `.md` file,
+        // surgically patching only blocks modified since open.
+        let (initial, source_map) = if let Some((orig_text, orig_map, orig_doc)) = self
+            .source
+            .as_ref()
+            .and_then(|s| s.original_markdown())
+        {
+            ibis_formats::markdown::patch_markdown_from_visual_edit(
+                orig_text,
+                orig_doc,
+                orig_map,
+                &flow_arc,
+                &self.presentation().media,
+            )
+        } else {
+            ibis_formats::markdown::export_markdown_with_source_map(
+                &flow_arc,
+                &self.presentation().media,
+            )
+        };
         let readonly = self.is_read_only()
             || self.is_jtd_read_only()
             || self.is_viewing_mode()
@@ -944,11 +974,18 @@ impl SlideEditor {
 
         editor.update(cx, |s, cx| s.focus(window, cx));
 
+        let active_block_index = self
+            .doc_state()
+            .and_then(|s| s.caret)
+            .and_then(|c| source_map.span_for_para(c.para))
+            .map(|s| s.block_index);
+
         if let Some(state) = self.doc_state_mut() {
             state.markdown_source = Some(MarkdownSourceState {
                 mode,
                 editor,
                 current_text: initial,
+                source_map,
                 dirty: false,
                 visual_dirty: false,
                 authority: SyncAuthority::Idle,
@@ -956,6 +993,10 @@ impl SlideEditor {
                 last_seen_flow: Some(flow_arc),
                 sync_generation: 0,
                 suppress_source_event: false,
+                sync_scroll_enabled: true,
+                last_synced_source_line: None,
+                last_synced_visual_para: None,
+                active_block_index,
                 split_ratio: DEFAULT_SPLIT_RATIO,
                 split_drag: None,
                 split_container_width: Rc::new(Cell::new(0.0)),
@@ -1027,8 +1068,90 @@ impl SlideEditor {
         .detach();
     }
 
-    /// Called from `Document::before_render`: flushes focus-transition syncs and detects
-    /// WYSIWYG `FlowDocument` mutations to keep the left Markdown source pane in sync.
+    fn scroll_visual_to_paragraph_preserving_focus(
+        &mut self,
+        para_id: u32,
+        cx: &mut Context<Self>,
+    ) {
+        self.relayout_if_changed();
+        let lines = self.flow_lines();
+        if let Some((page, _, y, h)) = self.caret_box(&lines, FlowPos::new(para_id, 0)) {
+            self.scroll_into_view(page, y, h, cx);
+        }
+    }
+
+    fn sync_split_cursor_and_scroll(
+        &mut self,
+        source_focused: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((sync_enabled, dirty, visual_dirty, editor_entity, last_line, last_para)) = self
+            .doc_state()
+            .and_then(|s| s.markdown_source.as_ref())
+            .map(|ms| {
+                (
+                    ms.sync_scroll_enabled,
+                    ms.dirty,
+                    ms.visual_dirty,
+                    ms.editor.clone(),
+                    ms.last_synced_source_line,
+                    ms.last_synced_visual_para,
+                )
+            })
+        else {
+            return;
+        };
+
+        if !sync_enabled || dirty || visual_dirty {
+            return;
+        }
+
+        if source_focused {
+            let line = editor_entity.read(cx).cursor_position().line as usize;
+            if Some(line) == last_line {
+                return;
+            }
+            let target = self
+                .doc_state()
+                .and_then(|s| s.markdown_source.as_ref())
+                .and_then(|ms| ms.source_map.span_for_line(line))
+                .map(|span| (span.block_index, span.para_ids.first().copied()));
+            if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
+                ms.last_synced_source_line = Some(line);
+                ms.active_block_index = target.map(|(idx, _)| idx);
+            }
+            if let Some((_, Some(para_id))) = target {
+                self.scroll_visual_to_paragraph_preserving_focus(para_id, cx);
+            }
+        } else {
+            let Some(para_id) = self.doc_state().and_then(|s| s.caret).map(|p| p.para) else {
+                return;
+            };
+            if Some(para_id) == last_para {
+                return;
+            }
+            let target = self
+                .doc_state()
+                .and_then(|s| s.markdown_source.as_ref())
+                .and_then(|ms| ms.source_map.span_for_para(para_id))
+                .map(|span| (span.block_index, span.byte_range.start, span.line_range.start));
+            if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
+                ms.last_synced_visual_para = Some(para_id);
+                ms.active_block_index = target.map(|(idx, _, _)| idx);
+                if let Some((_, _, start_line)) = target {
+                    ms.last_synced_source_line = Some(start_line);
+                }
+            }
+            if let Some((_, start_byte, _)) = target {
+                editor_entity.update(cx, |state, cx| {
+                    state.set_selected_range(start_byte..start_byte, cx);
+                });
+            }
+        }
+    }
+
+    /// Called from `Document::before_render`: flushes focus-transition syncs, detects
+    /// WYSIWYG `FlowDocument` mutations, and synchronizes cursor/scroll position across panes.
     pub(crate) fn poll_markdown_bidirectional_sync(
         &mut self,
         window: &mut Window,
@@ -1094,11 +1217,16 @@ impl SlideEditor {
             if scheduled {
                 self.schedule_visual_to_source_sync(window, cx);
             }
+            return;
         }
+
+        // When both sides are clean and synchronized, keep cursor & viewport aligned via SourceMap.
+        self.sync_split_cursor_and_scroll(source_focused, cx);
     }
 
-    /// Export the current WYSIWYG `FlowDocument` back into the Markdown `EditorState`,
-    /// preserving the source editor's scroll offset and suppressing recursive change events.
+    /// Export or surgically patch the current WYSIWYG `FlowDocument` back into the Markdown
+    /// `EditorState`, preserving untouched source formatting, scroll offset, and suppressing
+    /// recursive change events.
     pub(crate) fn sync_visual_to_markdown_source(
         &mut self,
         window: &mut Window,
@@ -1107,17 +1235,39 @@ impl SlideEditor {
         let Some(flow_arc) = self.presentation().flow.clone() else {
             return;
         };
-        let Some((editor_entity, prev_text)) = self
+        let Some((editor_entity, prev_text, prev_map, prev_synced_flow)) = self
             .doc_state()
             .and_then(|s| s.markdown_source.as_ref())
-            .map(|ms| (ms.editor.clone(), ms.current_text.clone()))
+            .map(|ms| {
+                (
+                    ms.editor.clone(),
+                    ms.current_text.clone(),
+                    ms.source_map.clone(),
+                    ms.last_synced_flow.clone(),
+                )
+            })
         else {
             return;
         };
 
-        let exported = ibis_formats::markdown::export_markdown(&flow_arc, &self.presentation().media);
+        let (exported, next_map) = if let Some(prev_flow) = prev_synced_flow.as_deref() {
+            ibis_formats::markdown::patch_markdown_from_visual_edit(
+                &prev_text,
+                prev_flow,
+                &prev_map,
+                &flow_arc,
+                &self.presentation().media,
+            )
+        } else {
+            ibis_formats::markdown::export_markdown_with_source_map(
+                &flow_arc,
+                &self.presentation().media,
+            )
+        };
+
         if exported == prev_text {
             if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
+                ms.source_map = next_map;
                 ms.last_synced_flow = Some(flow_arc.clone());
                 ms.last_seen_flow = Some(flow_arc);
                 ms.visual_dirty = false;
@@ -1136,12 +1286,14 @@ impl SlideEditor {
         });
         if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
             ms.current_text = exported;
+            ms.source_map = next_map;
             ms.dirty = false;
             ms.visual_dirty = false;
             ms.authority = SyncAuthority::Idle;
             ms.last_error = None;
             ms.last_synced_flow = Some(flow_arc.clone());
             ms.last_seen_flow = Some(flow_arc);
+            ms.last_synced_visual_para = None;
             ms.suppress_source_event = false;
         }
         cx.notify();
@@ -1172,6 +1324,8 @@ impl SlideEditor {
                 ms.last_synced_flow = synced_flow.clone();
                 ms.last_seen_flow = synced_flow;
                 ms.last_error = None;
+                ms.last_synced_source_line = None;
+                ms.last_synced_visual_para = None;
             }
         }
         applied
@@ -1190,7 +1344,7 @@ impl SlideEditor {
         let source = self.source.clone();
         let baseline_pres = self.presentation().clone();
 
-        let parsed = ibis_formats::markdown::reparse_markdown_document(
+        let parsed = ibis_formats::markdown::reparse_markdown_document_with_source_map(
             text,
             &current_doc,
             &mut media,
@@ -1199,8 +1353,8 @@ impl SlideEditor {
             base_dir,
         );
 
-        let mut new_doc = match parsed {
-            Ok(doc) => doc,
+        let (mut new_doc, new_map) = match parsed {
+            Ok(pair) => pair,
             Err(err) => {
                 let msg: SharedString = err.to_string().into();
                 if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
@@ -1235,7 +1389,13 @@ impl SlideEditor {
         }
         remap_document_media(&mut new_doc, &media_remap);
 
-        self.run_flow(vec![FlowCommand::ReplaceDocument(Box::new(new_doc))], cx)
+        let applied = self.run_flow(vec![FlowCommand::ReplaceDocument(Box::new(new_doc))], cx);
+        if applied
+            && let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut())
+        {
+            ms.source_map = new_map;
+        }
+        applied
     }
 
     /// Exit Markdown source / split view and return to the rendered Visual document view.
@@ -1267,7 +1427,8 @@ impl SlideEditor {
     }
 
     /// Compact mode strip shown for Markdown source/split views and `.md` files:
-    /// displays live sync status and `[Source | Split | Visual]` 3-way switcher.
+    /// displays live sync status, active SourceMap block indicator, sync-scroll toggle,
+    /// and `[Source | Split | Visual]` 3-way switcher.
     pub(crate) fn render_markdown_mode_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let mode = self.markdown_view_mode();
@@ -1281,6 +1442,21 @@ impl SlideEditor {
             Some(_) => Some(crate::shell::i18n::text("docx.markdown-source.synced")),
             None => None,
         };
+
+        let block_badge = ms
+            .filter(|ms| ms.mode == MarkdownViewMode::Split)
+            .and_then(|ms| {
+                let idx = ms.active_block_index?;
+                let span = ms.source_map.span_for_block(idx)?;
+                let start_l = span.line_range.start + 1;
+                let end_l = span.line_range.end.max(start_l);
+                if start_l == end_l {
+                    Some(format!("L{start_l} ↔ #{}", idx + 1))
+                } else {
+                    Some(format!("L{start_l}–{end_l} ↔ #{}", idx + 1))
+                }
+            });
+        let sync_scroll_enabled = ms.is_some_and(|ms| ms.sync_scroll_enabled);
 
         let mode_btn = |id: &'static str, label_key: &'static str, target: MarkdownViewMode| {
             let active = mode == target;
@@ -1347,6 +1523,18 @@ impl SlideEditor {
                                 .text_color(theme.muted_foreground)
                                 .child(label),
                         )
+                    })
+                    .when_some(block_badge, |row, badge| {
+                        row.child(
+                            div()
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded(px(4.))
+                                .bg(theme.muted)
+                                .text_size(px(10.5))
+                                .text_color(theme.muted_foreground)
+                                .child(badge),
+                        )
                     }),
             )
             .child(
@@ -1354,25 +1542,70 @@ impl SlideEditor {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(2.))
-                    .p(px(2.))
-                    .rounded(px(6.))
-                    .bg(theme.muted)
-                    .child(mode_btn(
-                        "markdown-mode-source",
-                        "docx.markdown-source.mode-source",
-                        MarkdownViewMode::Source,
-                    ))
-                    .child(mode_btn(
-                        "markdown-mode-split",
-                        "docx.markdown-source.mode-split",
-                        MarkdownViewMode::Split,
-                    ))
-                    .child(mode_btn(
-                        "markdown-mode-visual",
-                        "docx.markdown-source.mode-visual",
-                        MarkdownViewMode::Visual,
-                    )),
+                    .gap(px(6.))
+                    .when(mode == MarkdownViewMode::Split, |row| {
+                        row.child(
+                            div()
+                                .id("markdown-sync-scroll-toggle")
+                                .px(px(6.))
+                                .py(px(3.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_size(px(11.5))
+                                .when(sync_scroll_enabled, |d| {
+                                    d.bg(theme.accent)
+                                        .text_color(theme.accent_foreground)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                })
+                                .when(!sync_scroll_enabled, |d| {
+                                    d.text_color(theme.muted_foreground)
+                                        .hover(|h| h.bg(theme.secondary).text_color(theme.foreground))
+                                })
+                                .tooltip(|window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(
+                                        "スクロール・カーソル連動 (SourceMap)",
+                                    )
+                                    .build(window, cx)
+                                })
+                                .child("⇅")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(ms) = this
+                                        .doc_state_mut()
+                                        .and_then(|s| s.markdown_source.as_mut())
+                                    {
+                                        ms.sync_scroll_enabled = !ms.sync_scroll_enabled;
+                                        ms.last_synced_source_line = None;
+                                        ms.last_synced_visual_para = None;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(2.))
+                            .p(px(2.))
+                            .rounded(px(6.))
+                            .bg(theme.muted)
+                            .child(mode_btn(
+                                "markdown-mode-source",
+                                "docx.markdown-source.mode-source",
+                                MarkdownViewMode::Source,
+                            ))
+                            .child(mode_btn(
+                                "markdown-mode-split",
+                                "docx.markdown-source.mode-split",
+                                MarkdownViewMode::Split,
+                            ))
+                            .child(mode_btn(
+                                "markdown-mode-visual",
+                                "docx.markdown-source.mode-visual",
+                                MarkdownViewMode::Visual,
+                            )),
+                    ),
             )
             .into_any_element()
     }
@@ -1703,5 +1936,63 @@ graph LR
         assert!(exported.contains("Edited from WYSIWYG."), "WYSIWYG edit exported: {exported}");
         assert!(exported.contains("```mermaid"), "mermaid fence preserved: {exported}");
         assert!(exported.contains("Source --> Preview"), "mermaid body preserved: {exported}");
+    }
+
+    #[test]
+    fn source_map_bidirectional_cursor_and_surgical_patch_roundtrip() {
+        let initial_md = "\
+# Spec
+
+* keep star bullet
+
+Editable paragraph.
+
+```mermaid
+graph LR
+  A --> B
+```
+";
+        let mut media = Vec::new();
+        let (doc, map) = ibis_formats::markdown::reparse_markdown_document_with_source_map(
+            initial_md,
+            &FlowDocument::default(),
+            &mut media,
+            None,
+            None,
+            None,
+        )
+        .expect("reparse with source map");
+
+        // Source line 4 ("Editable paragraph.") resolves to a paragraph ID, and back to line 4.
+        let para_span = map.span_for_line(4).expect("line 4 span");
+        assert_eq!(&initial_md[para_span.byte_range.clone()], "Editable paragraph.");
+        let para_id = para_span.para_ids[0];
+        assert_eq!(map.span_for_para(para_id).unwrap().line_range, 4..5);
+
+        // Edit only that paragraph in WYSIWYG and patch back to Markdown.
+        let mut edited = doc.clone();
+        for block in &mut edited.body {
+            if let Block::Paragraph(p) = block
+                && p.id == para_id
+            {
+                for run in &mut p.runs {
+                    if let FlowRunKind::Text(t) = &mut run.kind {
+                        *t = "Edited cleanly.".to_owned();
+                    }
+                }
+            }
+        }
+        let (patched, patched_map) = ibis_formats::markdown::patch_markdown_from_visual_edit(
+            initial_md,
+            &doc,
+            &map,
+            &edited,
+            &media,
+        );
+        assert!(patched.contains("* keep star bullet"), "untouched star bullet preserved:\n{patched}");
+        assert!(patched.contains("Edited cleanly."), "visual edit applied:\n{patched}");
+        assert!(patched.contains("```mermaid\ngraph LR\n  A --> B\n```"), "mermaid preserved:\n{patched}");
+        let new_span = patched_map.span_for_para(para_id).expect("updated para span");
+        assert_eq!(&patched[new_span.byte_range.clone()], "Edited cleanly.");
     }
 }

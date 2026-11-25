@@ -33,6 +33,11 @@
 
 mod marp;
 mod metafile_preview;
+
+pub use crate::markdown_source_map::{
+    MarkdownBlockSpan, MarkdownSourceMap, patch_markdown_from_visual_edit,
+    try_patch_markdown_from_visual_edit,
+};
 mod myst;
 mod obsidian;
 mod okf_metadata;
@@ -338,7 +343,7 @@ pub fn open_markdown_with_base_dir(data: Vec<u8>, base_dir: Option<&std::path::P
     .clone();
 
     let mut media_list: Vec<Media> = opened.presentation.media.clone();
-    parse_markdown_into(
+    let source_map = parse_markdown_into(
         text,
         &mut doc,
         &mut media_list,
@@ -360,8 +365,9 @@ pub fn open_markdown_with_base_dir(data: Vec<u8>, base_dir: Option<&std::path::P
             };
         }
     }
-    opened.presentation.flow = Some(document);
+    opened.presentation.flow = Some(document.clone());
     opened.source.mark_generated_from_markdown();
+    opened.source.set_original_markdown(text.to_owned(), source_map, document);
     Ok(opened)
 }
 
@@ -376,6 +382,27 @@ pub fn reparse_markdown_document(
     baseline_pres: Option<&Presentation>,
     base_dir: Option<&std::path::Path>,
 ) -> Result<FlowDocument, Error> {
+    reparse_markdown_document_with_source_map(
+        text,
+        current_doc,
+        media,
+        source,
+        baseline_pres,
+        base_dir,
+    )
+    .map(|(doc, _)| doc)
+}
+
+/// Like [`reparse_markdown_document`], also returning the block-level [`MarkdownSourceMap`]
+/// mapping each top-level `FlowDocument::body` block back to its line/byte span in `text`.
+pub fn reparse_markdown_document_with_source_map(
+    text: &str,
+    current_doc: &FlowDocument,
+    media: &mut Vec<Media>,
+    source: Option<&crate::Source>,
+    baseline_pres: Option<&Presentation>,
+    base_dir: Option<&std::path::Path>,
+) -> Result<(FlowDocument, MarkdownSourceMap), Error> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let opened = crate::save::open(crate::blank::blank_file(crate::Kind::Document)?)?;
     let fallback_baseline = opened.presentation;
@@ -387,7 +414,7 @@ pub fn reparse_markdown_document(
     doc.view_mode = current_doc.view_mode;
     doc.interaction_mode = current_doc.interaction_mode;
 
-    parse_markdown_into(
+    let source_map = parse_markdown_into(
         text,
         &mut doc,
         media,
@@ -395,7 +422,7 @@ pub fn reparse_markdown_document(
         baseline_pres.or(Some(&fallback_baseline)),
         base_dir,
     )?;
-    Ok(doc)
+    Ok((doc, source_map))
 }
 
 /// Parse a Markdown text fragment into [`Block`]s using `doc`'s styles/numbering (e.g. for clipboard paste).
@@ -1607,8 +1634,10 @@ fn parse_markdown_into(
     source: Option<&crate::Source>,
     baseline_pres: Option<&Presentation>,
     base_dir: Option<&std::path::Path>,
-) -> Result<(), Error> {
+) -> Result<MarkdownSourceMap, Error> {
+    let original_text = text;
     let text = shape_text::strip(metafile_preview::strip(text));
+    let text_unmodified = std::ptr::eq(text.as_ptr(), original_text.as_ptr()) && text.len() == original_text.len();
     let trimmed_start = text.trim_start_matches(['\n', '\r']);
     let frontmatter = roundtrip::document_frontmatter(trimmed_start);
     let mut body_text = frontmatter.as_ref().map_or(text, |frame| frame.body);
@@ -1651,9 +1680,20 @@ fn parse_markdown_into(
         doc.bibliography_sources.push(xml.to_owned());
         body_text = rest;
     }
+    let body_line_offset = if text_unmodified
+        && body_text.as_ptr() as usize >= original_text.as_ptr() as usize
+        && (body_text.as_ptr() as usize - original_text.as_ptr() as usize) <= original_text.len()
+    {
+        let byte_offset = body_text.as_ptr() as usize - original_text.as_ptr() as usize;
+        original_text[..byte_offset].bytes().filter(|&b| b == b'\n').count()
+    } else {
+        0
+    };
     let mut footnote_defs: HashMap<String, String> = HashMap::new();
-    let body_text = collect_markdown_links(body_text, &mut ctx);
-    let mut blocks = parse_blocks(&body_text, &mut ctx, &mut footnote_defs)?;
+    let body_text_cow = collect_markdown_links(body_text, &mut ctx);
+    let body_borrowed = matches!(body_text_cow, std::borrow::Cow::Borrowed(_));
+    let mut raw_block_lines: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut blocks = parse_blocks_with_lines(&body_text_cow, &mut ctx, &mut footnote_defs, Some(&mut raw_block_lines))?;
     if let Some(Block::Paragraph(paragraph)) = blocks.last()
         && paragraph.section_break == ibis_doc_model::SectionBreak::None
         && let Some(section) = &paragraph.section
@@ -1682,6 +1722,7 @@ fn parse_markdown_into(
             *target = section.parts[index].clone().unwrap_or_default();
         }
         blocks.pop();
+        raw_block_lines.truncate(blocks.len());
     }
     if blocks.iter().any(|block| matches!(block, Block::Paragraph(p)
         if p.section.is_some() && p.section_break == ibis_doc_model::SectionBreak::None))
@@ -1694,6 +1735,7 @@ fn parse_markdown_into(
         _ => None,
     });
 
+    let blocks_were_nonempty = !blocks.is_empty();
     doc.styles = Arc::new(ctx.styles.clone());
     doc.body = if blocks.is_empty() {
         let mut p = FlowParagraph {
@@ -1847,7 +1889,19 @@ fn parse_markdown_into(
         let _ = ibis_doc_model::flow_command::apply_to(doc, command);
     }
 
-    Ok(())
+    let patchable = text_unmodified
+        && body_borrowed
+        && blocks_were_nonempty
+        && doc.body.len() == raw_block_lines.len();
+    let source_map = MarkdownSourceMap::from_line_spans(
+        original_text,
+        doc,
+        body_line_offset,
+        raw_block_lines,
+        patchable,
+    );
+
+    Ok(source_map)
 }
 
 // Private anchor namespace used only while a MyST reference awaits a target.
@@ -3196,7 +3250,16 @@ fn parse_blocks(
     ctx: &mut ParseContext<'_>,
     footnote_defs: &mut HashMap<String, String>,
 ) -> Result<Vec<Block>, Error> {
-    parse_blocks_at_quote_depth(body_text, ctx, footnote_defs, 0)
+    parse_blocks_with_lines(body_text, ctx, footnote_defs, None)
+}
+
+fn parse_blocks_with_lines(
+    body_text: &str,
+    ctx: &mut ParseContext<'_>,
+    footnote_defs: &mut HashMap<String, String>,
+    block_lines: Option<&mut Vec<std::ops::Range<usize>>>,
+) -> Result<Vec<Block>, Error> {
+    parse_blocks_at_quote_depth(body_text, ctx, footnote_defs, 0, block_lines)
 }
 
 fn parse_blocks_at_quote_depth(
@@ -3204,6 +3267,7 @@ fn parse_blocks_at_quote_depth(
     ctx: &mut ParseContext<'_>,
     footnote_defs: &mut HashMap<String, String>,
     quote_depth: usize,
+    mut block_lines: Option<&mut Vec<std::ops::Range<usize>>>,
 ) -> Result<Vec<Block>, Error> {
     let lines: Vec<&str> = body_text.lines().collect();
     let mut quoted_items = HashMap::new();
@@ -3212,8 +3276,17 @@ fn parse_blocks_at_quote_depth(
     let mut continuations = markdown_continuations(body_text, &lines, &mut quoted_items, quote_depth > 0, &mut item_paragraph_ends);
     let mut blocks: Vec<Block> = Vec::new();
     let mut i = 0;
+    let mut last_start_line = 0usize;
+    let mut last_block_len = 0usize;
 
     while i < lines.len() {
+        if let Some(spans) = block_lines.as_deref_mut()
+            && blocks.len() > last_block_len
+        {
+            spans.resize(blocks.len(), last_start_line..i);
+            last_block_len = blocks.len();
+        }
+        last_start_line = i;
         let raw = lines[i];
         let trimmed = raw.trim();
 
@@ -3953,6 +4026,12 @@ fn parse_blocks_at_quote_depth(
         }
     }
 
+    if let Some(spans) = block_lines.as_deref_mut()
+        && blocks.len() > last_block_len
+    {
+        spans.resize(blocks.len(), last_start_line..i);
+    }
+
     Ok(blocks)
 }
 
@@ -4479,7 +4558,7 @@ fn parse_structured_quote(
         return Ok(None);
     }
 
-    let mut blocks = parse_blocks_at_quote_depth(&source, ctx, &mut HashMap::new(), quote_depth + 1)?;
+    let mut blocks = parse_blocks_at_quote_depth(&source, ctx, &mut HashMap::new(), quote_depth + 1, None)?;
     if !has_nested && blocks.len() != count {
         return Ok(None);
     }
@@ -7416,6 +7495,22 @@ fn encode_base64(data: &[u8]) -> String {
 /// Export a [`FlowDocument`] and its media to deterministic Rich Markdown.
 pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
     export_markdown_with_positions(doc, media, &mut Vec::new(), |_, _, _| {})
+}
+
+/// Export a [`FlowDocument`] and its media to deterministic Rich Markdown together with a
+/// block-level [`MarkdownSourceMap`] covering every top-level `doc.body` block.
+pub fn export_markdown_with_source_map(
+    doc: &FlowDocument,
+    media: &[Media],
+) -> (String, MarkdownSourceMap) {
+    let mut spans: Vec<(usize, usize, usize)> = Vec::with_capacity(doc.body.len());
+    let text = export_markdown_with_positions(doc, media, &mut Vec::new(), |source, start, end| {
+        if let MarkdownSource::Body(index, _) = source {
+            spans.push((index, start, end));
+        }
+    });
+    let map = MarkdownSourceMap::from_byte_spans(&text, doc, spans, true);
+    (text, map)
 }
 
 enum MarkdownSource<'a> {

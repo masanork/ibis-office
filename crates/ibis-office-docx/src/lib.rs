@@ -900,10 +900,27 @@ impl FormatEditor for Document {
             }
             return Some(
                 ibis_formats::markdown::export_document_markdown_with_diagnostics(editor.presentation(), Default::default())
-                    .map(|export| FileBytes {
-                        bytes: export.markdown.into_bytes(),
-                        protect: false,
-                        note: source_export_note(&export.diagnostics),
+                    .map(|export| {
+                        let bytes = if export.diagnostics.is_empty()
+                            && let Some(flow) = editor.presentation().flow.as_deref()
+                            && let Some((orig_text, orig_map, orig_doc)) = source.original_markdown()
+                            && let Some((patched, _)) = ibis_formats::markdown::try_patch_markdown_from_visual_edit(
+                                orig_text,
+                                orig_doc,
+                                orig_map,
+                                flow,
+                                &editor.presentation().media,
+                            )
+                        {
+                            patched.into_bytes()
+                        } else {
+                            export.markdown.into_bytes()
+                        };
+                        FileBytes {
+                            bytes,
+                            protect: false,
+                            note: source_export_note(&export.diagnostics),
+                        }
                     })
                     .map_err(|e| e.to_string()),
             );
