@@ -82,30 +82,40 @@ fn patch_page(
                 if dx == 0.0 && dy == 0.0 {
                     return Ok(None);
                 }
-                check_move_links(node, shape, nested, &links)?;
+                let crossing = move_links(node, shape, nested, shapes, &links)?;
                 patch_pin(&mut patches, node, x + dx, y + dy)?;
-                let mut connectors = BTreeSet::new();
-                for &link in &links {
-                    if id(link, "ToSheet") == Some(shape) {
-                        connectors.insert(id(link, "FromSheet").ok_or_else(unsupported)?);
-                    }
-                }
-                for connector in connectors {
-                    let line = editable_route(shapes, &links, connector, &masters)?;
-                    let [mut start, mut end] = line.points;
-                    for (point, link) in [(&mut start, line.links[0]), (&mut end, line.links[1])] {
-                        if id(link, "ToSheet") == Some(shape) {
-                            if let Some(row) = fixed_row(link) {
-                                let saved = connection_point(node, master, row)?;
-                                if !close(saved.0, point.0) || !close(saved.1, point.1) {
-                                    return Err(unsupported());
-                                }
-                            }
-                            point.0 += dx;
-                            point.1 += dy;
+                if nested {
+                    if !crossing.is_empty() {
+                        let [a, b, c, d, _, _] = parent_frame(node, &masters).0;
+                        let delta = (a * dx + c * dy, b * dx + d * dy);
+                        for (line, end) in crossing {
+                            line.patch(&mut patches, end, delta)?;
                         }
                     }
-                    line.patch(&mut patches, start, end)?;
+                } else {
+                    let mut connectors = BTreeSet::new();
+                    for &link in &links {
+                        if id(link, "ToSheet") == Some(shape) {
+                            connectors.insert(id(link, "FromSheet").ok_or_else(unsupported)?);
+                        }
+                    }
+                    for connector in connectors {
+                        let line = editable_route(shapes, &links, connector, &masters)?;
+                        let [mut start, mut end] = line.points;
+                        for (point, link) in [(&mut start, line.links[0]), (&mut end, line.links[1])] {
+                            if id(link, "ToSheet") == Some(shape) {
+                                if let Some(row) = fixed_row(link) {
+                                    let saved = connection_point(node, master, row)?;
+                                    if !close(saved.0, point.0) || !close(saved.1, point.1) {
+                                        return Err(unsupported());
+                                    }
+                                }
+                                point.0 += dx;
+                                point.1 += dy;
+                            }
+                        }
+                        line.patch(&mut patches, start, end)?;
+                    }
                 }
             }
             GeometryEdit::Reconnect {
@@ -318,30 +328,158 @@ fn parent_pin_scale(shape: XmlNode<'_, '_>, key: &str) -> Option<(String, f64)> 
     close(value(shape, key).ok()?, fraction * extent).then_some((prefix, extent))
 }
 
-fn check_move_links(
-    node: XmlNode<'_, '_>,
+fn move_links<'a, 'i>(
+    node: XmlNode<'a, 'i>,
     shape: u32,
     nested: bool,
-    links: &[XmlNode<'_, '_>],
-) -> Result<()> {
+    shapes: XmlNode<'a, 'i>,
+    links: &[XmlNode<'a, 'i>],
+) -> Result<Vec<(StraightLine<'a, 'i>, usize)>> {
     if links.iter().any(|&link| id(link, "FromSheet") == Some(shape)) {
         return Err(unsupported());
     }
+    let mut crossing = Vec::new();
     if nested || is_group(node) {
         let subtree: BTreeSet<_> = node
             .descendants()
             .filter(|&item| named(item, "Shape"))
             .filter_map(|item| id(item, "ID"))
             .collect();
-        if links.iter().any(|&link| {
-            let from = id(link, "FromSheet").is_some_and(|id| subtree.contains(&id));
-            let to = id(link, "ToSheet").is_some_and(|id| subtree.contains(&id));
-            from != to
+        for &link in links {
+            let from = id(link, "FromSheet").ok_or_else(unsupported)?;
+            let to = id(link, "ToSheet").ok_or_else(unsupported)?;
+            if subtree.contains(&from) == subtree.contains(&to) {
+                continue;
+            }
+            if !nested || to != shape || subtree.contains(&from)
+                || links.iter().any(|&l| id(l, "ToSheet") == Some(from))
+            {
+                return Err(unsupported());
+            }
+            let line = StraightLine::read(shape_by_id(shapes, from)?, from, links)?;
+            let end = usize::from(link.attribute("FromCell") == Some("EndX"));
+            crossing.push((line, end));
+        }
+    }
+    Ok(crossing)
+}
+
+// Visio's straight 1-D shape uses a length and angle derived from its endpoints.
+struct StraightLine<'a, 'i> {
+    shape: XmlNode<'a, 'i>,
+    points: [(f64, f64); 2],
+    line_x: XmlNode<'a, 'i>,
+}
+
+impl<'a, 'i> StraightLine<'a, 'i> {
+    fn read(shape: XmlNode<'a, 'i>, connector: u32, links: &[XmlNode<'a, 'i>]) -> Result<Self> {
+        let points = [
+            (value(shape, "BeginX")?, value(shape, "BeginY")?),
+            (value(shape, "EndX")?, value(shape, "EndY")?),
+        ];
+        let values = Self::derived(points)?;
+        for (key, expected, formula) in values {
+            if !close(value(shape, key)?, expected) || cell(shape, key)?.attribute("F") != Some(formula) {
+                return Err(unsupported());
+            }
+        }
+        for key in ["Height", "LocPinY", "FlipX", "FlipY"] {
+            if !close(value(shape, key)?, 0.0) {
+                return Err(unsupported());
+            }
+        }
+        for (prefix, from_part) in [("Begin", 9), ("End", 12)] {
+            let mut matching = links.iter().copied().filter(|l| {
+                id(*l, "FromSheet") == Some(connector)
+                    && l.attribute("FromCell") == Some(&format!("{prefix}X"))
+            });
+            let formula = matching.next().map(|link| {
+                if id(link, "FromPart") != Some(from_part) {
+                    return Err(unsupported());
+                }
+                let target = id(link, "ToSheet").ok_or_else(unsupported)?;
+                Ok(fixed_formula(target, fixed_row(link).ok_or_else(unsupported)?))
+            }).transpose()?;
+            if matching.next().is_some() {
+                return Err(unsupported());
+            }
+            for axis in ["X", "Y"] {
+                if cell(shape, &format!("{prefix}{axis}"))?.attribute("F") != formula.as_deref() {
+                    return Err(unsupported());
+                }
+            }
+        }
+        if child(shape, "Shapes").is_some() || links.iter().any(|l| {
+            id(*l, "FromSheet") == Some(connector)
+                && !matches!(l.attribute("FromCell"), Some("BeginX" | "EndX"))
         }) {
             return Err(unsupported());
         }
+        let mut geometry = shape.children().filter(|n| named(*n, "Section") && n.attribute("N") == Some("Geometry"));
+        let section = geometry.next().ok_or_else(unsupported)?;
+        let rows: Vec<_> = section.children().filter(|n| named(*n, "Row")).collect();
+        let [start, end] = rows.as_slice() else { return Err(unsupported()); };
+        if geometry.next().is_some() {
+            return Err(unsupported());
+        }
+        for (row, kind, x, formula) in [
+            (*start, "MoveTo", 0.0, "Width*0"),
+            (*end, "LineTo", value(shape, "Width")?, "Width*1"),
+        ] {
+            if row.attribute("T") != Some(kind) || row.attribute("Del") == Some("1")
+                || !close(value(row, "X")?, x) || cell(row, "X")?.attribute("F") != Some(formula)
+                || !close(value(row, "Y")?, 0.0) || cell(row, "Y")?.attribute("F").is_some()
+            {
+                return Err(unsupported());
+            }
+        }
+        Ok(Self { shape, points, line_x: cell(*end, "X")? })
     }
-    Ok(())
+
+    fn derived([(x0, y0), (x1, y1)]: [(f64, f64); 2]) -> Result<[(&'static str, f64, &'static str); 5]> {
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let width = dx.hypot(dy);
+        if close(width, 0.0) {
+            return Err(unsupported());
+        }
+        Ok([
+            ("PinX", (x0 + x1) / 2.0, "(BeginX+EndX)/2"),
+            ("PinY", (y0 + y1) / 2.0, "(BeginY+EndY)/2"),
+            ("Width", width, "SQRT((EndX-BeginX)^2+(EndY-BeginY)^2)"),
+            ("LocPinX", width / 2.0, "Width*0.5"),
+            ("Angle", dy.atan2(dx), "ATAN2(EndY-BeginY,EndX-BeginX)"),
+        ])
+    }
+
+    fn patch(&self, patches: &mut Vec<Patch>, end: usize, delta: (f64, f64)) -> Result<()> {
+        let mut points = self.points;
+        points[end].0 += delta.0;
+        points[end].1 += delta.1;
+        let prefix = if end == 0 { "Begin" } else { "End" };
+        for (axis, value) in [("X", points[end].0), ("Y", points[end].1)] {
+            number_patch(patches, cell(self.shape, &format!("{prefix}{axis}"))?, value)?;
+        }
+        for (key, value, _) in Self::derived(points)? {
+            number_patch(patches, cell(self.shape, key)?, value)?;
+        }
+        number_patch(patches, self.line_x, (points[1].0 - points[0].0).hypot(points[1].1 - points[0].1))
+    }
+}
+
+fn parent_frame(
+    node: XmlNode<'_, '_>,
+    masters: &HashMap<&str, roxmltree::Document<'_>>,
+) -> crate::Matrix {
+    let mut ancestors: Vec<_> = node.ancestors().skip(1).filter(|n| named(*n, "Shape")).collect();
+    ancestors.reverse();
+    ancestors.into_iter().fold(crate::Matrix::IDENTITY, |frame, shape| {
+        let master = master_for(shape, masters, 0);
+        let get = |key| inherited_value(shape, master, key).ok();
+        frame.child(crate::Matrix::shape(
+            (0.0, 0.0), (0.0, 0.0), get("Angle").unwrap_or(0.0),
+            get("FlipX") == Some(1.0), get("FlipY") == Some(1.0),
+        ))
+    })
 }
 
 fn patch_pin(patches: &mut Vec<Patch>, shape: XmlNode<'_, '_>, x: f64, y: f64) -> Result<()> {
@@ -957,7 +1095,7 @@ impl VsdxContainer {
         let height = page.info.crop_box.height();
         let point = |x: f64, y: f64| ((x * 72.0) as f32, height - (y * 72.0) as f32);
         let mut targets = GeometryTargets::default();
-        collect_shape_targets(shapes, &masters, &links, height, crate::Matrix::IDENTITY, 0, &mut targets);
+        collect_shape_targets(shapes, shapes, &masters, &links, height, crate::Matrix::IDENTITY, 0, &mut targets);
         let connectors: BTreeSet<_> = links
             .iter()
             .filter_map(|&link| id(link, "FromSheet"))
@@ -976,10 +1114,11 @@ impl VsdxContainer {
     }
 }
 
-fn collect_shape_targets(
-    shapes: XmlNode<'_, '_>,
+fn collect_shape_targets<'a, 'i>(
+    shapes: XmlNode<'a, 'i>,
+    page_shapes: XmlNode<'a, 'i>,
     masters: &HashMap<&str, roxmltree::Document<'_>>,
-    links: &[XmlNode<'_, '_>],
+    links: &[XmlNode<'a, 'i>],
     height: f32,
     parent: crate::Matrix,
     depth: usize,
@@ -1019,7 +1158,7 @@ fn collect_shape_targets(
             ["PinX", "PinY"].into_iter().all(|key| {
                 cell(shape, key).is_ok_and(|cell| cell.attribute("F").is_none())
                     || parent_pin_scale(shape, key).is_some()
-            }) && check_move_links(shape, shape_id, true, links).is_ok()
+            }) && move_links(shape, shape_id, true, page_shapes, links).is_ok()
         };
         if can_drag && movable_pin(shape, master).is_ok() {
             let corners = [(0.0, 0.0), (width, 0.0), (0.0, shape_height), (width, shape_height)];
@@ -1045,7 +1184,7 @@ fn collect_shape_targets(
             }
         }
         if let Some(children) = child(shape, "Shapes") {
-            collect_shape_targets(children, masters, links, height, frame, depth + 1, targets);
+            collect_shape_targets(children, page_shapes, masters, links, height, frame, depth + 1, targets);
         }
     }
 }

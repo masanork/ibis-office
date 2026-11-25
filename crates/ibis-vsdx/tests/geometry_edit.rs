@@ -479,6 +479,46 @@ fn group_drag_inverts_the_composed_rotation_and_reflection() {
 }
 
 #[test]
+fn moves_only_the_glued_end_of_a_straight_line_crossing_a_rotated_group() {
+    let doc = rewrite_flowchart(|mut source| {
+        let at = source.find("</Shapes>").unwrap();
+        source.insert_str(at, concat!(
+            r#"<Shape ID="100" Type="Group"><Cell N="PinX" V="4"/><Cell N="PinY" V="4"/><Cell N="LocPinX" V="0"/><Cell N="LocPinY" V="0"/><Cell N="Width" V="2"/><Cell N="Height" V="2"/><Cell N="Angle" V="1.5707963267948966"/><Cell N="FlipY" V="1"/><Shapes>"#,
+            r#"<Shape ID="101"><Cell N="PinX" V="1"/><Cell N="PinY" V="1"/><Cell N="Width" V="1"/><Cell N="Height" V="1"/></Shape></Shapes></Shape>"#,
+            r#"<Shape ID="102"><Cell N="BeginX" V="1"/><Cell N="BeginY" V="5"/>"#,
+            r#"<Cell N="EndX" V="5" F="PAR(PNT(Sheet.101!Connections.X1,Sheet.101!Connections.Y1))"/><Cell N="EndY" V="5" F="PAR(PNT(Sheet.101!Connections.X1,Sheet.101!Connections.Y1))"/>"#,
+            r#"<Cell N="PinX" V="3" F="(BeginX+EndX)/2"/><Cell N="PinY" V="5" F="(BeginY+EndY)/2"/><Cell N="Width" V="4" F="SQRT((EndX-BeginX)^2+(EndY-BeginY)^2)"/>"#,
+            r#"<Cell N="LocPinX" V="2" F="Width*0.5"/><Cell N="Height" V="0"/><Cell N="LocPinY" V="0"/><Cell N="Angle" V="0" F="ATAN2(EndY-BeginY,EndX-BeginX)"/><Cell N="FlipX" V="0"/><Cell N="FlipY" V="0"/>"#,
+            r#"<Section N="Geometry"><Row T="MoveTo"><Cell N="X" V="0" F="Width*0"/><Cell N="Y" V="0"/></Row><Row T="LineTo"><Cell N="X" V="4" F="Width*1"/><Cell N="Y" V="0"/></Row></Section></Shape>"#,
+        ));
+        let at = source.find("</Connects>").unwrap();
+        source.insert_str(at, r#"<Connect FromSheet="102" FromCell="EndX" FromPart="12" ToSheet="101" ToCell="Connections.X1" ToPart="100"/>"#);
+        source
+    });
+    let targets = doc.geometry_targets(0).unwrap();
+    let child = targets.group_children.iter().find(|child| child.id == 101).unwrap();
+    let (dx, dy) = child.local_delta(0.25, 0.125);
+    let moved = doc.edit_geometry(0, GeometryEdit::Move { shape: 101, dx, dy }).unwrap();
+    let reopened = VsdxContainer::from_bytes(moved.clone().into()).unwrap();
+    reopened.interpret_page_scene(0).unwrap();
+
+    let zip = Archive::new(moved.into()).unwrap();
+    let entry = zip.entries().iter().find(|entry| entry.name == PAGE).unwrap();
+    let page = String::from_utf8(zip.read(entry).unwrap()).unwrap();
+    let xml = roxmltree::Document::parse(&page).unwrap();
+    for (shape, name, expected) in [
+        ("100", "PinX", 4.0), ("100", "PinY", 4.0),
+        ("101", "PinX", 1.125), ("101", "PinY", 1.25),
+        ("102", "BeginX", 1.0), ("102", "BeginY", 5.0),
+        ("102", "EndX", 5.25), ("102", "EndY", 5.125),
+        ("102", "Width", 4.25_f64.hypot(0.125)),
+    ] {
+        assert!((cell_value(&xml, shape, name) - expected).abs() < 1e-8, "{shape} {name}");
+    }
+    assert!(page.contains(r#"FromSheet="102" FromCell="EndX" FromPart="12" ToSheet="101" ToCell="Connections.X1" ToPart="100""#));
+}
+
+#[test]
 fn reconnects_circular_and_elliptical_arcs_at_uniform_scale() {
     use ibis_pdf::{DisplayCmd, scene::PathCmd};
 

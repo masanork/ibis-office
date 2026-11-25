@@ -27,6 +27,10 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
     if std::env::var_os("VSDX_VISIO_TRANSFORMED_GROUP_SAMPLE").is_some() {
         scenarios.push(("shell::vsdx_visio_transformed_group_drag", vsdx_visio_transformed_group_drag));
     }
+    if std::env::var_os("VSDX_VISIO_WIRED_CHILD_SAMPLE").is_some() {
+        scenarios.push(("shell::vsdx_wired_child_drag", wired_child_drag));
+        scenarios.push(("shell::vsdx_wired_transformed_child_drag", wired_transformed_child_drag));
+    }
     scenarios
 }
 
@@ -533,6 +537,152 @@ fn group_drag_roundtrip(
             == redact_pins(&new, moved_pins),
             "only the child position cells should differ");
     }
+}
+
+const WIRED_PAGE: &str = "visio/pages/page3.xml";
+const WIRED_DIR: &str = "target/scenario/vsdx-geometry-src";
+
+fn wired_child_drag() {
+    wired_child_roundtrip(false);
+}
+
+fn wired_transformed_child_drag() {
+    wired_child_roundtrip(true);
+}
+
+fn wired_child_roundtrip(transformed: bool) {
+    use ibis_office_pdf::editor::{geometry_screen_point, staged_geometry_bytes, write_vsdx_copy};
+    use ibis_ooxml::package::{Package, SaveOptions};
+
+    let input = std::env::var("VSDX_VISIO_WIRED_CHILD_SAMPLE").unwrap();
+    let original = std::fs::read(&input).unwrap();
+    let source = ibis_formats::zip::Archive::new(&original).unwrap();
+    let page = String::from_utf8(source.read(WIRED_PAGE).unwrap().unwrap()).unwrap();
+    let root = crate::shell::scenario::repo_root();
+    std::fs::create_dir_all(root.join(WIRED_DIR)).unwrap();
+
+    // The unmodified Visio file has a horizontal line glued to the Gateway Symbol.
+    // Exercise the same glue in a rotated and reflected coordinate frame too.
+    let (input, output, center, local_delta) = if transformed {
+        let doc = roxmltree::Document::parse(&page).unwrap();
+        let group = wired_shape(&doc, "4094");
+        let line = wired_shape(&doc, "4104");
+        let get = |shape, key| wired_cell(shape, key).attribute("V").unwrap().parse::<f64>().unwrap();
+        let (gx, gy) = (get(group, "PinX"), get(group, "PinY"));
+        let (bx, by) = (get(line, "BeginX"), get(line, "BeginY"));
+        let (ex, ey) = (gx + get(line, "EndY") - gy, gy + get(line, "EndX") - gx);
+        let width = (ex - bx).hypot(ey - by);
+        let line_x = line.descendants().find(|n| n.attribute("T") == Some("LineTo")).unwrap();
+        let mut patches = vec![
+            (wired_cell(group, "Angle"), std::f64::consts::FRAC_PI_2),
+            (wired_cell(group, "FlipY"), 1.0),
+            (wired_cell(line, "EndX"), ex),
+            (wired_cell(line, "EndY"), ey),
+            (wired_cell(line, "PinX"), (bx + ex) / 2.0),
+            (wired_cell(line, "PinY"), (by + ey) / 2.0),
+            (wired_cell(line, "Width"), width),
+            (wired_cell(line, "LocPinX"), width / 2.0),
+            (wired_cell(line, "Angle"), (ey - by).atan2(ex - bx)),
+            (wired_cell(line_x, "X"), width),
+        ];
+        patches.sort_by_key(|(node, _)| std::cmp::Reverse(node.range().start));
+        let mut rotated = page.clone();
+        for (node, value) in patches {
+            rotated.replace_range(node.attribute_node("V").unwrap().range_value(), &value.to_string());
+        }
+        let mut package = Package::open(original.as_slice()).unwrap();
+        package.set_bytes(WIRED_PAGE, rotated.into_bytes());
+        let path = format!("{WIRED_DIR}/visio-wired-child-transformed.vsdx");
+        std::fs::write(root.join(&path), package.save(SaveOptions::default()).unwrap()).unwrap();
+        (path, "visio-wired-child-transformed-edited.vsdx", (3.873727, 21.448014), [0.125, 0.25])
+    } else {
+        (input, "visio-wired-child-edited.vsdx", (3.780122, 21.54162), [0.25, 0.125])
+    };
+
+    let mut s = Scenario::open(&input);
+    let path = s.with(|editor, _| editor.file_path().unwrap());
+    let before = std::fs::read(&path).unwrap();
+    s.size(1500.0, 1200.0);
+    s.update(|editor, _, cx| { editor.zoom = Some(0.30); cx.notify(); });
+    s.menu("edit.go-to");
+    s.type_text("3");
+    s.key("enter");
+    s.menu("vsdx.resume-edit");
+    let mut at = |x: f32, y: f32| s.with(|editor, _| {
+        geometry_screen_point(editor, 2, x * 72.0, (49.5 - y) * 72.0).unwrap()
+    });
+    let start = at(center.0, center.1);
+    let finish = at(center.0 + 0.25, center.1 + 0.125);
+    s.drag(start, finish);
+    let bytes = s.with(|editor, _| staged_geometry_bytes(editor))
+        .unwrap_or_else(|| panic!("wired drag failed: {:?}", s.status_texts()));
+    let output = format!("{WIRED_DIR}/{output}");
+    write_vsdx_copy(Some(&path), &root.join(&output), &bytes).unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    drop(s);
+
+    let reopened = Scenario::open(&output)
+        .with(|editor, _| editor.presentation().pdf_bytes.clone()).unwrap();
+    let old_zip = ibis_formats::zip::Archive::new(&before).unwrap();
+    let new_zip = ibis_formats::zip::Archive::new(&reopened).unwrap();
+    assert_eq!(old_zip.names().len(), new_zip.names().len());
+    for name in old_zip.names() {
+        if name != WIRED_PAGE {
+            assert_eq!(old_zip.read(&name).unwrap(), new_zip.read(&name).unwrap(), "{name}");
+        }
+    }
+    let old = String::from_utf8(old_zip.read(WIRED_PAGE).unwrap().unwrap()).unwrap();
+    let new = String::from_utf8(new_zip.read(WIRED_PAGE).unwrap().unwrap()).unwrap();
+    let old_doc = roxmltree::Document::parse(&old).unwrap();
+    let new_doc = roxmltree::Document::parse(&new).unwrap();
+    let mut old_values = Vec::new();
+    let mut new_values = Vec::new();
+    for (id, cells) in [
+        ("4096", &["PinX", "PinY"][..]),
+        ("4104", &["EndX", "EndY", "PinX", "PinY", "Width", "LocPinX", "Angle"][..]),
+    ] {
+        for key in cells {
+            let a = wired_cell(wired_shape(&old_doc, id), key);
+            let b = wired_cell(wired_shape(&new_doc, id), key);
+            old_values.push(a.attribute_node("V").unwrap().range_value());
+            new_values.push(b.attribute_node("V").unwrap().range_value());
+            if id == "4096" {
+                old_values.push(a.attribute_node("F").unwrap().range_value());
+                new_values.push(b.attribute_node("F").unwrap().range_value());
+            }
+            let expected = match (id, *key) {
+                ("4096", "PinX") => local_delta[0],
+                ("4096", "PinY") => local_delta[1],
+                ("4104", "EndX") => 0.25,
+                ("4104", "EndY") => 0.125,
+                _ => continue,
+            };
+            let value = |node: roxmltree::Node<'_, '_>| node.attribute("V").unwrap().parse::<f64>().unwrap();
+            assert!((value(b) - value(a) - expected).abs() < 0.01, "{id} {key}");
+        }
+    }
+    for (doc, values) in [(&old_doc, &mut old_values), (&new_doc, &mut new_values)] {
+        let end = wired_shape(doc, "4104").descendants()
+            .find(|n| n.attribute("T") == Some("LineTo")).unwrap();
+        values.push(wired_cell(end, "X").attribute_node("V").unwrap().range_value());
+    }
+    let redact = |mut xml: String, mut ranges: Vec<std::ops::Range<usize>>| {
+        ranges.sort_by_key(|r| std::cmp::Reverse(r.start));
+        for range in ranges {
+            xml.replace_range(range, "");
+        }
+        xml
+    };
+    assert!(redact(old, old_values) == redact(new, new_values),
+        "the parent, other shapes, opposite endpoint, and glue must be preserved");
+}
+
+fn wired_shape<'a, 'i>(doc: &'a roxmltree::Document<'i>, id: &str) -> roxmltree::Node<'a, 'i> {
+    doc.descendants().find(|n| n.has_tag_name("Shape") && n.attribute("ID") == Some(id)).unwrap()
+}
+
+fn wired_cell<'a, 'i>(shape: roxmltree::Node<'a, 'i>, key: &str) -> roxmltree::Node<'a, 'i> {
+    shape.children().find(|n| n.has_tag_name("Cell") && n.attribute("N") == Some(key)).unwrap()
 }
 
 fn geometry_mode_roundtrip(input: &str, move_command: &str, reconnect_command: &str, pin: &str, link: &str, filename: &str, edited_shapes: &[&str]) {

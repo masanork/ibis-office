@@ -102,3 +102,18 @@ the child's position cells changed.
 VSDX_VISIO_TRANSFORMED_GROUP_SAMPLE=/path/to/mario-pipes.vsdx \
 cargo test --locked -p ibis-office-app --test scenarios -- shell::vsdx_visio_transformed_group_drag
 ```
+
+## Drag a grouped Visio shape with an external straight line
+
+The [MS CloudArchitecture networking drawing](https://github.com/bhdicaire/visioStencils/blob/f87f1f5b12f867149de92894778c9c056eb68340/Documents/Microsoft/CloudArchitecture/MS%20CloudArchitecture%20networking.vsdx)
+was saved by Microsoft Visio. Its SHA-256 is
+`965eccc10e903db2570d7c67c8ab43f460b62342a7861d3b5d4a944cd4f5d9e8`.
+On ExpressRoute, line 4104 is glued to child 4096 in group 4094. The
+desktop scenarios drag the child in the original file and in a test copy
+with that group rotated and flipped. They save new files, reopen them and
+compare the moved end, the stationary end, the glue, and the other shapes.
+
+```sh
+VSDX_VISIO_WIRED_CHILD_SAMPLE=/path/to/networking.vsdx \
+cargo test --locked -p ibis-office-app --test scenarios -- shell::vsdx_wired_
+```
