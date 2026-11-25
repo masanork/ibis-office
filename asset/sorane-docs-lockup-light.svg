@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 84" width="340" height="84">
+  <svg x="4" y="8" width="68" height="68" viewBox="0 0 1024 1024">
+    <path fill="#1E50B5" d="M139 64H885A75 75 0 0 1 960 139V760A200 200 0 0 1 760 960H139A75 75 0 0 1 64 885V139A75 75 0 0 1 139 64Z"/>
+    <path fill="#fff" fill-rule="evenodd" d="M168 176H608L856 424V648A200 200 0 0 1 656 848H168ZM336 344H520A168 168 0 0 1 520 680H336Z"/>
+    <path fill="#D9E4F8" d="M676 176H856V356Z"/>
+  </svg>
+  <text x="86" y="45" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="38" letter-spacing="-0.01em" fill="#0f172a">
+    <tspan font-weight="400">sorane</tspan><tspan font-weight="700">Docs</tspan>
+  </text>
+  <text x="87" y="67" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="500" fill="#64748b">
+    Powered by ibisOffice
+  </text>
+</svg>
