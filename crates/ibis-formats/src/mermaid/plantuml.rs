@@ -79,8 +79,18 @@ struct ArrowMatch {
     end: usize,
     mermaid: &'static str,
     reverse: bool,
+    circle_source: bool,
     circle_target: bool,
-    colored: bool,
+    styled_lossy: bool,
+}
+
+struct OrderedParticipant {
+    order: i32,
+    had_order: bool,
+    seq: usize,
+    line_no: usize,
+    raw_line: String,
+    emitted: String,
 }
 
 struct ParticipantRegistry {
@@ -197,8 +207,14 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
     let mut registry = ParticipantRegistry::new();
     let mut blocks: Vec<(BlockKind, usize)> = Vec::new();
     let mut activation_stack: Vec<(String, String)> = Vec::new();
+    let mut last_message: Option<(String, String)> = None;
     let mut last_participant: Option<String> = None;
     let mut first_participant: Option<String> = None;
+    let mut top_participants: Vec<OrderedParticipant> = Vec::new();
+    let mut seen_top_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut has_any_order = false;
+    let mut saw_box = false;
+    let mut participant_seq: usize = 0;
     let mut pending_note: Option<PendingNote> = None;
     let mut pending_title: Option<(usize, Vec<String>)> = None;
     let mut skip_until: Option<SkipUntil> = None;
@@ -483,8 +499,22 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
 
         // `autonumber`
         if lower == "autonumber" || lower.starts_with("autonumber ") {
-            out_lines.push("  autonumber".to_string());
-            if lower != "autonumber" {
+            let arg = lower.strip_prefix("autonumber").unwrap_or("").trim();
+            if arg.is_empty() {
+                out_lines.push("  autonumber".to_string());
+            } else if arg == "stop"
+                || arg == "resume"
+                || arg.starts_with("resume ")
+                || arg.starts_with("inc")
+            {
+                push_unsupported(
+                    line_no,
+                    "autonumber",
+                    trimmed,
+                    "Mid-diagram autonumber stop/resume/inc is not supported in Mermaid.",
+                );
+            } else {
+                out_lines.push("  autonumber".to_string());
                 push_unsupported(
                     line_no,
                     "autonumber",
@@ -492,6 +522,40 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
                     "Custom autonumber start, increment, or format is simplified to plain autonumber.",
                 );
             }
+            continue;
+        }
+
+        // `url of <who> is [[<url> <title>]]`
+        if let Some((who_raw, url, link_title)) = parse_participant_url(trimmed) {
+            let (id, synth) = registry.resolve(who_raw);
+            if let Some(decl) = synth {
+                if seen_top_ids.insert(id.clone()) && !saw_box {
+                    participant_seq += 1;
+                    top_participants.push(OrderedParticipant {
+                        order: 0,
+                        had_order: false,
+                        seq: participant_seq,
+                        line_no,
+                        raw_line: trimmed.to_string(),
+                        emitted: decl,
+                    });
+                } else {
+                    out_lines.push(decl);
+                }
+            } else if seen_top_ids.insert(id.clone()) && !saw_box {
+                participant_seq += 1;
+                top_participants.push(OrderedParticipant {
+                    order: 0,
+                    had_order: false,
+                    seq: participant_seq,
+                    line_no,
+                    raw_line: trimmed.to_string(),
+                    emitted: format!("  participant {id}"),
+                });
+            }
+            let title_text = sanitize_label(link_title.unwrap_or(url));
+            out_lines.push(format!("{}link {id}: {title_text} @ {url}", indent(&blocks)));
+            has_sequence_content = true;
             continue;
         }
 
@@ -525,6 +589,20 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
             continue;
         }
         if lower == "box" || lower.starts_with("box ") {
+            if !saw_box {
+                saw_box = true;
+                for entry in top_participants.drain(..) {
+                    if entry.had_order {
+                        push_unsupported(
+                            entry.line_no,
+                            "layout",
+                            &entry.raw_line,
+                            "Participant `order` cannot be reordered when `box` groups are present.",
+                        );
+                    }
+                    out_lines.push(entry.emitted);
+                }
+            }
             let rest = trimmed.get(3..).unwrap_or("").trim();
             let (title, color) = parse_box_args(rest);
             let mut line_out = format!("{}box", indent(&blocks));
@@ -551,14 +629,6 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
                     "Participant color or stereotype is not preserved in Mermaid.",
                 );
             }
-            if decl.had_order {
-                push_unsupported(
-                    line_no,
-                    "layout",
-                    trimmed,
-                    "Participant `order` clause is not preserved in Mermaid.",
-                );
-            }
             let id = registry.register_declared(&decl.alias, decl.label.as_deref());
             if first_participant.is_none() {
                 first_participant = Some(id.clone());
@@ -571,7 +641,48 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
                 &id,
                 decl.label.as_deref(),
             );
-            out_lines.push(format!("{}{}", indent(&blocks), emitted));
+            let in_box = blocks.iter().any(|(k, _)| *k == BlockKind::Box);
+            if !decl.is_create && !saw_box && !in_box {
+                if decl.order.is_some() {
+                    has_any_order = true;
+                }
+                let line_emitted = format!("  {emitted}");
+                if let Some(existing) = top_participants.iter_mut().find(|p| {
+                    p.emitted
+                        .trim_start()
+                        .split_whitespace()
+                        .nth(1)
+                        .map(|tok| tok.split("@{").next().unwrap_or(tok))
+                        == Some(id.as_str())
+                }) {
+                    existing.emitted = line_emitted;
+                    if let Some(ord) = decl.order {
+                        existing.order = ord;
+                        existing.had_order = true;
+                    }
+                } else {
+                    seen_top_ids.insert(id);
+                    participant_seq += 1;
+                    top_participants.push(OrderedParticipant {
+                        order: decl.order.unwrap_or(0),
+                        had_order: decl.order.is_some(),
+                        seq: participant_seq,
+                        line_no,
+                        raw_line: trimmed.to_string(),
+                        emitted: line_emitted,
+                    });
+                }
+            } else {
+                if decl.order.is_some() {
+                    push_unsupported(
+                        line_no,
+                        "layout",
+                        trimmed,
+                        "Participant `order` is not preserved inside `box` or on `create`.",
+                    );
+                }
+                out_lines.push(format!("{}{}", indent(&blocks), emitted));
+            }
             has_sequence_content = true;
             continue;
         }
@@ -601,7 +712,34 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
             }
             let (id, synth) = registry.resolve(who_raw);
             if let Some(decl) = synth {
-                out_lines.push(decl);
+                if seen_top_ids.insert(id.clone()) && !saw_box {
+                    participant_seq += 1;
+                    top_participants.push(OrderedParticipant {
+                        order: 0,
+                        had_order: false,
+                        seq: participant_seq,
+                        line_no,
+                        raw_line: trimmed.to_string(),
+                        emitted: decl,
+                    });
+                } else {
+                    out_lines.push(decl);
+                }
+            } else if seen_top_ids.insert(id.clone()) && !saw_box {
+                participant_seq += 1;
+                top_participants.push(OrderedParticipant {
+                    order: 0,
+                    had_order: false,
+                    seq: participant_seq,
+                    line_no,
+                    raw_line: trimmed.to_string(),
+                    emitted: format!("  participant {id}"),
+                });
+            }
+            if let Some((ref from, ref to)) = last_message
+                && to == &id
+            {
+                activation_stack.push((from.clone(), id.clone()));
             }
             out_lines.push(format!("{}activate {id}", indent(&blocks)));
             last_participant = Some(id);
@@ -612,6 +750,9 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
             let (id, synth) = registry.resolve(rest.trim());
             if let Some(decl) = synth {
                 out_lines.push(decl);
+            }
+            if let Some(pos) = activation_stack.iter().rposition(|(_, callee)| callee == &id) {
+                activation_stack.remove(pos);
             }
             out_lines.push(format!("{}deactivate {id}", indent(&blocks)));
             has_sequence_content = true;
@@ -635,6 +776,7 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
                     "{}{callee}-->>-{caller}: {label}",
                     indent(&blocks)
                 ));
+                last_message = Some((callee, caller.clone()));
                 last_participant = Some(caller);
                 has_sequence_content = true;
             } else {
@@ -642,14 +784,22 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
                     line_no,
                     "syntax",
                     trimmed,
-                    "`return` requires a preceding shorthand activation (`++`).",
+                    "`return` requires a preceding activation (`++` or `activate`).",
                 );
             }
             continue;
         }
 
-        // Combined fragments (`alt`, `else`, `opt`, `loop`, `par`, `break`, `critical`, `group`, `end`)
-        if let Some((kind, label)) = parse_fragment_start(trimmed) {
+        // Combined fragments (`alt`, `else`, `opt`, `loop`, `par`, `break`, `critical`, `option`, `group`, `end`)
+        if let Some((kind, raw_label, had_color)) = parse_fragment_start(trimmed) {
+            if had_color {
+                push_unsupported(
+                    line_no,
+                    "styling",
+                    trimmed,
+                    "Fragment background color is not preserved in Mermaid.",
+                );
+            }
             if kind == BlockKind::Group {
                 push_unsupported(
                     line_no,
@@ -668,15 +818,25 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
                 BlockKind::Box => unreachable!(),
             };
             // `sequence.rs` trims lines and matches `strip_prefix("<kw> ")`, so ensure a label.
-            let label = sanitize_label(label);
+            let label = sanitize_label(raw_label);
             let emitted_label = if label.is_empty() { "-" } else { &label };
             out_lines.push(format!("{}{kw} {emitted_label}", indent(&blocks)));
             blocks.push((kind, line_no));
             has_sequence_content = true;
             continue;
         }
-        if lower == "else" || lower.starts_with("else ") {
-            let label = sanitize_label(trimmed.get(4..).unwrap_or("").trim());
+        if lower == "else" || lower.starts_with("else ") || lower.starts_with("else#") {
+            let (label_clean, had_color) =
+                strip_leading_fragment_colors(trimmed.get(4..).unwrap_or(""));
+            if had_color {
+                push_unsupported(
+                    line_no,
+                    "styling",
+                    trimmed,
+                    "Fragment branch background color is not preserved in Mermaid.",
+                );
+            }
+            let label = sanitize_label(label_clean);
             match blocks.last().map(|(k, _)| *k) {
                 Some(BlockKind::Par) => {
                     let parent_indent = indent(&blocks[..blocks.len() - 1]);
@@ -705,6 +865,15 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
             }
             continue;
         }
+        if (lower == "option" || lower.starts_with("option "))
+            && matches!(blocks.last(), Some((BlockKind::Critical, _)))
+        {
+            let label = sanitize_label(trimmed.get(6..).unwrap_or("").trim());
+            let parent_indent = indent(&blocks[..blocks.len() - 1]);
+            let emitted_label = if label.is_empty() { "-" } else { &label };
+            out_lines.push(format!("{parent_indent}option {emitted_label}"));
+            continue;
+        }
         if lower == "end" {
             if let Some((kind, _)) = blocks.pop() {
                 if kind == BlockKind::Box {
@@ -727,13 +896,25 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
             continue;
         }
 
-        // Notes (`note`, `hnote`, `rnote`)
+        // Notes (`note`, `hnote`, `rnote`, and aligned `/ note ...`)
+        let (aligned_note, note_candidate) = match trimmed.strip_prefix("/ ") {
+            Some(rest) => (true, rest.trim_start()),
+            None => (false, trimmed),
+        };
         if let Some(note_res) = parse_note_line(
-            trimmed,
+            note_candidate,
             &mut registry,
             first_participant.as_deref(),
             last_participant.as_deref(),
         ) {
+            if aligned_note {
+                push_unsupported(
+                    line_no,
+                    "layout",
+                    trimmed,
+                    "Aligned side-by-side note prefix (/) is converted as a sequential note.",
+                );
+            }
             if note_res.styled_variant {
                 push_unsupported(
                     line_no,
@@ -750,8 +931,20 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
                     "`note across` is approximated as `Note over` the currently known span.",
                 );
             }
-            for decl in note_res.synth_decls {
-                out_lines.push(decl);
+            for (id, decl) in note_res.synth_decls {
+                if seen_top_ids.insert(id) && !saw_box {
+                    participant_seq += 1;
+                    top_participants.push(OrderedParticipant {
+                        order: 0,
+                        had_order: false,
+                        seq: participant_seq,
+                        line_no,
+                        raw_line: trimmed.to_string(),
+                        emitted: decl,
+                    });
+                } else {
+                    out_lines.push(decl);
+                }
             }
             match note_res.body {
                 NoteBody::Inline(text) => {
@@ -793,12 +986,12 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
                 );
                 continue;
             }
-            if msg.colored {
+            if msg.styled_lossy {
                 push_unsupported(
                     line_no,
                     "styling",
                     trimmed,
-                    "Arrow color styling is not preserved in Mermaid.",
+                    "Arrow color or thickness styling is not preserved in Mermaid.",
                 );
             }
             if msg.activation_colored {
@@ -819,11 +1012,37 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
             if first_participant.is_none() {
                 first_participant = Some(from_id.clone());
             }
-            if let Some(decl) = from_decl {
-                out_lines.push(decl);
-            }
-            if let Some(decl) = to_decl {
-                out_lines.push(decl);
+            for (pid, maybe_decl, is_created) in [
+                (&from_id, from_decl, false),
+                (&to_id, to_decl, msg.create_target),
+            ] {
+                if !is_created {
+                    if let Some(decl) = maybe_decl {
+                        if seen_top_ids.insert(pid.clone()) && !saw_box {
+                            participant_seq += 1;
+                            top_participants.push(OrderedParticipant {
+                                order: 0,
+                                had_order: false,
+                                seq: participant_seq,
+                                line_no,
+                                raw_line: trimmed.to_string(),
+                                emitted: decl,
+                            });
+                        } else {
+                            out_lines.push(decl);
+                        }
+                    } else if seen_top_ids.insert(pid.clone()) && !saw_box {
+                        participant_seq += 1;
+                        top_participants.push(OrderedParticipant {
+                            order: 0,
+                            had_order: false,
+                            seq: participant_seq,
+                            line_no,
+                            raw_line: trimmed.to_string(),
+                            emitted: format!("  participant {pid}"),
+                        });
+                    }
+                }
             }
             let ind = indent(&blocks);
             if msg.create_target {
@@ -832,6 +1051,7 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
             if msg.destroy_target {
                 out_lines.push(format!("{ind}destroy {to_id}"));
             }
+            let source_suffix = if msg.circle_source { "()" } else { "" };
             let target_prefix = if msg.circle_target { "()" } else { "" };
             let label = sanitize_label(msg.label);
             let suffix = match (msg.activate_target, msg.deactivate_source) {
@@ -861,10 +1081,12 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
                 }
                 (false, false) => "",
             };
+            // `sequence.rs` strips `()` before `+`/`-`, so `()` must precede any `+`/`-` token.
             out_lines.push(format!(
-                "{ind}{from_id}{}{suffix}{target_prefix}{to_id}: {label}",
+                "{ind}{from_id}{source_suffix}{}{target_prefix}{suffix}{to_id}: {label}",
                 msg.arrow
             ));
+            last_message = Some((from_id, to_id.clone()));
             last_participant = Some(to_id);
             has_sequence_content = true;
             continue;
@@ -913,6 +1135,26 @@ pub fn convert_plantuml_sequence(source: &str) -> PlantUmlConversion {
             "Unclosed fragment or box block (missing `end`).",
         );
         out_lines.push(format!("{}end", indent(&blocks)));
+    }
+
+    // Emit buffered top-level participants right after `sequenceDiagram` / header metadata.
+    // When `order N` was used (and no `box` group prevents reordering), sort stably by `(order, seq)`.
+    if !top_participants.is_empty() {
+        if has_any_order {
+            top_participants.sort_by_key(|p| (p.order, p.seq));
+        }
+        let insert_at = out_lines
+            .iter()
+            .enumerate()
+            .skip(1)
+            .take_while(|(_, line)| {
+                let t = line.trim();
+                t == "autonumber" || t.starts_with("title ") || t.starts_with("%% ")
+            })
+            .last()
+            .map_or(1, |(i, _)| i + 1);
+        let emitted: Vec<String> = top_participants.into_iter().map(|p| p.emitted).collect();
+        out_lines.splice(insert_at..insert_at, emitted);
     }
 
     let mermaid = if !non_sequence && has_sequence_content {
@@ -1117,7 +1359,36 @@ struct ParsedParticipant {
     alias: String,
     label: Option<String>,
     had_styling: bool,
-    had_order: bool,
+    order: Option<i32>,
+}
+
+fn parse_participant_url(line: &str) -> Option<(&str, &str, Option<&str>)> {
+    let rest = strip_prefix_ci(line, "url of ")?.trim_start();
+    let open = rest.find("[[")?;
+    let before = rest[..open].trim_end();
+    let suffix_start = before.len().saturating_sub(3);
+    let who = if before
+        .get(suffix_start..)
+        .is_some_and(|tail| tail.eq_ignore_ascii_case(" is"))
+    {
+        before[..suffix_start].trim()
+    } else {
+        return None;
+    };
+    let after_open = &rest[open + 2..];
+    let close = after_open.find("]]")?;
+    let inner = after_open[..close].trim();
+    if who.is_empty() || inner.is_empty() {
+        return None;
+    }
+    let (url, title) = match inner.split_once(char::is_whitespace) {
+        Some((u, t)) => {
+            let t = t.trim();
+            (u, (!t.is_empty()).then_some(t))
+        }
+        None => (inner, None),
+    };
+    Some((who, url, title))
 }
 
 fn parse_participant_declaration(line: &str) -> Option<ParsedParticipant> {
@@ -1140,7 +1411,7 @@ fn parse_participant_declaration(line: &str) -> Option<ParsedParticipant> {
 
     let mut body = after_kw;
     let mut had_styling = false;
-    let mut had_order = false;
+    let mut order: Option<i32> = None;
 
     // Strip trailing `#Color`, `order N`, `<<stereotype>>` in any order.
     loop {
@@ -1151,8 +1422,8 @@ fn parse_participant_declaration(line: &str) -> Option<ParsedParticipant> {
             body = stripped;
         }
         if let Some((head, tail)) = body.rsplit_once(" order ") {
-            if tail.trim().parse::<i32>().is_ok() {
-                had_order = true;
+            if let Ok(parsed) = tail.trim().parse::<i32>() {
+                order = Some(parsed);
                 body = head.trim_end();
             }
         }
@@ -1198,7 +1469,7 @@ fn parse_participant_declaration(line: &str) -> Option<ParsedParticipant> {
         alias,
         label,
         had_styling,
-        had_order,
+        order,
     })
 }
 
@@ -1268,7 +1539,30 @@ fn format_mermaid_participant(
     }
 }
 
-fn parse_fragment_start(line: &str) -> Option<(BlockKind, &str)> {
+/// Strip leading `#Color` tokens from PlantUML fragment headers (`alt#Gold #LightBlue ok`).
+fn strip_leading_fragment_colors(rest: &str) -> (&str, bool) {
+    let mut s = rest.trim_start();
+    let mut had_color = false;
+    while let Some(after_hash) = s.strip_prefix('#') {
+        let token_len = after_hash
+            .find(char::is_whitespace)
+            .unwrap_or(after_hash.len());
+        let token = &after_hash[..token_len];
+        if !token.is_empty()
+            && token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/'))
+        {
+            had_color = true;
+            s = after_hash[token_len..].trim_start();
+        } else {
+            break;
+        }
+    }
+    (s.trim(), had_color)
+}
+
+fn parse_fragment_start(line: &str) -> Option<(BlockKind, &str, bool)> {
     let table = [
         ("alt", BlockKind::Alt),
         ("opt", BlockKind::Opt),
@@ -1280,12 +1574,13 @@ fn parse_fragment_start(line: &str) -> Option<(BlockKind, &str)> {
     ];
     for (kw, kind) in table {
         if line.eq_ignore_ascii_case(kw) {
-            return Some((kind, ""));
+            return Some((kind, "", false));
         }
         if let Some(rest) = strip_prefix_ci(line, kw)
-            && rest.starts_with(char::is_whitespace)
+            && (rest.starts_with(char::is_whitespace) || rest.starts_with('#'))
         {
-            return Some((kind, rest.trim()));
+            let (label, had_color) = strip_leading_fragment_colors(rest);
+            return Some((kind, label, had_color));
         }
     }
     None
@@ -1300,9 +1595,27 @@ enum NoteBody {
 struct ParsedNote {
     header: String,
     body: NoteBody,
-    synth_decls: Vec<String>,
+    synth_decls: Vec<(String, String)>,
     styled_variant: bool,
     is_across: bool,
+}
+
+fn split_all_commas_outside_quotes(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut in_quotes = false;
+    let mut start = 0;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                parts.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(s[start..].trim());
+    parts
 }
 
 fn parse_note_line(
@@ -1333,31 +1646,37 @@ fn parse_note_line(
     let (header, is_across) = if let Some(who) = strip_prefix_ci(target_clean, "left of ") {
         let (id, decl) = registry.resolve(who.trim());
         if let Some(d) = decl {
-            synth_decls.push(d);
+            synth_decls.push((id.clone(), d));
         }
         (format!("Note left of {id}"), false)
     } else if let Some(who) = strip_prefix_ci(target_clean, "right of ") {
         let (id, decl) = registry.resolve(who.trim());
         if let Some(d) = decl {
-            synth_decls.push(d);
+            synth_decls.push((id.clone(), d));
         }
         (format!("Note right of {id}"), false)
     } else if let Some(who) = strip_prefix_ci(target_clean, "over ") {
         let who = who.trim();
-        if let Some((a, b)) = split_comma_outside_quotes(who) {
-            let (id_a, decl_a) = registry.resolve(a.trim());
-            let (id_b, decl_b) = registry.resolve(b.trim());
-            if let Some(d) = decl_a {
-                synth_decls.push(d);
+        let targets: Vec<&str> = split_all_commas_outside_quotes(who)
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect();
+        if targets.len() >= 2 {
+            let mut resolved_ids = Vec::with_capacity(targets.len());
+            for part in targets {
+                let (id, decl) = registry.resolve(part);
+                if let Some(d) = decl {
+                    synth_decls.push((id.clone(), d));
+                }
+                resolved_ids.push(id);
             }
-            if let Some(d) = decl_b {
-                synth_decls.push(d);
-            }
-            (format!("Note over {id_a},{id_b}"), false)
+            let first = &resolved_ids[0];
+            let last = resolved_ids.last().unwrap();
+            (format!("Note over {first},{last}"), false)
         } else {
             let (id, decl) = registry.resolve(who);
             if let Some(d) = decl {
-                synth_decls.push(d);
+                synth_decls.push((id.clone(), d));
             }
             (format!("Note over {id}"), false)
         }
@@ -1425,25 +1744,14 @@ fn split_colon_outside_quotes(s: &str) -> Option<(&str, &str)> {
     None
 }
 
-fn split_comma_outside_quotes(s: &str) -> Option<(&str, &str)> {
-    let mut in_quotes = false;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '"' => in_quotes = !in_quotes,
-            ',' if !in_quotes => return Some((&s[..i], &s[i + 1..])),
-            _ => {}
-        }
-    }
-    None
-}
-
 struct ParsedMessage<'a> {
     lhs: &'a str,
     rhs: &'a str,
     arrow: &'static str,
     reverse: bool,
+    circle_source: bool,
     circle_target: bool,
-    colored: bool,
+    styled_lossy: bool,
     gate: bool,
     activate_target: bool,
     deactivate_source: bool,
@@ -1466,8 +1774,9 @@ fn parse_message_line(line: &str) -> Option<ParsedMessage<'_>> {
             rhs: "",
             arrow: "",
             reverse: false,
+            circle_source: false,
             circle_target: false,
-            colored: false,
+            styled_lossy: false,
             gate: true,
             activate_target: false,
             deactivate_source: false,
@@ -1487,8 +1796,9 @@ fn parse_message_line(line: &str) -> Option<ParsedMessage<'_>> {
             rhs: "",
             arrow: "",
             reverse: false,
+            circle_source: false,
             circle_target: false,
-            colored: false,
+            styled_lossy: false,
             gate: true,
             activate_target: false,
             deactivate_source: false,
@@ -1512,8 +1822,9 @@ fn parse_message_line(line: &str) -> Option<ParsedMessage<'_>> {
         rhs,
         arrow: m.mermaid,
         reverse: m.reverse,
+        circle_source: m.circle_source,
         circle_target: m.circle_target,
-        colored: m.colored,
+        styled_lossy: m.styled_lossy,
         gate: false,
         activate_target,
         deactivate_source,
@@ -1562,39 +1873,66 @@ fn strip_message_modifiers(raw: &str) -> (&str, bool, bool, bool, bool) {
 }
 
 fn find_plantuml_arrow(expr: &str) -> Option<ArrowMatch> {
-    // First check colored PlantUML arrows like `-[#red]->` or `-[#0000FF]-->`.
-    if let Some(colored) = find_colored_arrow(expr) {
-        return Some(colored);
+    // First check bracketed PlantUML arrows like `-[dashed]->`, `-[#red,dashed]->`, `<-[#blue]--`.
+    if let Some(styled) = find_styled_arrow(expr) {
+        return Some(styled);
     }
 
     // Standard PlantUML sequence arrows ordered longest-first.
+    // Tuple: `(pattern, mermaid_arrow, reverse, circle_source, circle_target)` where
+    // `circle_source`/`circle_target` are already in logical `(from, to)` order after `reverse`.
     // Note: in PlantUML `->` is a solid filled arrowhead (Mermaid `->>`),
-    // while `->>` is an open/thin arrowhead (Mermaid `->`).
-    const PRIMARY_ARROWS: &[(&str, &str, bool, bool)] = &[
-        ("<<-->>", "<<-->>", false, false),
-        ("<<->>", "<<->>", false, false),
-        ("<-->", "<<-->>", false, false),
-        ("<->", "<<->>", false, false),
-        ("-->x", "--x", false, false),
-        ("->x", "-x", false, false),
-        ("x<--", "--x", true, false),
-        ("x<-", "-x", true, false),
-        ("-->o", "-->>", false, true),
-        ("->o", "->>", false, true),
-        ("o<--", "-->>", true, true),
-        ("o<-", "->>", true, true),
-        ("-->>", "-->", false, false),
-        ("->>", "->", false, false),
-        ("<<--", "-->", true, false),
-        ("<<-", "->", true, false),
-        ("-->", "-->>", false, false),
-        ("->", "->>", false, false),
-        ("<--", "-->>", true, false),
-        ("<-", "->>", true, false),
+    // while `->>` is an open/thin arrowhead (Mermaid `->`), and half-arrows (`-\`, `-/`, etc.)
+    // map to Mermaid async/open arrows (`-)` / `--)`).
+    const PRIMARY_ARROWS: &[(&str, &str, bool, bool, bool)] = &[
+        ("<<-->>", "<<-->>", false, false, false),
+        ("<<->>", "<<->>", false, false, false),
+        ("o-->o", "-->>", false, true, true),
+        ("o<--o", "-->>", true, true, true),
+        ("o->o", "->>", false, true, true),
+        ("o<-o", "->>", true, true, true),
+        ("<-->", "<<-->>", false, false, false),
+        ("<->", "<<->>", false, false, false),
+        ("-->x", "--x", false, false, false),
+        ("->x", "-x", false, false, false),
+        ("x<--", "--x", true, false, false),
+        ("x<-", "-x", true, false, false),
+        ("-->o", "-->>", false, false, true),
+        ("o-->", "-->>", false, true, false),
+        ("o<--", "-->>", true, false, true),
+        ("<--o", "-->>", true, true, false),
+        ("->o", "->>", false, false, true),
+        ("o->", "->>", false, true, false),
+        ("o<-", "->>", true, false, true),
+        ("<-o", "->>", true, true, false),
+        ("--\\\\", "--)", false, false, false),
+        ("--//", "--)", false, false, false),
+        ("\\\\--", "--)", true, false, false),
+        ("//--", "--)", true, false, false),
+        ("-\\\\", "-)", false, false, false),
+        ("-//", "-)", false, false, false),
+        ("\\\\-", "-)", true, false, false),
+        ("//-", "-)", true, false, false),
+        ("--\\", "--)", false, false, false),
+        ("--/", "--)", false, false, false),
+        ("\\--", "--)", true, false, false),
+        ("/--", "--)", true, false, false),
+        ("-\\", "-)", false, false, false),
+        ("-/", "-)", false, false, false),
+        ("\\-", "-)", true, false, false),
+        ("/-", "-)", true, false, false),
+        ("-->>", "-->", false, false, false),
+        ("->>", "->", false, false, false),
+        ("<<--", "-->", true, false, false),
+        ("<<-", "->", true, false, false),
+        ("-->", "-->>", false, false, false),
+        ("->", "->>", false, false, false),
+        ("<--", "-->>", true, false, false),
+        ("<-", "->>", true, false, false),
     ];
-    const FALLBACK_ARROWS: &[(&str, &str, bool, bool)] = &[
-        ("--x", "--x", false, false),
-        ("-x", "-x", false, false),
+    const FALLBACK_ARROWS: &[(&str, &str, bool, bool, bool)] = &[
+        ("--x", "--x", false, false, false),
+        ("-x", "-x", false, false, false),
     ];
 
     for table in [PRIMARY_ARROWS, FALLBACK_ARROWS] {
@@ -1609,9 +1947,9 @@ fn find_plantuml_arrow(expr: &str) -> Option<ArrowMatch> {
             }
             if !in_quotes && expr.is_char_boundary(i) {
                 let slice = &expr[i..];
-                for &(pat, mermaid, reverse, circle_target) in table {
+                for &(pat, mermaid, reverse, circle_source, circle_target) in table {
                     if slice.starts_with(pat) {
-                        // Ensure `x<-` / `o<-` isn't splitting the end of an identifier like `box<-`.
+                        // Ensure `x<-` / `o<-` / `o->` isn't splitting the end of an identifier.
                         let starts_alpha = pat.starts_with(['x', 'o']);
                         let prev_ok = if starts_alpha {
                             i == 0
@@ -1622,7 +1960,7 @@ fn find_plantuml_arrow(expr: &str) -> Option<ArrowMatch> {
                         } else {
                             true
                         };
-                        // Ensure `--x` / `-x` / `->x` / `->o` isn't splitting an identifier.
+                        // Ensure `--x` / `-x` / `->x` / `->o` / `<-o` isn't splitting an identifier.
                         let ends_alpha = pat.ends_with(['x', 'o']);
                         let after = &slice[pat.len()..];
                         let next_ok = if ends_alpha {
@@ -1640,8 +1978,9 @@ fn find_plantuml_arrow(expr: &str) -> Option<ArrowMatch> {
                                 end: i + pat.len(),
                                 mermaid,
                                 reverse,
+                                circle_source,
                                 circle_target,
-                                colored: false,
+                                styled_lossy: false,
                             });
                         }
                     }
@@ -1653,8 +1992,9 @@ fn find_plantuml_arrow(expr: &str) -> Option<ArrowMatch> {
     None
 }
 
-/// Match colored PlantUML arrows such as `-[#red]->`, `-[#0000FF]-->`, `<-[#red]-`, `<-[#red]--`.
-fn find_colored_arrow(expr: &str) -> Option<ArrowMatch> {
+/// Match bracketed PlantUML arrows such as `-[dashed]->`, `-[#red]->`, `-[#0000FF,dashed]-->`,
+/// `<-[#red]-`, `<-[dashed]--`.
+fn find_styled_arrow(expr: &str) -> Option<ArrowMatch> {
     let mut in_quotes = false;
     let bytes = expr.as_bytes();
     for i in 0..bytes.len() {
@@ -1666,10 +2006,10 @@ fn find_colored_arrow(expr: &str) -> Option<ArrowMatch> {
             continue;
         }
         let slice = &expr[i..];
-        let (reverse, prefix_len) = if slice.starts_with("<-[#") {
-            (true, 2)
-        } else if slice.starts_with("-[#") {
-            (false, 1)
+        let (reverse, prefix_len) = if slice.starts_with("<-[") {
+            (true, 3)
+        } else if slice.starts_with("-[") {
+            (false, 2)
         } else {
             continue;
         };
@@ -1677,8 +2017,12 @@ fn find_colored_arrow(expr: &str) -> Option<ArrowMatch> {
         let Some(close) = rest.find(']') else {
             continue;
         };
+        let style_spec = rest[..close].trim();
+        if style_spec.is_empty() {
+            continue;
+        }
         let after = &rest[close + 1..];
-        let (tail_len, dashed) = if reverse {
+        let (tail_len, tail_dashed) = if reverse {
             if after.starts_with("--") {
                 (2, true)
             } else if after.starts_with('-') {
@@ -1693,13 +2037,25 @@ fn find_colored_arrow(expr: &str) -> Option<ArrowMatch> {
         } else {
             continue;
         };
+        let mut dashed = tail_dashed;
+        let mut styled_lossy = false;
+        for token in style_spec.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+            if token.eq_ignore_ascii_case("dashed") || token.eq_ignore_ascii_case("dotted") {
+                dashed = true;
+            } else if token.eq_ignore_ascii_case("plain") {
+                dashed = false;
+            } else {
+                styled_lossy = true;
+            }
+        }
         return Some(ArrowMatch {
             start: i,
             end: i + prefix_len + close + 1 + tail_len,
             mermaid: if dashed { "-->>" } else { "->>" },
             reverse,
+            circle_source: false,
             circle_target: false,
-            colored: true,
+            styled_lossy,
         });
     }
     None
@@ -1972,5 +2328,114 @@ Alice -[#red]-> Bob : alert
         assert!(conv_gantt.mermaid.is_none());
         assert_eq!(conv_gantt.unsupported[0].line, 1);
         assert_eq!(conv_gantt.unsupported[0].kind, "diagram-type");
+    }
+
+    #[test]
+    fn converts_order_links_activate_return_circle_and_half_arrows_and_multi_notes() {
+        let puml = "\
+@startuml
+participant Last order 30
+participant First order 10
+participant Middle order 20
+participant DefaultZero
+url of First is [[https://example.com/first First Docs]]
+First -> Middle : request
+activate Middle
+return ok
+First o->o Last : ping
+Last <-o Middle : ack
+First -\\ Middle : async push
+Middle --/ First : async reply
+First -[dashed]-> Last : dashed style
+note over DefaultZero, First, Last : spans three
+@enduml
+";
+        let (conv, rendered) = crate::mermaid::render_plantuml_sequence(puml);
+        assert_eq!(conv.original, puml);
+        assert!(
+            conv.is_lossless(),
+            "unexpected diagnostics: {:?}",
+            conv.unsupported
+        );
+        let mermaid = conv.mermaid.as_deref().unwrap();
+        let pos_zero = mermaid.find("participant DefaultZero").unwrap();
+        let pos_first = mermaid.find("participant First").unwrap();
+        let pos_mid = mermaid.find("participant Middle").unwrap();
+        let pos_last = mermaid.find("participant Last").unwrap();
+        assert!(
+            pos_zero < pos_first && pos_first < pos_mid && pos_mid < pos_last,
+            "order N should sort top-level declarations:\n{mermaid}"
+        );
+        assert!(
+            mermaid.contains("link First: First Docs @ https://example.com/first"),
+            "{mermaid}"
+        );
+        assert!(mermaid.contains("activate Middle"), "{mermaid}");
+        assert!(mermaid.contains("Middle-->>-First: ok"), "{mermaid}");
+        assert!(mermaid.contains("First()->>()Last: ping"), "{mermaid}");
+        assert!(mermaid.contains("Middle()->>Last: ack"), "{mermaid}");
+        assert!(mermaid.contains("First-)Middle: async push"), "{mermaid}");
+        assert!(mermaid.contains("Middle--)First: async reply"), "{mermaid}");
+        assert!(mermaid.contains("First-->>Last: dashed style"), "{mermaid}");
+        assert!(
+            mermaid.contains("Note over DefaultZero,Last: spans three"),
+            "{mermaid}"
+        );
+
+        let Some(MermaidOutput::Svg { bytes, .. }) = rendered else {
+            panic!("expected SVG:\n{mermaid}");
+        };
+        let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(roxmltree::Document::parse(svg).is_ok(), "invalid SVG");
+        assert!(svg.contains(">First Docs<"), "{svg}");
+        assert!(svg.matches(r#"data-role="message-circle""#).count() >= 3, "{svg}");
+        assert!(svg.contains("spans three"), "{svg}");
+    }
+
+    #[test]
+    fn handles_colored_fragments_aligned_notes_autonumber_stop_and_styled_arrows() {
+        let puml = "\
+@startuml
+autonumber
+Alice -[#blue,dashed]-> Bob : retry
+autonumber stop
+alt#Gold #LightBlue 成功時
+  Bob --> Alice : ok
+else #Pink 失敗時
+  Bob -->x Alice : err
+end
+/ note right of Bob : side note
+@enduml
+";
+        let (conv, rendered) = crate::mermaid::render_plantuml_sequence(puml);
+        assert_eq!(conv.original, puml);
+        let mermaid = conv.mermaid.as_deref().unwrap();
+        assert!(mermaid.contains("Alice-->>Bob: retry"), "{mermaid}");
+        assert!(mermaid.contains("alt 成功時"), "{mermaid}");
+        assert!(mermaid.contains("else 失敗時"), "{mermaid}");
+        assert!(!mermaid.contains("#Gold") && !mermaid.contains("#LightBlue") && !mermaid.contains("#Pink"), "{mermaid}");
+        assert!(mermaid.contains("Note right of Bob: side note"), "{mermaid}");
+        assert_eq!(
+            mermaid.matches("autonumber").count(),
+            1,
+            "autonumber stop must not emit another autonumber:\n{mermaid}"
+        );
+
+        let reported: Vec<(usize, &str)> = conv
+            .unsupported
+            .iter()
+            .map(|u| (u.line, u.kind))
+            .collect();
+        assert_eq!(
+            reported,
+            vec![
+                (3, "styling"),
+                (4, "autonumber"),
+                (5, "styling"),
+                (7, "styling"),
+                (10, "layout"),
+            ]
+        );
+        assert!(rendered.is_some());
     }
 }
