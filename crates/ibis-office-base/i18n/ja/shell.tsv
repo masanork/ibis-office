@@ -186,6 +186,16 @@ shell.read-stopped	読み込みが止まりました
 start.new	新規作成
 start.select	選択
 start.open	開く…
+start.open-file	ファイルを開く
+start.github-open	GitHub から開く
+start.samples-open	サンプルを開く
+start.samples-hide	サンプルを閉じる
+start.new-sheet	新規作成
+start.new-memo	メモ
+start.new-word	Word
+start.new-excel	Excel
+start.new-powerpoint	PowerPoint
+start.new-memo-sub	Markdown
 start.recent	最近開いたファイル
 start.recent-none	最近開いたファイルはありません
 start.request	協力のお願い
