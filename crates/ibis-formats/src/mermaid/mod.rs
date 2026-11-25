@@ -57,6 +57,7 @@ mod zenuml;
 mod railroad;
 pub mod plantuml;
 mod plantuml_uml;
+mod plantuml_extra;
 mod text;
 #[cfg(test)]
 mod test_support;

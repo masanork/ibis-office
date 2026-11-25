@@ -36,19 +36,27 @@
 | `autonumber <start> [step]` / `stop` / `resume` | 対応（番号制御を反映） | 単純 `autonumber` 化・`stop`/`resume` は診断（`autonumber`） |
 | `note across` | 対応（全参加者確定後に両端へ展開） | 既知範囲で近似（`layout` 診断） |
 
-## 3. 共有 IR ネイティブ描画でも対象外とするもの（割り切る範囲）
+## 3. 共有 IR ネイティブ描画・統合ディスパッチャで対象外とするもの（割り切る範囲）
 
 | 種別（`kind`） | 対象構文の例 | 方針と理由 |
 | --- | --- | --- |
 | `macro` | `!include`、`!define`、`!procedure` / `!function`、`!if` / `!endif`、`!theme`、`!pragma`、`$macro(...)` | テキスト展開言語・外部ファイル参照はオフライン安全性の観点からも展開しない |
 | `timing` | `robust`、`concise`、`clock`、`binary`、`analog`、`mode`、`@0` / `@+100` | 既存 IR とレイアウトモデルが異なるため `output: None`＋行番号診断 |
-| `diagram-type` | `@startmindmap` / `@startwbs` / `@startgantt` / アクティビティ図・コンポーネント図・配置図等 | Phase 2 で **シーケンス図・クラス図・状態遷移図・ユースケース図・ER 図**（`render_plantuml`、および Markdown の ` ```plantuml ` / ` ```puml ` コードブロックの自動 SVG 描画と原本保持ラウンドトリップ）まで対応済み。構造・計画系 5 図種は Phase 3 で接続予定 |
-| `styling` | `skinparam`、`<style> ... </style>`、`hide`/`show`（`hide footbox` 除く）、参加者/矢印/活性化バー/`else` の `#Color`・`<<stereotype>>`・`bold` | 構造の描画を優先し、未反映装飾を行番号で報告 |
+| `diagram-type` | `@startsalt` / `@startjson` / `@startyaml` / `@startditaa` / `@startnwdiag` 等の上記 10 図種以外の外枠 | 未対応図種として `output: None`＋行番号診断（Markdown ではコードブロックのまま保持） |
+| `styling` | `skinparam`、`<style> ... </style>`、`hide`/`show`（`hide footbox` 除く）、要素/矢印/活性化バー/`else` の `#Color`・`<<stereotype>>`・`bold` | 構造の描画を優先し、未反映装飾を行番号で報告 |
 | `layout` | `\|\|\|`、`newpage`、`header` / `footer` / `legend` / `caption`、`scale`、Teoz 並列 `& ...`、横並び `/ note ...`、`box`/`create` 上の `order N` | 単一 SVG・1 イベント 1 行モデルと構造が異なるため診断を記録 |
 | `syntax` | `autoactivate`、先行活性化のない `return`、対応のない `else` / `end` / 未閉じブロック、その他未解釈行 | 行番号付きで報告 |
 
-## 4. Markdown の `plantuml` / `puml` コードブロック対応
+## 4. 統合ディスパッチャ（`render_plantuml`）と Markdown コードブロック対応
 
-- Markdown 内の ` ```plantuml ` / ` ```puml ` コードブロックは `render_plantuml` で自動判別（シーケンス・クラス・状態遷移・ユースケース・ER）して SVG 図として描画します。
+`render_plantuml` は既存の Mermaid レイアウト・SVG 描画器を重複実装せずに再利用し、以下の **10 図種**を自動判別して SVG 描画します。
+
+| 導入段階 | PlantUML 図種 | 再利用する既存描画器 |
+| --- | --- | --- |
+| Phase 1 | シーケンス図（`@startuml`） | `sequence.rs`（共有 `SeqDiagram` IR） |
+| Phase 2 | クラス図 / 状態遷移図 / ユースケース図 / ER 図（`@startuml`） | `class.rs` / `state.rs` / `usecase.rs` / `er.rs` |
+| Phase 3 | マインドマップ（`@startmindmap`）/ WBS（`@startwbs`）/ ガントチャート（`@startgantt`）/ アクティビティ図（新記法）/ コンポーネント・配置図（`@startuml`） | `mindmap.rs` / `treeview.rs` / `gantt.rs` / `flowchart.rs` |
+
+- Markdown 内の ` ```plantuml ` / ` ```puml ` コードブロックは `render_plantuml` で自動判別して SVG 図として描画します。
 - マクロ（`macro`）・タイミング図（`timing`）・未対応図種（`diagram-type`）を含むブロックは安全のため通常のコードブロックのまま保持します。
 - SVG 描画された図も `alt_text`（`__plantuml__:<lang>`）に原本ソースを保持しており、Markdown へ再書き出しすると元の ` ```plantuml ` / ` ```puml ` フェンスをそのまま復元します。
