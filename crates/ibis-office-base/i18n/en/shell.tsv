@@ -1711,6 +1711,13 @@ folder.backlinks	Referenced by
 folder.backlinks-empty	No references in the index
 folder.backlinks-partial	The Markdown index is partial
 folder.filter	File name, path, type:Metric, or tag:finance
+folder.filter-content	Search Markdown text in folder
+folder.mode-files	Files
+folder.mode-content	Search
+folder.nav-back	Back
+folder.nav-forward	Forward
+folder.search-empty	No matching lines
+folder.search-hint	Type text to search Markdown files
 folder.okf.unverified	Unverified
 folder.okf.machine-confirmed	Machine-confirmed
 folder.okf.human-reviewed	Human-reviewed

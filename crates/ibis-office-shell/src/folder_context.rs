@@ -385,6 +385,145 @@ impl Folder {
     pub(crate) fn has_index(&self) -> bool {
         self.files.iter().any(|path| path == "index.md")
     }
+
+    pub(super) fn search_markdown_content(
+        &self,
+        query: &str,
+        max_hits: usize,
+    ) -> Vec<ContentSearchHit> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() || max_hits == 0 {
+            return Vec::new();
+        }
+        let mut hits = Vec::new();
+        for relative in self
+            .files
+            .iter()
+            .filter(|path| matches!(extension(Path::new(path)).as_str(), "md" | "markdown"))
+        {
+            let Ok(path) = self.resolve(relative) else {
+                continue;
+            };
+            if let Some((matches, _)) = self.markdown_index.search(relative, &path, &query) {
+                for item in matches {
+                    if let (Some(line), Some(text)) =
+                        (item["line"].as_u64(), item["text"].as_str())
+                    {
+                        hits.push(ContentSearchHit {
+                            path: relative.clone(),
+                            line: usize::try_from(line).unwrap_or(1),
+                            excerpt: text.to_owned(),
+                        });
+                        if hits.len() >= max_hits {
+                            return hits;
+                        }
+                    }
+                }
+                continue;
+            }
+            let Ok((content, _)) = read_text(&path) else {
+                continue;
+            };
+            let mut file_hits = 0usize;
+            for (index, line) in content.lines().enumerate() {
+                if line.to_lowercase().contains(&query) {
+                    hits.push(ContentSearchHit {
+                        path: relative.clone(),
+                        line: index + 1,
+                        excerpt: excerpt(line.trim(), 120),
+                    });
+                    file_hits += 1;
+                    if hits.len() >= max_hits {
+                        return hits;
+                    }
+                    if file_hits >= 3 {
+                        break;
+                    }
+                }
+            }
+        }
+        hits
+    }
+
+    /// Create a new Markdown note for an unresolved Obsidian Wiki link inside the vault.
+    pub(super) fn create_wikilink_note(&self, file: &Path, url: &str) -> Result<Option<String>, String> {
+        if !self.is_obsidian_vault {
+            return Ok(None);
+        }
+        let Some(wiki) = url.strip_prefix("[[").and_then(|text| text.strip_suffix("]]")) else {
+            return Ok(None);
+        };
+        let target = wiki.split(['|', '#']).next().unwrap_or("").trim();
+        if target.is_empty()
+            || target.contains(['\\', ':', '\0', '\r', '\n', '[', ']', '?', '*'])
+            || target.starts_with('/')
+            || target.ends_with('/')
+        {
+            return Ok(None);
+        }
+        if target
+            .split('/')
+            .any(|part| part.trim().is_empty() || !visible(part))
+        {
+            return Ok(None);
+        }
+        let relative_from = file
+            .strip_prefix(&self.root)
+            .ok()
+            .and_then(|rel| rel.iter().map(|p| p.to_str()).collect::<Option<Vec<_>>>())
+            .map(|parts| parts.join("/"))
+            .unwrap_or_default();
+
+        let mut rel = if target.contains('/') {
+            target.to_owned()
+        } else if let Some((dir, _)) = relative_from.rsplit_once('/') {
+            format!("{dir}/{target}")
+        } else {
+            target.to_owned()
+        };
+        let ext = extension(Path::new(&rel));
+        if !matches!(ext.as_str(), "md" | "markdown") {
+            rel.push_str(".md");
+        }
+        if self.files.binary_search(&rel).is_ok() {
+            return Ok(Some(rel));
+        }
+
+        // Verify the parent chain stays inside the vault and crosses no symlinks.
+        let mut cursor = self.root.clone();
+        let parts: Vec<&str> = rel.split('/').collect();
+        let (file_name, parent_parts) = parts.split_last().ok_or("Invalid note path.")?;
+        for part in parent_parts {
+            cursor.push(part);
+            match cursor.symlink_metadata() {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err("Symbolic links are excluded from the open folder.".into());
+                }
+                Ok(meta) if !meta.is_dir() => {
+                    return Err("A file with the same name blocks creating the note folder.".into());
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    std::fs::create_dir(&cursor).map_err(|e| e.to_string())?;
+                }
+                Err(err) => return Err(err.to_string()),
+            }
+        }
+        let canon_parent = cursor.canonicalize().map_err(|err| err.to_string())?;
+        if !canon_parent.starts_with(&self.root) {
+            return Err("Path is outside the open folder.".into());
+        }
+        let note_path = canon_parent.join(file_name);
+        if note_path.exists() {
+            return Ok(Some(rel));
+        }
+        let title = file_name
+            .strip_suffix(".md")
+            .or_else(|| file_name.strip_suffix(".markdown"))
+            .unwrap_or(file_name);
+        std::fs::write(&note_path, format!("# {title}\n")).map_err(|err| err.to_string())?;
+        Ok(Some(rel))
+    }
 }
 
 const OFFICE_READS: &[&str] = &[
@@ -451,6 +590,13 @@ pub(crate) fn tools() -> [ToolDefinition; 8] {
             json!(["path","old_commit","new_commit"])),
 
     ]
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ContentSearchHit {
+    pub(super) path: String,
+    pub(super) line: usize,
+    pub(super) excerpt: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1461,5 +1607,81 @@ example: "[ignored](/資料/共通要件.md)"
         let third = Folder::scan(&fixture.0).unwrap();
         assert_eq!(third.markdown_index.cache_hits, 270);
         assert_eq!(third.markdown_index.backlinks("target.md").len(), 3);
+    }
+
+    #[test]
+    fn folder_tree_rows_group_directories_first_and_respect_collapsed_state() {
+        let files: Vec<String> = [
+            "README.md",
+            "docs/api.md",
+            "docs/sub/detail.md",
+            "index.md",
+            "notes/todo.md",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+
+        let expanded = ui::build_folder_tree_rows(&files, &std::collections::BTreeSet::new());
+        let names: Vec<(&str, usize)> = expanded
+            .iter()
+            .map(|row| match row {
+                ui::TreeRow::Dir { path, depth, .. } => (path.as_str(), *depth),
+                ui::TreeRow::File { path, depth, .. } => (path.as_str(), *depth),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("index.md", 0),
+                ("docs", 0),
+                ("docs/sub", 1),
+                ("docs/sub/detail.md", 2),
+                ("docs/api.md", 1),
+                ("notes", 0),
+                ("notes/todo.md", 1),
+                ("README.md", 0),
+            ]
+        );
+
+        let mut collapsed = std::collections::BTreeSet::new();
+        collapsed.insert("docs".to_owned());
+        let folded = ui::build_folder_tree_rows(&files, &collapsed);
+        assert!(folded.iter().all(|row| match row {
+            ui::TreeRow::Dir { path, .. } => path != "docs/sub",
+            ui::TreeRow::File { path, .. } => !path.starts_with("docs/"),
+        }));
+    }
+
+    #[test]
+    fn folder_content_search_and_obsidian_wikilink_creation_enforce_vault_boundary() {
+        let fixture = Fixture::new();
+        fixture.write("資料/guide.md", "# ガイド\n\n特別なキーワードがここにあります。\n");
+        let plain = Folder::scan(&fixture.0).unwrap();
+        let hits = plain.search_markdown_content("特別なキーワード", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].path.as_str(), hits[0].line), ("資料/guide.md", 3));
+        // Non-Obsidian folders do not auto-create missing Wiki link targets.
+        let source = plain.root.join("資料/guide.md");
+        assert_eq!(plain.create_wikilink_note(&source, "[[新しいノート]]").unwrap(), None);
+
+        std::fs::create_dir_all(fixture.0.join(".obsidian")).unwrap();
+        let vault = Folder::scan(&fixture.0).unwrap();
+        let created = vault
+            .create_wikilink_note(&source, "[[新しいノート|表示名]]")
+            .unwrap();
+        assert_eq!(created.as_deref(), Some("資料/新しいノート.md"));
+        assert_eq!(
+            std::fs::read_to_string(fixture.0.join("資料/新しいノート.md")).unwrap(),
+            "# 新しいノート\n"
+        );
+        let nested = vault
+            .create_wikilink_note(&source, "[[drafts/idea#見出し]]")
+            .unwrap();
+        assert_eq!(nested.as_deref(), Some("drafts/idea.md"));
+        assert!(fixture.0.join("drafts/idea.md").is_file());
+        // Path traversal and hidden paths are refused.
+        assert_eq!(vault.create_wikilink_note(&source, "[[../outside]]").unwrap(), None);
+        assert_eq!(vault.create_wikilink_note(&source, "[[.hidden]]").unwrap(), None);
     }
 }

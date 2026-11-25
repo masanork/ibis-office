@@ -1709,6 +1709,13 @@ folder.backlinks	参照しているファイル
 folder.backlinks-empty	索引内に参照はありません
 folder.backlinks-partial	Markdown 索引は一部のみです
 folder.filter	ファイル名、パス、type:Metric、tag:finance
+folder.filter-content	フォルダー内のMarkdown本文を検索
+folder.mode-files	ファイル
+folder.mode-content	本文検索
+folder.nav-back	戻る
+folder.nav-forward	進む
+folder.search-empty	一致する行はありません
+folder.search-hint	検索語を入力してください
 folder.okf.unverified	未検証
 folder.okf.machine-confirmed	機械確認済み
 folder.okf.human-reviewed	人による確認済み
