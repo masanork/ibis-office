@@ -9,7 +9,7 @@ mod scan_emf;
 mod vector_emf;
 mod wmf_text;
 
-use std::borrow::Cow;
+use std::{borrow::Cow, ops::Range};
 
 use delharc::decode::{Decoder, Lh5Decoder};
 
@@ -22,7 +22,6 @@ const MAX_OBJECTS: usize = 1_000_000;
 pub enum Error {
     Invalid,
     Protected,
-    Binder,
     UnsupportedDrawing,
     Limit,
 }
@@ -155,6 +154,34 @@ pub struct Document<B> {
     properties: Vec<u8>,
 }
 
+/// An embedded document and its zero-based range in the binder's page order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinderDocument {
+    pub name: String,
+    pub pages: Range<usize>,
+}
+
+pub struct Content<'a> {
+    pub pages: Vec<Page<'a>>,
+    /// Present for a binder, including for a binder with no pages.
+    pub binder_documents: Option<Vec<BinderDocument>>,
+}
+
+fn binder_document_name(attributes: &[u8]) -> Result<String> {
+    if let Some(wide) = field(attributes, 70)? {
+        let units: Vec<_> = wide.value.chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .take_while(|&unit| unit != 0)
+            .collect();
+        return Ok(String::from_utf16_lossy(&units));
+    }
+    let Some(name) = field(attributes, 4)? else {
+        return Ok(String::new());
+    };
+    let bytes = name.value.split(|&b| b == 0).next().unwrap_or_default();
+    Ok(encoding_rs::SHIFT_JIS.decode_without_bom_handling(bytes).0.into_owned())
+}
+
 pub struct Page<'a> {
     pub width: u32,
     pub height: u32,
@@ -223,9 +250,14 @@ impl<B: AsRef<[u8]>> Document<B> {
     }
 
     pub fn pages(&self) -> Result<Vec<Page<'_>>> {
+        Ok(self.content()?.pages)
+    }
+
+    pub fn content(&self) -> Result<Content<'_>> {
         let mut input = self.properties.as_slice();
         let mut parents = Vec::new();
         let mut pages = Vec::new();
+        let mut binder_documents: Option<Vec<BinderDocument>> = None;
         let mut position = (0, 0);
         let mut object_count = 0;
         while !input.is_empty() {
@@ -249,8 +281,23 @@ impl<B: AsRef<[u8]>> Document<B> {
             }
             parents.truncate(depth);
             match (parents.as_slice(), kind) {
-                ([], 0xc014) => return Err(Error::Binder),
+                ([], 0xc014) => binder_documents = Some(Vec::new()),
                 ([], kind) if kind != 0xc013 => return Err(Error::Invalid),
+                ([0xc014, 0x1401, 0x1402], 0xc013) => {
+                    let documents = binder_documents.as_mut().ok_or(Error::Invalid)?;
+                    if documents.len() == MAX_PAGES {
+                        return Err(Error::Limit);
+                    }
+                    documents.push(BinderDocument {
+                        name: binder_document_name(attributes)?,
+                        pages: pages.len()..pages.len(),
+                    });
+                }
+                _ => {}
+            }
+            let document_parents = parents.strip_prefix(&[0xc014, 0x1401, 0x1402])
+                .unwrap_or(&parents);
+            match (document_parents, kind) {
                 ([0xc013, 0x1303], 0x1301) => {
                     if pages.len() == MAX_PAGES {
                         return Err(Error::Limit);
@@ -258,6 +305,11 @@ impl<B: AsRef<[u8]>> Document<B> {
                     let mut dimensions = field(attributes, 5)?.ok_or(Error::Invalid)?.value;
                     let width = dimension(&mut dimensions)?;
                     let height = dimension(&mut dimensions)?;
+                    if binder_documents.is_some() {
+                        binder_documents.as_mut()
+                            .and_then(|documents| documents.last_mut())
+                            .ok_or(Error::Invalid)?.pages.end = pages.len() + 1;
+                    }
                     pages.push(Page {
                         width,
                         height,
@@ -315,10 +367,10 @@ impl<B: AsRef<[u8]>> Document<B> {
             }
             parents.push(kind);
         }
-        if pages.is_empty() {
+        if pages.is_empty() && binder_documents.is_none() {
             return Err(Error::Invalid);
         }
-        Ok(pages)
+        Ok(Content { pages, binder_documents })
     }
 
     pub fn object_drawing<'b>(&'b self, object: &'b PageObject<'_>) -> Result<Option<Drawing<'b>>> {

@@ -6071,6 +6071,7 @@ name = "ibis-xdw-read"
 version = "0.8.0"
 dependencies = [
  "delharc",
+ "encoding_rs",
  "ibis-emf",
  "ibis-pdf",
  "image",
