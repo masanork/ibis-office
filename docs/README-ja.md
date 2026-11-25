@@ -63,7 +63,7 @@ ibisOffice 本来のベンチマーク、基本機能一覧、商用ライセン
 - **セキュリティ／コンプライアンス分析** *（提案中: [#279](https://github.com/ibisjp/ibis-office/issues/279), [#280](https://github.com/ibisjp/ibis-office/issues/280)）*：CycloneDX SBOM/CBOM 棚卸し（PQC 移行管理含む）および OSV-Scanner 脆弱性結果の表計算レビュー。
 
 ### 5. AI アシスタント & MCP サーバー拡張
-- **AI アシスタントサイドバー** *（提案中: [#231](https://github.com/ibisjp/ibis-office/issues/231)）*：OpenAI 互換 API（デスクトップ）および Cloudflare Workers AI（Web）と連携した DOCX/XLSX/PPTX 共通の編集支援・変更提案。
+- **AI アシスタントサイドバー** *（提案中: [#231](https://github.com/ibisjp/ibis-office/issues/231)）*：デスクトップ版の OpenAI 互換 API と連携した DOCX/XLSX/PPTX 共通の編集支援・変更提案。
 - **MCP サーバー拡張（`ibis-mcp` & `ibis-doc-service`）** *（提案中: [#159](https://github.com/ibisjp/ibis-office/issues/159), [#275](https://github.com/ibisjp/ibis-office/issues/275), [#276](https://github.com/ibisjp/ibis-office/issues/276), [#281](https://github.com/ibisjp/ibis-office/issues/281)）*：基本的な OOXML 読み書きに加え、SQLite／クロスフォーマットデータセットクエリ（`sqlite_query`, `sqlite_query_to_table`, `sqlite_refresh_query_reports`, `xlsx_set_query_report_checks`）、ピボットテーブル、チャート、構造化プレフィル、SD-JWT/OID4VP ウォレット用の MCP ツール群を実装。さらに、起動中のデスクトップ Assistant へ外部 MCP クライアントから再接続するライブブリッジ、シート保護の非表示数式尊重、入力展開前のセル数上限チェックを備えています（[mcp-ja.md](mcp-ja.md)）。
 
 ### 6. 日本語組版・行政・法令・医療・トラスト

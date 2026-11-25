@@ -1,6 +1,6 @@
 # C2PA image verification acceptance checks
 
-Issue: [#180](https://github.com/masanork/ibis-office/issues/180).
+Issue: [#180](https://github.com/sorane-dev/docs/issues/180).
 The desktop implementation landed in `0ccea7e1`; browser support followed in
 `fd760e69`. This document records repeatable regression checks for that work.
 Public sample and GUI checks are recorded in

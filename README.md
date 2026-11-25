@@ -63,7 +63,7 @@ Each area below summarizes what this fork has built and contributed — noting i
 - **Security & Compliance Analytics** *(Proposed: [#279](https://github.com/ibisjp/ibis-office/issues/279), [#280](https://github.com/ibisjp/ibis-office/issues/280))*: Spreadsheet workflows for reviewing CycloneDX SBOM/CBOM inventories (including PQC migration tracking) and OSV-Scanner vulnerability results.
 
 ### 5. AI Assistant & MCP Server Extensions
-- **AI Assistant Sidebar** *(Proposed: [#231](https://github.com/ibisjp/ibis-office/issues/231))*: Cross-format editing assistance and staged change proposals for DOCX, XLSX, and PPTX backed by OpenAI-compatible APIs (Desktop) and Cloudflare Workers AI (Web).
+- **AI Assistant Sidebar** *(Proposed: [#231](https://github.com/ibisjp/ibis-office/issues/231))*: Cross-format editing assistance and staged change proposals for DOCX, XLSX, and PPTX backed by OpenAI-compatible APIs on Desktop.
 - **Extended MCP Server (`ibis-mcp` & `ibis-doc-service`)** *(Proposed: [#159](https://github.com/ibisjp/ibis-office/issues/159), [#275](https://github.com/ibisjp/ibis-office/issues/275), [#276](https://github.com/ibisjp/ibis-office/issues/276), [#281](https://github.com/ibisjp/ibis-office/issues/281))*: Expanded beyond basic OOXML read/edit with dedicated toolsets for SQLite/cross-format dataset querying (`sqlite_query`, `sqlite_query_to_table`, `sqlite_refresh_query_reports`, `xlsx_set_query_report_checks`), PivotTables, charts, structured prefill, and SD-JWT/OID4VP wallets — plus a live Desktop Assistant bridge for reconnecting from external MCP clients, sheet-protection formula hiding, and pre-expansion cell-limit guards ([docs/mcp.md](docs/mcp.md)).
 
 ### 6. Japanese Typography, Civic, Legal, Medical & Trust
