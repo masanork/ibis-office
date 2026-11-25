@@ -47,7 +47,12 @@ fi
 export ANDROID_HOME
 
 BUILD_TOOLS=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -n 1)
-PLATFORM_DIR=$(ls -d "$ANDROID_HOME/platforms/android-"* | sort -V | tail -n 1)
+ANDROID_COMPILE_SDK="${ANDROID_COMPILE_SDK:-36}"
+if [[ -d "$ANDROID_HOME/platforms/android-${ANDROID_COMPILE_SDK}" ]]; then
+  PLATFORM_DIR="$ANDROID_HOME/platforms/android-${ANDROID_COMPILE_SDK}"
+else
+  PLATFORM_DIR=$(ls -d "$ANDROID_HOME/platforms/android-"* | sort -V | tail -n 1)
+fi
 PLATFORM_JAR="$PLATFORM_DIR/android.jar"
 NDK_DIR=$(ls -d "$ANDROID_HOME/ndk/"* | sort -V | tail -n 1)
 STRIP=$(find "$NDK_DIR/toolchains/llvm/prebuilt" -name llvm-strip | head -n 1)
@@ -137,6 +142,7 @@ echo "4. Packaging APK with aapt2..."
   --manifest apps/android/AndroidManifest.xml \
   --version-code "$ANDROID_VERSION_CODE" \
   --version-name "$ANDROID_VERSION_NAME" \
+  --replace-version \
   -I "$PLATFORM_JAR" \
   "$OUT_DIR/res_flat"/*.flat \
   -o "$OUT_DIR/unaligned.apk"
@@ -184,6 +190,7 @@ if [[ "$BUILD_AAB" == "1" ]]; then
     --manifest apps/android/AndroidManifest.xml \
     --version-code "$ANDROID_VERSION_CODE" \
     --version-name "$ANDROID_VERSION_NAME" \
+    --replace-version \
     -I "$PLATFORM_JAR" \
     "$OUT_DIR/res_flat"/*.flat \
     -o "$OUT_DIR/base_proto.apk"
@@ -223,6 +230,10 @@ if [[ "$BUILD_AAB" == "1" ]]; then
 
   jarsigner -verify "$OUT_DIR/$AAB_NAME" >/dev/null
   "${BUNDLETOOL_CMD[@]}" validate --bundle="$OUT_DIR/$AAB_NAME"
+  "${BUNDLETOOL_CMD[@]}" dump manifest --bundle="$OUT_DIR/$AAB_NAME" | grep -q "android:versionCode=\"${ANDROID_VERSION_CODE}\"" || {
+    echo "AAB manifest did not contain expected android:versionCode=${ANDROID_VERSION_CODE}" >&2
+    exit 1
+  }
 
   ls -lh "$OUT_DIR/$AAB_NAME"
   echo "Built: $OUT_DIR/$AAB_NAME"
