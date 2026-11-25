@@ -18,5 +18,79 @@
       "sizes": "512x512",
       "type": "image/png"
     }
+  ],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [
+          ".docx",
+          ".docm",
+          ".dotx",
+          ".dotm"
+        ],
+        "application/msword": [
+          ".doc",
+          ".dot"
+        ],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
+          ".xlsx",
+          ".xlsm",
+          ".xltx",
+          ".xltm"
+        ],
+        "application/vnd.ms-excel": [
+          ".xls"
+        ],
+        "text/csv": [
+          ".csv"
+        ],
+        "text/tab-separated-values": [
+          ".tsv",
+          ".tab"
+        ],
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": [
+          ".pptx",
+          ".pptm",
+          ".ppsx",
+          ".ppsm",
+          ".potx",
+          ".potm"
+        ],
+        "application/vnd.ms-powerpoint": [
+          ".ppt",
+          ".pps",
+          ".pot"
+        ],
+        "text/markdown": [
+          ".md",
+          ".markdown"
+        ],
+        "application/vnd.oasis.opendocument.spreadsheet": [
+          ".ods",
+          ".ots"
+        ],
+        "application/vnd.oasis.opendocument.presentation": [
+          ".odp",
+          ".otp"
+        ],
+        "application/vnd.visio": [
+          ".vsdx"
+        ],
+        "application/epub+zip": [
+          ".epub"
+        ],
+        "application/pdf": [
+          ".pdf"
+        ]
+      },
+      "icons": [
+        {
+          "src": "./pwa/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
   ]
 }

@@ -21,4 +21,7 @@
       text.textContent = 'Docs を読み込んでいます…';
     }
   }
+  if ('serviceWorker' in navigator) {
+    void navigator.serviceWorker.register(new URL('./sw.js', location.href), { scope: './' }).catch(() => undefined);
+  }
 })();

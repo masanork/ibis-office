@@ -5,9 +5,11 @@
 /www/*.js
 !/www/sorane-start.js
 !/www/sorane-github-vault.js
+!/www/sw.template.js
 /www/*.d.ts
 /www/fonts/
 /www/loader-manifest.json
+/www/pwa-precache.json
 /www/build-info.ts
 /node_modules
 /data/fonts

@@ -15,6 +15,7 @@ import init, {
   host_snapshot,
   host_snapshot_name,
   host_editor_ready,
+  open_local_file,
 } from './pkg/ibis_office_app.js';
 import { installHostLoader, resolveOptionUrls, waitForEditor, type HostSession } from './host-loader.js';
 import { APP_VERSION } from './build-info.js';
@@ -23,6 +24,16 @@ import { SubsetLoader, subsetsOf, type BlockStore } from './subset-fetch.js';
 import type { IbisOfficeEvent } from './ibisoffice-host.js';
 
 import { loadWasm } from './wasm-loader.js';
+import { registerServiceWorker } from './pwa-register.js';
+import {
+  OPEN_EXTENSIONS,
+  handleFromDropItem,
+  installLaunchQueue,
+  pickLocalFile,
+  saveLocalFile,
+  setCurrentHandle,
+  type PickedLocalFile,
+} from './local-file.js';
 
 /** A file chosen by the user or loaded at startup. */
 interface PickedFile {
@@ -102,6 +113,8 @@ declare global {
     ibisOfficeEmbedAction: (kind: string, name: string, bytes?: Uint8Array) => void;
     /** Called from Rust for exports (HTML and the like): the browser saves `bytes` as the file `name`. */
     ibisOfficeSaveFile: (name: string, mime: string, bytes: Uint8Array) => void;
+    /** Called from Rust for 保存 / 名前を付けて保存: in-place File System Access, a save picker, or a download. */
+    ibisOfficeSaveLocal: (name: string, mime: string, bytes: Uint8Array, saveAs: boolean) => Promise<string | null>;
     /** Called from Rust at a print click, before the PDF is made: a blank tab opened while the click still counts (the popup blocker lets it). `null` when the browser refused. */
     ibisOfficeBlankTab: () => Window | null;
     /** Called from Rust when the print's PDF is made: shown in `tab` (a Blob URL), or in a new tab when `tab` is `null`; a tab left over is closed with `bytes` empty. */
@@ -549,6 +562,10 @@ async function initialFile(): Promise<PickedFile | null> {
   if (new URLSearchParams(location.search).has('local')) {
     return localFile();
   }
+  const launched = await launchedFile;
+  if (launched) {
+    return { name: launched.name, bytes: launched.bytes };
+  }
   const url = new URLSearchParams(location.search).get('open');
   if (!url) {
     return null;
@@ -565,6 +582,11 @@ async function initialFile(): Promise<PickedFile | null> {
 /** Set when the page was started for a host (`?host=1`): `window.IbisOffice` is published here, before anything is awaited. */
 const hostLoader = installHostLoader(window, location.search);
 let hostSession: HostSession | null = null;
+
+const launchedFile = hostLoader ? Promise.resolve(null) : installLaunchQueue(openLocalPicked);
+void registerServiceWorker({ japanese: (document.documentElement.lang || navigator.language).toLowerCase().startsWith('ja') }).catch((error) => {
+  console.warn('ibisOffice: service worker was not registered', error);
+});
 
 const status = document.getElementById('status');
 const statusText = document.getElementById('status-text');
@@ -850,7 +872,7 @@ async function fetchSameOriginUrl(url: string): Promise<PickedFile> {
 }
 
 window.ibisOfficeDecodeHeic = decodeHeic;
-window.ibisOfficePickFile = () => pickFile();
+window.ibisOfficePickFile = () => pickDocumentFile();
 window.ibisOfficeFetchUrl = fetchSameOriginUrl;
 window.ibisOfficeStartAction = (action: string) => {
   window.dispatchEvent(new CustomEvent('sorane:start-action', { detail: { action } }));
@@ -880,6 +902,57 @@ window.ibisOfficeFontsLoad = fontsLoad;
 window.ibisOfficeFontLoadOne = fontLoadOne;
 window.ibisOfficeEmbedAction = embedAction;
 window.ibisOfficeSaveFile = saveFile;
+window.ibisOfficeSaveLocal = async (name, mime, bytes, saveAs) => {
+  const result = await saveLocalFile(name, mime, bytes, saveAs);
+  return result ? result.name : null;
+};
+
+async function pickDocumentFile(): Promise<PickedFile | null> {
+  const picked = await pickLocalFile({ remember: true });
+  return picked ? { name: picked.name, bytes: picked.bytes } : null;
+}
+
+function openLocalPicked(file: PickedLocalFile): void {
+  try {
+    open_local_file(file.name, file.bytes);
+  } catch (error) {
+    console.warn('ibisOffice: could not open the local file', error);
+  }
+}
+
+function extensionOf(name: string): string {
+  const at = name.lastIndexOf('.');
+  return at >= 0 ? name.slice(at + 1).toLowerCase() : '';
+}
+
+function installLocalFileDrop(): void {
+  const over = (event: DragEvent) => {
+    if (event.dataTransfer?.types.includes('Files')) {
+      event.preventDefault();
+    }
+  };
+  window.addEventListener('dragover', over);
+  window.addEventListener('drop', (event) => {
+    const item = event.dataTransfer?.items?.[0];
+    if (!item || item.kind !== 'file') return;
+    event.preventDefault();
+    void (async () => {
+      const handle = await handleFromDropItem(item);
+      if (handle) {
+        const file = await handle.getFile();
+        if (![...OPEN_EXTENSIONS].includes(extensionOf(file.name) as typeof OPEN_EXTENSIONS[number])) return;
+        const picked = { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()), handle };
+        setCurrentHandle(handle);
+        openLocalPicked(picked);
+        return;
+      }
+      const file = item.getAsFile();
+      if (!file || ![...OPEN_EXTENSIONS].includes(extensionOf(file.name) as typeof OPEN_EXTENSIONS[number])) return;
+      setCurrentHandle(null);
+      openLocalPicked({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+    })();
+  });
+}
 window.ibisOfficeBlankTab = blankTab;
 window.ibisOfficeLocalFontsStart = () => {
   void localFonts();
@@ -965,6 +1038,7 @@ if (!('gpu' in navigator)) {
       window.ibisOfficeSetStartView = applyStartView;
     }
     await run(base, file?.name, file?.bytes);
+    installLocalFileDrop();
     status?.remove();
     if (hostLoader && hostSession) {
       // `run` returns before the editor window exists (it opens when the GPU is ready): `ready` means load is accepted, so wait for it.

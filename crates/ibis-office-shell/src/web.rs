@@ -174,11 +174,51 @@ extern "C" {
     /// Defined by `www/main.ts`: the browser saves the bytes as a file (a Blob behind a temporary link).
     #[wasm_bindgen(js_name = ibisOfficeSaveFile)]
     fn save_file_js(name: &str, mime: &str, bytes: &[u8]);
+    /// Defined by `www/main.ts`: overwrites the File System Access handle, or
+    /// shows 名前を付けて保存, or falls back to a download. Resolves to the
+    /// saved name, or `null` when cancelled.
+    #[wasm_bindgen(catch, js_name = ibisOfficeSaveLocal)]
+    fn save_local_js(name: &str, mime: &str, bytes: &[u8], save_as: bool) -> Result<js_sys::Promise, JsValue>;
 }
 
 /// The browser saves `bytes` as the file `name` of type `mime` (the browser version's way to export, as the desktop's save dialog).
 pub fn download_bytes(name: &str, mime: &str, bytes: &[u8]) {
     save_file_js(name, mime, bytes);
+}
+
+/// MIME type of a local save (`application/octet-stream` when unknown).
+pub fn mime_for_file_name(name: &str) -> &'static str {
+    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "docx" | "docm" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "dotx" | "dotm" => "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+        "doc" | "dot" => "application/msword",
+        "xlsx" | "xlsm" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xltx" | "xltm" => "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+        "xls" => "application/vnd.ms-excel",
+        "csv" => "text/csv",
+        "tsv" | "tab" => "text/tab-separated-values",
+        "pptx" | "pptm" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "ppsx" | "ppsm" => "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+        "potx" | "potm" => "application/vnd.openxmlformats-officedocument.presentationml.template",
+        "md" | "markdown" => "text/markdown",
+        "vsdx" => "application/vnd.ms-visio.drawing.main+xml",
+        "pdf" => "application/pdf",
+        "ods" | "ots" => "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" | "otp" => "application/vnd.oasis.opendocument.presentation",
+        "epub" => "application/epub+zip",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Save the open document in the browser (in place when a file handle is kept).
+/// `None` means the user cancelled the picker.
+pub async fn save_local(name: &str, mime: &str, bytes: &[u8], save_as: bool) -> Result<Option<String>, String> {
+    let value = wasm_bindgen_futures::JsFuture::from(save_local_js(name, mime, bytes, save_as).map_err(describe)?).await.map_err(describe)?;
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    Ok(Some(value.as_string().unwrap_or_else(|| name.to_string())))
 }
 
 fn describe(err: JsValue) -> String {

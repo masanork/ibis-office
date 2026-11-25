@@ -67,6 +67,7 @@ Web フォントの静的チャンク配信（SIL OFL 1.1: `ACGJMincho`・`BIZUD
 テスト済みの Web 資産を同じコミットの `wrangler.jsonc` で配信する。
 `production` 環境に Cloudflare の配信用シークレット `CLOUDFLARE_API_TOKEN` が必要。
 配信直前にブランチ先端を確認し、dry-run を通した構成で配信する。
+配信物には `scripts/build-pwa-sw.mjs` が生成した `www/sw.js` が含まれる。Cloudflare Worker は `/sw.js` を `Cache-Control: no-cache` と `Service-Worker-Allowed: /` で返す。
 配信後は <https://docs.sorane.dev> と <https://ibis.sorane.dev> のマニフェストを照合し、
 `docs.sorane.dev` の WASM チャンクを検証する。
 単なるブランチ整理では、検証中の別作業による配信を上書きしない。

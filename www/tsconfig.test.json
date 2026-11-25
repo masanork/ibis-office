@@ -7,5 +7,5 @@
     "lib": ["es2022", "dom", "dom.iterable"]
   },
   "files": [],
-  "include": ["host-loader.ts", "ibisoffice-host.ts", "chunked-fetch.ts", "subset-fetch.ts", "test/*.ts"]
+  "include": ["host-loader.ts", "ibisoffice-host.ts", "chunked-fetch.ts", "subset-fetch.ts", "local-file.ts", "pwa-register.ts", "pwa-sw-logic.ts", "test/*.ts"]
 }

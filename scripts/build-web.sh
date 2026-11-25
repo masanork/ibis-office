@@ -126,6 +126,9 @@ elif [[ "${IBIS_WEB_FONT_SUBSETS:-}" != "0" ]]; then
   node scripts/build-web-font-subsets.mjs --out www --if-cached
 fi
 
+# Versioned service worker: hashed wasm/fonts plus the app shell, one cache per build.
+node scripts/build-pwa-sw.mjs
+
 python3 scripts/check-web-assets.py www
 
 if [[ -n "${IBIS_WEB_BOM_DIR:-}" ]]; then
