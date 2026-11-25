@@ -52,6 +52,22 @@ pub fn visit_export_scenes(
     Ok(())
 }
 
+/// Visit export scenes with the marked-content ID for each indexed character.
+pub fn visit_marked_export_scenes(
+    container: &mut PdfContainer,
+    mut visit: impl FnMut(PageScene, Vec<Option<i32>>) -> Result<()>,
+) -> Result<()> {
+    let pages = collect_pages(container)?;
+    let pdf = parse_for_interpretation(container)?;
+    let cache = InterpreterCache::new();
+    for info in pages {
+        let mut device = scene_device(&pdf, &cache, info, Purpose::Export, true)?;
+        let marks = std::mem::take(&mut device.character_marks);
+        visit(device.finish(), marks)?;
+    }
+    Ok(())
+}
+
 /// Visit each page's characters only: nothing is drawn, no image decoded (the plain text export).
 /// The scenes have an empty display list.
 pub fn visit_text_scenes(
@@ -89,6 +105,16 @@ fn interpret_scene<'a>(
     info: PageInfo,
     purpose: Purpose,
 ) -> Result<PageScene> {
+    Ok(scene_device(pdf, cache, info, purpose, false)?.finish())
+}
+
+fn scene_device<'a>(
+    pdf: &'a Pdf,
+    cache: &'a InterpreterCache<'a>,
+    info: PageInfo,
+    purpose: Purpose,
+    collect_marks: bool,
+) -> Result<SceneDevice> {
     let page_index = info.index;
     let page = pdf
         .pages()
@@ -102,8 +128,9 @@ fn interpret_scene<'a>(
 
     let mut ctx = Context::new(initial_transform, bbox, cache, pdf.xref(), settings);
     let mut device = SceneDevice::new(info, purpose);
+    device.collect_marks = collect_marks;
     interpret_page(page, &mut ctx, &mut device);
-    Ok(device.finish())
+    Ok(device)
 }
 
 struct SceneDevice {
@@ -111,6 +138,9 @@ struct SceneDevice {
     display_list: Vec<DisplayCmd>,
     text_index: PageTextIndex,
     op_counter: usize,
+    collect_marks: bool,
+    marks: Vec<Option<i32>>,
+    character_marks: Vec<Option<i32>>,
     purpose: Purpose,
 }
 
@@ -121,6 +151,9 @@ impl SceneDevice {
             display_list: Vec::new(),
             text_index: PageTextIndex::default(),
             op_counter: 0,
+            collect_marks: false,
+            marks: Vec::new(),
+            character_marks: Vec::new(),
             purpose,
         }
     }
@@ -212,6 +245,16 @@ fn paint_rgba(paint: &Paint<'_>) -> [u8; 4] {
 }
 
 impl<'a> Device<'a> for SceneDevice {
+    fn begin_marked_content(&mut self, _: &[u8], mcid: Option<i32>) {
+        if self.collect_marks {
+            self.marks.push(mcid.or_else(|| self.marks.last().copied().flatten()));
+        }
+    }
+
+    fn end_marked_content(&mut self) {
+        self.marks.pop();
+    }
+
     fn set_soft_mask(&mut self, _mask: Option<SoftMask<'a>>) {}
 
     fn set_blend_mode(&mut self, _blend_mode: BlendMode) {}
@@ -281,6 +324,9 @@ impl<'a> Device<'a> for SceneDevice {
             let rect_pt = glyph_cell(combined, advance);
             let vertical = coeffs[1].abs() > coeffs[0].abs();
             for ch in text.chars() {
+                if self.collect_marks {
+                    self.character_marks.push(self.marks.last().copied().flatten());
+                }
                 self.text_index.chars.push(CharBox {
                     ch,
                     rect_pt,

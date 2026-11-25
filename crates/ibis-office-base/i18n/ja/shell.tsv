@@ -1940,3 +1940,4 @@ vsdx.guide.step1	左のステンシルをクリックして図形を配置しま
 vsdx.guide.step2	図形をダブルクリックしてラベルを入力できます
 vsdx.guide.step3	コネクタで図形同士を接続し、.vsdx で保存できます
 shape.parallelogram	平行四辺形
+fixed-layout.edit-docx	Word のコピーを編集（DOCX）

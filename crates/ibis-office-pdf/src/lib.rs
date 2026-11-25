@@ -17,6 +17,8 @@ use ibis_pdf::{PdfContainer, Result};
 pub mod editor;
 pub mod render;
 pub mod markdown;
+pub mod docx;
+mod docx_tags;
 pub mod text;
 pub use editor::PdfDocument;
 
