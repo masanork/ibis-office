@@ -13,7 +13,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 
-FIXTURES = Path(__file__).resolve().parents[1] / "crates/ibis-formats/tests/lawtext"
+FIXTURES = Path(__file__).resolve().parents[1] / "crates/ibis-lawtext/tests/lawtext"
 SCHEMA_URL = "https://laws.e-gov.go.jp/file/XMLSchemaForJapaneseLaw_v3.xsd"
 SCHEMA_SHA256 = "f5e11ddb0d91c26232d6eb49a59001c3f5d418ef34fd2aef3b59223a6f633276"
 DIFF_KEYS = ("xml_model_changes", "lawtext_roundtrip_changes", "markdown_roundtrip_changes")
