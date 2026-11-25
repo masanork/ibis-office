@@ -1,7 +1,7 @@
 name: Lawtext compatibility
 on:
   push:
-    branches: [masanork]
+    branches: [sorane]
     paths: ['crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', 'scripts/check-law-roundtrips.py', '.github/workflows/lawtext-compat.yml']
   pull_request:
     paths: ['crates/ibis-formats/**', 'crates/ibis-doc-model/**', 'Cargo.lock', 'scripts/check-law-roundtrips.py', '.github/workflows/lawtext-compat.yml']

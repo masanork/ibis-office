@@ -52,10 +52,10 @@ upstream を取り込んだら、比較 SHA、導線の欠落、検証結果を�
 ```sh
 git fetch origin
 git fetch masanork
-git rev-parse origin/main masanork/masanork
-git rev-list --left-right --count origin/main...masanork/masanork
-git log --first-parent --oneline origin/main..masanork/masanork
-git diff --stat origin/main masanork/masanork
+git rev-parse origin/main masanork/sorane
+git rev-list --left-right --count origin/main...masanork/sorane
+git log --first-parent --oneline origin/main..masanork/sorane
+git diff --stat origin/main masanork/sorane
 ```
 
-統合前の Docs からのファイル移動・削除は `git diff --name-status -M <統合前のDocsのSHA> masanork/masanork` で確認する。両側に同名の機能がある場合は、メニュー登録と実行先、ファイルの開く・保存する経路、対象テストまで照合する。
+統合前の Docs からのファイル移動・削除は `git diff --name-status -M <統合前のDocsのSHA> masanork/sorane` で確認する。両側に同名の機能がある場合は、メニュー登録と実行先、ファイルの開く・保存する経路、対象テストまで照合する。

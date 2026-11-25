@@ -1,9 +1,9 @@
 name: Sorane update verifier
 on:
   push:
-    branches: [masanork]
+    branches: [sorane]
   pull_request:
-    branches: [masanork]
+    branches: [sorane]
   workflow_dispatch:
 permissions:
   contents: read

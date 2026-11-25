@@ -6,7 +6,7 @@
 name: Mermaid compatibility
 on:
   push:
-    branches: [masanork]
+    branches: [sorane]
     paths:
       - crates/ibis-formats/**
       - crates/ibis-doc-model/**
@@ -42,7 +42,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: mermaid-compat
-          save-if: ${{ github.ref == 'refs/heads/masanork' }}
+          save-if: ${{ github.ref == 'refs/heads/sorane' }}
       - name: Mermaid unit tests (renderer and Markdown round trip)
         run: cargo test --locked -p ibis-formats --lib mermaid
       - name: Official docs corpus

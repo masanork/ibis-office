@@ -1,14 +1,14 @@
-# masanork forkのブランチ運用
+# Sorane forkのブランチ運用
 
-このforkで利用する最新版の統合先は`masanork`。
-GitHubの既定ブランチも`masanork`とし、機能・修正は個別ブランチで開発する。
+このforkで利用する最新版の統合先は`sorane`。
+GitHubの既定ブランチも`sorane`とし、機能・修正は個別ブランチで開発する。
 `main`はupstream由来の履歴を追うために残し、`gh-pages`はupstreamのplayground用履歴として扱う。
 
 | 対象 | 用途 |
 | --- | --- |
 | `origin` | `https://github.com/ibisjp/ibis-office`。upstreamの取得元 |
 | remote `masanork` | `https://github.com/masanork/ibis-office.git`。既定push先 |
-| branch `masanork` | 完成した機能を統合する最新版。追跡先は`masanork/masanork` |
+| branch `sorane` | 完成した機能を統合する最新版。追跡先は`masanork/sorane` |
 | `feat/*`、`fix/*`等 | 個別の開発。統合後、作業が完了した枝は削除 |
 
 現行の機能差分と upstream 統合後の確認結果は [Docs と upstream ibisOffice の差分](fork-feature-differences.md) を参照。
@@ -17,20 +17,20 @@ GitHubの既定ブランチも`masanork`とし、機能・修正は個別ブラ�
 
 ```sh
 git fetch masanork
-git switch masanork
+git switch sorane
 git pull --ff-only
 git switch -c feat/example
 ```
 
-別の変更が残るcheckoutでは、`git worktree add -b feat/example /path/to/worktree masanork/masanork`
+別の変更が残るcheckoutでは、`git worktree add -b feat/example /path/to/worktree masanork/sorane`
 で分離する。進行中の変更を機械的にstash、reset、cleanしない。
 
-機能ブランチで必要な検証を終え、`masanork`へmergeする。
+機能ブランチで必要な検証を終え、`sorane`へmergeする。
 競合解消後の統合結果も確認し、その最終HEADをpushする。
 CIがある場合は最終HEADの結果を確認してから完了扱いにする。
-PRで統合する場合はbaseを`masanork`にする。
+PRで統合する場合はbaseを`sorane`にする。
 
-完了した枝は、`git merge-base --is-ancestor <feature> masanork`等で取り込みを確認し、
+完了した枝は、`git merge-base --is-ancestor <feature> sorane`等で取り込みを確認し、
 remoteとlocalの両方から削除する。cherry-pick済みの枝はpatchの対応も確認する。
 その枝のworktreeに未コミット変更や進行中の作業があれば、先に保全・引継ぎする。
 PRのmerge時にはGitHubのhead branch自動削除も有効にする。
@@ -70,7 +70,7 @@ dry-runの後にdeployし、公開されたmanifestとWASMのhash、ブラウザ
 
 ## デスクトップ CI
 
-`Desktop build CI` は `masanork` への push、同ブランチ宛て PR、手動実行で
+`Desktop build CI` は `sorane` への push、同ブランチ宛て PR、手動実行で
 macOS arm64、Windows x64、Linux x64 AppImage をビルドする。PR はマージ用の
 仮コミットではなく PR head の SHA を checkout し、submodule の状態と Rust の
 版を成果物の `build-info.json` に記録する。各ジョブはパッケージを検証して
@@ -96,7 +96,7 @@ Linux AppImage、macOS、Windows の Desktop CI はパッケージから取り�
 
 ### Linux AppImage の署名付きビルド来歴
 
-`masanork` の push、対象タグ、手動実行では、AppImage をビルドしたジョブから
+`sorane` の push、対象タグ、手動実行では、AppImage をビルドしたジョブから
 別の GitHub ホストランナーに成果物を渡し、GitHub Artifact Attestations で署名する。
 Linux のビルドと署名は、コミットを固定した再利用ワークフローが実行する。
 署名権限はその中の署名ジョブに付与し、PR 実行は読み取り専用の呼び出しを使う。
@@ -106,7 +106,7 @@ Linux のビルドと署名は、コミットを固定した再利用ワーク�
 手動で Linux だけを検証する場合は Desktop build CI の `appimage_only` を選ぶ。
 
 検証時は、信頼するコミットと Git ref を指定する。タグ付き Release の場合は
-`refs/tags/sorane-v…`、統合ブランチのビルドでは `refs/heads/masanork` を使う。
+`refs/tags/sorane-v…`、統合ブランチのビルドでは `refs/heads/sorane` を使う。
 
 ```bash
 gh attestation verify desktop-linux-x64-ci.AppImage \
@@ -125,7 +125,7 @@ CI はさらに別のランナーへ AppImage と bundle をダウンロード�
 
 ## マイルストーン Release
 
-`masanork` の履歴にある検証済みコミットに `sorane-v1.2.3` のようなタグを
+`sorane` の履歴にある検証済みコミットに `sorane-v1.2.3` のようなタグを
 push すると、Desktop build CI が同じコミットの Linux x64 AppImage、Flatpak x86_64／arm64、
 macOS arm64、Windows x64、Android arm64、iOS arm64 をビルド・検証し、
 全ジョブ成功後に GitHub Release を作成する。
@@ -133,14 +133,14 @@ macOS arm64、Windows x64、Android arm64、iOS arm64 をビルド・検証し�
 上流タグと区別するため `sorane-v` を使う。
 
 ```sh
-git fetch origin masanork
-git tag -a sorane-v1.2.3 origin/masanork -m 'Docs milestone 1.2.3'
-git push origin sorane-v1.2.3
+git fetch masanork sorane
+git tag -a sorane-v1.2.3 masanork/sorane -m 'Docs milestone 1.2.3'
+git push masanork sorane-v1.2.3
 ```
 
 Release には各パッケージ、対応する SBOM／CBOM、ビルド情報、SHA256SUMS を添付する。
 Flatpak はパッケージと BOM を同じタグのビルドで生成する。タグが指すコミットが
-公開時にも `masanork` の履歴にあることを確認し、既存 Release は上書きしない。
+公開時にも `sorane` の履歴にあることを確認し、既存 Release は上書きしない。
 タグを付け替えて再利用せず、修正には新しいタグを使う。Release は自動公開される。
 macOS は公証されず Windows は未署名であり、自動更新フィードではない。
 公開前には対象コミットの CI と配布内容を確認する。
@@ -158,7 +158,7 @@ Signed update metadata preparation and the remaining production activation gates
 Docs のビルド名は `docs-v0.8.9-build862` の形式を使う。
 番号は対象コミットの `git rev-list --first-parent --count HEAD` で、
 同じコミットの再実行や各プラットフォームのビルドで共通になる。
-序列として使う範囲は `masanork` の first-parent 履歴。
+序列として使う範囲は `sorane` の first-parent 履歴。
 他のブランチでは同じ番号になることがあるため、成果物の照合には
 完全なソースコミットと SHA-256 を使う。
 

@@ -1,7 +1,7 @@
 name: Wallet presentation regression
 on:
   push:
-    branches: [masanork]
+    branches: [sorane]
   pull_request:
 permissions:
   contents: read

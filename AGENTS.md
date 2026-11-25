@@ -1,6 +1,6 @@
-# masanork fork workflow
+# Sorane fork workflow
 
-- `masanork` is this fork's integration branch and the base for new feature
+- `sorane` is this fork's integration branch and the base for new feature
   and fix branches. `main` tracks upstream; `origin` is `ibisjp/ibis-office`,
   and the `masanork` remote is `masanork/ibis-office`.
 - Upstream `ibisjp/ibis-office` limits pull request creation to repository
@@ -10,7 +10,7 @@
   and verification results in the issue.
 - Develop each independent change on its own branch, using an isolated
   worktree when the current checkout contains unrelated changes.
-- Integrate completed, tested changes into `masanork`. Verify the final
+- Integrate completed, tested changes into `sorane`. Verify the final
   integrated head, push it, and then delete the completed feature branches
   locally and remotely. Preserve active branches and dirty worktrees.
   Check ancestry or document patch equivalence before deleting a branch.

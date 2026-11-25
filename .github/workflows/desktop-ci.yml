@@ -2,10 +2,10 @@
 name: Desktop build CI
 on:
   push:
-    branches: [masanork]
+    branches: [sorane]
     tags: ["sorane-v*"]
   pull_request:
-    branches: [masanork]
+    branches: [sorane]
   workflow_dispatch:
     inputs:
       appimage_only:
@@ -37,14 +37,14 @@ jobs:
           ref: ${{ env.EXPECTED_SOURCE_SHA }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Require tagged commit in masanork history
+      - name: Require tagged commit in sorane history
         if: github.ref_type == 'tag'
         env:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           [[ "$TAG" =~ ^sorane-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
-          git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/masanork
+          git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/sorane
           test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
 
   desktop:
@@ -425,9 +425,9 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG" +refs/heads/masanork:refs/remotes/origin/masanork
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG" +refs/heads/sorane:refs/remotes/origin/sorane
           test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
-          git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/masanork
+          git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/sorane
           mkdir release
           for platform in linux-x64 macos-arm64 windows-x64 android-arm64 ios-arm64; do
             dir="artifacts/desktop-ci-$platform"
