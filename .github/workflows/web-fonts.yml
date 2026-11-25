@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-name: Web font tests
+name: Web CI
 on:
   push:
   pull_request:
@@ -189,7 +189,7 @@ jobs:
   deploy-production:
     name: Deploy soraneDocs to Cloudflare
     if: github.repository == 'sorane-dev/docs' && github.event_name == 'push' && github.ref == 'refs/heads/sorane'
-    needs: [web-fonts, portable-gestures, touch-browser, html-browser, verify-wasm-boms]
+    needs: [web-fonts, touch-browser, html-browser, verify-wasm-boms]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
