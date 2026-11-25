@@ -88,7 +88,7 @@ pub(crate) fn is_obsidian_vault(path: &Path) -> bool {
 }
 
 #[derive(Clone)]
-pub(crate) struct Folder {
+pub struct Folder {
     root: PathBuf,
     files: Vec<String>,
     concepts: BTreeMap<String, ConceptFilter>,
@@ -593,10 +593,83 @@ pub(crate) fn tools() -> [ToolDefinition; 8] {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ContentSearchHit {
-    pub(super) path: String,
-    pub(super) line: usize,
-    pub(super) excerpt: String,
+pub struct ContentSearchHit {
+    pub path: String,
+    pub line: usize,
+    pub excerpt: String,
+}
+
+/// Public snapshot of a Markdown backlink inside an open Vault folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultBacklink {
+    pub path: String,
+    pub line: usize,
+    pub excerpt: String,
+}
+
+impl Folder {
+    /// Scan a directory (including `.obsidian` vault detection, Git detection, and Markdown index).
+    pub fn scan_dir(path: &Path) -> Result<Self, String> {
+        Self::scan(path)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn files(&self) -> &[String] {
+        &self.files
+    }
+
+    pub fn display_name(&self) -> String {
+        self.name()
+    }
+
+    pub fn is_obsidian_vault(&self) -> bool {
+        self.is_obsidian_vault
+    }
+
+    pub fn has_git(&self) -> bool {
+        self.has_git
+    }
+
+    pub fn matches_query(&self, path: &str, query: &str) -> bool {
+        self.matches(path, query)
+    }
+
+    pub fn resolve_file_path(&self, relative: &str) -> Result<PathBuf, String> {
+        self.resolve(relative)
+    }
+
+    pub fn search_content(&self, query: &str, limit: usize) -> Vec<ContentSearchHit> {
+        self.search_markdown_content(query, limit)
+    }
+
+    pub fn backlinks_for(&self, relative: &str) -> Vec<VaultBacklink> {
+        self.markdown_index
+            .backlinks(relative)
+            .iter()
+            .map(|b| VaultBacklink {
+                path: b.source.path.clone(),
+                line: b.line,
+                excerpt: b.excerpt.clone(),
+            })
+            .collect()
+    }
+
+    pub fn relative_path_for(&self, path: &Path) -> Option<String> {
+        let canonical = path.canonicalize().ok()?;
+        let rel = canonical.strip_prefix(&self.root).ok()?;
+        let mut parts = Vec::new();
+        for comp in rel.components() {
+            if let Component::Normal(s) = comp {
+                parts.push(s.to_str()?);
+            } else {
+                return None;
+            }
+        }
+        (!parts.is_empty()).then(|| parts.join("/"))
+    }
 }
 
 #[derive(Clone, Debug)]

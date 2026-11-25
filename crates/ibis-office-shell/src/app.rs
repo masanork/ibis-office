@@ -258,14 +258,13 @@ fn remembered_bounds(cx: &App) -> Option<Bounds<Pixels>> {
 }
 
 /// Keep `bounds` as the size and place of the next window.
-pub(crate) fn keep_bounds(bounds: Bounds<Pixels>) {
+pub fn keep_bounds(bounds: Bounds<Pixels>) {
     let f = |v: Pixels| f32::from(v).round() as i32;
     crate::settings::set(WINDOW_BOUNDS_KEY, &format!("{},{},{},{}", f(bounds.origin.x), f(bounds.origin.y), f(bounds.size.width), f(bounds.size.height)));
 }
 
-/// A new editor window `width` pixels wide, its editor set up by `setup`. A window that shows a file (`remember`) opens where the last one was,
-/// as large as it was (the start window is as wide as its view and centred).
-fn open_window_sized(width: f32, remember: bool, cx: &mut App, setup: impl FnOnce(&mut SlideEditor, &mut Window, &mut Context<SlideEditor>) + 'static) {
+/// Build platform window options (remembered bounds + transparent titlebar + Linux desktop id).
+pub fn window_options_for(width: f32, remember: bool, cx: &mut App) -> WindowOptions {
     #[cfg(not(target_family = "wasm"))]
     let remembered = if remember { remembered_bounds(cx) } else { None };
     #[cfg(target_family = "wasm")]
@@ -287,6 +286,17 @@ fn open_window_sized(width: f32, remember: bool, cx: &mut App, setup: impl FnOnc
         ..Default::default()
     };
     linux_desktop::identify(&mut options);
+    options
+}
+
+/// A new editor window `width` pixels wide, its editor set up by `setup`. A window that shows a file (`remember`) opens where the last one was,
+/// as large as it was (the start window is as wide as its view and centred).
+fn open_window_sized(width: f32, remember: bool, cx: &mut App, setup: impl FnOnce(&mut SlideEditor, &mut Window, &mut Context<SlideEditor>) + 'static) {
+    let setup = match crate::window_editors::try_open_window_via_factory(width, remember, Box::new(setup), cx) {
+        Ok(()) => return,
+        Err(setup) => setup,
+    };
+    let options = window_options_for(width, remember, cx);
     cx.open_window(options, |window, cx| {
         crate::palette::watch(window, cx);
         let view = cx.new(|cx| {
@@ -325,6 +335,9 @@ pub fn open_path_in_app(path: std::path::PathBuf, cx: &mut App) {
     // A file already open is not opened again (each window edits its own copy in memory, and saving one would
     // overwrite the other): its window comes to the front.
     if crate::open_guard::raise_if_open(&path, None, cx) {
+        return;
+    }
+    if crate::window_editors::try_open_path_via_factory(&path, cx) {
         return;
     }
     for window in cx.windows() {

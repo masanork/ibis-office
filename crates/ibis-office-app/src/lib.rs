@@ -1261,6 +1261,7 @@ pub fn run_native() {
             }
             let pending: Vec<std::path::PathBuf> = std::mem::take(&mut opener.borrow_mut().1);
             init(cx);
+            sorane_workspace::install(cx);
             // This process answers the second starts of the user (see above); each request is handed to the app on its own thread's behalf.
             #[cfg(any(windows, target_os = "linux"))]
             if single {

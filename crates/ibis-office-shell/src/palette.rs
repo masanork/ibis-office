@@ -144,7 +144,7 @@ pub fn follow(appearance: WindowAppearance, window: Option<&mut Window>, cx: &mu
 }
 
 /// A window's changes of appearance are followed from now on (the application's was set at start).
-pub(crate) fn watch(window: &mut Window, _cx: &mut App) {
+pub fn watch(window: &mut Window, _cx: &mut App) {
     window.observe_window_appearance(|window, cx| follow(window.appearance(), None, cx)).detach();
 }
 

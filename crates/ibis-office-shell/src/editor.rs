@@ -2335,7 +2335,7 @@ impl SlideEditor {
 
     /// The window's close button (the red button on a Mac, × elsewhere): whether the window may close now. With edits
     /// not saved in the last window on its file, it stays and asks whether to save them (GitHub issue #27).
-    pub(crate) fn window_should_close(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+    pub fn window_should_close(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
         if self.save_confirm_dialog_open {
             // Already asking: the answer closes it.
             return false;

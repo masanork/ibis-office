@@ -71,7 +71,7 @@ pub(crate) fn raise_if_open(path: &Path, skip: Option<EntityId>, cx: &mut App) -
 
 impl SlideEditor {
     /// Whether this window shows (or is loading) the file at `path`.
-    pub(crate) fn shows_path(&self, path: &Path) -> bool {
+    pub fn shows_path(&self, path: &Path) -> bool {
         self.path.iter().chain(self.watch.opening_path.iter()).any(|own| same_file(own, path))
     }
 

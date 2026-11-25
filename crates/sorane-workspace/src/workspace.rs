@@ -1,0 +1,1794 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) ibis inc.
+// Additional terms under AGPL-3.0 section 7(b): see NOTICE.
+//! `SoraneWorkspace`: Obsidian-style desktop workspace shell hosting one or more
+//! embedded [`SlideEditor`] engines across tabs and split panes.
+
+use std::cell::Cell;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
+
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use ibis_formats::Kind;
+use ibis_office_shell::editor::SlideEditor;
+use ibis_office_shell::folder_context::{ContentSearchHit, Folder};
+use ibis_office_shell::window_editors::{WindowSetup, WorkspaceEditorHost};
+
+use crate::actions::*;
+use crate::model::*;
+use crate::quick_switcher::QuickSwitcherState;
+
+const WORKSPACE_CONTEXT: &str = "SoraneWorkspace";
+const RIBBON_WIDTH: f32 = 40.0;
+const DIVIDER_WIDTH: f32 = 5.0;
+const SEARCH_HIT_LIMIT: usize = 80;
+const TREE_ROW_LIMIT: usize = 200;
+
+pub struct SoraneWorkspace {
+    pub(crate) panes: Vec<PaneGroup<Entity<SlideEditor>>>,
+    pub(crate) layout: SplitLayout,
+    pub(crate) active_pane: PaneId,
+    next_pane_id: usize,
+    next_tab_id: usize,
+    seq: u64,
+
+    // Left dock (Activity Ribbon + collapsible/resizable Vault / Search / Git sidebar)
+    pub(crate) left_sidebar_open: bool,
+    pub(crate) left_panel: LeftPanelKind,
+    pub(crate) left_sidebar_width: f32,
+    left_sidebar_drag: Option<(f32, f32)>,
+
+    // Right dock (collapsible/resizable Backlinks panel; Phase 3 extends with Outline / AI)
+    pub(crate) right_sidebar_open: bool,
+    pub(crate) right_panel: RightPanelKind,
+    pub(crate) right_sidebar_width: f32,
+    right_sidebar_drag: Option<(f32, f32)>,
+
+    // Split pane drag state
+    split_drag: Option<(f32, f32)>,
+    split_container_width: Rc<Cell<f32>>,
+
+    // Vault state (reuses `ibis_office_shell::folder_context::Folder`)
+    pub(crate) vault: Option<Arc<Folder>>,
+    vault_filter: Entity<InputState>,
+    _vault_filter_sub: Subscription,
+    collapsed_dirs: BTreeSet<String>,
+    cached_search_query: String,
+    cached_search_hits: Vec<ContentSearchHit>,
+    vault_status: Option<SharedString>,
+
+    // Quick Switcher overlay (`Cmd/Ctrl+O`)
+    pub(crate) quick_switcher: Option<QuickSwitcherState>,
+
+    // Last OS window title applied
+    last_window_title: String,
+}
+
+impl SoraneWorkspace {
+    pub fn new(setup: WindowSetup, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let initial_editor = cx.new(|cx| {
+            let mut editor = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
+            setup(&mut editor, window, cx);
+            let policy = Self::policy_for_editor(&editor, None);
+            editor.embedded_chrome = Some(policy);
+            editor
+        });
+
+        let (path, title, kind) = Self::editor_metadata(&initial_editor, cx);
+        let initial_tab = TabEntry {
+            id: TabId(0),
+            path,
+            title,
+            kind,
+            pinned: false,
+            last_used_seq: 1,
+            toolbar_override: None,
+            state: TabState::Resident(initial_editor.clone()),
+        };
+
+        let initial_pane = PaneGroup::new(PaneId(0), initial_tab);
+        let focus = initial_editor.read(cx).focus_handle.clone();
+        focus.focus(window, cx);
+
+        let vault_filter = cx.new(|cx| InputState::new(window, cx).placeholder("フィルタ / 検索…"));
+        let vault_filter_sub = cx.subscribe(&vault_filter, |this, ed, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                if this.left_panel == LeftPanelKind::Search {
+                    let query = ed.read(cx).value().trim().to_owned();
+                    this.refresh_content_search(&query);
+                }
+                cx.notify();
+            }
+        });
+
+        Self {
+            panes: vec![initial_pane],
+            layout: SplitLayout::Single(PaneId(0)),
+            active_pane: PaneId(0),
+            next_pane_id: 1,
+            next_tab_id: 1,
+            seq: 1,
+            // Single-file startup keeps left sidebar collapsed (per approved design decision).
+            left_sidebar_open: false,
+            left_panel: LeftPanelKind::Vault,
+            left_sidebar_width: DEFAULT_LEFT_SIDEBAR_WIDTH,
+            left_sidebar_drag: None,
+            right_sidebar_open: false,
+            right_panel: RightPanelKind::Backlinks,
+            right_sidebar_width: DEFAULT_RIGHT_SIDEBAR_WIDTH,
+            right_sidebar_drag: None,
+            split_drag: None,
+            split_container_width: Rc::new(Cell::new(0.0)),
+            vault: None,
+            vault_filter,
+            _vault_filter_sub: vault_filter_sub,
+            collapsed_dirs: BTreeSet::new(),
+            cached_search_query: String::new(),
+            cached_search_hits: Vec::new(),
+            vault_status: None,
+            quick_switcher: None,
+            last_window_title: String::new(),
+        }
+    }
+
+    fn next_seq(&mut self) -> u64 {
+        self.seq += 1;
+        self.seq
+    }
+
+    fn alloc_tab_id(&mut self) -> TabId {
+        let id = TabId(self.next_tab_id);
+        self.next_tab_id += 1;
+        id
+    }
+
+    fn alloc_pane_id(&mut self) -> PaneId {
+        let id = PaneId(self.next_pane_id);
+        self.next_pane_id += 1;
+        id
+    }
+
+    fn policy_for_editor(editor: &SlideEditor, toolbar_override: Option<bool>) -> ibis_office_shell::window_editors::EmbeddedChromePolicy {
+        let path = editor.file_path();
+        let file_name = editor.file_name.as_deref();
+        let kind = editor.format.kind();
+        let read_only = editor.read_only || editor.is_read_only();
+        chrome_policy_for(path.as_deref(), file_name, kind, read_only, toolbar_override)
+    }
+
+    fn editor_metadata(editor: &Entity<SlideEditor>, cx: &App) -> (Option<PathBuf>, String, Kind) {
+        let e = editor.read(cx);
+        let path = e.file_path();
+        let kind = e.format.kind();
+        let title = e
+            .file_name
+            .as_ref()
+            .map(|s| s.to_string())
+            .or_else(|| {
+                path.as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "無題".to_owned());
+        (path, title, kind)
+    }
+
+    fn pane_mut(&mut self, id: PaneId) -> Option<&mut PaneGroup<Entity<SlideEditor>>> {
+        self.panes.iter_mut().find(|p| p.id == id)
+    }
+
+    fn pane(&self, id: PaneId) -> Option<&PaneGroup<Entity<SlideEditor>>> {
+        self.panes.iter().find(|p| p.id == id)
+    }
+
+    pub(crate) fn focus_active_editor(&self, window: &mut Window, cx: &mut App) {
+        if let Some(editor) = self.active_editor(cx) {
+            let focus = editor.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+        }
+    }
+
+    fn sync_tab_metadata_and_chrome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for pane in &mut self.panes {
+            for tab in &mut pane.tabs {
+                if let TabState::Resident(editor) = &tab.state {
+                    let (path, title, kind) = Self::editor_metadata(editor, cx);
+                    if path.is_some() {
+                        tab.path = path;
+                    }
+                    tab.title = title;
+                    tab.kind = kind;
+                    let desired = Self::policy_for_editor(editor.read(cx), tab.toolbar_override);
+                    if editor.read(cx).embedded_chrome != Some(desired) {
+                        editor.update(cx, |e, cx| e.set_embedded_chrome(Some(desired), cx));
+                    }
+                }
+            }
+        }
+
+        // Keep OS window title and macOS menu bar synced with the active pane's editor.
+        if let Some(active) = self.active_editor(cx) {
+            let e = active.read(cx);
+            let title = if e.has_document {
+                let base = e.display_title_formatted();
+                if e.is_dirty() {
+                    format!("{base} ● — Docs")
+                } else {
+                    format!("{base} — Docs")
+                }
+            } else if let Some(vault) = &self.vault {
+                format!("{} — Docs", vault.display_name())
+            } else {
+                "Docs".to_owned()
+            };
+            if title != self.last_window_title {
+                self.last_window_title = title.clone();
+                window.set_window_title(&title);
+            }
+            #[cfg(target_os = "macos")]
+            {
+                active.update(cx, |editor, cx| {
+                    ibis_office_shell::macos_menu::sync(editor, window, cx);
+                });
+            }
+        }
+    }
+
+    fn enforce_tab_budget(&mut self, cx: &App) {
+        enforce_resident_tab_budget(&mut self.panes, MAX_CLEAN_RESIDENT_TABS, |editor| {
+            editor.read(cx).is_dirty()
+        });
+    }
+
+    fn ensure_tab_resident(
+        &mut self,
+        pane_id: PaneId,
+        tab_idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<SlideEditor>> {
+        let (needs_spawn, path, toolbar_override) = {
+            let tab = self.pane(pane_id)?.tabs.get(tab_idx)?;
+            if let TabState::Resident(ed) = &tab.state {
+                return Some(ed.clone());
+            }
+            (true, tab.path.clone(), tab.toolbar_override)
+        };
+        if !needs_spawn {
+            return None;
+        }
+        let editor = cx.new(|cx| {
+            let mut e = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
+            if let Some(path) = path {
+                e.open_path(path, None, window, cx);
+            }
+            e.embedded_chrome = Some(Self::policy_for_editor(&e, toolbar_override));
+            e
+        });
+        if let Some(tab) = self.pane_mut(pane_id).and_then(|p| p.tabs.get_mut(tab_idx)) {
+            tab.state = TabState::Resident(editor.clone());
+        }
+        self.enforce_tab_budget(cx);
+        Some(editor)
+    }
+
+    pub(crate) fn activate_tab(
+        &mut self,
+        pane_id: PaneId,
+        tab_idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let seq = self.next_seq();
+        self.active_pane = pane_id;
+        if let Some(pane) = self.pane_mut(pane_id) {
+            pane.activate_index(tab_idx, seq);
+        }
+        let _ = self.ensure_tab_resident(pane_id, tab_idx, window, cx);
+        self.enforce_tab_budget(cx);
+        self.focus_active_editor(window, cx);
+        cx.notify();
+    }
+
+    pub fn open_path_in_active_pane(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pane_id = self.active_pane;
+        self.open_path_in_pane(pane_id, path, window, cx);
+    }
+
+    pub fn open_path_in_split_pane(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target_pane = match self.layout.other_pane(self.active_pane) {
+            Some(other) => other,
+            None => self.split_pane(window, cx),
+        };
+        self.open_path_in_pane(target_pane, path, window, cx);
+    }
+
+    pub fn open_path_in_pane(
+        &mut self,
+        pane_id: PaneId,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Deduplicate: if any tab in this workspace already shows `path`, activate it.
+        if self.activate_editor_by_path(&path, window, cx) {
+            return;
+        }
+
+        // Reuse the active tab if it's an empty replaceable start screen.
+        let reuse_active = self.pane(pane_id).and_then(|p| {
+            let tab = p.active()?;
+            let editor = tab.state.resident()?;
+            editor.read(cx).replaceable_by_open().then_some((p.active_tab, editor.clone()))
+        });
+        if let Some((tab_idx, editor)) = reuse_active {
+            editor.update(cx, |e, cx| {
+                e.open_path(path.clone(), None, window, cx);
+                e.embedded_chrome = Some(Self::policy_for_editor(e, None));
+            });
+            let (p, title, kind) = Self::editor_metadata(&editor, cx);
+            let seq = self.next_seq();
+            if let Some(pane) = self.pane_mut(pane_id) {
+                if let Some(tab) = pane.tabs.get_mut(tab_idx) {
+                    tab.path = p.or(Some(path));
+                    tab.title = title;
+                    tab.kind = kind;
+                    tab.last_used_seq = seq;
+                }
+            }
+            self.active_pane = pane_id;
+            self.focus_active_editor(window, cx);
+            cx.notify();
+            return;
+        }
+
+        // Otherwise create a new tab in `pane_id`.
+        let tab_id = self.alloc_tab_id();
+        let seq = self.next_seq();
+        let path_for_open = path.clone();
+        let editor = cx.new(|cx| {
+            let mut e = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
+            e.open_path(path_for_open, None, window, cx);
+            e.embedded_chrome = Some(Self::policy_for_editor(&e, None));
+            e
+        });
+        let (p, title, kind) = Self::editor_metadata(&editor, cx);
+        let tab = TabEntry {
+            id: tab_id,
+            path: p.or(Some(path)),
+            title,
+            kind,
+            pinned: false,
+            last_used_seq: seq,
+            toolbar_override: None,
+            state: TabState::Resident(editor),
+        };
+        if let Some(pane) = self.pane_mut(pane_id) {
+            pane.tabs.push(tab);
+            pane.active_tab = pane.tabs.len() - 1;
+        }
+        self.active_pane = pane_id;
+        self.enforce_tab_budget(cx);
+        self.focus_active_editor(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn new_tab_in_pane(
+        &mut self,
+        pane_id: PaneId,
+        kind: Option<Kind>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let tab_id = self.alloc_tab_id();
+        let seq = self.next_seq();
+        let editor = cx.new(|cx| {
+            let mut e = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
+            if let Some(k) = kind {
+                e.new_file(k, window, cx);
+            }
+            e.embedded_chrome = Some(Self::policy_for_editor(&e, None));
+            e
+        });
+        let (path, title, resolved_kind) = Self::editor_metadata(&editor, cx);
+        let tab = TabEntry {
+            id: tab_id,
+            path,
+            title,
+            kind: resolved_kind,
+            pinned: false,
+            last_used_seq: seq,
+            toolbar_override: None,
+            state: TabState::Resident(editor),
+        };
+        if let Some(pane) = self.pane_mut(pane_id) {
+            pane.tabs.push(tab);
+            pane.active_tab = pane.tabs.len() - 1;
+        }
+        self.active_pane = pane_id;
+        self.enforce_tab_budget(cx);
+        self.focus_active_editor(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn new_markdown_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(vault) = self.vault.clone() {
+            let mut index = 1usize;
+            let note_path = loop {
+                let candidate = if index == 1 {
+                    vault.root().join("Untitled.md")
+                } else {
+                    vault.root().join(format!("Untitled {index}.md"))
+                };
+                if !candidate.exists() {
+                    break candidate;
+                }
+                index += 1;
+            };
+            if std::fs::write(&note_path, "# Untitled\n\n").is_ok() {
+                self.refresh_vault_folder(window, cx);
+                self.open_path_in_active_pane(note_path, window, cx);
+                return;
+            }
+        }
+        self.new_tab_in_pane(self.active_pane, Some(Kind::Document), window, cx);
+    }
+
+    pub(crate) fn close_tab(
+        &mut self,
+        pane_id: PaneId,
+        tab_idx: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Ask the editor before closing if it has unsaved edits.
+        if let Some(editor) = self
+            .pane(pane_id)
+            .and_then(|p| p.tabs.get(tab_idx))
+            .and_then(|t| t.state.resident())
+            .cloned()
+        {
+            let may_close = editor.update(cx, |e, cx| e.window_should_close(window, cx));
+            if !may_close {
+                self.activate_tab(pane_id, tab_idx, window, cx);
+                return;
+            }
+        }
+
+        let pane_became_empty = if let Some(pane) = self.pane_mut(pane_id) {
+            pane.remove_tab(tab_idx);
+            pane.tabs.is_empty()
+        } else {
+            false
+        };
+
+        if pane_became_empty {
+            if let Some(other) = self.layout.other_pane(pane_id) {
+                self.panes.retain(|p| p.id != pane_id);
+                self.layout = SplitLayout::Single(other);
+                self.active_pane = other;
+            } else {
+                // Closing the last tab in the sole pane closes the window cleanly.
+                window.remove_window();
+                return;
+            }
+        }
+
+        if let Some(active_idx) = self.pane(self.active_pane).map(|p| p.active_tab) {
+            let _ = self.ensure_tab_resident(self.active_pane, active_idx, window, cx);
+        }
+        self.focus_active_editor(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn split_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) -> PaneId {
+        if let Some(other) = self.layout.other_pane(self.active_pane) {
+            self.active_pane = other;
+            self.focus_active_editor(window, cx);
+            cx.notify();
+            return other;
+        }
+        let new_pane_id = self.alloc_pane_id();
+        let tab_id = self.alloc_tab_id();
+        let seq = self.next_seq();
+        let editor = cx.new(|cx| {
+            let mut e = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
+            e.embedded_chrome = Some(Self::policy_for_editor(&e, None));
+            e
+        });
+        let (path, title, kind) = Self::editor_metadata(&editor, cx);
+        let tab = TabEntry {
+            id: tab_id,
+            path,
+            title,
+            kind,
+            pinned: false,
+            last_used_seq: seq,
+            toolbar_override: None,
+            state: TabState::Resident(editor),
+        };
+        let first = self.active_pane;
+        self.panes.push(PaneGroup::new(new_pane_id, tab));
+        self.layout = SplitLayout::Split {
+            axis: SplitAxis::Horizontal,
+            ratio: DEFAULT_PANE_SPLIT_RATIO,
+            first,
+            second: new_pane_id,
+        };
+        self.active_pane = new_pane_id;
+        self.focus_active_editor(window, cx);
+        cx.notify();
+        new_pane_id
+    }
+
+    pub(crate) fn toggle_split_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(other) = self.layout.other_pane(self.active_pane) {
+            // Merge `other`'s tabs into `active_pane` and collapse to Single.
+            if let Some(pos) = self.panes.iter().position(|p| p.id == other) {
+                let removed = self.panes.remove(pos);
+                let active_id = self.active_pane;
+                if let Some(target) = self.pane_mut(active_id) {
+                    for tab in removed.tabs {
+                        let is_empty_start = tab.path.is_none()
+                            && tab
+                                .state
+                                .resident()
+                                .is_some_and(|e| e.read(cx).replaceable_by_open());
+                        if !is_empty_start {
+                            target.tabs.push(tab);
+                        }
+                    }
+                }
+            }
+            self.layout = SplitLayout::Single(self.active_pane);
+            self.enforce_tab_budget(cx);
+            self.focus_active_editor(window, cx);
+            cx.notify();
+        } else {
+            let _ = self.split_pane(window, cx);
+        }
+    }
+
+    pub(crate) fn pick_vault_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            extensions: Vec::new(),
+            prompt: Some(ibis_office_shell::i18n::text("file.open-folder")),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let scanned = cx
+                .background_executor()
+                .spawn(async move { Folder::scan_dir(&path) })
+                .await;
+            let _ = this.update(cx, |ws, cx| match scanned {
+                Ok(folder) => {
+                    ws.vault = Some(Arc::new(folder));
+                    ws.collapsed_dirs.clear();
+                    ws.cached_search_hits.clear();
+                    ws.cached_search_query.clear();
+                    ws.left_sidebar_open = true;
+                    ws.left_panel = LeftPanelKind::Vault;
+                    ws.vault_status = None;
+                    cx.notify();
+                }
+                Err(err) => {
+                    ws.vault_status = Some(err.into());
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn refresh_vault_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.vault.as_ref().map(|v| v.root().to_path_buf()) else {
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let scanned = cx
+                .background_executor()
+                .spawn(async move { Folder::scan_dir(&root) })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                if let Ok(folder) = scanned {
+                    ws.vault = Some(Arc::new(folder));
+                    if ws.left_panel == LeftPanelKind::Search {
+                        let q = ws.cached_search_query.clone();
+                        ws.refresh_content_search(&q);
+                    }
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn refresh_content_search(&mut self, query: &str) {
+        self.cached_search_query = query.to_owned();
+        if query.is_empty() {
+            self.cached_search_hits.clear();
+            return;
+        }
+        if let Some(vault) = self.vault.as_ref() {
+            self.cached_search_hits = vault.search_content(query, SEARCH_HIT_LIMIT);
+        } else {
+            self.cached_search_hits.clear();
+        }
+    }
+
+    /// Window close guard: verify every resident editor across all tabs/panes.
+    pub fn window_should_close(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        let mut to_check: Vec<(PaneId, usize, Entity<SlideEditor>)> = Vec::new();
+        for pane in &self.panes {
+            for (idx, tab) in pane.tabs.iter().enumerate() {
+                if let TabState::Resident(ed) = &tab.state {
+                    to_check.push((pane.id, idx, ed.clone()));
+                }
+            }
+        }
+        for (pane_id, tab_idx, editor) in to_check {
+            let may_close = editor.update(cx, |e, cx| e.window_should_close(window, cx));
+            if !may_close {
+                let seq = self.next_seq();
+                self.active_pane = pane_id;
+                if let Some(pane) = self.pane_mut(pane_id) {
+                    pane.activate_index(tab_idx, seq);
+                }
+                cx.notify();
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn has_any_document(&self, cx: &App) -> bool {
+        self.all_editors(cx).iter().any(|e| e.read(cx).has_document)
+    }
+
+    fn active_vault_relative(&self, cx: &App) -> Option<String> {
+        let vault = self.vault.as_ref()?;
+        let active = self.active_editor(cx)?;
+        let path = active.read(cx).file_path()?;
+        vault.relative_path_for(&path)
+    }
+
+    fn render_activity_ribbon(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let top_pad = if cfg!(target_os = "macos") { px(32.) } else { px(8.) };
+
+        let ribbon_btn = |id: &'static str, label: &'static str, tip: &'static str, active: bool| {
+            div()
+                .id(id)
+                .w(px(30.))
+                .h(px(30.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .text_size(px(14.))
+                .when(active, |d| {
+                    d.bg(theme.accent)
+                        .text_color(theme.accent_foreground)
+                        .font_weight(FontWeight::SEMIBOLD)
+                })
+                .when(!active, |d| {
+                    d.text_color(theme.muted_foreground)
+                        .hover(|h| h.bg(theme.secondary).text_color(theme.foreground))
+                })
+                .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx))
+                .child(label)
+        };
+
+        v_flex()
+            .id("sorane-activity-ribbon")
+            .w(px(RIBBON_WIDTH))
+            .flex_shrink_0()
+            .h_full()
+            .pt(top_pad)
+            .pb_2()
+            .items_center()
+            .justify_between()
+            .bg(theme.title_bar)
+            .border_r_1()
+            .border_color(theme.border)
+            .child(
+                v_flex()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(
+                        ribbon_btn(
+                            "ribbon-vault",
+                            "📁",
+                            "Vault ファイルツリー (⌘B)",
+                            self.left_sidebar_open && self.left_panel == LeftPanelKind::Vault,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.vault.is_none() {
+                                this.pick_vault_folder(window, cx);
+                            } else if this.left_sidebar_open && this.left_panel == LeftPanelKind::Vault {
+                                this.left_sidebar_open = false;
+                            } else {
+                                this.left_sidebar_open = true;
+                                this.left_panel = LeftPanelKind::Vault;
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
+                            "ribbon-search",
+                            "🔍",
+                            "Vault 全文検索",
+                            self.left_sidebar_open && self.left_panel == LeftPanelKind::Search,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.left_sidebar_open && this.left_panel == LeftPanelKind::Search {
+                                this.left_sidebar_open = false;
+                            } else {
+                                this.left_sidebar_open = true;
+                                this.left_panel = LeftPanelKind::Search;
+                                this.vault_filter.update(cx, |s, cx| s.focus(window, cx));
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
+                            "ribbon-quick-switcher",
+                            "⌘",
+                            "クイックスイッチャー (⌘O)",
+                            self.quick_switcher.is_some(),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_quick_switcher(window, cx);
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
+                            "ribbon-split",
+                            "◫",
+                            "左右ペイン分割 (⌘\\)",
+                            self.layout.is_split(),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_split_pane(window, cx);
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
+                            "ribbon-new-md",
+                            "✎",
+                            "新規 Markdown ノート",
+                            false,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.new_markdown_note(window, cx);
+                        })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(
+                        ribbon_btn(
+                            "ribbon-open-folder",
+                            "📂",
+                            "フォルダ（Vault）を開く",
+                            false,
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.pick_vault_folder(window, cx);
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
+                            "ribbon-backlinks",
+                            "⇄",
+                            "右サイドバー: バックリンク",
+                            self.right_sidebar_open,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.right_sidebar_open = !this.right_sidebar_open;
+                            cx.notify();
+                        })),
+                    ),
+            )
+    }
+
+    fn render_left_sidebar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.left_sidebar_open {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        let width = clamp_left_sidebar_width(self.left_sidebar_width);
+        let active_rel = self.active_vault_relative(cx);
+        let query = self.vault_filter.read(cx).value().trim().to_lowercase();
+
+        let header_title = match self.left_panel {
+            LeftPanelKind::Vault => self
+                .vault
+                .as_ref()
+                .map(|v| v.display_name())
+                .unwrap_or_else(|| "Vault".to_owned()),
+            LeftPanelKind::Search => "全文検索".to_owned(),
+            LeftPanelKind::Git => "Git".to_owned(),
+        };
+
+        let mut list = v_flex()
+            .id("sorane-left-sidebar-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px_1()
+            .gap(px(1.));
+
+        match (&self.vault, self.left_panel) {
+            (None, _) => {
+                list = list.child(
+                    v_flex()
+                        .p_3()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("フォルダまたは Obsidian Vault を開くと、ツリー・全文検索・バックリンクが使えます。"),
+                        )
+                        .child(
+                            Button::new("vault-empty-open")
+                                .small()
+                                .label("フォルダを開く…")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.pick_vault_folder(window, cx);
+                                })),
+                        ),
+                );
+            }
+            (Some(vault), LeftPanelKind::Vault) => {
+                if query.is_empty() {
+                    let rows = build_vault_tree_rows(vault.files(), &self.collapsed_dirs);
+                    for row in rows.into_iter().take(TREE_ROW_LIMIT) {
+                        match row {
+                            VaultTreeRow::Dir {
+                                path,
+                                name,
+                                depth,
+                                collapsed,
+                            } => {
+                                let marker = if collapsed { "▸" } else { "▾" };
+                                let key = path.clone();
+                                list = list.child(
+                                    div()
+                                        .id(SharedString::from(format!("ws-dir:{path}")))
+                                        .cursor_pointer()
+                                        .rounded(px(4.))
+                                        .pl(px(6. + (depth as f32) * 12.))
+                                        .pr_2()
+                                        .py(px(3.))
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .hover(|h| h.bg(theme.secondary).text_color(theme.foreground))
+                                        .child(div().truncate().child(format!("{marker} {name}")))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if !this.collapsed_dirs.remove(&key) {
+                                                this.collapsed_dirs.insert(key.clone());
+                                            }
+                                            cx.notify();
+                                        })),
+                                );
+                            }
+                            VaultTreeRow::File { path, name, depth } => {
+                                let is_active = active_rel.as_deref() == Some(path.as_str());
+                                let full_path = vault.root().join(&path);
+                                let split_path = full_path.clone();
+                                list = list.child(
+                                    h_flex()
+                                        .id(SharedString::from(format!("ws-file:{path}")))
+                                        .cursor_pointer()
+                                        .rounded(px(4.))
+                                        .pl(px(14. + (depth as f32) * 12.))
+                                        .pr_1()
+                                        .py(px(3.))
+                                        .gap_1()
+                                        .items_center()
+                                        .when(is_active, |r| {
+                                            r.bg(theme.accent)
+                                                .text_color(theme.accent_foreground)
+                                                .font_weight(FontWeight::MEDIUM)
+                                        })
+                                        .when(!is_active, |r| {
+                                            r.text_color(theme.foreground)
+                                                .hover(|h| h.bg(theme.secondary))
+                                        })
+                                        .child(div().flex_1().min_w_0().text_xs().truncate().child(name))
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!("ws-file-split:{path}")))
+                                                .px(px(4.))
+                                                .rounded(px(3.))
+                                                .text_size(px(10.))
+                                                .text_color(theme.muted_foreground)
+                                                .hover(|h| h.bg(theme.background).text_color(theme.foreground))
+                                                .child("◫")
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.open_path_in_split_pane(split_path.clone(), window, cx);
+                                                })),
+                                        )
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_path_in_active_pane(full_path.clone(), window, cx);
+                                        })),
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    for rel in vault
+                        .files()
+                        .iter()
+                        .filter(|p| vault.matches_query(p, &query))
+                        .take(TREE_ROW_LIMIT)
+                    {
+                        let is_active = active_rel.as_deref() == Some(rel.as_str());
+                        let full_path = vault.root().join(rel);
+                        list = list.child(
+                            div()
+                                .id(SharedString::from(format!("ws-match:{rel}")))
+                                .cursor_pointer()
+                                .rounded(px(4.))
+                                .px_2()
+                                .py(px(4.))
+                                .text_xs()
+                                .when(is_active, |r| r.bg(theme.accent).text_color(theme.accent_foreground))
+                                .when(!is_active, |r| r.hover(|h| h.bg(theme.secondary)))
+                                .child(div().truncate().child(rel.clone()))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_path_in_active_pane(full_path.clone(), window, cx);
+                                })),
+                        );
+                    }
+                }
+            }
+            (Some(vault), LeftPanelKind::Search) => {
+                if query.is_empty() {
+                    list = list.child(
+                        div()
+                            .p_2()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("キーワードを入力して Vault 内の Markdown を検索…"),
+                    );
+                } else if self.cached_search_hits.is_empty() {
+                    list = list.child(
+                        div()
+                            .p_2()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("一致する箇所がありません"),
+                    );
+                } else {
+                    for (idx, hit) in self.cached_search_hits.iter().enumerate() {
+                        let full_path = vault.root().join(&hit.path);
+                        list = list.child(
+                            v_flex()
+                                .id(SharedString::from(format!("ws-hit:{idx}:{}", hit.path)))
+                                .cursor_pointer()
+                                .rounded(px(4.))
+                                .px_2()
+                                .py(px(4.))
+                                .hover(|h| h.bg(theme.secondary))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .truncate()
+                                        .child(format!("{} · L{}", hit.path, hit.line)),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(theme.muted_foreground)
+                                        .truncate()
+                                        .child(hit.excerpt.clone()),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_path_in_active_pane(full_path.clone(), window, cx);
+                                })),
+                        );
+                    }
+                }
+            }
+            (Some(vault), LeftPanelKind::Git) => {
+                list = list.child(
+                    v_flex()
+                        .p_3()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(if vault.has_git() {
+                                    "Git リポジトリを検出しました（詳細な履歴・差分統合は Phase 3 で右/左ドック統合予定）。"
+                                } else {
+                                    "このフォルダは Git リポジトリではありません。"
+                                }),
+                        ),
+                );
+            }
+        }
+
+        let dragging = self.left_sidebar_drag.is_some();
+        let weak = cx.entity().downgrade();
+        let resize_handle = div()
+            .id("sorane-left-resize")
+            .relative()
+            .w(px(DIVIDER_WIDTH))
+            .flex_shrink_0()
+            .h_full()
+            .cursor_col_resize()
+            .bg(theme.border)
+            .hover(|h| h.bg(theme.accent))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.left_sidebar_drag = Some((f32::from(event.position.x), this.left_sidebar_width));
+                    cx.notify();
+                }),
+            )
+            .when(dragging, |el| {
+                let tracker = weak.clone();
+                el.child(
+                    canvas(
+                        |_, _, _| (),
+                        move |_, _, window, _| {
+                            let moving = tracker.clone();
+                            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Capture {
+                                    let _ = moving.update(cx, |this, cx| {
+                                        if let Some((x0, w0)) = this.left_sidebar_drag {
+                                            this.left_sidebar_width = clamp_left_sidebar_width(
+                                                w0 + (f32::from(event.position.x) - x0),
+                                            );
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            });
+                            let released = tracker.clone();
+                            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Capture {
+                                    let _ = released.update(cx, |this, cx| {
+                                        if this.left_sidebar_drag.take().is_some() {
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            });
+                        },
+                    )
+                    .absolute()
+                    .size_0(),
+                )
+            });
+
+        Some(
+            h_flex()
+                .flex_shrink_0()
+                .h_full()
+                .child(
+                    v_flex()
+                        .w(px(width))
+                        .h_full()
+                        .min_h_0()
+                        .bg(theme.sidebar)
+                        .child(
+                            h_flex()
+                                .px_2()
+                                .py(px(6.))
+                                .gap_1()
+                                .items_center()
+                                .border_b_1()
+                                .border_color(theme.border)
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .truncate()
+                                        .child(header_title),
+                                )
+                                .child(
+                                    Button::new("ws-vault-refresh")
+                                        .ghost()
+                                        .xsmall()
+                                        .label("↻")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.refresh_vault_folder(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("ws-vault-close")
+                                        .ghost()
+                                        .xsmall()
+                                        .label("×")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.left_sidebar_open = false;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(div().p_2().child(Input::new(&self.vault_filter).small()))
+                        .when_some(self.vault_status.clone(), |col, msg| {
+                            col.child(
+                                div()
+                                    .px_2()
+                                    .pb_1()
+                                    .text_xs()
+                                    .text_color(theme.danger)
+                                    .child(msg),
+                            )
+                        })
+                        .child(list),
+                )
+                .child(resize_handle)
+                .into_any_element(),
+        )
+    }
+
+    fn render_right_sidebar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.right_sidebar_open {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        let width = clamp_right_sidebar_width(self.right_sidebar_width);
+        let active_rel = self.active_vault_relative(cx);
+
+        let mut content = v_flex()
+            .id("sorane-right-sidebar-list")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p_2()
+            .gap_1();
+
+        match (&self.vault, active_rel.as_deref()) {
+            (Some(vault), Some(rel)) => {
+                let backlinks = vault.backlinks_for(rel);
+                if backlinks.is_empty() {
+                    content = content.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child("このファイルへのバックリンクはまだありません。"),
+                    );
+                } else {
+                    for (idx, bl) in backlinks.into_iter().enumerate() {
+                        let full = vault.root().join(&bl.path);
+                        content = content.child(
+                            v_flex()
+                                .id(SharedString::from(format!("ws-bl:{idx}:{}", bl.path)))
+                                .cursor_pointer()
+                                .rounded(px(4.))
+                                .p(px(6.))
+                                .hover(|h| h.bg(theme.secondary))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .truncate()
+                                        .child(format!("{} · L{}", bl.path, bl.line)),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(theme.muted_foreground)
+                                        .truncate()
+                                        .child(bl.excerpt),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_path_in_active_pane(full.clone(), window, cx);
+                                })),
+                        );
+                    }
+                }
+            }
+            (None, _) => {
+                content = content.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("Vault フォルダを開くと、アクティブなノートのバックリンクがここに表示されます。"),
+                );
+            }
+            (Some(_), None) => {
+                content = content.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("Vault 内のファイルを開くとバックリンクが表示されます。"),
+                );
+            }
+        }
+
+        let dragging = self.right_sidebar_drag.is_some();
+        let weak = cx.entity().downgrade();
+        let resize_handle = div()
+            .id("sorane-right-resize")
+            .relative()
+            .w(px(DIVIDER_WIDTH))
+            .flex_shrink_0()
+            .h_full()
+            .cursor_col_resize()
+            .bg(theme.border)
+            .hover(|h| h.bg(theme.accent))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.right_sidebar_drag = Some((f32::from(event.position.x), this.right_sidebar_width));
+                    cx.notify();
+                }),
+            )
+            .when(dragging, |el| {
+                let tracker = weak.clone();
+                el.child(
+                    canvas(
+                        |_, _, _| (),
+                        move |_, _, window, _| {
+                            let moving = tracker.clone();
+                            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Capture {
+                                    let _ = moving.update(cx, |this, cx| {
+                                        if let Some((x0, w0)) = this.right_sidebar_drag {
+                                            this.right_sidebar_width = clamp_right_sidebar_width(
+                                                w0 + (x0 - f32::from(event.position.x)),
+                                            );
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            });
+                            let released = tracker.clone();
+                            window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Capture {
+                                    let _ = released.update(cx, |this, cx| {
+                                        if this.right_sidebar_drag.take().is_some() {
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            });
+                        },
+                    )
+                    .absolute()
+                    .size_0(),
+                )
+            });
+
+        Some(
+            h_flex()
+                .flex_shrink_0()
+                .h_full()
+                .child(resize_handle)
+                .child(
+                    v_flex()
+                        .w(px(width))
+                        .h_full()
+                        .min_h_0()
+                        .bg(theme.sidebar)
+                        .child(
+                            h_flex()
+                                .px_2()
+                                .py(px(6.))
+                                .items_center()
+                                .justify_between()
+                                .border_b_1()
+                                .border_color(theme.border)
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(match self.right_panel {
+                                            RightPanelKind::Backlinks => "バックリンク",
+                                        }),
+                                )
+                                .child(
+                                    Button::new("ws-right-close")
+                                        .ghost()
+                                        .xsmall()
+                                        .label("×")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.right_sidebar_open = false;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(content),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_pane(&self, pane_id: PaneId, cx: &mut Context<Self>) -> AnyElement {
+        let Some(pane) = self.pane(pane_id) else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme().clone();
+        let is_active_pane = self.active_pane == pane_id;
+
+        let mut tab_strip = h_flex()
+            .id(SharedString::from(format!("pane-tabs-{}", pane_id.0)))
+            .h(px(34.))
+            .flex_shrink_0()
+            .px_2()
+            .gap(px(3.))
+            .items_center()
+            .bg(theme.title_bar)
+            .border_b_1()
+            .border_color(theme.border);
+
+        for (idx, tab) in pane.tabs.iter().enumerate() {
+            let is_active_tab = idx == pane.active_tab;
+            let dirty = tab
+                .state
+                .resident()
+                .is_some_and(|e| e.read(cx).is_dirty());
+            let badge = tab.display_badge();
+            let title = if dirty {
+                format!("{} ●", tab.title)
+            } else {
+                tab.title.clone()
+            };
+            tab_strip = tab_strip.child(
+                h_flex()
+                    .id(SharedString::from(format!("tab-{}-{}", pane_id.0, tab.id.0)))
+                    .h(px(26.))
+                    .max_w(px(210.))
+                    .px_2()
+                    .gap(px(6.))
+                    .items_center()
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .when(is_active_tab, |t| {
+                        t.bg(theme.background)
+                            .border_1()
+                            .border_color(if is_active_pane { theme.accent } else { theme.border })
+                            .text_color(theme.foreground)
+                            .font_weight(FontWeight::MEDIUM)
+                    })
+                    .when(!is_active_tab, |t| {
+                        t.text_color(theme.muted_foreground)
+                            .hover(|h| h.bg(theme.secondary).text_color(theme.foreground))
+                    })
+                    .child(
+                        div()
+                            .text_size(px(9.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.muted_foreground)
+                            .child(badge),
+                    )
+                    .child(div().flex_1().min_w_0().text_xs().truncate().child(title))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("tab-close-{}-{}", pane_id.0, tab.id.0)))
+                            .px(px(3.))
+                            .rounded(px(3.))
+                            .text_size(px(11.))
+                            .text_color(theme.muted_foreground)
+                            .hover(|h| h.bg(theme.muted).text_color(theme.foreground))
+                            .child("×")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.close_tab(pane_id, idx, window, cx);
+                            })),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate_tab(pane_id, idx, window, cx);
+                    })),
+            );
+        }
+
+        // Toolbar toggle button (lets users summon/hide Office toolbar on any tab on demand)
+        let active_toolbar_shown = pane
+            .active()
+            .and_then(|t| t.state.resident())
+            .and_then(|e| e.read(cx).embedded_chrome)
+            .is_some_and(|p| p.show_toolbar);
+
+        tab_strip = tab_strip
+            .child(div().flex_1())
+            .child(
+                Button::new(SharedString::from(format!("pane-toolbar-toggle-{}", pane_id.0)))
+                    .ghost()
+                    .xsmall()
+                    .label(if active_toolbar_shown { "ツールバー隠す" } else { "ツールバー" })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(tab) = this.pane_mut(pane_id).and_then(|p| p.active_mut()) {
+                            tab.toolbar_override = Some(!active_toolbar_shown);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new(SharedString::from(format!("pane-add-tab-{}", pane_id.0)))
+                    .ghost()
+                    .xsmall()
+                    .label("+")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.new_tab_in_pane(pane_id, None, window, cx);
+                    })),
+            );
+
+        let editor_view: AnyElement = match pane.active().and_then(|t| t.state.resident()) {
+            Some(editor) => editor.clone().into_any_element(),
+            None => div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child("読み込み中…")
+                .into_any_element(),
+        };
+
+        v_flex()
+            .id(SharedString::from(format!("sorane-pane-{}", pane_id.0)))
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .overflow_hidden()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    if this.active_pane != pane_id {
+                        this.active_pane = pane_id;
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(tab_strip)
+            .child(div().flex_1().min_w_0().min_h_0().w_full().child(editor_view))
+            .into_any_element()
+    }
+
+    fn render_panes_area(&self, cx: &mut Context<Self>) -> AnyElement {
+        match self.layout {
+            SplitLayout::Single(pane_id) => self.render_pane(pane_id, cx),
+            SplitLayout::Split {
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                let theme = cx.theme().clone();
+                let ratio = clamp_pane_ratio(ratio);
+                let dragging = self.split_drag.is_some();
+                let width_cell = self.split_container_width.clone();
+                let measured = width_cell.get();
+
+                let first_wrapper = if measured > 240.0 {
+                    let first_px = ((measured - DIVIDER_WIDTH) * ratio).clamp(180.0, measured - 180.0);
+                    div().w(px(first_px)).flex_none()
+                } else {
+                    div().flex_1()
+                };
+
+                let weak = cx.entity().downgrade();
+                let divider = div()
+                    .id("sorane-pane-split-divider")
+                    .relative()
+                    .flex_none()
+                    .w(px(DIVIDER_WIDTH))
+                    .h_full()
+                    .bg(theme.border)
+                    .hover(|h| h.bg(theme.accent))
+                    .cursor_col_resize()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            if event.click_count == 2 {
+                                this.layout.set_ratio(DEFAULT_PANE_SPLIT_RATIO);
+                                this.split_drag = None;
+                                cx.notify();
+                            } else if let SplitLayout::Split { ratio, .. } = this.layout {
+                                this.split_drag = Some((f32::from(event.position.x), ratio));
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .when(dragging, |el| {
+                        let tracker = weak.clone();
+                        el.child(
+                            canvas(
+                                |_, _, _| (),
+                                move |_, _, window, _| {
+                                    let moving = tracker.clone();
+                                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                                        if phase == DispatchPhase::Capture {
+                                            let _ = moving.update(cx, |this, cx| {
+                                                if let Some((x0, r0)) = this.split_drag {
+                                                    let total = this.split_container_width.get().max(360.0);
+                                                    let dx = f32::from(event.position.x) - x0;
+                                                    this.layout.set_ratio(r0 + dx / total);
+                                                    cx.notify();
+                                                }
+                                            });
+                                        }
+                                    });
+                                    let released = tracker.clone();
+                                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                                        if phase == DispatchPhase::Capture {
+                                            let _ = released.update(cx, |this, cx| {
+                                                if this.split_drag.take().is_some() {
+                                                    cx.notify();
+                                                }
+                                            });
+                                        }
+                                    });
+                                },
+                            )
+                            .absolute()
+                            .size_0(),
+                        )
+                    });
+
+                div()
+                    .id("sorane-split-panes")
+                    .relative()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .h_full()
+                    .child(ibis_office_shell::editor::bounds_observer(move |bounds, _, _| {
+                        width_cell.set(f32::from(bounds.size.width));
+                    }))
+                    .child(
+                        first_wrapper
+                            .min_w_0()
+                            .min_h_0()
+                            .h_full()
+                            .overflow_hidden()
+                            .child(self.render_pane(first, cx)),
+                    )
+                    .child(divider)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .h_full()
+                            .overflow_hidden()
+                            .child(self.render_pane(second, cx)),
+                    )
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let vault_label = self.vault.as_ref().map(|v| {
+            if v.has_git() {
+                format!("📁 {} · Git", v.display_name())
+            } else {
+                format!("📁 {}", v.display_name())
+            }
+        });
+        let active_info = self.pane(self.active_pane).and_then(|p| p.active()).map(|t| {
+            let dirty = t.state.resident().is_some_and(|e| e.read(cx).is_dirty());
+            if dirty {
+                format!("{} · {} (未保存)", t.display_badge(), t.title)
+            } else {
+                format!("{} · {}", t.display_badge(), t.title)
+            }
+        });
+        let total_tabs: usize = self.panes.iter().map(|p| p.tabs.len()).sum();
+
+        h_flex()
+            .id("sorane-status-bar")
+            .h(px(24.))
+            .flex_shrink_0()
+            .px_3()
+            .items_center()
+            .justify_between()
+            .bg(theme.title_bar)
+            .border_t_1()
+            .border_color(theme.border)
+            .text_size(px(11.))
+            .text_color(theme.muted_foreground)
+            .child(
+                h_flex()
+                    .gap_3()
+                    .when_some(vault_label, |row, label| row.child(label))
+                    .child(if self.layout.is_split() {
+                        format!("2 ペイン · {total_tabs} タブ")
+                    } else {
+                        format!("{total_tabs} タブ")
+                    }),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .when_some(active_info, |row, info| row.child(info))
+                    .child("⌘O 切替 · ⌘\\ 分割"),
+            )
+    }
+}
+
+impl WorkspaceEditorHost for SoraneWorkspace {
+    fn active_editor(&self, _cx: &App) -> Option<Entity<SlideEditor>> {
+        self.pane(self.active_pane)
+            .and_then(|p| p.active())
+            .and_then(|t| t.state.resident())
+            .cloned()
+            .or_else(|| {
+                self.panes
+                    .iter()
+                    .flat_map(|p| p.tabs.iter())
+                    .find_map(|t| t.state.resident().cloned())
+            })
+    }
+
+    fn all_editors(&self, _cx: &App) -> Vec<Entity<SlideEditor>> {
+        self.panes
+            .iter()
+            .flat_map(|p| p.tabs.iter())
+            .filter_map(|t| t.state.resident().cloned())
+            .collect()
+    }
+
+    fn activate_editor_by_path(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut found: Option<(PaneId, usize)> = None;
+        for pane in &self.panes {
+            for (idx, tab) in pane.tabs.iter().enumerate() {
+                let matches_resident = tab
+                    .state
+                    .resident()
+                    .is_some_and(|e| e.read(cx).shows_path(path));
+                let matches_path = tab
+                    .path
+                    .as_deref()
+                    .is_some_and(|p| ibis_office_shell::open_guard::same_file(p, path));
+                if matches_resident || matches_path {
+                    found = Some((pane.id, idx));
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        if let Some((pane_id, tab_idx)) = found {
+            self.activate_tab(pane_id, tab_idx, window, cx);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Render for SoraneWorkspace {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_tab_metadata_and_chrome(window, cx);
+        let theme = cx.theme().clone();
+
+        v_flex()
+            .id("sorane-workspace-root")
+            .key_context(WORKSPACE_CONTEXT)
+            .relative()
+            .size_full()
+            .bg(theme.background)
+            .text_color(theme.foreground)
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.on_quick_switcher_key_down(event, window, cx) {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &QuickSwitcher, window, cx| {
+                this.open_quick_switcher(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSplitPane, window, cx| {
+                this.toggle_split_pane(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleLeftSidebar, _, cx| {
+                this.left_sidebar_open = !this.left_sidebar_open;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleRightSidebar, _, cx| {
+                this.right_sidebar_open = !this.right_sidebar_open;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &CloseActiveTab, window, cx| {
+                let pane_id = this.active_pane;
+                if let Some(tab_idx) = this.pane(pane_id).map(|p| p.active_tab) {
+                    this.close_tab(pane_id, tab_idx, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ibis_office_shell::actions::CloseFile, window, cx| {
+                let pane_id = this.active_pane;
+                if let Some(tab_idx) = this.pane(pane_id).map(|p| p.active_tab) {
+                    this.close_tab(pane_id, tab_idx, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ibis_office_shell::actions::OpenFolder, window, cx| {
+                this.pick_vault_folder(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NextTab, window, cx| {
+                let seq = this.next_seq();
+                let pane_id = this.active_pane;
+                if let Some(pane) = this.pane_mut(pane_id) {
+                    pane.next_tab(seq);
+                    let idx = pane.active_tab;
+                    let _ = this.ensure_tab_resident(pane_id, idx, window, cx);
+                }
+                this.focus_active_editor(window, cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &PrevTab, window, cx| {
+                let seq = this.next_seq();
+                let pane_id = this.active_pane;
+                if let Some(pane) = this.pane_mut(pane_id) {
+                    pane.prev_tab(seq);
+                    let idx = pane.active_tab;
+                    let _ = this.ensure_tab_resident(pane_id, idx, window, cx);
+                }
+                this.focus_active_editor(window, cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &OpenVaultFolder, window, cx| {
+                this.pick_vault_folder(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NewMarkdownNote, window, cx| {
+                this.new_markdown_note(window, cx);
+            }))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(self.render_activity_ribbon(cx))
+                    .children(self.render_left_sidebar(cx))
+                    .child(self.render_panes_area(cx))
+                    .children(self.render_right_sidebar(cx)),
+            )
+            .child(self.render_status_bar(cx))
+            .children(self.render_quick_switcher(cx))
+    }
+}

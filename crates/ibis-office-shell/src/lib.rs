@@ -62,7 +62,7 @@ mod document_compare;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod git_workspace;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-mod folder_context;
+pub mod folder_context;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_family = "wasm"))]
 mod structured_view;
 pub mod selection_handles;
@@ -174,7 +174,7 @@ pub mod password_window;
 pub mod icons;
 pub mod palette;
 #[cfg(target_os = "macos")]
-mod macos_menu;
+pub mod macos_menu;
 pub mod menu_bar;
 pub mod menu_context;
 #[cfg(not(target_family = "wasm"))]

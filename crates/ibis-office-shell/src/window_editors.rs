@@ -220,6 +220,62 @@ pub fn activate_path_in_window(handle: AnyWindowHandle, path: &Path, cx: &mut Ap
     .unwrap_or(false)
 }
 
+/// Setup callback run on the initial [`SlideEditor`] of a newly opened window.
+pub type WindowSetup = Box<dyn FnOnce(&mut SlideEditor, &mut Window, &mut Context<SlideEditor>) + 'static>;
+
+/// Implemented by an outer desktop workspace shell (such as `SoraneWorkspace`) so
+/// `ibis-office-shell::app` opens new windows and incoming files inside the workspace.
+pub trait WorkspaceWindowFactory: 'static {
+    /// Open a new workspace window whose initial editor is initialized via `setup`.
+    fn open_window(&self, width: f32, remember: bool, setup: WindowSetup, cx: &mut App);
+
+    /// Try to open `path` inside an existing workspace window (e.g. as a new tab).
+    /// Returns `true` if handled.
+    fn open_path_in_existing(&self, path: &Path, cx: &mut App) -> bool;
+}
+
+struct RegisteredWindowFactory {
+    factory: std::rc::Rc<dyn WorkspaceWindowFactory>,
+}
+
+impl Global for RegisteredWindowFactory {}
+
+/// Install an outer [`WorkspaceWindowFactory`] for desktop window creation.
+pub fn register_window_factory<F: WorkspaceWindowFactory>(factory: F, cx: &mut App) {
+    cx.set_global(RegisteredWindowFactory {
+        factory: std::rc::Rc::new(factory),
+    });
+}
+
+/// Dispatch window creation to the registered [`WorkspaceWindowFactory`], if any.
+/// Returns `Ok(())` if handled, or `Err(setup)` if no factory is installed.
+pub(crate) fn try_open_window_via_factory(
+    width: f32,
+    remember: bool,
+    setup: WindowSetup,
+    cx: &mut App,
+) -> Result<(), WindowSetup> {
+    let Some(factory) = cx
+        .try_global::<RegisteredWindowFactory>()
+        .map(|g| g.factory.clone())
+    else {
+        return Err(setup);
+    };
+    factory.open_window(width, remember, setup, cx);
+    Ok(())
+}
+
+/// Dispatch opening `path` to an existing workspace window via the registered factory.
+pub(crate) fn try_open_path_via_factory(path: &Path, cx: &mut App) -> bool {
+    let Some(factory) = cx
+        .try_global::<RegisteredWindowFactory>()
+        .map(|g| g.factory.clone())
+    else {
+        return false;
+    };
+    factory.open_path_in_existing(path, cx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::EmbeddedChromePolicy;
