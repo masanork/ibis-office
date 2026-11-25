@@ -41,15 +41,19 @@ fn book(fixed: bool) -> Vec<u8> {
     );
     add(
         "book/one.xhtml",
-        r##"<html xmlns:epub="http://www.idpf.org/2007/ops"><body><h1 id="one">第一章</h1>
+        r##"<html xmlns:epub="http://www.idpf.org/2007/ops"><body style="writing-mode: vertical-rl"><h1 id="one">第一章</h1>
         <p><ruby>山路<rt>やまみち</rt></ruby>の脚注<a href="two.xhtml#note" epub:type="noteref">1</a>。</p>
+        <p><span id="inline">本文内の目印</span> <a id="old" class="note-d" href="two.xhtml#oldnote">[2]</a></p>
+        <table id="table"><tr><th colspan="2">見出し</th><th>数</th></tr><tr><td rowspan="2">分類</td><td>甲</td><td>1</td></tr><tr><td>乙</td><td>2</td></tr></table>
         <p><img src="pic%20one.png" alt="検証画像"/></p><p><img src="https://example.invalid/remote.png" alt="外部画像"/></p>
         </body></html>"##,
     );
     add(
         "book/two.xhtml",
-        r#"<html xmlns:epub="http://www.idpf.org/2007/ops"><body><h1 id="two">第二章</h1>
-        <aside id="note" epub:type="footnote"><p>脚注の本文。</p></aside></body></html>"#,
+        r##"<html xmlns:epub="http://www.idpf.org/2007/ops"><body><h1 id="two">第二章</h1>
+        <p><a href="one.xhtml#inline">本文内へのリンク</a></p>
+        <aside id="note" epub:type="footnote"><p>脚注の本文。</p></aside>
+        <ul><li id="oldnote"><a href="one.xhtml#old">[2]</a>旧形式の脚注。</li><li>普通の項目</li></ul></body></html>"##,
     );
     let png = base64::Engine::decode(&base64::engine::general_purpose::STANDARD,
         "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAE0lEQVR4nGNkYPjPAANMcBY6BwAkeAEF0tyqqAAAAABJRU5ErkJggg==").unwrap();
@@ -87,6 +91,16 @@ fn opens_reflowable_epub_with_editable_ruby_images_and_footnotes() {
     assert!(main.contains("w:anchor=\"epub2\""));
     assert!(main.contains("w:name=\"epub2\""));
     assert!(main.contains("<w:drawing"));
+    assert!(main.contains("w:name=\"epub3\""));
+    assert!(main.contains("w:anchor=\"epub3\""));
+    assert!(main.contains("<w:tbl>"));
+    assert!(main.contains("w:gridSpan"));
+    assert!(main.contains("w:vMerge"));
+    assert!(main.contains("tbRl"));
+    assert!(md.contains("direction: vertical"));
+    let footnotes = xml_part("word/footnotes.xml");
+    assert!(footnotes.contains("旧形式の脚注。"));
+    assert!(!main.contains("旧形式の脚注。"));
     assert!(xml_part("word/footnotes.xml").contains("脚注の本文。"));
 }
 

@@ -4739,7 +4739,7 @@ fn parse_nested_table(payload: &str, ctx: &mut ParseContext<'_>, depth: usize) -
     ))
 }
 
-const PPTX_NO_TABLE_HEADER: &str = "<!-- pptx-no-header -->";
+pub(crate) const PPTX_NO_TABLE_HEADER: &str = "<!-- pptx-no-header -->";
 
 /// Optional table geometry attached to the first cell of a form table.
 struct FormTableLayout {
