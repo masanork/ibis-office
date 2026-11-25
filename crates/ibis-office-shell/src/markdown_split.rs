@@ -48,6 +48,33 @@ pub enum MarkdownViewMode {
     Source,
 }
 
+/// Textual source dialect shown in the Split / Source editor pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SourceDialect {
+    #[default]
+    Markdown,
+    Lawtext,
+    LawXml,
+}
+
+impl SourceDialect {
+    pub fn language_id(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Lawtext => "lawtext",
+            Self::LawXml => "xml",
+        }
+    }
+
+    pub fn badge_label(self) -> &'static str {
+        match self {
+            Self::Markdown => "MD",
+            Self::Lawtext => "Lawtext",
+            Self::LawXml => "e-Gov XML",
+        }
+    }
+}
+
 /// Which side currently holds unsynced edits in bidirectional Split mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum SyncAuthority {
@@ -1031,6 +1058,678 @@ pub fn markdown_highlighter_factory() -> InputHighlighterFactory {
     })
 }
 
+/// Multi-dialect pure-Rust syntax highlighter factory supporting Markdown, Lawtext, and e-Gov XML.
+pub fn multi_source_highlighter_factory() -> InputHighlighterFactory {
+    Rc::new(|lang| {
+        if lang.eq_ignore_ascii_case("markdown") || lang.eq_ignore_ascii_case("md") {
+            Some(Box::new(PureRustMarkdownHighlighter::new()))
+        } else if lang.eq_ignore_ascii_case("lawtext") {
+            Some(Box::new(PureRustLawtextHighlighter::new()))
+        } else if lang.eq_ignore_ascii_case("xml") || lang.eq_ignore_ascii_case("lawxml") {
+            Some(Box::new(PureRustXmlHighlighter::new()))
+        } else {
+            None
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Lawtext & e-Gov XML Section Spans + Pure-Rust Highlighters
+// ---------------------------------------------------------------------------
+
+fn is_kanji_or_digit_num(ch: char) -> bool {
+    matches!(
+        ch,
+        '一' | '二' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十' | '百' | '千' | '〇'
+            | '0'..='9'
+            | '０'..='９'
+    )
+}
+
+fn lawtext_article_title(trimmed: &str) -> Option<String> {
+    let rest = trimmed.strip_prefix('第')?;
+    let mut chars = rest.char_indices().peekable();
+    let mut saw_num = false;
+    let mut end = 0usize;
+    while let Some((idx, ch)) = chars.peek().copied() {
+        if is_kanji_or_digit_num(ch) {
+            saw_num = true;
+            end = idx + ch.len_utf8();
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    if !saw_num {
+        return None;
+    }
+    let after = &rest[end..];
+    if !after.starts_with('条') {
+        return None;
+    }
+    let mut title_len = '第'.len_utf8() + end + '条'.len_utf8();
+    // Optional branch suffix: `の二`, `の三の二`, etc.
+    let mut tail = &trimmed[title_len..];
+    while let Some(after_no) = tail.strip_prefix('の') {
+        let mut branch_len = 0usize;
+        for (idx, ch) in after_no.char_indices() {
+            if is_kanji_or_digit_num(ch) {
+                branch_len = idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if branch_len == 0 {
+            break;
+        }
+        title_len += 'の'.len_utf8() + branch_len;
+        tail = &trimmed[title_len..];
+    }
+    if tail.is_empty()
+        || tail.starts_with([' ', '\t', '　', '（', '('])
+    {
+        Some(trimmed[..title_len].to_string())
+    } else {
+        None
+    }
+}
+
+fn lawtext_structural_heading(trimmed: &str) -> Option<String> {
+    if trimmed.starts_with("附則") || trimmed.starts_with("別表") {
+        let label = trimmed.split_whitespace().next().unwrap_or(trimmed);
+        return Some(label.to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix('第') {
+        let mut num_len = 0usize;
+        for (idx, ch) in rest.char_indices() {
+            if is_kanji_or_digit_num(ch) {
+                num_len = idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if num_len > 0 {
+            let after = &rest[num_len..];
+            if after.starts_with(['編', '章', '節', '款', '目']) {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn lawtext_is_caption(trimmed: &str) -> bool {
+    (trimmed.starts_with('（') && trimmed.ends_with('）') && trimmed.chars().count() >= 3)
+        || (trimmed.starts_with('(') && trimmed.ends_with(')') && trimmed.chars().count() >= 3)
+}
+
+fn xml_attr_value<'a>(tag_line: &'a str, attr: &str) -> Option<&'a str> {
+    let needle = format!("{attr}=\"");
+    let pos = tag_line.find(&needle)?;
+    let rest = &tag_line[pos + needle.len()..];
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
+fn xml_inline_text<'a>(line: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}");
+    let start_tag = line.find(&open)?;
+    let gt = line[start_tag..].find('>')? + start_tag + 1;
+    let close = format!("</{tag}>");
+    let end = line[gt..].find(&close)? + gt;
+    let inner = line[gt..end].trim();
+    (!inner.is_empty()).then_some(inner)
+}
+
+/// Split a Lawtext or e-Gov Law XML document into article/chapter/suppl [`SectionSpan`]s
+/// for bidirectional article-level cursor & scroll sync.
+pub fn law_section_spans(text: &str, dialect: SourceDialect) -> Vec<SectionSpan> {
+    let lines = split_line_slices(text);
+    if lines.is_empty() {
+        return Vec::new();
+    }
+
+    let mut anchors: Vec<(usize, String)> = Vec::new();
+    match dialect {
+        SourceDialect::Lawtext => {
+            for (idx, slice) in lines.iter().enumerate() {
+                let trimmed = text[slice.start..slice.end].trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Some(title) = lawtext_article_title(trimmed) {
+                    // Attach an immediately preceding `(見出し)` caption line to this article span.
+                    let start_line = if idx > 0 {
+                        let prev = text[lines[idx - 1].start..lines[idx - 1].end].trim();
+                        if lawtext_is_caption(prev) {
+                            idx - 1
+                        } else {
+                            idx
+                        }
+                    } else {
+                        idx
+                    };
+                    anchors.push((start_line, title));
+                } else if let Some(heading) = lawtext_structural_heading(trimmed) {
+                    anchors.push((idx, heading));
+                }
+            }
+        }
+        SourceDialect::LawXml => {
+            for (idx, slice) in lines.iter().enumerate() {
+                let trimmed = text[slice.start..slice.end].trim();
+                if trimmed.starts_with("<Article")
+                    && trimmed
+                        .as_bytes()
+                        .get("<Article".len())
+                        .is_some_and(|b| matches!(b, b' ' | b'>' | b'\t'))
+                {
+                    // Prefer the inner `<ArticleTitle>` text on the next few lines when present.
+                    let mut title = None;
+                    for look in &lines[idx..(idx + 5).min(lines.len())] {
+                        if let Some(t) = xml_inline_text(&text[look.start..look.end], "ArticleTitle") {
+                            title = Some(t.to_string());
+                            break;
+                        }
+                    }
+                    let label = title.unwrap_or_else(|| {
+                        xml_attr_value(trimmed, "Num")
+                            .map(|n| format!("第{n}条"))
+                            .unwrap_or_else(|| "条文".to_string())
+                    });
+                    anchors.push((idx, label));
+                } else if trimmed.starts_with("<Chapter")
+                    && trimmed
+                        .as_bytes()
+                        .get("<Chapter".len())
+                        .is_some_and(|b| matches!(b, b' ' | b'>' | b'\t'))
+                {
+                    let mut title = None;
+                    for look in &lines[idx..(idx + 4).min(lines.len())] {
+                        if let Some(t) = xml_inline_text(&text[look.start..look.end], "ChapterTitle") {
+                            title = Some(t.to_string());
+                            break;
+                        }
+                    }
+                    let label = title.unwrap_or_else(|| {
+                        xml_attr_value(trimmed, "Num")
+                            .map(|n| format!("第{n}章"))
+                            .unwrap_or_else(|| "章".to_string())
+                    });
+                    anchors.push((idx, label));
+                } else if trimmed.starts_with("<SupplProvision")
+                    && trimmed
+                        .as_bytes()
+                        .get("<SupplProvision".len())
+                        .is_some_and(|b| matches!(b, b' ' | b'>' | b'\t'))
+                {
+                    let mut title = None;
+                    for look in &lines[idx..(idx + 4).min(lines.len())] {
+                        if let Some(t) =
+                            xml_inline_text(&text[look.start..look.end], "SupplProvisionLabel")
+                        {
+                            title = Some(t.to_string());
+                            break;
+                        }
+                    }
+                    anchors.push((idx, title.unwrap_or_else(|| "附則".to_string())));
+                } else if trimmed.starts_with("<AppdxTable")
+                    && trimmed
+                        .as_bytes()
+                        .get("<AppdxTable".len())
+                        .is_some_and(|b| matches!(b, b' ' | b'>' | b'\t'))
+                {
+                    anchors.push((idx, "別表".to_string()));
+                }
+            }
+        }
+        SourceDialect::Markdown => return Vec::new(),
+    }
+
+    if anchors.is_empty() {
+        return vec![SectionSpan {
+            index: 0,
+            line_range: 0..lines.len().max(1),
+            byte_range: 0..text.len(),
+            title: None,
+        }];
+    }
+
+    let total_lines = lines.len();
+    let mut spans = Vec::with_capacity(anchors.len());
+    for (i, (start_line, title)) in anchors.iter().enumerate() {
+        let end_line = anchors
+            .get(i + 1)
+            .map_or(total_lines, |(next_start, _)| *next_start)
+            .max(*start_line + 1);
+        let byte_start = lines.get(*start_line).map_or(text.len(), |l| l.start);
+        let byte_end = lines
+            .get(end_line.saturating_sub(1))
+            .map_or(text.len(), |l| l.next);
+        spans.push(SectionSpan {
+            index: i,
+            line_range: *start_line..end_line,
+            byte_range: byte_start..byte_end,
+            title: Some(title.clone()),
+        });
+    }
+    spans
+}
+
+/// Pure-Rust Lawtext syntax highlighter and article/chapter folder.
+pub struct PureRustLawtextHighlighter {
+    spans: Vec<Span>,
+    folds: Vec<FoldRange>,
+}
+
+impl PureRustLawtextHighlighter {
+    pub fn new() -> Self {
+        Self {
+            spans: Vec::new(),
+            folds: Vec::new(),
+        }
+    }
+
+    pub fn reparse(&mut self, text: &str) {
+        self.spans.clear();
+        self.folds.clear();
+
+        let lines = split_line_slices(text);
+        let mut active_article_start: Option<usize> = None;
+
+        for slice in &lines {
+            let line = &text[slice.start..slice.end];
+            let trimmed = line.trim_start();
+            let leading = line.len() - trimmed.len();
+            let content_start = slice.start + leading;
+            let trimmed_end = trimmed.trim_end();
+            if trimmed_end.is_empty() {
+                continue;
+            }
+
+            // First non-empty line with LawNum parentheses (e.g. `テスト法（令和七年法律第一号）`)
+            if slice.idx == 0 && trimmed_end.contains('（') && trimmed_end.ends_with('）') {
+                self.spans.push(Span {
+                    range: content_start..slice.end,
+                    kind: TokenKind::Heading,
+                });
+                continue;
+            }
+
+            // Structural divisions (編 / 章 / 節 / 附則 / 別表)
+            if lawtext_structural_heading(trimmed_end).is_some() {
+                if let Some(prev_start) = active_article_start.take()
+                    && slice.idx.saturating_sub(1) > prev_start
+                {
+                    self.folds
+                        .push(FoldRange::new(prev_start, slice.idx.saturating_sub(1)));
+                }
+                self.spans.push(Span {
+                    range: content_start..slice.end,
+                    kind: TokenKind::Heading,
+                });
+                continue;
+            }
+
+            // Article caption `(見出し)`
+            if lawtext_is_caption(trimmed_end) {
+                self.spans.push(Span {
+                    range: content_start..slice.end,
+                    kind: TokenKind::FrontmatterKey,
+                });
+                continue;
+            }
+
+            // Article header (`第一条 ...`)
+            if let Some(title) = lawtext_article_title(trimmed_end) {
+                if let Some(prev_start) = active_article_start.replace(slice.idx)
+                    && slice.idx.saturating_sub(1) > prev_start
+                {
+                    self.folds
+                        .push(FoldRange::new(prev_start, slice.idx.saturating_sub(1)));
+                }
+                let title_end = content_start + title.len();
+                self.spans.push(Span {
+                    range: content_start..title_end,
+                    kind: TokenKind::Strong,
+                });
+                if title_end < slice.end {
+                    scan_lawtext_inline(&text[title_end..slice.end], title_end, &mut self.spans);
+                }
+                continue;
+            }
+
+            // Paragraph / Item / Subitem leading number marker (`２ `, `一 `, `イ `)
+            if let Some((first_tok, _)) = trimmed_end.split_once([' ', '\t', '　'])
+                && is_lawtext_item_marker(first_tok)
+            {
+                let marker_end = content_start + first_tok.len();
+                self.spans.push(Span {
+                    range: content_start..marker_end,
+                    kind: TokenKind::ListMarker,
+                });
+                if marker_end < slice.end {
+                    scan_lawtext_inline(&text[marker_end..slice.end], marker_end, &mut self.spans);
+                }
+                continue;
+            }
+
+            scan_lawtext_inline(&text[content_start..slice.end], content_start, &mut self.spans);
+        }
+
+        let last_line = lines.len().saturating_sub(1);
+        if let Some(prev_start) = active_article_start
+            && last_line > prev_start
+        {
+            self.folds.push(FoldRange::new(prev_start, last_line));
+        }
+        self.folds.sort_by_key(|f| (f.start_line, f.end_line));
+    }
+}
+
+impl Default for PureRustLawtextHighlighter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn is_lawtext_item_marker(token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    if token.chars().all(is_kanji_or_digit_num) {
+        return true;
+    }
+    matches!(
+        token,
+        "イ" | "ロ" | "ハ" | "ニ" | "ホ" | "ヘ" | "ト" | "チ" | "リ" | "ヌ"
+    ) || (token.starts_with('（') && token.ends_with('）') && token.chars().count() <= 5)
+}
+
+fn scan_lawtext_inline(s: &str, base: usize, out: &mut Vec<Span>) {
+    let mut idx = 0usize;
+    while idx < s.len() {
+        let rest = &s[idx..];
+        if rest.starts_with('「')
+            && let Some(close_rel) = rest['「'.len_utf8()..].find('」')
+        {
+            let end = idx + '「'.len_utf8() + close_rel + '」'.len_utf8();
+            out.push(Span {
+                range: base + idx..base + end,
+                kind: TokenKind::LinkText,
+            });
+            idx = end;
+            continue;
+        }
+        if rest.starts_with('第') {
+            let after_dai = &rest['第'.len_utf8()..];
+            let mut num_len = 0usize;
+            for (i, ch) in after_dai.char_indices() {
+                if is_kanji_or_digit_num(ch) {
+                    num_len = i + ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if num_len > 0 {
+                let after_num = &after_dai[num_len..];
+                if let Some(unit) = ['条', '項', '号', '章', '節']
+                    .into_iter()
+                    .find(|&u| after_num.starts_with(u))
+                {
+                    let end = idx + '第'.len_utf8() + num_len + unit.len_utf8();
+                    out.push(Span {
+                        range: base + idx..base + end,
+                        kind: TokenKind::CodeFence,
+                    });
+                    idx = end;
+                    continue;
+                }
+            }
+        }
+        let ch_len = rest.chars().next().map_or(1, char::len_utf8);
+        idx += ch_len;
+    }
+}
+
+impl InputHighlighter for PureRustLawtextHighlighter {
+    fn language(&self) -> SharedString {
+        "lawtext".into()
+    }
+
+    fn update(
+        &mut self,
+        _edit: Option<InputEdit>,
+        text: &Rope,
+        _folding: bool,
+        _window: &mut Window,
+        _cx: &mut Context<EditorState>,
+    ) {
+        self.reparse(&text.to_string());
+    }
+
+    fn styles(
+        &self,
+        range: &Range<usize>,
+        resolver: &dyn HighlightStyleResolver,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
+        resolve_spans(&self.spans, range, resolver)
+    }
+
+    fn fold_ranges(&self, _text: &Rope) -> Vec<FoldRange> {
+        self.folds.clone()
+    }
+}
+
+/// Pure-Rust e-Gov Law XML syntax highlighter and element folder.
+pub struct PureRustXmlHighlighter {
+    spans: Vec<Span>,
+    folds: Vec<FoldRange>,
+}
+
+impl PureRustXmlHighlighter {
+    pub fn new() -> Self {
+        Self {
+            spans: Vec::new(),
+            folds: Vec::new(),
+        }
+    }
+
+    pub fn reparse(&mut self, text: &str) {
+        self.spans.clear();
+        self.folds.clear();
+
+        let bytes = text.as_bytes();
+        let len = bytes.len();
+        let mut i = 0usize;
+        while i < len {
+            if bytes[i..].starts_with(b"<!--") {
+                let end = text[i + 4..]
+                    .find("-->")
+                    .map_or(len, |rel| i + 4 + rel + 3);
+                self.spans.push(Span {
+                    range: i..end,
+                    kind: TokenKind::HtmlComment,
+                });
+                i = end;
+                continue;
+            }
+            if bytes[i..].starts_with(b"<?") {
+                let end = text[i + 2..]
+                    .find("?>")
+                    .map_or(len, |rel| i + 2 + rel + 2);
+                self.spans.push(Span {
+                    range: i..end,
+                    kind: TokenKind::FrontmatterDelimiter,
+                });
+                i = end;
+                continue;
+            }
+            if bytes[i] == b'<' {
+                let tag_start = i;
+                i += 1;
+                if i < len && bytes[i] == b'/' {
+                    i += 1;
+                }
+                let name_start = i;
+                while i < len
+                    && !matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')
+                {
+                    i += 1;
+                }
+                if i > name_start {
+                    self.spans.push(Span {
+                        range: tag_start..i,
+                        kind: TokenKind::CodeFence,
+                    });
+                }
+                while i < len && bytes[i] != b'>' {
+                    if matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n' | b'/') {
+                        i += 1;
+                        continue;
+                    }
+                    if bytes[i] == b'"' || bytes[i] == b'\'' {
+                        let q = bytes[i];
+                        let val_start = i;
+                        i += 1;
+                        while i < len && bytes[i] != q {
+                            i += 1;
+                        }
+                        if i < len {
+                            i += 1;
+                        }
+                        self.spans.push(Span {
+                            range: val_start..i,
+                            kind: TokenKind::LinkText,
+                        });
+                        continue;
+                    }
+                    let attr_start = i;
+                    while i < len
+                        && !matches!(bytes[i], b'=' | b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')
+                    {
+                        i += 1;
+                    }
+                    if i > attr_start {
+                        self.spans.push(Span {
+                            range: attr_start..i,
+                            kind: TokenKind::FrontmatterKey,
+                        });
+                    }
+                    if i < len && bytes[i] == b'=' {
+                        i += 1;
+                    }
+                }
+                if i < len && bytes[i] == b'>' {
+                    self.spans.push(Span {
+                        range: i..i + 1,
+                        kind: TokenKind::CodeFence,
+                    });
+                    i += 1;
+                }
+                continue;
+            }
+            i += 1;
+        }
+
+        // Line-level folds for major e-Gov XML container elements.
+        let lines = split_line_slices(text);
+        let mut stack: Vec<(&'static str, usize)> = Vec::new();
+        for slice in &lines {
+            let trimmed = text[slice.start..slice.end].trim();
+            for tag in ["Chapter", "Article", "SupplProvision", "AppdxTable"] {
+                let open_prefix = format!("<{tag}");
+                let close_tag = format!("</{tag}>");
+                let opens = trimmed.starts_with(&open_prefix)
+                    && trimmed
+                        .as_bytes()
+                        .get(open_prefix.len())
+                        .is_some_and(|b| matches!(b, b' ' | b'>' | b'\t'))
+                    && !trimmed.contains(&close_tag)
+                    && !trimmed.ends_with("/>");
+                if opens {
+                    stack.push((tag, slice.idx));
+                } else if trimmed.starts_with(&close_tag)
+                    && let Some(pos) = stack.iter().rposition(|(t, _)| *t == tag)
+                {
+                    let (_, start_line) = stack.remove(pos);
+                    if slice.idx > start_line {
+                        self.folds.push(FoldRange::new(start_line, slice.idx));
+                    }
+                }
+            }
+        }
+        self.folds.sort_by_key(|f| (f.start_line, f.end_line));
+    }
+}
+
+impl Default for PureRustXmlHighlighter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InputHighlighter for PureRustXmlHighlighter {
+    fn language(&self) -> SharedString {
+        "xml".into()
+    }
+
+    fn update(
+        &mut self,
+        _edit: Option<InputEdit>,
+        text: &Rope,
+        _folding: bool,
+        _window: &mut Window,
+        _cx: &mut Context<EditorState>,
+    ) {
+        self.reparse(&text.to_string());
+    }
+
+    fn styles(
+        &self,
+        range: &Range<usize>,
+        resolver: &dyn HighlightStyleResolver,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
+        resolve_spans(&self.spans, range, resolver)
+    }
+
+    fn fold_ranges(&self, _text: &Rope) -> Vec<FoldRange> {
+        self.folds.clone()
+    }
+}
+
+fn resolve_spans(
+    spans: &[Span],
+    range: &Range<usize>,
+    resolver: &dyn HighlightStyleResolver,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    if range.start >= range.end {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut cursor = range.start;
+    let first = spans.partition_point(|s| s.range.end <= range.start);
+    for span in &spans[first..] {
+        if span.range.start >= range.end {
+            break;
+        }
+        let s_start = span.range.start.max(cursor);
+        let s_end = span.range.end.min(range.end);
+        if s_start >= s_end {
+            continue;
+        }
+        if s_start > cursor {
+            out.push((cursor..s_start, HighlightStyle::default()));
+        }
+        out.push((s_start..s_end, span.kind.resolve(resolver)));
+        cursor = s_end;
+    }
+    if cursor < range.end {
+        out.push((cursor..range.end, HighlightStyle::default()));
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // SlideEditor Shared Helpers & Split UI Components
 // ---------------------------------------------------------------------------
@@ -1098,6 +1797,18 @@ impl SlideEditor {
         }
     }
 
+    /// Raw Lawtext / e-Gov XML bytes loaded in the browser on wasm (`None` on native platforms).
+    pub fn web_law_source_bytes(&self) -> Option<&[u8]> {
+        #[cfg(target_family = "wasm")]
+        {
+            self.web.law_source.as_deref().map(Vec::as_slice)
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            None
+        }
+    }
+
     /// True when this editor's open file path or file name has a `.md` / `.markdown` extension.
     pub fn is_markdown_path(&self) -> bool {
         let from_path = self
@@ -1114,12 +1825,68 @@ impl SlideEditor {
             .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
     }
 
-    /// True when this embedded editor should automatically enter bidirectional Markdown `Split`
-    /// view on initial open (e.g. `.md` notes, Marp decks, and workbooks inside `SoraneWorkspace`).
+    /// True when this editor's open file represents a Japanese statute (Lawtext, e-Gov Law XML,
+    /// or Lawtext-flavored Markdown).
+    pub fn is_law_document(&self) -> bool {
+        if self.kind() != ibis_formats::Kind::Document {
+            return false;
+        }
+        let name_lower = self
+            .current_path()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .or(self.file_name.as_deref())
+            .map(|n| n.to_ascii_lowercase());
+        if name_lower
+            .as_deref()
+            .is_some_and(|n| n.ends_with(".lawtext") || n.ends_with(".law.txt"))
+        {
+            return true;
+        }
+        #[cfg(target_family = "wasm")]
+        if self.web.law_source.is_some() {
+            return true;
+        }
+        if let Some((orig_md, _, _)) = self.source.as_ref().and_then(|s| s.original_markdown())
+            && ibis_formats::markdown::roundtrip::document_frontmatter(
+                orig_md.trim_start_matches(['\u{feff}', '\r', '\n']),
+            )
+            .is_some_and(|frame| frame.lawtext)
+        {
+            return true;
+        }
+        self.presentation().flow.as_ref().is_some_and(|flow| {
+            flow.body.iter().take(8).any(|block| match block {
+                ibis_doc_model::flow::Block::Paragraph(p) => {
+                    p.text().trim_start().starts_with("法令番号:")
+                }
+                _ => false,
+            })
+        })
+    }
+
+    /// True when the open file path is a `.lawtext` / `.law.txt` file, or an e-Gov Law `.xml` file.
+    pub fn is_law_path(&self) -> bool {
+        let name_lower = self
+            .current_path()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .or(self.file_name.as_deref())
+            .map(|n| n.to_ascii_lowercase());
+        match name_lower.as_deref() {
+            Some(n) if n.ends_with(".lawtext") || n.ends_with(".law.txt") => true,
+            Some(n) if n.ends_with(".xml") => self.is_law_document(),
+            _ => false,
+        }
+    }
+
+    /// True when this embedded editor should automatically enter bidirectional Source `Split`
+    /// view on initial open (e.g. `.md` notes, Marp decks, workbooks, and `.lawtext`/e-Gov `.xml`
+    /// inside `SoraneWorkspace`).
     pub fn should_auto_open_markdown_split(&self) -> bool {
         self.embedded_chrome
             .is_some_and(|policy| policy.default_markdown_split)
-            && self.is_markdown_path()
+            && (self.is_markdown_path() || self.is_law_path())
     }
 
     /// Ensure all raster/SVG media embedded in `self.presentation().media` (including Marp Mermaid
@@ -1628,5 +2395,78 @@ not_a_slide: true
         let no_fm = "<!-- xlsx-sheet \"Sheet1\" -->\n\n## Sheet1\n";
         let unchanged = preserve_workbook_frontmatter(no_fm, "## Sheet1\n".to_string());
         assert_eq!(unchanged, "## Sheet1\n");
+    }
+
+    #[::core::prelude::v1::test]
+    fn law_section_spans_maps_lawtext_and_egov_xml_articles() {
+        let lawtext = "\
+テスト法（令和七年法律第一号）
+
+第一章 総則
+
+（目的）
+第一条 この法律は、第一条第二項に定める「基準」を示す。
+２ 前項の規定を補う。
+
+（定義）
+第二条 用語を定める。
+一 第一号の事項
+
+附則
+この法律は、公布の日から施行する。
+";
+        let spans = law_section_spans(lawtext, SourceDialect::Lawtext);
+        let titles: Vec<&str> = spans
+            .iter()
+            .filter_map(|s| s.title.as_deref())
+            .collect();
+        assert_eq!(titles, vec!["第一章 総則", "第一条", "第二条", "附則"]);
+
+        let art2_item = lawtext.lines().position(|l| l.starts_with("一 ")).unwrap();
+        assert_eq!(
+            section_for_line(&spans, art2_item).and_then(|s| s.title.as_deref()),
+            Some("第二条")
+        );
+
+        let mut lh = PureRustLawtextHighlighter::new();
+        lh.reparse(lawtext);
+        assert!(lh.spans.iter().any(|s| s.kind == TokenKind::Heading));
+        assert!(lh.spans.iter().any(|s| s.kind == TokenKind::Strong));
+        assert!(lh.spans.iter().any(|s| s.kind == TokenKind::FrontmatterKey));
+        assert!(lh.spans.iter().any(|s| s.kind == TokenKind::ListMarker));
+        assert!(lh.spans.iter().any(|s| s.kind == TokenKind::LinkText));
+        assert!(!lh.folds.is_empty());
+
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Law Era="Reiwa" Lang="ja" LawType="Act" Num="001" Year="07">
+  <LawBody>
+    <MainProvision>
+      <Chapter Num="1">
+        <ChapterTitle>第一章 総則</ChapterTitle>
+        <Article Num="1">
+          <ArticleTitle>第一条</ArticleTitle>
+          <Paragraph Num="1"><ParagraphSentence><Sentence>本文。</Sentence></ParagraphSentence></Paragraph>
+        </Article>
+      </Chapter>
+    </MainProvision>
+    <SupplProvision>
+      <SupplProvisionLabel>附則</SupplProvisionLabel>
+    </SupplProvision>
+  </LawBody>
+</Law>"#;
+        let xml_spans = law_section_spans(xml, SourceDialect::LawXml);
+        let xml_titles: Vec<&str> = xml_spans
+            .iter()
+            .filter_map(|s| s.title.as_deref())
+            .collect();
+        assert_eq!(xml_titles, vec!["第一章 総則", "第一条", "附則"]);
+
+        let mut xh = PureRustXmlHighlighter::new();
+        xh.reparse(xml);
+        assert!(xh.spans.iter().any(|s| s.kind == TokenKind::FrontmatterDelimiter));
+        assert!(xh.spans.iter().any(|s| s.kind == TokenKind::CodeFence));
+        assert!(xh.spans.iter().any(|s| s.kind == TokenKind::FrontmatterKey));
+        assert!(xh.spans.iter().any(|s| s.kind == TokenKind::LinkText));
+        assert!(!xh.folds.is_empty());
     }
 }

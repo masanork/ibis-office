@@ -380,7 +380,9 @@ pub fn chrome_policy_for(
         .unwrap_or("")
         .to_ascii_lowercase();
 
-    let mut policy = if matches!(ext.as_str(), "md" | "markdown") {
+    let mut policy = if matches!(ext.as_str(), "md" | "markdown" | "lawtext")
+        || (ext == "xml" && kind == Kind::Document && !read_only)
+    {
         EmbeddedChromePolicy::workspace_markdown()
     } else if read_only
         || kind == Kind::Pdf
@@ -671,6 +673,12 @@ mod tests {
         let jtd = chrome_policy_for(Some(Path::new("doc.jtd")), None, Kind::Document, true, None, None);
         assert!(!jtd.show_toolbar);
         assert!(!jtd.default_markdown_split);
+
+        let law = chrome_policy_for(Some(Path::new("draft.lawtext")), None, Kind::Document, false, None, None);
+        assert!(law.default_markdown_split);
+
+        let law_xml = chrome_policy_for(Some(Path::new("statute.xml")), None, Kind::Document, false, None, None);
+        assert!(law_xml.default_markdown_split);
     }
 
     #[test]
@@ -678,6 +686,8 @@ mod tests {
         assert_eq!(badge_for_path_and_kind(Some(Path::new("note.md")), Kind::Document), "MD");
         assert_eq!(badge_for_path_and_kind(Some(Path::new("deck.md")), Kind::Presentation), "MARP");
         assert_eq!(badge_for_path_and_kind(Some(Path::new("budget.md")), Kind::Workbook), "SHEET");
+        assert_eq!(badge_for_path_and_kind(Some(Path::new("draft.lawtext")), Kind::Document), "LAW");
+        assert_eq!(badge_for_path_and_kind(Some(Path::new("statute.xml")), Kind::Document), "LAW");
         assert_eq!(badge_for_path_and_kind(Some(Path::new("spec.docx")), Kind::Document), "DOC");
         assert_eq!(badge_for_path_and_kind(Some(Path::new("slides.pptx")), Kind::Presentation), "PPT");
         assert_eq!(badge_for_path_and_kind(Some(Path::new("data.xlsx")), Kind::Workbook), "XLS");

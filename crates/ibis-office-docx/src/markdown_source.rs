@@ -26,6 +26,9 @@ use ibis_formats::markdown::MarkdownSourceMap;
 
 use crate::ext::*;
 use crate::shell::editor::SlideEditor;
+use crate::shell::markdown_split::{
+    SectionSpan, SourceDialect, law_section_spans, multi_source_highlighter_factory, section_for_line,
+};
 
 pub(crate) const MARKDOWN_SOURCE_CONTEXT: &str = "MarkdownSource";
 const SOURCE_TO_VISUAL_DEBOUNCE_MS: u64 = 250;
@@ -63,15 +66,23 @@ pub(crate) fn clamp_split_ratio(ratio: f32) -> f32 {
     }
 }
 
-/// Active state while the document is shown in Markdown Split or Source view.
+/// Active state while the document is shown in Markdown / Lawtext / e-Gov XML Split or Source view.
 pub(crate) struct MarkdownSourceState {
     pub(crate) mode: MarkdownViewMode,
+    /// Active source dialect (`Markdown`, `Lawtext`, or `LawXml`).
+    pub(crate) dialect: SourceDialect,
     pub(crate) editor: Entity<EditorState>,
     /// Cached latest UTF-8 text of `editor` so save paths without `App` context
     /// (`FormatEditor::bytes_for_path`) can write the exact source directly.
     pub(crate) current_text: String,
-    /// Block-level source map linking `current_text` lines/bytes to `last_synced_flow.body`.
+    /// Block-level source map linking `current_text` lines/bytes to `last_synced_flow.body` (Markdown).
     pub(crate) source_map: MarkdownSourceMap,
+    /// Article/chapter/suppl section spans for Lawtext and e-Gov XML cursor/scroll sync.
+    pub(crate) law_sections: Vec<SectionSpan>,
+    /// Live legislative lint summary (`ibis_lawtext::lint_law`) for Lawtext / e-Gov XML documents.
+    pub(crate) law_lint: Option<ibis_lawtext::LintReport>,
+    /// Original e-Gov Law XML baseline for surgical `apply_law_source_edits` writeback.
+    pub(crate) original_law_xml: Option<String>,
     /// True once the user has modified the source since entering source view or last sync.
     pub(crate) dirty: bool,
     /// True while the WYSIWYG `FlowDocument` has edits pending export back to `editor`.
@@ -92,7 +103,7 @@ pub(crate) struct MarkdownSourceState {
     pub(crate) last_synced_source_line: Option<usize>,
     /// Last WYSIWYG caret paragraph ID already synced to the Source editor.
     pub(crate) last_synced_visual_para: Option<u32>,
-    /// Active top-level `FlowDocument::body` block index under the current cursor.
+    /// Active top-level `FlowDocument::body` block index (Markdown) or law section index (Lawtext/XML).
     pub(crate) active_block_index: Option<usize>,
     /// Left pane width ratio in Split mode (`MIN_SPLIT_RATIO..=MAX_SPLIT_RATIO`).
     pub(crate) split_ratio: f32,
@@ -697,6 +708,7 @@ impl InputHighlighter for PureRustMarkdownHighlighter {
     }
 }
 
+#[allow(dead_code)]
 fn markdown_highlighter_factory() -> InputHighlighterFactory {
     Rc::new(|lang| {
         if lang.eq_ignore_ascii_case("markdown") || lang.eq_ignore_ascii_case("md") {
@@ -804,11 +816,37 @@ impl SlideEditor {
             .is_some_and(|ms| ms.editor.read(cx).focus_handle(cx).is_focused(window))
     }
 
-    /// Cached Markdown source text when the source editor is authoritative or synchronized
-    /// with the current `FlowDocument`. Returns `None` if the WYSIWYG side has newer
-    /// unsynchronized edits so save paths fall back to exporting the latest `FlowDocument`.
+    /// Default source dialect for the currently open document (`.lawtext`/`.law.txt` -> `Lawtext`,
+    /// e-Gov Law `.xml` -> `LawXml`, otherwise `Markdown`).
+    pub(crate) fn default_source_dialect(&self) -> SourceDialect {
+        let name_lower = self
+            .current_path()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .or(self.file_name.as_deref())
+            .map(|n| n.to_ascii_lowercase());
+        match name_lower.as_deref() {
+            Some(n) if n.ends_with(".lawtext") || n.ends_with(".law.txt") => SourceDialect::Lawtext,
+            Some(n) if n.ends_with(".xml") && self.is_law_document() => SourceDialect::LawXml,
+            _ => SourceDialect::Markdown,
+        }
+    }
+
+    /// Active source dialect in the Split/Source editor (or default dialect when in Visual mode).
+    pub(crate) fn source_dialect(&self) -> SourceDialect {
+        self.doc_state()
+            .and_then(|s| s.markdown_source.as_ref())
+            .map_or_else(|| self.default_source_dialect(), |ms| ms.dialect)
+    }
+
+    /// Cached Markdown source text when the source editor is in `Markdown` dialect and authoritative
+    /// or synchronized with the current `FlowDocument`. Returns `None` if the WYSIWYG side has newer
+    /// unsynchronized edits or if the pane is displaying Lawtext/XML.
     pub(crate) fn markdown_source_text(&self) -> Option<&str> {
         let ms = self.doc_state()?.markdown_source.as_ref()?;
+        if ms.dialect != SourceDialect::Markdown {
+            return None;
+        }
         if ms.dirty || ms.mode == MarkdownViewMode::Source {
             return Some(ms.current_text.as_str());
         }
@@ -824,7 +862,100 @@ impl SlideEditor {
         flow_matches.then_some(ms.current_text.as_str())
     }
 
-    /// Toggle between Visual view and Markdown Split/Source view (⌘⇧M / View > Markdown Source).
+    /// Exact UTF-8 Lawtext or e-Gov XML source text when the source editor is showing `dialect`
+    /// and is authoritative or synchronized with the current `FlowDocument`.
+    pub(crate) fn law_source_text(&self, dialect: SourceDialect) -> Option<&str> {
+        let ms = self.doc_state()?.markdown_source.as_ref()?;
+        if ms.dialect != dialect {
+            return None;
+        }
+        if ms.dirty || ms.mode == MarkdownViewMode::Source {
+            return Some(ms.current_text.as_str());
+        }
+        if ms.visual_dirty {
+            return None;
+        }
+        let flow_matches = self
+            .presentation()
+            .flow
+            .as_ref()
+            .zip(ms.last_synced_flow.as_ref())
+            .is_some_and(|(cur, synced)| Arc::ptr_eq(cur, synced));
+        flow_matches.then_some(ms.current_text.as_str())
+    }
+
+    /// Original e-Gov Law XML baseline for surgical writeback when saving `.xml`.
+    pub(crate) fn law_original_xml(&self) -> Option<&str> {
+        self.doc_state()
+            .and_then(|s| s.markdown_source.as_ref())
+            .and_then(|ms| ms.original_law_xml.as_deref())
+    }
+
+    /// Switch the source pane dialect (`Lawtext` / `e-Gov XML` / `Markdown`) on a law document.
+    pub(crate) fn set_source_dialect(
+        &mut self,
+        target: SourceDialect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_markdown_source_mode() {
+            self.enter_markdown_view_mode_with_dialect(MarkdownViewMode::Split, target, window, cx);
+            return;
+        }
+        let current = self.source_dialect();
+        if current == target {
+            return;
+        }
+        // Flush any dirty edits from the current dialect into FlowDocument first.
+        if !self.sync_markdown_source_if_dirty(cx) {
+            return;
+        }
+        let Some(flow_arc) = self.presentation().flow.clone() else {
+            return;
+        };
+        let prev_orig_xml = self
+            .doc_state()
+            .and_then(|s| s.markdown_source.as_ref())
+            .and_then(|ms| ms.original_law_xml.clone());
+        let (rendered, source_map, law_sections, law_lint, orig_xml) =
+            self.render_initial_source_for_dialect(target, &flow_arc, prev_orig_xml);
+
+        let editor_entity = self
+            .doc_state()
+            .and_then(|s| s.markdown_source.as_ref())
+            .map(|ms| ms.editor.clone());
+        if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
+            ms.suppress_source_event = true;
+            ms.dialect = target;
+            ms.current_text = rendered.clone();
+            ms.source_map = source_map;
+            ms.law_sections = law_sections;
+            ms.law_lint = law_lint;
+            ms.original_law_xml = orig_xml;
+            ms.dirty = false;
+            ms.visual_dirty = false;
+            ms.authority = SyncAuthority::Idle;
+            ms.last_error = None;
+            ms.last_synced_flow = Some(flow_arc.clone());
+            ms.last_seen_flow = Some(flow_arc);
+            ms.last_synced_source_line = None;
+            ms.last_synced_visual_para = None;
+            ms.active_block_index = None;
+        }
+        if let Some(editor) = editor_entity {
+            editor.update(cx, |state, cx| {
+                state.set_highlighter(target.language_id(), cx);
+                state.set_value(rendered, window, cx);
+            });
+        }
+        if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
+            ms.suppress_source_event = false;
+        }
+        cx.notify();
+        window.refresh();
+    }
+
+    /// Toggle between Visual view and Markdown/Lawtext Split/Source view (⌘⇧M / View > Markdown Source).
     pub(crate) fn toggle_markdown_source_mode(
         &mut self,
         window: &mut Window,
@@ -882,7 +1013,7 @@ impl SlideEditor {
         }
     }
 
-    /// Switch from rendered view to Markdown source view (defaults to Split).
+    /// Switch from rendered view to Markdown / Lawtext / e-Gov XML source view (defaults to Split).
     pub(crate) fn enter_markdown_source_mode(
         &mut self,
         window: &mut Window,
@@ -897,32 +1028,139 @@ impl SlideEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let dialect = self.default_source_dialect();
+        self.enter_markdown_view_mode_with_dialect(mode, dialect, window, cx);
+    }
+
+    fn render_initial_source_for_dialect(
+        &self,
+        dialect: SourceDialect,
+        flow_arc: &Arc<FlowDocument>,
+        existing_orig_xml: Option<String>,
+    ) -> (
+        String,
+        MarkdownSourceMap,
+        Vec<SectionSpan>,
+        Option<ibis_lawtext::LintReport>,
+        Option<String>,
+    ) {
+        let disk_raw = self.read_unmodified_law_raw_text();
+        let orig_xml = existing_orig_xml.or_else(|| {
+            disk_raw
+                .as_deref()
+                .filter(|raw| ibis_lawtext::is_law_xml(raw.as_bytes()))
+                .map(ToOwned::to_owned)
+        });
+
+        match dialect {
+            SourceDialect::Markdown => {
+                let (initial, source_map) = if let Some((orig_text, orig_map, orig_doc)) = self
+                    .source
+                    .as_ref()
+                    .and_then(|s| s.original_markdown())
+                {
+                    ibis_formats::markdown::patch_markdown_from_visual_edit(
+                        orig_text,
+                        orig_doc,
+                        orig_map,
+                        flow_arc,
+                        &self.presentation().media,
+                    )
+                } else {
+                    ibis_formats::markdown::export_markdown_with_source_map(
+                        flow_arc,
+                        &self.presentation().media,
+                    )
+                };
+                let lint = if self.is_law_document() {
+                    ibis_lawtext::parse_markdown_law(&initial)
+                        .ok()
+                        .map(|law| ibis_lawtext::lint_law(&law))
+                } else {
+                    None
+                };
+                (initial, source_map, Vec::new(), lint, orig_xml)
+            }
+            SourceDialect::Lawtext => {
+                let initial = if !self.document.is_dirty()
+                    && let Some(raw) = disk_raw.as_deref()
+                    && !ibis_lawtext::is_law_xml(raw.as_bytes())
+                {
+                    raw.to_owned()
+                } else {
+                    ibis_lawtext::export_presentation_to_lawtext(self.presentation()).unwrap_or_else(
+                        |_| ibis_formats::markdown::export_markdown(flow_arc, &self.presentation().media),
+                    )
+                };
+                let lint = ibis_lawtext::parse_lawtext(&initial)
+                    .ok()
+                    .map(|law| ibis_lawtext::lint_law(&law));
+                let sections = law_section_spans(&initial, SourceDialect::Lawtext);
+                (initial, MarkdownSourceMap::default(), sections, lint, orig_xml)
+            }
+            SourceDialect::LawXml => {
+                let initial = if !self.document.is_dirty()
+                    && let Some(xml) = orig_xml.as_deref()
+                {
+                    xml.to_owned()
+                } else if let Some(xml) = orig_xml.as_deref()
+                    && let Ok(md) = ibis_formats::markdown::export_presentation_to_markdown(self.presentation())
+                    && let Ok(patch) = ibis_lawtext::apply_law_source_edits(
+                        xml,
+                        &md,
+                        ibis_lawtext::LawEditFormat::Markdown,
+                    )
+                    && let Some(patched_xml) = patch.xml
+                {
+                    patched_xml
+                } else {
+                    ibis_lawtext::export_presentation_to_law_xml(self.presentation()).unwrap_or_else(
+                        |_| ibis_formats::markdown::export_markdown(flow_arc, &self.presentation().media),
+                    )
+                };
+                let lint = ibis_lawtext::parse_law_xml(&initial)
+                    .ok()
+                    .map(|law| ibis_lawtext::lint_law(&law));
+                let sections = law_section_spans(&initial, SourceDialect::LawXml);
+                let xml_baseline = orig_xml.or_else(|| {
+                    ibis_lawtext::is_law_xml(initial.as_bytes()).then(|| initial.clone())
+                });
+                (initial, MarkdownSourceMap::default(), sections, lint, xml_baseline)
+            }
+        }
+    }
+
+    fn read_unmodified_law_raw_text(&self) -> Option<String> {
+        if let Some(bytes) = self.web_law_source_bytes()
+            && let Ok(s) = std::str::from_utf8(bytes)
+        {
+            return Some(s.to_owned());
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if self.is_law_path()
+            && let Some(path) = self.current_path()
+            && let Ok(raw) = std::fs::read_to_string(path)
+        {
+            return Some(raw);
+        }
+        None
+    }
+
+    fn enter_markdown_view_mode_with_dialect(
+        &mut self,
+        mode: MarkdownViewMode,
+        dialect: SourceDialect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if mode == MarkdownViewMode::Visual || self.is_markdown_source_mode() {
             return;
         }
         let Some(flow_arc) = self.presentation().flow.clone() else {
             return;
         };
-        // Preserve original hand-formatted Markdown when opening Split/Source on a `.md` file,
-        // surgically patching only blocks modified since open.
-        let (initial, source_map) = if let Some((orig_text, orig_map, orig_doc)) = self
-            .source
-            .as_ref()
-            .and_then(|s| s.original_markdown())
-        {
-            ibis_formats::markdown::patch_markdown_from_visual_edit(
-                orig_text,
-                orig_doc,
-                orig_map,
-                &flow_arc,
-                &self.presentation().media,
-            )
-        } else {
-            ibis_formats::markdown::export_markdown_with_source_map(
-                &flow_arc,
-                &self.presentation().media,
-            )
-        };
+        let (initial, source_map, law_sections, law_lint, original_law_xml) =
+            self.render_initial_source_for_dialect(dialect, &flow_arc, None);
         let readonly = self.is_read_only()
             || self.is_jtd_read_only()
             || self.is_viewing_mode()
@@ -930,13 +1168,13 @@ impl SlideEditor {
 
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
-                .language("markdown")
+                .language(dialect.language_id())
                 .line_number(true)
                 .soft_wrap(true)
                 .folding(true)
                 .searchable(true)
                 .default_value(initial.clone());
-            state.set_highlighter_factory(markdown_highlighter_factory(), cx);
+            state.set_highlighter_factory(multi_source_highlighter_factory(), cx);
             state.set_readonly(readonly, cx);
             state
         });
@@ -956,6 +1194,9 @@ impl SlideEditor {
                 if let Some(doc_state) = this.doc_state_mut() {
                     doc_state.characters = chars;
                     if let Some(ms) = doc_state.markdown_source.as_mut() {
+                        if ms.dialect != SourceDialect::Markdown {
+                            ms.law_sections = law_section_spans(&text, ms.dialect);
+                        }
                         ms.current_text = text;
                         ms.dirty = true;
                         ms.visual_dirty = false;
@@ -974,18 +1215,25 @@ impl SlideEditor {
 
         editor.update(cx, |s, cx| s.focus(window, cx));
 
-        let active_block_index = self
-            .doc_state()
-            .and_then(|s| s.caret)
-            .and_then(|c| source_map.span_for_para(c.para))
-            .map(|s| s.block_index);
+        let active_block_index = if dialect == SourceDialect::Markdown {
+            self.doc_state()
+                .and_then(|s| s.caret)
+                .and_then(|c| source_map.span_for_para(c.para))
+                .map(|s| s.block_index)
+        } else {
+            None
+        };
 
         if let Some(state) = self.doc_state_mut() {
             state.markdown_source = Some(MarkdownSourceState {
                 mode,
+                dialect,
                 editor,
                 current_text: initial,
                 source_map,
+                law_sections,
+                law_lint,
+                original_law_xml,
                 dirty: false,
                 visual_dirty: false,
                 authority: SyncAuthority::Idle,
@@ -1080,29 +1328,135 @@ impl SlideEditor {
         }
     }
 
+    fn find_law_paragraph_for_title(&self, title: &str) -> Option<u32> {
+        let flow = self.presentation().flow.as_ref()?;
+        let normalized = title.trim();
+        if normalized.is_empty() {
+            return None;
+        }
+        for block in &flow.body {
+            if let Block::Paragraph(p) = block {
+                let text = p.text();
+                let t = text.trim();
+                if t == normalized
+                    || t.starts_with(normalized)
+                    || (normalized.starts_with('第') && t.contains(normalized))
+                {
+                    return Some(p.id);
+                }
+            }
+        }
+        None
+    }
+
+    fn find_law_section_for_paragraph(&self, para_id: u32, sections: &[SectionSpan]) -> Option<usize> {
+        let flow = self.presentation().flow.as_ref()?;
+        let mut target_idx = None;
+        for (idx, block) in flow.body.iter().enumerate() {
+            if let Block::Paragraph(p) = block
+                && p.id == para_id
+            {
+                target_idx = Some(idx);
+                break;
+            }
+        }
+        let target_idx = target_idx?;
+        // Walk backwards from the caret paragraph to find the nearest article/chapter heading.
+        for block in flow.body[..=target_idx].iter().rev() {
+            if let Block::Paragraph(p) = block {
+                let text = p.text();
+                let t = text.trim();
+                if t.is_empty() {
+                    continue;
+                }
+                if let Some(span) = sections.iter().find(|s| {
+                    s.title.as_deref().is_some_and(|title| {
+                        t == title || t.starts_with(title) || (title.starts_with('第') && t.contains(title))
+                    })
+                }) {
+                    return Some(span.index);
+                }
+            }
+        }
+        None
+    }
+
     fn sync_split_cursor_and_scroll(
         &mut self,
         source_focused: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some((sync_enabled, dirty, visual_dirty, editor_entity, last_line, last_para)) = self
-            .doc_state()
-            .and_then(|s| s.markdown_source.as_ref())
-            .map(|ms| {
-                (
-                    ms.sync_scroll_enabled,
-                    ms.dirty,
-                    ms.visual_dirty,
-                    ms.editor.clone(),
-                    ms.last_synced_source_line,
-                    ms.last_synced_visual_para,
-                )
-            })
+        let Some((dialect, sync_enabled, dirty, visual_dirty, editor_entity, last_line, last_para)) =
+            self.doc_state()
+                .and_then(|s| s.markdown_source.as_ref())
+                .map(|ms| {
+                    (
+                        ms.dialect,
+                        ms.sync_scroll_enabled,
+                        ms.dirty,
+                        ms.visual_dirty,
+                        ms.editor.clone(),
+                        ms.last_synced_source_line,
+                        ms.last_synced_visual_para,
+                    )
+                })
         else {
             return;
         };
 
         if !sync_enabled || dirty || visual_dirty {
+            return;
+        }
+
+        if dialect != SourceDialect::Markdown {
+            if source_focused {
+                let line = editor_entity.read(cx).cursor_position().line as usize;
+                if Some(line) == last_line {
+                    return;
+                }
+                let matched = self
+                    .doc_state()
+                    .and_then(|s| s.markdown_source.as_ref())
+                    .and_then(|ms| section_for_line(&ms.law_sections, line))
+                    .map(|span| (span.index, span.title.clone()));
+                if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
+                    ms.last_synced_source_line = Some(line);
+                    ms.active_block_index = matched.as_ref().map(|(idx, _)| *idx);
+                }
+                if let Some((_, Some(title))) = matched
+                    && let Some(para_id) = self.find_law_paragraph_for_title(&title)
+                {
+                    self.scroll_visual_to_paragraph_preserving_focus(para_id, cx);
+                }
+            } else {
+                let Some(para_id) = self.doc_state().and_then(|s| s.caret).map(|p| p.para) else {
+                    return;
+                };
+                if Some(para_id) == last_para {
+                    return;
+                }
+                let sections = self
+                    .doc_state()
+                    .and_then(|s| s.markdown_source.as_ref())
+                    .map(|ms| ms.law_sections.clone())
+                    .unwrap_or_default();
+                let target = self
+                    .find_law_section_for_paragraph(para_id, &sections)
+                    .and_then(|idx| sections.get(idx))
+                    .map(|span| (span.index, span.byte_range.start, span.line_range.start));
+                if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
+                    ms.last_synced_visual_para = Some(para_id);
+                    ms.active_block_index = target.map(|(idx, _, _)| idx);
+                    if let Some((_, _, start_line)) = target {
+                        ms.last_synced_source_line = Some(start_line);
+                    }
+                }
+                if let Some((_, start_byte, _)) = target {
+                    editor_entity.update(cx, |state, cx| {
+                        state.set_selected_range(start_byte..start_byte, cx);
+                    });
+                }
+            }
             return;
         }
 
@@ -1220,13 +1574,13 @@ impl SlideEditor {
             return;
         }
 
-        // When both sides are clean and synchronized, keep cursor & viewport aligned via SourceMap.
+        // When both sides are clean and synchronized, keep cursor & viewport aligned via SourceMap/LawSections.
         self.sync_split_cursor_and_scroll(source_focused, cx);
     }
 
-    /// Export or surgically patch the current WYSIWYG `FlowDocument` back into the Markdown
-    /// `EditorState`, preserving untouched source formatting, scroll offset, and suppressing
-    /// recursive change events.
+    /// Export or surgically patch the current WYSIWYG `FlowDocument` back into the source
+    /// `EditorState` (Markdown, Lawtext, or e-Gov XML), preserving untouched source formatting,
+    /// scroll offset, and suppressing recursive change events.
     pub(crate) fn sync_visual_to_markdown_source(
         &mut self,
         window: &mut Window,
@@ -1235,39 +1589,98 @@ impl SlideEditor {
         let Some(flow_arc) = self.presentation().flow.clone() else {
             return;
         };
-        let Some((editor_entity, prev_text, prev_map, prev_synced_flow)) = self
+        let Some((dialect, editor_entity, prev_text, prev_map, prev_synced_flow, orig_xml)) = self
             .doc_state()
             .and_then(|s| s.markdown_source.as_ref())
             .map(|ms| {
                 (
+                    ms.dialect,
                     ms.editor.clone(),
                     ms.current_text.clone(),
                     ms.source_map.clone(),
                     ms.last_synced_flow.clone(),
+                    ms.original_law_xml.clone(),
                 )
             })
         else {
             return;
         };
 
-        let (exported, next_map) = if let Some(prev_flow) = prev_synced_flow.as_deref() {
-            ibis_formats::markdown::patch_markdown_from_visual_edit(
-                &prev_text,
-                prev_flow,
-                &prev_map,
-                &flow_arc,
-                &self.presentation().media,
-            )
-        } else {
-            ibis_formats::markdown::export_markdown_with_source_map(
-                &flow_arc,
-                &self.presentation().media,
-            )
+        let (exported, next_map, next_sections, next_lint) = match dialect {
+            SourceDialect::Markdown => {
+                let (md, map) = if let Some(prev_flow) = prev_synced_flow.as_deref() {
+                    ibis_formats::markdown::patch_markdown_from_visual_edit(
+                        &prev_text,
+                        prev_flow,
+                        &prev_map,
+                        &flow_arc,
+                        &self.presentation().media,
+                    )
+                } else {
+                    ibis_formats::markdown::export_markdown_with_source_map(
+                        &flow_arc,
+                        &self.presentation().media,
+                    )
+                };
+                let lint = if self.is_law_document() {
+                    ibis_lawtext::parse_markdown_law(&md)
+                        .ok()
+                        .map(|law| ibis_lawtext::lint_law(&law))
+                } else {
+                    None
+                };
+                (md, map, Vec::new(), lint)
+            }
+            SourceDialect::Lawtext | SourceDialect::LawXml => {
+                let md = ibis_formats::markdown::export_markdown(
+                    &flow_arc,
+                    &self.presentation().media,
+                );
+                let law = match ibis_lawtext::parse_markdown_law(&md) {
+                    Ok(law) => law,
+                    Err(err) => {
+                        let msg: SharedString = err.to_string().into();
+                        if let Some(ms) =
+                            self.doc_state_mut().and_then(|s| s.markdown_source.as_mut())
+                        {
+                            ms.last_error = Some(msg);
+                            ms.visual_dirty = false;
+                            ms.authority = SyncAuthority::Idle;
+                        }
+                        cx.notify();
+                        return;
+                    }
+                };
+                let lint = Some(ibis_lawtext::lint_law(&law));
+                let rendered = if dialect == SourceDialect::Lawtext {
+                    ibis_lawtext::to_lawtext(&law)
+                } else {
+                    let xml_base = orig_xml.as_deref().or_else(|| {
+                        ibis_lawtext::is_law_xml(prev_text.as_bytes()).then_some(prev_text.as_str())
+                    });
+                    if let Some(base) = xml_base
+                        && let Ok(patch) = ibis_lawtext::apply_law_source_edits(
+                            base,
+                            &md,
+                            ibis_lawtext::LawEditFormat::Markdown,
+                        )
+                        && let Some(patched_xml) = patch.xml
+                    {
+                        patched_xml
+                    } else {
+                        ibis_lawtext::to_law_xml(&law)
+                    }
+                };
+                let sections = law_section_spans(&rendered, dialect);
+                (rendered, MarkdownSourceMap::default(), sections, lint)
+            }
         };
 
         if exported == prev_text {
             if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
                 ms.source_map = next_map;
+                ms.law_sections = next_sections;
+                ms.law_lint = next_lint;
                 ms.last_synced_flow = Some(flow_arc.clone());
                 ms.last_seen_flow = Some(flow_arc);
                 ms.visual_dirty = false;
@@ -1287,6 +1700,8 @@ impl SlideEditor {
         if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
             ms.current_text = exported;
             ms.source_map = next_map;
+            ms.law_sections = next_sections;
+            ms.law_lint = next_lint;
             ms.dirty = false;
             ms.visual_dirty = false;
             ms.authority = SyncAuthority::Idle;
@@ -1299,13 +1714,13 @@ impl SlideEditor {
         cx.notify();
     }
 
-    /// Sync dirty Markdown source edits back into `FlowDocument` without leaving source view.
-    /// Returns `true` if synced (or nothing to sync), `false` on parse error.
+    /// Sync dirty Markdown / Lawtext / e-Gov XML source edits back into `FlowDocument` without
+    /// leaving source view. Returns `true` if synced (or nothing to sync), `false` on parse error.
     pub(crate) fn sync_markdown_source_if_dirty(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some((text, dirty)) = self
+        let Some((dialect, text, dirty)) = self
             .doc_state()
             .and_then(|s| s.markdown_source.as_ref())
-            .map(|m| (m.current_text.clone(), m.dirty))
+            .map(|m| (m.dialect, m.current_text.clone(), m.dirty))
         else {
             return true;
         };
@@ -1313,7 +1728,54 @@ impl SlideEditor {
             return true;
         }
 
-        let applied = self.replace_markdown_text(&text, cx);
+        let (markdown_to_apply, law_lint, law_sections, updated_xml) = match dialect {
+            SourceDialect::Markdown => {
+                let lint = if self.is_law_document() {
+                    ibis_lawtext::parse_markdown_law(&text)
+                        .ok()
+                        .map(|law| ibis_lawtext::lint_law(&law))
+                } else {
+                    None
+                };
+                (text.clone(), lint, Vec::new(), None)
+            }
+            SourceDialect::Lawtext => match ibis_lawtext::parse_lawtext(&text) {
+                Ok(law) => {
+                    let lint = Some(ibis_lawtext::lint_law(&law));
+                    let md = ibis_lawtext::to_markdown(&law);
+                    let sections = law_section_spans(&text, SourceDialect::Lawtext);
+                    (md, lint, sections, None)
+                }
+                Err(err) => {
+                    let msg: SharedString = err.to_string().into();
+                    if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
+                        ms.last_error = Some(msg.clone());
+                    }
+                    self.set_status(msg.to_string(), cx);
+                    cx.notify();
+                    return false;
+                }
+            },
+            SourceDialect::LawXml => match ibis_lawtext::parse_law_xml(&text) {
+                Ok(law) => {
+                    let lint = Some(ibis_lawtext::lint_law(&law));
+                    let md = ibis_lawtext::to_markdown(&law);
+                    let sections = law_section_spans(&text, SourceDialect::LawXml);
+                    (md, lint, sections, Some(text.clone()))
+                }
+                Err(err) => {
+                    let msg: SharedString = err.to_string().into();
+                    if let Some(ms) = self.doc_state_mut().and_then(|s| s.markdown_source.as_mut()) {
+                        ms.last_error = Some(msg.clone());
+                    }
+                    self.set_status(msg.to_string(), cx);
+                    cx.notify();
+                    return false;
+                }
+            },
+        };
+
+        let applied = self.replace_markdown_text(&markdown_to_apply, cx);
         if applied {
             self.relayout_now(cx);
             let synced_flow = self.presentation().flow.clone();
@@ -1326,6 +1788,13 @@ impl SlideEditor {
                 ms.last_error = None;
                 ms.last_synced_source_line = None;
                 ms.last_synced_visual_para = None;
+                ms.law_lint = law_lint;
+                if dialect != SourceDialect::Markdown {
+                    ms.law_sections = law_sections;
+                }
+                if let Some(xml) = updated_xml {
+                    ms.original_law_xml = Some(xml);
+                }
             }
         }
         applied
@@ -1426,13 +1895,16 @@ impl SlideEditor {
         true
     }
 
-    /// Compact mode strip shown for Markdown source/split views and `.md` files:
-    /// displays live sync status, active SourceMap block indicator, sync-scroll toggle,
+    /// Compact mode strip shown for Markdown / Lawtext / e-Gov XML source/split views:
+    /// displays live sync status, active SourceMap/article indicator, live 法制執務 Lint badge,
+    /// dialect switcher (`Lawtext | XML | MD`) for statutes, sync-scroll toggle,
     /// and `[Source | Split | Visual]` 3-way switcher.
     pub(crate) fn render_markdown_mode_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let mode = self.markdown_view_mode();
         let ms = self.doc_state().and_then(|s| s.markdown_source.as_ref());
+        let dialect = self.source_dialect();
+        let is_law = self.is_law_document() || dialect != SourceDialect::Markdown;
 
         let status_label = match ms {
             Some(ms) if ms.mode == MarkdownViewMode::Split && (ms.dirty || ms.visual_dirty) => {
@@ -1447,15 +1919,54 @@ impl SlideEditor {
             .filter(|ms| ms.mode == MarkdownViewMode::Split)
             .and_then(|ms| {
                 let idx = ms.active_block_index?;
-                let span = ms.source_map.span_for_block(idx)?;
-                let start_l = span.line_range.start + 1;
-                let end_l = span.line_range.end.max(start_l);
-                if start_l == end_l {
-                    Some(format!("L{start_l} ↔ #{}", idx + 1))
+                if ms.dialect != SourceDialect::Markdown {
+                    let span = ms.law_sections.get(idx)?;
+                    let start_l = span.line_range.start + 1;
+                    let end_l = span.line_range.end.max(start_l);
+                    let line_part = if start_l == end_l {
+                        format!("L{start_l}")
+                    } else {
+                        format!("L{start_l}–{end_l}")
+                    };
+                    let label = span.title.as_deref().unwrap_or("条文");
+                    Some(format!("{line_part} ↔ {label}"))
                 } else {
-                    Some(format!("L{start_l}–{end_l} ↔ #{}", idx + 1))
+                    let span = ms.source_map.span_for_block(idx)?;
+                    let start_l = span.line_range.start + 1;
+                    let end_l = span.line_range.end.max(start_l);
+                    if start_l == end_l {
+                        Some(format!("L{start_l} ↔ #{}", idx + 1))
+                    } else {
+                        Some(format!("L{start_l}–{end_l} ↔ #{}", idx + 1))
+                    }
                 }
             });
+
+        let lint_badge = ms.and_then(|ms| ms.law_lint.as_ref()).map(|report| {
+            let total = report.findings.len();
+            let (label, is_err, is_warn) = if report.error_count > 0 {
+                (format!("Lint ✕ {}", report.error_count), true, false)
+            } else if report.warning_count > 0 {
+                (format!("Lint ⚠ {}", report.warning_count), false, true)
+            } else if total > 0 {
+                (format!("Lint ℹ {total}"), false, false)
+            } else {
+                ("Lint ✓".to_string(), false, false)
+            };
+            let tooltip_text = if report.findings.is_empty() {
+                "法制執務 Lint: 指摘事項なし".to_string()
+            } else {
+                report
+                    .findings
+                    .iter()
+                    .take(6)
+                    .map(|f| format!("[{}] {}: {}", f.code, f.location, f.message))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            (label, is_err, is_warn, tooltip_text)
+        });
+
         let sync_scroll_enabled = ms.is_some_and(|ms| ms.sync_scroll_enabled);
 
         let mode_btn = |id: &'static str, label_key: &'static str, target: MarkdownViewMode| {
@@ -1484,6 +1995,32 @@ impl SlideEditor {
                 }))
         };
 
+        let dialect_btn = |id: &'static str, label: &'static str, target: SourceDialect| {
+            let active = dialect == target;
+            div()
+                .id(id)
+                .px(px(7.))
+                .py(px(2.))
+                .rounded(px(4.))
+                .cursor_pointer()
+                .text_size(px(10.5))
+                .when(active, |d| {
+                    d.bg(theme.background)
+                        .border_1()
+                        .border_color(theme.border)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.foreground)
+                })
+                .when(!active, |d| {
+                    d.text_color(theme.muted_foreground)
+                        .hover(|h| h.bg(theme.secondary).text_color(theme.foreground))
+                })
+                .child(label)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.set_source_dialect(target, window, cx);
+                }))
+        };
+
         let title = self
             .file_name
             .clone()
@@ -1508,6 +2045,19 @@ impl SlideEditor {
                     .items_center()
                     .gap(px(8.))
                     .min_w_0()
+                    .when(is_law, |row| {
+                        row.child(
+                            div()
+                                .px(px(5.))
+                                .py(px(1.))
+                                .rounded(px(4.))
+                                .bg(theme.secondary)
+                                .text_size(px(10.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.foreground)
+                                .child(dialect.badge_label()),
+                        )
+                    })
                     .child(
                         div()
                             .text_size(px(12.))
@@ -1535,6 +2085,31 @@ impl SlideEditor {
                                 .text_color(theme.muted_foreground)
                                 .child(badge),
                         )
+                    })
+                    .when_some(lint_badge, |row, (label, is_err, is_warn, tip)| {
+                        row.child(
+                            div()
+                                .id("law-lint-badge")
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded(px(4.))
+                                .text_size(px(10.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .when(is_err, |d| {
+                                    d.bg(theme.danger).text_color(theme.danger_foreground)
+                                })
+                                .when(!is_err && is_warn, |d| {
+                                    d.bg(theme.secondary).text_color(theme.foreground)
+                                })
+                                .when(!is_err && !is_warn, |d| {
+                                    d.bg(theme.muted).text_color(theme.muted_foreground)
+                                })
+                                .tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                        .build(window, cx)
+                                })
+                                .child(label),
+                        )
                     }),
             )
             .child(
@@ -1543,6 +2118,33 @@ impl SlideEditor {
                     .flex_row()
                     .items_center()
                     .gap(px(6.))
+                    .when(is_law, |row| {
+                        row.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(2.))
+                                .p(px(2.))
+                                .rounded(px(6.))
+                                .bg(theme.muted)
+                                .child(dialect_btn(
+                                    "law-dialect-lawtext",
+                                    "Lawtext",
+                                    SourceDialect::Lawtext,
+                                ))
+                                .child(dialect_btn(
+                                    "law-dialect-xml",
+                                    "XML",
+                                    SourceDialect::LawXml,
+                                ))
+                                .child(dialect_btn(
+                                    "law-dialect-md",
+                                    "MD",
+                                    SourceDialect::Markdown,
+                                )),
+                        )
+                    })
                     .when(mode == MarkdownViewMode::Split, |row| {
                         row.child(
                             div()
@@ -1563,7 +2165,7 @@ impl SlideEditor {
                                 })
                                 .tooltip(|window, cx| {
                                     gpui_kit::component::tooltip::Tooltip::new(
-                                        "スクロール・カーソル連動 (SourceMap)",
+                                        "スクロール・カーソル連動 (SourceMap / 条文)",
                                     )
                                     .build(window, cx)
                                 })
@@ -1994,5 +2596,85 @@ graph LR
         assert!(patched.contains("```mermaid\ngraph LR\n  A --> B\n```"), "mermaid preserved:\n{patched}");
         let new_span = patched_map.span_for_para(para_id).expect("updated para span");
         assert_eq!(&patched[new_span.byte_range.clone()], "Edited cleanly.");
+    }
+
+    #[test]
+    fn lawtext_and_egov_xml_bidirectional_roundtrip_with_surgical_xml_patch_and_lint() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Law Era="Reiwa" Lang="ja" LawType="Act" Num="001" Year="07">
+  <LawNum>令和七年法律第一号</LawNum>
+  <LawBody>
+    <LawTitle>デジタル手続モデル法</LawTitle>
+    <MainProvision>
+      <Article Num="1">
+        <ArticleCaption>（目的）</ArticleCaption>
+        <ArticleTitle>第一条</ArticleTitle>
+        <Paragraph Num="1">
+          <ParagraphNum></ParagraphNum>
+          <ParagraphSentence><Sentence>この法律は、行政手続の標準化を定める。</Sentence></ParagraphSentence>
+        </Paragraph>
+      </Article>
+      <Article Num="2">
+        <ArticleCaption>（適用）</ArticleCaption>
+        <ArticleTitle>第二条</ArticleTitle>
+        <Paragraph Num="1">
+          <ParagraphNum></ParagraphNum>
+          <ParagraphSentence><Sentence>第一条の規定を準用する。</Sentence></ParagraphSentence>
+        </Paragraph>
+      </Article>
+    </MainProvision>
+  </LawBody>
+</Law>"#;
+
+        // 1. e-Gov XML -> LawDoc -> Markdown -> FlowDocument
+        let law = ibis_lawtext::parse_law_xml(xml).expect("parse law xml");
+        let lint0 = ibis_lawtext::lint_law(&law);
+        assert_eq!(lint0.error_count, 0);
+        let md = ibis_lawtext::to_markdown(&law);
+        let mut media = Vec::new();
+        let (doc, _) = ibis_formats::markdown::reparse_markdown_document_with_source_map(
+            &md,
+            &FlowDocument::default(),
+            &mut media,
+            None,
+            None,
+            None,
+        )
+        .expect("reparse law markdown");
+
+        // 2. Visual edit on FlowDocument -> Markdown -> Lawtext & surgical XML patch
+        let mut edited = doc.clone();
+        let mut changed = false;
+        for block in &mut edited.body {
+            if let Block::Paragraph(p) = block {
+                for run in &mut p.runs {
+                    if let FlowRunKind::Text(t) = &mut run.kind
+                        && t.contains("行政手続の標準化")
+                    {
+                        *t = t.replace("行政手続の標準化", "電子手続の標準化");
+                        changed = true;
+                    }
+                }
+            }
+        }
+        assert!(changed, "expected article 1 text in FlowDocument");
+
+        let edited_md = ibis_formats::markdown::export_markdown(&edited, &media);
+        let edited_law = ibis_lawtext::parse_markdown_law(&edited_md).expect("parse edited law md");
+        let exported_lawtext = ibis_lawtext::to_lawtext(&edited_law);
+        assert!(exported_lawtext.contains("電子手続の標準化"));
+        assert!(exported_lawtext.contains("第一条"));
+        assert!(exported_lawtext.contains("第二条"));
+
+        let patch = ibis_lawtext::apply_law_source_edits(
+            xml,
+            &edited_md,
+            ibis_lawtext::LawEditFormat::Markdown,
+        )
+        .expect("surgical xml patch");
+        let patched_xml = patch.xml.expect("surgical patch xml produced");
+        assert!(patched_xml.contains("電子手続の標準化"));
+        assert!(patched_xml.contains("Era=\"Reiwa\""));
+        assert!(patched_xml.contains("<ArticleTitle>第二条</ArticleTitle>"));
     }
 }
