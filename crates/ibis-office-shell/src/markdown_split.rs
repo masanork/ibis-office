@@ -1045,6 +1045,46 @@ pub struct SplitViewCallbacks {
     pub on_end_split_drag: Rc<dyn Fn(&mut SlideEditor, &mut Context<SlideEditor>)>,
 }
 
+/// Extract a leading YAML frontmatter block (`---\n...\n---\n`) including trailing blank lines,
+/// if present at the top of `text`.
+pub fn extract_leading_frontmatter(text: &str) -> Option<&str> {
+    let lines = split_line_slices(text);
+    let fm_end = detect_frontmatter_end(text, &lines)?;
+    let mut end_idx = fm_end + 1;
+    while let Some(line) = lines.get(end_idx) {
+        if text[line.start..line.end].trim().is_empty() {
+            end_idx += 1;
+        } else {
+            break;
+        }
+    }
+    let byte_end = lines.get(end_idx).map_or(text.len(), |l| l.start);
+    Some(&text[..byte_end])
+}
+
+/// Preserve any leading YAML frontmatter from `prev_text` (such as `type: workbook` or Obsidian
+/// tags/properties) when exporting a workbook back to Markdown.
+pub fn preserve_workbook_frontmatter(prev_text: &str, exported: String) -> String {
+    if exported.trim_start_matches('\u{feff}').starts_with("---\n")
+        || exported.trim_start_matches('\u{feff}').starts_with("---\r\n")
+    {
+        return exported;
+    }
+    let Some(prefix) = extract_leading_frontmatter(prev_text) else {
+        return exported;
+    };
+    let mut out = String::with_capacity(prefix.len() + exported.len() + 2);
+    out.push_str(prefix);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if !out.ends_with("\n\n") && !out.ends_with("\r\n\r\n") {
+        out.push('\n');
+    }
+    out.push_str(exported.trim_start_matches(['\r', '\n']));
+    out
+}
+
 impl SlideEditor {
     /// True when this editor's open file path or file name has a `.md` / `.markdown` extension.
     pub fn is_markdown_path(&self) -> bool {
@@ -1057,6 +1097,14 @@ impl SlideEditor {
         from_path
             .or(from_name)
             .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+    }
+
+    /// True when this embedded editor should automatically enter bidirectional Markdown `Split`
+    /// view on initial open (e.g. `.md` notes, Marp decks, and workbooks inside `SoraneWorkspace`).
+    pub fn should_auto_open_markdown_split(&self) -> bool {
+        self.embedded_chrome
+            .is_some_and(|policy| policy.default_markdown_split)
+            && self.is_markdown_path()
     }
 
     /// Ensure all raster/SVG media embedded in `self.presentation().media` (including Marp Mermaid
@@ -1552,5 +1600,18 @@ not_a_slide: true
         assert_eq!(clamp_split_ratio(0.95), MAX_SPLIT_RATIO);
         assert_eq!(clamp_split_ratio(f32::NAN), DEFAULT_SPLIT_RATIO);
         assert_eq!(clamp_split_ratio(0.5), 0.5);
+    }
+
+    #[::core::prelude::v1::test]
+    fn preserve_workbook_frontmatter_keeps_obsidian_yaml_properties() {
+        let prev = "---\ntype: workbook\ntags: [budget, 2026]\n---\n\n| Item | Cost |\n| --- | --- |\n| A | 10 |\n";
+        let exported = "<!-- xlsx-sheet \"Sheet1\" -->\n\n## Sheet1\n\n| Item | Cost |\n| --- | --- |\n| A | 20 |\n".to_string();
+        let merged = preserve_workbook_frontmatter(prev, exported);
+        assert!(merged.starts_with("---\ntype: workbook\ntags: [budget, 2026]\n---\n\n"));
+        assert!(merged.contains("| A | 20 |"));
+
+        let no_fm = "<!-- xlsx-sheet \"Sheet1\" -->\n\n## Sheet1\n";
+        let unchanged = preserve_workbook_frontmatter(no_fm, "## Sheet1\n".to_string());
+        assert_eq!(unchanged, "## Sheet1\n");
     }
 }

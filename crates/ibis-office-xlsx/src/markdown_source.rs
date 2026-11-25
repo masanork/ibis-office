@@ -501,7 +501,7 @@ impl SlideEditor {
         };
 
         let exported = match ibis_formats::markdown::export_workbook_markdown(self.presentation()) {
-            Ok(md) => md,
+            Ok(md) => crate::shell::markdown_split::preserve_workbook_frontmatter(&prev_text, md),
             Err(err) => {
                 let msg: SharedString = err.to_string().into();
                 if let Some(ms) = self

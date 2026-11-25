@@ -230,11 +230,13 @@ pub struct State {
     pub(crate) visio_hover_site: Option<(u64, u32)>,
     /// Active bidirectional Marp Markdown Split / Source view state.
     pub(crate) markdown_source: Option<crate::shell::markdown_split::MarkdownSplitHost>,
+    /// True once initial workspace auto-Split initialization has been evaluated.
+    pub(crate) auto_split_initialized: bool,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { mermaid_edit: None, slideshow: None, master_view: None, notes_format: None, animation_copy: None, photo_album: None, section_panel: None, layout_panel: None, print_panel: None, #[cfg(feature = "export")] edit_points: None, path_draw: None, notes_marks_panel: None, print_settings: Default::default(), folded_sections: Default::default(), section_selection: None, cell_size_panel: None, comments: None, animation_pane: false, animation_expanded: Default::default(), animation_drag_folded: Vec::new(), animation_table: Default::default(), animation_dnd: Default::default(), sidebar_settings: None, smartart_text_pane: false, smartart_reorder: Default::default(), animation_options_panel: None, reading_order_pane: None, link_panel: None, clips: Vec::new(), transition_sound: None, clip_hover: None, clip_seek: None, clip_volume: Default::default(), timing_panel: None, show_panel: None, notes_field: None, notes_hidden: false, notes_touched: Default::default(), pane_width: None, notes_height: notes::PANE_HEIGHT, notes_open_percent: None, pane_drag: None, grid_view: false, outline_view: false, outline_edit: None, ink: None, math_panel: None, notes_page_view: false, slide_selection: Vec::new(), properties_panel: None, inspect_panel: None, accessibility_panel: None, compatibility_panel: None, slide_zoom_dialog: None, section_zoom_dialog: None, summary_zoom_dialog: None, compare_panel: None, audio_record: None, threed_panel: None, record_preview: None, screen_reader: None, ribbon_qat: None, trust_center: None, visio_auto_connect: true, visio_fill_override: None, visio_hover_site: None, markdown_source: None }
+        Self { mermaid_edit: None, slideshow: None, master_view: None, notes_format: None, animation_copy: None, photo_album: None, section_panel: None, layout_panel: None, print_panel: None, #[cfg(feature = "export")] edit_points: None, path_draw: None, notes_marks_panel: None, print_settings: Default::default(), folded_sections: Default::default(), section_selection: None, cell_size_panel: None, comments: None, animation_pane: false, animation_expanded: Default::default(), animation_drag_folded: Vec::new(), animation_table: Default::default(), animation_dnd: Default::default(), sidebar_settings: None, smartart_text_pane: false, smartart_reorder: Default::default(), animation_options_panel: None, reading_order_pane: None, link_panel: None, clips: Vec::new(), transition_sound: None, clip_hover: None, clip_seek: None, clip_volume: Default::default(), timing_panel: None, show_panel: None, notes_field: None, notes_hidden: false, notes_touched: Default::default(), pane_width: None, notes_height: notes::PANE_HEIGHT, notes_open_percent: None, pane_drag: None, grid_view: false, outline_view: false, outline_edit: None, ink: None, math_panel: None, notes_page_view: false, slide_selection: Vec::new(), properties_panel: None, inspect_panel: None, accessibility_panel: None, compatibility_panel: None, slide_zoom_dialog: None, section_zoom_dialog: None, summary_zoom_dialog: None, compare_panel: None, audio_record: None, threed_panel: None, record_preview: None, screen_reader: None, ribbon_qat: None, trust_center: None, visio_auto_connect: true, visio_fill_override: None, visio_hover_site: None, markdown_source: None, auto_split_initialized: false }
     }
 }
 
@@ -333,6 +335,7 @@ impl crate::shell::format::GestureView for State {
             visio_fill_override: _,
             visio_hover_site: _,
             markdown_source: _,
+            auto_split_initialized: _,
         } = self;
         GestureSnapshot {
             slide_selection: slide_selection.clone(),
@@ -967,6 +970,19 @@ impl FormatEditor for Presentation {
 
     fn before_render(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
         editor.sync_selection();
+        let needs_auto_split = editor
+            .pptx_mut()
+            .is_some_and(|s| !std::mem::replace(&mut s.auto_split_initialized, true));
+        if needs_auto_split
+            && editor.should_auto_open_markdown_split()
+            && !editor.pptx_is_markdown_source_mode()
+        {
+            editor.pptx_set_markdown_view_mode(
+                crate::shell::markdown_split::MarkdownViewMode::Split,
+                window,
+                cx,
+            );
+        }
         editor.poll_pptx_markdown_bidirectional_sync(window, cx);
     }
 

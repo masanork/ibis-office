@@ -37,6 +37,8 @@ pub(crate) enum WorkspaceCommand {
     NavigateBack,
     NavigateForward,
     NewMarkdownNote,
+    NewMarpDeck,
+    NewMarkdownWorkbook,
     OpenDailyNote,
     OpenVaultFolder,
     RefreshVault,
@@ -133,6 +135,18 @@ const ALL_COMMANDS: &[(WorkspaceCommand, &str, &str, Option<&str>)] = &[
         "新規 Markdown ノートを作成 (New Note)",
         "Vault に新しい .md ファイルを作成",
         Some("⌥⌘N"),
+    ),
+    (
+        WorkspaceCommand::NewMarpDeck,
+        "新規 Marp スライドを作成 (New Marp Deck)",
+        "Marp プレゼンテーション (.md) を作成して分割ビューで開く",
+        None,
+    ),
+    (
+        WorkspaceCommand::NewMarkdownWorkbook,
+        "新規ワークブック Markdown を作成 (New Workbook Markdown)",
+        "GFM テーブルと数式を含むスプレッドシート (.md) を作成して分割ビューで開く",
+        None,
     ),
     (
         WorkspaceCommand::OpenVaultFolder,
@@ -429,6 +443,8 @@ impl SoraneWorkspace {
                 self.navigate_pane_forward(self.active_pane, window, cx)
             }
             WorkspaceCommand::NewMarkdownNote => self.new_markdown_note(window, cx),
+            WorkspaceCommand::NewMarpDeck => self.new_marp_deck(window, cx),
+            WorkspaceCommand::NewMarkdownWorkbook => self.new_workbook_markdown(window, cx),
             WorkspaceCommand::OpenDailyNote => self.open_daily_note(window, cx),
             WorkspaceCommand::OpenVaultFolder => self.pick_vault_folder(window, cx),
             WorkspaceCommand::RefreshVault => self.refresh_vault_folder(window, cx),

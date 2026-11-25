@@ -940,18 +940,7 @@ impl SoraneWorkspace {
 
     pub(crate) fn new_markdown_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(vault) = self.vault.clone() {
-            let mut index = 1usize;
-            let note_path = loop {
-                let candidate = if index == 1 {
-                    vault.root().join("Untitled.md")
-                } else {
-                    vault.root().join(format!("Untitled {index}.md"))
-                };
-                if !candidate.exists() {
-                    break candidate;
-                }
-                index += 1;
-            };
+            let note_path = crate::session::next_numbered_markdown_path(vault.root(), "Untitled");
             if std::fs::write(&note_path, "# Untitled\n\n").is_ok() {
                 self.refresh_vault_folder(window, cx);
                 self.open_path_in_active_pane(note_path, window, cx);
@@ -959,6 +948,35 @@ impl SoraneWorkspace {
             }
         }
         self.new_tab_in_pane(self.active_pane, Some(Kind::Document), window, cx);
+    }
+
+    pub(crate) fn new_marp_deck(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(vault) = self.vault.clone() {
+            let deck_path = crate::session::next_numbered_markdown_path(vault.root(), "Slides");
+            if std::fs::write(&deck_path, crate::session::DEFAULT_MARP_TEMPLATE).is_ok() {
+                self.refresh_vault_folder(window, cx);
+                self.open_path_in_active_pane(deck_path, window, cx);
+                return;
+            }
+        }
+        self.new_tab_in_pane(self.active_pane, Some(Kind::Presentation), window, cx);
+    }
+
+    pub(crate) fn new_workbook_markdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(vault) = self.vault.clone() {
+            let sheet_path = crate::session::next_numbered_markdown_path(vault.root(), "Workbook");
+            if std::fs::write(
+                &sheet_path,
+                crate::session::DEFAULT_WORKBOOK_MARKDOWN_TEMPLATE,
+            )
+            .is_ok()
+            {
+                self.refresh_vault_folder(window, cx);
+                self.open_path_in_active_pane(sheet_path, window, cx);
+                return;
+            }
+        }
+        self.new_tab_in_pane(self.active_pane, Some(Kind::Workbook), window, cx);
     }
 
     pub(crate) fn close_tab(
@@ -2114,6 +2132,44 @@ impl SoraneWorkspace {
                         .when(self.left_panel != LeftPanelKind::Git, |col| {
                             col.child(div().p_2().child(Input::new(&self.vault_filter).small()))
                         })
+                        .when(
+                            self.left_panel == LeftPanelKind::Vault && self.vault.is_some(),
+                            |col| {
+                                col.child(
+                                    h_flex()
+                                        .px_2()
+                                        .pb(px(6.))
+                                        .gap_1()
+                                        .child(
+                                            Button::new("ws-vault-new-note")
+                                                .ghost()
+                                                .xsmall()
+                                                .label("+ ノート")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.new_markdown_note(window, cx);
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("ws-vault-new-marp")
+                                                .ghost()
+                                                .xsmall()
+                                                .label("+ Marp")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.new_marp_deck(window, cx);
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("ws-vault-new-sheet")
+                                                .ghost()
+                                                .xsmall()
+                                                .label("+ 表")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.new_workbook_markdown(window, cx);
+                                                })),
+                                        ),
+                                )
+                            },
+                        )
                         .when_some(self.vault_status.clone(), |col, msg| {
                             col.child(
                                 div()

@@ -406,7 +406,11 @@ pub fn chrome_policy_for(
 pub fn badge_for_path_and_kind(path: Option<&Path>, kind: Kind) -> &'static str {
     if let Some(ext) = path.and_then(|p| p.extension()).and_then(|e| e.to_str()) {
         if ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown") {
-            return "MD";
+            return match kind {
+                Kind::Presentation => "MARP",
+                Kind::Workbook => "SHEET",
+                _ => "MD",
+            };
         }
         if ext.eq_ignore_ascii_case("jtd") || ext.eq_ignore_ascii_case("jtt") {
             return "JTD";
@@ -634,6 +638,13 @@ mod tests {
         let md = chrome_policy_for(Some(Path::new("notes/arch.md")), None, Kind::Document, false, None, None);
         assert!(!md.show_toolbar);
         assert!(!md.show_right_sidebar);
+        assert!(md.default_markdown_split);
+
+        let marp = chrome_policy_for(Some(Path::new("deck.md")), None, Kind::Presentation, false, None, None);
+        assert!(marp.default_markdown_split);
+
+        let wb_md = chrome_policy_for(Some(Path::new("budget.md")), None, Kind::Workbook, false, None, None);
+        assert!(wb_md.default_markdown_split);
 
         let md_override = chrome_policy_for(
             Some(Path::new("notes/arch.md")),
@@ -645,17 +656,31 @@ mod tests {
         );
         assert!(md_override.show_toolbar);
         assert!(md_override.show_right_sidebar);
+        assert!(md_override.default_markdown_split);
 
         let docx = chrome_policy_for(Some(Path::new("spec.docx")), None, Kind::Document, false, None, None);
         assert!(docx.show_toolbar);
         assert!(docx.show_right_sidebar);
+        assert!(!docx.default_markdown_split);
 
         let pdf = chrome_policy_for(Some(Path::new("ref.pdf")), None, Kind::Pdf, true, None, None);
         assert!(!pdf.show_toolbar);
         assert!(!pdf.show_right_sidebar);
+        assert!(!pdf.default_markdown_split);
 
         let jtd = chrome_policy_for(Some(Path::new("doc.jtd")), None, Kind::Document, true, None, None);
         assert!(!jtd.show_toolbar);
+        assert!(!jtd.default_markdown_split);
+    }
+
+    #[test]
+    fn badge_for_path_and_kind_distinguishes_markdown_subtypes() {
+        assert_eq!(badge_for_path_and_kind(Some(Path::new("note.md")), Kind::Document), "MD");
+        assert_eq!(badge_for_path_and_kind(Some(Path::new("deck.md")), Kind::Presentation), "MARP");
+        assert_eq!(badge_for_path_and_kind(Some(Path::new("budget.md")), Kind::Workbook), "SHEET");
+        assert_eq!(badge_for_path_and_kind(Some(Path::new("spec.docx")), Kind::Document), "DOC");
+        assert_eq!(badge_for_path_and_kind(Some(Path::new("slides.pptx")), Kind::Presentation), "PPT");
+        assert_eq!(badge_for_path_and_kind(Some(Path::new("data.xlsx")), Kind::Workbook), "XLS");
     }
 
     #[test]

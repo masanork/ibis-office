@@ -366,6 +366,8 @@ pub struct State {
     pub(crate) pending_view_scroll: Option<Point<Pixels>>,
     /// Active bidirectional Workbook Markdown Split / Source view state.
     pub(crate) markdown_source: Option<crate::shell::markdown_split::MarkdownSplitHost>,
+    /// True once initial workspace auto-Split initialization has been evaluated.
+    pub(crate) auto_split_initialized: bool,
 }
 
 pub(crate) const STATUS_SUMMARY_AVG: u8 = 1 << 0;
@@ -594,6 +596,7 @@ impl crate::shell::format::GestureView for State {
             sheet_scrolls,
             pending_view_scroll: _,
             markdown_source: _,
+            auto_split_initialized: _,
         } = self;
         GestureSnapshot {
             cells: cells.clone(),
@@ -1454,7 +1457,7 @@ impl FormatEditor for Workbook {
             _ => None,
         });
         conditional::apply_ahead(sheets.collect());
-        Box::new(State { range_pick: None, range_pick_click_release: false, cells: HashMap::new(), cell_ends: HashMap::new(), cell_drag: false, drag_scroll: None, deselect_drag: None, split_drag: None, jump: sheet_ui::CellJump::new(window, cx), cell_edit: None, bar_bounds: Default::default(), bar_marked_rect: Default::default(), bar_expanded: false, bar_visual_lines: Vec::new(), bar_caret_row:None, bar_shapes:Vec::new(), bar_scroll: ScrollHandle::new(), clip: None, copy_outline: false, header_geometry: Default::default(), header_drag: None, timeline_drag: None, control_drag: None, ruler_margin_drag: None, header_select: None, header_hover: None, header_popup: None, fill_source: None, cell_move: None, fill_copy: false, move_overwrite: None, tab_start: None, painter: None, names: None, validation: None, validation_warning: None, list_popup: None, validation_choices: None, validation_rejected: None, validation_message_bounds: None, filter_panel: None, comment_hover: None, note_card: Default::default(), comment_scroll: ScrollHandle::new(), comment_popup: Default::default(), table_dialog: None, chart_edit: None, last_fill: None, last_paste: None, find: None, spelling: None, link: None, page_setup: false, print_panel: false, header_footer_edit: None, custom_format: None, format_tab: 0, conditional_edit: None, sort_edit: None, panels: Default::default(), links_notice: crate::shell::settings_dialog::links_warning_enabled() && presentation.workbook.as_ref().is_some_and(|w| w.external_books.iter().any(|b| !b.broken && !b.name.is_empty())), border_line: ibis_doc_model::BorderLine::Thin, border_color: ibis_doc_model::Rgb::BLACK, tab_drag: None, tab_scroll: ScrollHandle::new(), tab_reveal: None, tab_last_click: None, group: Vec::new(), right_key: None, dialog_pane_open: false, pivot_pane: Default::default(), show_formula_bar: true, validation_circles: false, unlocked_ranges: HashSet::new(), trace_arrows: Vec::new(), calc_warmup_started: false, print_what: PrintWhat::ActiveSheet, always_create_backup: None, show_all_notes: false, design_mode: false, status_summary_mask: STATUS_SUMMARY_DEFAULT, sheet_scrolls: HashMap::new(), pending_view_scroll: None, markdown_source: None })
+        Box::new(State { range_pick: None, range_pick_click_release: false, cells: HashMap::new(), cell_ends: HashMap::new(), cell_drag: false, drag_scroll: None, deselect_drag: None, split_drag: None, jump: sheet_ui::CellJump::new(window, cx), cell_edit: None, bar_bounds: Default::default(), bar_marked_rect: Default::default(), bar_expanded: false, bar_visual_lines: Vec::new(), bar_caret_row:None, bar_shapes:Vec::new(), bar_scroll: ScrollHandle::new(), clip: None, copy_outline: false, header_geometry: Default::default(), header_drag: None, timeline_drag: None, control_drag: None, ruler_margin_drag: None, header_select: None, header_hover: None, header_popup: None, fill_source: None, cell_move: None, fill_copy: false, move_overwrite: None, tab_start: None, painter: None, names: None, validation: None, validation_warning: None, list_popup: None, validation_choices: None, validation_rejected: None, validation_message_bounds: None, filter_panel: None, comment_hover: None, note_card: Default::default(), comment_scroll: ScrollHandle::new(), comment_popup: Default::default(), table_dialog: None, chart_edit: None, last_fill: None, last_paste: None, find: None, spelling: None, link: None, page_setup: false, print_panel: false, header_footer_edit: None, custom_format: None, format_tab: 0, conditional_edit: None, sort_edit: None, panels: Default::default(), links_notice: crate::shell::settings_dialog::links_warning_enabled() && presentation.workbook.as_ref().is_some_and(|w| w.external_books.iter().any(|b| !b.broken && !b.name.is_empty())), border_line: ibis_doc_model::BorderLine::Thin, border_color: ibis_doc_model::Rgb::BLACK, tab_drag: None, tab_scroll: ScrollHandle::new(), tab_reveal: None, tab_last_click: None, group: Vec::new(), right_key: None, dialog_pane_open: false, pivot_pane: Default::default(), show_formula_bar: true, validation_circles: false, unlocked_ranges: HashSet::new(), trace_arrows: Vec::new(), calc_warmup_started: false, print_what: PrintWhat::ActiveSheet, always_create_backup: None, show_all_notes: false, design_mode: false, status_summary_mask: STATUS_SUMMARY_DEFAULT, sheet_scrolls: HashMap::new(), pending_view_scroll: None, markdown_source: None, auto_split_initialized: false })
     }
 
     /// A worksheet at its own zoom, as Excel shows it.
@@ -1735,6 +1738,19 @@ impl FormatEditor for Workbook {
     /// After the first render completes, warm up the formula dependency index on a background thread.
     fn before_render(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
         if editor.sheet_range_pick_active() { editor.clear_sheet_range_handle_bounds(); editor.update_sheet_range_pick(window, cx); }
+        let needs_auto_split = editor
+            .sheet_state_mut()
+            .is_some_and(|s| !std::mem::replace(&mut s.auto_split_initialized, true));
+        if needs_auto_split
+            && editor.should_auto_open_markdown_split()
+            && !editor.xlsx_is_markdown_source_mode()
+        {
+            editor.xlsx_set_markdown_view_mode(
+                crate::shell::markdown_split::MarkdownViewMode::Split,
+                window,
+                cx,
+            );
+        }
         editor.poll_xlsx_markdown_bidirectional_sync(window, cx);
         if let Some(state) = editor.sheet_state_mut() {
             if !state.calc_warmup_started {
