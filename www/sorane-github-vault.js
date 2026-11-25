@@ -362,7 +362,7 @@ if (!params.has('host')) {
 
     let needsInstallRefresh = false;
 
-    function updateInstallBanner(installed, canCreateRepo, installHref, repoSelection, installSettingsUrl) {
+    function updateInstallBanner(installed, canCreateRepo, installHref, repoSelection, installSettingsUrl, hasSoraneDocsRepo) {
       const href = installHref || session.installUrl;
       if (installed === false && href) {
         needsInstallRefresh = true;
@@ -391,7 +391,7 @@ if (!params.has('host')) {
         installBanner.append(heading, desc, actions);
         return;
       }
-      if (installed === true && canCreateRepo === false) {
+      if (installed === true && canCreateRepo === false && !hasSoraneDocsRepo) {
         needsInstallRefresh = true;
         installBanner.style.display = 'flex';
         installBanner.innerHTML = '';
@@ -443,12 +443,21 @@ if (!params.has('host')) {
         }
         if (res.ok && Array.isArray(data.repos)) {
           allRepos = data.repos;
+          const loginLower = String(session.login || '').toLowerCase();
+          const hasSoraneDocsRepo = allRepos.some(
+            (r) => r.owner?.toLowerCase() === loginLower && r.repo?.toLowerCase() === 'soranedocs',
+          );
+          createBox.style.display = hasSoraneDocsRepo ? 'none' : 'flex';
+          existingHeading.textContent = hasSoraneDocsRepo
+            ? '接続するリポジトリを選択'
+            : 'または既存のリポジトリを選択';
           updateInstallBanner(
             data.installed,
             data.canCreateRepo,
             data.installUrl,
             data.repoSelection,
             data.installSettingsUrl,
+            hasSoraneDocsRepo,
           );
           if (data.installed === false) {
             showStatus('GitHub App がまだインストールされていません。上のボタンからインストールしてください。');

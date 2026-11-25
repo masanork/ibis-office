@@ -501,6 +501,32 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
           403,
         );
       }
+      if (createRes.status === 422) {
+        let installSettingsUrl: string | null = null;
+        try {
+          const instRes = await githubFetch('/user/installations?per_page=20', session.accessToken);
+          if (instRes.ok) {
+            const instData = (await instRes.json()) as {
+              installations?: Array<{ account?: { login?: string }; html_url?: string }>;
+            };
+            const list = instData.installations ?? [];
+            const matched = list.find(i => i.account?.login?.toLowerCase() === session.login.toLowerCase()) ?? list[0];
+            installSettingsUrl = matched?.html_url ?? null;
+          }
+        } catch {
+          /* Best-effort link lookup. */
+        }
+        return json(
+          {
+            error: `リポジトリ ${session.login}/${rawName} はすでに存在するため新規作成できません。既存リポジトリ一覧から選択するか、一覧に表示されない場合は GitHub App のアクセス許可を確認してください。`,
+            alreadyExists: true,
+            fallbackCreateUrl,
+            ...(installSettingsUrl ? { installSettingsUrl } : {}),
+            ...(installUrl ? { installUrl } : {}),
+          },
+          422,
+        );
+      }
       return json(
         {
           error: createData.message || `リポジトリ作成に失敗しました (HTTP ${createRes.status})`,
@@ -515,22 +541,67 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     const branch = createData.default_branch || 'main';
     const repoUrl = createData.html_url || `https://github.com/${owner}/${repo}`;
 
-    // Initialize with an OKF-compliant index.md so the repository is ready to open immediately.
+    // Initialize with an OKF-compliant, structured help index.md so the repository is useful immediately.
     const initialIndex = [
       '---',
       'type: index',
-      `title: ${repo}`,
+      `title: ${repo} — soraneDocs ガイド`,
       'description: Personal knowledge and documents managed with soraneDocs.',
       'profile: sorane-okf/0.1',
       '---',
       '',
       `# ${repo}`,
       '',
-      'soraneDocs で作成したプライベートドキュメントリポジトリです。',
+      'soraneDocs で作成したプライベートドキュメントリポジトリへようこそ。',
+      'このリポジトリは、あなたの文書・メモ・表計算・スライドを安全に保管し、ブラウザやデスクトップから直接編集・保存するための拠点です。',
+      '',
+      '## 1. 基本的な使い方',
+      '',
+      '1. **文書を開く**: スタート画面のリポジトリ一覧からファイルをクリックして開きます。',
+      '2. **編集して保存する**: リポジトリから開いたファイルを保存・ダウンロードすると、確認ダイアログのあとにこのリポジトリへ直接コミットされます。',
+      '3. **リポジトリやフォルダを切り替える**: スタート画面上部の `GitHub: ...` ボタンから、別のリポジトリやサブフォルダ（例: `docs`）を指定できます。',
+      '',
+      '## 2. 対応しているファイル形式',
+      '',
+      '| カテゴリ | 対応拡張子 | 主な用途 |',
+      '| --- | --- | --- |',
+      '| マークダウン・文書 | `.md`, `.markdown` | メモ、議事録、設計書、OKF ナレッジ |',
+      '| オフィス文書 | `.docx`, `.jtd`, `.xdw` | 企画書、契約書、一太郎・DocuWorks 文書 |',
+      '| 表計算・データ | `.xlsx`, `.csv`, `.tsv`, `.json` | 集計表、台帳、データ一覧 |',
+      '| プレゼン・図面 | `.pptx`, `.vsdx` | 発表資料、構成図、フロー図 |',
+      '',
+      '## 3. おすすめのフォルダ構成',
+      '',
+      '```text',
+      `${repo}/`,
+      '├── index.md      # このガイド・全体の目次',
+      '├── notes/        # 日々のメモ・議事録（Markdown）',
+      '├── docs/         # 企画書・仕様書・配布資料（DOCX / XLSX / PPTX）',
+      '└── archive/      # 保管用の参照資料',
+      '```',
+      '',
+      '## 4. OKF メモの書き方ヒント',
+      '',
+      'Markdown ファイルの先頭に YAML フロントマター（`---` で囲んだメタデータ）を記述すると、文書の種別やタグを構造化して管理できます。',
+      '',
+      '```markdown',
+      '---',
+      'type: note',
+      'title: 会議メモ',
+      'tags: [meeting, project]',
+      '---',
+      '',
+      '# 会議メモ',
+      '```',
+      '',
+      '## 5. トラブルシューティング',
+      '',
+      '- **新しいリポジトリが見えない／保存できない場合**: GitHub App（soraneDocs）のインストール設定で、リポジトリアクセスが **All repositories** になっているか、対象リポジトリが許可されているか確認してください。',
+      '- **ログインが切れた場合**: スタート画面上部の GitHub ボタンから再ログインすると、最新のトークンで再接続できます。',
       '',
     ].join('\n');
     const initPayload = JSON.stringify({
-      message: 'Initialize soraneDocs repository with OKF index.md',
+      message: 'Initialize soraneDocs repository with OKF help index.md',
       content: toBase64(new TextEncoder().encode(initialIndex)),
       branch,
     });

@@ -357,12 +357,13 @@ test('POST /api/github/repos/create fails with initFailed when index.md commit i
   }
 });
 
-test('POST /api/github/repos/create succeeds and sets vault cookie when index.md commit succeeds', async () => {
+test('POST /api/github/repos/create succeeds with structured OKF help index.md and sets vault cookie', async () => {
   const sealed = await sealSession(
     { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
     TEST_ENV.GITHUB_SESSION_SECRET,
   );
   const origFetch = globalThis.fetch;
+  let capturedIndexMarkdown = '';
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     if (url.endsWith('/user/repos') && init?.method === 'POST') {
@@ -377,6 +378,8 @@ test('POST /api/github/repos/create succeeds and sets vault cookie when index.md
       );
     }
     if (url.includes('/contents/index.md') && init?.method === 'PUT') {
+      const payload = JSON.parse(String(init.body));
+      capturedIndexMarkdown = Buffer.from(payload.content, 'base64').toString('utf8');
       return new Response(JSON.stringify({ content: { sha: 'abc123' } }), {
         status: 201,
         headers: { 'Content-Type': 'application/json' },
@@ -398,6 +401,58 @@ test('POST /api/github/repos/create succeeds and sets vault cookie when index.md
     assert.equal(body.ok, true);
     assert.deepEqual(body.vault, { owner: 'masanork', repo: 'soraneDocs', branch: 'main', rootPath: '' });
     assert.match(res.headers.get('Set-Cookie') || '', /sorane_gh_session=/);
+    assert.match(capturedIndexMarkdown, /profile: sorane-okf\/0\.1/);
+    assert.match(capturedIndexMarkdown, /## 1\. 基本的な使い方/);
+    assert.match(capturedIndexMarkdown, /## 2\. 対応しているファイル形式/);
+    assert.match(capturedIndexMarkdown, /## 3\. おすすめのフォルダ構成/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('POST /api/github/repos/create returns alreadyExists guidance on 422', async () => {
+  const sealed = await sealSession(
+    { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/user/repos') && init?.method === 'POST') {
+      return new Response(
+        JSON.stringify({ message: 'Repository creation failed.' }),
+        { status: 422, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url.includes('/user/installations')) {
+      return new Response(
+        JSON.stringify({
+          installations: [
+            {
+              account: { login: 'masanork' },
+              html_url: 'https://github.com/settings/installations/42',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/github/repos/create', {
+        method: 'POST',
+        headers: { Cookie: `sorane_gh_session=${sealed}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'soraneDocs' }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(res.status, 422);
+    const body = await res.json();
+    assert.equal(body.alreadyExists, true);
+    assert.equal(body.installSettingsUrl, 'https://github.com/settings/installations/42');
+    assert.match(body.error, /すでに存在するため/);
   } finally {
     globalThis.fetch = origFetch;
   }
