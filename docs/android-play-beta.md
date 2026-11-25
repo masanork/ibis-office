@@ -8,7 +8,7 @@ Android 版 soraneDocs（Application ID: `dev.sorane.docs`）を Google Play Con
 | --- | --- |
 | Application ID | `dev.sorane.docs`（公開後は変更不可） |
 | Activity | `dev.sorane.docs.IbisActivity` |
-| `minSdkVersion` / `targetSdkVersion` | 26 / 35 |
+| `minSdkVersion` / `targetSdkVersion` | 26 / 36 |
 | ABI | `arm64-v8a`（16 KB ページサイズアラインメント検証付き） |
 | `versionName` | `version.txt` の `Android` 行（例: `0.8.9`） |
 | `versionCode` | `git rev-list --first-parent --count HEAD`（`ANDROID_VERSION_CODE` で上書き可） |
