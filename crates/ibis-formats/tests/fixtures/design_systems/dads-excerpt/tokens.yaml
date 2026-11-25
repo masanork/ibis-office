@@ -1,0 +1,59 @@
+# Minimal test excerpt (NOT a vendored copy of the full token set).
+# Source repository: digital-go-jp/design-tokens (MIT)
+# Package: @digital-go-jp/design-tokens v2.1.0
+name: "dads-excerpt"
+source:
+  repository: "digital-go-jp/design-tokens"
+  package: "@digital-go-jp/design-tokens"
+  version: "2.1.0"
+  license: "MIT"
+  note: "Minimal excerpt for design-system import and generation tests (not a full vendored token set)"
+colors:
+  primary: "#0017C1"
+  secondary: "#00118F"
+  surface: "#FFFFFF"
+  surface_subtle: "#E8F1FE"
+  text: "#1A1A1C"
+  text_muted: "#4D4D54"
+  link: "#0017C1"
+  visited_link: "#6F2DBD"
+  accents:
+    - "#0017C1"
+    - "#197A4B"
+    - "#EC0000"
+    - "#C74700"
+    - "#006F83"
+    - "#6F2DBD"
+  chart:
+    - "#0017C1"
+    - "#197A4B"
+    - "#EC0000"
+    - "#C74700"
+    - "#006F83"
+    - "#6F2DBD"
+typography:
+  font_family: "Noto Sans JP"
+  heading_font_family: "Noto Sans JP"
+  east_asian_font: "Noto Sans JP"
+  mono_font_family: "Noto Sans Mono"
+  sizes:
+    body: 12
+    h1: 24
+    h2: 18
+    h3: 15
+    h4: 13.5
+    h5: 12
+    h6: 10.5
+    slide_cover_title: 42.75
+    slide_title: 27
+    slide_body: 18
+  line_height: 1.5
+spacing:
+  paragraph_after: 6
+  heading_before: 12
+  heading_after: 6
+  scale:
+    "2": 6
+    "4": 12
+slide_size:
+  preset: "16:9"

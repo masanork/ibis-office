@@ -1,0 +1,17 @@
+# DOCX style mapping declarations (format definition and loading only in this increment).
+styles:
+  body:
+    docx_style: "Normal"
+    description: "本文段落"
+  heading_1:
+    docx_style: "Heading1"
+    based_on: "Normal"
+    description: "大見出し"
+  heading_2:
+    docx_style: "Heading2"
+    based_on: "Normal"
+    description: "中見出し"
+  heading_3:
+    docx_style: "Heading3"
+    based_on: "Normal"
+    description: "小見出し"

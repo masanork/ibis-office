@@ -1,0 +1,45 @@
+/*
+ * Minimal test excerpt (NOT a vendored copy of the full token set).
+ * Source repository: digital-go-jp/design-tokens (MIT)
+ * Package: @digital-go-jp/design-tokens v2.1.0 (tokens.css / tokens-simple.css format)
+ */
+:root {
+  /* Core DADS blues & neutrals */
+  --color-primitive-blue-50: #e8f1fe;
+  --color-primitive-blue-900: #0017c1;
+  --color-primitive-blue-1000: #00118f;
+  --color-neutral-white: #ffffff;
+  --color-neutral-solid-gray-900: #1a1a1c;
+  --color-neutral-solid-gray-700: #4d4d54;
+
+  /* Accent / chart hues */
+  --color-primitive-green-800: #197a4b;
+  --color-primitive-red-800: #ec0000;
+  --color-primitive-orange-800: #c74700;
+  --color-primitive-cyan-800: #006f83;
+  --color-primitive-purple-800: #6f2dbd;
+
+  /* Semantic aliases */
+  --color-semantic-accent-primary: var(--color-primitive-blue-900);
+  --color-semantic-background-base: var(--color-neutral-white);
+  --color-semantic-background-subtle: var(--color-primitive-blue-50);
+  --color-semantic-text-body: var(--color-neutral-solid-gray-900);
+  --color-semantic-link-default: var(--color-primitive-blue-900);
+
+  /* Typography scale */
+  --font-family-sans: "Noto Sans JP", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-family-mono: "Noto Sans Mono", monospace;
+  --font-size-14: 0.875rem;
+  --font-size-16: 1rem;
+  --font-size-18: 1.125rem;
+  --font-size-20: 1.25rem;
+  --font-size-24: 1.5rem;
+  --font-size-32: 2rem;
+  --font-size-36: 2.25rem;
+  --font-size-57: 3.5625rem;
+  --line-height-150: 1.5;
+
+  /* Spacing excerpt */
+  --spacing-2: 8px;
+  --spacing-4: 16px;
+}
