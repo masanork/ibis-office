@@ -7,7 +7,7 @@ GitHubの既定ブランチも`sorane`とし、機能・修正は個別ブラン
 | 対象 | 用途 |
 | --- | --- |
 | `origin` | `https://github.com/ibisjp/ibis-office`。upstreamの取得元 |
-| remote `masanork` | `https://github.com/masanork/ibis-office.git`。既定push先 |
+| remote `masanork` | `https://github.com/sorane-dev/docs.git`。既定push先 |
 | branch `sorane` | 完成した機能を統合する最新版。追跡先は`masanork/sorane` |
 | `feat/*`、`fix/*`等 | 個別の開発。統合後、作業が完了した枝は削除 |
 
