@@ -1,50 +1,48 @@
-# PlantUML 基本シーケンス図から Mermaid への機械変換
+# PlantUML シーケンス図の共有 IR ネイティブ描画と Mermaid 変換
 
-追加 crate を使わず、既存の PlantUML 基本シーケンス図を Mermaid `sequenceDiagram` へ機械変換し、内蔵の Mermaid 描画器（`ibis_formats::mermaid`）で SVG 確認するための変換範囲と非対応境界をまとめます（関連: #188）。
+追加 crate を使わず、内蔵 Mermaid 描画器（`crates/ibis-formats/src/mermaid/`）のレイアウト・SVG 描画資産を共有して PlantUML シーケンス図を扱うための 2 つの経路と対応境界をまとめます（関連: #188）。
 
-- 実装: `crates/ibis-formats/src/mermaid/plantuml.rs`（`convert_plantuml_sequence` / `render_plantuml_sequence`）
-- 検証用 CLI: `cargo run --locked -p ibis-formats --example plantuml_sequence_convert -- <input.puml> [--svg <out.svg>]`
-- 変換結果（`PlantUmlConversion`）は常に **原本（`original`）をそのまま保持**し、対応外または一部情報が落ちる構文を **1 始まりの行番号・種別（`kind`）・原文抜粋・理由**付きで返します。
+- **共有 IR ネイティブ描画（`render_plantuml_sequence_native`）**: PlantUML シーケンス図を直接 [`SeqDiagram`](../crates/ibis-formats/src/mermaid/sequence.rs) IR へ構築し、既存の `sequence.rs` SVG 描画器で描画します。Mermaid テキスト記法に表現がない `== Divider ==`・`... Delay ...`・`ref over`・境界ゲート・`hide footbox`・`group`・`hnote`/`rnote`・`autonumber` 制御までレイアウト重複なしで描画できます。
+- **Mermaid テキスト移行変換（`convert_plantuml_sequence` / `render_plantuml_sequence`）**: 外部の Mermaid 環境（GitHub / mermaid.js 等）へ持ち出すための標準 `sequenceDiagram` テキストへ変換します。
+- **検証用 CLI**:
+  - Mermaid 移行確認: `cargo run --locked -p ibis-formats --example plantuml_sequence_convert -- <input.puml> [--svg <out.svg>]`
+  - 共有 IR ネイティブ描画: `cargo run --locked -p ibis-formats --example plantuml_sequence_convert -- <input.puml> --native --svg <out.svg>`
 
-## 機械変換できる範囲（Mermaid `sequenceDiagram` に対応）
+どちらの経路も **原本（`original`）をそのまま保持**し、対応外または一部情報が落ちる構文を **1 始まりの行番号・種別（`kind`）・原文抜粋・理由**付きで返します。
 
-| 領域 | PlantUML 構文 | Mermaid 変換先 | 備考 |
+## 1. 両経路で共通に対応する基本範囲
+
+| 領域 | PlantUML 構文 | ネイティブ IR | Mermaid テキスト移行 |
 | --- | --- | --- | --- |
-| 外枠・注釈 | `@startuml` / `@enduml`、`'` 行コメント、`/' ... '/` ブロックコメント | `sequenceDiagram`、`%% ...` | `@enduml` 以降は無視 |
-| メタ情報 | `title ...`、複数行 `title ... end title`、`autonumber` | `title ...`、`autonumber` | 複数行タイトルは ` / ` で連結 |
-| 参加者 | `participant`、`actor`、`boundary`、`control`、`entity`、`database`、`collections`、`queue` | `participant` / `actor` / `@{ "type": ... }` | `"表示名" as 別名`・`別名 as "表示名"`・引用符付き名・ハイフン/空白/日本語識別子に対応 |
-| 参加者の並び順・リンク・枠 | トップレベルの `order N`、`url of X is [[url title]]`、`box "Title" [#Color] ... end box` | 宣言順の安定ソート、`link X: title @ url`、`box ... end` | `order` の既定値は `0`。`box` 併用時や `create` 上の `order` は並び替えず `layout` 診断 |
-| ライフサイクル | `create` / `destroy` / `activate` / `deactivate`、矢印略記 `++` / `--` / `--++` / `++--` / `**` / `!!`、`return [label]` | `create participant` / `destroy` / `activate` / `deactivate` / `+` / `-` / `B-->>-A: ...` | `return` は直前の `++` またはメッセージ直後の `activate` と対にして変換 |
-| メッセージ矢印 | `->` / `-->` / `->>` / `-->>`、`<-` / `<--` / `<<-` / `<<--`、`->x` / `-->x` / `x<-` / `x<--`、`<->` / `<-->` / `<<->>` / `<<-->>`、`->o` / `o->` / `o->o` / `<-o` / `o<-` / `o<-o`（破線含む）、片矢印（`-\` / `-/` / `--\` / `--/` 等の左右）、`-[dashed]->` / `-[dotted]->` / `-[plain]->` | `->>` / `-->>` / `->` / `-->` / `-x` / `--x` / `<<->>` / `<<-->>` / `()` 端点 / `-)` / `--)` | 逆向き矢印は送受信を入れ替えて変換。ラベル内 `\n` は ` / ` に置換 |
-| 注記 | `note left of` / `right of` / `over`（1〜複数参加者）、複数行 `note ... end note`、暗黙の `note left` / `note right` | `Note left of` / `right of` / `over A,B` | 3 者以上の `note over A, B, C` は両端 `Note over A,C` に変換 |
-| 基本的な分岐・反復 | `alt` / `else`、`opt`、`loop`、`par`（内部の `else` は `and` へ）、`break`、`critical`（`option` / `else`）、`end` | 同名の Mermaid フラグメント | 空ラベルのフラグメントは `-` で補完 |
+| 外枠・注釈・メタ情報 | `@startuml`/`@enduml`、`'`、`/' ... '/`、単行/複数行 `title`、`autonumber` | 対応 | 対応 |
+| 参加者 | `participant` / `actor` / `boundary` / `control` / `entity` / `database` / `collections` / `queue`、両方向の `as`、トップレベル `order N`、`url of X is [[url title]]`、`box ... end box` | 対応（識別子変換不要） | 対応（識別子を自動サニタイズ） |
+| ライフサイクル | `create` / `destroy` / `activate` / `deactivate`、`++` / `--` / `--++` / `++--` / `**` / `!!`、`return [label]`（`++` および直前メッセージ後の `activate` に対応） | 対応 | 対応 |
+| メッセージ矢印 | 実線・破線・開矢印・失われたメッセージ・双方向・始点/終点/両端 `o`・左右逆向き・片矢印（`-\` / `-/` 等）・`-[dashed]->` / `-[dotted]->` / `-[plain]->` | 対応 | 対応 |
+| 注記・基本分岐 | 単行/複数行 `note left/right of` / `over`（1〜3 者以上）・暗黙 `note left`/`right`、`alt`/`else`/`opt`/`loop`/`par`→`and`/`break`/`critical`/`option`/`end` | 対応 | 対応 |
 
-## Mermaid では表現できないため対象外とするもの（諦める範囲）
+## 2. Mermaid テキスト記法にないため共有 IR ネイティブ描画でのみ対応するもの
 
-Mermaid `sequenceDiagram`（および内蔵描画器）に対応する意味構造がないため、以下は **変換せず原本保持＋行番号付き診断**にとどめます。
+以下は Mermaid 標準のテキスト記法には存在しない（または近似になる）ため、**Mermaid テキスト移行では行番号付き診断を出し、共有 IR ネイティブ描画（`render_plantuml_sequence_native`）ではそのまま描画**します。
 
-### 変換自体を中止するもの（`mermaid: None`）
-
-| 種別（`kind`） | 対象構文の例 | 対象外とする理由 |
+| 構文 | 共有 IR ネイティブ描画 | Mermaid テキスト移行 |
 | --- | --- | --- |
-| `timing` | `robust`、`concise`、`clock`、`binary`、`analog`、`mode`、`@0` / `@+100` | Mermaid にタイミング図相当がなく、時間軸・状態遷移波形・制約の意味が失われるため |
-| `diagram-type` | `@startgantt` / `@startmindmap` / `@startjson` / `@startsalt` 等の非 `@startuml`、`class` / `interface` / `enum` / `state` / `usecase` / `component` / `node` / `package` / `[*] -->` 等 | シーケンス図以外の UML・図種は本変換の対象外のため |
+| `hide footbox` | 対応（下部アクター枠を省略） | 非対応（`styling` 診断） |
+| `== セクション ==` | 対応（二重線＋中央見出し） | 非対応（`divider` 診断） |
+| `... [待機] ...` | 対応（ライフライン破断＋中央注釈） | 非対応（`delay` 診断） |
+| `ref over A, B : ...`（複数行含む） | 対応（`ref` フレーム描画） | 非対応（`reference` 診断） |
+| 境界ゲート `[-> A` / `A ->]` / `[<- A` / `A <-]` | 対応（左右端からの境界矢印） | 非対応（`syntax` 診断） |
+| `group 任意ラベル` / フラグメント背景色 `#Color` | 対応（`group` タグ＋背景色） | `opt` 近似（`fragment` / `styling` 診断） |
+| `hnote` / `rnote` および注記の `#Color` | 対応（六角・角丸なし・塗り色） | 通常 `Note` へ変換（`styling` 診断） |
+| `autonumber <start> [step]` / `stop` / `resume` | 対応（番号制御を反映） | 単純 `autonumber` 化・`stop`/`resume` は診断（`autonumber`） |
+| `note across` | 対応（全参加者確定後に両端へ展開） | 既知範囲で近似（`layout` 診断） |
 
-### 部分変換しつつ行番号付き診断を出すもの（`unsupported` に記録）
+## 3. 共有 IR ネイティブ描画でも対象外とするもの（割り切る範囲）
 
-| 種別（`kind`） | 対象構文の例 | 振る舞いと理由 |
+| 種別（`kind`） | 対象構文の例 | 方針と理由 |
 | --- | --- | --- |
-| `macro` | `!include`、`!define`、`!procedure` / `!function` ... `!endprocedure`、`!if` / `!endif`、`!theme`、`!pragma`、`$macro(...)` | プリプロセッサ展開や外部ファイル読込は行わない（プロシージャ本体はスキップ） |
-| `divider` | `== 後半 ==` | Mermaid `sequenceDiagram` にセクション区切り線がないためスキップ |
-| `delay` | `...`、`... 5分後 ...` | Mermaid に時間経過（遅延）記号がないためスキップ |
-| `reference` | `ref over A, B : ...`（複数行 `ref ... end ref` 含む） | 内蔵 Mermaid 描画器に相互作用参照フレーム（`ref`）がないためスキップ |
-| `layout` | `\|\|\|` / `\|\|45\|\|`、`newpage`、`header` / `footer` / `legend` / `caption`、`scale`、Teoz 並列 `& ...`、`/ note ...`、`note across`、`box` 内や `create` 上の `order N` | ページ分割・余白・並列配置・横並び注記は Mermaid に直接対応がない（`/ note` と `note across` は近似変換しつつ診断を記録） |
-| `fragment` | `group カスタム見出し` | Mermaid に任意ラベルの `group` 枠がないため `opt` に近似しつつ診断を記録 |
-| `autonumber` | `autonumber 10 5`、`autonumber "<b>[000]"`、`autonumber stop` / `resume` / `inc` | Mermaid の `autonumber` は開始番号・増分・書式指定や途中停止に対応しないため |
-| `styling` | `skinparam`、`<style> ... </style>`、`hide` / `show`、参加者や矢印・活性化バー・フラグメント・注記の `#Color` / `<<stereotype>>` / `bold` / `thickness`、`hnote` / `rnote` | 配色・線種装飾・注記形状は落とすが、図の構造（参加者・矢印・分岐・注記本文）は可能な限り変換 |
-| `syntax` | 境界ゲート矢印（`[-> A` / `A ->]`）、`autoactivate`、先行活性化のない `return`、対応のない `else` / `end` / 未閉じブロック、その他未解釈行 | Mermaid に直接の表現がないか、対応関係が閉じない構文として行番号を報告 |
-
-## 運用上の目安
-
-- `PlantUmlConversion::is_lossless()` が `true` の図は、追加 crate なしで Mermaid `sequenceDiagram` として等価に描画・移行できます。
-- `unsupported` が空でない場合は、行番号付きの診断を見て「配色だけ落ちる（`styling`）」のか「意味のある構文が落ちる（`macro` / `divider` / `reference` / `timing` 等）」のかを確認したうえで、原本を保持するか手直しして Mermaid へ移行するかを判断します。
+| `macro` | `!include`、`!define`、`!procedure` / `!function`、`!if` / `!endif`、`!theme`、`!pragma`、`$macro(...)` | テキスト展開言語・外部ファイル参照はオフライン安全性の観点からも展開しない |
+| `timing` | `robust`、`concise`、`clock`、`binary`、`analog`、`mode`、`@0` / `@+100` | 既存 IR とレイアウトモデルが異なるため `output: None`＋行番号診断 |
+| `diagram-type` | `class` / `state` / `usecase` / `er` / `activity` / `@startmindmap` / `@startwbs` / `@startgantt` 等 | Phase 1 のシーケンス IR では `output: None`。Phase 2・3 で既存の `class.rs` / `state.rs` / `usecase.rs` / `er.rs` / `flowchart.rs` / `mindmap.rs` / `treeview.rs` / `gantt.rs` へ段階的に共有 IR 接続する予定 |
+| `styling` | `skinparam`、`<style> ... </style>`、`hide`/`show`（`hide footbox` 除く）、参加者/矢印/活性化バー/`else` の `#Color`・`<<stereotype>>`・`bold` | 構造の描画を優先し、未反映装飾を行番号で報告 |
+| `layout` | `\|\|\|`、`newpage`、`header` / `footer` / `legend` / `caption`、`scale`、Teoz 並列 `& ...`、横並び `/ note ...`、`box`/`create` 上の `order N` | 単一 SVG・1 イベント 1 行モデルと構造が異なるため診断を記録 |
+| `syntax` | `autoactivate`、先行活性化のない `return`、対応のない `else` / `end` / 未閉じブロック、その他未解釈行 | 行番号付きで報告 |

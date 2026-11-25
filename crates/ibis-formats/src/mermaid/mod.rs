@@ -97,7 +97,10 @@ use sankey::*;
 use text::*;
 
 pub use chart::render_chart_spec_svg;
-pub use plantuml::{PlantUmlConversion, PlantUmlUnsupported, convert_plantuml_sequence};
+pub use plantuml::{
+    PlantUmlConversion, PlantUmlNativeRender, PlantUmlUnsupported, convert_plantuml_sequence,
+    render_plantuml_sequence_native,
+};
 
 /// Convert a PlantUML basic sequence diagram to Mermaid and render it with the existing
 /// Mermaid sequence renderer when conversion produced a sequence diagram.

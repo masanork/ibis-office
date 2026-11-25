@@ -2061,6 +2061,1400 @@ fn find_styled_arrow(expr: &str) -> Option<ArrowMatch> {
     None
 }
 
+/// Result of natively rendering a PlantUML diagram through the shared internal IR and
+/// existing SVG renderer, without going through Mermaid text serialization.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlantUmlNativeRender {
+    /// Original PlantUML source preserved verbatim.
+    pub original: String,
+    /// Rendered SVG output when the diagram is supported natively.
+    pub output: Option<super::MermaidOutput>,
+    /// Unsupported constructs remaining even in native IR rendering, with 1-based line numbers.
+    pub unsupported: Vec<PlantUmlUnsupported>,
+}
+
+impl PlantUmlNativeRender {
+    /// True when native rendering produced an output with zero unsupported constructs.
+    pub fn is_lossless(&self) -> bool {
+        self.output.is_some() && self.unsupported.is_empty()
+    }
+}
+
+/// Natively render a PlantUML sequence diagram through the shared [`super::sequence::SeqDiagram`]
+/// IR and existing sequence SVG renderer, preserving the original source verbatim and
+/// reporting only constructs that remain unsupported even natively.
+pub fn render_plantuml_sequence_native(source: &str) -> PlantUmlNativeRender {
+    let original = source.to_string();
+    let (diagram, unsupported) = parse_plantuml_sequence_ir(source);
+    let output = diagram
+        .as_ref()
+        .and_then(super::sequence::render_seq_diagram_svg)
+        .map(|(bytes, width_px, height_px)| super::MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        });
+    PlantUmlNativeRender {
+        original,
+        output,
+        unsupported,
+    }
+}
+
+struct NativePendingNote {
+    line: usize,
+    from: usize,
+    to: usize,
+    pos: super::sequence::SeqNotePos,
+    shape: super::sequence::SeqNoteShape,
+    color: Option<String>,
+    is_across: bool,
+    lines: Vec<String>,
+}
+
+struct NativePendingRef {
+    line: usize,
+    from: usize,
+    to: usize,
+    lines: Vec<String>,
+}
+
+struct ParsedGate<'a> {
+    target: &'a str,
+    incoming: bool,
+    from_left: bool,
+    label: &'a str,
+    dashed: bool,
+    open_arrow: bool,
+    cross_end: bool,
+}
+
+fn parse_gate_message(line: &str) -> Option<ParsedGate<'_>> {
+    let (expr, label) = match split_colon_outside_quotes(line) {
+        Some((e, l)) => (e.trim(), l.trim()),
+        None => (line.trim(), ""),
+    };
+    // Left-edge boundary gates: `[-> A`, `[--> A`, `[->> A`, `[-->> A`, `[->x A`, `[-->x A`, `[<- A`, `[<-- A`, `[<<- A`, `[<<-- A`.
+    if let Some(after_bracket) = expr.strip_prefix('[') {
+        const LEFT_GATES: &[(&str, bool, bool, bool, bool)] = &[
+            ("-->x", true, true, false, true),
+            ("->x", true, false, false, true),
+            ("-->>", true, true, true, false),
+            ("->>", true, false, true, false),
+            ("<<--", false, true, true, false),
+            ("<<-", false, false, true, false),
+            ("-->", true, true, false, false),
+            ("->", true, false, false, false),
+            ("<--", false, true, false, false),
+            ("<-", false, false, false, false),
+        ];
+        for &(pat, incoming, dashed, open_arrow, cross_end) in LEFT_GATES {
+            if let Some(rest) = after_bracket.strip_prefix(pat) {
+                let (target_clean, _) = split_trailing_color(rest.trim());
+                let (target, _, _, _, _) = strip_message_modifiers(target_clean);
+                if !target.is_empty() {
+                    return Some(ParsedGate {
+                        target,
+                        incoming,
+                        from_left: true,
+                        label,
+                        dashed,
+                        open_arrow,
+                        cross_end,
+                    });
+                }
+            }
+        }
+    }
+    // Right-edge boundary gates: `A ->]`, `A -->]`, `A ->>]`, `A -->>]`, `A ->x]`, `A -->x]`, `A <-]`, `A <--]`, `A <<-]`, `A <<--]`.
+    if let Some(before_bracket) = expr.strip_suffix(']') {
+        let before_bracket = before_bracket.trim_end();
+        const RIGHT_GATES: &[(&str, bool, bool, bool, bool)] = &[
+            ("-->x", false, true, false, true),
+            ("->x", false, false, false, true),
+            ("-->>", false, true, true, false),
+            ("->>", false, false, true, false),
+            ("<<--", true, true, true, false),
+            ("<<-", true, false, true, false),
+            ("-->", false, true, false, false),
+            ("->", false, false, false, false),
+            ("<--", true, true, false, false),
+            ("<-", true, false, false, false),
+        ];
+        for &(pat, incoming, dashed, open_arrow, cross_end) in RIGHT_GATES {
+            if let Some(target_raw) = before_bracket.strip_suffix(pat) {
+                let target = target_raw.trim();
+                if !target.is_empty() {
+                    return Some(ParsedGate {
+                        target,
+                        incoming,
+                        from_left: false,
+                        label,
+                        dashed,
+                        open_arrow,
+                        cross_end,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_trailing_color(s: &str) -> (&str, Option<String>) {
+    let (clean, had_color) = split_trailing_color(s);
+    if had_color {
+        let color = s[clean.len()..].trim().to_string();
+        (clean, (!color.is_empty()).then_some(color))
+    } else {
+        (s, None)
+    }
+}
+
+fn extract_leading_fragment_color(rest: &str) -> (&str, Option<String>) {
+    let mut s = rest.trim_start();
+    let mut first_color: Option<String> = None;
+    while let Some(after_hash) = s.strip_prefix('#') {
+        let token_len = after_hash
+            .find(char::is_whitespace)
+            .unwrap_or(after_hash.len());
+        let token = &after_hash[..token_len];
+        if !token.is_empty()
+            && token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/'))
+        {
+            if first_color.is_none() {
+                first_color = Some(format!("#{token}"));
+            }
+            s = after_hash[token_len..].trim_start();
+        } else {
+            break;
+        }
+    }
+    (s.trim(), first_color)
+}
+
+fn map_seq_kind(kind: ParticipantKind) -> (bool, Option<super::sequence::SeqKind>) {
+    use super::sequence::SeqKind;
+    match kind {
+        ParticipantKind::Participant => (false, None),
+        ParticipantKind::Actor => (true, None),
+        ParticipantKind::Boundary => (false, Some(SeqKind::Boundary)),
+        ParticipantKind::Control => (false, Some(SeqKind::Control)),
+        ParticipantKind::Entity => (false, Some(SeqKind::Entity)),
+        ParticipantKind::Database => (false, Some(SeqKind::Database)),
+        ParticipantKind::Collections => (false, Some(SeqKind::Collections)),
+        ParticipantKind::Queue => (false, Some(SeqKind::Queue)),
+    }
+}
+
+fn parse_autonumber_args(arg: &str) -> Option<super::sequence::SeqAutonumberOp> {
+    use super::sequence::SeqAutonumberOp;
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return Some(SeqAutonumberOp::Start { start: 1, step: 1 });
+    }
+    if arg.eq_ignore_ascii_case("stop") {
+        return Some(SeqAutonumberOp::Stop);
+    }
+    if arg.eq_ignore_ascii_case("resume") {
+        return Some(SeqAutonumberOp::Resume);
+    }
+    let parts: Vec<&str> = arg.split_whitespace().collect();
+    if parts.len() == 1
+        && let Ok(start) = parts[0].parse::<usize>()
+    {
+        return Some(SeqAutonumberOp::Start { start, step: 1 });
+    }
+    if parts.len() == 2
+        && let (Ok(start), Ok(step)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>())
+    {
+        return Some(SeqAutonumberOp::Start { start, step });
+    }
+    None
+}
+
+fn parse_plantuml_sequence_ir(
+    source: &str,
+) -> (Option<super::sequence::SeqDiagram>, Vec<PlantUmlUnsupported>) {
+    use super::sequence::{
+        SeqAutonumberOp, SeqBox, SeqDiagram, SeqItem, SeqNotePos, SeqNoteShape, SeqParticipant,
+    };
+
+    let mut unsupported: Vec<PlantUmlUnsupported> = Vec::new();
+    let mut participants: Vec<SeqParticipant> = Vec::new();
+    let mut part_orders: Vec<(i32, usize, bool, usize, String)> = Vec::new();
+    let mut alias_map: HashMap<String, usize> = HashMap::new();
+    let mut items: Vec<SeqItem> = Vec::new();
+    let mut boxes: Vec<SeqBox> = Vec::new();
+    let mut blocks: Vec<(BlockKind, usize)> = Vec::new();
+    let mut activation_stack: Vec<(usize, usize)> = Vec::new();
+    let mut last_message: Option<(usize, usize)> = None;
+    let mut last_participant: Option<usize> = None;
+    let mut pending_create: Vec<usize> = Vec::new();
+    let mut pending_destroy: Vec<usize> = Vec::new();
+    let mut created_at: HashMap<usize, usize> = HashMap::new();
+    let mut destroyed_at: HashMap<usize, usize> = HashMap::new();
+    let mut across_note_indices: Vec<usize> = Vec::new();
+    let mut autonumber = false;
+    let mut mirror_actors = true;
+    let mut title: Option<String> = None;
+    let mut has_any_order = false;
+    let mut saw_box = false;
+
+    let mut pending_note: Option<NativePendingNote> = None;
+    let mut pending_ref: Option<NativePendingRef> = None;
+    let mut pending_title: Option<(usize, Vec<String>)> = None;
+    let mut skip_until: Option<SkipUntil> = None;
+    let mut in_block_comment = false;
+    let mut saw_enduml = false;
+    let mut non_sequence = false;
+
+    let mut push_unsupported = |line: usize, kind: &'static str, src: &str, reason: &str| {
+        unsupported.push(PlantUmlUnsupported {
+            line,
+            kind,
+            source: excerpt(src, 120),
+            reason: reason.to_string(),
+        });
+    };
+
+    let ensure_participant = |raw: &str,
+                              label: Option<&str>,
+                              is_actor: bool,
+                              kind: Option<super::sequence::SeqKind>,
+                              order: Option<i32>,
+                              line_no: usize,
+                              raw_line: &str,
+                              participants: &mut Vec<SeqParticipant>,
+                              part_orders: &mut Vec<(i32, usize, bool, usize, String)>,
+                              alias_map: &mut HashMap<String, usize>,
+                              boxes: &mut [SeqBox],
+                              in_box: bool|
+     -> usize {
+        let key = strip_quotes(raw.trim()).to_string();
+        let idx = if let Some(&existing) = alias_map.get(&key) {
+            if let Some(lbl) = label {
+                let clean = sanitize_label(lbl);
+                if !clean.is_empty() {
+                    participants[existing].label = clean;
+                }
+                alias_map.entry(lbl.to_string()).or_insert(existing);
+            }
+            if is_actor {
+                participants[existing].is_actor = true;
+            }
+            if kind.is_some() {
+                participants[existing].kind = kind;
+            }
+            if let Some(ord) = order {
+                part_orders[existing].0 = ord;
+                part_orders[existing].2 = true;
+                part_orders[existing].3 = line_no;
+                part_orders[existing].4 = raw_line.to_string();
+            }
+            existing
+        } else {
+            let idx = participants.len();
+            let display = sanitize_label(label.unwrap_or(&key));
+            participants.push(SeqParticipant {
+                _id: key.clone(),
+                label: if display.is_empty() { key.clone() } else { display },
+                is_actor,
+                kind,
+                links: Vec::new(),
+            });
+            part_orders.push((
+                order.unwrap_or(0),
+                idx,
+                order.is_some(),
+                line_no,
+                raw_line.to_string(),
+            ));
+            alias_map.insert(key, idx);
+            if let Some(lbl) = label {
+                alias_map.entry(lbl.to_string()).or_insert(idx);
+            }
+            idx
+        };
+        if in_box
+            && let Some(seq_box) = boxes.last_mut()
+            && !seq_box.members.contains(&idx)
+        {
+            seq_box.members.push(idx);
+        }
+        idx
+    };
+
+    for (idx, raw_line) in source.lines().enumerate() {
+        let line_no = idx + 1;
+        if saw_enduml {
+            continue;
+        }
+
+        let cleaned = strip_block_comments(raw_line, &mut in_block_comment);
+        let trimmed = cleaned.trim();
+
+        if let Some(mode) = skip_until {
+            let lower = trimmed.to_ascii_lowercase();
+            let done = match mode {
+                SkipUntil::MacroProc => {
+                    lower.starts_with("!endprocedure") || lower.starts_with("!endfunction")
+                }
+                SkipUntil::StyleTag => lower.contains("</style>"),
+                SkipUntil::BraceBlock => trimmed == "}" || trimmed.ends_with('}'),
+                SkipUntil::RefBlock => lower == "end ref" || lower == "endref",
+                SkipUntil::TitleBlock => lower == "end title" || lower == "endtitle",
+                SkipUntil::EndKeyword(end_kw) => lower == end_kw,
+            };
+            if mode == SkipUntil::TitleBlock {
+                if done {
+                    if let Some((_, lines)) = pending_title.take() {
+                        let joined = sanitize_label(&lines.join(" / "));
+                        if !joined.is_empty() {
+                            title = Some(joined);
+                        }
+                    }
+                    skip_until = None;
+                } else if let Some((_, lines)) = pending_title.as_mut()
+                    && !trimmed.is_empty()
+                {
+                    lines.push(trimmed.to_string());
+                }
+            } else if done {
+                skip_until = None;
+            }
+            continue;
+        }
+
+        if let Some(mut note) = pending_note.take() {
+            let lower = trimmed.to_ascii_lowercase();
+            if matches!(
+                lower.as_str(),
+                "end note" | "endnote" | "end hnote" | "end rnote"
+            ) {
+                let text = sanitize_label(&note.lines.join(" / "));
+                if note.is_across {
+                    across_note_indices.push(items.len());
+                }
+                items.push(SeqItem::Note {
+                    from: note.from,
+                    to: note.to,
+                    pos: note.pos,
+                    text,
+                    shape: note.shape,
+                    color: note.color,
+                });
+            } else {
+                if !trimmed.is_empty() {
+                    note.lines.push(trimmed.to_string());
+                }
+                pending_note = Some(note);
+            }
+            continue;
+        }
+
+        if let Some(mut r) = pending_ref.take() {
+            let lower = trimmed.to_ascii_lowercase();
+            if lower == "end ref" || lower == "endref" {
+                let label = sanitize_label(&r.lines.join(" / "));
+                items.push(SeqItem::Ref {
+                    from: r.from,
+                    to: r.to,
+                    label,
+                });
+            } else {
+                if !trimmed.is_empty() {
+                    r.lines.push(trimmed.to_string());
+                }
+                pending_ref = Some(r);
+            }
+            continue;
+        }
+
+        if trimmed.is_empty() || trimmed.starts_with('\'') {
+            continue;
+        }
+
+        let lower = trimmed.to_ascii_lowercase();
+        let in_box = matches!(blocks.last(), Some((BlockKind::Box, _)));
+
+        if lower.starts_with("@start") {
+            let directive = lower.split_whitespace().next().unwrap_or("");
+            if directive != "@startuml" {
+                non_sequence = true;
+                push_unsupported(
+                    line_no,
+                    "diagram-type",
+                    trimmed,
+                    "Only @startuml sequence diagrams are supported in Phase 1 native rendering.",
+                );
+            }
+            continue;
+        }
+        if lower.starts_with("@end") {
+            saw_enduml = true;
+            continue;
+        }
+
+        // Preprocessor macros
+        if trimmed.starts_with('!') {
+            push_unsupported(
+                line_no,
+                "macro",
+                trimmed,
+                "PlantUML preprocessor directives and macros are not expanded.",
+            );
+            if lower.starts_with("!procedure ")
+                || lower.starts_with("!unquoted procedure ")
+                || lower.starts_with("!function ")
+                || lower.starts_with("!unquoted function ")
+            {
+                skip_until = Some(SkipUntil::MacroProc);
+            }
+            continue;
+        }
+        if trimmed.starts_with('$') {
+            push_unsupported(
+                line_no,
+                "macro",
+                trimmed,
+                "PlantUML macro invocations are not expanded.",
+            );
+            continue;
+        }
+
+        if is_timing_statement(trimmed, &lower) {
+            non_sequence = true;
+            push_unsupported(
+                line_no,
+                "timing",
+                trimmed,
+                "PlantUML timing diagrams are outside the shared sequence renderer scope.",
+            );
+            continue;
+        }
+        if is_non_sequence_uml(trimmed, &lower) {
+            non_sequence = true;
+            push_unsupported(
+                line_no,
+                "diagram-type",
+                trimmed,
+                "Non-sequence PlantUML diagram syntax is not handled by the sequence IR parser.",
+            );
+            continue;
+        }
+
+        // Styling / layout
+        if lower.starts_with("skinparam") {
+            push_unsupported(
+                line_no,
+                "styling",
+                trimmed,
+                "skinparam styling directives are not applied by the native renderer.",
+            );
+            if trimmed.ends_with('{') {
+                skip_until = Some(SkipUntil::BraceBlock);
+            }
+            continue;
+        }
+        if lower.starts_with("<style>") {
+            push_unsupported(
+                line_no,
+                "styling",
+                trimmed,
+                "<style> blocks are not applied by the native renderer.",
+            );
+            if !lower.contains("</style>") {
+                skip_until = Some(SkipUntil::StyleTag);
+            }
+            continue;
+        }
+        if lower == "hide footbox" {
+            mirror_actors = false;
+            continue;
+        }
+        if lower.starts_with("hide ") || lower.starts_with("show ") {
+            push_unsupported(
+                line_no,
+                "styling",
+                trimmed,
+                "hide/show directives other than `hide footbox` are not supported.",
+            );
+            continue;
+        }
+        if lower.starts_with("scale ")
+            || lower == "newpage"
+            || lower.starts_with("newpage ")
+            || lower.starts_with("autoactivate ")
+            || lower.starts_with("caption ")
+        {
+            push_unsupported(
+                line_no,
+                "layout",
+                trimmed,
+                "Layout/pagination directive is not supported.",
+            );
+            continue;
+        }
+        if let Some(block_end) = multi_line_unsupported_block(&lower) {
+            push_unsupported(
+                line_no,
+                "layout",
+                trimmed,
+                "header/footer/legend blocks are not supported.",
+            );
+            if !trimmed.contains(' ') || lower == "legend" || lower == "header" || lower == "footer"
+            {
+                skip_until = Some(SkipUntil::EndKeyword(block_end));
+            }
+            continue;
+        }
+        if trimmed == "|||"
+            || (trimmed.starts_with("||") && trimmed.ends_with("||") && trimmed.len() >= 4)
+        {
+            push_unsupported(
+                line_no,
+                "layout",
+                trimmed,
+                "Explicit vertical spacing (|||) is not supported.",
+            );
+            continue;
+        }
+        if trimmed.starts_with("& ") {
+            push_unsupported(
+                line_no,
+                "layout",
+                trimmed,
+                "Teoz parallel prefix (&) is not supported.",
+            );
+            continue;
+        }
+
+        // Native divider: `== Title ==`
+        if trimmed.starts_with("==") && trimmed.ends_with("==") && trimmed.len() >= 4 {
+            let label = sanitize_label(trimmed.trim_matches('=').trim());
+            items.push(SeqItem::Divider { label });
+            continue;
+        }
+
+        // Native delay: `...` or `... 5 minutes later ...`
+        if trimmed.starts_with("...") && trimmed.ends_with("...") {
+            let inner = if trimmed.len() > 6 {
+                trimmed[3..trimmed.len() - 3].trim()
+            } else {
+                ""
+            };
+            items.push(SeqItem::Delay {
+                label: sanitize_label(inner),
+            });
+            continue;
+        }
+
+        // Native interaction-use frame: `ref over A, B : label` or multi-line `ref over A, B\n...\nend ref`
+        if let Some(rest) = strip_prefix_ci(trimmed, "ref over ") {
+            let (targets_raw, inline_label) = match split_colon_outside_quotes(rest) {
+                Some((t, l)) => (t.trim(), Some(sanitize_label(l))),
+                None => (rest.trim(), None),
+            };
+            let targets: Vec<&str> = split_all_commas_outside_quotes(targets_raw)
+                .into_iter()
+                .filter(|t| !t.is_empty())
+                .collect();
+            if targets.is_empty() {
+                push_unsupported(line_no, "syntax", trimmed, "`ref over` requires at least one participant.");
+                continue;
+            }
+            let mut resolved = Vec::with_capacity(targets.len());
+            for t in targets {
+                resolved.push(ensure_participant(
+                    t,
+                    None,
+                    false,
+                    None,
+                    None,
+                    line_no,
+                    trimmed,
+                    &mut participants,
+                    &mut part_orders,
+                    &mut alias_map,
+                    &mut boxes,
+                    in_box,
+                ));
+            }
+            let from = resolved[0];
+            let to = *resolved.last().unwrap();
+            match inline_label {
+                Some(label) => items.push(SeqItem::Ref { from, to, label }),
+                None => {
+                    pending_ref = Some(NativePendingRef {
+                        line: line_no,
+                        from,
+                        to,
+                        lines: Vec::new(),
+                    });
+                }
+            }
+            continue;
+        }
+
+        // Native `autonumber [start] [step]`, `stop`, `resume`
+        if lower == "autonumber" || lower.starts_with("autonumber ") {
+            let arg = trimmed.get(10..).unwrap_or("").trim();
+            if let Some(op) = parse_autonumber_args(arg) {
+                if items.is_empty() && matches!(op, SeqAutonumberOp::Start { start: 1, step: 1 }) {
+                    autonumber = true;
+                } else {
+                    items.push(SeqItem::Autonumber(op));
+                }
+            } else {
+                items.push(SeqItem::Autonumber(SeqAutonumberOp::Start {
+                    start: 1,
+                    step: 1,
+                }));
+                push_unsupported(
+                    line_no,
+                    "autonumber",
+                    trimmed,
+                    "Custom autonumber format string is simplified to numeric autonumber.",
+                );
+            }
+            continue;
+        }
+
+        // `url of <who> is [[<url> <title>]]`
+        if let Some((who_raw, url, link_title)) = parse_participant_url(trimmed) {
+            let pid = ensure_participant(
+                who_raw,
+                None,
+                false,
+                None,
+                None,
+                line_no,
+                trimmed,
+                &mut participants,
+                &mut part_orders,
+                &mut alias_map,
+                &mut boxes,
+                in_box,
+            );
+            let label = sanitize_label(link_title.unwrap_or(url));
+            if !label.is_empty() {
+                participants[pid].links.push(label);
+            }
+            continue;
+        }
+
+        // `title`
+        if lower == "title" {
+            pending_title = Some((line_no, Vec::new()));
+            skip_until = Some(SkipUntil::TitleBlock);
+            continue;
+        }
+        if let Some(rest) = strip_prefix_ci(trimmed, "title ") {
+            let t = sanitize_label(rest.trim());
+            if !t.is_empty() {
+                title = Some(t);
+            }
+            continue;
+        }
+
+        // `box ...` / `end box`
+        if lower == "end box" || lower == "endbox" {
+            if matches!(blocks.last(), Some((BlockKind::Box, _))) {
+                blocks.pop();
+            } else {
+                push_unsupported(
+                    line_no,
+                    "syntax",
+                    trimmed,
+                    "Unexpected `end box` without a matching `box`.",
+                );
+            }
+            continue;
+        }
+        if lower == "box" || lower.starts_with("box ") {
+            saw_box = true;
+            let rest = trimmed.get(3..).unwrap_or("").trim();
+            let (box_title, _color) = parse_box_args(rest);
+            boxes.push(SeqBox {
+                title: sanitize_label(&box_title),
+                members: Vec::new(),
+            });
+            blocks.push((BlockKind::Box, line_no));
+            continue;
+        }
+
+        // Participant declarations
+        if let Some(decl) = parse_participant_declaration(trimmed) {
+            if decl.had_styling {
+                push_unsupported(
+                    line_no,
+                    "styling",
+                    trimmed,
+                    "Participant color or stereotype is not preserved.",
+                );
+            }
+            let (is_actor, kind) = map_seq_kind(decl.kind);
+            if decl.order.is_some() {
+                if decl.is_create || in_box {
+                    push_unsupported(
+                        line_no,
+                        "layout",
+                        trimmed,
+                        "Participant `order` is not preserved inside `box` or on `create`.",
+                    );
+                } else {
+                    has_any_order = true;
+                }
+            }
+            let pid = ensure_participant(
+                &decl.alias,
+                decl.label.as_deref(),
+                is_actor,
+                kind,
+                if decl.is_create || in_box { None } else { decl.order },
+                line_no,
+                trimmed,
+                &mut participants,
+                &mut part_orders,
+                &mut alias_map,
+                &mut boxes,
+                in_box,
+            );
+            if decl.is_create {
+                pending_create.push(pid);
+            }
+            last_participant = Some(pid);
+            continue;
+        }
+
+        // Bare `create <who>`
+        if let Some(rest) = strip_prefix_ci(trimmed, "create ") {
+            let pid = ensure_participant(
+                rest.trim(),
+                None,
+                false,
+                None,
+                None,
+                line_no,
+                trimmed,
+                &mut participants,
+                &mut part_orders,
+                &mut alias_map,
+                &mut boxes,
+                in_box,
+            );
+            pending_create.push(pid);
+            last_participant = Some(pid);
+            continue;
+        }
+
+        // `activate` / `deactivate` / `destroy`
+        if let Some(rest) = strip_prefix_ci(trimmed, "activate ") {
+            let (who_raw, had_color) = split_trailing_color(rest.trim());
+            if had_color {
+                push_unsupported(
+                    line_no,
+                    "styling",
+                    trimmed,
+                    "Activation bar color is not preserved.",
+                );
+            }
+            let pid = ensure_participant(
+                who_raw,
+                None,
+                false,
+                None,
+                None,
+                line_no,
+                trimmed,
+                &mut participants,
+                &mut part_orders,
+                &mut alias_map,
+                &mut boxes,
+                in_box,
+            );
+            if let Some((from, to)) = last_message
+                && to == pid
+            {
+                activation_stack.push((from, pid));
+            }
+            items.push(SeqItem::Activate(pid));
+            last_participant = Some(pid);
+            continue;
+        }
+        if let Some(rest) = strip_prefix_ci(trimmed, "deactivate ") {
+            let pid = ensure_participant(
+                rest.trim(),
+                None,
+                false,
+                None,
+                None,
+                line_no,
+                trimmed,
+                &mut participants,
+                &mut part_orders,
+                &mut alias_map,
+                &mut boxes,
+                in_box,
+            );
+            if let Some(pos) = activation_stack.iter().rposition(|&(_, callee)| callee == pid) {
+                activation_stack.remove(pos);
+            }
+            items.push(SeqItem::Deactivate(pid));
+            continue;
+        }
+        if let Some(rest) = strip_prefix_ci(trimmed, "destroy ") {
+            let pid = ensure_participant(
+                rest.trim(),
+                None,
+                false,
+                None,
+                None,
+                line_no,
+                trimmed,
+                &mut participants,
+                &mut part_orders,
+                &mut alias_map,
+                &mut boxes,
+                in_box,
+            );
+            pending_destroy.push(pid);
+            continue;
+        }
+
+        // `return [label]`
+        if lower == "return" || lower.starts_with("return ") {
+            let label = sanitize_label(trimmed.get(6..).unwrap_or("").trim());
+            if let Some((caller, callee)) = activation_stack.pop() {
+                items.push(SeqItem::Message {
+                    from: callee,
+                    to: caller,
+                    label,
+                    dashed: true,
+                    open_arrow: false,
+                    cross_end: false,
+                    bidirectional: false,
+                    circle_from: false,
+                    circle_to: false,
+                    activate_from: false,
+                    deactivate_from: true,
+                    activate_to: false,
+                    deactivate_to: false,
+                });
+                last_message = Some((callee, caller));
+                last_participant = Some(caller);
+            } else {
+                push_unsupported(
+                    line_no,
+                    "syntax",
+                    trimmed,
+                    "`return` requires a preceding activation (`++` or `activate`).",
+                );
+            }
+            continue;
+        }
+
+        // Combined fragments (`alt`, `opt`, `loop`, `par`, `break`, `critical`, native `group`, with optional `#Color`)
+        if let Some((kind, _, _)) = parse_fragment_start(trimmed) {
+            let kw_str = match kind {
+                BlockKind::Alt => "alt",
+                BlockKind::Opt => "opt",
+                BlockKind::Loop => "loop",
+                BlockKind::Par => "par",
+                BlockKind::Break => "break",
+                BlockKind::Critical => "critical",
+                BlockKind::Group => "group",
+                BlockKind::Box => unreachable!(),
+            };
+            let rest = trimmed.get(kw_str.len()..).unwrap_or("");
+            let (label_clean, color) = extract_leading_fragment_color(rest);
+            items.push(SeqItem::BlockStart {
+                kind: kw_str.to_string(),
+                label: sanitize_label(label_clean),
+                color,
+            });
+            blocks.push((kind, line_no));
+            continue;
+        }
+        if lower == "else" || lower.starts_with("else ") || lower.starts_with("else#") {
+            let (label_clean, had_color) =
+                strip_leading_fragment_colors(trimmed.get(4..).unwrap_or(""));
+            if had_color {
+                push_unsupported(
+                    line_no,
+                    "styling",
+                    trimmed,
+                    "Branch-specific background color on `else` is not preserved.",
+                );
+            }
+            if matches!(
+                blocks.last().map(|(k, _)| *k),
+                Some(
+                    BlockKind::Alt
+                        | BlockKind::Par
+                        | BlockKind::Critical
+                        | BlockKind::Opt
+                        | BlockKind::Group
+                )
+            ) {
+                items.push(SeqItem::BlockElse {
+                    label: sanitize_label(label_clean),
+                });
+            } else {
+                push_unsupported(
+                    line_no,
+                    "syntax",
+                    trimmed,
+                    "Unexpected `else` outside an open fragment.",
+                );
+            }
+            continue;
+        }
+        if (lower == "option" || lower.starts_with("option "))
+            && matches!(blocks.last(), Some((BlockKind::Critical, _)))
+        {
+            items.push(SeqItem::BlockElse {
+                label: sanitize_label(trimmed.get(6..).unwrap_or("").trim()),
+            });
+            continue;
+        }
+        if lower == "end" {
+            if let Some((kind, _)) = blocks.pop() {
+                if kind == BlockKind::Box {
+                    push_unsupported(
+                        line_no,
+                        "syntax",
+                        trimmed,
+                        "Closed `box` with `end` instead of `end box`.",
+                    );
+                } else {
+                    items.push(SeqItem::BlockEnd);
+                }
+            } else {
+                push_unsupported(
+                    line_no,
+                    "syntax",
+                    trimmed,
+                    "Unexpected `end` without an open fragment.",
+                );
+            }
+            continue;
+        }
+
+        // Native notes (`note`, `hnote`, `rnote`, `/ note ...`, including `note across`)
+        let (aligned_note, note_candidate) = match trimmed.strip_prefix("/ ") {
+            Some(rest) => (true, rest.trim_start()),
+            None => (false, trimmed),
+        };
+        let note_prefix = if let Some(r) = strip_prefix_ci(note_candidate, "note ") {
+            Some((SeqNoteShape::Rect, r.trim_start()))
+        } else if let Some(r) = strip_prefix_ci(note_candidate, "hnote ") {
+            Some((SeqNoteShape::Hexagon, r.trim_start()))
+        } else if let Some(r) = strip_prefix_ci(note_candidate, "rnote ") {
+            Some((SeqNoteShape::Box, r.trim_start()))
+        } else {
+            None
+        };
+        if let Some((shape, rest)) = note_prefix {
+            if aligned_note {
+                push_unsupported(
+                    line_no,
+                    "layout",
+                    trimmed,
+                    "Aligned side-by-side note prefix (/) is rendered sequentially.",
+                );
+            }
+            let (target_raw, inline_text) = match split_colon_outside_quotes(rest) {
+                Some((t, text)) => (t.trim(), Some(sanitize_label(text))),
+                None => (rest.trim(), None),
+            };
+            let (target_clean, color) = extract_trailing_color(target_raw);
+            let resolved_target = if let Some(who) = strip_prefix_ci(target_clean, "left of ") {
+                let id = ensure_participant(
+                    who.trim(),
+                    None,
+                    false,
+                    None,
+                    None,
+                    line_no,
+                    trimmed,
+                    &mut participants,
+                    &mut part_orders,
+                    &mut alias_map,
+                    &mut boxes,
+                    in_box,
+                );
+                Some((id, id, SeqNotePos::Left, false))
+            } else if let Some(who) = strip_prefix_ci(target_clean, "right of ") {
+                let id = ensure_participant(
+                    who.trim(),
+                    None,
+                    false,
+                    None,
+                    None,
+                    line_no,
+                    trimmed,
+                    &mut participants,
+                    &mut part_orders,
+                    &mut alias_map,
+                    &mut boxes,
+                    in_box,
+                );
+                Some((id, id, SeqNotePos::Right, false))
+            } else if let Some(who) = strip_prefix_ci(target_clean, "over ") {
+                let targets: Vec<&str> = split_all_commas_outside_quotes(who.trim())
+                    .into_iter()
+                    .filter(|p| !p.is_empty())
+                    .collect();
+                if targets.is_empty() {
+                    None
+                } else {
+                    let mut ids = Vec::with_capacity(targets.len());
+                    for part in targets {
+                        ids.push(ensure_participant(
+                            part,
+                            None,
+                            false,
+                            None,
+                            None,
+                            line_no,
+                            trimmed,
+                            &mut participants,
+                            &mut part_orders,
+                            &mut alias_map,
+                            &mut boxes,
+                            in_box,
+                        ));
+                    }
+                    Some((ids[0], *ids.last().unwrap(), SeqNotePos::Over, false))
+                }
+            } else if target_clean.eq_ignore_ascii_case("left") {
+                last_participant.map(|id| (id, id, SeqNotePos::Left, false))
+            } else if target_clean.eq_ignore_ascii_case("right") {
+                last_participant.map(|id| (id, id, SeqNotePos::Right, false))
+            } else if target_clean.eq_ignore_ascii_case("across") {
+                Some((0, 0, SeqNotePos::Over, true))
+            } else {
+                None
+            };
+            let Some((from, to, pos, is_across)) = resolved_target else {
+                push_unsupported(
+                    line_no,
+                    "syntax",
+                    trimmed,
+                    "Note target could not be resolved.",
+                );
+                continue;
+            };
+            match inline_text {
+                Some(text) => {
+                    if is_across {
+                        across_note_indices.push(items.len());
+                    }
+                    items.push(SeqItem::Note {
+                        from,
+                        to,
+                        pos,
+                        text,
+                        shape,
+                        color,
+                    });
+                }
+                None => {
+                    pending_note = Some(NativePendingNote {
+                        line: line_no,
+                        from,
+                        to,
+                        pos,
+                        shape,
+                        color,
+                        is_across,
+                        lines: Vec::new(),
+                    });
+                }
+            }
+            continue;
+        }
+
+        // Native boundary gates (`[-> A`, `A ->]`, `[<- A`, `A <-]`)
+        if let Some(gate) = parse_gate_message(trimmed) {
+            let target = ensure_participant(
+                gate.target,
+                None,
+                false,
+                None,
+                None,
+                line_no,
+                trimmed,
+                &mut participants,
+                &mut part_orders,
+                &mut alias_map,
+                &mut boxes,
+                in_box,
+            );
+            items.push(SeqItem::Gate {
+                target,
+                incoming: gate.incoming,
+                from_left: gate.from_left,
+                label: sanitize_label(gate.label),
+                dashed: gate.dashed,
+                open_arrow: gate.open_arrow,
+                cross_end: gate.cross_end,
+            });
+            last_participant = Some(target);
+            continue;
+        }
+
+        // Messages
+        if let Some(msg) = parse_message_line(trimmed) {
+            if msg.styled_lossy {
+                push_unsupported(
+                    line_no,
+                    "styling",
+                    trimmed,
+                    "Arrow color or thickness styling is not preserved.",
+                );
+            }
+            if msg.activation_colored {
+                push_unsupported(
+                    line_no,
+                    "styling",
+                    trimmed,
+                    "Shorthand activation color is not preserved.",
+                );
+            }
+            let (raw_from, raw_to) = if msg.reverse {
+                (msg.rhs, msg.lhs)
+            } else {
+                (msg.lhs, msg.rhs)
+            };
+            let from = ensure_participant(
+                raw_from,
+                None,
+                false,
+                None,
+                None,
+                line_no,
+                trimmed,
+                &mut participants,
+                &mut part_orders,
+                &mut alias_map,
+                &mut boxes,
+                in_box,
+            );
+            let to = ensure_participant(
+                raw_to,
+                None,
+                false,
+                None,
+                None,
+                line_no,
+                trimmed,
+                &mut participants,
+                &mut part_orders,
+                &mut alias_map,
+                &mut boxes,
+                in_box,
+            );
+            if msg.create_target {
+                pending_create.push(to);
+            }
+            if msg.destroy_target {
+                pending_destroy.push(to);
+            }
+            let msg_idx = items.len();
+            for who in [to, from] {
+                if let Some(pos) = pending_create.iter().position(|&p| p == who) {
+                    pending_create.remove(pos);
+                    created_at.insert(who, msg_idx);
+                    break;
+                }
+            }
+            for who in [from, to] {
+                if let Some(pos) = pending_destroy.iter().position(|&p| p == who) {
+                    pending_destroy.remove(pos);
+                    destroyed_at.insert(who, msg_idx);
+                }
+            }
+            let (dashed, open_arrow, cross_end, bidirectional) = match msg.arrow {
+                "<<-->>" => (true, false, false, true),
+                "<<->>" => (false, false, false, true),
+                "-->>" => (true, false, false, false),
+                "->>" => (false, false, false, false),
+                "-->" | "--)" => (true, true, false, false),
+                "->" | "-)" => (false, true, false, false),
+                "--x" => (true, false, true, false),
+                "-x" => (false, false, true, false),
+                _ => (false, false, false, false),
+            };
+            if msg.deactivate_source
+                && let Some(pos) = activation_stack
+                    .iter()
+                    .rposition(|&(_, callee)| callee == from)
+            {
+                activation_stack.remove(pos);
+            }
+            if msg.activate_target {
+                activation_stack.push((from, to));
+            }
+            items.push(SeqItem::Message {
+                from,
+                to,
+                label: sanitize_label(msg.label),
+                dashed,
+                open_arrow,
+                cross_end,
+                bidirectional,
+                circle_from: msg.circle_source,
+                circle_to: msg.circle_target,
+                activate_from: false,
+                deactivate_from: msg.deactivate_source,
+                activate_to: msg.activate_target,
+                deactivate_to: false,
+            });
+            last_message = Some((from, to));
+            last_participant = Some(to);
+            continue;
+        }
+
+        push_unsupported(
+            line_no,
+            "syntax",
+            trimmed,
+            "Unsupported PlantUML sequence syntax.",
+        );
+    }
+
+    if let Some(note) = pending_note {
+        push_unsupported(
+            note.line,
+            "syntax",
+            "note",
+            "Unclosed multi-line note (missing `end note`).",
+        );
+    }
+    if let Some(r) = pending_ref {
+        push_unsupported(
+            r.line,
+            "syntax",
+            "ref over",
+            "Unclosed multi-line `ref` block (missing `end ref`).",
+        );
+    }
+    if let Some((line_no, _)) = pending_title {
+        push_unsupported(
+            line_no,
+            "syntax",
+            "title",
+            "Unclosed multi-line `title` block (missing `end title`).",
+        );
+    }
+    while let Some((kind, open_line)) = blocks.pop() {
+        let label = match kind {
+            BlockKind::Box => "box",
+            BlockKind::Alt => "alt",
+            BlockKind::Opt => "opt",
+            BlockKind::Loop => "loop",
+            BlockKind::Par => "par",
+            BlockKind::Break => "break",
+            BlockKind::Critical => "critical",
+            BlockKind::Group => "group",
+        };
+        push_unsupported(
+            open_line,
+            "syntax",
+            label,
+            "Unclosed fragment or box block (missing `end`).",
+        );
+        if kind != BlockKind::Box {
+            items.push(SeqItem::BlockEnd);
+        }
+    }
+
+    if non_sequence || participants.is_empty() {
+        return (None, unsupported);
+    }
+
+    // Apply top-level participant `order N` stably when no `box` groups prevent reordering.
+    if has_any_order {
+        if saw_box {
+            for &(_, _, had_order, line_no, ref raw) in &part_orders {
+                if had_order {
+                    push_unsupported(
+                        line_no,
+                        "layout",
+                        raw,
+                        "Participant `order` cannot be reordered when `box` groups are present.",
+                    );
+                }
+            }
+        } else {
+            let mut perm: Vec<usize> = (0..participants.len()).collect();
+            perm.sort_by_key(|&i| (part_orders[i].0, part_orders[i].1));
+            let mut old_to_new = vec![0usize; participants.len()];
+            for (new_idx, &old_idx) in perm.iter().enumerate() {
+                old_to_new[old_idx] = new_idx;
+            }
+            let old_parts = std::mem::take(&mut participants);
+            let mut slots: Vec<Option<SeqParticipant>> = old_parts.into_iter().map(Some).collect();
+            participants = perm
+                .into_iter()
+                .map(|old_idx| slots[old_idx].take().unwrap())
+                .collect();
+            for item in &mut items {
+                match item {
+                    SeqItem::Message { from, to, .. }
+                    | SeqItem::Note { from, to, .. }
+                    | SeqItem::Ref { from, to, .. } => {
+                        *from = old_to_new[*from];
+                        *to = old_to_new[*to];
+                    }
+                    SeqItem::Activate(who)
+                    | SeqItem::Deactivate(who)
+                    | SeqItem::Gate { target: who, .. } => {
+                        *who = old_to_new[*who];
+                    }
+                    _ => {}
+                }
+            }
+            created_at = created_at
+                .into_iter()
+                .map(|(k, v)| (old_to_new[k], v))
+                .collect();
+            destroyed_at = destroyed_at
+                .into_iter()
+                .map(|(k, v)| (old_to_new[k], v))
+                .collect();
+        }
+    }
+
+    // Resolve `note across` now that all participants (and final ordering) are known.
+    let last_col = participants.len().saturating_sub(1);
+    for idx in across_note_indices {
+        if let Some(SeqItem::Note { from, to, .. }) = items.get_mut(idx) {
+            *from = 0;
+            *to = last_col;
+        }
+    }
+
+    (
+        Some(SeqDiagram {
+            participants,
+            items,
+            autonumber,
+            mirror_actors,
+            boxes,
+            title,
+            created_at,
+            destroyed_at,
+        }),
+        unsupported,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2437,5 +3831,100 @@ end
             ]
         );
         assert!(rendered.is_some());
+    }
+
+    #[test]
+    fn native_shared_ir_renders_dividers_delays_refs_gates_footbox_hnote_and_autonumber() {
+        let puml = "\
+@startuml
+hide footbox
+autonumber 10 5
+participant Last order 30
+participant First order 10
+participant Middle order 20
+[-> First : 外部リクエスト
+First -> Middle : 処理依頼
+== 検証フェーズ ==
+hnote over Middle #LightYellow : 六角注記
+rnote right of Middle #LightCyan : 角丸なし注記
+... 5分待機 ...
+autonumber stop
+group #LightBlue 共通処理
+  ref over First, Last
+    認証トークン検証
+    監査ログ出力
+  end ref
+end
+autonumber resume
+Middle -> Last : 完了通知
+Last ->] : 外部コールバック
+note across : 全体完了
+@enduml
+";
+        let native = render_plantuml_sequence_native(puml);
+        assert_eq!(native.original, puml);
+        assert!(
+            native.is_lossless(),
+            "native IR should handle all constructs losslessly, got: {:?}",
+            native.unsupported
+        );
+        let Some(MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        }) = native.output
+        else {
+            panic!("expected SVG from native shared IR renderer");
+        };
+        assert!(width_px > 250 && height_px > 300);
+        let svg = std::str::from_utf8(&bytes).unwrap();
+        assert!(roxmltree::Document::parse(svg).is_ok(), "invalid SVG");
+        // `hide footbox` omits bottom actor boxes.
+        assert!(!svg.contains(r#"data-role="actor-bottom""#), "{svg}");
+        // `order N` places First < Middle < Last left-to-right.
+        assert!(svg.find(">First<").unwrap() < svg.find(">Middle<").unwrap());
+        assert!(svg.find(">Middle<").unwrap() < svg.find(">Last<").unwrap());
+        // Native PlantUML sequence elements drawn through shared `sequence.rs` renderer.
+        assert!(svg.contains(r#"data-shape="seq-divider""#), "{svg}");
+        assert!(svg.contains("検証フェーズ"), "{svg}");
+        assert!(svg.contains(r#"data-shape="seq-delay""#), "{svg}");
+        assert!(svg.contains("5分待機"), "{svg}");
+        assert!(svg.contains(r#"data-shape="seq-ref""#), "{svg}");
+        assert!(svg.contains("認証トークン検証 / 監査ログ出力"), "{svg}");
+        assert_eq!(svg.matches(r#"data-shape="seq-gate""#).count(), 2, "{svg}");
+        assert!(svg.contains("外部リクエスト") && svg.contains("外部コールバック"), "{svg}");
+        assert!(svg.contains(r#"data-shape="seq-hnote""#), "{svg}");
+        assert!(svg.contains(r#"data-shape="seq-rnote""#), "{svg}");
+        assert!(svg.contains(">group<") && svg.contains("[共通処理]"), "{svg}");
+        assert!(svg.contains("全体完了"), "{svg}");
+        // Autonumber 10, 15, stopped, resumed at 20, 25.
+        assert!(svg.contains(r#"data-role="seq-autonumber">10</text>"#), "{svg}");
+        assert!(svg.contains(r#"data-role="seq-autonumber">15</text>"#), "{svg}");
+        assert!(svg.contains(r#"data-role="seq-autonumber">20</text>"#), "{svg}");
+        assert!(svg.contains(r#"data-role="seq-autonumber">25</text>"#), "{svg}");
+    }
+
+    #[test]
+    fn native_shared_ir_still_reports_macros_skinparam_and_timing_with_line_numbers() {
+        let puml = "\
+@startuml
+!include common.puml
+skinparam backgroundColor #EEE
+Alice -> Bob : hi
+@enduml
+";
+        let native = render_plantuml_sequence_native(puml);
+        assert!(native.output.is_some());
+        let reported: Vec<(usize, &str)> = native
+            .unsupported
+            .iter()
+            .map(|u| (u.line, u.kind))
+            .collect();
+        assert_eq!(reported, vec![(2, "macro"), (3, "styling")]);
+
+        let timing = "@startuml\nrobust \"Web\" as W\n@0\nW is Idle\n@enduml\n";
+        let native_timing = render_plantuml_sequence_native(timing);
+        assert!(native_timing.output.is_none());
+        assert!(native_timing.unsupported.iter().any(|u| u.line == 2 && u.kind == "timing"));
     }
 }
