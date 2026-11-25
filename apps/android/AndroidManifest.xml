@@ -11,7 +11,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:label="Docs"
+        android:label="soraneDocs"
         android:icon="@mipmap/ic_launcher"
         android:hasCode="true">
         <activity
