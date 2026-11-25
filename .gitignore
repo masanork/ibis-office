@@ -5,10 +5,10 @@
 /www/*.js
 !/www/sorane-start.js
 /www/*.d.ts
-/www/fonts.json
+/www/fonts/
+/www/loader-manifest.json
 /www/build-info.ts
 /node_modules
-/crates/ibis-font-subsetter/pkg
 /data/fonts
 /worker/*.js
 /test/private/

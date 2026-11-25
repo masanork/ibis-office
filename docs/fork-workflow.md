@@ -62,7 +62,7 @@ scripts/build-web.sh --release
 python3 scripts/check-web-assets.py
 ```
 
-Web フォントの静的チャンク配信は upstream の `tools/ibis-font-subsetter` と `scripts/web-loader-setup.mjs`（[Web 埋め込み](web-embedding-ja.md)）を使う。
+Web フォントの静的チャンク配信（SIL OFL 1.1: `ACGJMincho`・`BIZUDGothic`・`BIZUDMincho`）は `npm run build:font-subsets`（または `IBIS_WEB_FONT_SUBSETS=1 scripts/build-web.sh --release`）で `tools/ibis-font-subsetter` から `www/fonts/` と `www/loader-manifest.json` を生成する（[Web 埋め込み](web-embedding-ja.md)）。
 配信先は<https://docs.sorane.dev>（既存の<https://ibis.sorane.dev>も維持）。配信時はこのブランチの`wrangler.jsonc`を使い、
 dry-runの後にdeployし、公開されたmanifestとWASMのhash、ブラウザー動作を確認する。
 単なるブランチ整理では、検証中の別作業による配信を上書きしない。
