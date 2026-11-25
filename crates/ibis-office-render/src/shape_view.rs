@@ -248,6 +248,8 @@ pub struct Resources {
     /// The GIFs put in after the file was opened (not decoded ahead), decoded with all their frames when the slide
     /// show first draws them.
     live_gifs: std::cell::RefCell<HashMap<MediaId, Arc<RenderImage>>>,
+    /// SVG images keyed by `(original_image_id, fonts_generation)` so GPUI re-rasterizes SVGs after late fonts arrive.
+    svg_versioned: std::cell::RefCell<HashMap<(u64, u64), Arc<Image>>>,
     /// What the text of the slide being drawn wraps round (`Resources::set_wrap`).
     slide_wrap: std::cell::RefCell<std::rc::Rc<SlideWrap>>,
     /// The soft-edged groups of the slide being drawn (`Resources::set_wrap`).
@@ -659,6 +661,7 @@ impl Resources {
             print: false,
             animate_pictures: std::cell::Cell::new(false),
             live_gifs: Default::default(),
+            svg_versioned: Default::default(),
             slide_wrap: Default::default(),
             soft_groups: Default::default(),
             print_backgrounds: false,
@@ -821,24 +824,26 @@ impl Resources {
                 }
             }
         }
-        match self.preload.decoded(media) {
-            Ok(Some(image)) => Some(ImageSource::Render(image)),
-            Ok(None) => None,
-            Err(()) => {
-                let image = self.images.get(&media).cloned().or_else(|| self.preload.prepared_one(media).map(|(img, _)| img))?;
-                // A GIF put in after the file was opened plays in the slide show as one read from the file does.
-                if self.animate_pictures.get() && self.formats.get(&media) == Some(&MediaFormat::Gif) {
-                    if let Some(frames) = self.live_gifs.borrow().get(&media) {
-                        return Some(ImageSource::Render(frames.clone()));
-                    }
-                    if let Ok(frames) = image.to_image_data(SvgRenderer::new(Arc::new(()))) {
-                        self.live_gifs.borrow_mut().insert(media, frames.clone());
-                        return Some(ImageSource::Render(frames));
-                    }
-                }
-                Some(ImageSource::Image(image))
+        let svg_stale = fonts_generation() > 0 && self.formats.get(&media) == Some(&MediaFormat::Svg);
+        if !svg_stale {
+            match self.preload.decoded(media) {
+                Ok(Some(image)) => return Some(ImageSource::Render(image)),
+                Ok(None) => return None,
+                Err(()) => {}
             }
         }
+        let image = self.images.get(&media).cloned().or_else(|| self.preload.prepared_one(media).map(|(img, _)| img))?;
+        // A GIF put in after the file was opened plays in the slide show as one read from the file does.
+        if self.animate_pictures.get() && self.formats.get(&media) == Some(&MediaFormat::Gif) {
+            if let Some(frames) = self.live_gifs.borrow().get(&media) {
+                return Some(ImageSource::Render(frames.clone()));
+            }
+            if let Ok(frames) = image.to_image_data(SvgRenderer::new(Arc::new(()))) {
+                self.live_gifs.borrow_mut().insert(media, frames.clone());
+                return Some(ImageSource::Render(frames));
+            }
+        }
+        Some(ImageSource::Image(self.versioned_svg_image(image)))
     }
 
     /// Sample the whole source at the density required by its visible cropped region.
@@ -883,9 +888,33 @@ impl Resources {
         }
     }
 
+    /// Returns an `Image` with its cache ID mixed with `fonts_generation()` for SVGs
+    /// so GPUI re-rasterizes them when late fonts (such as static web font subsets) arrive.
+    fn versioned_svg_image(&self, image: Arc<Image>) -> Arc<Image> {
+        if image.format != ImageFormat::Svg {
+            return image;
+        }
+        let generation = fonts_generation();
+        if generation == 0 {
+            return image;
+        }
+        let key = (image.id, generation);
+        if let Some(cached) = self.svg_versioned.borrow().get(&key) {
+            return cached.clone();
+        }
+        let versioned = Arc::new(Image {
+            format: image.format,
+            bytes: image.bytes.clone(),
+            id: image.id ^ generation.wrapping_mul(0x9E37_79B1_85EB_CA87),
+        });
+        self.svg_versioned.borrow_mut().insert(key, versioned.clone());
+        versioned
+    }
+
     /// An SVG picture (rotated, cut or recoloured) to draw: rasterized
     /// ahead, or left to GPUI to rasterize.
     pub fn svg_picture(&self, image: Arc<Image>) -> ImageSource {
+        let image = self.versioned_svg_image(image);
         match self.rasters.borrow().get(&image.id()) {
             Some(raster) => ImageSource::Render(raster.clone()),
             None => ImageSource::Image(image),
@@ -902,6 +931,7 @@ impl Resources {
         images.extend(self.clipped.borrow().values().cloned());
         images.extend(self.duotones.borrow().values().cloned());
         images.extend(format_hooks::extra_images());
+        let mut images: Vec<Arc<Image>> = images.into_iter().map(|image| self.versioned_svg_image(image)).collect();
         let done = self.rasters.borrow();
         images.retain(|image| !done.contains_key(&image.id()));
         drop(done);
@@ -2438,9 +2468,13 @@ pub fn add_fonts_now(cx: &App, files: Vec<Vec<u8>>) -> bool {
     if fonts.is_empty() {
         return false;
     }
-    if let Err(err) = cx.text_system().add_fonts(fonts) {
+    if let Err(err) = cx.text_system().add_fonts(fonts.clone()) {
         log::warn!("downloaded fonts could not be loaded: {err}");
         return false;
+    }
+    let svg_renderer = cx.svg_renderer();
+    for font in fonts {
+        svg_renderer.add_font(font);
     }
     let mut names = system_font_names().cloned().unwrap_or_default();
     names.extend(cx.text_system().all_font_names());

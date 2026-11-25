@@ -95,6 +95,16 @@ pub fn font_for_typeface(typeface: &str) -> Option<String> {
     state(|s| s.fonts.iter().find(|f| f.typefaces.iter().any(|t| same_typeface(t, typeface))).map(|f| f.id.clone()))
 }
 
+/// The preferred subset font id for SVG `<text>` elements (e.g. Mermaid diagrams rendered with `font-family="sans-serif"`).
+pub fn svg_font_id() -> Option<String> {
+    for candidate in ["BIZ UDゴシック", "BIZ UDGothic", "Noto Sans JP", "Noto Sans CJK JP", "sans-serif"] {
+        if let Some(id) = font_for_typeface(candidate) {
+            return Some(id);
+        }
+    }
+    state(|s| s.fonts.first().map(|f| f.id.clone()))
+}
+
 /// The family to draw a document's `typeface` with: the base block's, once it is loaded (the first block of the font is its base block).
 pub fn base_family_for_typeface(typeface: &str) -> Option<String> {
     state(|s| {
@@ -182,5 +192,15 @@ mod tests {
         assert!(!any_chunk_missing(), "all taken or failed");
         set_fonts(Vec::new());
         assert!(!any_chunk_missing(), "no font, nothing to follow");
+        assert_eq!(svg_font_id(), None);
+        set_fonts(vec![
+            SubsetFont { id: "BIZUDMincho".into(), typefaces: vec!["游明朝".into()], blocks: vec![block("base", &[(0x20, 0x7e)])] },
+            SubsetFont { id: "BIZUDGothic".into(), typefaces: vec!["BIZ UDゴシック".into()], blocks: vec![block("base", &[(0x20, 0x7e)])] },
+        ]);
+        assert_eq!(svg_font_id(), Some("BIZUDGothic".to_string()));
+        set_fonts(vec![
+            SubsetFont { id: "CustomMincho".into(), typefaces: vec!["游明朝".into()], blocks: vec![block("base", &[(0x20, 0x7e)])] },
+        ]);
+        assert_eq!(svg_font_id(), Some("CustomMincho".to_string()));
     }
 }

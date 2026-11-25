@@ -663,7 +663,7 @@ async function fetchWasm(): Promise<Response | WebAssembly.Module> {
   if (chunked) {
     return chunked;
   }
-  if (!manifest) {
+  if (!manifest || manifest.files.length === 0) {
     return loadWasm(new URL('./pkg/ibis_office_app_bg.manifest.json', import.meta.url), chunkedEnv.onProgress!);
   }
   const url = new URL('./pkg/ibis_office_app_bg.wasm', import.meta.url);

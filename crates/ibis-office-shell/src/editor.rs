@@ -1489,7 +1489,10 @@ impl SlideEditor {
         self.office_path_confirm_dialog_open = false;
         // The browser version: the blocks of the fonts the document names that the page has (GitHub issue #157, stage 2).
         #[cfg(target_family = "wasm")]
-        crate::web::request_subset_blocks_for(self.used_fonts(), self.used_text(), cx);
+        {
+            crate::web::request_subset_blocks_for(self.used_fonts(), self.used_text(), cx);
+            crate::web::request_subset_blocks_for_svg(self.presentation(), cx);
+        }
         // The file read before is no longer this window's (`open_read` records the new one).
         self.watch.dialog = false;
         self.watch.asked = None;
@@ -4449,6 +4452,7 @@ impl SlideEditor {
         }
         SUBSET_FOLLOWED_AT.with(|t| t.set(now));
         crate::web::request_subset_blocks_for(self.used_fonts(), self.used_text(), cx);
+        crate::web::request_subset_blocks_for_svg(self.presentation(), cx);
     }
 }
 

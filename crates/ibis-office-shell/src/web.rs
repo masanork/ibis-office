@@ -293,6 +293,26 @@ pub fn request_subset_blocks_for(typefaces: Vec<String>, text: Option<String>, c
     }
 }
 
+/// Requests subset font blocks needed for text embedded inside SVG pictures (such as Mermaid diagrams).
+pub fn request_subset_blocks_for_svg(presentation: &ibis_doc_model::Presentation, cx: &mut gpui_kit::App) {
+    let mut svg_text = String::new();
+    for media in &presentation.media {
+        if media.format == ibis_doc_model::MediaFormat::Svg {
+            ibis_formats::mermaid::append_svg_text(&media.data, &mut svg_text);
+        }
+    }
+    if svg_text.trim().is_empty() {
+        return;
+    }
+    let Some(font_id) = crate::render::subset_fonts::svg_font_id() else {
+        return;
+    };
+    let keys = crate::render::subset_fonts::blocks_needed(&font_id, &svg_text);
+    if !keys.is_empty() {
+        load_subset_blocks(cx, vec![(font_id, keys)], false);
+    }
+}
+
 /// GitHub issue #157, stage 2: the page's blocks of fonts are taken (the base block of each font at the start; then, for the typefaces `typefaces` a document names, the
 /// blocks that have the characters of its text: `texts` are the texts). Each block is given to the text system as it comes (`fonts_late::fonts_arrived`) and put in the
 /// chain of its font (`subset_fonts::mark_loaded`); the windows draw again once. A block that cannot be had is left (its characters are drawn with the viewer's fonts).
