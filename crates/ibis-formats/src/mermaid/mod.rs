@@ -60,6 +60,7 @@ mod plantuml_uml;
 mod plantuml_extra;
 mod plantuml_timing;
 mod plantuml_non_uml;
+mod plantuml_style;
 mod text;
 #[cfg(test)]
 mod test_support;
