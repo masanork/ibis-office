@@ -89,13 +89,14 @@ jobs:
             -o "${RUNNER_TEMP}/bundletool.jar"
 
       - name: Prepare upload keystore
-        if: secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 != ''
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > "${RUNNER_TEMP}/upload-keystore.jks"
-          chmod 600 "${RUNNER_TEMP}/upload-keystore.jks"
+          if [[ -n "$KEYSTORE_B64" ]]; then
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > "${RUNNER_TEMP}/upload-keystore.jks"
+            chmod 600 "${RUNNER_TEMP}/upload-keystore.jks"
+          fi
 
       - name: Build and validate Android AAB
         id: build
