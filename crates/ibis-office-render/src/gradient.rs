@@ -125,7 +125,8 @@ pub fn paint_gradient_mode(
     powerpoint: bool,
     map: &dyn Fn(&[Pt]) -> Vec<Point<Pixels>>,
 ) {
-    let mut paint = |pieces: Vec<Vec<Pt>>, color: Hsla| {
+    let cached = cached_gradient_bands(fill, subpaths, (w, h), px_per_unit, powerpoint);
+    for (pieces, color) in cached.iter() {
         let mut builder = PathBuilder::fill();
         let mut any = false;
         for piece in pieces.iter().filter(|p| p.len() >= 3) {
@@ -138,10 +139,67 @@ pub fn paint_gradient_mode(
             any = true;
         }
         if any && let Ok(path) = builder.build() {
-            window.paint_path(path, color);
+            window.paint_path(path, *color);
         }
-    };
-    gradient_pieces(fill, subpaths, (w, h), px_per_unit, powerpoint, &mut paint);
+    }
+}
+
+fn gradient_cache_key(
+    fill: &Fill,
+    subpaths: &[Vec<Pt>],
+    (w, h): (f32, f32),
+    px_per_unit: f32,
+    powerpoint: bool,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{fill:?}").hash(&mut hasher);
+    subpaths.len().hash(&mut hasher);
+    for sp in subpaths {
+        sp.len().hash(&mut hasher);
+        for &(x, y) in sp {
+            x.to_bits().hash(&mut hasher);
+            y.to_bits().hash(&mut hasher);
+        }
+    }
+    w.to_bits().hash(&mut hasher);
+    h.to_bits().hash(&mut hasher);
+    px_per_unit.to_bits().hash(&mut hasher);
+    powerpoint.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn cached_gradient_bands(
+    fill: &Fill,
+    subpaths: &[Vec<Pt>],
+    (w, h): (f32, f32),
+    px_per_unit: f32,
+    powerpoint: bool,
+) -> std::rc::Rc<Vec<(Vec<Vec<Pt>>, Hsla)>> {
+    type Bands = std::rc::Rc<Vec<(Vec<Vec<Pt>>, Hsla)>>;
+    thread_local! {
+        static CACHE: std::cell::RefCell<std::collections::HashMap<u64, Bands>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    let key = gradient_cache_key(fill, subpaths, (w, h), px_per_unit, powerpoint);
+    if let Some(bands) = CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return bands;
+    }
+    let mut out = Vec::new();
+    gradient_pieces(fill, subpaths, (w, h), px_per_unit, powerpoint, &mut |pieces, color| {
+        if pieces.iter().any(|p| p.len() >= 3) {
+            out.push((pieces, color));
+        }
+    });
+    let bands = std::rc::Rc::new(out);
+    CACHE.with(|c| {
+        let mut map = c.borrow_mut();
+        if map.len() >= 512 {
+            map.clear();
+        }
+        map.insert(key, bands.clone());
+    });
+    bands
 }
 
 /// The bands `paint_gradient_mode` paints, in painting order (each laid over the ones before): polygons in the shape's own coordinates and the

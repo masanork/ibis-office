@@ -77,12 +77,22 @@ struct ActiveMenu {
     generation: u64,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct SyncSig {
+    window: AnyWindowHandle,
+    show_menu_bar: bool,
+    blocked: bool,
+    contexts: Vec<crate::menu_context::ContextMenu>,
+}
+
 #[derive(Default)]
 struct State {
     active: Option<ActiveMenu>,
     start_window: Option<AnyWindowHandle>,
     generation: u64,
     refresh: bool,
+    last_sync: Option<std::time::Instant>,
+    last_sig: Option<SyncSig>,
 }
 
 impl Global for State {}
@@ -156,9 +166,27 @@ pub(crate) fn sync(editor: &SlideEditor, window: &Window, cx: &mut Context<Slide
         return;
     }
 
+    let blocked = document_commands_blocked(editor);
+    let sig = SyncSig {
+        window: handle,
+        show_menu_bar: editor.show_menu_bar,
+        blocked,
+        contexts: editor.bar_contexts.clone(),
+    };
+    {
+        let state = cx.global::<State>();
+        if !state.refresh
+            && state.active.as_ref().is_some_and(|a| a.window == handle)
+            && state.last_sig.as_ref() == Some(&sig)
+            && state.last_sync.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(200))
+        {
+            return;
+        }
+    }
+
     let mut projection = Projection {
         handlers: Vec::new(),
-        blocked: document_commands_blocked(editor),
+        blocked,
         recent_colors: &editor.recent_colors,
     };
     let entries: Vec<_> = editor
@@ -196,6 +224,8 @@ pub(crate) fn sync(editor: &SlideEditor, window: &Window, cx: &mut Context<Slide
     // while leaving its label and checked/disabled state unchanged.
     let weak = cx.weak_entity();
     let state = cx.global_mut::<State>();
+    state.last_sync = Some(std::time::Instant::now());
+    state.last_sig = Some(sig);
     if let Some(active) = &mut state.active {
         if !state.refresh && active.window == handle && active.entries == entries {
             active.handlers = projection.handlers;

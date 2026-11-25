@@ -153,6 +153,9 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                             if top > visible.origin.y + visible.size.height || top + px(size_px * 2.0) < visible.origin.y {
                                 continue;
                             }
+                            let is_vert = font.features.tag_value_list().iter().any(|(tag, value)| tag == "vert" && *value == 1);
+                            let ts_gen = (std::sync::Arc::as_ptr(window.text_system()) as usize as u64)
+                                ^ crate::render::shape_view::fonts_generation().wrapping_mul(0xA24B_AED4_963E_E407);
                             let mut prev_char = None;
                             for ((i, c), dx) in text.char_indices().zip(offsets.iter()) {
                                 // The selectors and joined characters of a cluster are drawn with its first character (as one glyph: an
@@ -167,8 +170,8 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                     continue;
                                 }
                                 let run = TextRun { len: s.len(), font: font.clone(), color: *color, background_color: None, underline: None, strikethrough: None };
-                                let mut shaped = window.text_system().shape_line(SharedString::from(s.to_string()), px(size_px), &[run.clone()], None);
-                                if font.features.tag_value_list().iter().any(|(tag,value)|tag=="vert" && *value==1)
+                                let mut shaped = shape_cluster_cached(window, ts_gen, s, font, size_px, &run);
+                                if is_vert
                                     && let Some(run)=shaped.runs.first()
                                     && crate::render::vertical_text::paint_glyph(window,point(o.x+px((x+dx)*k),o.y+px(y*k)),run.font_id,c,size_px,*color)
                                 {
@@ -179,7 +182,7 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                 // module's table (`vertical_text`): the vertical glyph or upright for UAX #50 Tu and Tr, turned for the others
                                 // that `upright` says are turned; Word's one difference, ； (U+FF1B), keeps its horizontal glyph upright.
                                 #[cfg(target_family = "wasm")]
-                                if font.features.tag_value_list().iter().any(|(tag, value)| tag == "vert" && *value == 1)
+                                if is_vert
                                     && c != '\u{FF1B}'
                                     && let sideways = (!crate::render::vertical_text::vertical_glyph(c) && !crate::render::vertical_text::upright(c))
                                     && (sideways || crate::render::vertical_text::vertical_glyph(c))
@@ -197,7 +200,7 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                 }
                                 #[cfg(target_family = "wasm")]
                                 if c == 'ー' && s.chars().count() == 1
-                                    && font.features.tag_value_list().iter().any(|(tag, value)| tag == "vert" && *value == 1)
+                                    && is_vert
                                     && let Some(run) = shaped.runs.first()
                                     && window.text_system().font_data(run.font_id).is_none()
                                     && run.glyphs.len() == 1
@@ -207,7 +210,7 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                 }
                                 #[cfg(target_family = "wasm")]
                                 if s.chars().count() == 1
-                                    && font.features.tag_value_list().iter().any(|(tag, value)| tag == "vert" && *value == 1)
+                                    && is_vert
                                     && shaped.runs.first().is_some_and(|run| window.text_system().font_data(run.font_id).is_none())
                                     && let Some(vertical) = crate::render::vertical_text::vertical_presentation(c)
                                 {
@@ -378,6 +381,49 @@ fn paint_text_boundaries(window: &mut Window, o: Point<Pixels>, k: f32, area: [f
         stroke(window, (0.0, top), (paper_width, top), blue);
         stroke(window, (0.0, bottom), (paper_width, bottom), blue);
     }
+}
+
+/// Cache shaped single-cluster lines across frames so scrolling, mouse moves, and caret
+/// blinks do not re-shape every visible character cluster on every paint.
+fn shape_cluster_cached(
+    window: &Window,
+    ts_gen: u64,
+    text: &str,
+    font: &Font,
+    size_px: f32,
+    run: &TextRun,
+) -> ShapedLine {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ts_gen.hash(&mut hasher);
+    text.hash(&mut hasher);
+    font.hash(&mut hasher);
+    size_px.to_bits().hash(&mut hasher);
+    let key = hasher.finish();
+    thread_local! {
+        static CLUSTER_SHAPES: std::cell::RefCell<std::collections::HashMap<u64, std::rc::Rc<ShapedLine>>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    if let Some(cached) = CLUSTER_SHAPES.with(|c| {
+        c.borrow()
+            .get(&key)
+            .filter(|l| l.text.as_ref() == text)
+            .cloned()
+    }) {
+        return cached.restyled(std::slice::from_ref(run));
+    }
+    let shaped = window
+        .text_system()
+        .shape_line(SharedString::from(text.to_string()), px(size_px), std::slice::from_ref(run), None);
+    let rc = std::rc::Rc::new(shaped);
+    CLUSTER_SHAPES.with(|c| {
+        let mut map = c.borrow_mut();
+        if map.len() >= 32_768 {
+            map.clear();
+        }
+        map.insert(key, rc.clone());
+    });
+    rc.restyled(std::slice::from_ref(run))
 }
 
 /// The colour of a body item while the header or footer is edited: faint.

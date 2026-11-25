@@ -2333,6 +2333,7 @@ pub(crate) const SIDEBAR_MAX_WIDTH: f32 = 720.0;
 /// The right pane's left edge, which the pointer drags to change the pane's width (every panel's, in every format).
 /// The pane stays at least [`SIDEBAR_WIDTH`] and at most [`SIDEBAR_MAX_WIDTH`] (and a part of the window).
 fn sidebar_width_handle(editor: WeakEntity<SlideEditor>, cx: &mut Context<SlideEditor>) -> impl IntoElement {
+    let dragging = editor.read_with(cx, |this, _| this.sidebar_drag.is_some()).unwrap_or(false);
     let tracker = editor.clone();
     div()
         .id("sidebar-width-handle")
@@ -2345,39 +2346,42 @@ fn sidebar_width_handle(editor: WeakEntity<SlideEditor>, cx: &mut Context<SlideE
         .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, _, cx| {
             this.sidebar_drag = Some((f32::from(event.position.x), this.sidebar_width.max(SIDEBAR_WIDTH)));
             cx.stop_propagation();
+            cx.notify();
         }))
-        .child(
-            canvas(
-                |_, _, _| (),
-                move |_, _, window, _| {
-                    let moving = tracker.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                        if phase == DispatchPhase::Capture {
-                            let viewport = f32::from(window.viewport_size().width);
-                            let _ = moving.update(cx, |this, cx| {
-                                if let Some((x0, w0)) = this.sidebar_drag {
-                                    let widest = SIDEBAR_MAX_WIDTH.min((viewport * 0.6).max(SIDEBAR_WIDTH));
-                                    this.sidebar_width = (w0 + x0 - f32::from(event.position.x)).clamp(SIDEBAR_WIDTH, widest);
-                                    cx.notify();
-                                }
-                            });
-                        }
-                    });
-                    let released = tracker.clone();
-                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
-                        if phase == DispatchPhase::Capture {
-                            let _ = released.update(cx, |this, cx| {
-                                if this.sidebar_drag.take().is_some() {
-                                    cx.notify();
-                                }
-                            });
-                        }
-                    });
-                },
+        .when(dragging, |el| {
+            el.child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        let moving = tracker.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                            if phase == DispatchPhase::Capture {
+                                let viewport = f32::from(window.viewport_size().width);
+                                let _ = moving.update(cx, |this, cx| {
+                                    if let Some((x0, w0)) = this.sidebar_drag {
+                                        let widest = SIDEBAR_MAX_WIDTH.min((viewport * 0.6).max(SIDEBAR_WIDTH));
+                                        this.sidebar_width = (w0 + x0 - f32::from(event.position.x)).clamp(SIDEBAR_WIDTH, widest);
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        });
+                        let released = tracker.clone();
+                        window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                            if phase == DispatchPhase::Capture {
+                                let _ = released.update(cx, |this, cx| {
+                                    if this.sidebar_drag.take().is_some() {
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .size_0(),
             )
-            .absolute()
-            .size_0(),
-        )
+        })
 }
 
 /// Shared height for labeled command buttons across all document formats.

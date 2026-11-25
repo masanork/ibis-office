@@ -9481,17 +9481,13 @@ thread_local! {
     static FONTS_SEEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// Pagination of the documents open, by the document (held so its
     /// address is not reused).
-    static PAGINATIONS: std::cell::RefCell<Vec<(Arc<FlowDocument>, Arc<Pagination>, u64, bool, bool, bool, Arc<std::collections::BTreeSet<u32>>, Option<Arc<std::collections::HashMap<String, String>>>, MarkupView, Option<(u32, usize, Arc<str>)>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    #[allow(clippy::type_complexity)]
+    static PAGINATIONS: std::cell::RefCell<Vec<(Arc<FlowDocument>, Arc<Pagination>, u64, bool, bool, bool, Arc<std::collections::BTreeSet<u32>>, Option<Arc<std::collections::HashMap<String, String>>>, MarkupView, Option<(u32, usize, Arc<str>)>, Option<(ibis_doc_model::ShapeId, Option<ibis_doc_model::TextBody>)>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The pages of `doc`, laid out once.
 pub fn pages(doc: &Arc<FlowDocument>, res: &Resources) -> Arc<Pagination> {
-    if res.edited_box.as_ref().is_some_and(|(_, _, c)| c.is_some()) {
-        let mut p = paginate(doc, res);
-        order_floating_shapes(&mut p);
-        add_watermark(doc, &mut p);
-        return Arc::new(p);
-    }
+    let edited_key = res.edited_box.as_ref().and_then(|(id, _, body)| body.as_ref().map(|b| (*id, Some(b.clone()))));
     PAGINATIONS.with(|cache| {
         let mut cache = cache.borrow_mut();
         // Laid out again when art borders' pictures have come since (the
@@ -9502,8 +9498,8 @@ pub fn pages(doc: &Arc<FlowDocument>, res: &Resources) -> Arc<Pagination> {
             PIECES.with(|c| c.borrow_mut().clear());
         }
         let generation = crate::art_border::generation().wrapping_add(fonts.wrapping_mul(1 << 32));
-        cache.retain(|(_, _, g, _, _, _, _, _, _, _)| *g == generation);
-        if let Some((_, p, _, _, _, _, _, _, _, _)) = cache.iter().find(|(d, _, _, pr, ph, pm, co, mv, mk, ime)| Arc::ptr_eq(d, doc) && *ime == res.ime_marked && *pr == res.print && *ph == res.print_hidden_text && *pm == res.print_markup && **co == *res.collapsed_headings && *mv == res.merge_values && *mk == res.markup_view) {
+        cache.retain(|(_, _, g, _, _, _, _, _, _, _, _)| *g == generation);
+        if let Some((_, p, _, _, _, _, _, _, _, _, _)) = cache.iter().find(|(d, _, _, pr, ph, pm, co, mv, mk, ime, eb)| Arc::ptr_eq(d, doc) && *ime == res.ime_marked && *eb == edited_key && *pr == res.print && *ph == res.print_hidden_text && *pm == res.print_markup && **co == *res.collapsed_headings && *mv == res.merge_values && *mk == res.markup_view) {
             return p.clone();
         }
         let started = crate::debug_timing::start();
@@ -9515,7 +9511,7 @@ pub fn pages(doc: &Arc<FlowDocument>, res: &Resources) -> Arc<Pagination> {
         if cache.len() >= 4 {
             cache.remove(0);
         }
-        cache.push((doc.clone(), p.clone(), generation, res.print, res.print_hidden_text, res.print_markup, res.collapsed_headings.clone(), res.merge_values.clone(), res.markup_view.clone(), res.ime_marked.clone()));
+        cache.push((doc.clone(), p.clone(), generation, res.print, res.print_hidden_text, res.print_markup, res.collapsed_headings.clone(), res.merge_values.clone(), res.markup_view.clone(), res.ime_marked.clone(), edited_key));
         p
     })
 }

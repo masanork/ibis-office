@@ -291,14 +291,23 @@ fn dash_dropdown(prefix: &'static str, ui: DashUi, hooks: ShapeFormatHooks, cx: 
                 .when(selected || hovered, |el| el.bg(accent_bg))
                 .child(dash_graphic(d, 96.0, fg))
                 .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                    let mut changed = false;
                     if let Some(ui) = (hooks.dash_ui)(this) {
-                        if *over {
-                            ui.hovered = Some(d);
+                        let next = if *over {
+                            Some(d)
                         } else if ui.hovered == Some(d) {
-                            ui.hovered = None;
+                            None
+                        } else {
+                            ui.hovered
+                        };
+                        if ui.hovered != next {
+                            ui.hovered = next;
+                            changed = true;
                         }
                     }
-                    cx.notify();
+                    if changed {
+                        cx.notify();
+                    }
                 }))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     if let Some(ui) = (hooks.dash_ui)(this) {

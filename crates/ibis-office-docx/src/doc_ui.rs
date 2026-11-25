@@ -545,7 +545,7 @@ impl SlideEditor {
         };
         let scale = content.scale;
         let k = scale * EMU_PER_POINT as f32;
-        let lines = self.flow_lines();
+        let lines = self.flow_lines_arc();
         let selection = self.ordered_selection();
         let caret = self.text_selection().map(|(_, c)| c);
         let marked = self.doc_state().and_then(|s| s.marked.clone());

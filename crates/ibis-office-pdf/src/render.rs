@@ -105,7 +105,7 @@ pub fn paint_page_scene(
 
     let origin = page_bounds.origin;
     let mut mask = None;
-    let mut font_names = None;
+    let ts_ptr = std::sync::Arc::as_ptr(window.text_system()) as usize as u64;
     for (cmd_idx, cmd) in scene.display_list.iter().enumerate() {
         if let DisplayCmd::SetClipRect(rect) = cmd {
             mask = rect.map(|rect| ContentMask {
@@ -173,12 +173,7 @@ pub fn paint_page_scene(
                         underline: None,
                         strikethrough: None,
                     };
-                    let shaped = window.text_system().shape_line(
-                        SharedString::from(text.clone()),
-                        px(size_px),
-                        &[run],
-                        None,
-                    );
+                    let shaped = pdf_shape_line_cached(window, ts_ptr, text, px(size_px), &run);
                     let pos = point(
                         origin.x + px(*gx * scale),
                         origin.y + px(*gy * scale) - shaped.ascent,
@@ -210,18 +205,13 @@ pub fn paint_page_scene(
                 if text.is_empty() || *font_size <= 0.0 {
                     return;
                 }
-                let names = font_names.get_or_insert_with(|| window.text_system().all_font_names());
-                let family = names
-                    .iter()
-                    .find(|name| name.eq_ignore_ascii_case(family))
-                    .map(String::as_str)
-                    .unwrap_or(".SystemUIFont");
+                let family = pdf_resolve_font_family(window, ts_ptr, family);
                 let color = rgba_to_hsla(*rgba);
                 let font_size = px(*font_size * scale);
                 let run = TextRun {
                     len: text.len(),
                     font: Font {
-                        family: SharedString::from(family.to_owned()),
+                        family,
                         weight: FontWeight(f32::from(*weight).clamp(100.0, 900.0)),
                         style: if *italic {
                             FontStyle::Italic
@@ -235,12 +225,7 @@ pub fn paint_page_scene(
                     underline: None,
                     strikethrough: None,
                 };
-                let shaped = window.text_system().shape_line(
-                    SharedString::from(text.clone()),
-                    font_size,
-                    &[run],
-                    None,
-                );
+                let shaped = pdf_shape_line_cached(window, ts_ptr, text, font_size, &run);
                 let mut sx = *horizontal_scale;
                 if let Some(width) = max_width
                     && shaped.width > px(0.0)
@@ -300,4 +285,71 @@ pub fn paint_page_scene(
             | DisplayCmd::PopTransparencyGroup => {}
         });
     }
+}
+
+fn pdf_resolve_font_family(window: &Window, ts_ptr: u64, family: &str) -> SharedString {
+    thread_local! {
+        static FONT_MAP: std::cell::RefCell<Option<(u64, HashMap<String, SharedString>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let key = family.to_ascii_lowercase();
+    FONT_MAP.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        if guard.as_ref().is_none_or(|(ptr, _)| *ptr != ts_ptr) {
+            let map: HashMap<String, SharedString> = window
+                .text_system()
+                .all_font_names()
+                .into_iter()
+                .map(|name| (name.to_ascii_lowercase(), SharedString::from(name)))
+                .collect();
+            *guard = Some((ts_ptr, map));
+        }
+        guard
+            .as_ref()
+            .and_then(|(_, map)| map.get(&key).cloned())
+            .unwrap_or_else(|| SharedString::from(".SystemUIFont"))
+    })
+}
+
+fn pdf_shape_line_cached(
+    window: &Window,
+    ts_ptr: u64,
+    text: &str,
+    font_size: Pixels,
+    run: &TextRun,
+) -> gpui_kit::ShapedLine {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ts_ptr.hash(&mut hasher);
+    text.hash(&mut hasher);
+    run.font.hash(&mut hasher);
+    f32::from(font_size).to_bits().hash(&mut hasher);
+    let key = hasher.finish();
+    thread_local! {
+        static PDF_SHAPED: std::cell::RefCell<HashMap<u64, std::rc::Rc<gpui_kit::ShapedLine>>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    if let Some(cached) = PDF_SHAPED.with(|c| {
+        c.borrow()
+            .get(&key)
+            .filter(|l| l.text.as_ref() == text)
+            .cloned()
+    }) {
+        return cached.restyled(std::slice::from_ref(run));
+    }
+    let shaped = window.text_system().shape_line(
+        SharedString::from(text.to_owned()),
+        font_size,
+        std::slice::from_ref(run),
+        None,
+    );
+    let rc = std::rc::Rc::new(shaped);
+    PDF_SHAPED.with(|c| {
+        let mut map = c.borrow_mut();
+        if map.len() >= 32_768 {
+            map.clear();
+        }
+        map.insert(key, rc.clone());
+    });
+    rc.restyled(std::slice::from_ref(run))
 }

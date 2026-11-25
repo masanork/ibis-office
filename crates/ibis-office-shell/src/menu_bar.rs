@@ -486,24 +486,53 @@ fn static_fold_rank(kind: ibis_formats::Kind, id: MenuId) -> Fold {
 }
 
 /// The slots of the bar's menus, in the bar's order (the static menus, then the context menus: these fold from the right).
-fn bar_slots(items: &[(BarMenu, Vec<MenuEntry>)], kind: ibis_formats::Kind, window: &Window) -> Vec<BarSlot> {
-    let contexts = items.iter().filter(|(m, _)| matches!(m, BarMenu::Context(_))).count();
+fn bar_slots(menus: &[BarMenu], kind: ibis_formats::Kind, window: &Window) -> Vec<BarSlot> {
+    let contexts = menus.iter().filter(|m| matches!(m, BarMenu::Context(_))).count();
     let mut seen_contexts = 0;
-    items
+    menus
         .iter()
-        .map(|(menu, _)| {
-            let label = menu.label();
+        .map(|menu| {
             match menu {
-                BarMenu::Static(id) => BarSlot { width: crate::chrome::dropdown_list::label_width(window, &menu.display().text, 14.) + 2. * MENU_BAR_BUTTON_PADDING, fold: static_fold_rank(kind, *id) },
+                BarMenu::Static(id) => BarSlot {
+                    width: cached_bar_label_width(window, &menu.display().text, false) + 2. * MENU_BAR_BUTTON_PADDING,
+                    fold: static_fold_rank(kind, *id),
+                },
                 BarMenu::Context(_) => {
+                    let label = menu.label();
                     let first = seen_contexts == 0;
                     let rank = 1000 + (contexts - 1 - seen_contexts) as u32;
                     seen_contexts += 1;
-                    BarSlot { width: bold_label_width(window, &label, 14.) + 2. * MENU_BAR_BUTTON_PADDING + if first { GROUP_LINE_WIDTH } else { 0.0 }, fold: Fold::Rank(rank) }
+                    BarSlot {
+                        width: cached_bar_label_width(window, &label, true) + 2. * MENU_BAR_BUTTON_PADDING + if first { GROUP_LINE_WIDTH } else { 0.0 },
+                        fold: Fold::Rank(rank),
+                    }
                 }
             }
         })
         .collect()
+}
+
+fn cached_bar_label_width(window: &Window, label: &str, bold: bool) -> f32 {
+    thread_local! {
+        static WIDTHS: std::cell::RefCell<std::collections::HashMap<(String, bool), f32>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    if let Some(width) = WIDTHS.with(|cache| cache.borrow().get(&(label.to_owned(), bold)).copied()) {
+        return width;
+    }
+    let width = if bold {
+        bold_label_width(window, label, 14.)
+    } else {
+        crate::chrome::dropdown_list::label_width(window, label, 14.)
+    };
+    WIDTHS.with(|cache| {
+        let mut map = cache.borrow_mut();
+        if map.len() >= 256 {
+            map.clear();
+        }
+        map.insert((label.to_owned(), bold), width);
+    });
+    width
 }
 
 /// How wide `label` is in the bold type of a context menu's name.
@@ -633,6 +662,22 @@ impl SlideEditor {
         items
     }
 
+    /// The bar's menu IDs without constructing full menu entry trees and command handlers.
+    pub(crate) fn bar_menu_ids(&self) -> Vec<BarMenu> {
+        if !self.has_document {
+            return self.start_menus().into_iter().map(|(id, _)| BarMenu::Static(id)).collect();
+        }
+        let specs = crate::menu_layout::layout(self.kind());
+        let mut menus = Vec::with_capacity(specs.len() + self.bar_contexts.len());
+        for spec in specs {
+            menus.push(BarMenu::Static(spec.id));
+        }
+        for &context in &self.bar_contexts {
+            menus.push(BarMenu::Context(context));
+        }
+        menus
+    }
+
     /// Which menus of `items` show in the bar and which are folded into the ▾ at this window's width.
     fn bar_split(&self, items: &[(BarMenu, Vec<MenuEntry>)], window: &Window) -> (Vec<usize>, Vec<usize>) {
         let layout = self.bar_layout(items, window);
@@ -698,18 +743,18 @@ impl SlideEditor {
     /// the menus that do not fit (right after the last one that does). The Help menu is in the row like the others
     /// (the first to be folded into the ▾).
     pub(crate) fn render_menu_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let items = self.bar_items();
-        let layout = self.bar_layout(&items, window);
+        let menus = self.bar_menu_ids();
+        let layout = self.bar_layout_menus(&menus, window);
         let open_ix = self.open_menu.as_ref().map(|o| o.ix);
         let logo_height = LOGO_HEIGHT_IN_BAR;
         let dark = crate::palette::is_dark();
         // The Help menu stands with the others, at the left (the user's decision, 2026-11-08); it is still the first folded into the ▾.
         let main: Vec<usize> = layout.visible.clone();
         let help: Option<usize> = None;
-        let first_context = main.iter().copied().find(|i| matches!(items[*i].0, BarMenu::Context(_)));
+        let first_context = main.iter().copied().find(|i| matches!(menus[*i], BarMenu::Context(_)));
         let kind = self.kind();
         let one = |cx: &mut Context<Self>, ix: usize| -> AnyElement {
-            let menu = items[ix].0;
+            let menu = menus[ix];
             let selected = open_ix == Some(ix);
             let id_key = menu.key();
             let tone = matches!(menu, BarMenu::Context(_)).then(|| context_tone(kind, dark));
@@ -852,7 +897,12 @@ impl SlideEditor {
     /// Where the bar's parts go at this window's width: whether the logo shows, the room at its left, and which menus of
     /// `items` show and which are folded into the ▾.
     pub(crate) fn bar_layout(&self, items: &[(BarMenu, Vec<MenuEntry>)], window: &Window) -> BarLayout {
-        let slots = bar_slots(items, self.kind(), window);
+        let menus: Vec<BarMenu> = items.iter().map(|(m, _)| *m).collect();
+        self.bar_layout_menus(&menus, window)
+    }
+
+    pub(crate) fn bar_layout_menus(&self, menus: &[BarMenu], window: &Window) -> BarLayout {
+        let slots = bar_slots(menus, self.kind(), window);
         let viewport = f32::from(window.viewport_size().width);
         let total: f32 = slots.iter().map(|s| s.width).sum();
         let logo_width = LOGO_HEIGHT_IN_BAR * crate::chrome::LOGO_ASPECT + 2.0 * MENU_BAR_BUTTON_PADDING;

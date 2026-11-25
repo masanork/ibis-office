@@ -11,7 +11,10 @@
 
 #[cfg(not(target_family = "wasm"))]
 mod store {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static CACHE: Mutex<Option<(PathBuf, Vec<(String, String)>)>> = Mutex::new(None);
 
     fn path() -> Option<PathBuf> {
         let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
@@ -31,8 +34,7 @@ mod store {
         Some(base?.join("ibisOffice").join("settings.txt"))
     }
 
-    fn read() -> Vec<(String, String)> {
-        let Some(path) = path() else { return Vec::new() };
+    fn read_disk(path: &Path) -> Vec<(String, String)> {
         std::fs::read_to_string(path)
             .unwrap_or_default()
             .lines()
@@ -41,16 +43,31 @@ mod store {
             .collect()
     }
 
+    fn with_entries<R>(path: &Path, f: impl FnOnce(&mut Vec<(String, String)>) -> R) -> R {
+        let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let needs_load = guard.as_ref().is_none_or(|(cached_path, _)| cached_path != path);
+        if needs_load {
+            let entries = read_disk(path);
+            *guard = Some((path.to_path_buf(), entries));
+        }
+        let (_, entries) = guard.as_mut().expect("settings cache initialized");
+        f(entries)
+    }
+
     pub(super) fn get(key: &str) -> Option<String> {
-        read().into_iter().find(|(k, _)| k == key).map(|(_, v)| v)
+        let path = path()?;
+        with_entries(&path, |entries| {
+            entries.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+        })
     }
 
     pub(super) fn set(key: &str, value: &str) {
         let Some(path) = path() else { return };
-        let mut all = read();
-        all.retain(|(k, _)| k != key);
-        all.push((key.to_string(), value.to_string()));
-        let text: String = all.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+        let text: String = with_entries(&path, |all| {
+            all.retain(|(k, _)| k != key);
+            all.push((key.to_string(), value.to_string()));
+            all.iter().map(|(k, v)| format!("{k}={v}\n")).collect()
+        });
         let result = match path.parent() {
             Some(dir) => std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, text)),
             None => std::fs::write(&path, text),
@@ -63,12 +80,15 @@ mod store {
     /// The line of `key` taken out of the file (nothing is written when it is not there).
     pub(super) fn remove(key: &str) {
         let Some(path) = path() else { return };
-        let all = read();
-        if !all.iter().any(|(k, _)| k == key) {
-            return;
-        }
-        let text: String = all.iter().filter(|(k, _)| k != key).map(|(k, v)| format!("{k}={v}
-")).collect();
+        let text: Option<String> = with_entries(&path, |all| {
+            let before = all.len();
+            all.retain(|(k, _)| k != key);
+            if all.len() == before {
+                return None;
+            }
+            Some(all.iter().map(|(k, v)| format!("{k}={v}\n")).collect())
+        });
+        let Some(text) = text else { return };
         if let Err(err) = std::fs::write(&path, text) {
             log::warn!("{}: {err}", path.display());
         }
@@ -77,7 +97,13 @@ mod store {
 
 #[cfg(target_family = "wasm")]
 mod store {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
     use wasm_bindgen::JsValue;
+
+    thread_local! {
+        static CACHE: RefCell<HashMap<String, Option<String>>> = RefCell::new(HashMap::new());
+    }
 
     fn storage() -> Option<JsValue> {
         js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("localStorage")).ok() // host-lint-allow: not used when an editor uses in-memory settings
@@ -95,15 +121,28 @@ mod store {
     }
 
     pub(super) fn get(key: &str) -> Option<String> {
-        call("getItem", &[&format!("ibisOffice.{key}")])?.as_string()
+        if let Some(cached) = CACHE.with(|c| c.borrow().get(key).cloned()) {
+            return cached;
+        }
+        let value = call("getItem", &[&format!("ibisOffice.{key}")]).and_then(|v| v.as_string());
+        CACHE.with(|c| {
+            c.borrow_mut().insert(key.to_string(), value.clone());
+        });
+        value
     }
 
     pub(super) fn set(key: &str, value: &str) {
         call("setItem", &[&format!("ibisOffice.{key}"), value]);
+        CACHE.with(|c| {
+            c.borrow_mut().insert(key.to_string(), Some(value.to_string()));
+        });
     }
 
     pub(super) fn remove(key: &str) {
         call("removeItem", &[&format!("ibisOffice.{key}")]);
+        CACHE.with(|c| {
+            c.borrow_mut().insert(key.to_string(), None);
+        });
     }
 }
 
@@ -230,5 +269,35 @@ mod legacy_key_tests {
             assert_eq!(LEGACY_KEYS.iter().filter(|(n, o)| n == new || o == old).count(), 1);
         }
         assert_eq!(legacy_name("docx.unknown"), None);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn settings_cache_tracks_set_remove_and_dir_switch() {
+        let base = std::env::temp_dir().join(format!("ibis-settings-cache-test-{}", std::process::id()));
+        let dir_a = base.join("a");
+        let dir_b = base.join("b");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+
+        unsafe { std::env::set_var("IBIS_SETTINGS_DIR", &dir_a) };
+        assert_eq!(super::get("test.cache-key"), None);
+        super::set("test.cache-key", "alpha");
+        assert_eq!(super::get("test.cache-key").as_deref(), Some("alpha"));
+
+        // Switching IBIS_SETTINGS_DIR must invalidate the cached path immediately.
+        unsafe { std::env::set_var("IBIS_SETTINGS_DIR", &dir_b) };
+        assert_eq!(super::get("test.cache-key"), None);
+        super::set("test.cache-key", "beta");
+        assert_eq!(super::get("test.cache-key").as_deref(), Some("beta"));
+        super::remove("test.cache-key");
+        assert_eq!(super::get("test.cache-key"), None);
+
+        // Switching back to dir_a sees the persisted value.
+        unsafe { std::env::set_var("IBIS_SETTINGS_DIR", &dir_a) };
+        assert_eq!(super::get("test.cache-key").as_deref(), Some("alpha"));
+        unsafe { std::env::remove_var("IBIS_SETTINGS_DIR") };
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

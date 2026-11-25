@@ -655,19 +655,40 @@ impl SlideEditor {
         None
     }
 
-    /// The lines of the laid-out pages.
-    pub fn flow_lines(&self) -> Vec<LineGeom> {
-        let Some(doc) = self.flow() else { return Vec::new() };
+    /// The lines of the laid-out pages, cached per pagination instance.
+    pub fn flow_lines_arc(&self) -> Arc<Vec<LineGeom>> {
+        let Some(doc) = self.flow() else { return Arc::new(Vec::new()) };
         let pagination = pages(doc, &self.resources);
-        let mut out = Vec::new();
-        for (page, pg) in pagination.pages.iter().enumerate() {
-            for item in &pg.items {
-                if let Item::Line { para, x, y, h, stops, vertical, list_tab, base, avail, .. } = item {
-                    out.push(LineGeom { page, para: *para, x: *x, y: *y, h: *h, stops: stops.clone(), vertical: *vertical, list_tab: *list_tab, base: *base, avail: *avail });
+        let key = Arc::as_ptr(&pagination) as usize;
+        thread_local! {
+            static FLOW_LINES: std::cell::RefCell<Vec<(usize, Arc<crate::flow_layout::Pagination>, Arc<Vec<LineGeom>>)>> =
+                const { std::cell::RefCell::new(Vec::new()) };
+        }
+        FLOW_LINES.with(|cell| {
+            let mut cache = cell.borrow_mut();
+            if let Some((_, _, lines)) = cache.iter().find(|(k, _, _)| *k == key) {
+                return lines.clone();
+            }
+            let mut out = Vec::new();
+            for (page, pg) in pagination.pages.iter().enumerate() {
+                for item in &pg.items {
+                    if let Item::Line { para, x, y, h, stops, vertical, list_tab, base, avail, .. } = item {
+                        out.push(LineGeom { page, para: *para, x: *x, y: *y, h: *h, stops: stops.clone(), vertical: *vertical, list_tab: *list_tab, base: *base, avail: *avail });
+                    }
                 }
             }
-        }
-        out
+            let lines = Arc::new(out);
+            if cache.len() >= 4 {
+                cache.remove(0);
+            }
+            cache.push((key, pagination, lines.clone()));
+            lines
+        })
+    }
+
+    /// The lines of the laid-out pages.
+    pub fn flow_lines(&self) -> Vec<LineGeom> {
+        (*self.flow_lines_arc()).clone()
     }
 
     /// The line the caret at `pos` is shown on.

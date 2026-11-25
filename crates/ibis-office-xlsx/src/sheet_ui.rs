@@ -1126,28 +1126,58 @@ impl SlideEditor {
         let show_headings = sheet.headings;
         let scale = content.scale;
         let to_px = |origin: Pixels, at: i64, offset: i64| f32::from(origin) + ((at + offset) as f32 * scale).round();
-        let mut xs: Vec<f32> = sheet.column_offsets().into_iter().map(|o| to_px(content.slide_origin.x, shape.frame.x, o)).collect();
-        let mut ys: Vec<f32> = sheet.row_offsets().into_iter().map(|o| to_px(content.slide_origin.y, shape.frame.y, o)).collect();
-        let target_right_px = to_px(content.slide_origin.x, shape.frame.x, 0) + f32::from(content.size.width) + 2000.0;
-        let target_bottom_px = to_px(content.slide_origin.y, shape.frame.y, 0) + f32::from(content.size.height) + 2000.0;
-        let last_column_emu: i64 = sheet.columns.iter().sum();
-        let last_row_emu: i64 = sheet.rows.iter().sum();
-        let mut cur_x = *xs.last().unwrap_or(&0.0);
-        let mut col_count = sheet.columns.len();
-        while cur_x < target_right_px && col_count < 16_384 {
-            let extra = (col_count + 1 - sheet.columns.len()) as i64 * sheet.default_column;
-            cur_x = to_px(content.slide_origin.x, shape.frame.x, last_column_emu + extra);
-            xs.push(cur_x);
-            col_count += 1;
+        type HeaderCacheKey = (usize, u32, u32, u32, i64, i64, u32, u32);
+        type HeaderCacheVal = (std::sync::Arc<Vec<f32>>, std::sync::Arc<Vec<f32>>, std::sync::Arc<Vec<bool>>, std::sync::Arc<Vec<bool>>);
+        thread_local! {
+            static HEADER_CACHE: std::cell::RefCell<Option<(HeaderCacheKey, HeaderCacheVal)>> =
+                const { std::cell::RefCell::new(None) };
         }
-        let mut cur_y = *ys.last().unwrap_or(&0.0);
-        let mut row_count = sheet.rows.len();
-        while cur_y < target_bottom_px && row_count < 1_048_576 {
-            let extra = (row_count + 1 - sheet.rows.len()) as i64 * sheet.default_row;
-            cur_y = to_px(content.slide_origin.y, shape.frame.y, last_row_emu + extra);
-            ys.push(cur_y);
-            row_count += 1;
-        }
+        let cache_key: HeaderCacheKey = (
+            std::ptr::from_ref::<ibis_doc_model::Sheet>(sheet) as usize,
+            scale.to_bits(),
+            f32::from(content.slide_origin.x).to_bits(),
+            f32::from(content.slide_origin.y).to_bits(),
+            shape.frame.x,
+            shape.frame.y,
+            f32::from(content.size.width).to_bits(),
+            f32::from(content.size.height).to_bits(),
+        );
+        let (xs, ys, hidden_columns, hidden_rows) = HEADER_CACHE.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            if let Some((k, v)) = guard.as_ref()
+                && *k == cache_key
+            {
+                return v.clone();
+            }
+            let mut xs: Vec<f32> = sheet.column_offsets().into_iter().map(|o| to_px(content.slide_origin.x, shape.frame.x, o)).collect();
+            let mut ys: Vec<f32> = sheet.row_offsets().into_iter().map(|o| to_px(content.slide_origin.y, shape.frame.y, o)).collect();
+            let target_right_px = to_px(content.slide_origin.x, shape.frame.x, 0) + f32::from(content.size.width) + 2000.0;
+            let target_bottom_px = to_px(content.slide_origin.y, shape.frame.y, 0) + f32::from(content.size.height) + 2000.0;
+            let last_column_emu: i64 = sheet.columns.iter().sum();
+            let last_row_emu: i64 = sheet.rows.iter().sum();
+            let mut cur_x = *xs.last().unwrap_or(&0.0);
+            let mut col_count = sheet.columns.len();
+            while cur_x < target_right_px && col_count < 16_384 {
+                let extra = (col_count + 1 - sheet.columns.len()) as i64 * sheet.default_column;
+                cur_x = to_px(content.slide_origin.x, shape.frame.x, last_column_emu + extra);
+                xs.push(cur_x);
+                col_count += 1;
+            }
+            let mut cur_y = *ys.last().unwrap_or(&0.0);
+            let mut row_count = sheet.rows.len();
+            while cur_y < target_bottom_px && row_count < 1_048_576 {
+                let extra = (row_count + 1 - sheet.rows.len()) as i64 * sheet.default_row;
+                cur_y = to_px(content.slide_origin.y, shape.frame.y, last_row_emu + extra);
+                ys.push(cur_y);
+                row_count += 1;
+            }
+            // Hidden columns and rows: where a run of them starts, the headers' line is drawn green and 2 px wide (Excel's own mark is a doubled line).
+            let hidden_columns: Vec<bool> = sheet.columns.iter().map(|&w| w == 0).collect();
+            let hidden_rows: Vec<bool> = sheet.rows.iter().map(|&h| h == 0).collect();
+            let val = (std::sync::Arc::new(xs), std::sync::Arc::new(ys), std::sync::Arc::new(hidden_columns), std::sync::Arc::new(hidden_rows));
+            *guard = Some((cache_key, val.clone()));
+            val
+        });
         let range = self.selected_range().filter(|_| self.selection.is_none() || self.sheet_range_pick_active());
         let all_selected = range.is_some_and(|r| {
             r.first_column == 0
@@ -1169,9 +1199,6 @@ impl SlideEditor {
             *geometry.borrow_mut() = Default::default();
         }
         let paint_geometry = geometry.clone();
-        // Hidden columns and rows: where a run of them starts, the headers' line is drawn green and 2 px wide (Excel's own mark is a doubled line).
-        let hidden_columns: Vec<bool> = sheet.columns.iter().map(|&w| w == 0).collect();
-        let hidden_rows: Vec<bool> = sheet.rows.iter().map(|&h| h == 0).collect();
         let drag = self.wb().header_drag;
         let (primary, bg_color) = (cx.theme().primary, cx.theme().background);
         let extra_shape_frames: Vec<AnyElement> = self
@@ -1219,6 +1246,9 @@ impl SlideEditor {
             let (background, line, text, selected, green) =
                 (rgb(HEADER_BACKGROUND), rgb(HEADER_LINE), rgb(HEADER_TEXT), rgb(HEADER_SELECTED), rgb(SELECTION_COLOR));
             let label = |window: &mut Window, cx: &mut App, s: String, color: Rgba, x: Pixels, y: Pixels, w: Pixels, h: Pixels| {
+                if w < px(1.) || h < px(1.) {
+                    return;
+                }
                 let run = TextRun {
                     len: s.len(),
                     font: font.clone(),
@@ -1227,10 +1257,37 @@ impl SlideEditor {
                     underline: None,
                     strikethrough: None,
                 };
-                let shaped = window.text_system().shape_line(s.into(), px(HEADER_FONT_SIZE), &[run], None);
-                if w < px(1.) || h < px(1.) {
-                    return;
-                }
+                let shaped = {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    (std::sync::Arc::as_ptr(window.text_system()) as usize).hash(&mut hasher);
+                    s.hash(&mut hasher);
+                    font.hash(&mut hasher);
+                    let key = hasher.finish();
+                    thread_local! {
+                        static HEADER_SHAPES: std::cell::RefCell<std::collections::HashMap<u64, std::rc::Rc<ShapedLine>>> =
+                            std::cell::RefCell::new(std::collections::HashMap::new());
+                    }
+                    if let Some(cached) = HEADER_SHAPES.with(|c| {
+                        c.borrow()
+                            .get(&key)
+                            .filter(|l| l.text.as_ref() == s)
+                            .cloned()
+                    }) {
+                        cached.restyled(std::slice::from_ref(&run))
+                    } else {
+                        let line = window.text_system().shape_line(s.into(), px(HEADER_FONT_SIZE), std::slice::from_ref(&run), None);
+                        let rc = std::rc::Rc::new(line);
+                        HEADER_SHAPES.with(|c| {
+                            let mut map = c.borrow_mut();
+                            if map.len() >= 4096 {
+                                map.clear();
+                            }
+                            map.insert(key, rc.clone());
+                        });
+                        rc.restyled(std::slice::from_ref(&run))
+                    }
+                };
                 // A label that fits is centred; one that does not starts at
                 // the header's left and is cut off at its edges.
                 let fits = shaped.width <= w - px(2.);
