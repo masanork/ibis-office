@@ -1,10 +1,12 @@
 <p align="center"><a href="../README.md">English</a> | <b>日本語</b></p>
 
 <p align="center">
-  <img src="../crates/ibis-office-app/branding/sorane-docs.svg" alt="soraneDocs" width="84">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../asset/sorane-docs-lockup-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="../asset/sorane-docs-lockup-light.svg">
+    <img src="../asset/sorane-docs-lockup-light.svg" alt="soraneDocs — Powered by ibisOffice" width="340">
+  </picture>
 </p>
-
-<h1 align="center">soraneDocs</h1>
 
 <p align="center">
   <b>Rust と GPUI で作られた <a href="https://github.com/ibisjp/ibis-office">ibisOffice</a> の機能拡張フォーク</b><br>
