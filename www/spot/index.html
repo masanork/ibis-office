@@ -71,7 +71,17 @@
     <div class="card">
       <div class="row" style="justify-content: space-between;">
         <strong>リレーから回収</strong>
-        <button id="btn-fetch-inbox" class="secondary" type="button">Inbox 取得・復号</button>
+        <div class="row">
+          <button id="btn-scan-qr" class="secondary" type="button">カメラで QR 読取</button>
+          <button id="btn-fetch-inbox" class="secondary" type="button">Inbox 取得・復号</button>
+        </div>
+      </div>
+      <div id="qr-scanner" class="hidden" style="margin-top: 10px;">
+        <video id="qr-video" playsinline muted style="width: 100%; max-height: 280px; border-radius: 8px; background: #000;"></video>
+        <div class="row" style="justify-content: space-between; margin-top: 6px;">
+          <span id="qr-scan-status" class="muted">カメラ待機中...</span>
+          <button id="btn-stop-scan" class="secondary" type="button">停止</button>
+        </div>
       </div>
       <label for="paste-envelope">オフライン（QR 等）で受け取った <code>spot1:...</code> 文字列を直接復号</label>
       <textarea id="paste-envelope" rows="3" placeholder="spot1:..."></textarea>

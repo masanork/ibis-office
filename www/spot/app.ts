@@ -6,6 +6,7 @@ import {
   type SpotRecipientJwk,
 } from './cose-envelope.js';
 import { formatSpotCsv, formatSpotTsv, type SpotDecryptedRecord } from './export.js';
+import { renderQrSvg } from './qr.js';
 
 interface FormField {
   id: string;
@@ -151,8 +152,17 @@ async function main(): Promise<void> {
     listEl.innerHTML = '';
     for (const item of items) {
       const wrap = document.createElement('div');
-      wrap.style.marginBottom = '10px';
+      wrap.style.marginBottom = '12px';
       wrap.innerHTML = `<div><strong>${item.status === 'sent' ? '送信済み' : '未送信（待機中）'}</strong> — <code>${item.envelope_id.slice(0, 12)}...</code> (${item.envelope.length} chars)</div>`;
+      const qrBox = document.createElement('div');
+      qrBox.style.maxWidth = '220px';
+      qrBox.style.margin = '8px 0';
+      try {
+        qrBox.innerHTML = renderQrSvg(item.envelope);
+      } catch {
+        qrBox.textContent = 'QR 上限超過（テキストまたは HTTP 提出を利用）';
+      }
+      wrap.appendChild(qrBox);
       const pre = document.createElement('pre');
       pre.textContent = item.envelope;
       wrap.appendChild(pre);
@@ -266,6 +276,71 @@ async function main(): Promise<void> {
     });
     decryptedById.set(opened.envelopeId, { payload: opened.payload, source: 'offline-paste' });
     renderDecrypted();
+  });
+
+  let scanStream: MediaStream | null = null;
+  let scanActive = false;
+  const scannerBox = document.getElementById('qr-scanner')!;
+  const scanVideo = document.getElementById('qr-video') as HTMLVideoElement;
+  const scanStatus = document.getElementById('qr-scan-status')!;
+
+  const stopScan = () => {
+    scanActive = false;
+    if (scanStream) {
+      for (const track of scanStream.getTracks()) track.stop();
+      scanStream = null;
+    }
+    scanVideo.srcObject = null;
+    scannerBox.classList.add('hidden');
+  };
+
+  document.getElementById('btn-stop-scan')!.addEventListener('click', stopScan);
+
+  document.getElementById('btn-scan-qr')!.addEventListener('click', async () => {
+    const Detector = (window as unknown as {
+      BarcodeDetector?: new (opts: { formats: string[] }) => {
+        detect(source: HTMLVideoElement): Promise<Array<{ rawValue?: string }>>;
+      };
+    }).BarcodeDetector;
+    if (!Detector || !navigator.mediaDevices?.getUserMedia) {
+      scanStatus.textContent = 'このブラウザはカメラ QR 読取に未対応です（下の文字列貼付をご利用ください）。';
+      scannerBox.classList.remove('hidden');
+      return;
+    }
+    try {
+      scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      scanVideo.srcObject = scanStream;
+      await scanVideo.play();
+      scannerBox.classList.remove('hidden');
+      scanStatus.textContent = 'QR コードをかざしてください...';
+      scanActive = true;
+      const detector = new Detector({ formats: ['qr_code'] });
+      const tick = async () => {
+        if (!scanActive) return;
+        try {
+          const codes = await detector.detect(scanVideo);
+          for (const code of codes) {
+            const raw = code.rawValue?.trim() ?? '';
+            if (!raw.startsWith('spot1:')) continue;
+            const opened = await openSpotEnvelope(raw, demoKeys.privateJwk, {
+              tenantId: manifest.tenant_id,
+              formId: manifest.form_id,
+              version: manifest.version,
+            });
+            decryptedById.set(opened.envelopeId, { payload: opened.payload, source: 'qr-camera' });
+            renderDecrypted();
+            scanStatus.textContent = `読取成功: ${opened.envelopeId.slice(0, 12)}...`;
+          }
+        } catch {
+          // Continue scanning next frame.
+        }
+        if (scanActive) requestAnimationFrame(() => { void tick(); });
+      };
+      requestAnimationFrame(() => { void tick(); });
+    } catch {
+      scanStatus.textContent = 'カメラを起動できませんでした。';
+      scannerBox.classList.remove('hidden');
+    }
   });
 
   const currentRecords = (): SpotDecryptedRecord[] =>

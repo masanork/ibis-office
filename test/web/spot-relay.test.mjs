@@ -7,6 +7,7 @@ import {
   sealSpotEnvelope,
 } from '../../www/spot/cose-envelope.js';
 import { formatSpotCsv, formatSpotTsv } from '../../www/spot/export.js';
+import { encodeQrMatrix, renderQrSvg } from '../../www/spot/qr.js';
 import { createMemoryRelayStore, dispatchSpotRelay } from '../../worker/spot-relay.js';
 
 test('COSE_Encrypt0 Spot envelope round-trips and rejects context or key tampering', async () => {
@@ -130,4 +131,21 @@ test('Spot TSV and BOM CSV export formats decrypted records cleanly', () => {
     csv,
     `\uFEFFrecord_id,submitted_at,source,name,party_size\r\n${'a'.repeat(64)},2026-11-26T10:00:00Z,relay,"山田, 太郎",3\r\n`,
   );
+});
+
+test('QR encoder generates valid matrix finder patterns and SVG for Spot envelopes', async () => {
+  const { publicJwk } = await generateRecipientKeyPair('demo-city-2026-01');
+  const sealed = await sealSpotEnvelope(
+    publicJwk,
+    { tenantId: 'demo-city', formId: 'evac-checkin', version: '1.0.0' },
+    { answers: { name: '山田 太郎', party_size: 2 } },
+  );
+  const matrix = encodeQrMatrix(sealed.envelope);
+  assert.ok(matrix.version >= 1 && matrix.version <= 20);
+  assert.equal(matrix.size, matrix.version * 4 + 17);
+  // Top-left finder pattern center (3,3) and outer ring (0,0) must be dark.
+  assert.equal(matrix.modules[0], 1);
+  assert.equal(matrix.modules[3 * matrix.size + 3], 1);
+  const svg = renderQrSvg(sealed.envelope);
+  assert.ok(svg.startsWith('<svg ') && svg.includes('</svg>'));
 });

@@ -13,6 +13,14 @@
     "binding": "ASSETS",
     "run_worker_first": ["/api/relay/*"]
   },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SPOT_RELAY_DO", "class_name": "SpotTenantRelay" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SpotTenantRelay"] }
+  ],
   "observability": {
     "enabled": true,
     "logs": { "enabled": true, "invocation_logs": false },
