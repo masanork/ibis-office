@@ -238,9 +238,12 @@ pub struct Resources {
     japanese: std::cell::RefCell<HashMap<String, Option<bool>>>,
     /// What Word draws an underline and a strike from, in the installed font of a typeface (and of its bold) (`font_metrics::DecorationMetrics`).
     decoration: std::cell::RefCell<HashMap<(String, bool), Option<crate::font_metrics::DecorationMetrics>>>,
-    /// The web build's shaped widths of single characters (`text_width`), by font, size and character.
-    #[cfg(target_family = "wasm")]
+    /// Cached single-character advances (`char_width` / `text_width`), by font, size and character.
     char_widths: std::cell::RefCell<HashMap<(FontId, u32, char), f32>>,
+    /// Cached `Font -> FontId` resolutions so per-character layout does not re-lock `TextSystem`.
+    font_ids: std::cell::RefCell<HashMap<Font, FontId>>,
+    /// `fonts_generation()` snapshot for `char_widths` and `font_ids`.
+    metrics_fonts_gen: std::cell::Cell<u64>,
     /// Draw as printed: sheets without their grid lines.
     pub print: bool,
     /// The slide show is drawn: an animated GIF plays (elsewhere it shows its first frame).
@@ -656,8 +659,9 @@ impl Resources {
             row_metrics: Default::default(),
             japanese: Default::default(),
             decoration: Default::default(),
-            #[cfg(target_family = "wasm")]
             char_widths: Default::default(),
+            font_ids: Default::default(),
+            metrics_fonts_gen: std::cell::Cell::new(fonts_generation()),
             print: false,
             animate_pictures: std::cell::Cell::new(false),
             live_gifs: Default::default(),
@@ -989,8 +993,71 @@ impl Resources {
 
     /// The width of `text` in `font` at `size` pixels, from the characters'
     /// advances (text is laid out without kerning).
-    pub fn text_width(&self, text: &str, font: &Font, size: f32) -> f32 {
+    fn sync_metrics_caches(&self) {
+        let fonts_gen = fonts_generation();
+        if self.metrics_fonts_gen.get() != fonts_gen {
+            self.metrics_fonts_gen.set(fonts_gen);
+            self.char_widths.borrow_mut().clear();
+            self.font_ids.borrow_mut().clear();
+        }
+    }
+
+    pub fn resolve_font_cached(&self, font: &Font) -> FontId {
+        self.sync_metrics_caches();
+        if let Some(&id) = self.font_ids.borrow().get(font) {
+            return id;
+        }
         let id = self.text_system.resolve_font(font);
+        let mut cache = self.font_ids.borrow_mut();
+        if cache.len() >= 1024 {
+            cache.clear();
+        }
+        cache.insert(font.clone(), id);
+        id
+    }
+
+    fn char_width_for_id(&self, id: FontId, c: char, size: f32) -> f32 {
+        let key = (id, size.to_bits(), c);
+        if let Some(&w) = self.char_widths.borrow().get(&key) {
+            return w;
+        }
+        // The web build draws half-width Latin text with the browser's installed typeface of the document's font (the
+        // text system replaces the glyphs and their advances when the line is shaped, `forks/gpui-pre-web`), whereas the
+        // advance of the glyph the text system finds for the character is the bundled font's. A line measured so is spaced
+        // as the bundled font, not as the browser's glyphs it is drawn with: a monospaced typeface came out with its narrow
+        // letters closed up and its wide ones apart (#126). The shaped width of the one character has the replaced advance.
+        #[cfg(target_family = "wasm")]
+        let w = if (c as u32) < 0x2e80 && !c.is_control() {
+            f32::from(self.text_system.layout_width(id, px(size), c))
+        } else {
+            match self.text_system.advance(id, px(size), c) {
+                Ok(advance) => f32::from(advance.width),
+                Err(_) if c as u32 >= 0x2e80 => size,
+                Err(_) => size * 0.5,
+            }
+        };
+        #[cfg(not(target_family = "wasm"))]
+        let w = match self.text_system.advance(id, px(size), c) {
+            Ok(advance) => f32::from(advance.width),
+            Err(_) if c as u32 >= 0x2e80 => size,
+            Err(_) => size * 0.5,
+        };
+        let mut cache = self.char_widths.borrow_mut();
+        if cache.len() >= 65_536 {
+            cache.clear();
+        }
+        cache.insert(key, w);
+        w
+    }
+
+    /// Cached advance of a single character `c` at `size` pt without allocating a `String`.
+    pub fn char_width(&self, c: char, font: &Font, size: f32) -> f32 {
+        let id = self.resolve_font_cached(font);
+        self.char_width_for_id(id, c, size)
+    }
+
+    pub fn text_width(&self, text: &str, font: &Font, size: f32) -> f32 {
+        let id = self.resolve_font_cached(font);
         // A selector, a joiner and the character it joins take no room of their own: they are one glyph with the character before.
         let mut prev = None;
         text.chars()
@@ -1000,26 +1067,7 @@ impl Resources {
                 if joined {
                     return 0.0;
                 }
-                // The web build draws half-width Latin text with the browser's installed typeface of the document's font (the
-                // text system replaces the glyphs and their advances when the line is shaped, `forks/gpui-pre-web`), whereas the
-                // advance of the glyph the text system finds for the character is the bundled font's. A line measured so is spaced
-                // as the bundled font, not as the browser's glyphs it is drawn with: a monospaced typeface came out with its narrow
-                // letters closed up and its wide ones apart (#126). The shaped width of the one character has the replaced advance.
-                #[cfg(target_family = "wasm")]
-                if (c as u32) < 0x2e80 && !c.is_control() {
-                    let key = (id, size.to_bits(), c);
-                    if let Some(&w) = self.char_widths.borrow().get(&key) {
-                        return w;
-                    }
-                    let w = f32::from(self.text_system.layout_width(id, px(size), c));
-                    self.char_widths.borrow_mut().insert(key, w);
-                    return w;
-                }
-                match self.text_system.advance(id, px(size), c) {
-                    Ok(advance) => f32::from(advance.width),
-                    Err(_) if c as u32 >= 0x2e80 => size,
-                    Err(_) => size * 0.5,
-                }
+                self.char_width_for_id(id, c, size)
             })
             .sum()
     }

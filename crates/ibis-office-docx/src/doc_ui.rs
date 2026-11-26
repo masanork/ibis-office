@@ -575,17 +575,40 @@ impl SlideEditor {
         } else {
             f32::from(content.slide_origin.y)
         };
-        self.presentation()
-            .slides
-            .iter()
-            .enumerate()
-            .skip(first)
-            .take_while(|(index, _)| {
-                let (left, page_top) = page_place(&content, &pages, *index, side_to_side);
-                if side_to_side { left < to } else { page_top < to }
-            })
-            .flat_map(|(index, slide)| {
-                let (left, page_top) = page_place(&content, &pages, index, side_to_side);
+        let max_cross = if side_to_side {
+            pages.iter().map(|p| p.height).max().unwrap_or(1)
+        } else {
+            pages.iter().map(|p| p.width).max().unwrap_or(1)
+        };
+        let mut cursor = gap
+            + pages
+                .iter()
+                .take(first)
+                .map(|p| {
+                    let extent = if side_to_side { p.width } else { p.height };
+                    extent as f32 * scale + gap
+                })
+                .sum::<f32>();
+        let mut visible_places: Vec<(usize, f32, f32)> = Vec::new();
+        for (index, page_size) in pages.iter().enumerate().skip(first) {
+            if cursor >= to {
+                break;
+            }
+            let (left, page_top) = if side_to_side {
+                let top = f32::from(content.slide_origin.y) + (max_cross - page_size.height) as f32 * scale / 2.0;
+                (cursor, top)
+            } else {
+                let left = f32::from(content.slide_origin.x) + (max_cross - page_size.width) as f32 * scale / 2.0;
+                (left, cursor)
+            };
+            visible_places.push((index, left, page_top));
+            let extent = if side_to_side { page_size.width } else { page_size.height };
+            cursor += extent as f32 * scale + gap;
+        }
+        visible_places
+            .into_iter()
+            .filter_map(|(index, left, page_top)| self.presentation().slides.get(index).map(|slide| (index, left, page_top, slide)))
+            .flat_map(|(index, left, page_top, slide)| {
                 let size = pages[index];
                 let (w, h) = (size.width as f32 * scale, size.height as f32 * scale);
                 let shapes = slide.shapes.iter().map(|shape| {

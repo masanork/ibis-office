@@ -129,6 +129,9 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                 }
                 let Some(page) = pagination.pages.get(index) else { return };
                 let visible = window.content_mask().bounds;
+                let ts_gen = (std::sync::Arc::as_ptr(window.text_system()) as usize as u64)
+                    ^ crate::render::shape_view::fonts_generation().wrapping_mul(0xA24B_AED4_963E_E407);
+                let recording_glyph_text = crate::render::glyph_text::recording();
                 for (i, item) in page.items.iter().enumerate() {
                     if hide_body && i < page.body_items_count {
                         continue;
@@ -154,8 +157,9 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                 continue;
                             }
                             let is_vert = font.features.tag_value_list().iter().any(|(tag, value)| tag == "vert" && *value == 1);
-                            let ts_gen = (std::sync::Arc::as_ptr(window.text_system()) as usize as u64)
-                                ^ crate::render::shape_view::fonts_generation().wrapping_mul(0xA24B_AED4_963E_E407);
+                            let is_palt_recording = recording_glyph_text
+                                && font.features.tag_value_list().iter().any(|(tag, value)| tag == "palt" && *value == 1);
+                            let font_key = font_cluster_key(ts_gen, font, size_px);
                             let mut prev_char = None;
                             for ((i, c), dx) in text.char_indices().zip(offsets.iter()) {
                                 // The selectors and joined characters of a cluster are drawn with its first character (as one glyph: an
@@ -169,8 +173,8 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                 if s.trim().is_empty() {
                                     continue;
                                 }
-                                let run = TextRun { len: s.len(), font: font.clone(), color: *color, background_color: None, underline: None, strikethrough: None };
-                                let mut shaped = shape_cluster_cached(window, ts_gen, s, font, size_px, &run);
+                                #[allow(unused_mut)]
+                                let mut shaped = shape_cluster_cached(window, font_key, s, font, size_px, *color);
                                 if is_vert
                                     && let Some(run)=shaped.runs.first()
                                     && crate::render::vertical_text::paint_glyph(window,point(o.x+px((x+dx)*k),o.y+px(y*k)),run.font_id,c,size_px,*color)
@@ -215,9 +219,8 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                     && let Some(vertical) = crate::render::vertical_text::vertical_presentation(c)
                                 {
                                     let display = vertical.to_string();
-                                    let mut fallback_run = run.clone();
-                                    fallback_run.len = display.len();
-                                    shaped = window.text_system().shape_line(display.into(), px(size_px), &[fallback_run], None);
+                                    let fallback_run = TextRun { len: display.len(), font: font.clone(), color: *color, background_color: None, underline: None, strikethrough: None };
+                                    shaped = std::rc::Rc::new(window.text_system().shape_line(display.into(), px(size_px), &[fallback_run], None));
                                 }
                                 if matches!(c, '☐' | '☑' | '☒') && f32::from(shaped.width) < size_px * 0.85 {
                                     let box_run = TextRun { len: "□".len(), font: font.clone(), color: *color, background_color: None, underline: None, strikethrough: None };
@@ -253,9 +256,8 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                 // A PDF being written copies this glyph as the character it was asked for, not as the character the font's cmap gives its glyph id
                                 // (a stand-in for a proportional typeface draws オ, （ and １ with the glyphs of ｵ, ( and 1, `palt` and `pwid`): the glyph is
                                 // painted where `paint` puts it and the character noted for it (`glyph_text`).
-                                if crate::render::glyph_text::recording()
+                                if is_palt_recording
                                     && s.chars().count() == 1
-                                    && font.features.tag_value_list().iter().any(|(tag, value)| tag == "palt" && *value == 1)
                                     && shaped.runs.iter().all(|r| r.glyphs.iter().all(|g| !g.is_emoji))
                                 {
                                     for r in &shaped.runs {
@@ -266,18 +268,36 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                         }
                                     }
                                 } else {
-                                    shaped.paint(origin, shaped.ascent + shaped.descent, TextAlign::Left, None, window, cx).ok();
+                                    let dec = [DecorationRun {
+                                        len: shaped.text.len() as u32,
+                                        color: *color,
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    }];
+                                    LineLayout::paint(&**shaped, origin, shaped.ascent + shaped.descent, TextAlign::Left, None, &dec, window, cx).ok();
                                 }
                             }
                         }
                         Item::Turned { x, y, text, font, size: font_size, color, turns, xscale } => {
+                            let size_px = font_size * k;
+                            let approx_len = (text.chars().count() as f32).max(1.0) * size_px * xscale.abs().max(1.0);
+                            let sy = o.y + px(y * k);
+                            let (min_y, max_y) = if *turns >= 0 {
+                                (sy - px(size_px), sy + px(approx_len + size_px))
+                            } else {
+                                (sy - px(approx_len + size_px), sy + px(size_px))
+                            };
+                            if min_y > visible.origin.y + visible.size.height || max_y < visible.origin.y {
+                                continue;
+                            }
                             // Each glyph moved where turning the line about its
                             // start takes it, and turned about itself there.
                             let run = TextRun { len: text.len(), font: font.clone(), color: *color, background_color: None, underline: None, strikethrough: None };
-                            let shaped = window.text_system().shape_line(text.clone(), px(font_size * k), &[run], None);
+                            let shaped = window.text_system().shape_line(text.clone(), px(size_px), &[run], None);
                             let angle = f32::from(*turns) * std::f32::consts::FRAC_PI_2;
                             let (sin, cos) = angle.sin_cos();
-                            let start = point(o.x + px(x * k), o.y + px(y * k));
+                            let start = point(o.x + px(x * k), sy);
                             let scale = window.scale_factor();
                             for r in &shaped.runs {
                                 for glyph in &r.glyphs {
@@ -292,16 +312,22 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                     if let Some(c) = text.get(glyph.index..).and_then(|t| t.chars().next()) {
                                         crate::render::glyph_text::note(r.font_id, glyph.id, turned, c);
                                     }
-                                    let _ = window.paint_glyph_transformed(turned, r.font_id, glyph.id, px(font_size * k), *color, transformation);
+                                    let _ = window.paint_glyph_transformed(turned, r.font_id, glyph.id, px(size_px), *color, transformation);
                                 }
                             }
                         }
                         Item::Scaled { x, y, text, font, size: font_size, color, xscale } => {
+                            let size_px = font_size * k;
+                            let top = o.y + px(y * k - size_px);
+                            if top > visible.origin.y + visible.size.height || top + px(size_px * 2.0) < visible.origin.y {
+                                continue;
+                            }
                             // The glyph squeezed about where it starts.
                             let color = &dark_color(*color, dark);
                             let color = &fade(*color, faint);
                             let run = TextRun { len: text.len(), font: font.clone(), color: *color, background_color: None, underline: None, strikethrough: None };
-                            let mut shaped = window.text_system().shape_line(text.clone(), px(font_size * k), &[run.clone()], None);
+                            #[allow(unused_mut)]
+                            let mut shaped = window.text_system().shape_line(text.clone(), px(size_px), &[run.clone()], None);
                             #[cfg(target_family = "wasm")]
                             if text.chars().count() == 1
                                 && font.features.tag_value_list().iter().any(|(tag, value)| tag == "vert" && *value == 1)
@@ -311,7 +337,7 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                 let display = vertical.to_string();
                                 let mut fallback_run = run;
                                 fallback_run.len = display.len();
-                                shaped = window.text_system().shape_line(display.into(), px(font_size * k), &[fallback_run], None);
+                                shaped = window.text_system().shape_line(display.into(), px(size_px), &[fallback_run], None);
                             }
                             let start = point(o.x + px(x * k), o.y + px(y * k));
                             let scale = window.scale_factor();
@@ -326,18 +352,43 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                     if let Some(c) = text.get(glyph.index..).and_then(|t| t.chars().next()) {
                                         crate::render::glyph_text::note(r.font_id, glyph.id, at, c);
                                     }
-                                    let _ = window.paint_glyph_transformed(at, r.font_id, glyph.id, px(font_size * k), *color, transformation);
+                                    let _ = window.paint_glyph_transformed(at, r.font_id, glyph.id, px(size_px), *color, transformation);
                                 }
                             }
                         }
                         Item::Stroke { x, y, x2, y2, w, color } => {
+                            let stroke_w = (w * k).max(1.0 / window.scale_factor());
+                            let half = stroke_w * 0.5;
+                            let x_min = x.min(*x2) * k;
+                            let x_max = x.max(*x2) * k;
+                            let y_min = y.min(*y2) * k;
+                            let y_max = y.max(*y2) * k;
+                            let is_horiz = (y - y2).abs() < 1e-4;
+                            let is_vert_line = (x - x2).abs() < 1e-4;
+                            let r = if is_horiz {
+                                Bounds::new(point(o.x + px(x_min), o.y + px(y_min - half)), size(px((x_max - x_min).max(stroke_w)), px(stroke_w)))
+                            } else if is_vert_line {
+                                Bounds::new(point(o.x + px(x_min - half), o.y + px(y_min)), size(px(stroke_w), px((y_max - y_min).max(stroke_w))))
+                            } else {
+                                Bounds::new(
+                                    point(o.x + px(x_min - half), o.y + px(y_min - half)),
+                                    size(px(x_max - x_min + stroke_w), px(y_max - y_min + stroke_w)),
+                                )
+                            };
+                            if !r.intersects(&visible) {
+                                continue;
+                            }
                             let color = &dark_color(*color, dark);
                             let color = &fade(*color, faint);
-                            let mut path = PathBuilder::stroke(px((w * k).max(1.0 / window.scale_factor())));
-                            path.move_to(point(o.x + px(x * k), o.y + px(y * k)));
-                            path.line_to(point(o.x + px(x2 * k), o.y + px(y2 * k)));
-                            if let Ok(path) = path.build() {
-                                window.paint_path(path, *color);
+                            if is_horiz || is_vert_line {
+                                window.paint_quad(fill(r, *color));
+                            } else {
+                                let mut path = PathBuilder::stroke(px(stroke_w));
+                                path.move_to(point(o.x + px(x * k), o.y + px(y * k)));
+                                path.line_to(point(o.x + px(x2 * k), o.y + px(y2 * k)));
+                                if let Ok(path) = path.build() {
+                                    window.paint_path(path, *color);
+                                }
                             }
                         }
                         Item::Picture { .. } | Item::Art { .. } | Item::Shape { .. } | Item::Line { .. } | Item::Shading { .. } | Item::CommentBubble { .. } => {}
@@ -383,22 +434,31 @@ fn paint_text_boundaries(window: &mut Window, o: Point<Pixels>, k: f32, area: [f
     }
 }
 
-/// Cache shaped single-cluster lines across frames so scrolling, mouse moves, and caret
-/// blinks do not re-shape every visible character cluster on every paint.
-fn shape_cluster_cached(
-    window: &Window,
-    ts_gen: u64,
-    text: &str,
-    font: &Font,
-    size_px: f32,
-    run: &TextRun,
-) -> ShapedLine {
+/// Pre-hash the font + size + text-system generation once per `Item::Text` so the
+/// per-character cluster cache lookup does not re-hash `Font` on every character.
+fn font_cluster_key(ts_gen: u64, font: &Font, size_px: f32) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     ts_gen.hash(&mut hasher);
-    text.hash(&mut hasher);
     font.hash(&mut hasher);
     size_px.to_bits().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Cache shaped single-cluster lines across frames so scrolling, mouse moves, and caret
+/// blinks do not re-shape, clone `Font`, or restyle every visible character cluster on every paint.
+fn shape_cluster_cached(
+    window: &Window,
+    font_key: u64,
+    text: &str,
+    font: &Font,
+    size_px: f32,
+    color: Hsla,
+) -> std::rc::Rc<ShapedLine> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    font_key.hash(&mut hasher);
+    text.hash(&mut hasher);
     let key = hasher.finish();
     thread_local! {
         static CLUSTER_SHAPES: std::cell::RefCell<std::collections::HashMap<u64, std::rc::Rc<ShapedLine>>> =
@@ -410,11 +470,12 @@ fn shape_cluster_cached(
             .filter(|l| l.text.as_ref() == text)
             .cloned()
     }) {
-        return cached.restyled(std::slice::from_ref(run));
+        return cached;
     }
+    let run = TextRun { len: text.len(), font: font.clone(), color, background_color: None, underline: None, strikethrough: None };
     let shaped = window
         .text_system()
-        .shape_line(SharedString::from(text.to_string()), px(size_px), std::slice::from_ref(run), None);
+        .shape_line(SharedString::from(text.to_string()), px(size_px), &[run], None);
     let rc = std::rc::Rc::new(shaped);
     CLUSTER_SHAPES.with(|c| {
         let mut map = c.borrow_mut();
@@ -423,7 +484,7 @@ fn shape_cluster_cached(
         }
         map.insert(key, rc.clone());
     });
-    rc.restyled(std::slice::from_ref(run))
+    rc
 }
 
 /// The colour of a body item while the header or footer is edited: faint.
