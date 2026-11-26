@@ -2320,7 +2320,7 @@ impl<'r> Layouter<'r> {
 
     /// `combine_width` of a part of a 割注 that a line parts: its opening bracket is on the first part (`open`), its closing one on the last (`close`).
     fn combine_part_width(&self, s: &FlowRunStyle, chars: &[char], size: f32, c: ibis_doc_model::Combine, open: bool, close: bool) -> f32 {
-        let measure = |list: &[char], at: f32| list.iter().map(|ch| self.res.text_width(&ch.to_string(), &self.font(s, s.font_for(*ch)), at)).sum::<f32>();
+        let measure = |list: &[char], at: f32| list.iter().map(|ch| self.res.char_width(*ch, &self.font(s, s.font_for(*ch)), at)).sum::<f32>();
         let first = chars.len().div_ceil(2);
         let block = measure(&chars[..first], combine_size(size)).max(measure(&chars[first..], combine_size(size)));
         block + c.brackets().map_or(0.0, |(a, b)| if open { self.bracket_width(s, a, size) } else { 0.0 } + if close { self.bracket_width(s, b, size) } else { 0.0 })
@@ -2833,10 +2833,10 @@ impl<'r> Layouter<'r> {
                 let (drawn, font, width) = match &symbol {
                     Some((face, code)) if glyphs == 1 => {
                         let font = self.font(style, Some(face.as_str()));
-                        let width = self.res.text_width(&code.to_string(), &font, size);
+                        let width = self.res.char_width(*code, &font, size);
                         (*code, font, width)
                     }
-                    _ => (c, stand_in_font.clone(), self.res.text_width(&c.to_string(), &stand_in_font, size)),
+                    _ => (c, stand_in_font.clone(), self.res.char_width(c, &stand_in_font, size)),
                 };
                 let (mut ascent, mut line) = self.line_metrics(name, &stand_in_font, size);
                 if is_hangul(c) && line < size * HANGUL_LINE {
@@ -2981,9 +2981,9 @@ impl<'r> Layouter<'r> {
                         features.push(("hwid".into(), 1));
                         font.features = FontFeatures(Arc::new(features));
                     }
-                    let mut actual = self.res.text_width(&c.to_string(), &font, char_size);
-                                        if matches!(c, '☐' | '☑' | '☒') && actual < char_size * 0.85 {
-                        let box_w = self.res.text_width("□", &font, char_size);
+                    let mut actual = self.res.char_width(c, &font, char_size);
+                    if matches!(c, '☐' | '☑' | '☒') && actual < char_size * 0.85 {
+                        let box_w = self.res.char_width('□', &font, char_size);
                         if box_w >= char_size * 0.9 {
                             actual = box_w;
                         }
