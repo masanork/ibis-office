@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0f4c81" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <title>Sorane Spot Relay PoC</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, sans-serif; color: #18222f; background: #f7f8fa; }
+    body { margin: 0; padding: 16px; max-width: 760px; margin-inline: auto; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+    h1 { font-size: 1.2rem; margin: 0; }
+    .badge { font-size: 0.8rem; padding: 4px 10px; border-radius: 999px; background: #e3edf7; color: #0f4c81; font-weight: 600; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+    .tabs button { flex: 1; padding: 10px; border: 1px solid #cbd5e1; background: #fff; border-radius: 8px; cursor: pointer; font-weight: 600; }
+    .tabs button.active { background: #0f4c81; color: #fff; border-color: #0f4c81; }
+    .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    label { display: block; font-size: 0.9rem; font-weight: 600; margin-top: 12px; margin-bottom: 4px; }
+    input, textarea, select { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; }
+    button.primary { margin-top: 16px; width: 100%; padding: 12px; background: #0f4c81; color: #fff; border: 0; border-radius: 8px; font-weight: 700; cursor: pointer; }
+    button.secondary { padding: 8px 12px; background: #eef2f7; color: #18222f; border: 1px solid #cbd5e1; border-radius: 8px; cursor: pointer; font-weight: 600; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    pre, code { background: #f1f5f9; padding: 8px; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; }
+    .muted { color: #64748b; font-size: 0.85rem; }
+    .hidden { display: none; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th, td { border-bottom: 1px solid #e2e8f0; text-align: left; padding: 8px; vertical-align: top; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1 id="form-title">Sorane Spot Relay PoC</h1>
+      <div class="muted" id="form-meta">読み込み中...</div>
+    </div>
+    <span class="badge" id="net-status">確認中</span>
+  </header>
+
+  <div class="tabs">
+    <button id="tab-submit" class="active" type="button">避難者フォーム（提出）</button>
+    <button id="tab-receive" type="button">受付ビュー（回収・復号）</button>
+  </div>
+
+  <section id="panel-submit">
+    <div class="card">
+      <div class="row" style="justify-content: space-between;">
+        <strong>テスト用 受付鍵ペア</strong>
+        <button id="btn-gen-keys" class="secondary" type="button">鍵ペア生成 / 再生成</button>
+      </div>
+      <p class="muted">PoC 用にブラウザ内で受付側 P-256 鍵ペアを生成し、暗号化と復号を単体確認できます。</p>
+    </div>
+
+    <form id="spot-form" class="card">
+      <div id="form-fields"></div>
+      <label for="relay-override">送信先リレー URL（オフライン時はローカル AP 等へ変更可）</label>
+      <input id="relay-override" type="text" value="/api/relay/v1/submit" />
+      <button class="primary" type="submit">COSE 暗号化して提出（オフライン時はキュー保存）</button>
+    </form>
+
+    <div class="card">
+      <div class="row" style="justify-content: space-between;">
+        <strong>送信キュー（IndexedDB）</strong>
+        <button id="btn-flush" class="secondary" type="button">今すぐ再送</button>
+      </div>
+      <div id="queue-list" class="muted" style="margin-top: 8px;">キューは空です。</div>
+    </div>
+  </section>
+
+  <section id="panel-receive" class="hidden">
+    <div class="card">
+      <div class="row" style="justify-content: space-between;">
+        <strong>リレーから回収</strong>
+        <button id="btn-fetch-inbox" class="secondary" type="button">Inbox 取得・復号</button>
+      </div>
+      <label for="paste-envelope">オフライン（QR 等）で受け取った <code>spot1:...</code> 文字列を直接復号</label>
+      <textarea id="paste-envelope" rows="3" placeholder="spot1:..."></textarea>
+      <button id="btn-decrypt-paste" class="secondary" type="button" style="margin-top: 8px;">貼り付けた封筒を復号</button>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content: space-between;">
+        <strong>復号済み一覧（envelope_id で重複排除）</strong>
+        <div class="row">
+          <button id="btn-copy-tsv" class="secondary" type="button">TSV コピー（Raw 用）</button>
+          <button id="btn-download-csv" class="secondary" type="button">CSV ダウンロード</button>
+        </div>
+      </div>
+      <div id="inbox-list" class="muted" style="margin-top: 8px;">まだデータがありません。</div>
+    </div>
+  </section>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

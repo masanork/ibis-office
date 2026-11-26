@@ -1,0 +1,16 @@
+{
+  "schema": "sorane.spot.form.v1",
+  "tenant_id": "demo-city",
+  "form_id": "evac-checkin",
+  "version": "1.0.0",
+  "title": "避難所受付票（PoC）",
+  "description": "オフライン時は端末内に保存し、回線復帰後または受付経由で暗号化提出します。",
+  "relay_url": "/api/relay/v1/submit",
+  "inbox_url": "/api/relay/v1/inbox",
+  "fields": [
+    { "id": "name", "label": "氏名", "type": "text", "required": true, "placeholder": "山田 太郎" },
+    { "id": "party_size", "label": "世帯人数", "type": "number", "required": true, "placeholder": "2" },
+    { "id": "shelter", "label": "避難場所・エリア", "type": "text", "required": false, "placeholder": "第一小学校 体育館" },
+    { "id": "needs", "label": "要配慮事項・必要な支援", "type": "textarea", "required": false, "placeholder": "アレルギー、常備薬など" }
+  ]
+}
