@@ -121,6 +121,8 @@ declare global {
     ibisOfficeSaveFile: (name: string, mime: string, bytes: Uint8Array) => void;
     /** Called from Rust for 保存 / 名前を付けて保存: in-place File System Access, a save picker, or a download. */
     ibisOfficeSaveLocal: (name: string, mime: string, bytes: Uint8Array, saveAs: boolean) => Promise<string | null>;
+    /** Optional hook installed by sorane-github-vault.js to commit saves directly to GitHub. */
+    soraneSaveToGitHub?: (name: string, bytes: Uint8Array) => Promise<{ handled: boolean; name: string | null }>;
     /** Called from Rust at a print click, before the PDF is made: a blank tab opened while the click still counts (the popup blocker lets it). `null` when the browser refused. */
     ibisOfficeBlankTab: () => Window | null;
     /** Called from Rust when the print's PDF is made: shown in `tab` (a Blob URL), or in a new tab when `tab` is `null`; a tab left over is closed with `bytes` empty. */
@@ -979,17 +981,27 @@ window.ibisOfficeFontLoadOne = fontLoadOne;
 window.ibisOfficeEmbedAction = embedAction;
 window.ibisOfficeSaveFile = saveFile;
 window.ibisOfficeSaveLocal = async (name, mime, bytes, saveAs) => {
+  if (!saveAs && window.soraneSaveToGitHub) {
+    const githubResult = await window.soraneSaveToGitHub(name, bytes);
+    if (githubResult.handled) {
+      return githubResult.name;
+    }
+  }
   const result = await saveLocalFile(name, mime, bytes, saveAs);
   return result ? result.name : null;
 };
 
 async function pickDocumentFile(): Promise<PickedFile | null> {
   const picked = await pickLocalFile({ remember: true });
+  if (picked) {
+    window.dispatchEvent(new CustomEvent('sorane:github-file-opened', { detail: null }));
+  }
   return picked ? { name: picked.name, bytes: picked.bytes } : null;
 }
 
 function openLocalPicked(file: PickedLocalFile): void {
   try {
+    window.dispatchEvent(new CustomEvent('sorane:github-file-opened', { detail: null }));
     open_local_file(file.name, file.bytes);
   } catch (error) {
     console.warn('ibisOffice: could not open the local file', error);

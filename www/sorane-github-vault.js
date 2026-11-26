@@ -518,26 +518,33 @@ if (!params.has('host')) {
     openedRepoFile = event.detail || null;
   });
 
-  // Intercept save/download when GitHub Vault is connected so edits and new drafts can commit directly to GitHub.
-  window.addEventListener('ibisoffice:download', async (event) => {
-    if (!session.loggedIn || !session.vault) return;
-    const bytes = event.detail?.bytes;
-    if (!(bytes instanceof Uint8Array)) return;
-    let targetPath = openedRepoFile?.path || null;
+  async function saveToGitHub(name, bytes) {
+    if (!session.loggedIn || !session.vault) {
+      return { handled: false, name: null };
+    }
+    if (!(bytes instanceof Uint8Array)) {
+      return { handled: false, name: null };
+    }
+    const existingPath = openedRepoFile?.path || null;
+    let targetPath = existingPath;
     if (!targetPath) {
-      const suggested = event.detail?.name || 'Untitled.md';
+      const suggested = name || 'Untitled.md';
       const chosen = window.prompt(
-        `GitHub (${session.vault.owner}/${session.vault.repo}) へ新規ファイルとして保存するパスを入力してください。\n（キャンセルするとローカル保存のみになります）`,
+        `GitHub (${session.vault.owner}/${session.vault.repo}) へ新規ファイルとして保存するパスを入力してください。\n（キャンセルするとローカル保存になります）`,
         suggested,
       );
-      if (!chosen || !chosen.trim()) return;
+      if (!chosen || !chosen.trim()) {
+        return { handled: false, name: null };
+      }
       targetPath = chosen.trim().replace(/^\/+/, '');
     }
     const message = window.prompt(
       `GitHub (${session.vault.owner}/${session.vault.repo}) へコミットするメッセージを入力してください。\n（キャンセルするとコミットしません）`,
-      `${openedRepoFile ? 'Update' : 'Add'} ${targetPath}`,
+      `${existingPath ? 'Update' : 'Add'} ${targetPath}`,
     );
-    if (!message || !message.trim()) return;
+    if (!message || !message.trim()) {
+      return { handled: Boolean(existingPath), name: null };
+    }
     const headers = { 'X-Commit-Message': message.trim() };
     if (openedRepoFile?.etag) headers['If-Match'] = openedRepoFile.etag;
     const res = await fetch(`/api/github/file?path=${encodeURIComponent(targetPath)}`, {
@@ -548,12 +555,27 @@ if (!params.has('host')) {
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.sha) {
-      openedRepoFile = { path: targetPath, name: targetPath.split('/').pop() || targetPath, etag: `"${data.sha}"` };
+      const savedName = targetPath.split('/').pop() || targetPath;
+      openedRepoFile = { path: targetPath, name: savedName, etag: `"${data.sha}"` };
       void refreshRepoTree();
-      alert(`GitHub にコミットしました (${data.commitSha?.slice(0, 7) || 'ok'})`);
-    } else {
-      alert(`GitHub コミットに失敗しました: ${data.error || `HTTP ${res.status}`}`);
+      return { handled: true, name: savedName };
     }
+    const errMsg = data.error || `HTTP ${res.status}`;
+    alert(`GitHub コミットに失敗しました: ${errMsg}`);
+    throw new Error(errMsg);
+  }
+
+  window.soraneSaveToGitHub = saveToGitHub;
+
+  // Keep supporting ibisoffice:download if dispatched by embed/export callers.
+  window.addEventListener('ibisoffice:download', (event) => {
+    const bytes = event.detail?.bytes;
+    if (!(bytes instanceof Uint8Array)) return;
+    void saveToGitHub(event.detail?.name || 'Untitled.md', bytes).then((result) => {
+      if (result.handled && result.name) {
+        alert(`GitHub にコミットしました (${result.name})`);
+      }
+    }).catch(() => {});
   });
 
   let activeAiAbortController = null;
