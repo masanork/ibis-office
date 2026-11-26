@@ -16,6 +16,11 @@ test('index.html boots the WASM app directly with start-view and GitHub repo int
   assert.match(editor, /<script src="\.\/sorane-start\.js"><\/script>/);
 });
 
+test('index.html and editor.html disable pointer events on the hidden IME textarea', () => {
+  assert.match(home, /body\s*>\s*textarea\s*\{[^}]*pointer-events:\s*none/);
+  assert.match(editor, /body\s*>\s*textarea\s*\{[^}]*pointer-events:\s*none/);
+});
+
 test('sorane-start.js configures the featured samples and all bundled files exist', () => {
   const win = {};
   runInNewContext(startScript, {
