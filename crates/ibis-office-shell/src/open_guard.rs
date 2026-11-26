@@ -86,8 +86,8 @@ impl SlideEditor {
             }
             return;
         }
-        // A window with a document of its own keeps it: the file opens in another window (the browser's page has one editor: `open_file`).
-        #[cfg(not(target_family = "wasm"))]
+        // A window with a document of its own keeps it: the file opens in another window (the browser's page and Android's NativeActivity have one window).
+        #[cfg(not(any(target_family = "wasm", target_os = "android")))]
         if !self.replaceable_by_open() {
             crate::app::open_editor_for(path, None, cx);
             return;

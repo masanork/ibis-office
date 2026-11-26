@@ -343,7 +343,7 @@ pub fn open_path_in_app(path: std::path::PathBuf, cx: &mut App) {
     for window in cx.windows() {
         let editor = crate::window_editors::active_in_window(window, cx);
         if let Some(editor) = editor
-            && editor.read(cx).replaceable_by_open()
+            && (cfg!(target_os = "android") || editor.read(cx).replaceable_by_open())
         {
             window
                 .update(cx, |_, window, cx| editor.update(cx, |e, cx| e.open_path(path.clone(), None, window, cx)))

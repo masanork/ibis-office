@@ -27,6 +27,7 @@ impl AndroidDispatcher {
             let rx = Arc::clone(&rx);
             let _ = thread::Builder::new()
                 .name(format!("gpui-bg-{i}"))
+                .stack_size(8 * 1024 * 1024)
                 .spawn(move || {
                     loop {
                         let task = {

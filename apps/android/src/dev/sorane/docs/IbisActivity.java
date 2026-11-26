@@ -42,6 +42,8 @@ public class IbisActivity extends NativeActivity {
     private ImeBridgeView imeView;
     private long pendingOpenRequestId = 0;
     private long pendingSaveRequestId = 0;
+    private volatile boolean nativeReady = false;
+    private Uri pendingOpenUri = null;
     private final ConcurrentHashMap<String, Uri> exportUriByTempPath = new ConcurrentHashMap<>();
 
     public static native void nativeOnFilePicked(long requestId, String path);
@@ -116,19 +118,41 @@ public class IbisActivity extends NativeActivity {
         handleOpenIntent(intent);
     }
 
+    public void onNativeReady() {
+        final Uri uri;
+        synchronized (this) {
+            nativeReady = true;
+            uri = pendingOpenUri;
+            pendingOpenUri = null;
+        }
+        if (uri != null) {
+            dispatchOpenUri(uri);
+        }
+    }
+
     private void handleOpenIntent(Intent intent) {
         if (intent == null) return;
         final Uri uri;
         if (Intent.ACTION_VIEW.equals(intent.getAction())) {
             uri = intent.getData();
         } else if (Intent.ACTION_SEND.equals(intent.getAction())
-                && "application/vnd.fujixerox.docuworks".equals(intent.getType())) {
+                && intent.getType() != null) {
             Object stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
             uri = stream instanceof Uri ? (Uri) stream : null;
         } else {
             return;
         }
         if (uri == null) return;
+        synchronized (this) {
+            if (!nativeReady) {
+                pendingOpenUri = uri;
+                return;
+            }
+        }
+        dispatchOpenUri(uri);
+    }
+
+    private void dispatchOpenUri(final Uri uri) {
         new Thread(() -> {
             String path = copyUriToStorage(uri);
             if (path != null) {
@@ -265,13 +289,14 @@ public class IbisActivity extends NativeActivity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_OPEN_DOCUMENT) {
-            long reqId = pendingOpenRequestId;
+            final long reqId = pendingOpenRequestId;
             pendingOpenRequestId = 0;
-            String copiedPath = null;
-            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
-                copiedPath = copyUriToStorage(data.getData());
+            final Uri pickedUri = (resultCode == Activity.RESULT_OK && data != null) ? data.getData() : null;
+            if (pickedUri == null) {
+                nativeOnFilePicked(reqId, null);
+            } else {
+                new Thread(() -> nativeOnFilePicked(reqId, copyUriToStorage(pickedUri))).start();
             }
-            nativeOnFilePicked(reqId, copiedPath);
         } else if (requestCode == REQ_CREATE_DOCUMENT) {
             long reqId = pendingSaveRequestId;
             pendingSaveRequestId = 0;

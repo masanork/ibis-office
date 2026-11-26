@@ -101,6 +101,10 @@ pub fn init(app: &AndroidApp) {
         ime_queue: Mutex::new(VecDeque::new()),
     });
     let _ = BRIDGE.set(state);
+    with_env(|env, activity| {
+        env.call_method(activity, "onNativeReady", "()V", &[])?;
+        Ok(())
+    });
 }
 
 fn with_env<F, R>(f: F) -> Option<R>
@@ -293,7 +297,8 @@ extern "system" fn native_on_open_path(
 ) {
     if let Some(p) = jstring_to_option(&mut env, path) {
         if let Some(state) = BRIDGE.get() {
-            state.open_paths.lock().push_back(format!("file://{p}"));
+            let escaped = p.replace('%', "%25");
+            state.open_paths.lock().push_back(format!("file://{escaped}"));
             state.waker.wake();
         }
     }
