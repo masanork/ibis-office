@@ -81,6 +81,13 @@
       url: '/samples/urban-comfort-analysis.xlsx',
       badge: 'XLSX',
     },
+    {
+      title: 'スライドショー アニメーション・3D 切り替え検証',
+      subtitle: 'グループ変形・トリガー・淡色テーマ色・3D 画面切り替え・ECMA-376 式/色/軌跡の検証デッキ（23スライド）',
+      name: 'anim_stress_test.pptx',
+      url: '/samples/anim_stress_test.pptx',
+      badge: 'PPTX',
+    },
   ];
 
   const startView = {
