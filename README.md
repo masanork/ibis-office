@@ -56,6 +56,14 @@ Each area below summarizes what this fork has built and contributed — noting i
 - **EPUB 3 & Production Images** *(Fork)*: Native EPUB 3 import, plus HEIC, DPX, Cineon, OpenEXR, and JPEG 2000 preview ([docs/production-image-preview-ja.md](docs/production-image-preview-ja.md)).
 - **OOXML & ODF Compatibility** *(Adopted: [#190](https://github.com/ibisjp/ibis-office/issues/190), [#221](https://github.com/ibisjp/ibis-office/issues/221))*: Office 2007 Standard encryption decryption, DOCX `w14:paraId` preservation, and extended ODF nested/hidden-row/column import.
 
+### WordPerfect compatibility
+
+Open WordPerfect 6.x files (`.wpd` and `.wp6`) and save a separate editable DOCX. Tested conversions retain text, paragraphs, page breaks and basic character formatting, as well as table grids, merged cells, borders and cell shading. Embedded graphics retain their inline or floating placement. Tested WPG 2 drawings include bitmaps, basic vectors, group rotation and scaling, Bézier curves, arcs, compound paths with holes, dashed strokes and linear, circular and elliptical fills.
+
+WPG drawings are saved as PNG images in DOCX. Unsupported records can omit an entire embedded image, and the import warning reports the number omitted. Encrypted WordPerfect files and other WordPerfect versions are outside this importer's scope. The anchored linear fill uses the drawing-coordinate interpretation tested with synthetic WPDs. Its appearance in WordPerfect or Corel Presentations remains unverified. LibreOffice also differs on some compound paths and gradients. Validation covers the supplied cases, including macOS DOCX Save As and reopening.
+
+The web start screen lists **WordPerfect 6の表** and **WordPerfect 6の埋め込み図**. Both are synthetic and available as [table WPD](www/samples/wordperfect-table.wpd) and [graphics WPD](www/samples/wordperfect-graphics.wpd).
+
 ### 4. BI, Data Analytics & External Data Ingestion
 - **Cross-Format SQL & Query Pipeline** *(Proposed: [#263](https://github.com/ibisjp/ibis-office/issues/263))*: In-memory/streaming SQLite (Turso) query engine joining CSV, Parquet (column projection, multi-file append, Zstandard), Arrow IPC, JSON Lines, Avro, and SQLite tables; exports to named Excel tables with refreshable bindings, schema-change detection, quality-check gates, and encoding-aware CSV in-place saving.
 - **Data Analytics, Power Query M & Modeling** *(Fork / Proposed)*: Standalone Power Query M interpreter (`crates/ibis-m-lang`), query editor/reports, PivotTable calculated fields/items & drill-down, cohort charts, statistical analysis panel, forecast sheets, solver, quick analysis, and prefill workflows.

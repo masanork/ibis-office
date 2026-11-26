@@ -30,7 +30,7 @@ test('sorane-start.js configures the featured samples and all bundled files exis
   });
   const startView = win.ibisOfficeOptions?.startView;
   assert.ok(startView, 'startView config should be installed');
-  assert.equal(startView.items.length, 12);
+  assert.equal(startView.items.length, 14);
   assert.equal(startView.selectAction?.action, 'github-vault');
   for (const name of [
     'sorane-knowledge-note.md',
@@ -44,6 +44,8 @@ test('sorane-start.js configures the featured samples and all bundled files exis
     'standard-linkage.csv',
     'mynumber-law-2023-comparison.jtd',
     'urban-comfort-analysis.xlsx',
+    'wordperfect-table.wpd',
+    'wordperfect-graphics.wpd',
     'anim_stress_test.pptx',
   ]) {
     assert.ok(startView.items.some((item) => item.url === `/samples/${name}`), `missing sample ${name}`);

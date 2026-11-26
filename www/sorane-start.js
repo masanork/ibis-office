@@ -82,6 +82,20 @@
       badge: 'XLSX',
     },
     {
+      title: 'WordPerfect 6の表',
+      subtitle: '結合セル・罫線・背景色を含む合成WPD',
+      name: 'wordperfect-table.wpd',
+      url: '/samples/wordperfect-table.wpd',
+      badge: 'WPD',
+    },
+    {
+      title: 'WordPerfect 6の埋め込み図',
+      subtitle: '線形・放射状グラデーションと行内・浮動配置を含む合成WPD',
+      name: 'wordperfect-graphics.wpd',
+      url: '/samples/wordperfect-graphics.wpd',
+      badge: 'WPD',
+    },
+    {
       title: 'スライドショー アニメーション・3D 切り替え検証',
       subtitle: 'グループ変形・トリガー・淡色テーマ色・3D 画面切り替え・ECMA-376 式/色/軌跡の検証デッキ（23スライド）',
       name: 'anim_stress_test.pptx',
