@@ -438,6 +438,7 @@ pub struct SlideEditor {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) assistant_socket: Option<ibis_mcp::assistant_endpoint::SocketLifetime>,
     pub ai_assistant: Option<crate::ai_assistant::AiAssistantState>,
+    pub inline_completion: crate::markdown_split::InlineCompletionState,
     _zoom_subscription: Subscription,
     /// The status bar's list of zooms is open.
     pub zoom_menu_open: bool,
@@ -885,6 +886,7 @@ impl SlideEditor {
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             assistant_socket: None,
             ai_assistant: None,
+            inline_completion: Default::default(),
             _zoom_subscription: zoom_subscription,
             zoom_menu_open: false,
             zoom_input,

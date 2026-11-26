@@ -148,6 +148,21 @@ pub struct MarkdownSplitHost {
     pub _subscription: Subscription,
 }
 
+/// State for AI-powered Markdown inline completion (ghost-style suggestion bar).
+#[derive(Clone, Debug, Default)]
+pub struct InlineCompletionState {
+    /// Whether automatic inline completion on typing is enabled.
+    pub enabled: bool,
+    /// Whether a completion request is currently in flight.
+    pub loading: bool,
+    /// Pending inline suggestion text ready to insert at the cursor.
+    pub suggestion: Option<String>,
+    /// Last non-fatal error message from completion.
+    pub error: Option<String>,
+    /// Monotonic generation counter to discard stale debounced responses.
+    pub generation: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Marp Slide & Workbook Sheet Span Parsers
 // ---------------------------------------------------------------------------
@@ -2146,15 +2161,271 @@ impl SlideEditor {
             );
         }
 
-        pane.child(
-            div().flex_1().min_w_0().min_h_0().child(
-                Editor::new(&editor_entity)
-                    .h(relative(1.0))
-                    .bordered(false)
-                    .readonly(readonly),
-            ),
-        )
-        .into_any_element()
+        pane.child(self.render_inline_completion_bar(id_prefix, editor_entity.clone(), readonly, cx))
+            .child(
+                div().flex_1().min_w_0().min_h_0().child(
+                    Editor::new(&editor_entity)
+                        .h(relative(1.0))
+                        .bordered(false)
+                        .readonly(readonly),
+                ),
+            )
+            .into_any_element()
+    }
+
+    pub fn toggle_inline_completion(
+        &mut self,
+        editor: Option<Entity<EditorState>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.inline_completion.enabled = !self.inline_completion.enabled;
+        self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
+        self.inline_completion.loading = false;
+        self.inline_completion.suggestion = None;
+        self.inline_completion.error = None;
+        if self.inline_completion.enabled
+            && let Some(ed) = editor
+        {
+            self.schedule_inline_completion(ed, cx);
+            return;
+        }
+        cx.notify();
+    }
+
+    pub fn clear_inline_completion(&mut self, cx: &mut Context<Self>) {
+        self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
+        self.inline_completion.loading = false;
+        self.inline_completion.suggestion = None;
+        self.inline_completion.error = None;
+        cx.notify();
+    }
+
+    pub fn schedule_inline_completion(
+        &mut self,
+        editor: Entity<EditorState>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.inline_completion.enabled {
+            return;
+        }
+        self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
+        let completion_gen = self.inline_completion.generation;
+        self.inline_completion.suggestion = None;
+        self.inline_completion.error = None;
+        self.inline_completion.loading = false;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(700))
+                .await;
+
+            let input = this.update(cx, |this, cx| {
+                if !this.inline_completion.enabled
+                    || this.inline_completion.generation != completion_gen
+                {
+                    return None;
+                }
+                let (text, pos) = {
+                    let ed = editor.read(cx);
+                    (ed.value().to_string(), ed.cursor_position())
+                };
+                if text.trim().is_empty() {
+                    this.inline_completion.loading = false;
+                    cx.notify();
+                    return None;
+                }
+                this.inline_completion.loading = true;
+                cx.notify();
+                Some(crate::ai_client::slice_prefix_suffix(
+                    &text,
+                    pos.line as usize,
+                    pos.character as usize,
+                ))
+            });
+
+            let Ok(Some((prefix, suffix))) = input else {
+                return;
+            };
+
+            let result = crate::ai_client::complete_inline_suggestion(&prefix, &suffix).await;
+
+            let _ = this.update(cx, |this, cx| {
+                if !this.inline_completion.enabled
+                    || this.inline_completion.generation != completion_gen
+                {
+                    return;
+                }
+                this.inline_completion.loading = false;
+                match result {
+                    Ok(suggestion) if !suggestion.trim().is_empty() => {
+                        this.inline_completion.suggestion = Some(suggestion);
+                        this.inline_completion.error = None;
+                    }
+                    Ok(_) => {
+                        this.inline_completion.suggestion = None;
+                        this.inline_completion.error = None;
+                    }
+                    Err(err) => {
+                        this.inline_completion.suggestion = None;
+                        this.inline_completion.error = Some(err);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub fn accept_inline_completion(
+        &mut self,
+        editor: Entity<EditorState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(suggestion) = self.inline_completion.suggestion.take() {
+            self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
+            self.inline_completion.loading = false;
+            self.inline_completion.error = None;
+            editor.update(cx, |state, cx| {
+                state.insert(suggestion, window, cx);
+                state.focus(window, cx);
+            });
+            cx.notify();
+        }
+    }
+
+    pub fn render_inline_completion_bar(
+        &self,
+        id_prefix: &'static str,
+        editor: Entity<EditorState>,
+        readonly: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use gpui_kit::component::Disableable as _;
+        use gpui_kit::component::button::{Button, ButtonVariants as _};
+
+        let theme = cx.theme().clone();
+        let enabled = self.inline_completion.enabled;
+        let loading = self.inline_completion.loading;
+        let suggestion = self.inline_completion.suggestion.clone();
+        let error = self.inline_completion.error.clone();
+
+        let toggle_label = if enabled {
+            "AI補完: ON"
+        } else {
+            "AI補完: OFF"
+        };
+
+        let mut bar = div()
+            .id(SharedString::from(format!("{id_prefix}-inline-completion-bar")))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(12.))
+            .py(px(4.))
+            .bg(theme.muted)
+            .border_b_1()
+            .border_color(theme.border)
+            .text_size(px(12.))
+            .child(
+                Button::new(SharedString::from(format!("{id_prefix}-inline-toggle")))
+                    .label(toggle_label)
+                    .compact()
+                    .disabled(readonly)
+                    .when(enabled, |btn| btn.primary())
+                    .when(!enabled, |btn| btn.ghost())
+                    .on_click(cx.listener({
+                        let editor = editor.clone();
+                        move |this, _ev, _window, cx| {
+                            this.toggle_inline_completion(Some(editor.clone()), cx);
+                        }
+                    })),
+            );
+
+        if loading {
+            bar = bar.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(theme.muted_foreground)
+                    .child("先読み補完を生成中..."),
+            );
+        } else if let Some(err) = error {
+            bar = bar
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.danger)
+                        .child(err),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{id_prefix}-inline-err-dismiss")))
+                        .label("閉じる")
+                        .compact()
+                        .ghost()
+                        .on_click(cx.listener(|this, _ev, _window, cx| {
+                            this.clear_inline_completion(cx);
+                        })),
+                );
+        } else if let Some(text) = suggestion {
+            let preview = text.replace('\n', " ");
+            bar = bar
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded(px(4.))
+                        .bg(theme.background)
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_color(theme.foreground)
+                        .child(preview),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{id_prefix}-inline-accept")))
+                        .label("挿入")
+                        .compact()
+                        .primary()
+                        .disabled(readonly)
+                        .on_click(cx.listener({
+                            let editor = editor.clone();
+                            move |this, _ev, window, cx| {
+                                this.accept_inline_completion(editor.clone(), window, cx);
+                            }
+                        })),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{id_prefix}-inline-dismiss")))
+                        .label("却下")
+                        .compact()
+                        .ghost()
+                        .on_click(cx.listener(|this, _ev, _window, cx| {
+                            this.clear_inline_completion(cx);
+                        })),
+                );
+        } else {
+            let hint = if enabled {
+                "入力を止めると AI が続きを提案します"
+            } else {
+                "GitHub Models / AI で Markdown の続きを先読み補完"
+            };
+            bar = bar.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.muted_foreground)
+                    .child(hint),
+            );
+        }
+
+        bar.into_any_element()
     }
 
     /// Render the shared Split container: left Markdown source pane + draggable divider + right Visual pane.

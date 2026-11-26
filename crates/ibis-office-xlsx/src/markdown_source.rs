@@ -212,6 +212,7 @@ impl SlideEditor {
                     ms.sync_generation = ms.sync_generation.wrapping_add(1);
                     should_schedule = ms.mode == MarkdownViewMode::Split;
                 }
+                this.schedule_inline_completion(ed.clone(), cx);
                 if should_schedule {
                     this.xlsx_schedule_source_to_visual_sync(cx);
                 }

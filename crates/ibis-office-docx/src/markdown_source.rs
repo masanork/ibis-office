@@ -1209,6 +1209,7 @@ impl SlideEditor {
                 if should_schedule {
                     this.schedule_source_to_visual_sync(cx);
                 }
+                this.schedule_inline_completion(ed.clone(), cx);
                 cx.notify();
             }
         });
@@ -2251,7 +2252,13 @@ impl SlideEditor {
             );
         }
 
-        pane.child(
+        pane.child(self.render_inline_completion_bar(
+            "docx-markdown",
+            editor_entity.clone(),
+            readonly,
+            cx,
+        ))
+        .child(
             div().flex_1().min_w_0().min_h_0().child(
                 Editor::new(&editor_entity)
                     .h(relative(1.0))

@@ -1469,6 +1469,111 @@ fn accept_sse_line(parser: &mut SseStreamParser, line: &str, on_delta: &mut impl
     Ok(())
 }
 
+/// Extract bounded UTF-8 prefix and suffix slices around a 0-based `(line, character)` cursor.
+pub(crate) fn slice_prefix_suffix(text: &str, cursor_line: usize, cursor_col: usize) -> (String, String) {
+    let mut byte_offset = text.len();
+    let mut current_line = 0usize;
+    let mut line_start = 0usize;
+    for (idx, ch) in text.char_indices() {
+        if current_line == cursor_line {
+            line_start = idx;
+            break;
+        }
+        if ch == '\n' {
+            current_line += 1;
+            line_start = idx + 1;
+        }
+    }
+    if current_line == cursor_line || line_start <= text.len() {
+        let rest = &text[line_start.min(text.len())..];
+        let mut col = 0usize;
+        let mut found = false;
+        for (rel, ch) in rest.char_indices() {
+            if col == cursor_col || ch == '\n' {
+                byte_offset = line_start + rel;
+                found = true;
+                break;
+            }
+            col += 1;
+        }
+        if !found {
+            byte_offset = text.len();
+        }
+    }
+
+    let before = &text[..byte_offset];
+    let after = &text[byte_offset..];
+    let prefix: String = before
+        .chars()
+        .rev()
+        .take(1200)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let suffix: String = after.chars().take(400).collect();
+    (prefix, suffix)
+}
+
+pub(crate) fn build_inline_completion_messages(prefix: &str, suffix: &str) -> Vec<ChatMessage> {
+    let prompt = format!(
+        "あなたは Markdown 文書作成の先読み補完アシスタントです。\n\
+         次の <prefix> の直後（カーソル位置）に続く自然な日本語または Markdown の続きを 1〜2 文（最大 120 文字程度）だけ出力してください。\n\
+         制約:\n\
+         - 補完テキスト本体のみを出力し、説明・挨拶・前後を囲む ``` は絶対に出力しないこと。\n\
+         - <prefix> の末尾に続く文字から始め、重複させないこと。\n\n\
+         <prefix>\n{prefix}\n</prefix>\n\
+         <suffix>\n{suffix}\n</suffix>"
+    );
+    vec![ChatMessage::user(prompt)]
+}
+
+pub(crate) fn clean_inline_suggestion(raw: &str) -> String {
+    let trimmed = raw.trim_matches(|c| c == '\r' || c == '\n');
+    let without_fence = trimmed
+        .strip_prefix("```markdown")
+        .or_else(|| trimmed.strip_prefix("```md"))
+        .or_else(|| trimmed.strip_prefix("```"))
+        .unwrap_or(trimmed);
+    let without_end = without_fence.strip_suffix("```").unwrap_or(without_fence);
+    without_end.trim_end().chars().take(200).collect()
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) async fn complete_inline_suggestion(prefix: &str, suffix: &str) -> Result<String, String> {
+    if browser_csrf().is_empty() {
+        let catalog = load_browser_catalog().await?;
+        set_browser_csrf(&catalog.csrf);
+    }
+    let config = AiConfig {
+        base_url: String::new(),
+        model: sorane_github::DEFAULT_GITHUB_MODEL.to_string(),
+        api_key: String::new(),
+    };
+    let messages = build_inline_completion_messages(prefix, suffix);
+    let mut collected = String::new();
+    let outcome = stream_chat_completion(&config, &messages, Vec::new(), |delta| {
+        collected.push_str(delta);
+    })
+    .await?;
+    let text = if collected.is_empty() { outcome.content } else { collected };
+    Ok(clean_inline_suggestion(&text))
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) async fn complete_inline_suggestion(prefix: &str, suffix: &str) -> Result<String, String> {
+    let mut connection = ConnectionChoice::Auto.load()?;
+    connection.check_connection()?;
+    let messages = build_inline_completion_messages(prefix, suffix);
+    let mut collected = String::new();
+    let outcome = stream_chat_completion(&connection, &messages, Vec::new(), |delta| {
+        collected.push_str(delta);
+    })
+    .await?;
+    let text = if collected.is_empty() { outcome.content } else { collected };
+    Ok(clean_inline_suggestion(&text))
+}
+
 #[cfg(not(target_family = "wasm"))]
 fn percent_encode_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
@@ -2149,5 +2254,19 @@ mod tests {
             .feed_line(r#"data: {"error":{"message":"invalid api key"}}"#)
             .unwrap_err();
         assert_eq!(err, "invalid api key");
+    }
+
+    #[test]
+    fn slice_prefix_suffix_handles_multibyte_utf8_cursor() {
+        let text = "# 見出し\nこんにちは世界\n次の行";
+        let (prefix, suffix) = slice_prefix_suffix(text, 1, 5);
+        assert_eq!(prefix, "# 見出し\nこんにちは");
+        assert_eq!(suffix, "世界\n次の行");
+    }
+
+    #[test]
+    fn clean_inline_suggestion_strips_markdown_fences() {
+        let raw = "\n```markdown\nこれは補完テキストです。\n```\n";
+        assert_eq!(clean_inline_suggestion(raw), "これは補完テキストです。");
     }
 }
