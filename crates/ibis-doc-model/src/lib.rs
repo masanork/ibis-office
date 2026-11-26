@@ -110,9 +110,10 @@ pub use model::{ZoomObject, ZoomTarget,
 };
 pub use form_control::{ControlHit, ControlKind, FormControl};
 pub use sd_jwt::{
-    Es256KeyPair, KeyBindingJwtOutput, Oid4vpRequest, SdJwtDisclosure, SdJwtOptions, SdJwtOutput,
-    base64url_decode, base64url_encode, hmac_sha256, issue_kb_jwt, issue_sd_jwt,
-    issue_sheet_sd_jwt, sha256, verify_es256,
+    Es256KeyPair, ExistingSdJwtPresentation, KeyBindingJwtOutput, Oid4vpRequest, SdJwtDisclosure,
+    SdJwtOptions, SdJwtOutput, base64url_decode, base64url_encode, hmac_sha256, issue_kb_jwt,
+    issue_sd_jwt, issue_sheet_sd_jwt, list_sd_jwt_disclosure_paths, percent_encode_form_component,
+    present_existing_sd_jwt, sha256, verify_es256,
 };
 pub use sd_jwt_binding::{
     BindingSource, BoundClaim, ClaimValue, DiscloseBinding, SdJwtTemplateKind, SheetClaimBindings,

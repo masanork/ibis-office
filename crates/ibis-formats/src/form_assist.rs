@@ -1962,24 +1962,450 @@ pub fn current_date_ymd() -> Option<String> {
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
             .as_secs() as i64;
-        // Shift to JST (+09:00) or UTC civil date via Howard Hinnant's algorithm
-        let days = secs.div_euclid(86_400);
-        let z = days + 719_468;
-        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-        let doe = (z - era * 146_097) as u32;
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let y = (yoe as i64) + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        let year = y + if m <= 2 { 1 } else { 0 };
+        let (year, m, d, _, _, _) = civil_datetime_from_unix(secs);
         Some(format!("{year:04}-{m:02}-{d:02}"))
     }
     #[cfg(target_family = "wasm")]
     {
         None
     }
+}
+
+/// Helper to return current UTC timestamp as ISO-8601 `"YYYY-MM-DDTHH:MM:SSZ"`.
+pub fn current_utc_timestamp_iso() -> String {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let (year, m, d, hh, mm, ss) = civil_datetime_from_unix(secs);
+        format!("{year:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        "1970-01-01T00:00:00Z".to_string()
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn civil_datetime_from_unix(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400) as u32;
+    let hh = rem / 3600;
+    let mm = (rem % 3600) / 60;
+    let ss = rem % 60;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    (year, m, d, hh, mm, ss)
+}
+
+/// Computes lowercase hex SHA-256 digest of `data`.
+pub fn sha256_hex(data: &[u8]) -> String {
+    let digest = ibis_doc_model::sd_jwt::sha256(data);
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// 6. OKF `type: presentation-request` (`requests/*.req.md`)
+// ---------------------------------------------------------------------------
+
+/// Parsed OKF `type: presentation-request` Vault note describing a Verifier / OID4VP submission target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresentationRequestNote {
+    pub path: String,
+    pub request_id: String,
+    pub title: String,
+    pub purpose: Option<String>,
+    pub client_id: String,
+    pub response_uri: Option<String>,
+    pub response_mode: Option<String>,
+    pub state: Option<String>,
+    pub nonce: Option<String>,
+    pub dcql_credential_id: Option<String>,
+    pub vct: Option<String>,
+    pub requested_claims: Vec<String>,
+}
+
+impl PresentationRequestNote {
+    /// Converts this Vault request note into an [`ibis_doc_model::Oid4vpRequest`].
+    pub fn to_oid4vp_request(&self, fallback_nonce: &str) -> ibis_doc_model::Oid4vpRequest {
+        ibis_doc_model::Oid4vpRequest {
+            client_id: self.client_id.clone(),
+            nonce: self
+                .nonce
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| fallback_nonce.to_string()),
+            response_uri: self.response_uri.clone(),
+            response_mode: self
+                .response_mode
+                .clone()
+                .or_else(|| Some("direct_post".to_string())),
+            state: self.state.clone(),
+            dcql_credential_id: self.dcql_credential_id.clone(),
+            requested_claims: self.requested_claims.clone(),
+        }
+    }
+}
+
+/// Parses an OKF `type: presentation-request` Markdown note into a [`PresentationRequestNote`].
+pub fn parse_presentation_request_markdown(
+    path: &str,
+    text: &str,
+) -> Option<PresentationRequestNote> {
+    let fm = crate::okf::frontmatter_map(text).ok()??;
+    let doc_type = fm.get("type")?.as_str()?.trim();
+    if !doc_type.eq_ignore_ascii_case("presentation-request") {
+        return None;
+    }
+
+    let stem = path
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches(".md")
+        .trim_end_matches(".markdown")
+        .trim_end_matches(".req")
+        .to_string();
+    let title = fm
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&stem)
+        .to_string();
+
+    let ext = fm
+        .get("x-sorane-presentation-request")
+        .or_else(|| fm.get("x-sorane-request"))
+        .and_then(Value::as_object);
+
+    let get_str = |key: &str| -> Option<String> {
+        ext.and_then(|o| o.get(key))
+            .or_else(|| fm.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+
+    // If a raw `openid4vp_uri` is embedded, parse it as a base and overlay explicit YAML fields.
+    let parsed_uri = get_str("openid4vp_uri")
+        .or_else(|| get_str("request_uri"))
+        .and_then(|u| ibis_doc_model::Oid4vpRequest::parse(&u));
+
+    let request_id = get_str("request_id")
+        .or_else(|| get_str("id"))
+        .unwrap_or_else(|| stem.clone());
+    let purpose = get_str("purpose");
+    let client_id = get_str("client_id")
+        .or_else(|| parsed_uri.as_ref().map(|r| r.client_id.clone()))
+        .unwrap_or_else(|| "https://verifier.example.com".to_string());
+    let response_uri = get_str("response_uri")
+        .or_else(|| get_str("redirect_uri"))
+        .or_else(|| parsed_uri.as_ref().and_then(|r| r.response_uri.clone()));
+    let response_mode = get_str("response_mode")
+        .or_else(|| parsed_uri.as_ref().and_then(|r| r.response_mode.clone()));
+    let state = get_str("state").or_else(|| parsed_uri.as_ref().and_then(|r| r.state.clone()));
+    let nonce = get_str("nonce").or_else(|| parsed_uri.as_ref().map(|r| r.nonce.clone()));
+    let vct = get_str("vct");
+    let mut dcql_credential_id = get_str("dcql_credential_id")
+        .or_else(|| get_str("credential_id"))
+        .or_else(|| {
+            parsed_uri
+                .as_ref()
+                .and_then(|r| r.dcql_credential_id.clone())
+        });
+
+    let mut requested_claims = Vec::new();
+    if let Some(uri_req) = &parsed_uri {
+        for c in &uri_req.requested_claims {
+            if !requested_claims.contains(c) {
+                requested_claims.push(c.clone());
+            }
+        }
+    }
+
+    // Parse `claims` array (`["given_name", "address.region"]`) or `dcql_query` object
+    let claims_val = ext.and_then(|o| o.get("claims")).or_else(|| fm.get("claims"));
+    if let Some(Value::Array(arr)) = claims_val {
+        for item in arr {
+            if let Some(s) = item.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                if !requested_claims.iter().any(|existing| existing == s) {
+                    requested_claims.push(s.to_string());
+                }
+            } else if let Some(path_arr) = item.get("path").and_then(Value::as_array) {
+                let joined: Vec<&str> = path_arr
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !joined.is_empty() {
+                    let p = joined.join(".");
+                    if !requested_claims.contains(&p) {
+                        requested_claims.push(p);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(dcql_val) = ext
+        .and_then(|o| o.get("dcql_query"))
+        .or_else(|| fm.get("dcql_query"))
+    {
+        if dcql_credential_id.is_none() {
+            dcql_credential_id = dcql_val
+                .get("credentials")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(|c| c.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        if let Ok(dcql_json) = serde_json::to_string(dcql_val)
+            && let Some(parsed) = ibis_doc_model::Oid4vpRequest::parse(&dcql_json)
+        {
+            for c in parsed.requested_claims {
+                if !requested_claims.contains(&c) {
+                    requested_claims.push(c);
+                }
+            }
+        }
+    }
+
+    Some(PresentationRequestNote {
+        path: path.to_string(),
+        request_id,
+        title,
+        purpose,
+        client_id,
+        response_uri,
+        response_mode,
+        state,
+        nonce,
+        dcql_credential_id,
+        vct,
+        requested_claims,
+    })
+}
+
+/// Starter OKF `type: presentation-request` template for quick testing in a Vault.
+pub fn starter_presentation_request_markdown() -> (&'static str, &'static str) {
+    (
+        "requests/sample-verifier.req.md",
+        r#"---
+type: presentation-request
+title: サンプル提出先（OID4VP direct_post）
+tags: [request, oid4vp]
+x-sorane-presentation-request:
+  version: 1
+  request_id: sample-verifier
+  purpose: 提出テスト（氏名・所属・住所の一部のみ開示）
+  client_id: https://verifier.example.org
+  response_uri: https://verifier.example.org/oid4vp/direct_post
+  response_mode: direct_post
+  dcql_credential_id: credential_1
+  claims:
+    - given_name
+    - family_name
+    - address.region
+---
+
+# サンプル提出先リクエスト
+
+提出先の `client_id` / `response_uri` / `claims` を書き換えて利用してください。
+ローカル検証用のモック Verifier (`http://127.0.0.1:...`) も指定できます。
+"#,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// 7. OKF `type: submission-receipt` (`submissions/YYYY-MM-DD-*.md`)
+// ---------------------------------------------------------------------------
+
+/// Immutable audit/receipt metadata recorded in the Vault after a VC/OID4VP submission or issuance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmissionReceipt {
+    pub submitted_at: String,
+    pub recipient: String,
+    pub response_uri: Option<String>,
+    /// `"oid4vp_direct_post"` | `"vc_issue_sd_jwt"` | `"vc_issue_mdoc"` | `"vp_token_copy"`
+    pub mode: String,
+    pub http_status: Option<u16>,
+    pub form_id: Option<String>,
+    pub form_mapping_path: Option<String>,
+    pub request_path: Option<String>,
+    pub source_paths: Vec<String>,
+    pub artifact_path: Option<String>,
+    pub disclosed_fields: Vec<String>,
+    pub payload_sha256: String,
+    pub key_storage: String,
+    pub holder_key_thumbprint: Option<String>,
+    pub notes: Option<String>,
+}
+
+fn wiki_link_for_vault_path(rel_path: &str) -> String {
+    let trimmed = rel_path.trim().trim_start_matches('/');
+    let without_md = trimmed
+        .strip_suffix(".md")
+        .or_else(|| trimmed.strip_suffix(".markdown"))
+        .unwrap_or(trimmed);
+    format!("[[{without_md}]]")
+}
+
+/// Computes a safe relative Vault path for a submission receipt (`submissions/YYYY-MM-DD-<slug>.md`).
+pub fn submission_receipt_relative_path(date_ymd: &str, slug_hint: &str) -> String {
+    let slug: String = slug_hint
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let slug = if slug.is_empty() {
+        "submission".to_string()
+    } else {
+        slug.chars().take(40).collect()
+    };
+    let date_prefix = if date_ymd.len() >= 10 {
+        &date_ymd[..10]
+    } else {
+        "undated"
+    };
+    format!("submissions/{date_prefix}-{slug}.md")
+}
+
+/// Renders a [`SubmissionReceipt`] as an OKF `type: submission-receipt` Markdown note with
+/// `[[Wiki links]]` connecting the submission to its source profiles, credentials, mappings, and requests.
+pub fn render_submission_receipt_markdown(receipt: &SubmissionReceipt) -> String {
+    let mut out = String::new();
+    let title = format!(
+        "提出記録: {} ({})",
+        receipt.recipient,
+        receipt.submitted_at.get(..10).unwrap_or(&receipt.submitted_at)
+    );
+    out.push_str("---\n");
+    out.push_str("type: submission-receipt\n");
+    out.push_str(&format!("title: {}\n", yaml_quote(&title)));
+    out.push_str("tags: [submission, vc]\n");
+    out.push_str(&format!("submitted_at: {}\n", yaml_quote(&receipt.submitted_at)));
+    out.push_str(&format!("recipient: {}\n", yaml_quote(&receipt.recipient)));
+    if let Some(uri) = &receipt.response_uri {
+        out.push_str(&format!("response_uri: {}\n", yaml_quote(uri)));
+    }
+    out.push_str(&format!("mode: {}\n", yaml_quote(&receipt.mode)));
+    if let Some(status) = receipt.http_status {
+        out.push_str(&format!("http_status: {status}\n"));
+    }
+    if let Some(form_id) = &receipt.form_id {
+        out.push_str(&format!("form_id: {}\n", yaml_quote(form_id)));
+    }
+    if let Some(map_path) = &receipt.form_mapping_path {
+        out.push_str(&format!("form_mapping: {}\n", yaml_quote(map_path)));
+    }
+    if let Some(req_path) = &receipt.request_path {
+        out.push_str(&format!("request: {}\n", yaml_quote(req_path)));
+    }
+    if let Some(art_path) = &receipt.artifact_path {
+        out.push_str(&format!("artifact: {}\n", yaml_quote(art_path)));
+    }
+    out.push_str(&format!(
+        "payload_sha256: {}\n",
+        yaml_quote(&receipt.payload_sha256)
+    ));
+    out.push_str(&format!(
+        "key_storage: {}\n",
+        yaml_quote(&receipt.key_storage)
+    ));
+    if let Some(thumb) = &receipt.holder_key_thumbprint {
+        out.push_str(&format!("holder_key_thumbprint: {}\n", yaml_quote(thumb)));
+    }
+    if !receipt.disclosed_fields.is_empty() {
+        out.push_str("disclosed_fields:\n");
+        for f in &receipt.disclosed_fields {
+            out.push_str(&format!("  - {}\n", yaml_quote(f)));
+        }
+    }
+    out.push_str("---\n\n");
+
+    out.push_str(&format!("# {title}\n\n"));
+    out.push_str(&format!("- **提出日時 (UTC)**: `{}`\n", receipt.submitted_at));
+    out.push_str(&format!("- **提出先**: `{}`\n", receipt.recipient));
+    if let Some(uri) = &receipt.response_uri {
+        out.push_str(&format!("- **送信先 URI**: `{uri}`\n"));
+    }
+    out.push_str(&format!("- **提出方式**: `{}`\n", receipt.mode));
+    if let Some(status) = receipt.http_status {
+        out.push_str(&format!("- **HTTP ステータス**: `{status}`\n"));
+    }
+    out.push_str(&format!(
+        "- **鍵保管**: `{}`{}\n",
+        receipt.key_storage,
+        receipt
+            .holder_key_thumbprint
+            .as_deref()
+            .map(|t| format!(" (`{t}`)"))
+            .unwrap_or_default()
+    ));
+    out.push_str(&format!(
+        "- **ペイロード SHA-256**: `{}`\n",
+        receipt.payload_sha256
+    ));
+
+    if !receipt.disclosed_fields.is_empty() {
+        out.push_str("\n## 開示した項目\n\n");
+        for f in &receipt.disclosed_fields {
+            out.push_str(&format!("- `{f}`\n"));
+        }
+    }
+
+    let has_links = receipt.form_mapping_path.is_some()
+        || receipt.request_path.is_some()
+        || receipt.artifact_path.is_some()
+        || !receipt.source_paths.is_empty();
+    if has_links {
+        out.push_str("\n## 関連ファイル\n\n");
+        if let Some(req) = &receipt.request_path {
+            out.push_str(&format!("- 提出要求: {}\n", wiki_link_for_vault_path(req)));
+        }
+        if let Some(map) = &receipt.form_mapping_path {
+            out.push_str(&format!("- フォーム対応表: {}\n", wiki_link_for_vault_path(map)));
+        }
+        if let Some(art) = &receipt.artifact_path {
+            out.push_str(&format!("- 出力ファイル: {}\n", wiki_link_for_vault_path(art)));
+        }
+        for src in &receipt.source_paths {
+            out.push_str(&format!("- 参照元: {}\n", wiki_link_for_vault_path(src)));
+        }
+    }
+
+    if let Some(notes) = receipt.notes.as_deref().filter(|s| !s.trim().is_empty()) {
+        out.push_str("\n## メモ\n\n");
+        out.push_str(notes.trim());
+        out.push('\n');
+    }
+
+    out
 }
 
 #[allow(dead_code)]
@@ -2216,4 +2642,58 @@ x-sorane-form-mapping:
             parse_form_mapping_markdown(&draft.path, &md).expect("rendered OKF markdown reparses");
         assert_eq!(reparsed.fields.len(), draft.fields.len());
     }
+
+    #[test]
+    fn presentation_request_and_submission_receipt_roundtrip() {
+        let (path, md) = starter_presentation_request_markdown();
+        let req_note = parse_presentation_request_markdown(path, md)
+            .expect("starter presentation-request parses");
+        assert_eq!(req_note.request_id, "sample-verifier");
+        assert_eq!(req_note.client_id, "https://verifier.example.org");
+        assert_eq!(
+            req_note.response_uri.as_deref(),
+            Some("https://verifier.example.org/oid4vp/direct_post")
+        );
+        assert_eq!(req_note.dcql_credential_id.as_deref(), Some("credential_1"));
+        assert_eq!(
+            req_note.requested_claims,
+            vec!["given_name", "family_name", "address.region"]
+        );
+
+        let oid = req_note.to_oid4vp_request("nonce-fresh-123");
+        assert_eq!(oid.nonce, "nonce-fresh-123");
+        assert_eq!(oid.dcql_credential_id.as_deref(), Some("credential_1"));
+
+        let receipt = SubmissionReceipt {
+            submitted_at: "2026-11-26T01:23:45Z".into(),
+            recipient: req_note.client_id.clone(),
+            response_uri: req_note.response_uri.clone(),
+            mode: "oid4vp_direct_post".into(),
+            http_status: Some(200),
+            form_id: Some("sample-verifier".into()),
+            form_mapping_path: Some("forms/invoice.form-map.md".into()),
+            request_path: Some(req_note.path.clone()),
+            source_paths: vec![
+                "profiles/me.md".into(),
+                "credentials/pid.sd-jwt".into(),
+            ],
+            artifact_path: None,
+            disclosed_fields: vec!["given_name".into(), "address.region".into()],
+            payload_sha256: sha256_hex(b"vp_token=demo"),
+            key_storage: "local_app_data".into(),
+            holder_key_thumbprint: Some("abc123def456".into()),
+            notes: Some("ローカル検証完了".into()),
+        };
+        let rel = submission_receipt_relative_path("2026-11-26", "Sample Verifier!");
+        assert_eq!(rel, "submissions/2026-11-26-sample-verifier.md");
+        let rendered = render_submission_receipt_markdown(&receipt);
+        let fm = crate::okf::frontmatter_map(&rendered).unwrap().unwrap();
+        assert_eq!(fm["type"], Value::String("submission-receipt".into()));
+        assert_eq!(fm["mode"], Value::String("oid4vp_direct_post".into()));
+        assert!(rendered.contains("[[profiles/me]]"));
+        assert!(rendered.contains("[[credentials/pid.sd-jwt]]"));
+        assert!(rendered.contains("[[forms/invoice.form-map]]"));
+        assert!(rendered.contains("[[requests/sample-verifier.req]]"));
+    }
 }
+

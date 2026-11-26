@@ -16,11 +16,13 @@ use turso_core::{
     Connection, Database, Numeric, OpenFlags, OpenOptions, PlatformIO, SqliteDialect, Value,
 };
 
-use ibis_formats::form_assist::{FormMapping, VaultCredentialSummary, VaultProfile};
+use ibis_formats::form_assist::{
+    FormMapping, PresentationRequestNote, VaultCredentialSummary, VaultProfile,
+};
 
 use super::markdown_index::{CachedCredential, CachedFile, RawLink, Stamp};
 
-const SCHEMA_VERSION: &str = "2";
+const SCHEMA_VERSION: &str = "3";
 
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -241,6 +243,7 @@ pub(super) fn load_all(root: &Path) -> Option<BTreeMap<String, CachedFile>> {
                     links: Vec::new(),
                     profile: None,
                     form_mapping: None,
+                    presentation_request: None,
                 },
             );
         }
@@ -333,18 +336,34 @@ pub(super) fn load_all(root: &Path) -> Option<BTreeMap<String, CachedFile>> {
 
     {
         let mut stmt = conn
-            .prepare("SELECT path, spec_json FROM form_definitions WHERE kind = 'form-mapping'")
+            .prepare("SELECT path, kind, spec_json FROM form_definitions")
             .ok()?;
         let rows = stmt.run_collect_rows().ok()?;
         for row in rows {
-            if row.len() != 2 {
+            if row.len() != 3 {
                 continue;
             }
-            if let (Some(path), Some(json_str)) = (value_text(&row[0]), value_text(&row[1]))
-                && let Some(entry) = files.get_mut(&path)
-                && let Ok(mapping) = serde_json::from_str::<FormMapping>(&json_str)
+            if let (Some(path), Some(kind), Some(json_str)) = (
+                value_text(&row[0]),
+                value_text(&row[1]),
+                value_text(&row[2]),
+            ) && let Some(entry) = files.get_mut(&path)
             {
-                entry.form_mapping = Some(mapping);
+                match kind.as_str() {
+                    "form-mapping" => {
+                        if let Ok(mapping) = serde_json::from_str::<FormMapping>(&json_str) {
+                            entry.form_mapping = Some(mapping);
+                        }
+                    }
+                    "presentation-request" => {
+                        if let Ok(req) =
+                            serde_json::from_str::<PresentationRequestNote>(&json_str)
+                        {
+                            entry.presentation_request = Some(req);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -577,6 +596,22 @@ pub(super) fn sync_diff(
                         None => Value::Null,
                     },
                 )?;
+                bind(&mut ins_form_def, 6, Value::from_text(json_str))?;
+                ins_form_def.run_ignore_rows().map_err(|err| err.to_string())?;
+            }
+            if let Some(req) = &entry.presentation_request
+                && let Ok(json_str) = serde_json::to_string(req)
+            {
+                ins_form_def.reset().map_err(|err| err.to_string())?;
+                bind(&mut ins_form_def, 1, Value::from_text(path.clone()))?;
+                bind(
+                    &mut ins_form_def,
+                    2,
+                    Value::from_text("presentation-request".to_string()),
+                )?;
+                bind(&mut ins_form_def, 3, Value::from_text(req.request_id.clone()))?;
+                bind(&mut ins_form_def, 4, Value::Null)?;
+                bind(&mut ins_form_def, 5, Value::Null)?;
                 bind(&mut ins_form_def, 6, Value::from_text(json_str))?;
                 ins_form_def.run_ignore_rows().map_err(|err| err.to_string())?;
             }

@@ -659,6 +659,23 @@ impl Es256KeyPair {
         ClaimValue::Object(map)
     }
 
+    /// Exports the public key as a canonical compact JWK JSON string (RFC 7638 member order).
+    pub fn to_public_jwk_json(&self) -> String {
+        self.to_public_jwk().to_json()
+    }
+
+    /// Exports the private key as a compact JWK JSON string.
+    pub fn to_private_jwk_json(&self) -> String {
+        self.to_private_jwk().to_json()
+    }
+
+    /// Returns the first 12 Base64url characters of the RFC 7638 SHA-256 JWK thumbprint
+    /// for safe user-facing key identification without exposing private key material.
+    pub fn thumbprint_short(&self) -> String {
+        let thumb = base64url_encode(&sha256(self.to_public_jwk_json().as_bytes()));
+        thumb.chars().take(12).collect()
+    }
+
     /// Signs `message` using ES256 (ECDSA P-256 with SHA-256, RFC 6979 deterministic `k`),
     /// returning the 64-byte JWS signature `r || s`.
     pub fn sign_es256(&self, message: &[u8]) -> [u8; 64] {
@@ -1068,6 +1085,13 @@ pub struct Oid4vpRequest {
     pub nonce: String,
     /// Optional `response_uri` or `redirect_uri`.
     pub response_uri: Option<String>,
+    /// Optional `response_mode` (e.g. `"direct_post"`).
+    pub response_mode: Option<String>,
+    /// Optional opaque `state` echoed back in `direct_post`.
+    pub state: Option<String>,
+    /// Optional DCQL credential query `id` (`dcql_query.credentials[0].id`), used to wrap `vp_token`
+    /// as OpenID4VP 1.0 JSON object `{ "<id>": ["<vp_token>"] }`.
+    pub dcql_credential_id: Option<String>,
     /// Canonical dot-separated claim paths requested via DCQL (`dcql_query`) or Presentation Exchange (`presentation_definition`).
     pub requested_claims: Vec<String>,
 }
@@ -1081,6 +1105,21 @@ pub struct KeyBindingJwtOutput {
     pub kb_jwt: String,
     /// Complete SD-JWT+KB token (`<Issuer-JWT>~<D_1>~...~<D_m>~<KB-JWT>`) suitable as OID4VP `vp_token`.
     pub vp_token: String,
+}
+
+/// Output of selectively re-presenting an already-issued `.sd-jwt` credential with a fresh `kb+jwt`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExistingSdJwtPresentation {
+    /// `<Issuer-JWT>~<selected_D1>~...~` without the trailing KB-JWT.
+    pub sd_jwt_without_kb: String,
+    /// Fresh Key Binding JWT (`kb+jwt`) and complete `vp_token`.
+    pub kb: KeyBindingJwtOutput,
+    /// Canonical dot-paths of disclosures included in this presentation.
+    pub disclosed_paths: Vec<String>,
+    /// Canonical dot-paths of disclosures withheld from this presentation.
+    pub omitted_paths: Vec<String>,
+    /// Whether `holder_key` matches `cnf.jwk` in the Issuer JWT (`None` if credential has no `cnf.jwk`).
+    pub holder_cnf_matches: Option<bool>,
 }
 
 impl SdJwtOutput {
@@ -1134,6 +1173,233 @@ pub fn issue_kb_jwt(
     }
 }
 
+struct ResolvedDisclosure {
+    path_str: String,
+    encoded: String,
+    value: ClaimValue,
+    ancestors: Vec<String>,
+}
+
+fn collect_resolved_disclosures(
+    obj: &BTreeMap<String, ClaimValue>,
+    prefix: &[String],
+    ancestors: &[String],
+    by_digest: &BTreeMap<String, (String, Option<String>, ClaimValue)>,
+    out: &mut Vec<ResolvedDisclosure>,
+) {
+    if prefix.len() >= 32 {
+        return;
+    }
+    for (k, v) in obj {
+        if k == "_sd" || k == "_sd_alg" {
+            continue;
+        }
+        if let ClaimValue::Object(child) = v {
+            let mut next_prefix = prefix.to_vec();
+            next_prefix.push(k.clone());
+            collect_resolved_disclosures(child, &next_prefix, ancestors, by_digest, out);
+        }
+    }
+    if let Some(ClaimValue::Array(digests)) = obj.get("_sd") {
+        for item in digests {
+            let Some(digest) = item.as_str() else {
+                continue;
+            };
+            let Some((encoded, Some(name), val)) = by_digest.get(digest) else {
+                continue;
+            };
+            let mut next_prefix = prefix.to_vec();
+            next_prefix.push(name.clone());
+            let path_str = next_prefix.join(".");
+            out.push(ResolvedDisclosure {
+                path_str,
+                encoded: encoded.clone(),
+                value: val.clone(),
+                ancestors: ancestors.to_vec(),
+            });
+            if let ClaimValue::Object(child) = val {
+                let mut next_ancestors = ancestors.to_vec();
+                next_ancestors.push(encoded.clone());
+                collect_resolved_disclosures(child, &next_prefix, &next_ancestors, by_digest, out);
+            }
+        }
+    }
+}
+
+fn inspect_sd_jwt_disclosures(
+    raw_sd_jwt: &str,
+) -> Result<(String, BTreeMap<String, ClaimValue>, Vec<String>, Vec<ResolvedDisclosure>), String> {
+    let trimmed = raw_sd_jwt.trim();
+    let parts: Vec<&str> = trimmed.split('~').collect();
+    if parts.is_empty() || parts[0].is_empty() {
+        return Err("missing issuer-signed JWT".to_string());
+    }
+    let issuer_jwt = parts[0].trim().to_string();
+    let jwt_segs: Vec<&str> = issuer_jwt.split('.').collect();
+    if jwt_segs.len() != 3 {
+        return Err("issuer JWT must have 3 segments".to_string());
+    }
+    let payload_bytes =
+        base64url_decode(jwt_segs[1]).ok_or_else(|| "invalid base64url in JWT payload".to_string())?;
+    let payload_str =
+        std::str::from_utf8(&payload_bytes).map_err(|_| "JWT payload is not UTF-8".to_string())?;
+    let payload_val = ClaimValue::parse_json(payload_str)?;
+    let payload_obj = payload_val
+        .as_object()
+        .ok_or_else(|| "JWT payload must be a JSON object".to_string())?
+        .clone();
+
+    let mut raw_disclosures = Vec::new();
+    let mut by_digest: BTreeMap<String, (String, Option<String>, ClaimValue)> = BTreeMap::new();
+    let trailing = &parts[1..];
+    for (idx, part) in trailing.iter().enumerate() {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        // Skip trailing KB-JWT
+        if idx == trailing.len() - 1 && p.contains('.') {
+            continue;
+        }
+        let disc_bytes = base64url_decode(p)
+            .ok_or_else(|| format!("invalid base64url in disclosure #{idx}"))?;
+        let disc_str = std::str::from_utf8(&disc_bytes)
+            .map_err(|_| format!("disclosure #{idx} is not UTF-8"))?;
+        let disc_val = ClaimValue::parse_json(disc_str)?;
+        let arr = disc_val
+            .as_array()
+            .ok_or_else(|| format!("disclosure #{idx} must be a JSON array"))?;
+        let digest = base64url_encode(&sha256(p.as_bytes()));
+        let entry = match arr.len() {
+            3 => {
+                let name = arr[1]
+                    .as_str()
+                    .ok_or_else(|| format!("disclosure #{idx} claim name must be a string"))?
+                    .to_string();
+                (p.to_string(), Some(name), arr[2].clone())
+            }
+            2 => (p.to_string(), None, arr[1].clone()),
+            _ => return Err(format!("disclosure #{idx} must have 2 or 3 elements")),
+        };
+        raw_disclosures.push(p.to_string());
+        by_digest.insert(digest, entry);
+    }
+
+    let mut resolved = Vec::new();
+    collect_resolved_disclosures(&payload_obj, &[], &[], &by_digest, &mut resolved);
+    Ok((issuer_jwt, payload_obj, raw_disclosures, resolved))
+}
+
+/// Lists selectively disclosable `(path_str, value)` entries in an existing compact `.sd-jwt`.
+pub fn list_sd_jwt_disclosure_paths(raw_sd_jwt: &str) -> Result<Vec<(String, ClaimValue)>, String> {
+    let (_, _, _, resolved) = inspect_sd_jwt_disclosures(raw_sd_jwt)?;
+    Ok(resolved
+        .into_iter()
+        .map(|d| (d.path_str, d.value))
+        .collect())
+}
+
+/// Re-presents an already-issued `.sd-jwt` by filtering its Disclosures to `selected_paths`
+/// (preserving original Base64url Disclosure bytes so the Issuer signature and `_sd` digests remain intact)
+/// and signing a fresh RFC 9901 §4.3 Key Binding JWT (`kb+jwt`) with `holder_key`.
+pub fn present_existing_sd_jwt(
+    raw_sd_jwt: &str,
+    selected_paths: Option<&[String]>,
+    aud: &str,
+    nonce: &str,
+    iat: i64,
+    holder_key: &Es256KeyPair,
+) -> Result<ExistingSdJwtPresentation, String> {
+    let (issuer_jwt, payload_obj, raw_disclosures, resolved) =
+        inspect_sd_jwt_disclosures(raw_sd_jwt)?;
+
+    let holder_cnf_matches = payload_obj
+        .get("cnf")
+        .and_then(ClaimValue::as_object)
+        .and_then(|cnf| cnf.get("jwk"))
+        .and_then(ClaimValue::as_object)
+        .and_then(|jwk| {
+            let x = base64url_decode(jwk.get("x")?.as_str()?)?;
+            let y = base64url_decode(jwk.get("y")?.as_str()?)?;
+            Some(x.as_slice() == holder_key.x && y.as_slice() == holder_key.y)
+        });
+
+    let mut kept_encoded = std::collections::BTreeSet::<String>::new();
+    let mut disclosed_paths = Vec::new();
+    let mut omitted_paths = Vec::new();
+
+    match selected_paths {
+        None => {
+            for r in &resolved {
+                kept_encoded.insert(r.encoded.clone());
+                for anc in &r.ancestors {
+                    kept_encoded.insert(anc.clone());
+                }
+                disclosed_paths.push(r.path_str.clone());
+            }
+        }
+        Some(wanted) => {
+            for r in &resolved {
+                if wanted.iter().any(|w| w == &r.path_str) {
+                    kept_encoded.insert(r.encoded.clone());
+                    for anc in &r.ancestors {
+                        kept_encoded.insert(anc.clone());
+                    }
+                    disclosed_paths.push(r.path_str.clone());
+                } else {
+                    omitted_paths.push(r.path_str.clone());
+                }
+            }
+        }
+    }
+
+    let mut sd_jwt_without_kb = format!("{issuer_jwt}~");
+    for raw in &raw_disclosures {
+        if kept_encoded.contains(raw) {
+            sd_jwt_without_kb.push_str(raw);
+            sd_jwt_without_kb.push('~');
+        }
+    }
+
+    let kb = issue_kb_jwt(&sd_jwt_without_kb, aud, nonce, iat, holder_key);
+    Ok(ExistingSdJwtPresentation {
+        sd_jwt_without_kb,
+        kb,
+        disclosed_paths,
+        omitted_paths,
+        holder_cnf_matches,
+    })
+}
+
+/// Percent-encodes a string for `application/x-www-form-urlencoded` (RFC 3986 unreserved set).
+pub fn percent_encode_form_component(input: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(input.len());
+    for &b in input.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0F) as usize] as char);
+        }
+    }
+    out
+}
+
+fn extract_dcql_credential_id(json: &str) -> Option<String> {
+    let val: serde_json::Value = serde_json::from_str(json).ok()?;
+    let dcql = val.get("dcql_query").unwrap_or(&val);
+    dcql.get("credentials")?
+        .as_array()?
+        .first()?
+        .get("id")?
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 impl Oid4vpRequest {
     /// Parses an OID4VP Authorization Request from either:
     /// - an `openid4vp://?...` or `https://...?...` URL query string, or
@@ -1157,6 +1423,9 @@ impl Oid4vpRequest {
         let mut client_id = None;
         let mut nonce = None;
         let mut response_uri = None;
+        let mut response_mode = None;
+        let mut state = None;
+        let mut dcql_credential_id = None;
         let mut requested_claims = Vec::new();
 
         for pair in query.split('&') {
@@ -1174,7 +1443,20 @@ impl Oid4vpRequest {
                         response_uri = Some(v);
                     }
                 }
+                "response_mode" => {
+                    if !v.is_empty() {
+                        response_mode = Some(v);
+                    }
+                }
+                "state" => {
+                    if !v.is_empty() {
+                        state = Some(v);
+                    }
+                }
                 "dcql_query" | "presentation_definition" => {
+                    if k == "dcql_query" && dcql_credential_id.is_none() {
+                        dcql_credential_id = extract_dcql_credential_id(&v);
+                    }
                     for path in extract_requested_claim_paths_from_json(&v) {
                         if !requested_claims.contains(&path) {
                             requested_claims.push(path);
@@ -1204,6 +1486,9 @@ impl Oid4vpRequest {
             client_id: client_id.unwrap_or_else(|| "https://verifier.example.com".to_string()),
             nonce: nonce.unwrap_or_else(|| "n-0S6_WzA2Mj".to_string()),
             response_uri,
+            response_mode,
+            state,
+            dcql_credential_id,
             requested_claims,
         })
     }
@@ -1215,6 +1500,9 @@ impl Oid4vpRequest {
             .unwrap_or_else(|| "n-0S6_WzA2Mj".to_string());
         let response_uri = extract_json_string_field(json, "response_uri")
             .or_else(|| extract_json_string_field(json, "redirect_uri"));
+        let response_mode = extract_json_string_field(json, "response_mode");
+        let state = extract_json_string_field(json, "state");
+        let dcql_credential_id = extract_dcql_credential_id(json);
         let requested_claims = extract_requested_claim_paths_from_json(json);
 
         if extract_json_string_field(json, "client_id").is_none()
@@ -1228,8 +1516,28 @@ impl Oid4vpRequest {
             client_id,
             nonce,
             response_uri,
+            response_mode,
+            state,
+            dcql_credential_id,
             requested_claims,
         })
+    }
+
+    /// Builds an `application/x-www-form-urlencoded` body for OpenID4VP `response_mode=direct_post`.
+    /// When `dcql_credential_id` is present, wraps `vp_token` as an OpenID4VP 1.0 JSON object
+    /// `{"<credential_id>":["<vp_token>"]}`; otherwise encodes the raw `vp_token` string.
+    pub fn build_direct_post_body(&self, vp_token: &str) -> String {
+        let vp_value = if let Some(cred_id) = &self.dcql_credential_id {
+            serde_json::json!({ cred_id: [vp_token] }).to_string()
+        } else {
+            vp_token.to_string()
+        };
+        let mut body = format!("vp_token={}", percent_encode_form_component(&vp_value));
+        if let Some(state) = self.state.as_deref().filter(|s| !s.is_empty()) {
+            body.push_str("&state=");
+            body.push_str(&percent_encode_form_component(state));
+        }
+        body
     }
 }
 
