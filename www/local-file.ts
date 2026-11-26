@@ -22,7 +22,7 @@ export const OPEN_EXTENSIONS = [
   'md', 'markdown',
   'vsdx', 'epub', 'pdf', 'jtd', 'jtt', 'jttc',
   'hwp', 'hwpx', 'uot', 'wpd', 'wp6',
-  'json', 'xml', 'sd-jwt', 'mdoc', 'ofd', 'xps', 'oxps', 'xdw',
+  'json', 'xml', 'sd-jwt', 'mdoc', 'ofd', 'xps', 'oxps', 'xdw', 'xbd',
 ] as const;
 
 export const FILE_HANDLER_GROUPS: { description: string; accept: Record<string, string[]> }[] = [
@@ -65,6 +65,13 @@ export const FILE_HANDLER_GROUPS: { description: string; accept: Record<string, 
     accept: {
       'application/vnd.oasis.opendocument.spreadsheet': ['.ods', '.ots'],
       'application/vnd.oasis.opendocument.presentation': ['.odp', '.otp'],
+    },
+  },
+  {
+    description: 'DocuWorks',
+    accept: {
+      'application/vnd.fujifilm.docuworks': ['.xdw'],
+      'application/vnd.fujifilm.docuworks.binder': ['.xbd'],
     },
   },
   {
