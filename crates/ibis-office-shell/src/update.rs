@@ -389,6 +389,11 @@ fn check() -> Found {
     let Some(log) = log_for(&latest) else { return Found::Failed };
     log.ok("check", &format!("a newer version: {latest} (current {CURRENT})"));
 
+    #[cfg(target_os = "macos")]
+    if TEAM_ID.is_empty() {
+        log.info("check", "Apple signing team is not configured: offering manual download");
+        return Found::Manual { version: latest, kind: ManualKind::Other };
+    }
     if attempts(&latest) >= MAX_ATTEMPTS {
         log.info("check", &format!("{MAX_ATTEMPTS} attempts at {latest} did not end in it running: no more offers"));
         return Found::Manual { version: latest, kind: ManualKind::Other };
