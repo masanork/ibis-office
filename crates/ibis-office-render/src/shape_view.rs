@@ -1297,6 +1297,10 @@ struct Fonts {
     traits: std::collections::BTreeMap<String, ibis_doc_model::TypefaceTraits>,
     /// A Word document's font table (typeface to `w:family`), where one is read: see `family`.
     docx_font_table: Option<std::collections::BTreeMap<String, ibis_doc_model::FontTableEntry>>,
+    /// Cached `Fonts::available(name)` results so repeated lookups do not linearly scan all system fonts.
+    available_cache: std::cell::RefCell<HashMap<String, Option<(SharedString, FontWeight)>>>,
+    /// `fonts_generation()` snapshot for `available_cache`.
+    available_fonts_gen: std::cell::Cell<u64>,
 }
 
 /// Weight words at the end of a typeface name, such as "Poppins SemiBold"
@@ -2514,6 +2518,7 @@ impl Fonts {
     /// typeface already installed is used as installed; a font whose
     /// licence forbids embedded use is not used.
     fn add_embedded(&mut self, fonts: &[ibis_doc_model::EmbeddedFont], preload: &crate::preload::Preload, cx: &App) {
+        self.available_cache.borrow_mut().clear();
         let mut registered = REGISTERED_FONTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut new_fonts = Vec::new();
         for font in fonts {
@@ -2556,6 +2561,7 @@ impl Fonts {
                 None => log::warn!("embedded font {} could not be used", font.typeface),
             }
         }
+        self.available_cache.borrow_mut().clear();
         if !new_fonts.is_empty()
             && let Err(err) = cx.text_system().add_fonts(new_fonts)
         {
@@ -2631,6 +2637,8 @@ impl Fonts {
             calibri_for_missing: false,
             docx_font_table: None,
             traits: Default::default(),
+            available_cache: Default::default(),
+            available_fonts_gen: std::cell::Cell::new(fonts_generation()),
         }
     }
 
@@ -2725,12 +2733,26 @@ impl Fonts {
     /// Segoe UI at 350).
     fn available(&self, name: &str) -> Option<(SharedString, FontWeight)> {
         let name = self.resolve(name);
-        resolve_font_with_index(name, &self.installed, Some(&self.embedded_index), true)
+        let fonts_gen = fonts_generation();
+        if self.available_fonts_gen.get() != fonts_gen {
+            self.available_fonts_gen.set(fonts_gen);
+            self.available_cache.borrow_mut().clear();
+        }
+        if let Some(hit) = self.available_cache.borrow().get(name) {
+            return hit.clone();
+        }
+        let resolved = resolve_font_with_index(name, &self.installed, Some(&self.embedded_index), true)
             // A font downloaded since the document was opened (`add_fonts_now`).
             .or_else(|| (*LATE_FONTS.read().unwrap_or_else(|e| e.into_inner())).and_then(|late| resolve_font_with_index(name, late, None, true)))
             .map(|(family, weight, _)| (family, weight))
             // A typeface the browser version has the blocks of (GitHub issue #157): its base block, once it came.
-            .or_else(|| crate::subset_fonts::base_family_for_typeface(name).map(|family| (SharedString::from(family), FontWeight::NORMAL)))
+            .or_else(|| crate::subset_fonts::base_family_for_typeface(name).map(|family| (SharedString::from(family), FontWeight::NORMAL)));
+        let mut cache = self.available_cache.borrow_mut();
+        if cache.len() >= 1024 {
+            cache.clear();
+        }
+        cache.insert(name.to_string(), resolved.clone());
+        resolved
     }
 
     fn kind(&self) -> DocKind {
@@ -7505,7 +7527,7 @@ mod font_resolution_tests {
     #[test]
     fn a_missing_latin_typeface_is_calibri_in_a_presentation_only() {
         let installed: HashSet<String> = ["Calibri", "Arial", "Carlito"].iter().map(|s| s.to_string()).collect();
-        let mut fonts = Fonts { installed, embedded_index: OpenTypeIndex::default(), east_asian_fallback: None, substitutions: HashMap::new(), calibri_for_missing: true, docx_font_table: None, traits: Default::default() };
+        let mut fonts = Fonts { installed, embedded_index: OpenTypeIndex::default(), east_asian_fallback: None, substitutions: HashMap::new(), calibri_for_missing: true, docx_font_table: None, traits: Default::default(), available_cache: Default::default(), available_fonts_gen: std::cell::Cell::new(fonts_generation()) };
         assert_eq!(fonts.family("Zzqx Missing Sans").0.as_ref(), "Calibri");
         assert_eq!(fonts.family("Helvetica").0.as_ref(), "Arial");
         fonts.calibri_for_missing = false;
@@ -7518,7 +7540,7 @@ mod font_resolution_tests {
         let installed: HashSet<String> = ["Cambria", "Calibri", "Georgia", "Arial"].iter().map(|s| s.to_string()).collect();
         let entry = |alt: &[&str], family: &str| ibis_doc_model::FontTableEntry { alt_names: alt.iter().map(|s| s.to_string()).collect(), family: family.into(), ..Default::default() };
         let table = [("Zzqx Serif".to_string(), entry(&["Zzqx Other", "Georgia"], "swiss")), ("Zzqx Plain".to_string(), entry(&[], "swiss"))].into_iter().collect();
-        let fonts = Fonts { installed, embedded_index: OpenTypeIndex::default(), east_asian_fallback: None, substitutions: HashMap::new(), calibri_for_missing: false, docx_font_table: Some(table), traits: Default::default() };
+        let fonts = Fonts { installed, embedded_index: OpenTypeIndex::default(), east_asian_fallback: None, substitutions: HashMap::new(), calibri_for_missing: false, docx_font_table: Some(table), traits: Default::default(), available_cache: Default::default(), available_fonts_gen: std::cell::Cell::new(fonts_generation()) };
         assert_eq!(fonts.family("Zzqx Serif").0.as_ref(), "Georgia");
         assert_eq!(fonts.family("Zzqx Plain").0.as_ref(), "Calibri");
     }
@@ -7530,6 +7552,8 @@ mod font_resolution_tests {
         Fonts {
             installed, embedded_index: OpenTypeIndex::default(), east_asian_fallback: Some("Yu Gothic".into()), substitutions: HashMap::new(), calibri_for_missing,
             docx_font_table: kind_document.then(Default::default), traits: Default::default(),
+            available_cache: Default::default(),
+            available_fonts_gen: std::cell::Cell::new(fonts_generation()),
         }
     }
 
@@ -7852,6 +7876,8 @@ mod font_resolution_tests {
             calibri_for_missing: table.is_none() && traits.values().any(|t| t.charset == Some(-128)),
             docx_font_table: table,
             traits,
+            available_cache: Default::default(),
+            available_fonts_gen: std::cell::Cell::new(fonts_generation()),
         }
     }
 
@@ -8038,6 +8064,8 @@ mod font_resolution_tests {
             calibri_for_missing: false,
             docx_font_table: None,
             traits: Default::default(),
+            available_cache: Default::default(),
+            available_fonts_gen: std::cell::Cell::new(fonts_generation()),
         };
 
         assert_eq!(
