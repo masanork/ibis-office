@@ -80,15 +80,220 @@ mod web_platform {
     #[derive(Clone, Debug)]
     pub struct Folder {
         root: PathBuf,
+        display_name: String,
         files: Vec<String>,
+        contents: std::collections::BTreeMap<String, String>,
+        tags_by_file: std::collections::BTreeMap<String, Vec<String>>,
+        outgoing_by_file: std::collections::BTreeMap<String, Vec<String>>,
+        backlinks_by_file: std::collections::BTreeMap<String, Vec<BacklinkHit>>,
+        all_tags_cache: Vec<(String, usize)>,
+    }
+
+    fn extract_tags(content: &str) -> Vec<String> {
+        let mut tags = std::collections::BTreeSet::new();
+        for line in content.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with('#') && trimmed.chars().nth(1).is_some_and(char::is_whitespace) {
+                continue;
+            }
+            let bytes = line.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'#' {
+                    let prev_ok = i == 0 || bytes[i - 1].is_ascii_whitespace() || bytes[i - 1] == b'(';
+                    if prev_ok {
+                        let rest = &line[i + 1..];
+                        let tag: String = rest
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '/')
+                            .collect();
+                        if !tag.is_empty() && !tag.chars().all(|c| c.is_ascii_digit()) {
+                            tags.insert(tag);
+                        }
+                    }
+                }
+                i += 1;
+            }
+        }
+        tags.into_iter().collect()
+    }
+
+    fn resolve_target(target_raw: &str, files: &[String]) -> Option<String> {
+        let base = target_raw
+            .split('#')
+            .next()
+            .unwrap_or(target_raw)
+            .split('|')
+            .next()
+            .unwrap_or(target_raw)
+            .trim()
+            .trim_start_matches("./")
+            .trim_start_matches('/');
+        if base.is_empty() {
+            return None;
+        }
+        let lower = base.to_ascii_lowercase();
+        let with_md = if lower.ends_with(".md") || lower.ends_with(".lawtext") {
+            lower.clone()
+        } else {
+            format!("{lower}.md")
+        };
+        if let Some(exact) = files.iter().find(|f| {
+            let fl = f.to_ascii_lowercase();
+            fl == lower || fl == with_md
+        }) {
+            return Some(exact.clone());
+        }
+        files
+            .iter()
+            .find(|f| {
+                let name = Path::new(f)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let stem = Path::new(f)
+                    .file_stem()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                name == lower || name == with_md || stem == lower
+            })
+            .cloned()
+    }
+
+    fn extract_links(content: &str, files: &[String]) -> Vec<(String, usize, String)> {
+        let mut out = Vec::new();
+        for (idx, line) in content.lines().enumerate() {
+            let line_no = idx + 1;
+            let excerpt = line.trim().chars().take(120).collect::<String>();
+            let mut rest = line;
+            while let Some(start) = rest.find("[[") {
+                let after = &rest[start + 2..];
+                if let Some(end) = after.find("]]") {
+                    let raw = &after[..end];
+                    if let Some(resolved) = resolve_target(raw, files) {
+                        out.push((resolved, line_no, excerpt.clone()));
+                    }
+                    rest = &after[end + 2..];
+                } else {
+                    break;
+                }
+            }
+            let mut mrest = line;
+            while let Some(mid) = mrest.find("](") {
+                let after = &mrest[mid + 2..];
+                if let Some(end) = after.find(')') {
+                    let raw = after[..end].trim();
+                    if !raw.starts_with("http://") && !raw.starts_with("https://") && !raw.starts_with('#')
+                        && let Some(resolved) = resolve_target(raw, files)
+                    {
+                        out.push((resolved, line_no, excerpt.clone()));
+                    }
+                    mrest = &after[end + 1..];
+                } else {
+                    break;
+                }
+            }
+        }
+        out
     }
 
     impl Folder {
         pub fn scan_dir(root: &Path) -> Result<Self, String> {
             Ok(Self {
+                display_name: root
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("soraneDocs")
+                    .to_string(),
                 root: root.to_path_buf(),
                 files: Vec::new(),
+                contents: std::collections::BTreeMap::new(),
+                tags_by_file: std::collections::BTreeMap::new(),
+                outgoing_by_file: std::collections::BTreeMap::new(),
+                backlinks_by_file: std::collections::BTreeMap::new(),
+                all_tags_cache: Vec::new(),
             })
+        }
+
+        pub fn from_web_files(
+            root: PathBuf,
+            display_name: String,
+            mut files: Vec<String>,
+            contents: std::collections::BTreeMap<String, String>,
+        ) -> Self {
+            files.sort();
+            files.dedup();
+            let mut folder = Self {
+                root,
+                display_name,
+                files,
+                contents,
+                tags_by_file: std::collections::BTreeMap::new(),
+                outgoing_by_file: std::collections::BTreeMap::new(),
+                backlinks_by_file: std::collections::BTreeMap::new(),
+                all_tags_cache: Vec::new(),
+            };
+            folder.rebuild_index();
+            folder
+        }
+
+        pub fn with_hydrated_file(&self, rel_path: String, content: String) -> Self {
+            let mut files = self.files.clone();
+            if !files.contains(&rel_path) {
+                files.push(rel_path.clone());
+            }
+            let mut contents = self.contents.clone();
+            contents.insert(rel_path, content);
+            Self::from_web_files(
+                self.root.clone(),
+                self.display_name.clone(),
+                files,
+                contents,
+            )
+        }
+
+        pub fn content_for(&self, rel: &str) -> Option<&str> {
+            self.contents.get(rel).map(String::as_str)
+        }
+
+        pub fn cached_contents(&self) -> &std::collections::BTreeMap<String, String> {
+            &self.contents
+        }
+
+        fn rebuild_index(&mut self) {
+            let mut tag_counts = std::collections::BTreeMap::<String, usize>::new();
+            self.tags_by_file.clear();
+            self.outgoing_by_file.clear();
+            self.backlinks_by_file.clear();
+
+            for (rel, content) in &self.contents {
+                let tags = extract_tags(content);
+                for t in &tags {
+                    *tag_counts.entry(t.clone()).or_default() += 1;
+                }
+                self.tags_by_file.insert(rel.clone(), tags);
+
+                let links = extract_links(content, &self.files);
+                let mut outgoing = Vec::new();
+                for (target, line, excerpt) in links {
+                    if target != *rel && !outgoing.contains(&target) {
+                        outgoing.push(target.clone());
+                    }
+                    self.backlinks_by_file.entry(target).or_default().push(BacklinkHit {
+                        path: rel.clone(),
+                        line,
+                        excerpt,
+                    });
+                }
+                self.outgoing_by_file.insert(rel.clone(), outgoing);
+            }
+
+            let mut all_tags: Vec<(String, usize)> = tag_counts.into_iter().collect();
+            all_tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            self.all_tags_cache = all_tags;
         }
 
         pub fn root(&self) -> &Path {
@@ -96,12 +301,7 @@ mod web_platform {
         }
 
         pub fn display_name(&self) -> String {
-            self.root
-                .file_name()
-                .and_then(|n| n.to_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("soraneDocs")
-                .to_string()
+            self.display_name.clone()
         }
 
         pub fn files(&self) -> &[String] {
@@ -112,7 +312,17 @@ mod web_platform {
             false
         }
 
-        pub fn relative_path_for(&self, _path: &Path) -> Option<String> {
+        pub fn relative_path_for(&self, path: &Path) -> Option<String> {
+            if let Ok(stripped) = path.strip_prefix(&self.root) {
+                let rel = stripped.to_string_lossy().replace('\\', "/");
+                if !rel.is_empty() {
+                    return Some(rel);
+                }
+            }
+            let s = path.to_string_lossy().replace('\\', "/");
+            if self.files.iter().any(|f| f == &s) {
+                return Some(s);
+            }
             None
         }
 
@@ -120,28 +330,51 @@ mod web_platform {
             rel.to_lowercase().contains(query)
         }
 
-        pub fn search_content(&self, _query: &str, _limit: usize) -> Vec<ContentSearchHit> {
-            Vec::new()
+        pub fn search_content(&self, query: &str, limit: usize) -> Vec<ContentSearchHit> {
+            let needle = query.trim().to_lowercase();
+            if needle.is_empty() || limit == 0 {
+                return Vec::new();
+            }
+            let mut hits = Vec::new();
+            for (rel, content) in &self.contents {
+                for (idx, line) in content.lines().enumerate() {
+                    if line.to_lowercase().contains(&needle) {
+                        hits.push(ContentSearchHit {
+                            path: rel.clone(),
+                            line: idx + 1,
+                            excerpt: line.trim().chars().take(120).collect(),
+                        });
+                        if hits.len() >= limit {
+                            return hits;
+                        }
+                    }
+                }
+            }
+            hits
         }
 
-        pub fn files_with_tag(&self, _tag: &str) -> Vec<String> {
-            Vec::new()
+        pub fn files_with_tag(&self, tag: &str) -> Vec<String> {
+            self.tags_by_file
+                .iter()
+                .filter(|(_, tags)| tags.iter().any(|t| t == tag))
+                .map(|(rel, _)| rel.clone())
+                .collect()
         }
 
-        pub fn tags_for(&self, _rel: &str) -> Vec<String> {
-            Vec::new()
+        pub fn tags_for(&self, rel: &str) -> Vec<String> {
+            self.tags_by_file.get(rel).cloned().unwrap_or_default()
         }
 
         pub fn all_tags(&self) -> Vec<(String, usize)> {
-            Vec::new()
+            self.all_tags_cache.clone()
         }
 
-        pub fn backlinks_for(&self, _rel: &str) -> Vec<BacklinkHit> {
-            Vec::new()
+        pub fn backlinks_for(&self, rel: &str) -> Vec<BacklinkHit> {
+            self.backlinks_by_file.get(rel).cloned().unwrap_or_default()
         }
 
-        pub fn outgoing_links_for(&self, _rel: &str) -> Vec<String> {
-            Vec::new()
+        pub fn outgoing_links_for(&self, rel: &str) -> Vec<String> {
+            self.outgoing_by_file.get(rel).cloned().unwrap_or_default()
         }
     }
 
@@ -736,6 +969,61 @@ impl SoraneWorkspace {
             return;
         }
 
+        #[cfg(target_family = "wasm")]
+        {
+            if let Some(vault) = self.vault.clone()
+                && let Some(rel) = vault.relative_path_for(&path)
+            {
+                let file_name = std::path::Path::new(&rel)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&rel)
+                    .to_string();
+                if let Some(content) = vault.content_for(&rel) {
+                    let bytes = content.as_bytes().to_vec();
+                    ibis_office_shell::web::notify_github_file_opened(&rel, &file_name);
+                    self.open_web_bytes_tab_with_path(Some(path), file_name, bytes, window, cx);
+                    return;
+                }
+                let encoded: String = rel
+                    .as_bytes()
+                    .iter()
+                    .flat_map(|&b| {
+                        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                            vec![b as char]
+                        } else {
+                            format!("%{b:02X}").chars().collect()
+                        }
+                    })
+                    .collect();
+                let url = format!("/api/github/file?path={encoded}");
+                let rel_clone = rel.clone();
+                let path_clone = path.clone();
+                cx.spawn_in(window, async move |this, cx| {
+                    if let Ok((_fetched_name, bytes)) = ibis_office_shell::web::fetch_url(&url).await {
+                        if let Ok(text) = std::str::from_utf8(&bytes) {
+                            let text_owned = text.to_string();
+                            let _ = this.update_in(cx, |ws, _, cx| {
+                                ws.hydrate_web_vault_file(rel_clone.clone(), text_owned, cx);
+                            });
+                        }
+                        ibis_office_shell::web::notify_github_file_opened(&rel_clone, &file_name);
+                        let _ = this.update_in(cx, |ws, window, cx| {
+                            ws.open_web_bytes_tab_with_path(
+                                Some(path_clone),
+                                file_name,
+                                bytes,
+                                window,
+                                cx,
+                            );
+                        });
+                    }
+                })
+                .detach();
+                return;
+            }
+        }
+
         // Reuse the active tab if it's an empty replaceable start screen.
         let reuse_active = self.pane(pane_id).and_then(|p| {
             let tab = p.active()?;
@@ -1151,6 +1439,49 @@ impl SoraneWorkspace {
     }
 
     #[cfg(target_family = "wasm")]
+    pub fn set_web_vault_tree(
+        &mut self,
+        label: String,
+        files: Vec<String>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let root = PathBuf::from(format!("sorane-web://{label}"));
+        let existing_contents = self
+            .vault
+            .as_ref()
+            .map(|v| v.cached_contents().clone())
+            .unwrap_or_default();
+        self.vault = Some(Arc::new(Folder::from_web_files(
+            root,
+            label,
+            files,
+            existing_contents,
+        )));
+        self.collapsed_dirs.clear();
+        self.selected_tag = None;
+        self.cached_search_hits.clear();
+        self.cached_search_query.clear();
+        self.left_sidebar_open = true;
+        self.left_panel = LeftPanelKind::Vault;
+        self.save_workspace_session();
+        cx.notify();
+    }
+
+    #[cfg(target_family = "wasm")]
+    pub fn hydrate_web_vault_file(
+        &mut self,
+        rel_path: String,
+        content: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(vault) = self.vault.as_ref() {
+            self.vault = Some(Arc::new(vault.with_hydrated_file(rel_path, content)));
+            cx.notify();
+        }
+    }
+
+    #[cfg(target_family = "wasm")]
     pub fn open_web_bytes_tab(
         &mut self,
         name: String,
@@ -1158,6 +1489,27 @@ impl SoraneWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let virtual_path = self.vault.as_ref().and_then(|v| {
+            v.relative_path_for(Path::new(&name))
+                .map(|rel| v.root().join(rel))
+        });
+        self.open_web_bytes_tab_with_path(virtual_path, name, data, window, cx);
+    }
+
+    #[cfg(target_family = "wasm")]
+    pub fn open_web_bytes_tab_with_path(
+        &mut self,
+        virtual_path: Option<PathBuf>,
+        name: String,
+        data: Vec<u8>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ref vp) = virtual_path
+            && self.activate_editor_by_path(vp, window, cx)
+        {
+            return;
+        }
         let reuse_active = self
             .active_editor(cx)
             .is_some_and(|ed| !ed.read(cx).has_document);
@@ -1182,7 +1534,7 @@ impl SoraneWorkspace {
             let (path, title, resolved_kind) = Self::editor_metadata(&editor, cx);
             let tab = TabEntry {
                 id: tab_id,
-                path,
+                path: virtual_path.clone().or(path),
                 title,
                 kind: resolved_kind,
                 pinned: false,
@@ -1201,12 +1553,13 @@ impl SoraneWorkspace {
         if let Some(pane) = self.pane_mut(self.active_pane)
             && let Some(tab) = pane.tabs.get_mut(pane.active_tab)
         {
-            tab.path = path;
+            tab.path = virtual_path.or(path);
             tab.title = title;
             tab.kind = resolved_kind;
         }
         self.enforce_tab_budget(cx);
         self.focus_active_editor(window, cx);
+        self.save_workspace_session();
         cx.notify();
     }
 
@@ -2216,7 +2569,10 @@ impl SoraneWorkspace {
     fn active_vault_relative(&self, cx: &App) -> Option<String> {
         let vault = self.vault.as_ref()?;
         let active = self.active_editor(cx)?;
-        let path = active.read(cx).file_path()?;
+        let path = active
+            .read(cx)
+            .file_path()
+            .or_else(|| self.pane(self.active_pane)?.active()?.path.clone())?;
         vault.relative_path_for(&path)
     }
 

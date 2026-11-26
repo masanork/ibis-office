@@ -1422,31 +1422,83 @@ mod web {
         with_app(|cx| crate::shell::host_editor::with_editor(cx, |_, _, _| ()).is_some()).unwrap_or(false)
     }
 
+    fn with_workspace<R>(
+        cx: &mut App,
+        f: impl FnOnce(&mut sorane_workspace::SoraneWorkspace, &mut Window, &mut Context<sorane_workspace::SoraneWorkspace>) -> R,
+    ) -> Option<R> {
+        let mut f_opt = Some(f);
+        for window in cx.windows() {
+            if let Some(root) = window.downcast::<gpui_kit::component::Root>()
+                && let Ok(Some(ws)) = root.update(cx, |root, _, _| {
+                    root.view().clone().downcast::<sorane_workspace::SoraneWorkspace>().ok()
+                })
+            {
+                return window
+                    .update(cx, |_, window, cx| {
+                        ws.update(cx, |ws, cx| f_opt.take().map(|f| f(ws, window, cx)))
+                    })
+                    .ok()
+                    .flatten();
+            }
+        }
+        None
+    }
+
+    #[wasm_bindgen]
+    pub fn set_web_vault_tree(label: String, paths_lines: String) -> Result<(), JsValue> {
+        let files: Vec<String> = paths_lines
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+        let updated = with_app(|cx| {
+            with_workspace(cx, |ws, window, cx| {
+                ws.set_web_vault_tree(label, files, window, cx);
+            })
+        });
+        if updated.flatten().is_some() {
+            Ok(())
+        } else {
+            Err(JsValue::from_str("workspace is not active"))
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn hydrate_web_vault_file(rel_path: String, content: String) -> Result<(), JsValue> {
+        let updated = with_app(|cx| {
+            with_workspace(cx, |ws, _, cx| {
+                ws.hydrate_web_vault_file(rel_path, content, cx);
+            })
+        });
+        if updated.flatten().is_some() {
+            Ok(())
+        } else {
+            Err(JsValue::from_str("workspace is not active"))
+        }
+    }
+
     /// Open a local file in the running editor (a second launch, a drop, or
     /// File System Access after startup).
     #[wasm_bindgen]
     pub fn open_local_file(name: String, bytes: Vec<u8>) -> Result<(), JsValue> {
         let opened = with_app(|cx| {
-            for window in cx.windows() {
-                if let Some(root) = window.downcast::<gpui_kit::component::Root>()
-                    && let Ok(Some(ws)) = root.update(cx, |root, _, _| {
-                        root.view().clone().downcast::<sorane_workspace::SoraneWorkspace>().ok()
-                    })
-                {
-                    let mut name_opt = Some(name);
-                    let mut bytes_opt = Some(bytes);
-                    let res = window.update(cx, |_, window, cx| {
-                        ws.update(cx, |ws, cx| {
-                            if let (Some(n), Some(b)) = (name_opt.take(), bytes_opt.take()) {
-                                ws.open_web_bytes_tab(n, b, window, cx);
-                            }
-                        });
-                    });
-                    return res.ok();
+            let mut name_opt = Some(name);
+            let mut bytes_opt = Some(bytes);
+            if with_workspace(cx, |ws, window, cx| {
+                if let (Some(n), Some(b)) = (name_opt.take(), bytes_opt.take()) {
+                    ws.open_web_bytes_tab(n, b, window, cx);
                 }
+            })
+            .is_some()
+            {
+                return Some(());
             }
+            let (Some(n), Some(b)) = (name_opt.take(), bytes_opt.take()) else {
+                return Some(());
+            };
             crate::shell::host_editor::with_editor(cx, |editor, window, cx| {
-                editor.open_web_bytes(name, bytes, false, window, cx);
+                editor.open_web_bytes(n, b, false, window, cx);
             })
         });
         if opened.flatten().is_some() { Ok(()) } else { Err(JsValue::from_str("the editor is not running")) }

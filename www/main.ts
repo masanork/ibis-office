@@ -16,6 +16,8 @@ import init, {
   host_snapshot_name,
   host_editor_ready,
   open_local_file,
+  set_web_vault_tree,
+  hydrate_web_vault_file,
 } from './pkg/ibis_office_app.js';
 import { installHostLoader, resolveOptionUrls, waitForEditor, type HostSession } from './host-loader.js';
 import { APP_VERSION } from './build-info.js';
@@ -84,6 +86,9 @@ declare global {
     ibisOfficeFetchUrl: (url: string) => Promise<PickedFile>;
     /** Called from Rust when a host-configured Web start-view action button is clicked. */
     ibisOfficeStartAction: (action: string) => void;
+    ibisOfficeNotifyGitHubFile?: (path: string, name: string) => void;
+    ibisOfficeSetWebVaultTree?: (label: string, files: string[]) => void;
+    ibisOfficeHydrateWebVaultFile?: (relPath: string, content: string) => void;
     /** Optional runtime updater for the Web start view configuration. */
     ibisOfficeSetStartView?: (config: Record<string, unknown>) => void;
     ibisOfficeDecodeHeic: (bytes: Uint8Array) => Promise<Uint8Array>;
@@ -1108,9 +1113,44 @@ if (!('gpu' in navigator)) {
       applyStartView(window.ibisOfficeOptions?.startView);
       window.ibisOfficeSetStartView = applyStartView;
     }
+    let pendingVaultTree: { label: string; files: string[] } | null = null;
+    const pendingVaultContents: Array<{ relPath: string; content: string }> = [];
+    window.ibisOfficeNotifyGitHubFile = (path, name) => {
+      window.dispatchEvent(new CustomEvent('sorane:github-file-opened', { detail: { path, name, etag: null } }));
+    };
+    window.ibisOfficeSetWebVaultTree = (label, files) => {
+      try {
+        set_web_vault_tree(label, files.join('\n'));
+        pendingVaultTree = null;
+      } catch {
+        pendingVaultTree = { label, files };
+      }
+    };
+    window.ibisOfficeHydrateWebVaultFile = (relPath, content) => {
+      try {
+        hydrate_web_vault_file(relPath, content);
+      } catch {
+        pendingVaultContents.push({ relPath, content });
+      }
+    };
     await run(base, file?.name, file?.bytes);
     installLocalFileDrop();
     status?.remove();
+    if (!hostLoader) {
+      void waitForEditor(host_editor_ready, 'timeout').then(() => {
+        if (pendingVaultTree) {
+          try {
+            set_web_vault_tree(pendingVaultTree.label, pendingVaultTree.files.join('\n'));
+          } catch { /* single-editor mode */ }
+          pendingVaultTree = null;
+        }
+        for (const item of pendingVaultContents.splice(0)) {
+          try {
+            hydrate_web_vault_file(item.relPath, item.content);
+          } catch { /* single-editor mode */ }
+        }
+      }).catch(() => {});
+    }
     if (hostLoader && hostSession) {
       // `run` returns before the editor window exists (it opens when the GPU is ready): `ready` means load is accepted, so wait for it.
       await waitForEditor(host_editor_ready, ja ? 'エディターの準備が間に合いませんでした' : 'The editor did not become ready in time');
