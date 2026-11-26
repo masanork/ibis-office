@@ -69,6 +69,27 @@ if (!params.has('host')) {
       repoItems = [];
     }
     applyStartViewConfig();
+    if (session.loggedIn && session.vault && repoItems.length > 0) {
+      const label = `${session.vault.owner}/${session.vault.repo}`;
+      const relPaths = repoItems.map((f) => f.subtitle);
+      window.ibisOfficeSetWebVaultTree?.(label, relPaths);
+      const textItems = repoItems
+        .filter((f) => /\.(md|markdown|lawtext|txt)$/i.test(f.name))
+        .slice(0, 30);
+      void (async () => {
+        for (const item of textItems) {
+          try {
+            const r = await fetch(item.url, { credentials: 'same-origin' });
+            if (r.ok) {
+              const text = await r.text();
+              window.ibisOfficeHydrateWebVaultFile?.(item.subtitle, text);
+            }
+          } catch {
+            /* ignore transient fetch failures */
+          }
+        }
+      })();
+    }
   }
 
   async function loadSession() {
@@ -497,19 +518,29 @@ if (!params.has('host')) {
     openedRepoFile = event.detail || null;
   });
 
-  // Intercept save/download when a GitHub repository file is open so the user can commit directly back to GitHub.
+  // Intercept save/download when GitHub Vault is connected so edits and new drafts can commit directly to GitHub.
   window.addEventListener('ibisoffice:download', async (event) => {
-    if (!openedRepoFile || !session.loggedIn || !session.vault) return;
+    if (!session.loggedIn || !session.vault) return;
     const bytes = event.detail?.bytes;
     if (!(bytes instanceof Uint8Array)) return;
+    let targetPath = openedRepoFile?.path || null;
+    if (!targetPath) {
+      const suggested = event.detail?.name || 'Untitled.md';
+      const chosen = window.prompt(
+        `GitHub (${session.vault.owner}/${session.vault.repo}) へ新規ファイルとして保存するパスを入力してください。\n（キャンセルするとローカル保存のみになります）`,
+        suggested,
+      );
+      if (!chosen || !chosen.trim()) return;
+      targetPath = chosen.trim().replace(/^\/+/, '');
+    }
     const message = window.prompt(
       `GitHub (${session.vault.owner}/${session.vault.repo}) へコミットするメッセージを入力してください。\n（キャンセルするとコミットしません）`,
-      `Update ${openedRepoFile.path}`,
+      `${openedRepoFile ? 'Update' : 'Add'} ${targetPath}`,
     );
     if (!message || !message.trim()) return;
     const headers = { 'X-Commit-Message': message.trim() };
-    if (openedRepoFile.etag) headers['If-Match'] = openedRepoFile.etag;
-    const res = await fetch(`/api/github/file?path=${encodeURIComponent(openedRepoFile.path)}`, {
+    if (openedRepoFile?.etag) headers['If-Match'] = openedRepoFile.etag;
+    const res = await fetch(`/api/github/file?path=${encodeURIComponent(targetPath)}`, {
       method: 'PUT',
       credentials: 'same-origin',
       headers,
@@ -517,7 +548,8 @@ if (!params.has('host')) {
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.sha) {
-      openedRepoFile.etag = `"${data.sha}"`;
+      openedRepoFile = { path: targetPath, name: targetPath.split('/').pop() || targetPath, etag: `"${data.sha}"` };
+      void refreshRepoTree();
       alert(`GitHub にコミットしました (${data.commitSha?.slice(0, 7) || 'ok'})`);
     } else {
       alert(`GitHub コミットに失敗しました: ${data.error || `HTTP ${res.status}`}`);

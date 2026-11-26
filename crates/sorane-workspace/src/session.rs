@@ -110,6 +110,9 @@ fn write_store(path: &Path, store: &SessionStore) {
     }
 }
 
+#[cfg(target_family = "wasm")]
+const WEB_SESSION_STORAGE_KEY: &str = "sorane.workspace.session.v1";
+
 /// Save the latest workspace session (both globally and keyed by `vault_root` when open).
 pub fn save_session(session: &WorkspaceSession) {
     #[cfg(not(target_family = "wasm"))]
@@ -117,7 +120,9 @@ pub fn save_session(session: &WorkspaceSession) {
         save_session_to(&path, session);
     }
     #[cfg(target_family = "wasm")]
-    let _ = session;
+    if let Ok(json) = serde_json::to_string(session) {
+        ibis_office_shell::web::local_storage_set(WEB_SESSION_STORAGE_KEY, &json);
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -146,7 +151,12 @@ pub fn load_last_session() -> Option<WorkspaceSession> {
     }
     #[cfg(target_family = "wasm")]
     {
-        None
+        let raw = ibis_office_shell::web::local_storage_get(WEB_SESSION_STORAGE_KEY)?;
+        let session: WorkspaceSession = serde_json::from_str(&raw).ok()?;
+        if session.vault_root.is_none() && session.panes.iter().all(|p| p.tabs.is_empty()) {
+            return None;
+        }
+        Some(session)
     }
 }
 
