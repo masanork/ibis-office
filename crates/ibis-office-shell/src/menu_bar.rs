@@ -949,8 +949,9 @@ impl SlideEditor {
         let slots = bar_slots(menus, self.kind(), window);
         let viewport = f32::from(window.viewport_size().width);
         let logo_width = LOGO_HEIGHT_IN_BAR * crate::chrome::LOGO_ASPECT + 2.0 * MENU_BAR_BUTTON_PADDING;
-        // Always keep the brand logo visible in the menu bar; overflow menus fold into ▾ when space is tight.
-        let show_logo = true;
+        // Keep the brand logo visible on all desktop/tablet/web windows (>= 600px); overflow menus
+        // fold into ▾ instead of hiding the logo. Phone-narrow viewports (< 600px) keep the menu bar compact.
+        let show_logo = viewport >= 600.0;
         let leading = bar_leading(show_logo);
         let trailing_reserve = if self.has_document
             && self.embedded_chrome.is_some_and(|p| !p.show_title_row)
@@ -960,7 +961,7 @@ impl SlideEditor {
         } else {
             0.0
         };
-        let available = (viewport - leading - logo_width - trailing_reserve - BAR_TRAILING).max(0.0);
+        let available = (viewport - leading - if show_logo { logo_width } else { 0.0 } - trailing_reserve - BAR_TRAILING).max(0.0);
         let (visible, hidden) = overflow_split(&slots, available, MORE_WIDTH);
         BarLayout { show_logo, leading, visible, hidden }
     }
