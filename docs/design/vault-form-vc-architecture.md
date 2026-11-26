@@ -1,6 +1,6 @@
 # soraneDocs フォーム入力支援 × Obsidian 風 Vault × Verifiable Credentials 統合設計書
 
-> **ステータス**: 承認済み（Phase 0 着手・2026-11-25 確定）  
+> **ステータス**: Phase 0 完了（Phase 1 着手待ち・2026-11-25 更新）  
 > **関連ドキュメント**: [デスクトップ Workspace UI 設計書](desktop-workspace-ui.md) / [Excel フォームからの SD-JWT 生成と OID4VP 提示の設計計画](../xlsx-sd-jwt-plan.md) / [フォームテンプレートの書式と作り方](../form-template-ja.md) / [就労証明書の XLSX 受け渡しと項目対応](../employment-certificate-xlsx-ja.md)
 
 ---

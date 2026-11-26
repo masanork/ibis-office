@@ -5,12 +5,13 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui_kit::component::{Disableable as _, checkbox::Checkbox};
+use gpui_kit::component::button::ButtonVariants as _;
+use gpui_kit::component::{Disableable as _, Sizable as _, checkbox::Checkbox, h_flex};
 use gpui_kit::*;
 use serde_json::Value;
 
 use crate::ext::*;
-use crate::prefill_copy::{ReviewInput, is_xlsx, read_text, save_reviewed_copy};
+use crate::prefill_copy::{ReviewInput, is_xlsx, read_text, save_reviewed_copy_with_options};
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
 use crate::shell::i18n::text;
@@ -18,12 +19,14 @@ use crate::shell::i18n::text;
 pub(crate) struct PrefillReview {
     input: Arc<ReviewInput>,
     selected: BTreeSet<String>,
+    allow_overwrite: bool,
     saving: bool,
     message: Option<String>,
 }
 
-fn can_select(row: &Value) -> bool {
-    row["status"] == "ready"
+fn can_select(row: &Value, allow_overwrite: bool) -> bool {
+    let status_ok = row["status"] == "ready" || (allow_overwrite && row["status"] == "occupied");
+    status_ok
         && row["proposed_value"]
             .as_str()
             .is_none_or(|value| value.chars().count() <= 250)
@@ -126,6 +129,7 @@ impl SlideEditor {
                             report,
                         }),
                         selected: BTreeSet::new(),
+                        allow_overwrite: false,
                         saving: false,
                         message: None,
                     })
@@ -145,11 +149,119 @@ impl SlideEditor {
         .detach();
     }
 
+    fn can_apply_prefill_to_sheet(&self) -> bool {
+        !self.is_read_only() && self.protection_password.is_none()
+    }
+
     fn can_save_prefill_copy(&self) -> bool {
         !self.is_read_only()
             && self.protection_password.is_none()
             && self.file_path().is_some_and(|path| is_xlsx(&path))
             && self.source.is_some()
+    }
+
+    fn apply_prefill_to_sheet(&mut self, cx: &mut Context<Self>) {
+        if !self.can_apply_prefill_to_sheet() {
+            if let Some(Ok(review)) = self.wb_mut().panels.prefill_preview.as_mut() {
+                review.message = Some(text("xlsx.prefill.apply-unavailable").to_string());
+            }
+            cx.notify();
+            return;
+        }
+        self.commit_cell_edit(cx);
+        let slide = self.current_slide;
+        let Some((input, targets, allow_overwrite)) = self
+            .sheet_state()
+            .and_then(|state| state.panels.prefill_preview.as_ref())
+            .and_then(|res| res.as_ref().ok())
+            .filter(|review| !review.selected.is_empty() && !review.saving)
+            .map(|review| {
+                (
+                    review.input.clone(),
+                    review.selected.clone(),
+                    review.allow_overwrite,
+                )
+            })
+        else {
+            return;
+        };
+
+        let settings: Value = match serde_json::from_str(&input.mapping_text) {
+            Ok(val) => val,
+            Err(_) => {
+                if let Some(Ok(review)) = self.wb_mut().panels.prefill_preview.as_mut() {
+                    review.message = Some(text("xlsx.prefill.changed").to_string());
+                }
+                cx.notify();
+                return;
+            }
+        };
+        let signed = self
+            .source
+            .as_ref()
+            .is_some_and(|source| source.has_package_signatures().unwrap_or(true));
+        let current = match ibis_doc_service::review_prefill(
+            self.presentation(),
+            slide,
+            signed,
+            &input.format,
+            &input.source_text,
+            &settings["mappings"],
+        ) {
+            Ok(report) if report == input.report => report,
+            _ => {
+                if let Some(Ok(review)) = self.wb_mut().panels.prefill_preview.as_mut() {
+                    review.message = Some(text("xlsx.prefill.changed").to_string());
+                }
+                cx.notify();
+                return;
+            }
+        };
+
+        let command = match ibis_doc_service::reviewed_prefill_command_with_options(
+            &current,
+            slide,
+            &serde_json::json!(targets),
+            allow_overwrite,
+        ) {
+            Ok(cmd) => cmd,
+            Err(error) => {
+                if let Some(Ok(review)) = self.wb_mut().panels.prefill_preview.as_mut() {
+                    review.message = Some(error.message);
+                }
+                cx.notify();
+                return;
+            }
+        };
+
+        let applied_count = targets.len();
+        self.run_sheet(vec![command], cx);
+
+        let updated_report = ibis_doc_service::review_prefill(
+            self.presentation(),
+            slide,
+            signed,
+            &input.format,
+            &input.source_text,
+            &settings["mappings"],
+        )
+        .unwrap_or(current);
+
+        let count_str = applied_count.to_string();
+        let msg = crate::shell::i18n::format("xlsx.prefill.applied", &[("count", &count_str)]);
+        if let Some(Ok(review)) = self.wb_mut().panels.prefill_preview.as_mut() {
+            review.input = Arc::new(ReviewInput {
+                source: input.source.clone(),
+                mapping: input.mapping.clone(),
+                source_text: input.source_text.clone(),
+                mapping_text: input.mapping_text.clone(),
+                format: input.format.clone(),
+                report: updated_report,
+            });
+            review.selected.clear();
+            review.message = Some(msg);
+        }
+        cx.notify();
     }
 
     fn save_prefill_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -173,6 +285,7 @@ impl SlideEditor {
         review.message = None;
         let input = review.input.clone();
         let targets = review.selected.clone();
+        let allow_overwrite = review.allow_overwrite;
         let stem = workbook.file_stem().unwrap_or_default().to_string_lossy();
         let picked = cx.prompt_for_new_path(directory, Some(&format!("{stem}-filled.xlsx")));
         cx.notify();
@@ -205,7 +318,7 @@ impl SlideEditor {
                             let (presentation, package) = snapshot;
                             let package = package
                                 .ok_or_else(|| text("xlsx.prefill.save-unavailable").to_string())?;
-                            save_reviewed_copy(
+                            save_reviewed_copy_with_options(
                                 &input_for_save,
                                 presentation,
                                 &package,
@@ -213,6 +326,7 @@ impl SlideEditor {
                                 &workbook,
                                 &output,
                                 &targets,
+                                allow_overwrite,
                             )?;
                             Ok::<_, String>(Some(name))
                         })
@@ -254,10 +368,72 @@ impl SlideEditor {
             Err(error) => body = body.child(error.clone()),
             Ok(review) => {
                 let report = &review.input.report;
+                let can_apply = self.can_apply_prefill_to_sheet();
                 let can_save = self.can_save_prefill_copy();
+                let can_edit = can_apply || can_save;
+                let allow_overwrite = review.allow_overwrite;
                 body = body.child(text("xlsx.prefill.read-only"));
                 if report["credential_trust"] == "not_checked" {
                     body = body.child(text("xlsx.prefill.unverified"));
+                }
+                if can_edit {
+                    let has_occupied = report["changes"]
+                        .as_array()
+                        .is_some_and(|rows| rows.iter().any(|r| r["status"] == "occupied"));
+                    let mut controls = h_flex().gap_2().flex_wrap().child(
+                        crate::shell::chrome::action_button("prefill-select-all")
+                            .small()
+                            .label(text("xlsx.prefill.select-all"))
+                            .disabled(review.saving)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(Ok(review)) =
+                                    this.wb_mut().panels.prefill_preview.as_mut()
+                                {
+                                    let overwrite = review.allow_overwrite;
+                                    if let Some(changes) =
+                                        review.input.report["changes"].as_array()
+                                    {
+                                        for row in changes {
+                                            if can_select(row, overwrite)
+                                                && let Some(target) = row["target"].as_str()
+                                            {
+                                                review.selected.insert(target.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                                cx.notify();
+                            })),
+                    );
+                    if has_occupied {
+                        controls = controls.child(
+                            Checkbox::new("prefill-allow-overwrite")
+                                .label(text("xlsx.prefill.allow-overwrite"))
+                                .checked(allow_overwrite)
+                                .disabled(review.saving)
+                                .on_change(cx.listener(|this, checked, _, cx| {
+                                    if let Some(Ok(review)) =
+                                        this.wb_mut().panels.prefill_preview.as_mut()
+                                    {
+                                        review.allow_overwrite = *checked;
+                                        if !*checked
+                                            && let Some(changes) =
+                                                review.input.report["changes"].as_array()
+                                        {
+                                            for row in changes {
+                                                if row["status"] == "occupied"
+                                                    && let Some(target) = row["target"].as_str()
+                                                {
+                                                    review.selected.remove(target);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    cx.notify();
+                                })),
+                        );
+                    }
+                    body = body.child(controls);
                 }
                 if let Some(changes) = report["changes"].as_array() {
                     for row in changes {
@@ -292,7 +468,9 @@ impl SlideEditor {
                             .gap(px(3.))
                             .child(format!("{label}  ({cell})"))
                             .child(text(status));
-                        if can_save && can_select(row) {
+                        let status_selectable = row["status"] == "ready"
+                            || (allow_overwrite && row["status"] == "occupied");
+                        if can_edit && can_select(row, allow_overwrite) {
                             let target = target.to_string();
                             item = item.child(
                                 Checkbox::new(SharedString::from(format!("prefill-{cell}")))
@@ -312,7 +490,7 @@ impl SlideEditor {
                                         cx.notify();
                                     })),
                             );
-                        } else if row["status"] == "ready" && !can_select(row) {
+                        } else if status_selectable && !can_select(row, allow_overwrite) {
                             item = item.child(text("xlsx.prefill.long-value"));
                         }
                         if label != target {
@@ -339,15 +517,30 @@ impl SlideEditor {
                 if let Some(message) = &review.message {
                     body = body.child(message.clone());
                 }
-                if can_save {
-                    body = body.child(
-                        crate::shell::chrome::action_button("prefill-save")
-                            .label(text("xlsx.prefill.save-copy"))
-                            .disabled(review.selected.is_empty() || review.saving)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.save_prefill_copy(window, cx)
-                            })),
-                    );
+                if can_edit {
+                    let mut buttons = h_flex().gap_2().flex_wrap();
+                    if can_apply {
+                        buttons = buttons.child(
+                            crate::shell::chrome::action_button("prefill-apply-sheet")
+                                .primary()
+                                .label(text("xlsx.prefill.apply-sheet"))
+                                .disabled(review.selected.is_empty() || review.saving)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.apply_prefill_to_sheet(cx)
+                                })),
+                        );
+                    }
+                    if can_save {
+                        buttons = buttons.child(
+                            crate::shell::chrome::action_button("prefill-save")
+                                .label(text("xlsx.prefill.save-copy"))
+                                .disabled(review.selected.is_empty() || review.saving)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.save_prefill_copy(window, cx)
+                                })),
+                        );
+                    }
+                    body = body.child(buttons);
                 }
             }
         }
@@ -355,5 +548,31 @@ impl SlideEditor {
             title: text("xlsx.prefill.title").into(),
             body: body.into_any_element(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_prefill_caption_is_in_both_languages() {
+        for table in [
+            include_str!("../../ibis-office-base/i18n/ja/xlsx.tsv"),
+            include_str!("../../ibis-office-base/i18n/en/xlsx.tsv"),
+        ] {
+            for id in [
+                "xlsx.prefill.title",
+                "xlsx.prefill.allow-overwrite",
+                "xlsx.prefill.select-all",
+                "xlsx.prefill.apply-sheet",
+                "xlsx.prefill.applied",
+                "xlsx.prefill.apply-unavailable",
+                "xlsx.prefill.save-copy",
+            ] {
+                assert!(
+                    table.lines().any(|l| l.split('\t').next() == Some(id)),
+                    "{id} is missing"
+                );
+            }
+        }
     }
 }

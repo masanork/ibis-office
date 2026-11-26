@@ -31,6 +31,29 @@ pub(crate) fn save_reviewed_copy(
     output: &Path,
     targets: &BTreeSet<String>,
 ) -> Result<(), String> {
+    save_reviewed_copy_with_options(
+        input,
+        presentation,
+        package,
+        slide,
+        workbook,
+        output,
+        targets,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn save_reviewed_copy_with_options(
+    input: &ReviewInput,
+    presentation: ibis_doc_model::Presentation,
+    package: &ibis_formats::Source,
+    slide: ibis_doc_model::SlideId,
+    workbook: &Path,
+    output: &Path,
+    targets: &BTreeSet<String>,
+    allow_overwrite: bool,
+) -> Result<(), String> {
     if !is_xlsx(workbook) || !is_xlsx(output) || output.exists() || output.is_symlink() {
         return Err(text("xlsx.prefill.new-file").to_string());
     }
@@ -67,9 +90,13 @@ pub(crate) fn save_reviewed_copy(
     }
 
     let mut document = ibis_doc_model::Document::new(presentation);
-    let command =
-        ibis_doc_service::reviewed_prefill_command(&current, slide, &serde_json::json!(targets))
-            .map_err(|error| error.message)?;
+    let command = ibis_doc_service::reviewed_prefill_command_with_options(
+        &current,
+        slide,
+        &serde_json::json!(targets),
+        allow_overwrite,
+    )
+    .map_err(|error| error.message)?;
     document
         .execute(vec![command])
         .map_err(|error| error.to_string())?;
