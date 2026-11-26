@@ -134,10 +134,17 @@ pub(crate) struct WorkbookImportSettings<'a> {
     pub preserve_name_formulas: bool,
 }
 
+/// Content omitted by an editable import.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImportWarning {
+    WordPerfectImagesOmitted(usize),
+}
+
 /// A file read for editing: its model, and what saving it needs.
 pub struct Opened {
     pub presentation: Presentation,
     pub source: Source,
+    pub import_warning: Option<ImportWarning>,
 }
 
 /// A chunk of streaming CSV cells and row heights sent to the UI during progressive loading.
@@ -398,7 +405,7 @@ pub fn open_progressive_with_options(
     crate::progress::fraction(1.0);
     #[cfg(not(target_family = "wasm"))]
     std::thread::spawn(move || drop(csv_records));
-    Ok((Opened { presentation, source }, csv_rx))
+    Ok((Opened { presentation, source, import_warning: None }, csv_rx))
 }
 
 /// Read a `.pptx`, `.xlsx` or `.docx` for editing and saving.

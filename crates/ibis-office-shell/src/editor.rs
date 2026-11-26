@@ -1833,12 +1833,36 @@ impl SlideEditor {
                     if is_ppsx {
                         with_format!(this, show_start(this, window, cx));
                     }
+                    this.show_import_warning(opened.import_warning, window, cx);
                 }
                 Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
             })
             .ok();
         })
         .detach();
+    }
+
+    fn show_import_warning(
+        &mut self,
+        warning: Option<ibis_formats::ImportWarning>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ibis_formats::ImportWarning::WordPerfectImagesOmitted(count)) = warning {
+            let title = crate::i18n::text("file.wpd-images-omitted.title");
+            let message = crate::i18n::format("file.wpd-images-omitted.message", &[("count", &count)]);
+            #[cfg(target_os = "macos")]
+            {
+                use gpui::{PromptButton, PromptLevel};
+                let buttons = [PromptButton::ok(crate::i18n::text("shell.action.ok"))];
+                let _ = window.prompt(PromptLevel::Warning, &title, Some(&message), &buttons, cx);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = window;
+                self.show_alert(title, message.into(), cx);
+            }
+        }
     }
 
     /// Show a file read from bytes (the browser's local file, a host's file): as the window's document, under `name`.
@@ -1853,6 +1877,7 @@ impl SlideEditor {
         if is_ppsx {
             with_format!(self, show_start(self, window, cx));
         }
+        self.show_import_warning(opened.import_warning, window, cx);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -2206,10 +2231,14 @@ impl SlideEditor {
                     if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_formats::is_slideshow) {
                         with_format!(this, show_start(this, window, cx));
                     }
-                    match signature_presence {
-                        Ok(true) => this.show_alert(crate::i18n::text("file.signature-warning.title"), crate::i18n::text("file.signature-warning.message"), cx),
-                        Err(_) => this.show_alert(crate::i18n::text("file.signature-warning.title"), crate::i18n::text("file.signature-warning.unknown"), cx),
-                        Ok(false) => {},
+                    if loaded.import_warning.is_some() {
+                        this.show_import_warning(loaded.import_warning, window, cx);
+                    } else {
+                        match signature_presence {
+                            Ok(true) => this.show_alert(crate::i18n::text("file.signature-warning.title"), crate::i18n::text("file.signature-warning.message"), cx),
+                            Err(_) => this.show_alert(crate::i18n::text("file.signature-warning.title"), crate::i18n::text("file.signature-warning.unknown"), cx),
+                            Ok(false) => {},
+                        }
                     }
                     // A file with a password to modify: asked for, or read as it is.
                     if this.is_modify_locked() {

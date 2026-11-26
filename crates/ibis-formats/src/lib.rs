@@ -174,7 +174,7 @@ use ibis_doc_model::Presentation;
 pub use geometry::preset as preset_geometry;
 pub use geometry::text_warp as text_warp_geometry;
 pub use new_file::new_presentation;
-pub use save::{CsvProgressiveChunk, ForeignSlide, NewChartKind, Opened, SaveOptions, Source, open, open_progressive, open_progressive_with, open_progressive_with_csv_encoding, open_progressive_with_options};
+pub use save::{CsvProgressiveChunk, ForeignSlide, ImportWarning, NewChartKind, Opened, SaveOptions, Source, open, open_progressive, open_progressive_with, open_progressive_with_csv_encoding, open_progressive_with_options};
 pub use reader::script_pieces;
 pub use save::pptx_chart_data::{ChartData, SeriesRefs, bubble_refs_for_range, chart_from_data, sheet_chart_from_data, format_ref, grown_refs, parse_ref, quote_sheet, refs_for_new_chart, refs_for_range, preferred_series_columns, leading_line_is_time_axis, refs_range, scatter_refs_for_range, sheet_of, stock_refs_for_range};
 pub use svg_convert::convert_svg_to_shapes;

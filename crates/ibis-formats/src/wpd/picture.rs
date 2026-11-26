@@ -24,6 +24,7 @@ struct PictureContent {
 #[derive(Default)]
 pub(super) struct Pictures {
     cache: HashMap<u16, Option<PictureContent>>,
+    pub(super) omitted: usize,
 }
 
 #[derive(Default)]
@@ -210,10 +211,31 @@ impl Pictures {
             .filter_map(|id| packets.packet(word(id, 0)?, 0x41))
             .find_map(ImageBox::style)
             .unwrap_or_default();
-        frame.apply(payload(record).ok()?)?;
+        if payload(record)
+            .ok()
+            .and_then(|data| frame.apply(data))
+            .is_none()
+        {
+            self.omitted += usize::from(frame.kind == 3);
+            return None;
+        }
         if frame.kind != 3 {
             return None;
         }
+        let image = self.read_image(ids, frame, record[1], packets, presentation, id);
+        self.omitted += usize::from(image.is_none());
+        image
+    }
+
+    fn read_image(
+        &mut self,
+        ids: &[u8],
+        frame: ImageBox,
+        kind: u8,
+        packets: Packets<'_>,
+        presentation: &mut Presentation,
+        id: ShapeId,
+    ) -> Option<FlowRunKind> {
         let pid = ids
             .chunks_exact(2)
             .filter_map(|id| packets.packet(word(id, 0)?, 0x40))
@@ -246,7 +268,6 @@ impl Pictures {
             })
             .as_ref()?;
         let size = frame.size(picture.size)?;
-        let kind = record[1];
         let floating = (kind != 0).then(|| (id, frame.anchor(kind)));
         Some(crate::hangul_structure::imported_picture(
             picture.media,

@@ -1008,6 +1008,8 @@ file.standard-copy-saved	コピーを新しい暗号化方式で保存しまし�
 file.standard-copy-format	パスワードを維持するため、コピーは Office 形式で保存してください。
 start.version	ver.{version}
 shell.open-failed.title	ファイルを開けませんでした
+file.wpd-images-omitted.title	WordPerfect の図を一部取り込めませんでした
+file.wpd-images-omitted.message	取り込めなかった埋め込み図の数は {count} です。別名保存する前に元の WordPerfect 文書と見比べてください。
 file.signature-warning.title	電子署名
 file.signature-warning.message	このファイルには電子署名があります。署名の有効性は確認していません。編集や保存で署名が無効になる場合があります。署名済みの元ファイルを保管してください。
 file.signature-warning.unknown	ファイルの署名情報を確認できませんでした。編集や保存で署名が無効になる場合があります。元ファイルを保管してください。

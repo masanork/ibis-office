@@ -32,11 +32,26 @@ pub fn is_wpd(data: &[u8]) -> bool {
 }
 
 pub fn open(data: &[u8]) -> Result<Opened, Error> {
-    crate::open(to_docx(data)?)
+    let (docx, omitted) = convert(data)?;
+    let mut opened = crate::open(docx)?;
+    if omitted != 0 {
+        opened.import_warning = Some(crate::ImportWarning::WordPerfectImagesOmitted(omitted));
+    }
+    Ok(opened)
 }
 
 pub fn to_docx(data: &[u8]) -> Result<Vec<u8>, Error> {
-    crate::hwpx::document_to_docx(|presentation| read(data, presentation))
+    convert(data).map(|(docx, _)| docx)
+}
+
+fn convert(data: &[u8]) -> Result<(Vec<u8>, usize), Error> {
+    let mut omitted = 0;
+    let docx = crate::hwpx::document_to_docx(|presentation| {
+        let (document, omitted_images) = read(data, presentation)?;
+        omitted = omitted_images;
+        Ok(document)
+    })?;
+    Ok((docx, omitted))
 }
 
 fn malformed() -> Error {
@@ -46,7 +61,7 @@ fn malformed() -> Error {
 fn read(
     data: &[u8],
     presentation: &mut ibis_doc_model::Presentation,
-) -> Result<FlowDocument, Error> {
+) -> Result<(FlowDocument, usize), Error> {
     if !is_wpd(data) {
         return Err(malformed());
     }
@@ -93,7 +108,7 @@ fn read(
     if importer.has_paragraph() || !matches!(importer.document.body.last(), Some(Block::Table(_))) {
         importer.finish_paragraph();
     }
-    Ok(importer.document)
+    Ok((importer.document, importer.pictures.omitted))
 }
 
 fn take_record(body: &[u8], code: u8) -> Result<&[u8], Error> {
@@ -376,6 +391,7 @@ mod tests {
     use super::*;
     fn read(data: &[u8]) -> Result<FlowDocument, Error> {
         super::read(data, &mut ibis_doc_model::Presentation::default())
+            .map(|(document, _)| document)
     }
     use ibis_doc_model::flow::FlowRunStyle;
 
@@ -549,6 +565,7 @@ mod tests {
 
         let data = include_bytes!("../../../test/fixtures/wordperfect/appearance.wpd");
         let opened = open(data).unwrap();
+        assert_eq!(opened.import_warning, None);
         let flow = opened.presentation.flow.unwrap();
         let [
             Block::Paragraph(_),
@@ -730,6 +747,58 @@ mod tests {
             (222, 90, [232, 136, 32, 255]), // Vector in front of the transformed bitmap.
         ] {
             assert_eq!(picture.get_pixel(x, y).0, expected, "pixel at ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn reports_omitted_graphics_and_keeps_the_other_image_and_text() {
+        let data =
+            include_bytes!("../../../test/fixtures/wordperfect/partially-unsupported-wpg2.wpd");
+        let opened = open(data).unwrap();
+        assert_eq!(
+            opened.import_warning,
+            Some(crate::ImportWarning::WordPerfectImagesOmitted(1)),
+        );
+        let bytes = to_docx(data).unwrap();
+        let saved = crate::open(bytes).unwrap();
+        assert_eq!(saved.import_warning, None);
+        for document in [opened, saved] {
+            let flow = document.presentation.flow.as_ref().unwrap();
+            let [
+                Block::Paragraph(inline),
+                Block::Paragraph(floating),
+                Block::Paragraph(last),
+            ] = flow.body.as_slice()
+            else {
+                panic!("expected all three paragraphs");
+            };
+            assert!(
+                inline
+                    .runs
+                    .iter()
+                    .any(|run| matches!(run.kind, FlowRunKind::Picture { .. }))
+            );
+            assert!(
+                floating
+                    .runs
+                    .iter()
+                    .all(|run| !matches!(run.kind, FlowRunKind::Shape(_)))
+            );
+            for (paragraph, expected) in [
+                (inline, "Inline:"),
+                (floating, "Floating anchor"),
+                (last, "Last"),
+            ] {
+                let text: String = paragraph
+                    .runs
+                    .iter()
+                    .filter_map(|run| match &run.kind {
+                        FlowRunKind::Text(text) => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(text.contains(expected), "{text:?}");
+            }
         }
     }
 

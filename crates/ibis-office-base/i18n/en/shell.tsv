@@ -1010,6 +1010,8 @@ file.standard-copy-saved	The copy was saved with newer encryption. The original 
 file.standard-copy-format	Save the copy in an Office format to keep password protection.
 start.version	ver.{version}
 shell.open-failed.title	Could not open the file
+file.wpd-images-omitted.title	Some WordPerfect graphics were omitted
+file.wpd-images-omitted.message	Embedded graphics omitted: {count}. Compare with the original WordPerfect document before saving a copy.
 file.signature-warning.title	Digital signature
 file.signature-warning.message	This file contains a digital signature. Its validity has not been checked. Editing or saving may invalidate it; keep the signed original.
 file.signature-warning.unknown	The file's signature information could not be checked. Editing or saving may invalidate a signature; keep the original.

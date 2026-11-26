@@ -23,6 +23,7 @@ pub struct Loaded {
     /// The password a protected file was opened with: saving protects it again.
     pub password: Option<String>,
     pub standard_encryption: bool,
+    pub(crate) import_warning: Option<ibis_formats::ImportWarning>,
     pub(crate) editable_import: Option<EditableImport>,
     pub jtd_original: Option<Vec<u8>>,
     pub jtd_gallery: bool,
@@ -41,7 +42,7 @@ fn read_only_preview(opened: ibis_formats::Opened) -> Loaded {
     crate::render::preload::Preload::start_for_next(&opened.presentation);
     Loaded {
         presentation: opened.presentation, source: std::sync::Arc::new(opened.source),
-        password: None, standard_encryption: false, editable_import: None, csv_stream: None,
+        password: None, standard_encryption: false, editable_import: None, import_warning: None, csv_stream: None,
         jtd_original: None, jtd_gallery: false, structured_preview: true, bom_source: None,
         exr_exposure: None, image_provenance: None,
     }
@@ -237,7 +238,7 @@ fn load_production_image(
     image_provenance: Option<crate::image_provenance::Report>,
 ) -> Loaded {
     crate::render::preload::Preload::start_for_next(&opened.presentation);
-    Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, editable_import: None, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source: None, exr_exposure, image_provenance }
+    Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, editable_import: None, import_warning: None, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source: None, exr_exposure, image_provenance }
 }
 
 /// Run `read` for the file at `path`. One file's reader going wrong must close that file only: every window shares this
@@ -567,7 +568,7 @@ fn read_file_data(
         let presentation = format.read(data.into())?;
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, editable_import: None, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source: None, exr_exposure: None, image_provenance: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, editable_import: None, import_warning: None, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source: None, exr_exposure: None, image_provenance: None });
     }
     let extension = path.extension().and_then(|e| e.to_str());
     if let Some((opened, exr_exposure)) = ibis_formats::production_image::open_with_exposure(extension, &data)? {
@@ -579,7 +580,7 @@ fn read_file_data(
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
         crate::render::preload::Preload::start_for_next(&presentation);
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, editable_import: None, csv_stream: None, jtd_original: Some(data), jtd_gallery, structured_preview: false, bom_source: None, exr_exposure: None, image_provenance: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, editable_import: None, import_warning: None, csv_stream: None, jtd_original: Some(data), jtd_gallery, structured_preview: false, bom_source: None, exr_exposure: None, image_provenance: None });
     }
     let standard_encryption = ibis_formats::ibis_ooxml::encryption::is_standard_encrypted(&data);
     let read_fs_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
@@ -637,7 +638,7 @@ fn read_file_data(
     let total_file_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
     eprintln!("ibisOffice timing: read_file total: {total_file_ms:.1} ms (fs::read: {read_fs_ms:.1} ms, open: {open_ms:.1} ms)");
     crate::render::preload::Preload::start_for_next(&opened.presentation);
-    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, editable_import: opened_import, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source, exr_exposure: None, image_provenance: None })
+    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, editable_import: opened_import, import_warning: opened.import_warning, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source, exr_exposure: None, image_provenance: None })
 }
 
 /// Tell every format that the file at `path` could not be parsed (in the order of their registration, as they were told
