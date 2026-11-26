@@ -167,7 +167,7 @@ fn paragraph_rows_drag() {
         trigger: AnimationTrigger::None,
         paragraph: paragraph.map(|i| (i, i)), chars: None, text_unit: None, path: Vec::new(),
         chart_element: None, chart_build: None,
-        dgm_element: None, dgm_build: None, behaviors: Vec::new(),
+        dgm_element: None, dgm_build: None, behaviors: Vec::new(), group_pivot: None,
     };
     // Row 0: another shape; rows 1..=3: the paragraphs 0, 1, 2 of the text box; row 4: the other shape again.
     let animations = vec![effect(other, None), effect(shape, Some(0)), effect(shape, Some(1)), effect(shape, Some(2)), effect(other, None)];
@@ -372,7 +372,7 @@ fn text_box_rows(open: bool) -> (Scenario, ibis_doc_model::ShapeId) {
         shape, class: AnimationClass::Entrance, start: AnimationStart::OnClick, look: AnimationLook::Appear, delay: 0, duration: 1, preset: (1, 0),
         repeat_count: AnimationRepeat::None, auto_reverse: false, rewind: false, accel: 0, decel: 0, after_effect: AnimationAfterEffect::Hold,
         trigger: AnimationTrigger::None, paragraph: paragraph.map(|i| (i, i)), chars: None, text_unit: None, path: Vec::new(),
-        chart_element: None, chart_build: None, dgm_element: None, dgm_build: None, behaviors: Vec::new(),
+        chart_element: None, chart_build: None, dgm_element: None, dgm_build: None, behaviors: Vec::new(), group_pivot: None,
     };
     let animations = vec![effect(other, None), effect(shape, Some(0)), effect(shape, Some(1)), effect(shape, Some(2)), effect(other, None)];
     s.update(|e, _, cx| e.run(vec![Command::SetAnimations { slide, animations: animations.clone() }], cx));
@@ -548,7 +548,7 @@ pub(crate) fn effect_of(shape: ibis_doc_model::ShapeId, paragraph: Option<u32>, 
         shape, class: AnimationClass::Entrance, start: AnimationStart::OnClick, look: AnimationLook::Appear, delay, duration: 1, preset: (1, 0),
         repeat_count: AnimationRepeat::None, auto_reverse: false, rewind: false, accel: 0, decel: 0, after_effect: AnimationAfterEffect::Hold,
         trigger: AnimationTrigger::None, paragraph: paragraph.map(|i| (i, i)), chars: None, text_unit: None, path: Vec::new(),
-        chart_element: None, chart_build: None, dgm_element: None, dgm_build: None, behaviors: Vec::new(),
+        chart_element: None, chart_build: None, dgm_element: None, dgm_build: None, behaviors: Vec::new(), group_pivot: None,
     }
 }
 

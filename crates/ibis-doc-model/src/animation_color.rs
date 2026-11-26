@@ -65,34 +65,224 @@ fn slot_of(attr: &str) -> Option<ColorSlot> {
     }
 }
 
-/// The value of attribute `key` in the first start tag `tag` of `s`.
-fn attr_of<'a>(s: &'a str, tag: &str, key: &str) -> Option<&'a str> {
-    let at = s.find(&format!("<{tag}"))?;
+/// Whether `s` starts with an XML start tag whose local name (ignoring any namespace prefix) is `local`.
+pub(crate) fn starts_with_local_tag(s: &str, local: &str) -> bool {
+    let Some(rest) = s.trim_start().strip_prefix('<') else { return false };
+    let name_end = rest.find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/').unwrap_or(rest.len());
+    let qname = &rest[..name_end];
+    let lname = qname.rsplit_once(':').map_or(qname, |(_, l)| l);
+    lname == local
+}
+
+/// Finds the byte offset of the first XML start tag in `s` whose local name is `local`.
+fn find_local_tag(s: &str, local: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = s[i..].find('<') {
+        let pos = i + rel;
+        let rest = &s[pos + 1..];
+        if !rest.starts_with('/') && !rest.starts_with('!') && !rest.starts_with('?') {
+            let name_end = rest.find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/').unwrap_or(rest.len());
+            let qname = &rest[..name_end];
+            let lname = qname.rsplit_once(':').map_or(qname, |(_, l)| l);
+            if lname == local {
+                return Some(pos);
+            }
+        }
+        i = pos + 1;
+        if i >= bytes.len() {
+            break;
+        }
+    }
+    None
+}
+
+/// The value of attribute `key` in the first start tag whose local name is `local` (supports both `"` and `'`).
+pub(crate) fn attr_of_local<'a>(s: &'a str, local: &str, key: &str) -> Option<&'a str> {
+    let at = find_local_tag(s, local)?;
     let rest = &s[at..];
     let end = rest.find('>')?;
     let head = &rest[..end];
-    let k = head.find(&format!(" {key}=\""))? + key.len() + 3;
-    let len = head[k..].find('"')?;
-    Some(&head[k..k + len])
+    let bytes = head.as_bytes();
+    let mut i = head.find(|c: char| c.is_ascii_whitespace())?;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] == b'/' || bytes[i] == b'>' {
+            break;
+        }
+        let name_start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'/' && bytes[i] != b'>' {
+            i += 1;
+        }
+        let attr_name = &head[name_start..i];
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'=' {
+            continue;
+        }
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let quote = bytes[i];
+        if quote != b'"' && quote != b'\'' {
+            continue;
+        }
+        i += 1;
+        let val_start = i;
+        while i < bytes.len() && bytes[i] != quote {
+            i += 1;
+        }
+        let val = &head[val_start..i];
+        if i < bytes.len() {
+            i += 1;
+        }
+        let attr_local = attr_name.rsplit_once(':').map_or(attr_name, |(_, l)| l);
+        if attr_name == key || attr_local == key {
+            return Some(val);
+        }
+    }
+    None
 }
 
-/// The part of `raw` inside `<p:tag>` … `</p:tag>`.
-fn section<'a>(raw: &'a str, tag: &str) -> Option<&'a str> {
-    let open = format!("<p:{tag}>");
-    let at = raw.find(&open)? + open.len();
-    let end = raw[at..].find(&format!("</p:{tag}>"))?;
-    Some(&raw[at..at + end])
+/// The part of `raw` inside `<*:local ...>` … `</*:local>` (any namespace prefix).
+fn section_local<'a>(raw: &'a str, local: &str) -> Option<&'a str> {
+    let at = find_local_tag(raw, local)?;
+    let rest = &raw[at..];
+    let open_end = rest.find('>')?;
+    if rest[..open_end].ends_with('/') {
+        return None;
+    }
+    let inner = &rest[open_end + 1..];
+    // Find matching closing tag `</*:local>`.
+    let mut scan = 0;
+    while let Some(rel) = inner[scan..].find("</") {
+        let close_pos = scan + rel;
+        let after = &inner[close_pos + 2..];
+        if let Some(gt) = after.find('>') {
+            let qname = after[..gt].trim();
+            let lname = qname.rsplit_once(':').map_or(qname, |(_, l)| l);
+            if lname == local {
+                return Some(&inner[..close_pos]);
+            }
+        }
+        scan = close_pos + 2;
+    }
+    None
+}
+
+fn linear_to_srgb(linear: f64) -> f64 {
+    let x = linear.clamp(0.0, 1.0);
+    if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 }
+}
+
+fn system_color_fallback(name: &str) -> Option<Rgb> {
+    Some(Rgb(match name {
+        "window" | "windowFrame" | "highlightText" | "btnHighlight" | "3dLight" => 0xFFFFFF,
+        "windowText" | "captionText" | "menuText" | "btnText" | "infoText" => 0x000000,
+        "highlight" | "hotLight" => 0x0078D7,
+        "grayText" | "btnShadow" => 0x808080,
+        "btnFace" | "menu" | "scrollBar" => 0xF0F0F0,
+        "infoBk" => 0xFFFFE1,
+        _ => return None,
+    }))
+}
+
+fn preset_color(name: &str) -> Option<Rgb> {
+    let short;
+    let name = match (name.strip_prefix("dark"), name.strip_prefix("light"), name.strip_prefix("medium")) {
+        (Some(rest), _, _) => {
+            short = format!("dk{rest}");
+            short.as_str()
+        }
+        (_, Some(rest), _) => {
+            short = format!("lt{rest}");
+            short.as_str()
+        }
+        (_, _, Some(rest)) => {
+            short = format!("med{rest}");
+            short.as_str()
+        }
+        _ => name,
+    };
+    Some(Rgb(match name {
+        "aliceBlue" => 0xf0f8ff, "antiqueWhite" => 0xfaebd7, "aqua" => 0x00ffff, "aquamarine" => 0x7fffd4,
+        "azure" => 0xf0ffff, "beige" => 0xf5f5dc, "bisque" => 0xffe4c4, "black" => 0x000000,
+        "blanchedAlmond" => 0xffebcd, "blue" => 0x0000ff, "blueViolet" => 0x8a2be2, "brown" => 0xa52a2a,
+        "burlyWood" => 0xdeb887, "cadetBlue" => 0x5f9ea0, "chartreuse" => 0x7fff00, "chocolate" => 0xd2691e,
+        "coral" => 0xff7f50, "cornflowerBlue" => 0x6495ed, "cornsilk" => 0xfff8dc, "crimson" => 0xdc143c,
+        "cyan" => 0x00ffff, "dkBlue" => 0x00008b, "dkCyan" => 0x008b8b, "dkGoldenrod" => 0xb8860b,
+        "dkGray" | "dkGrey" => 0xa9a9a9, "dkGreen" => 0x006400, "dkKhaki" => 0xbdb76b, "dkMagenta" => 0x8b008b,
+        "dkOliveGreen" => 0x556b2f, "dkOrange" => 0xff8c00, "dkOrchid" => 0x9932cc, "dkRed" => 0x8b0000,
+        "dkSalmon" => 0xe9967a, "dkSeaGreen" => 0x8fbc8f, "dkSlateBlue" => 0x483d8b, "dkSlateGray" | "dkSlateGrey" => 0x2f4f4f,
+        "dkTurquoise" => 0x00ced1, "dkViolet" => 0x9400d3, "deepPink" => 0xff1493, "deepSkyBlue" => 0x00bfff,
+        "dimGray" | "dimGrey" => 0x696969, "dodgerBlue" => 0x1e90ff, "firebrick" => 0xb22222, "floralWhite" => 0xfffaf0,
+        "forestGreen" => 0x228b22, "fuchsia" => 0xff00ff, "gainsboro" => 0xdcdcdc, "ghostWhite" => 0xf8f8ff,
+        "gold" => 0xffd700, "goldenrod" => 0xdaa520, "gray" | "grey" => 0x808080, "green" => 0x008000,
+        "greenYellow" => 0xadff2f, "honeydew" => 0xf0fff0, "hotPink" => 0xff69b4, "indianRed" => 0xcd5c5c,
+        "indigo" => 0x4b0082, "ivory" => 0xfffff0, "khaki" => 0xf0e68c, "lavender" => 0xe6e6fa,
+        "lavenderBlush" => 0xfff0f5, "lawnGreen" => 0x7cfc00, "lemonChiffon" => 0xfffacd, "ltBlue" => 0xadd8e6,
+        "ltCoral" => 0xf08080, "ltCyan" => 0xe0ffff, "ltGoldenrodYellow" => 0xfafad2, "ltGray" | "ltGrey" => 0xd3d3d3,
+        "ltGreen" => 0x90ee90, "ltPink" => 0xffb6c1, "ltSalmon" => 0xffa07a, "ltSeaGreen" => 0x20b2aa,
+        "ltSkyBlue" => 0x87cefa, "ltSlateGray" | "ltSlateGrey" => 0x778899, "ltSteelBlue" => 0xb0c4de, "ltYellow" => 0xffffe0,
+        "lime" => 0x00ff00, "limeGreen" => 0x32cd32, "linen" => 0xfaf0e6, "magenta" => 0xff00ff,
+        "maroon" => 0x800000, "medAquamarine" => 0x66cdaa, "medBlue" => 0x0000cd, "medOrchid" => 0xba55d3,
+        "medPurple" => 0x9370db, "medSeaGreen" => 0x3cb371, "medSlateBlue" => 0x7b68ee, "medSpringGreen" => 0x00fa9a,
+        "medTurquoise" => 0x48d1cc, "medVioletRed" => 0xc71585, "midnightBlue" => 0x191970, "mintCream" => 0xf5fffa,
+        "mistyRose" => 0xffe4e1, "moccasin" => 0xffe4b5, "navajoWhite" => 0xffdead, "navy" => 0x000080,
+        "oldLace" => 0xfdf5e6, "olive" => 0x808000, "oliveDrab" => 0x6b8e23, "orange" => 0xffa500,
+        "orangeRed" => 0xff4500, "orchid" => 0xda70d6, "paleGoldenrod" => 0xeee8aa, "paleGreen" => 0x98fb98,
+        "paleTurquoise" => 0xafeeee, "paleVioletRed" => 0xdb7093, "papayaWhip" => 0xffefd5, "peachPuff" => 0xffdab9,
+        "peru" => 0xcd853f, "pink" => 0xffc0cb, "plum" => 0xdda0dd, "powderBlue" => 0xb0e0e6,
+        "purple" => 0x800080, "red" => 0xff0000, "rosyBrown" => 0xbc8f8f, "royalBlue" => 0x4169e1,
+        "saddleBrown" => 0x8b4513, "salmon" => 0xfa8072, "sandyBrown" => 0xf4a460, "seaGreen" => 0x2e8b57,
+        "seaShell" => 0xfff5ee, "sienna" => 0xa0522d, "silver" => 0xc0c0c0, "skyBlue" => 0x87ceeb,
+        "slateBlue" => 0x6a5acd, "slateGray" | "slateGrey" => 0x708090, "snow" => 0xfffafa, "springGreen" => 0x00ff7f,
+        "steelBlue" => 0x4682b4, "tan" => 0xd2b48c, "teal" => 0x008080, "thistle" => 0xd8bfd8,
+        "tomato" => 0xff6347, "turquoise" => 0x40e0d0, "violet" => 0xee82ee, "wheat" => 0xf5deb3,
+        "white" => 0xffffff, "whiteSmoke" => 0xf5f5f5, "yellow" => 0xffff00, "yellowGreen" => 0x9acd32,
+        _ => return None,
+    }))
 }
 
 fn color_in(s: &str) -> Option<AnimColor> {
-    if let Some(v) = attr_of(s, "a:schemeClr", "val") {
+    if let Some(v) = attr_of_local(s, "schemeClr", "val") {
         return Some(AnimColor::Scheme(v.to_string()));
     }
-    if let Some(v) = attr_of(s, "a:srgbClr", "val") {
+    if let Some(v) = attr_of_local(s, "srgbClr", "val") {
         return u32::from_str_radix(v, 16).ok().map(|n| AnimColor::Rgb(Rgb(n)));
     }
-    if s.contains("<p:rgb") {
-        let c = |k: &str| attr_of(s, "p:rgb", k)?.parse::<f64>().ok().map(|v| (v / 100_000.0 * 255.0).round().clamp(0.0, 255.0) as u8);
+    if let Some(v) = attr_of_local(s, "prstClr", "val") {
+        return preset_color(v).map(AnimColor::Rgb);
+    }
+    if find_local_tag(s, "sysClr").is_some() {
+        let rgb = attr_of_local(s, "sysClr", "lastClr")
+            .and_then(|v| u32::from_str_radix(v, 16).ok())
+            .map(Rgb)
+            .or_else(|| attr_of_local(s, "sysClr", "val").and_then(system_color_fallback))?;
+        return Some(AnimColor::Rgb(rgb));
+    }
+    if find_local_tag(s, "hslClr").is_some() {
+        let h = attr_of_local(s, "hslClr", "hue")?.parse::<f64>().ok()? / 60_000.0;
+        let sat = attr_of_local(s, "hslClr", "sat")?.parse::<f64>().ok()? / 100_000.0;
+        let lum = attr_of_local(s, "hslClr", "lum")?.parse::<f64>().ok()? / 100_000.0;
+        return Some(AnimColor::Rgb(from_hsl(h, sat, lum)));
+    }
+    if find_local_tag(s, "scrgbClr").is_some() {
+        let ch = |k: &str| {
+            let lin = attr_of_local(s, "scrgbClr", k)?.parse::<f64>().ok()? / 100_000.0;
+            Some((linear_to_srgb(lin) * 255.0).round().clamp(0.0, 255.0) as u8)
+        };
+        return Some(AnimColor::Rgb(Rgb::from_rgb(ch("r")?, ch("g")?, ch("b")?)));
+    }
+    if find_local_tag(s, "rgb").is_some() {
+        let c = |k: &str| attr_of_local(s, "rgb", k)?.parse::<f64>().ok().map(|v| (v / 100_000.0 * 255.0).round().clamp(0.0, 255.0) as u8);
         return Some(AnimColor::Rgb(Rgb::from_rgb(c("r")?, c("g")?, c("b")?)));
     }
     None
@@ -100,45 +290,60 @@ fn color_in(s: &str) -> Option<AnimColor> {
 
 /// The colour behaviour an opaque `p:animClr` or a `p:set` of a colour (`<p:to><p:clrVal>`) says.
 pub fn color_spec(raw: &str) -> Option<ColorSpec> {
-    let is_set = raw.starts_with("<p:set");
-    let is_anim = raw.starts_with("<p:anim ");
-    if !is_set && !is_anim && !raw.starts_with("<p:animClr") {
+    let is_set = starts_with_local_tag(raw, "set");
+    let is_anim = starts_with_local_tag(raw, "anim");
+    if !is_set && !is_anim && !starts_with_local_tag(raw, "animClr") {
         return None;
     }
-    let attr = section(raw, "attrName")?;
+    let attr = section_local(raw, "attrName")?;
     let slot = slot_of(attr.trim())?;
     if is_anim {
-        let list = section(raw, "tavLst")?;
+        let list = section_local(raw, "tavLst")?;
         let mut steps = Vec::new();
         let mut rest = list;
-        while let Some(at) = rest.find("<p:tav ") {
+        while let Some(at) = find_local_tag(rest, "tav") {
             let tav = &rest[at..];
-            let end = tav.find("</p:tav>").unwrap_or(tav.len());
-            let tm = attr_of(&tav[..end], "p:tav", "tm")?.parse::<f64>().ok()? / 100_000.0;
+            let end = tav.find("</").and_then(|c| {
+                // Advance to closing `</*:tav>`.
+                let mut scan = c;
+                while let Some(rel) = tav[scan..].find("</") {
+                    let cp = scan + rel;
+                    let after = &tav[cp + 2..];
+                    if let Some(gt) = after.find('>') {
+                        let q = after[..gt].trim();
+                        if q.rsplit_once(':').map_or(q, |(_, l)| l) == "tav" {
+                            return Some(cp + 2 + gt + 1);
+                        }
+                    }
+                    scan = cp + 2;
+                }
+                None
+            }).unwrap_or(tav.len());
+            let tm = attr_of_local(&tav[..end], "tav", "tm")?.parse::<f64>().ok()? / 100_000.0;
             steps.push((tm, color_in(&tav[..end])?));
             rest = &tav[end..];
         }
         if steps.is_empty() {
             return None;
         }
-        let discrete = attr_of(raw, "p:anim", "calcmode") == Some("discrete");
+        let discrete = attr_of_local(raw, "anim", "calcmode") == Some("discrete");
         return Some(ColorSpec { change: ColorChange { slot, from: None, to: None, by_hsl: None, by_rgb: None, hsl: false, ccw: false, steps, discrete, q: 0.0 }, is_set: false });
     }
-    let (from, to) = (section(raw, "from").and_then(color_in), section(raw, "to").and_then(color_in));
-    let by = section(raw, "by");
-    let by_hsl = by.filter(|b| b.contains("<p:hsl")).and_then(|b| {
-        let n = |k: &str| attr_of(b, "p:hsl", k)?.parse::<f64>().ok();
+    let (from, to) = (section_local(raw, "from").and_then(color_in), section_local(raw, "to").and_then(color_in));
+    let by = section_local(raw, "by");
+    let by_hsl = by.filter(|b| find_local_tag(b, "hsl").is_some()).and_then(|b| {
+        let n = |k: &str| attr_of_local(b, "hsl", k)?.parse::<f64>().ok();
         Some((n("h")? / 60_000.0, n("s")? / 100_000.0, n("l")? / 100_000.0))
     });
-    let by_rgb = by.filter(|b| b.contains("<p:rgb")).and_then(|b| {
-        let n = |k: &str| attr_of(b, "p:rgb", k)?.parse::<f64>().ok().map(|v| v / 100_000.0);
+    let by_rgb = by.filter(|b| find_local_tag(b, "rgb").is_some()).and_then(|b| {
+        let n = |k: &str| attr_of_local(b, "rgb", k)?.parse::<f64>().ok().map(|v| v / 100_000.0);
         Some((n("r")?, n("g")?, n("b")?))
     });
     if to.is_none() && by_hsl.is_none() && by_rgb.is_none() {
         return None;
     }
-    let hsl = attr_of(raw, "p:animClr", "clrSpc") == Some("hsl");
-    let ccw = attr_of(raw, "p:animClr", "dir") == Some("ccw");
+    let hsl = attr_of_local(raw, "animClr", "clrSpc") == Some("hsl");
+    let ccw = attr_of_local(raw, "animClr", "dir") == Some("ccw");
     Some(ColorSpec { change: ColorChange { slot, from, to, by_hsl, by_rgb, hsl, ccw, steps: Vec::new(), discrete: false, q: 0.0 }, is_set })
 }
 
@@ -313,5 +518,25 @@ mod tests {
             let (h, s, l) = to_hsl(c);
             assert_eq!(from_hsl(h, s, l), c);
         }
+    }
+
+    #[test]
+    fn prst_sys_hsl_scrgb_single_quoted_and_prefixed_colours_are_read() {
+        let wrap = |prefix: &str, to: &str| {
+            format!(
+                "<{prefix}:animClr clrSpc='rgb' dir='cw'><{prefix}:cBhvr><{prefix}:attrNameLst><{prefix}:attrName>fillcolor</{prefix}:attrName></{prefix}:attrNameLst></{prefix}:cBhvr><{prefix}:to>{to}</{prefix}:to></{prefix}:animClr>"
+            )
+        };
+        let resolve_end = |raw: &str| {
+            let mut spec = color_spec(raw).expect(raw);
+            spec.change.q = 1.0;
+            spec.change.resolve(Rgb::BLACK, &|_| None)
+        };
+        assert_eq!(resolve_end(&wrap("p", r#"<a:prstClr val="red"/>"#)), Rgb::from_rgb(255, 0, 0));
+        assert_eq!(resolve_end(&wrap("p", r#"<a:sysClr val="highlight" lastClr="0078D7"/>"#)), Rgb(0x0078D7));
+        assert_eq!(resolve_end(&wrap("p", r#"<a:hslClr hue="14400000" sat="100000" lum="50000"/>"#)), Rgb::from_rgb(0, 0, 255));
+        assert_eq!(resolve_end(&wrap("p", r#"<a:scrgbClr r="0" g="100000" b="0"/>"#)), Rgb::from_rgb(0, 255, 0));
+        assert_eq!(resolve_end(&wrap("p", "<a:srgbClr val='FF0000'/>")), Rgb::from_rgb(255, 0, 0));
+        assert_eq!(resolve_end(&wrap("pp", r#"<a:srgbClr val="FF0000"/>"#)), Rgb::from_rgb(255, 0, 0));
     }
 }

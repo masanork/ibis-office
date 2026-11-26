@@ -235,6 +235,23 @@ impl Parser<'_> {
                 self.i += 1;
                 self.factor()
             }
+            _ => self.power(),
+        }
+    }
+    fn power(&mut self) -> Option<f64> {
+        let base = self.primary()?;
+        if self.peek() == Some(b'^') {
+            self.i += 1;
+            let exp = self.factor()?;
+            // Guard tiny negative rounding errors (e.g. sin(pi * 1.0)^0.5) against producing NaN.
+            let b = if base < 0.0 && base > -1e-9 && exp.fract() != 0.0 { 0.0 } else { base };
+            let r = b.powf(exp);
+            return Some(if r.is_nan() { 0.0 } else { r });
+        }
+        Some(base)
+    }
+    fn primary(&mut self) -> Option<f64> {
+        match self.peek()? {
             b'(' => {
                 self.i += 1;
                 let v = self.expr()?;
@@ -250,6 +267,14 @@ impl Parser<'_> {
                 let name = std::str::from_utf8(&self.s[start..self.i]).ok()?;
                 if self.peek() == Some(b'(') {
                     self.i += 1;
+                    // Zero-argument functions (e.g. `rand()`).
+                    if self.peek() == Some(b')') {
+                        self.i += 1;
+                        return match name {
+                            "rand" => Some(0.5),
+                            _ => None,
+                        };
+                    }
                     let arg = self.expr()?;
                     // Two arguments (`min(a, b)`, `max(a, b)`).
                     if self.peek() == Some(b',') {
@@ -267,23 +292,48 @@ impl Parser<'_> {
                         "sin" => Some(arg.sin()),
                         "cos" => Some(arg.cos()),
                         "tan" => Some(arg.tan()),
+                        "asin" => Some(arg.clamp(-1.0, 1.0).asin()),
+                        "acos" => Some(arg.clamp(-1.0, 1.0).acos()),
+                        "atan" => Some(arg.atan()),
+                        "sinh" => Some(arg.sinh()),
+                        "cosh" => Some(arg.cosh()),
+                        "tanh" => Some(arg.tanh()),
                         "abs" => Some(arg.abs()),
                         "sqrt" => Some(arg.max(0.0).sqrt()),
-                        "atan" => Some(arg.atan()),
                         "exp" => Some(arg.exp()),
                         "ln" => Some(arg.max(f64::MIN_POSITIVE).ln()),
+                        "log" => Some(arg.max(f64::MIN_POSITIVE).log10()),
+                        "floor" => Some(arg.floor()),
+                        "ceil" => Some(arg.ceil()),
+                        "int" | "trunc" => Some(arg.trunc()),
+                        // ECMA-376 19.5.34: `rand(x)` yields a random number in [0, x].
+                        "rand" => {
+                            let seed = (self.i as u64).wrapping_add(arg.to_bits());
+                            Some(arg * scatter(seed as usize))
+                        }
                         _ => None,
                     };
                 }
-                if name == "pi" {
-                    return Some(std::f64::consts::PI);
+                match name {
+                    "pi" => return Some(std::f64::consts::PI),
+                    "e" => return Some(std::f64::consts::E),
+                    _ => {}
                 }
                 (self.vars)(name)
             }
             b'0'..=b'9' | b'.' => {
                 let start = self.i;
-                while self.i < self.s.len() && (self.s[self.i].is_ascii_digit() || self.s[self.i] == b'.' || self.s[self.i] == b'e' && self.s.get(self.i + 1).is_some_and(|c| c.is_ascii_digit() || *c == b'-')) {
-                    self.i += if self.s[self.i] == b'e' { 2 } else { 1 };
+                while self.i < self.s.len() {
+                    let c = self.s[self.i];
+                    if c.is_ascii_digit() || c == b'.' {
+                        self.i += 1;
+                    } else if (c == b'e' || c == b'E')
+                        && self.s.get(self.i + 1).is_some_and(|n| n.is_ascii_digit() || ((*n == b'-' || *n == b'+') && self.s.get(self.i + 2).is_some_and(u8::is_ascii_digit)))
+                    {
+                        self.i += if matches!(self.s[self.i + 1], b'-' | b'+') { 3 } else { 2 };
+                    } else {
+                        break;
+                    }
                 }
                 std::str::from_utf8(&self.s[start..self.i]).ok()?.parse().ok()
             }
@@ -352,10 +402,64 @@ fn anim_value(keys: &[(u32, String)], formula: Option<&str>, discrete: bool, q: 
     }
 }
 
+/// Splits an OOXML motion `path` string into command letters and numeric tokens,
+/// handling both whitespace-separated (`"M 0 0 L 0.3 0 E"`) and compact (`"M0 0L0.3 0E"`) forms.
+pub fn tokenize_path(path: &str) -> Vec<&str> {
+    let bytes = path.as_bytes();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c.is_ascii_whitespace() || c == b',' {
+            i += 1;
+            continue;
+        }
+        if c.is_ascii_alphabetic() {
+            tokens.push(&path[i..i + 1]);
+            i += 1;
+            continue;
+        }
+        if c.is_ascii_digit() || c == b'.' || c == b'-' || c == b'+' {
+            let start = i;
+            if c == b'-' || c == b'+' {
+                i += 1;
+            }
+            let mut has_dot = false;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if b.is_ascii_digit() {
+                    i += 1;
+                } else if b == b'.' && !has_dot {
+                    has_dot = true;
+                    i += 1;
+                } else if (b == b'e' || b == b'E')
+                    && bytes.get(i + 1).is_some_and(|n| n.is_ascii_digit() || ((*n == b'+' || *n == b'-') && bytes.get(i + 2).is_some_and(u8::is_ascii_digit)))
+                {
+                    i += if matches!(bytes[i + 1], b'+' | b'-') { 3 } else { 2 };
+                    while i < bytes.len() && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                    break;
+                } else {
+                    break;
+                }
+            }
+            if i > start {
+                tokens.push(&path[start..i]);
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    tokens
+}
+
 /// The points a motion path (`M x y L x y C … Q … Z E`, in fractions of the slide; lower case commands are relative to where the
 /// path is) goes through, curves cut into short lines.
 fn path_polyline(path: &str) -> Vec<(f64, f64)> {
-    let tokens: Vec<&str> = path.split(|c: char| c.is_whitespace() || c == ',').filter(|t| !t.is_empty()).collect();
+    let tokens = tokenize_path(path);
     let num = |i: usize| -> Option<f64> { tokens.get(i)?.parse().ok() };
     let mut points: Vec<(f64, f64)> = Vec::new();
     let (mut start, mut here) = ((0.0, 0.0), (0.0, 0.0));
@@ -445,12 +549,34 @@ pub fn motion_point(path: &str, q: f64) -> Option<(f64, f64)> {
     points.last().copied()
 }
 
-/// The `path` of an opaque `p:animMotion`.
+/// The `path` of an opaque `animMotion` (any namespace prefix, single or double quotes).
 fn opaque_motion_path(raw: &str) -> Option<&str> {
-    let tag = raw.strip_prefix("<p:animMotion")?;
-    let at = tag.find(" path=\"")? + " path=\"".len();
-    let end = tag[at..].find('"')?;
-    Some(&tag[at..at + end])
+    if !crate::animation_color::starts_with_local_tag(raw, "animMotion") {
+        return None;
+    }
+    crate::animation_color::attr_of_local(raw, "animMotion", "path")
+}
+
+/// A `by`/`from`/`to` motion displacement (fractions of the slide) for an opaque `animMotion` without a `path` attribute.
+fn opaque_motion_delta(raw: &str, q: f64) -> Option<(f64, f64)> {
+    if !crate::animation_color::starts_with_local_tag(raw, "animMotion") {
+        return None;
+    }
+    let pair = |tag: &str| -> Option<(f64, f64)> {
+        let x = crate::animation_color::attr_of_local(raw, tag, "x")?.parse::<f64>().ok()? / 100_000.0;
+        let y = crate::animation_color::attr_of_local(raw, tag, "y")?.parse::<f64>().ok()? / 100_000.0;
+        Some((x, y))
+    };
+    let q = q.clamp(0.0, 1.0);
+    if let Some((bx, by)) = pair("by") {
+        let (fx, fy) = pair("from").unwrap_or((0.0, 0.0));
+        return Some((fx + bx * q, fy + by * q));
+    }
+    if let Some((tx, ty)) = pair("to") {
+        let (fx, fy) = pair("from").unwrap_or((0.0, 0.0));
+        return Some((fx + (tx - fx) * q, fy + (ty - fy) * q));
+    }
+    None
 }
 
 /// The state the `behaviours` of an effect leave the shape in `ms` after the effect begins; `b` is the shape's own box.
@@ -593,6 +719,8 @@ pub fn sample_eased(behaviours: &[AnimBehavior], ms: f64, b: PptBox, parent: (u3
                     if let Some((x, y)) = motion_point(path, q) {
                         s.motion = Some((x, y));
                     }
+                } else if let Some((x, y)) = opaque_motion_delta(raw, q) {
+                    s.motion = Some((x, y));
                 }
             }
             BehaviorKind::Rotate { from, to, by } => {
@@ -1564,6 +1692,62 @@ mod tests {
         assert!((area("plus(in)", false, 0.0) - 2.0).abs() < 1e-9, "the arms of the cross, overlapping at the middle");
         assert!(area("plus(in)", false, 1.0).abs() < 1e-9);
         assert!((area("plus(out)", false, 0.0) - 4.0 * 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fmla_supports_power_rand_acos_floor_ceil_and_e() {
+        let vars = |name: &str| match name {
+            "#ppt_y" => Some(0.5),
+            "$" => Some(0.5),
+            _ => None,
+        };
+        assert!((eval_expr("#ppt_y-0.3*sin(pi*$)^0.5", &vars).unwrap() - 0.2).abs() < 1e-9);
+        assert!((eval_expr("2^3^2", &vars).unwrap() - 512.0).abs() < 1e-9);
+        assert!((eval_expr("2^-1", &vars).unwrap() - 0.5).abs() < 1e-9);
+        let r = eval_expr("#ppt_y-0.3*sin(pi*$)-rand(0.04)", &vars).unwrap();
+        assert!((0.16..=0.20).contains(&r), "{r}");
+        let r0 = eval_expr("rand()", &vars).unwrap();
+        assert!((0.0..=1.0).contains(&r0), "{r0}");
+        assert!((eval_expr("#ppt_y-0.3*sin(acos(1-2*$))", &vars).unwrap() - 0.2).abs() < 1e-9);
+        assert!((eval_expr("#ppt_y-0.3*floor(4*sin(pi*$))/4", &vars).unwrap() - 0.2).abs() < 1e-9);
+        assert!((eval_expr("ceil(1.2)", &vars).unwrap() - 2.0).abs() < 1e-9);
+        assert!((eval_expr("#ppt_y-0.3*sin(pi*$)*e/e", &vars).unwrap() - 0.2).abs() < 1e-9);
+        assert!((eval_expr("1.5e-2", &vars).unwrap() - 0.015).abs() < 1e-9);
+        // Guard sin(pi*1.0)^0.5 against NaN from -1e-16 floating point error.
+        let at_one = |name: &str| if name == "$" { Some(1.0) } else { vars(name) };
+        assert!((eval_expr("sin(pi*$)^0.5", &at_one).unwrap()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compact_single_quoted_and_prefixed_motion_paths_are_sampled() {
+        let (x, y) = motion_point("M0 0L0.3 0E", 1.0).unwrap();
+        assert!((x - 0.3).abs() < 1e-9 && y.abs() < 1e-9);
+        let (nx, ny) = motion_point("M0 0L-0.3-0.2E", 1.0).unwrap();
+        assert!((nx + 0.3).abs() < 1e-9 && (ny + 0.2).abs() < 1e-9);
+        // Single-quoted path attribute on an opaque animMotion.
+        let single = AnimBehavior {
+            kind: BehaviorKind::Opaque("<p:animMotion origin='layout' path='M 0 0 L 0.3 0 E'/>".into()),
+            begin: 0,
+            dur: 1000,
+            time: BehaviorTime::default(),
+        };
+        let at = sample(&[single], 500.0, B).motion.unwrap();
+        assert!((at.0 - 0.15).abs() < 1e-9 && at.1.abs() < 1e-9);
+        // Alternate namespace prefix (`pp:`) and `<pp:by>` without `path`.
+        let prefixed = AnimBehavior {
+            kind: BehaviorKind::Opaque("<pp:animMotion origin=\"layout\" path=\"M 0 0 L 0.18 0 E\"/>".into()),
+            begin: 0,
+            dur: 1000,
+            time: BehaviorTime::default(),
+        };
+        assert!((sample(&[prefixed], 1000.0, B).motion.unwrap().0 - 0.18).abs() < 1e-9);
+        let by_only = AnimBehavior {
+            kind: BehaviorKind::Opaque("<p:animMotion origin=\"layout\"><p:by x=\"30000\" y=\"0\"/></p:animMotion>".into()),
+            begin: 0,
+            dur: 1000,
+            time: BehaviorTime::default(),
+        };
+        assert!((sample(&[by_only], 500.0, B).motion.unwrap().0 - 0.15).abs() < 1e-9);
     }
 }
 

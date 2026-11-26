@@ -113,7 +113,7 @@ fn the_play_survives_a_change_of_the_animations_of_the_slide() {
     model.slides[0].animations.push(Animation {
         shape: target, class: AnimationClass::Entrance, start: AnimationStart::OnClick, look: AnimationLook::Fade, delay: 0, duration: 500, preset: (10, 0),
         repeat_count: AnimationRepeat::None, auto_reverse: false, rewind: false, accel: 0, decel: 0, after_effect: AnimationAfterEffect::Hold,
-        trigger: AnimationTrigger::None, paragraph: None, chars: None, text_unit: None, path: Vec::new(), chart_element: None, chart_build: None, dgm_element: None, dgm_build: None, behaviors: Vec::new(),
+        trigger: AnimationTrigger::None, paragraph: None, chars: None, text_unit: None, path: Vec::new(), chart_element: None, chart_build: None, dgm_element: None, dgm_build: None, behaviors: Vec::new(), group_pivot: None,
     });
     let bytes = again.source.save(&model, ibis_formats::SaveOptions::default()).unwrap();
     let xml = slide_xml(&bytes);

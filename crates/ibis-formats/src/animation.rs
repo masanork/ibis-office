@@ -36,7 +36,7 @@ fn delay(ctn: Node) -> u32 {
 }
 
 /// Parse the trigger condition from an interactive sequence's cTn.
-fn parse_interactive_trigger(interactive_ctn: Node, shapes: &HashMap<String, ShapeId>) -> AnimationTrigger {
+fn parse_interactive_trigger(interactive_ctn: Node, shapes: &HashMap<String, ShapeId>, groups: &HashMap<String, Vec<ShapeId>>) -> AnimationTrigger {
     let Some(st_cond_lst) = child(interactive_ctn, "stCondLst") else { return AnimationTrigger::None };
     for cond in elements(st_cond_lst) {
         if cond.tag_name().name() != "cond" {
@@ -47,6 +47,9 @@ fn parse_interactive_trigger(interactive_ctn: Node, shapes: &HashMap<String, Sha
             if let Some(spid) = cond.descendants().find(|n| n.is_element() && n.tag_name().name() == "spTgt").and_then(|n| n.attribute("spid")) {
                 if let Some(&shape) = shapes.get(spid) {
                     return AnimationTrigger::OnShapeClick(shape);
+                }
+                if let Some(members) = groups.get(spid).filter(|m| !m.is_empty()) {
+                    return AnimationTrigger::OnGroupClick { native_id: spid.to_string(), shapes: members.clone() };
                 }
             }
         }
@@ -65,7 +68,13 @@ fn parse_interactive_trigger(interactive_ctn: Node, shapes: &HashMap<String, Sha
 
 /// The effects of `timing` (a slide's `p:timing`), in order, for the shapes
 /// `shapes` names by drawing id.
-pub(crate) fn read(slide: Node, shapes: &HashMap<String, ShapeId>, groups: &HashMap<String, Vec<ShapeId>>) -> Vec<Animation> {
+pub(crate) fn read(
+    slide: Node,
+    shapes: &HashMap<String, ShapeId>,
+    groups: &HashMap<String, Vec<ShapeId>>,
+    group_pivots: &HashMap<String, (i32, i32)>,
+    colors: Option<&crate::theme::Colors<'_>>,
+) -> Vec<Animation> {
     let Some(timing) = child(slide, "timing") else { return Vec::new() };
     let mut chart_builds: HashMap<String, (ibis_doc_model::ChartBuildStep, bool)> = HashMap::new();
     let mut diagram_builds: HashMap<String, ibis_doc_model::DiagramBuildStep> = HashMap::new();
@@ -101,7 +110,7 @@ pub(crate) fn read(slide: Node, shapes: &HashMap<String, ShapeId>, groups: &Hash
             }
         }
     }
-    let targets = Targets { shapes, groups, chart_builds: &chart_builds, diagram_builds: &diagram_builds };
+    let targets = Targets { shapes, groups, group_pivots, chart_builds: &chart_builds, diagram_builds: &diagram_builds, colors };
     let mut out = Vec::new();
 
     // 1. Main sequence effects (mainSeq)
@@ -111,7 +120,7 @@ pub(crate) fn read(slide: Node, shapes: &HashMap<String, ShapeId>, groups: &Hash
 
     // 2. Interactive sequence effects (interactiveSeq, triggers)
     for interactive in timing.descendants().filter(|n| n.is_element() && n.tag_name().name() == "cTn" && n.attribute("nodeType") == Some("interactiveSeq")) {
-        let trigger = parse_interactive_trigger(interactive, shapes);
+        let trigger = parse_interactive_trigger(interactive, shapes, groups);
         if trigger.is_none() {
             continue;
         }
@@ -178,7 +187,7 @@ fn read_effects(e: Node, group_delay: u32, targets: &Targets, trigger: &Animatio
         });
     let dgm_build = targets.diagram_builds.get(target).copied();
     if let Some(&shape) = targets.shapes.get(target) {
-        out.extend(read_effect(e, group_delay, shape, trigger.clone()).map(|a| Animation {
+        out.extend(read_effect_with_colors(e, group_delay, shape, trigger.clone(), targets.colors).map(|a| Animation {
             paragraph,
             chars: if paragraph.is_some() { None } else { chars },
             chart_element,
@@ -188,11 +197,13 @@ fn read_effects(e: Node, group_delay: u32, targets: &Targets, trigger: &Animatio
             ..a
         }));
     } else if let Some(members) = targets.groups.get(target) {
+        let pivot = targets.group_pivots.get(target).copied();
         for (i, &shape) in members.iter().enumerate() {
-            if let Some(mut animation) = read_effect(e, group_delay, shape, trigger.clone()) {
+            if let Some(mut animation) = read_effect_with_colors(e, group_delay, shape, trigger.clone(), targets.colors) {
                 if i > 0 {
                     animation.start = AnimationStart::WithPrevious;
                 }
+                animation.group_pivot = pivot;
                 animation.chart_element = chart_element;
                 animation.chart_build = chart_build;
                 animation.dgm_element = dgm_element.clone();
@@ -207,11 +218,24 @@ fn read_effects(e: Node, group_delay: u32, targets: &Targets, trigger: &Animatio
 pub(crate) struct Targets<'a> {
     pub(crate) shapes: &'a HashMap<String, ShapeId>,
     pub(crate) groups: &'a HashMap<String, Vec<ShapeId>>,
+    pub(crate) group_pivots: &'a HashMap<String, (i32, i32)>,
     pub(crate) chart_builds: &'a HashMap<String, (ibis_doc_model::ChartBuildStep, bool)>,
     pub(crate) diagram_builds: &'a HashMap<String, ibis_doc_model::DiagramBuildStep>,
+    pub(crate) colors: Option<&'a crate::theme::Colors<'a>>,
 }
 
 pub(crate) fn read_effect(e: Node, group_delay: u32, shape: ShapeId, trigger: AnimationTrigger) -> Option<Animation> {
+    read_effect_with_colors(e, group_delay, shape, trigger, None)
+}
+
+fn scale_by_speed(ms: u32, spd_pct: Option<u32>) -> u32 {
+    match spd_pct {
+        Some(s) if s > 0 && s != 100_000 => ((u64::from(ms) * 100_000) / u64::from(s)).min(u64::from(u32::MAX)) as u32,
+        _ => ms,
+    }
+}
+
+fn read_effect_with_colors(e: Node, group_delay: u32, shape: ShapeId, trigger: AnimationTrigger, colors: Option<&crate::theme::Colors<'_>>) -> Option<Animation> {
     let class = match e.attribute("presetClass")? {
         "entr" => AnimationClass::Entrance,
         "emph" => AnimationClass::Emphasis,
@@ -231,15 +255,21 @@ pub(crate) fn read_effect(e: Node, group_delay: u32, shape: ShapeId, trigger: An
     );
     // The effect lasts as long as its longest behaviour (and its delay).
     let behaviours: Vec<Node> = child(e, "childTnLst").into_iter().flat_map(elements).collect();
+    let effect_spd = e.attribute("spd").and_then(|v| v.parse::<i32>().ok()).filter(|&v| v != 0).map(i32::unsigned_abs);
     // (A behaviour that runs forward and back takes twice its `dur`. A preset played as its behaviours keeps that in the behaviours;
     // for the other looks the effect's own `auto_reverse` carries it, and `duration` is the one pass.)
     let longest = |doubled: bool| {
-        behaviours
+        let raw = behaviours
             .iter()
             .filter_map(|b| child(*b, "cBhvr").and_then(ctn))
-            .map(|c| delay(c) + c.attribute("dur").and_then(|d| d.parse::<u32>().ok()).unwrap_or(0) * if doubled && is_true(c.attribute("autoRev")) { 2 } else { 1 })
+            .map(|c| {
+                let bhvr_spd = c.attribute("spd").and_then(|v| v.parse::<i32>().ok()).filter(|&v| v != 0).map(i32::unsigned_abs);
+                let dur = scale_by_speed(c.attribute("dur").and_then(|d| d.parse::<u32>().ok()).unwrap_or(0), bhvr_spd);
+                delay(c) + dur * if doubled && is_true(c.attribute("autoRev")) { 2 } else { 1 }
+            })
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0);
+        scale_by_speed(raw, effect_spd)
     };
     let has = |name: &str| behaviours.iter().any(|b| b.tag_name().name() == name);
     let side = |subtype: u32| match subtype {
@@ -249,8 +279,30 @@ pub(crate) fn read_effect(e: Node, group_delay: u32, shape: ShapeId, trigger: An
         8 => Some(AnimationSide::Left),
         _ => None,
     };
-    let behaviors = parse_behaviors(&behaviours, e.attribute("fill") == Some("hold"));
-    let motion_path = behaviours.iter().find(|b| b.tag_name().name() == "animMotion").and_then(|b| b.attribute("path")).and_then(path_points);
+    let mut behaviors = parse_behaviors(&behaviours, e.attribute("fill") == Some("hold"));
+    if let Some(spd) = effect_spd {
+        for bh in &mut behaviors {
+            bh.begin = scale_by_speed(bh.begin, Some(spd));
+            bh.dur = scale_by_speed(bh.dur, Some(spd));
+        }
+    }
+    let motion_path = behaviours.iter().find(|b| b.tag_name().name() == "animMotion").and_then(|b| {
+        if let Some(pts) = b.attribute("path").and_then(path_points) {
+            return Some(pts);
+        }
+        let pair = |name: &str| {
+            let n = child(*b, name)?;
+            Some((n.attribute("x")?.parse::<i32>().ok()?, n.attribute("y")?.parse::<i32>().ok()?))
+        };
+        if let Some((bx, by)) = pair("by") {
+            return Some(vec![(bx, by)]);
+        }
+        if let Some((tx, ty)) = pair("to") {
+            let (fx, fy) = pair("from").unwrap_or((0, 0));
+            return Some(vec![(tx - fx, ty - fy)]);
+        }
+        None
+    });
     // 再生・一時停止・停止: the call (`p:cmd`) says which; the preset (1, 2, 3) when it names none we know.
     let media_command = behaviours.iter().find(|b| b.tag_name().name() == "cmd").and_then(|b| b.attribute("cmd")).and_then(|c| {
         if c.starts_with("play") || c == "resume" {
@@ -334,29 +386,53 @@ pub(crate) fn read_effect(e: Node, group_delay: u32, shape: ShapeId, trigger: An
     let duration = longest(preset_look);
     // `repeatCount="indefinite"` stops at the next click (`endCondLst`, the default here) or at the end of the slide (`endSync`).
     let until_end_of_slide = child(e, "endSync").is_some();
+    let repeat_from_thousandths = |n: u32| -> AnimationRepeat {
+        if n == 0 || n == 1000 {
+            AnimationRepeat::None
+        } else if n % 1000 == 0 {
+            AnimationRepeat::Count(n / 1000)
+        } else {
+            // Fractional counts (`500` = 0.5 times, `2500` = 2.5 times): stops partway through the pass.
+            AnimationRepeat::Thousandths(n)
+        }
+    };
     let parse_repeat = |val: &str| -> AnimationRepeat {
         if val == "indefinite" {
             if until_end_of_slide { AnimationRepeat::UntilEndOfSlide } else { AnimationRepeat::UntilNextClick }
         } else if let Ok(n) = val.parse::<u32>() {
-            let count = if n >= 1000 { n / 1000 } else { n };
-            if n > 1000 && n % 1000 != 0 {
-                // 2.5 times: the last one stops half way.
-                AnimationRepeat::Thousandths(n)
-            } else if count <= 1 {
-                AnimationRepeat::None
-            } else {
-                AnimationRepeat::Count(count)
-            }
+            repeat_from_thousandths(n)
         } else {
             AnimationRepeat::None
         }
     };
-    let repeat_count = e.attribute("repeatCount")
-        .or_else(|| behaviours.iter().filter(|_| !preset_look).filter_map(|b| child(*b, "cBhvr").and_then(ctn)).find_map(|c| c.attribute("repeatCount")))
-        .map_or(AnimationRepeat::None, parse_repeat);
     let auto_reverse = e.attribute("autoRev")
         .or_else(|| behaviours.iter().filter(|_| !preset_look).filter_map(|b| child(*b, "cBhvr").and_then(ctn)).find_map(|c| c.attribute("autoRev")))
         .is_some_and(|v| v == "1" || v == "true");
+    let raw_repeat_count = e.attribute("repeatCount")
+        .or_else(|| behaviours.iter().filter(|_| !preset_look).filter_map(|b| child(*b, "cBhvr").and_then(ctn)).find_map(|c| c.attribute("repeatCount")));
+    let mut repeat_count = raw_repeat_count.map_or(AnimationRepeat::None, parse_repeat);
+    let raw_repeat_dur = e.attribute("repeatDur")
+        .or_else(|| behaviours.iter().filter(|_| !preset_look).filter_map(|b| child(*b, "cBhvr").and_then(ctn)).find_map(|c| c.attribute("repeatDur")));
+    if let Some(rd) = raw_repeat_dur {
+        if rd == "indefinite" {
+            if raw_repeat_count.is_none() {
+                repeat_count = if until_end_of_slide { AnimationRepeat::UntilEndOfSlide } else { AnimationRepeat::UntilNextClick };
+            }
+        } else if let Ok(rd_ms) = rd.parse::<u32>() {
+            let pass_ms = duration.saturating_mul(if auto_reverse { 2 } else { 1 });
+            if pass_ms > 0 {
+                let rd_thousandths = ((u64::from(rd_ms) * 1000 + u64::from(pass_ms) / 2) / u64::from(pass_ms)).min(u64::from(u32::MAX)) as u32;
+                let from_dur = repeat_from_thousandths(rd_thousandths);
+                repeat_count = match (raw_repeat_count, repeat_count) {
+                    (None, _) => from_dur,
+                    (Some(_), AnimationRepeat::UntilNextClick | AnimationRepeat::UntilEndOfSlide) => from_dur,
+                    (Some(_), AnimationRepeat::Count(c)) if u64::from(c) * 1000 > u64::from(rd_thousandths) => from_dur,
+                    (Some(_), AnimationRepeat::Thousandths(t)) if t > rd_thousandths => from_dur,
+                    (Some(_), existing) => existing,
+                };
+            }
+        }
+    }
     let accel = e.attribute("accel")
         .or_else(|| behaviours.iter().filter(|_| !preset_look).filter_map(|b| child(*b, "cBhvr").and_then(ctn)).find_map(|c| c.attribute("accel")))
         .and_then(|v| v.parse().ok())
@@ -380,8 +456,11 @@ pub(crate) fn read_effect(e: Node, group_delay: u32, shape: ShapeId, trigger: An
                 match b.tag_name().name() {
                     "set" if child(to, "strVal").and_then(|v| v.attribute("val")) == Some("hidden") => Some(if master == "sameClick" { AnimationAfterEffect::Hide } else { AnimationAfterEffect::HideOnNextClick }),
                     "animClr" if master == "nextClick" => {
-                        let rgb = child(to, "srgbClr").and_then(|c| c.attribute("val")).and_then(|v| u32::from_str_radix(v, 16).ok())?;
-                        Some(AnimationAfterEffect::Dim(ibis_doc_model::Rgb(rgb)))
+                        let rgb = colors
+                            .and_then(|c| c.in_parent(to, None))
+                            .map(|c| c.rgb)
+                            .or_else(|| child(to, "srgbClr").and_then(|c| c.attribute("val")).and_then(|v| u32::from_str_radix(v, 16).ok()).map(ibis_doc_model::Rgb))?;
+                        Some(AnimationAfterEffect::Dim(rgb))
                     }
                     _ => None,
                 }
@@ -402,7 +481,7 @@ pub(crate) fn read_effect(e: Node, group_delay: u32, shape: ShapeId, trigger: An
         };
         Some((unit, gap))
     });
-    Some(Animation { shape, class, start, look, delay: delay(e), duration, preset, repeat_count, auto_reverse, rewind, accel, decel, after_effect, trigger, paragraph: None, chars: None, text_unit, path, chart_element: None, chart_build: None, dgm_element: None, dgm_build: None, behaviors: if look == AnimationLook::Preset { behaviors } else { Vec::new() } })
+    Some(Animation { shape, class, start, look, delay: delay(e), duration, preset, repeat_count, auto_reverse, rewind, accel, decel, after_effect, trigger, paragraph: None, chars: None, text_unit, path, chart_element: None, chart_build: None, dgm_element: None, dgm_build: None, behaviors: if look == AnimationLook::Preset { behaviors } else { Vec::new() }, group_pivot: None })
 }
 
 /// An effect's behaviours as the model keeps them (`p:set`, `p:anim`, `p:animEffect`, `p:animScale`, `p:animRot`);
@@ -418,24 +497,32 @@ fn parse_behaviors(nodes: &[Node], inherit_hold: bool) -> Vec<ibis_doc_model::An
         Some((n.attribute("x")?.parse().ok()?, n.attribute("y")?.parse().ok()?))
     };
     // A behaviour kept as its XML, its target and time node ids to be filled in on writing.
+    // Uses roxmltree ranges so any namespace prefix (`p:`, `pp:`, unprefixed) and quote style (`"`, `'`) works.
     let opaque = |b: Node| -> Option<BehaviorKind> {
         let doc_text = b.document().input_text();
-        let mut raw = doc_text[b.range()].to_string();
-        if let (Some(a), Some(z)) = (raw.find("<p:tgtEl>"), raw.find("</p:tgtEl>")) {
-            raw.replace_range(a..z + "</p:tgtEl>".len(), "\u{1}");
-        } else {
-            return None;
+        let base = b.range().start;
+        let tgt_range = b.descendants().find(|n| n.is_element() && n.tag_name().name() == "tgtEl")?.range();
+        let mut edits: Vec<(std::ops::Range<usize>, &'static str)> = vec![(tgt_range.start - base..tgt_range.end - base, "\u{1}")];
+        for ctn_node in b.descendants().filter(|n| n.is_element() && n.tag_name().name() == "cTn") {
+            if let Some(id_attr) = ctn_node.attribute_node("id") {
+                let vr = id_attr.range_value();
+                if vr.start >= base && vr.end <= b.range().end && !(vr.start >= tgt_range.start && vr.end <= tgt_range.end) {
+                    edits.push((vr.start - base..vr.end - base, "\u{2}"));
+                }
+            }
         }
-        let mut out = String::new();
-        let mut rest = raw.as_str();
-        while let Some(at) = rest.find("<p:cTn id=\"") {
-            let after = at + "<p:cTn id=\"".len();
-            let end = rest[after..].find('"').map_or(rest.len(), |e| after + e);
-            out.push_str(&rest[..after]);
-            out.push('\u{2}');
-            rest = &rest[end..];
+        edits.sort_by_key(|(r, _)| r.start);
+        let raw = &doc_text[b.range()];
+        let mut out = String::with_capacity(raw.len());
+        let mut pos = 0;
+        for (range, rep) in edits {
+            if range.start >= pos && range.end <= raw.len() {
+                out.push_str(&raw[pos..range.start]);
+                out.push_str(rep);
+                pos = range.end;
+            }
         }
-        out.push_str(rest);
+        out.push_str(&raw[pos..]);
         Some(BehaviorKind::Opaque(out))
     };
     // When the last of the behaviours ends: a change of size that says nothing of its fill takes its effect's only if it lasts to there (one that
@@ -450,7 +537,8 @@ fn parse_behaviors(nodes: &[Node], inherit_hold: bool) -> Vec<ibis_doc_model::An
         // Only a change of size (`p:animScale`) goes back at its end; the others' values stay (the Zipper's `ppt_y` of 1.23 s in 2 s does).
         let lasts = end_of(b) >= last_end || b.tag_name().name() != "animScale";
         let begin = time.map_or(0, delay);
-        let dur = time.and_then(|c| c.attribute("dur")).and_then(|d| d.parse::<u32>().ok()).unwrap_or(0);
+        let bhvr_spd = time.and_then(|c| c.attribute("spd")).and_then(|v| v.parse::<i32>().ok()).filter(|&v| v != 0).map(i32::unsigned_abs);
+        let dur = scale_by_speed(time.and_then(|c| c.attribute("dur")).and_then(|d| d.parse::<u32>().ok()).unwrap_or(0), bhvr_spd);
         let time_node = time;
         let flag = |a: &str| time_node.is_some_and(|c| is_true(c.attribute(a)));
         let behavior_time = ibis_doc_model::animation_preset::BehaviorTime {
@@ -533,7 +621,7 @@ fn parse_behaviors(nodes: &[Node], inherit_hold: bool) -> Vec<ibis_doc_model::An
 /// `Q`) is drawn as short lines; `Z` goes back to the start. Only the
 /// commands `M L C Q Z E` are read (upper case from the shape's place, lower case from where the path is).
 fn path_points(path: &str) -> Option<Vec<(i32, i32)>> {
-    let tokens: Vec<&str> = path.split(|c: char| c.is_whitespace() || c == ',').filter(|t| !t.is_empty()).collect();
+    let tokens = ibis_doc_model::animation_preset::tokenize_path(path);
     let mut points: Vec<(f64, f64)> = Vec::new();
     let mut start = (0.0, 0.0);
     let mut here = (0.0, 0.0);
@@ -639,22 +727,23 @@ mod tests {
         let doc = roxmltree::Document::parse(xml).unwrap();
         let shapes: HashMap<String, ShapeId> = [("4".to_string(), ShapeId(40))].into();
         let groups: HashMap<String, Vec<ShapeId>> = [("9".to_string(), vec![ShapeId(1), ShapeId(2), ShapeId(3)])].into();
-        let effects = read(doc.root_element(), &shapes, &groups);
+        let no_pivots = HashMap::new();
+        let effects = read(doc.root_element(), &shapes, &groups, &no_pivots, None);
         assert_eq!(effects.iter().map(|a| a.shape).collect::<Vec<_>>(), [ShapeId(1), ShapeId(2), ShapeId(3)]);
         assert_eq!(effects.iter().map(|a| a.start).collect::<Vec<_>>(), [AnimationStart::OnClick, AnimationStart::WithPrevious, AnimationStart::WithPrevious]);
         // Effects on paragraphs (`p:txEl/p:pRg`) keep their range.
         let by_paragraph = xml.replace(r#"<p:spTgt spid="9"/>"#, r#"<p:spTgt spid="4"><p:txEl><p:pRg st="2" end="3"/></p:txEl></p:spTgt>"#);
         let doc = roxmltree::Document::parse(&by_paragraph).unwrap();
-        let effects = read(doc.root_element(), &shapes, &groups);
+        let effects = read(doc.root_element(), &shapes, &groups, &no_pivots, None);
         assert_eq!(effects.len(), 1);
         assert_eq!((effects[0].shape, effects[0].paragraph), (ShapeId(40), Some((2, 3))));
         // Effects on characters (`p:txEl/p:charRg`) and by word or letter (`p:iterate`) keep what they say.
         let by_chars = by_paragraph.replace(r#"<p:pRg st="2" end="3"/>"#, r#"<p:charRg st="4" end="9"/>"#);
         let doc = roxmltree::Document::parse(&by_chars).unwrap();
-        assert_eq!(read(doc.root_element(), &shapes, &groups)[0].chars, Some((4, 9)));
+        assert_eq!(read(doc.root_element(), &shapes, &groups, &no_pivots, None)[0].chars, Some((4, 9)));
         let by_word = by_paragraph.replace(r#"</p:stCondLst><p:childTnLst><p:set>"#, r#"</p:stCondLst><p:iterate type="wd"><p:tmPct val="10000"/></p:iterate><p:childTnLst><p:set>"#).replace(r#"<p:pRg st="2" end="3"/>"#, "");
         let doc = roxmltree::Document::parse(&by_word).unwrap();
-        let unit = read(doc.root_element(), &shapes, &groups)[0].text_unit;
+        let unit = read(doc.root_element(), &shapes, &groups, &no_pivots, None)[0].text_unit;
         assert_eq!(unit, Some((ibis_doc_model::TextUnit::Word, ibis_doc_model::UnitGap::Percent(10_000))));
         // Diagram element ST_Guid (`{00000007-0000-0000-0000-000000000000}`) decodes back to `"7"`.
         let by_dgm = xml.replace(
@@ -662,11 +751,11 @@ mod tests {
             r#"<p:spTgt spid="4"><p:graphicEl><a:dgm xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" id="{00000007-0000-0000-0000-000000000000}" bldStep="sp"/></p:graphicEl></p:spTgt>"#,
         );
         let doc = roxmltree::Document::parse(&by_dgm).unwrap();
-        let dgm_el = read(doc.root_element(), &shapes, &groups)[0].dgm_element.clone();
+        let dgm_el = read(doc.root_element(), &shapes, &groups, &no_pivots, None)[0].dgm_element.clone();
         assert_eq!(dgm_el, Some(ibis_doc_model::DiagramAnimationElement { id: "7".to_string(), bld_step: "sp".to_string() }));
         // A shape that is neither is no effect.
         let doc = roxmltree::Document::parse(xml).unwrap();
-        assert!(read(doc.root_element(), &shapes, &HashMap::new()).is_empty());
+        assert!(read(doc.root_element(), &shapes, &HashMap::new(), &no_pivots, None).is_empty());
     }
 
     #[test]
@@ -678,5 +767,59 @@ mod tests {
         // Lines one after another, and back to the start with Z.
         assert_eq!(path_points("M 0 0 L 0.1 0 L 0.1 0.2 Z E"), Some(vec![(10_000, 0), (10_000, 20_000), (0, 0)]));
         assert_eq!(path_points("M 0 0 E"), None);
+        // Compact path without spaces between commands and coordinates.
+        assert_eq!(path_points("M0 0L0.3 0E"), Some(vec![(30_000, 0)]));
+    }
+
+    #[test]
+    fn fractional_repeat_spd_repeat_dur_group_trigger_dim_scheme_and_prefixed_timing() {
+        // A1: repeatCount="500" is 0.5 times (Thousandths(500)), not 500 times.
+        let xml = r#"<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" nodeType="tmRoot"><p:childTnLst><p:seq><p:cTn id="2" dur="indefinite" nodeType="mainSeq"><p:childTnLst><p:par><p:cTn id="3" fill="hold"><p:stCondLst><p:cond delay="indefinite"/></p:stCondLst><p:childTnLst><p:par><p:cTn id="4" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>
+            <p:par><p:cTn id="5" presetID="8" presetClass="emph" presetSubtype="0" repeatCount="500" fill="hold" nodeType="clickEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:animRot by="21600000"><p:cBhvr><p:cTn id="6" dur="2000" fill="hold"/><p:tgtEl><p:spTgt spid="9"/></p:tgtEl><p:attrNameLst><p:attrName>r</p:attrName></p:attrNameLst></p:cBhvr></p:animRot></p:childTnLst></p:cTn></p:par>
+            <p:par><p:cTn id="7" presetID="8" presetClass="emph" presetSubtype="0" spd="25000" fill="hold" nodeType="withEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:animRot by="21600000"><p:cBhvr><p:cTn id="8" dur="1000" fill="hold"/><p:tgtEl><p:spTgt spid="9"/></p:tgtEl><p:attrNameLst><p:attrName>r</p:attrName></p:attrNameLst></p:cBhvr></p:animRot></p:childTnLst></p:cTn></p:par>
+            <p:par><p:cTn id="9" presetID="8" presetClass="emph" presetSubtype="0" repeatDur="3000" fill="hold" nodeType="withEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:animRot by="21600000"><p:cBhvr><p:cTn id="10" dur="1000" fill="hold"/><p:tgtEl><p:spTgt spid="9"/></p:tgtEl><p:attrNameLst><p:attrName>r</p:attrName></p:attrNameLst></p:cBhvr></p:animRot></p:childTnLst></p:cTn></p:par>
+            <p:par><p:cTn id="11" presetID="0" presetClass="path" presetSubtype="0" fill="hold" nodeType="withEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:animMotion origin="layout" pathEditMode="relative"><p:cBhvr><p:cTn id="12" dur="2000" fill="hold"/><p:tgtEl><p:spTgt spid="9"/></p:tgtEl><p:attrNameLst><p:attrName>ppt_x</p:attrName><p:attrName>ppt_y</p:attrName></p:attrNameLst></p:cBhvr><p:by x="30000" y="0"/></p:animMotion></p:childTnLst></p:cTn></p:par>
+            <p:par><p:cTn id="13" presetID="1" presetClass="entr" presetSubtype="0" fill="hold" nodeType="withEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:set><p:cBhvr><p:cTn id="14" dur="1" fill="hold"/><p:tgtEl><p:spTgt spid="9"/></p:tgtEl><p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr><p:to><p:strVal val="visible"/></p:to></p:set></p:childTnLst><p:subTnLst><p:animClr clrSpc="rgb" dir="cw"><p:cBhvr override="childStyle"><p:cTn id="15" dur="1" fill="hold" masterRel="nextClick" afterEffect="1"/><p:tgtEl><p:spTgt spid="9"/></p:tgtEl><p:attrNameLst><p:attrName>ppt_c</p:attrName></p:attrNameLst></p:cBhvr><p:to><a:schemeClr val="accent2"/></p:to></p:animClr></p:subTnLst></p:cTn></p:par>
+        </p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:seq>
+        <p:seq><p:cTn id="20" nodeType="interactiveSeq"><p:stCondLst><p:cond evt="onClick" delay="0"><p:tgtEl><p:spTgt spid="100"/></p:tgtEl></p:cond></p:stCondLst><p:childTnLst><p:par><p:cTn id="21" presetID="1" presetClass="entr" presetSubtype="0" fill="hold" nodeType="clickEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:set><p:cBhvr><p:cTn id="22" dur="1" fill="hold"/><p:tgtEl><p:spTgt spid="9"/></p:tgtEl><p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr><p:to><p:strVal val="visible"/></p:to></p:set></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:seq>
+        </p:childTnLst></p:cTn></p:par></p:tnLst></p:timing></p:sld>"#;
+        let doc = roxmltree::Document::parse(xml).unwrap();
+        let shapes: HashMap<String, ShapeId> = [("9".into(), ShapeId(9))].into();
+        let groups: HashMap<String, Vec<ShapeId>> = [("100".into(), vec![ShapeId(10), ShapeId(11)])].into();
+        let pivots: HashMap<String, (i32, i32)> = [("100".into(), (50_000, 50_000))].into();
+        let theme_xml = r#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:clrScheme name="T"><a:accent2><a:srgbClr val="C0504D"/></a:accent2></a:clrScheme></a:themeElements></a:theme>"#;
+        let theme_doc = roxmltree::Document::parse(theme_xml).unwrap();
+        let theme = crate::theme::Theme::read(theme_doc.root_element());
+        let colors = crate::theme::Colors::new(&theme, None, &[]);
+        let effects = read(doc.root_element(), &shapes, &groups, &pivots, Some(&colors));
+        assert_eq!(effects.len(), 6);
+        assert_eq!(effects[0].repeat_count, AnimationRepeat::Thousandths(500));
+        assert_eq!(effects[0].active_ms(), Some(1000));
+        assert!((effects[0].settled_progress() - 0.5).abs() < 1e-6);
+        assert_eq!(effects[1].duration, 4000);
+        assert_eq!(effects[2].repeat_count, AnimationRepeat::Count(3));
+        assert_eq!(effects[3].look, AnimationLook::Motion(30_000, 0));
+        assert_eq!(effects[4].after_effect, AnimationAfterEffect::Dim(ibis_doc_model::Rgb(0xC0504D)));
+        assert!(effects[5].trigger.matches_click(ShapeId(10)));
+        assert!(effects[5].trigger.matches_click(ShapeId(11)));
+        assert!(!effects[5].trigger.matches_click(ShapeId(9)));
+
+        // B5: alternate namespace prefix `pp:` in `pp:timing` keeps opaque colour and motion behaviours.
+        let pp_xml = r#"<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><pp:timing xmlns:pp="http://schemas.openxmlformats.org/presentationml/2006/main"><pp:tnLst><pp:par><pp:cTn id="1" dur="indefinite" nodeType="tmRoot"><pp:childTnLst><pp:seq><pp:cTn id="2" dur="indefinite" nodeType="mainSeq"><pp:childTnLst><pp:par><pp:cTn id="3" fill="hold"><pp:stCondLst><pp:cond delay="indefinite"/></pp:stCondLst><pp:childTnLst><pp:par><pp:cTn id="4" fill="hold"><pp:stCondLst><pp:cond delay="0"/></pp:stCondLst><pp:childTnLst>
+            <pp:par><pp:cTn id="5" presetID="1" presetClass="emph" presetSubtype="2" fill="hold" nodeType="clickEffect"><pp:stCondLst><pp:cond delay="0"/></pp:stCondLst><pp:childTnLst><pp:animClr clrSpc="rgb" dir="cw"><pp:cBhvr><pp:cTn id="6" dur="1500" fill="hold"/><pp:tgtEl><pp:spTgt spid="9"/></pp:tgtEl><pp:attrNameLst><pp:attrName>fillcolor</pp:attrName></pp:attrNameLst></pp:cBhvr><pp:to><a:srgbClr val="FF0000"/></pp:to></pp:animClr></pp:childTnLst></pp:cTn></pp:par>
+            <pp:par><pp:cTn id="7" presetID="0" presetClass="emph" presetSubtype="0" fill="hold" nodeType="withEffect"><pp:stCondLst><pp:cond delay="0"/></pp:stCondLst><pp:childTnLst><pp:animMotion origin="layout" path="M 0 0 L 0.18 0 E"><pp:cBhvr><pp:cTn id="8" dur="2000" fill="hold"/><pp:tgtEl><pp:spTgt spid="9"/></pp:tgtEl><pp:attrNameLst><pp:attrName>ppt_x</pp:attrName><pp:attrName>ppt_y</pp:attrName></pp:attrNameLst></pp:cBhvr></pp:animMotion></pp:childTnLst></pp:cTn></pp:par>
+        </pp:childTnLst></pp:cTn></pp:par></pp:childTnLst></pp:cTn></pp:par></pp:childTnLst></pp:cTn></pp:seq></pp:childTnLst></pp:cTn></pp:par></pp:tnLst></pp:timing></p:sld>"#;
+        let pp_doc = roxmltree::Document::parse(pp_xml).unwrap();
+        let pp_effects = read(pp_doc.root_element(), &shapes, &groups, &pivots, Some(&colors));
+        assert_eq!(pp_effects.len(), 2);
+        assert_eq!(pp_effects[0].look, AnimationLook::Preset);
+        assert_eq!(pp_effects[0].behaviors.len(), 1);
+        assert_eq!(pp_effects[1].look, AnimationLook::Preset);
+        assert_eq!(pp_effects[1].behaviors.len(), 1);
+        let b = ibis_doc_model::animation_preset::PptBox { x: 0.5, y: 0.5, w: 0.2, h: 0.2 };
+        let st_clr = ibis_doc_model::animation_preset::sample(&pp_effects[0].behaviors, 1500.0, b);
+        assert_eq!(st_clr.colors.len(), 1);
+        let st_mot = ibis_doc_model::animation_preset::sample(&pp_effects[1].behaviors, 2000.0, b);
+        assert!((st_mot.motion.unwrap().0 - 0.18).abs() < 1e-9);
     }
 }
