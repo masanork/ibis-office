@@ -474,18 +474,17 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     next_id += 1;
                 }
                 table.rows.push(row);
-                table.resolve_borders();
                 let mut combined = false;
                 if paragraph.runs.is_empty() {
                     if let Some(Block::Table(previous)) = flow.body.last_mut() {
                         if previous.columns == table.columns && previous.borders == table.borders {
-                            previous.rows.extend(table.rows.clone());
+                            previous.rows.append(&mut table.rows);
                             combined = true;
                         } else if table_key.is_some()
                             && table_key == last_table_key
                             && previous.borders == table.borders
                         {
-                            combined = merge_table_grids(previous, &table);
+                            combined = merge_table_grids_raw(previous, &table);
                         }
                     }
                 }
@@ -570,6 +569,11 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
         next_id
     };
     flow.body.push(Block::Paragraph(paragraph));
+    for block in &mut flow.body {
+        if let Block::Table(table) = block {
+            table.resolve_borders();
+        }
+    }
     flow.id_floor = next_id;
     Ok(presentation)
 }
@@ -790,7 +794,7 @@ fn view_style_lines(data: &[u8]) -> Option<u16> {
 /// The new spans are planned before any cell changes. A long comparison
 /// table adds one ruled line at a time, so cloning the rows already
 /// accumulated would copy the whole table on every line.
-fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
+fn merge_table_grids_raw(previous: &mut FlowTable, next: &FlowTable) -> bool {
     fn edges(columns: &[i64]) -> Option<Vec<i64>> {
         let mut out = vec![0i64];
         for &width in columns {
@@ -839,16 +843,26 @@ fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
     if grid.len() > 1025 {
         return false;
     }
-    let (Some(previous_spans), Some(incoming_spans)) = (
-        planned_spans(&previous.rows, &a, &grid),
-        planned_spans(&next.rows, &b, &grid),
-    ) else {
+    // Fast path: when `b`'s edges are already a subset of `a`, `previous.rows` spans do not change.
+    let grid_unchanged = grid == a;
+    let previous_spans = if grid_unchanged {
+        None
+    } else {
+        match planned_spans(&previous.rows, &a, &grid) {
+            Some(spans) => Some(spans),
+            None => return false,
+        }
+    };
+    let Some(incoming_spans) = planned_spans(&next.rows, &b, &grid) else {
         return false;
     };
-    for (row, spans) in previous.rows.iter_mut().zip(previous_spans) {
-        for (cell, span) in row.cells.iter_mut().zip(spans) {
-            cell.span = span;
+    if let Some(previous_spans) = previous_spans {
+        for (row, spans) in previous.rows.iter_mut().zip(previous_spans) {
+            for (cell, span) in row.cells.iter_mut().zip(spans) {
+                cell.span = span;
+            }
         }
+        previous.columns = grid.windows(2).map(|pair| pair[1] - pair[0]).collect();
     }
     let mut incoming = next.rows.clone();
     for (row, spans) in incoming.iter_mut().zip(incoming_spans) {
@@ -856,8 +870,15 @@ fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
             cell.span = span;
         }
     }
-    previous.columns = grid.windows(2).map(|pair| pair[1] - pair[0]).collect();
     previous.rows.extend(incoming);
+    true
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
+    if !merge_table_grids_raw(previous, next) {
+        return false;
+    }
     previous.resolve_borders();
     true
 }
