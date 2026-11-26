@@ -99,6 +99,7 @@ mod odt_import;
 mod xlsb;
 mod xlsb_formula;
 mod xls;
+pub mod xmlss;
 mod msdoc;
 /// Read-only Ichitaro text import.
 mod hangul_structure;

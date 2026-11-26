@@ -339,6 +339,8 @@ impl SlideEditor {
 #[cfg(target_family = "wasm")]
 #[derive(Default)]
 pub(crate) struct WebEditorState {
+    /// XML Spreadsheet imports must save to a new XLSX, away from their source handle.
+    pub(crate) xmlss_import: bool,
     pub(crate) open_generation: u64,
     /// Exact input for comparison while this law has no edits.
     pub(crate) law_source: Option<std::sync::Arc<Vec<u8>>>,
@@ -1381,7 +1383,7 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         { self.bom_source = None; }
         #[cfg(target_family = "wasm")]
-        { self.web.law_source = None; }
+        { self.web.law_source = None; self.web.xmlss_import = false; }
         #[cfg(any(target_os = "android", target_family = "wasm"))]
         {
             self.phone_editing = false;
@@ -1822,6 +1824,7 @@ impl SlideEditor {
                     };
                     this.load(opened.presentation, doc_name, window, cx);
                     this.web.law_source = law_source;
+                    this.web.xmlss_import = opened_import == Some(crate::read_file::EditableImport::XmlSpreadsheet);
                     this.set_production_image_view(production_image, exposure);
                     this.image_provenance = image_provenance;
                     this.set_opened_source(std::sync::Arc::new(opened.source), production_image);

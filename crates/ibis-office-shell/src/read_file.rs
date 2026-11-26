@@ -90,6 +90,14 @@ pub(crate) fn open_document_bytes(
     data: &[u8],
 ) -> Result<Option<CommonOpen>, String> {
     use ibis_formats::docx_convert::DocxConvertFormat;
+    if let Some(opened) = ibis_formats::xmlss::try_open(data).map_err(|e| e.to_string())? {
+        return Ok(Some(CommonOpen::Standard {
+            opened,
+            editable_import: Some(EditableImport::XmlSpreadsheet),
+            bom_format: None,
+            is_law: false,
+        }));
+    }
     let virtual_path = std::path::Path::new(name);
     let extension = virtual_path.extension().and_then(|ext| ext.to_str());
     let external_document_format = DocxConvertFormat::from_path(virtual_path);
@@ -371,6 +379,7 @@ pub(crate) enum EditableImport {
     Uot,
     Epub,
     WordPerfect,
+    XmlSpreadsheet,
 }
 
 impl EditableImport {
@@ -400,6 +409,8 @@ impl EditableImport {
             Self::Epub => ibis_formats::epub::open(data),
             Self::Uot => ibis_formats::uot::open_with_base_dir(data, base_dir),
             Self::WordPerfect => ibis_formats::wpd::open(data),
+            Self::XmlSpreadsheet => ibis_formats::xmlss::try_open(data)?
+                .ok_or_else(|| ibis_formats::Error::new("Invalid Excel XML Spreadsheet 2003")),
             Self::OpenDocument(format) => ibis_formats::open(format.to_ooxml(data)?),
         }
     }
@@ -407,7 +418,7 @@ impl EditableImport {
     pub(crate) fn save_extension(self) -> &'static str {
         match self {
             Self::Hancom(_) | Self::Uot | Self::Epub | Self::WordPerfect | Self::OpenDocument(ibis_odf::Format::Text) => "docx",
-            Self::OpenDocument(ibis_odf::Format::Spreadsheet) => "xlsx",
+            Self::OpenDocument(ibis_odf::Format::Spreadsheet) | Self::XmlSpreadsheet => "xlsx",
             Self::OpenDocument(ibis_odf::Format::Presentation) => "pptx",
         }
     }

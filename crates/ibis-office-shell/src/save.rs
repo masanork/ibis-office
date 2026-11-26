@@ -238,6 +238,7 @@ impl SlideEditor {
                 return;
             }
         };
+        let save_as = save_as || self.web.xmlss_import;
         cx.spawn_in(window, async move |this, cx| {
             let result = crate::web::save_local(&name, &mime, &bytes, save_as).await;
             this.update_in(cx, |this, window, cx| {
