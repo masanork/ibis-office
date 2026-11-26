@@ -51,7 +51,7 @@ ibisOffice 本来のベンチマーク、基本機能一覧、商用ライセン
 - **一太郎（`.jtd`・`.jtt`・`.jttc`）** *（Fork）*：論理レコード・縦書き・ルビ・罫線・画像・サムネイル・目次を復元する読み取り専用プレビューと DOCX/HTML 出力（[jtd-preview.md](jtd-preview.md)）。
 - **Microsoft Visio（`.vsdx`）** *（提案中: [#292](https://github.com/ibisjp/ibis-office/issues/292)）*：閲覧・新規作成・編集、ステンシルパレット、フローチャート図形、スナップハイライト、Web/Wasm 版対応。
 - **Unified Office Format（UOF / `.uot`）** *（Fork）*：UOT 文書および埋め込み画像のネイティブ読み込み。
-- **WordPerfect（`.wpd`）& WPG 2** *（Fork）*：WordPerfect 文書（テキスト・表）および WPG 2 ベクタ・ビットマップ・曲線・破線・複合パス画像の読み込み。
+- **WordPerfect（`.wpd`）& WPG 2** *（Fork）*：WordPerfect 文書（テキスト・表）および WPG 2 ベクタ・ビットマップ・曲線・破線・線形グラデーション・複合パス画像の読み込み。
 - **DocuWorks（`.xdw`・`.xbd`）& Hancom（`.hwp`・`.hwpx`）** *（提案中: [#254](https://github.com/ibisjp/ibis-office/issues/254), [#288](https://github.com/ibisjp/ibis-office/issues/288)）*：DocuWorks 閲覧および HWP 5.0 / HWPX の編集可能な DOCX としての読み込み。
 - **EPUB 3・制作素材画像** *（Fork）*：EPUB 3 ネイティブ読み込み、HEIC・DPX・Cineon・OpenEXR・JPEG 2000 プレビュー（[production-image-preview-ja.md](production-image-preview-ja.md)）。
 - **OOXML / ODF 互換強化** *（採用済み: [#190](https://github.com/ibisjp/ibis-office/issues/190), [#221](https://github.com/ibisjp/ibis-office/issues/221)）*：Office 2007 Standard 暗号化復号、DOCX 段落 ID（`w14:paraId`）の編集・保存時保持、ODF の入れ子領域・繰り返し列・非表示行列読み込み拡張。

@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use image::RgbaImage;
 use tiny_skia::{
-    ColorU8, FillRule, IntSize, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke,
-    StrokeDash, Transform,
+    Color, ColorU8, FillRule, GradientStop, IntSize, LinearGradient, Paint, Path, PathBuilder,
+    Pixmap, PixmapPaint, Point, Rect, SpreadMode, Stroke, StrokeDash, Transform,
 };
 
 use super::{
@@ -32,16 +32,51 @@ struct Compound {
 }
 
 struct Style {
-    fill: [u8; 4],
+    fill: Fill,
+    gradient_angle: Option<f32>,
     pen: [u8; 4],
     pen_width: f32,
     pen_pattern: u16,
 }
 
+enum Fill {
+    Solid(Color),
+    Linear {
+        angle: f32,
+        start: Color,
+        end: Color,
+    },
+}
+
+impl Fill {
+    fn paint(&self, path: &Path) -> Option<Paint<'static>> {
+        let mut paint = Paint::default();
+        match *self {
+            Self::Solid(color) => paint.set_color(color),
+            Self::Linear { angle, start, end } => {
+                let bounds = path.bounds();
+                let (dx, dy) = angle.sin_cos();
+                let cx = (bounds.left() + bounds.right()) * 0.5;
+                let cy = (bounds.top() + bounds.bottom()) * 0.5;
+                let extent = (dx.abs() * bounds.width() + dy.abs() * bounds.height()) * 0.5;
+                paint.shader = LinearGradient::new(
+                    Point::from_xy(cx - dx * extent, cy - dy * extent),
+                    Point::from_xy(cx + dx * extent, cy + dy * extent),
+                    vec![GradientStop::new(0.0, start), GradientStop::new(1.0, end)],
+                    SpreadMode::Pad,
+                    Transform::identity(),
+                )?;
+            }
+        }
+        Some(paint)
+    }
+}
+
 impl Default for Style {
     fn default() -> Self {
         Self {
-            fill: [0, 0, 0, 255],
+            fill: Fill::Solid(Color::BLACK),
+            gradient_angle: None,
             pen: [0, 0, 0, 255],
             pen_width: 0.0,
             pen_pattern: 0,
@@ -143,7 +178,38 @@ impl Drawing {
             0x2c => {
                 self.style.pen_width = u32::from_le_bytes(record.get(..4)?.try_into().ok()?) as f32
             }
-            0x31 if record.first() == Some(&0) => self.style.fill = color(record.get(1..)?)?,
+            0x2f => {
+                // Basic gradients span the full shape. Other reference points
+                // and gradient flags require different stop placement.
+                self.style.gradient_angle =
+                    match (word(record, 4)?, word(record, 6)?, word(record, 8)?) {
+                        (u16::MAX, u16::MAX, 0) => {
+                            let degrees =
+                                f32::from(word(record, 2)?) + f32::from(word(record, 0)?) / 65536.0;
+                            Some(degrees.to_radians())
+                        }
+                        _ => None,
+                    };
+            }
+            0x31 => {
+                let rgba = |bytes| {
+                    let [r, g, b, a] = color(bytes)?;
+                    Some(Color::from_rgba8(r, g, b, a))
+                };
+                self.style.fill = match *record.first()? {
+                    0 => Fill::Solid(rgba(record.get(1..)?)?),
+                    1 if word(record, 1)? == 2 => {
+                        word(record, 11)?; // The two-color form includes a position word.
+                        Fill::Linear {
+                            angle: self.style.gradient_angle?,
+                            // WPG 2 stores the ending color first.
+                            start: rgba(record.get(7..)?)?,
+                            end: rgba(record.get(3..)?)?,
+                        }
+                    }
+                    _ => return None,
+                };
+            }
             0x08 => {
                 let id = word(record, 0)?;
                 let pairs = usize::from(word(record, 2)?);
@@ -226,9 +292,7 @@ impl Drawing {
             return None;
         }
         if flags & 0x2000 != 0 {
-            let mut paint = Paint::default();
-            let [r, g, b, a] = self.style.fill;
-            paint.set_color_rgba8(r, g, b, a);
+            let paint = self.style.fill.paint(path)?;
             let rule = if flags & 0x1000 != 0 {
                 FillRule::Winding
             } else {

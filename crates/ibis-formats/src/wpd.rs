@@ -751,6 +751,37 @@ mod tests {
     }
 
     #[test]
+    fn wpg2_linear_gradients_survive_docx_conversion() {
+        let data = include_bytes!("../../../test/fixtures/wordperfect/linear-gradient-wpg2.wpd");
+        let opened = open(data).unwrap();
+        assert_eq!(opened.import_warning, None);
+        let media = opened.presentation.media.first().unwrap();
+        let pixels = image::load_from_memory(&media.data).unwrap().to_rgba8();
+        assert_eq!(pixels.dimensions(), (300, 225));
+        for (x, y, rgb) in [
+            (70, 58, [131, 80, 125]),
+            (215, 58, [123, 81, 131]),
+            (78, 166, [131, 80, 125]),
+            (215, 165, [55, 150, 80]),
+        ] {
+            let pixel = pixels.get_pixel(x, y).0;
+            assert_eq!(pixel[3], 255);
+            for (actual, expected) in pixel[..3].iter().zip(rgb) {
+                assert!(
+                    actual.abs_diff(expected) <= 4,
+                    "pixel at ({x}, {y}): {pixel:?}"
+                );
+            }
+        }
+        assert!(pixels.get_pixel(70, 20).0[0] > 205);
+        assert!(pixels.get_pixel(70, 97).0[0] < 45);
+        assert!(pixels.get_pixel(165, 58).0[0] < 45);
+        assert!(pixels.get_pixel(275, 58).0[0] > 215);
+        assert!(pixels.get_pixel(130, 125).0[0] > 205);
+        assert!(pixels.get_pixel(20, 205).0[0] < 55);
+    }
+
+    #[test]
     fn wpg2_pen_patterns_survive_docx_conversion() {
         let dashed = include_bytes!("../../../test/fixtures/wordperfect/dashed-grid-wpg2.wpd");
         let dash_dot = include_bytes!("../../../test/fixtures/wordperfect/dash-dot-grid-wpg2.wpd");
