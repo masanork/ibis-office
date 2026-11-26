@@ -2232,6 +2232,16 @@ impl SlideEditor {
             .on_action(cx.listener(|this, _: &crate::editing::ToggleMarkdownSource, window, cx| {
                 this.toggle_markdown_source_mode(window, cx);
             }))
+            .capture_key_down(cx.listener({
+                let editor = editor_entity.clone();
+                move |this, event: &KeyDownEvent, window, cx| {
+                    if this.handle_inline_completion_key(editor.clone(), readonly, event, window, cx)
+                    {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }
+            }))
             .flex()
             .flex_col()
             .flex_1()

@@ -2141,6 +2141,16 @@ impl SlideEditor {
         let mut pane = div()
             .id(SharedString::from(format!("{id_prefix}-source-workspace")))
             .key_context(MARKDOWN_SOURCE_CONTEXT)
+            .capture_key_down(cx.listener({
+                let editor = editor_entity.clone();
+                move |this, event: &KeyDownEvent, window, cx| {
+                    if this.handle_inline_completion_key(editor.clone(), readonly, event, window, cx)
+                    {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }
+            }))
             .flex()
             .flex_col()
             .flex_1()
@@ -2295,6 +2305,45 @@ impl SlideEditor {
         }
     }
 
+    pub fn handle_inline_completion_key(
+        &mut self,
+        editor: Entity<EditorState>,
+        readonly: bool,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if readonly {
+            return false;
+        }
+        let ks = &event.keystroke;
+        if self.inline_completion.suggestion.is_some() {
+            if ks.key.as_str() == "tab"
+                && !ks.modifiers.shift
+                && !ks.modifiers.control
+                && !ks.modifiers.alt
+                && !ks.modifiers.platform
+            {
+                self.accept_inline_completion(editor, window, cx);
+                return true;
+            }
+            if ks.key.as_str() == "escape" && !ks.modifiers.modified() {
+                self.clear_inline_completion(cx);
+                return true;
+            }
+        }
+        if ks.key.as_str() == "]"
+            && ks.modifiers.alt
+            && !ks.modifiers.control
+            && !ks.modifiers.platform
+        {
+            self.inline_completion.enabled = true;
+            self.schedule_inline_completion(editor, cx);
+            return true;
+        }
+        false
+    }
+
     pub fn render_inline_completion_bar(
         &self,
         id_prefix: &'static str,
@@ -2389,7 +2438,7 @@ impl SlideEditor {
                 )
                 .child(
                     Button::new(SharedString::from(format!("{id_prefix}-inline-accept")))
-                        .label("挿入")
+                        .label("挿入 (Tab)")
                         .compact()
                         .primary()
                         .disabled(readonly)
@@ -2402,7 +2451,7 @@ impl SlideEditor {
                 )
                 .child(
                     Button::new(SharedString::from(format!("{id_prefix}-inline-dismiss")))
-                        .label("却下")
+                        .label("却下 (Esc)")
                         .compact()
                         .ghost()
                         .on_click(cx.listener(|this, _ev, _window, cx| {
@@ -2411,9 +2460,9 @@ impl SlideEditor {
                 );
         } else {
             let hint = if enabled {
-                "入力を止めると AI が続きを提案します"
+                "入力停止で提案 / Alt+]: 今すぐ補完"
             } else {
-                "GitHub Models / AI で Markdown の続きを先読み補完"
+                "GitHub Models / AI で先読み補完 (Alt+]: 今すぐ補完)"
             };
             bar = bar.child(
                 div()

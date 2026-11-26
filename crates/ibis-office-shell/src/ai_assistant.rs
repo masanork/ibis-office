@@ -5386,12 +5386,33 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         let header = header.justify_end();
         #[cfg(target_family = "wasm")]
-        let header = header.justify_between().child(
+        let header = header.justify_between().child(if browser_models.is_empty() {
             div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child(model_caption),
-        );
+                .child(model_caption)
+                .into_any_element()
+        } else {
+            let selected = browser_models.iter().find(|model| model.key == cfg.model);
+            let editor = cx.weak_entity();
+            let items = browser_models
+                .iter()
+                .map(|model| {
+                    let key = model.key.clone();
+                    crate::chrome::DropdownItem::new(model.label.clone())
+                        .checked(model.key == cfg.model)
+                        .on_select(std::rc::Rc::new(move |editor, window, cx| {
+                            editor.select_browser_model(key.clone(), window, cx);
+                        }))
+                })
+                .collect();
+            let label = selected
+                .map(|model| model.label.clone())
+                .unwrap_or_else(|| cfg.model.clone());
+            crate::chrome::Dropdown::new("ai-header-model", label, items, &editor)
+                .searchable(false)
+                .into_any_element()
+        });
         let header = header
             .child(
                 h_flex()

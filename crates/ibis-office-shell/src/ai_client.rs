@@ -1545,9 +1545,15 @@ pub(crate) async fn complete_inline_suggestion(prefix: &str, suffix: &str) -> Re
         let catalog = load_browser_catalog().await?;
         set_browser_csrf(&catalog.csrf);
     }
+    let saved_model = AiConfig::load_saved().model;
+    let model = if saved_model.is_empty() {
+        sorane_github::DEFAULT_GITHUB_MODEL.to_string()
+    } else {
+        saved_model
+    };
     let config = AiConfig {
         base_url: String::new(),
-        model: sorane_github::DEFAULT_GITHUB_MODEL.to_string(),
+        model,
         api_key: String::new(),
     };
     let messages = build_inline_completion_messages(prefix, suffix);
