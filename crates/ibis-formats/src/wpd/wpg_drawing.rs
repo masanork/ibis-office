@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use image::RgbaImage;
 use tiny_skia::{
     Color, ColorU8, FillRule, GradientStop, IntSize, LinearGradient, Paint, Path, PathBuilder,
-    Pixmap, PixmapPaint, Point, Rect, SpreadMode, Stroke, StrokeDash, Transform,
+    Pixmap, PixmapPaint, Point, RadialGradient, Rect, SpreadMode, Stroke, StrokeDash, Transform,
 };
 
 use super::{
@@ -33,36 +33,111 @@ struct Compound {
 
 struct Style {
     fill: Fill,
-    gradient_angle: Option<f32>,
+    gradient: Option<GradientGeometry>,
     pen: [u8; 4],
     pen_width: f32,
     pen_pattern: u16,
+}
+
+#[derive(Clone, Copy)]
+struct GradientGeometry {
+    angle: f32,
+    reference: [u16; 2],
 }
 
 enum Fill {
     Solid(Color),
     Linear {
         angle: f32,
-        start: Color,
-        end: Color,
+        stops: Vec<GradientStop>,
+    },
+    Radial {
+        stops: Vec<GradientStop>,
     },
 }
 
 impl Fill {
+    fn read(record: &[u8], geometry: Option<GradientGeometry>) -> Option<Self> {
+        let kind = *record.first()?;
+        if kind == 0 {
+            return Some(Self::Solid(brush_color(record.get(1..)?)?));
+        }
+        let geometry = geometry?;
+        let count = usize::from(word(record, 1)?);
+        if count < 2 {
+            return None;
+        }
+        let colors_end = 3 + 4 * count;
+        let colors = record.get(3..colors_end)?;
+        let positions = record.get(colors_end..colors_end + 2 * (count - 1))?;
+        match (kind, geometry.reference) {
+            (1, [u16::MAX, u16::MAX]) => {
+                // The stored order runs from the ending color back to the start.
+                // For this full-span form the last stored position is the endpoint.
+                let mut stops = Vec::with_capacity(count);
+                let mut offset = 0;
+                for (index, color) in colors.chunks_exact(4).enumerate() {
+                    stops.push(GradientStop::new(
+                        1.0 - f32::from(offset) / f32::from(u16::MAX),
+                        brush_color(color)?,
+                    ));
+                    if index + 1 < count {
+                        let next = if count == 2 {
+                            u16::MAX
+                        } else {
+                            word(positions, index * 2)?
+                        };
+                        if next <= offset || (next == u16::MAX) != (index + 2 == count) {
+                            return None;
+                        }
+                        offset = next;
+                    }
+                }
+                stops.reverse();
+                Some(Self::Linear {
+                    angle: geometry.angle,
+                    stops,
+                })
+            }
+            (3, [32768, 32768]) if count == 2 => Some(Self::Radial {
+                stops: vec![
+                    GradientStop::new(0.0, brush_color(colors)?),
+                    GradientStop::new(1.0, brush_color(colors.get(4..)?)?),
+                ],
+            }),
+            _ => None,
+        }
+    }
+
     fn paint(&self, path: &Path) -> Option<Paint<'static>> {
         let mut paint = Paint::default();
-        match *self {
-            Self::Solid(color) => paint.set_color(color),
-            Self::Linear { angle, start, end } => {
-                let bounds = path.bounds();
+        let bounds = path.bounds();
+        let cx = (bounds.left() + bounds.right()) * 0.5;
+        let cy = (bounds.top() + bounds.bottom()) * 0.5;
+        match self {
+            Self::Solid(color) => paint.set_color(*color),
+            Self::Linear { angle, stops } => {
                 let (dx, dy) = angle.sin_cos();
-                let cx = (bounds.left() + bounds.right()) * 0.5;
-                let cy = (bounds.top() + bounds.bottom()) * 0.5;
                 let extent = (dx.abs() * bounds.width() + dy.abs() * bounds.height()) * 0.5;
                 paint.shader = LinearGradient::new(
                     Point::from_xy(cx - dx * extent, cy - dy * extent),
                     Point::from_xy(cx + dx * extent, cy + dy * extent),
-                    vec![GradientStop::new(0.0, start), GradientStop::new(1.0, end)],
+                    stops.clone(),
+                    SpreadMode::Pad,
+                    Transform::identity(),
+                )?;
+            }
+            Self::Radial { stops } => {
+                let diameter = bounds.width().max(bounds.height());
+                if (bounds.width() - bounds.height()).abs() > diameter * 1e-5 {
+                    return None;
+                }
+                let center = Point::from_xy(cx, cy);
+                paint.shader = RadialGradient::new(
+                    center,
+                    center,
+                    diameter * 0.5,
+                    stops.clone(),
                     SpreadMode::Pad,
                     Transform::identity(),
                 )?;
@@ -72,11 +147,16 @@ impl Fill {
     }
 }
 
+fn brush_color(bytes: &[u8]) -> Option<Color> {
+    let [r, g, b, transparency] = *bytes.first_chunk::<4>()?;
+    Some(Color::from_rgba8(r, g, b, 255 - transparency))
+}
+
 impl Default for Style {
     fn default() -> Self {
         Self {
             fill: Fill::Solid(Color::BLACK),
-            gradient_angle: None,
+            gradient: None,
             pen: [0, 0, 0, 255],
             pen_width: 0.0,
             pen_pattern: 0,
@@ -179,37 +259,15 @@ impl Drawing {
                 self.style.pen_width = u32::from_le_bytes(record.get(..4)?.try_into().ok()?) as f32
             }
             0x2f => {
-                // Basic gradients span the full shape. Other reference points
-                // and gradient flags require different stop placement.
-                self.style.gradient_angle =
-                    match (word(record, 4)?, word(record, 6)?, word(record, 8)?) {
-                        (u16::MAX, u16::MAX, 0) => {
-                            let degrees =
-                                f32::from(word(record, 2)?) + f32::from(word(record, 0)?) / 65536.0;
-                            Some(degrees.to_radians())
-                        }
-                        _ => None,
-                    };
+                let degrees = f32::from(word(record, 2)?) + f32::from(word(record, 0)?) / 65536.0;
+                let reference = [word(record, 4)?, word(record, 6)?];
+                // Anchored and granular gradients require separate geometry.
+                self.style.gradient = (word(record, 8)? == 0).then_some(GradientGeometry {
+                    angle: degrees.to_radians(),
+                    reference,
+                });
             }
-            0x31 => {
-                let rgba = |bytes| {
-                    let [r, g, b, a] = color(bytes)?;
-                    Some(Color::from_rgba8(r, g, b, a))
-                };
-                self.style.fill = match *record.first()? {
-                    0 => Fill::Solid(rgba(record.get(1..)?)?),
-                    1 if word(record, 1)? == 2 => {
-                        word(record, 11)?; // The two-color form includes a position word.
-                        Fill::Linear {
-                            angle: self.style.gradient_angle?,
-                            // WPG 2 stores the ending color first.
-                            start: rgba(record.get(7..)?)?,
-                            end: rgba(record.get(3..)?)?,
-                        }
-                    }
-                    _ => return None,
-                };
-            }
+            0x31 => self.style.fill = Fill::read(record, self.style.gradient)?,
             0x08 => {
                 let id = word(record, 0)?;
                 let pairs = usize::from(word(record, 2)?);

@@ -751,6 +751,33 @@ mod tests {
     }
 
     #[test]
+    fn wpg2_linear_stops_and_centered_radial_fill_survive_docx_conversion() {
+        let data = include_bytes!("../../../test/fixtures/wordperfect/gradient-stops-wpg2.wpd");
+        let opened = open(data).unwrap();
+        assert_eq!(opened.import_warning, None);
+        let media = opened.presentation.media.first().unwrap();
+        let pixels = image::load_from_memory(&media.data).unwrap().to_rgba8();
+        assert_eq!(pixels.dimensions(), (300, 225));
+
+        // The green stop is 37.5% across the rectangle, before its midpoint.
+        let green = pixels.get_pixel(63, 112).0;
+        assert!(green[0] < 30 && green[1] > 215 && green[2].abs_diff(100) <= 4);
+        assert!(pixels.get_pixel(30, 112).0[2] > 170);
+        assert!(pixels.get_pixel(78, 112).0[1] < 200);
+        assert!(pixels.get_pixel(130, 112).0[0] > 200);
+
+        // The circle has a red center and a blue rim.
+        let center = pixels.get_pixel(220, 112).0;
+        assert!(center[0] > 225 && center[2] < 51);
+        for (x, y) in [(249, 112), (220, 142), (190, 112), (220, 82)] {
+            let pixel = pixels.get_pixel(x, y).0;
+            assert!(pixel[0].abs_diff(131) <= 4 && pixel[2].abs_diff(125) <= 4);
+        }
+        assert!(pixels.get_pixel(275, 112).0[2] > 188);
+        assert_eq!(pixels.get_pixel(284, 112).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
     fn wpg2_linear_gradients_survive_docx_conversion() {
         let data = include_bytes!("../../../test/fixtures/wordperfect/linear-gradient-wpg2.wpd");
         let opened = open(data).unwrap();
