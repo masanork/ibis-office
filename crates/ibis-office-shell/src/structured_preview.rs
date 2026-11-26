@@ -54,9 +54,10 @@ pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<O
     let mut body = Vec::new();
     let t = crate::i18n::text;
 
-    // Header title & read-only notice
+    // Header title & read-only notice (Heading1 for document outline root)
     body.push(Block::Paragraph(FlowParagraph {
         id: fresh_id(),
+        style: Some("Heading1".to_string()),
         runs: vec![
             FlowRun::new(
                 FlowRunKind::Text(format!("{}  ", literal(&t("structured-preview.title")))),
@@ -149,6 +150,7 @@ pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<O
         for field in &preview.fields {
             body.push(build_kv_paragraph(
                 0,
+                "",
                 &field.name,
                 &field.value,
                 (!field.path.is_empty()).then_some(field.path.as_str()),
@@ -157,14 +159,25 @@ pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<O
             ));
         }
     } else {
-        for block in &preview.blocks {
+        for (idx, block) in preview.blocks.iter().enumerate() {
+            let tree_prefix = tree_branch_prefix(&preview.blocks, idx);
             match block {
                 PreviewBlock::Section {
                     title,
                     badge,
                     depth,
                 } => {
-                    let mut runs = vec![FlowRun::new(
+                    let mut runs = Vec::new();
+                    if !tree_prefix.is_empty() {
+                        runs.push(FlowRun::new(
+                            FlowRunKind::Text(tree_prefix.to_string()),
+                            FlowRunStyle {
+                                color: Rgb(0x94A3B8),
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                    runs.push(FlowRun::new(
                         FlowRunKind::Text(literal(title)),
                         FlowRunStyle {
                             bold: true,
@@ -172,7 +185,7 @@ pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<O
                             color: Rgb(0x0F172A),
                             ..Default::default()
                         },
-                    )];
+                    ));
                     if let Some(b) = badge {
                         runs.push(FlowRun::new(
                             FlowRunKind::Text(format!("  {}", literal(b))),
@@ -184,8 +197,10 @@ pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<O
                         ));
                     }
                     let indent = (*depth as i64) * 180_000;
+                    let heading_level = (depth + 2).min(6);
                     body.push(Block::Paragraph(FlowParagraph {
                         id: fresh_id(),
+                        style: Some(format!("Heading{heading_level}")),
                         runs,
                         direct: ParaFormat {
                             left: (indent > 0).then_some(indent),
@@ -218,6 +233,7 @@ pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<O
                 } => {
                     body.push(build_kv_paragraph(
                         *depth,
+                        tree_prefix,
                         key,
                         value,
                         (!path.is_empty() && path != key).then_some(path.as_str()),
@@ -484,8 +500,41 @@ fn value_run_style(kind: ValueKind) -> FlowRunStyle {
     }
 }
 
+fn block_depth(block: &PreviewBlock) -> Option<usize> {
+    match block {
+        PreviewBlock::Section { depth, .. }
+        | PreviewBlock::KeyValue { depth, .. }
+        | PreviewBlock::Table { depth, .. }
+        | PreviewBlock::ChatTurn { depth, .. } => Some(*depth),
+        PreviewBlock::PreferencePair { .. } => Some(1),
+        PreviewBlock::Callout { .. } => None,
+    }
+}
+
+fn tree_branch_prefix(blocks: &[PreviewBlock], idx: usize) -> &'static str {
+    let Some(d) = block_depth(&blocks[idx]) else {
+        return "";
+    };
+    if d == 0 {
+        return "";
+    }
+    for next in &blocks[idx + 1..] {
+        let Some(nd) = block_depth(next) else {
+            continue;
+        };
+        if nd < d {
+            return "└─ ";
+        }
+        if nd == d {
+            return "├─ ";
+        }
+    }
+    "└─ "
+}
+
 fn build_kv_paragraph(
     depth: usize,
+    tree_prefix: &str,
     key: &str,
     value: &str,
     path: Option<&str>,
@@ -497,14 +546,24 @@ fn build_kv_paragraph(
     } else {
         Rgb(0x0F172A)
     };
-    let mut runs = vec![FlowRun::new(
+    let mut runs = Vec::new();
+    if !tree_prefix.is_empty() {
+        runs.push(FlowRun::new(
+            FlowRunKind::Text(tree_prefix.to_string()),
+            FlowRunStyle {
+                color: Rgb(0x94A3B8),
+                ..Default::default()
+            },
+        ));
+    }
+    runs.push(FlowRun::new(
         FlowRunKind::Text(literal(key)),
         FlowRunStyle {
             bold: true,
             color: key_color,
             ..Default::default()
         },
-    )];
+    ));
     if !value.is_empty() {
         runs.push(FlowRun::new(
             FlowRunKind::Text(format!("  {}", literal(value))),

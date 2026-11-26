@@ -167,6 +167,11 @@ fn detects_and_validates_ai_sft_and_rlhf_datasets_across_json_and_jsonl() {
     )));
     assert!(sft.blocks.iter().any(|b| matches!(
         b,
+        PreviewBlock::Table { title: Some(t), rows, .. }
+            if t.starts_with("Record Index") && rows.len() == 3
+    )));
+    assert!(sft.blocks.iter().any(|b| matches!(
+        b,
         PreviewBlock::ChatTurn { role, content, .. } if role == "assistant" && content == "Hello!"
     )));
 

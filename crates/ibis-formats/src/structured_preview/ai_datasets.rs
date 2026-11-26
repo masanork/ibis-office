@@ -159,17 +159,26 @@ pub(super) fn read_jsonl(
         return Ok((fields, summary, blocks));
     }
     if let Some(primary_kind) = refs.iter().find_map(|r| detect_record_kind(r)) {
-        let (summary, blocks) = build_ai_dataset_preview(
+        let (summary, mut blocks) = build_ai_dataset_preview(
             &refs,
             primary_kind,
             byte_size,
             fields.len(),
-            malformed_lines,
+            malformed_lines.clone(),
         );
+        // Insert a compact Record Index overview table right after Statistics for multi-record JSONL.
+        if parsed_records.len() > 1 {
+            let index_table = build_jsonl_index_table(&parsed_records, &malformed_lines);
+            let insert_at = blocks
+                .iter()
+                .position(|b| matches!(b, PreviewBlock::Table { title: Some(t), .. } if t.ends_with("Statistics")))
+                .map_or(0, |p| p + 1);
+            blocks.insert(insert_at, index_table);
+        }
         return Ok((fields, summary, blocks));
     }
 
-    // Generic JSONL fallback: render summary + uniform table or first N records.
+    // Generic JSONL fallback: render summary + Record Index + first N records.
     let mut blocks = Vec::new();
     let mut warnings = Vec::new();
     if !malformed_lines.is_empty() {
@@ -184,6 +193,9 @@ pub(super) fn read_jsonl(
             title: "Malformed JSONL lines".into(),
             body: msg,
         });
+    }
+    if parsed_records.len() > 1 {
+        blocks.push(build_jsonl_index_table(&parsed_records, &malformed_lines));
     }
     let slice_val = Value::Array(
         parsed_records
@@ -201,6 +213,169 @@ pub(super) fn read_jsonl(
         warnings,
     );
     Ok((fields, summary, blocks))
+}
+
+fn build_jsonl_index_table(
+    parsed_records: &[(usize, Value)],
+    malformed_lines: &[usize],
+) -> PreviewBlock {
+    const MAX_INDEX_ROWS: usize = 50;
+    let mut rows: Vec<Vec<TableCellValue>> = Vec::new();
+    for (line_no, val) in parsed_records.iter().take(MAX_INDEX_ROWS) {
+        let (preview_txt, detail_txt, status_txt, status_kind) = summarize_jsonl_record(val);
+        rows.push(vec![
+            TableCellValue {
+                text: format!("L{line_no}"),
+                kind: ValueKind::Number,
+            },
+            TableCellValue {
+                text: preview_txt,
+                kind: ValueKind::String,
+            },
+            TableCellValue {
+                text: detail_txt,
+                kind: ValueKind::Attribute,
+            },
+            TableCellValue {
+                text: status_txt,
+                kind: status_kind,
+            },
+        ]);
+    }
+    for &bad_line in malformed_lines.iter().take(10) {
+        rows.push(vec![
+            TableCellValue {
+                text: format!("L{bad_line}"),
+                kind: ValueKind::Number,
+            },
+            TableCellValue {
+                text: "(parse error)".into(),
+                kind: ValueKind::Null,
+            },
+            TableCellValue {
+                text: "-".into(),
+                kind: ValueKind::Empty,
+            },
+            TableCellValue {
+                text: "ERR: malformed JSON".into(),
+                kind: ValueKind::Boolean,
+            },
+        ]);
+    }
+    PreviewBlock::Table {
+        title: Some(format!("Record Index ({} records)", parsed_records.len())),
+        depth: 0,
+        headers: vec![
+            "Line".into(),
+            "Preview".into(),
+            "Shape / Turns".into(),
+            "Status".into(),
+        ],
+        rows,
+    }
+}
+
+fn summarize_jsonl_record(val: &Value) -> (String, String, String, ValueKind) {
+    let snippet = |s: &str| -> String {
+        let single = s.replace(['\r', '\n'], " ");
+        let mut out: String = single.chars().take(56).collect();
+        if single.chars().count() > 56 {
+            out.push('…');
+        }
+        out
+    };
+    if let Some(kind) = detect_record_kind(val) {
+        match kind {
+            AiDatasetKind::SftOpenAi => {
+                let msgs = val.get("messages").and_then(Value::as_array);
+                let n = msgs.map_or(0, Vec::len);
+                let first_user = msgs
+                    .and_then(|arr| {
+                        arr.iter()
+                            .find(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+                            .or_else(|| arr.first())
+                    })
+                    .map(|m| extract_text(m.get("content")))
+                    .unwrap_or_default();
+                let empty_asst = msgs.is_some_and(|arr| {
+                    arr.iter().any(|m| {
+                        m.get("role").and_then(Value::as_str) == Some("assistant")
+                            && extract_text(m.get("content")).trim().is_empty()
+                            && m.get("tool_calls").is_none()
+                    })
+                });
+                return (
+                    snippet(&first_user),
+                    format!("{n} turns"),
+                    if empty_asst {
+                        "WARN: empty assistant".into()
+                    } else {
+                        "OK".into()
+                    },
+                    if empty_asst {
+                        ValueKind::Boolean
+                    } else {
+                        ValueKind::String
+                    },
+                );
+            }
+            AiDatasetKind::RlhfDpo => {
+                let prompt = extract_text(val.get("prompt"));
+                let chosen = format_preference_side(val.get("chosen"));
+                let rejected = format_preference_side(val.get("rejected"));
+                let dup = chosen.trim() == rejected.trim() && !chosen.trim().is_empty();
+                let empty = chosen.trim().is_empty() || rejected.trim().is_empty();
+                let status = if dup {
+                    ("WARN: chosen == rejected".into(), ValueKind::Boolean)
+                } else if empty {
+                    ("WARN: empty side".into(), ValueKind::Boolean)
+                } else {
+                    ("OK".into(), ValueKind::String)
+                };
+                return (
+                    snippet(if prompt.is_empty() { &chosen } else { &prompt }),
+                    "DPO pair".into(),
+                    status.0,
+                    status.1,
+                );
+            }
+            AiDatasetKind::RlhfKto => {
+                let prompt = extract_text(val.get("prompt"));
+                let lbl = val.get("label").and_then(Value::as_bool);
+                return (
+                    snippet(&prompt),
+                    format!("KTO ({})", lbl.map_or("?".to_string(), |b| b.to_string())),
+                    "OK".into(),
+                    ValueKind::String,
+                );
+            }
+            _ => {}
+        }
+    }
+    let summary = match val {
+        Value::Object(map) => {
+            let keys: Vec<&str> = map.keys().take(4).map(String::as_str).collect();
+            (
+                snippet(&keys.join(", ")),
+                format!("{{{} keys}}", map.len()),
+                "OK".into(),
+                ValueKind::String,
+            )
+        }
+        Value::Array(arr) => (
+            snippet(&val.to_string()),
+            format!("[{} items]", arr.len()),
+            "OK".into(),
+            ValueKind::String,
+        ),
+        other => (
+            snippet(&other.to_string()),
+            "scalar".into(),
+            "OK".into(),
+            ValueKind::String,
+        ),
+    };
+    summary
 }
 
 fn build_ai_dataset_preview(
