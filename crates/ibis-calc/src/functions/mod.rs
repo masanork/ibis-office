@@ -21,6 +21,7 @@ mod financial;
 mod groupby;
 mod identifier_match;
 mod info;
+mod json;
 mod kana_match;
 mod logical;
 mod lookup;
@@ -42,8 +43,11 @@ pub type Func = fn(&mut Ctx, &[Expr]) -> Value;
 /// The function named `name` (upper case, no prefix), if the engine has it.
 pub fn lookup(name: &str) -> Option<Func> {
     match name {
-        "IBIS.FIELDMATCH" => return Some(field_match::field_match),
-        "IBIS.RECORDMATCH" => return Some(field_match::record_match),
+        "SORANE.FIELDMATCH" | "IBIS.FIELDMATCH" => return Some(field_match::field_match),
+        "SORANE.JSONKEYS" => return Some(json::json_keys),
+        "SORANE.JSONTABLE" => return Some(json::json_table),
+        "SORANE.JSONVALUE" => return Some(json::json_value),
+        "SORANE.RECORDMATCH" | "IBIS.RECORDMATCH" => return Some(field_match::record_match),
         _ => {}
     }
     math::get(name).or_else(|| logical::get(name)).or_else(|| info::get(name)).or_else(|| text::get(name)).or_else(|| stat::get(name)).or_else(|| lookup::get(name)).or_else(|| date::get(name)).or_else(|| financial::get(name)).or_else(|| groupby::get(name)).or_else(|| ets::get(name)).or_else(|| engineering::get(name)).or_else(|| database::get(name))

@@ -43,7 +43,7 @@ fn functions_beyond_the_official_list_are_explicitly_allowed() {
     let (all, _) = official();
     let beyond: BTreeSet<String> = ibis_calc::functions::implemented().into_iter().map(str::to_string).filter(|n| !all.contains(n)).collect();
     println!("beyond the list: {beyond:?}");
-    let allowed: BTreeSet<&str> = ["ANCHORARRAY", "SINGLE", "ECMA.CEILING", "FIELDVALUE", "PY", "COPILOT", "DATESTRING", "NUMBERSTRING", "IBIS.FIELDMATCH", "IBIS.RECORDMATCH"].into_iter().collect();
+    let allowed: BTreeSet<&str> = ["ANCHORARRAY", "SINGLE", "ECMA.CEILING", "FIELDVALUE", "PY", "COPILOT", "DATESTRING", "NUMBERSTRING", "IBIS.FIELDMATCH", "IBIS.RECORDMATCH", "SORANE.FIELDMATCH", "SORANE.JSONKEYS", "SORANE.JSONTABLE", "SORANE.JSONVALUE", "SORANE.RECORDMATCH"].into_iter().collect();
     let unexpected: Vec<&String> = beyond.iter().filter(|n| !allowed.contains(n.as_str())).collect();
     assert!(unexpected.is_empty(), "{unexpected:?}");
 }
