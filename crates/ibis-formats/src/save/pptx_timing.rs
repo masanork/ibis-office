@@ -461,6 +461,9 @@ fn timing_xml(p: &str, animations: &[Animation], spid: &dyn Fn(ShapeId) -> Optio
                 let trigger_spid = spid(*s).ok_or_else(|| unsupported("トリガー図形のアニメーション"))?;
                 format!("<{p}cond evt=\"onClick\" delay=\"0\"><{p}tgtEl><{p}spTgt spid=\"{trigger_spid}\"/></{p}tgtEl></{p}cond>")
             }
+            AnimationTrigger::OnGroupClick { native_id, .. } => {
+                format!("<{p}cond evt=\"onClick\" delay=\"0\"><{p}tgtEl><{p}spTgt spid=\"{native_id}\"/></{p}tgtEl></{p}cond>")
+            }
             AnimationTrigger::OnMediaBookmark { shape, bookmark } => {
                 let trigger_spid = spid(*shape).ok_or_else(|| unsupported("トリガーメディア図形のアニメーション"))?;
                 let bmk_escaped = bookmark.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
@@ -655,7 +658,7 @@ mod tests {
             trigger: AnimationTrigger::None,
             paragraph: None, chars: None, text_unit: None, path: Vec::new(),
             chart_element: None, chart_build: None,
-            dgm_element: None, dgm_build: None, behaviors: Vec::new(),
+            dgm_element: None, dgm_build: None, behaviors: Vec::new(), group_pivot: None,
         }
     }
 

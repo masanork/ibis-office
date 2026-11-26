@@ -107,6 +107,14 @@ pub enum Turn3dKind {
     Vortex,
     /// 扉 and 窓: the old slide's halves swing back and the new slide grows from the middle (the motion is (1, 0) for the halves above and below, (0, 1) for those at the sides; `window` on grey).
     Doors { window: bool },
+    /// キラキラ（グリッター）: hexagon or diamond tiles sweeping across the slide, flipping in 3D with specular glint.
+    Glitter { hexagon: bool },
+    /// 華やか（プレステージ）: shimmering facets sweeping across the slide with metallic sheen.
+    Prestige,
+    /// 割れる（フラクチャー）: the old slide shatters into 3D shards that tumble and fall away, revealing the new slide.
+    Fracture,
+    /// くしゃくしゃ（クラッシュ）: the old slide crumples into a 3D paper ball and drops away, revealing the new slide.
+    Crush,
 }
 
 /// The easing of transition `effect` at `t` (0 to 1 of its time), where PowerPoint's differs from the common ease-in-out
@@ -161,7 +169,7 @@ pub fn progress_with(effect: &str, token: Option<&str>, t: f64) -> Option<f64> {
         "cube" | "rotate" => Some(bezier_ease(0.326, 0.69, t)),
         "box" | "orbit" => Some(bezier_ease(0.346, 0.65, t)),
         // コンベヤー runs at a constant speed in the table of `turn3d.rs`; ハニカム's planes move by the frame (`turn3d_tiles::honeycomb`).
-        "conveyor" | "gallery" | "switch" | "ferris" | "fallOver" | "pageCurlSingle" | "peelOff" | "curtains" | "wind" | "pageCurlDouble" | "drape" | "airplane" | "origami" | "ripple" | "honeycomb" | "vortex" | "comb" | "blinds" | "checker" | "doors" | "window" => Some(t),
+        "conveyor" | "gallery" | "switch" | "ferris" | "fallOver" | "pageCurlSingle" | "peelOff" | "curtains" | "wind" | "pageCurlDouble" | "drape" | "airplane" | "origami" | "ripple" | "honeycomb" | "vortex" | "comb" | "blinds" | "checker" | "doors" | "window" | "glitter" | "prestige" | "fracture" | "crush" => Some(t),
         "flip" => Some(bezier_ease(0.593, 0.358, t)),
         "wipe" | "split" | "strips" | "dissolve" => Some(t),
         // The shapes' bands travel at a constant speed (measured on PowerPoint for Windows, 1 and 2 seconds); the fade's own
@@ -247,7 +255,7 @@ fn flat_plan(effect: &str, token: &str, q: f64, aspect: f64) -> Option<Transitio
         "drape" => windows(if inv { "randombar(vertical)" } else { "blinds(vertical)" }),
         "wind" | "fallOver" => TransitionPlan::SoftWindows(wipe_strips(if inv { 'l' } else { 'r' }, q)),
         "peelOff" | "pageCurlDouble" | "pageCurlSingle" | "airplane" | "origami" => TransitionPlan::Slide { from: (0.0, 0.0), old_to: if inv { (1.0, 0.0) } else { (-1.0, 0.0) }, new_on_top: false },
-        "prestige" | "fracture" | "crush" => windows("dissolve"),
+        "glitter" | "prestige" | "fracture" | "crush" => windows("dissolve"),
         _ => return None,
     })
 }
@@ -827,10 +835,6 @@ fn motion(token: &str) -> (f64, f64) {
 /// How effect `effect` with option `token` shows the new slide at `q` (0 to 1) of its time, on a slide of `aspect` (width over height).
 pub fn plan(effect: &str, token: Option<&str>, q: f64, aspect: f64) -> TransitionPlan {
     let token = token.unwrap_or("");
-    let windows = |filter: &str| match reveal_rects(filter, true, q, aspect) {
-        Some(rects) => TransitionPlan::Windows(rects),
-        None => TransitionPlan::Fade { through_black: false },
-    };
     match effect {
         "fade" => TransitionPlan::Fade { through_black: token == "thruBlk" },
         "cut" if token == "thruBlk" && q < 0.5 => TransitionPlan::Windows(vec![]),
@@ -896,7 +900,18 @@ pub fn plan(effect: &str, token: Option<&str>, q: f64, aspect: f64) -> Transitio
         // The side the sweep starts at, as the motion: `l` (from the right) (-1, 0), `r` (1, 0), `u` (0, -1), `d` (0, 1).
         "vortex" => TransitionPlan::Turn3d { kind: Turn3dKind::Vortex, motion: match token { "r" => (1.0, 0.0), "u" => (0.0, -1.0), "d" => (0.0, 1.0), _ => (-1.0, 0.0) } },
         "honeycomb" => TransitionPlan::Turn3d { kind: Turn3dKind::Honeycomb, motion: (0.0, 0.0) },
-        "glitter" => windows("dissolve"),
+        "glitter" => TransitionPlan::Turn3d {
+            kind: Turn3dKind::Glitter { hexagon: token.starts_with("hex") },
+            motion: match token.rsplit('-').next().unwrap_or("") {
+                "r" => (1.0, 0.0),
+                "u" => (0.0, -1.0),
+                "d" => (0.0, 1.0),
+                _ => (-1.0, 0.0),
+            },
+        },
+        "prestige" => TransitionPlan::Turn3d { kind: Turn3dKind::Prestige, motion: (1.0, 0.0) },
+        "fracture" => TransitionPlan::Turn3d { kind: Turn3dKind::Fracture, motion: (0.0, 1.0) },
+        "crush" => TransitionPlan::Turn3d { kind: Turn3dKind::Crush, motion: (0.0, 1.0) },
         "shred" => TransitionPlan::Turn3d { kind: Turn3dKind::Shred { particle: matches!(token, "rect-in" | "rect-out" | "rectangle" | "particle") }, motion: (0.0, 0.0) },
         "wedge" => TransitionPlan::SoftWindows(soft_shape(SoftShape::Wedge, 0, false, q, aspect)),
         "diamond" => TransitionPlan::SoftWindows(soft_shape(SoftShape::Diamond, 0, false, q, aspect)),
@@ -1206,5 +1221,18 @@ mod tests {
         // `r` is the mirror image.
         let (right_r, _) = share("r", 0.12, 0.8, 1.0);
         assert!(right_r > 0.97);
+    }
+
+    #[test]
+    fn glitter_prestige_fracture_and_crush_are_3d_transitions_with_flat_stand_ins() {
+        assert_eq!(plan("glitter", Some("hex-l"), 0.5, 16.0 / 9.0), TransitionPlan::Turn3d { kind: Turn3dKind::Glitter { hexagon: true }, motion: (-1.0, 0.0) });
+        assert_eq!(plan("glitter", Some("diamond-r"), 0.5, 16.0 / 9.0), TransitionPlan::Turn3d { kind: Turn3dKind::Glitter { hexagon: false }, motion: (1.0, 0.0) });
+        assert_eq!(plan("prestige", None, 0.5, 16.0 / 9.0), TransitionPlan::Turn3d { kind: Turn3dKind::Prestige, motion: (1.0, 0.0) });
+        assert_eq!(plan("fracture", None, 0.5, 16.0 / 9.0), TransitionPlan::Turn3d { kind: Turn3dKind::Fracture, motion: (0.0, 1.0) });
+        assert_eq!(plan("crush", None, 0.5, 16.0 / 9.0), TransitionPlan::Turn3d { kind: Turn3dKind::Crush, motion: (0.0, 1.0) });
+        for e in ["glitter", "prestige", "fracture", "crush"] {
+            assert_eq!(progress(e, 0.4), Some(0.4), "{e}");
+            assert!(flat_stand_in(e, None, 0.5, 16.0 / 9.0).is_some(), "{e}");
+        }
     }
 }

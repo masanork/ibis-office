@@ -141,7 +141,7 @@ pub fn effect(shape: ShapeId, class: C, look: L) -> Animation {
         trigger: AnimationTrigger::None,
         paragraph: None, chars: None, text_unit: None, path: Vec::new(),
         chart_element: None, chart_build: None,
-        dgm_element: None, dgm_build: None, behaviors: Vec::new(),
+        dgm_element: None, dgm_build: None, behaviors: Vec::new(), group_pivot: None,
     }
 }
 

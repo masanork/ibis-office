@@ -589,6 +589,334 @@ pub(crate) fn vortex(motion: (f64, f64), q: f32, w: f32, h: f32) -> Vec<Card> {
     cards.into_iter().map(|(_, c)| c).collect()
 }
 
+/// キラキラ（グリッター）at `q` (0 to 1, linear) in 3D: a lattice of regular hexagons (`hexagon`) or diamonds sweeping across
+/// the slide in the `motion` direction. Each tile flips 180° in perspective with a slight forward pop and specular glint (`white`).
+pub(crate) fn glitter(hexagon: bool, motion: (f64, f64), q: f32, w: f32, h: f32) -> Vec<Card> {
+    let q = q.clamp(0.0, 1.0);
+    if q <= 0.0 {
+        return vec![Card::flat(Face::Old, Transform3D::identity(), false, 1.0)];
+    }
+    if q >= 1.0 {
+        return vec![Card::flat(Face::New, Transform3D::identity(), false, 1.0)];
+    }
+    let focal = 1.6 * w;
+    let vertical_sweep = motion.1.abs() > motion.0.abs();
+    let mut cards: Vec<(f32, Card)> = Vec::new();
+    // Build tile polygons covering 0..w x 0..h.
+    let mut polys: Vec<(i32, i32, Vec<(f32, f32)>)> = Vec::new();
+    if hexagon {
+        let r = (w.min(h) / 11.0).max(12.0);
+        let dx = 3.0_f32.sqrt() * r;
+        let dy = 1.5 * r;
+        let cols = (w / dx).ceil() as i32 + 2;
+        let rows = (h / dy).ceil() as i32 + 2;
+        for row in -1..=rows {
+            let x_off = if row.rem_euclid(2) == 1 { dx * 0.5 } else { 0.0 };
+            for col in -1..=cols {
+                let (cx, cy) = (col as f32 * dx + x_off, row as f32 * dy);
+                let hex: Vec<(f32, f32)> = (0..6)
+                    .map(|k| {
+                        let a = std::f32::consts::FRAC_PI_3 * k as f32 - std::f32::consts::FRAC_PI_2;
+                        (cx + r * a.cos(), cy + r * a.sin())
+                    })
+                    .collect();
+                let clipped = clip_to_slide(hex, w, h);
+                if clipped.len() >= 3 {
+                    polys.push((col, row, clipped));
+                }
+            }
+        }
+    } else {
+        let s = (w.min(h) / 9.0).max(16.0);
+        let cols = (w / s).ceil() as i32 + 2;
+        let rows = (h / (s * 0.5)).ceil() as i32 + 2;
+        for row in -1..=rows {
+            let x_off = if row.rem_euclid(2) == 1 { s * 0.5 } else { 0.0 };
+            for col in -1..=cols {
+                let (cx, cy) = (col as f32 * s + x_off, row as f32 * s * 0.5);
+                let diamond = vec![(cx, cy - s * 0.5), (cx + s * 0.5, cy), (cx, cy + s * 0.5), (cx - s * 0.5, cy)];
+                let clipped = clip_to_slide(diamond, w, h);
+                if clipped.len() >= 3 {
+                    polys.push((col, row, clipped));
+                }
+            }
+        }
+    }
+    const FLIP_SPAN: f32 = 0.34;
+    for (col, row, poly) in polys {
+        let n = poly.len() as f32;
+        let (cx, cy) = (poly.iter().map(|p| p.0).sum::<f32>() / n, poly.iter().map(|p| p.1).sum::<f32>() / n);
+        let along = if motion.0 > 0.5 {
+            cx / w
+        } else if motion.0 < -0.5 {
+            1.0 - cx / w
+        } else if motion.1 > 0.5 {
+            cy / h
+        } else {
+            1.0 - cy / h
+        };
+        let jitter = (lattice_random(col, row, 0x6117_7e20) - 0.5) * 0.16;
+        let start = (along * (1.0 - FLIP_SPAN) + jitter).clamp(0.0, 1.0 - FLIP_SPAN);
+        let local = ((q - start) / FLIP_SPAN).clamp(0.0, 1.0);
+        let (face, angle) = if local < 0.5 {
+            (Face::Old, local * std::f32::consts::PI)
+        } else {
+            (Face::New, (local - 1.0) * std::f32::consts::PI)
+        };
+        let lift = (local * std::f32::consts::PI).sin();
+        let z = lift * (0.09 + 0.07 * lattice_random(col, row, 0x6117_7e21)) * focal;
+        let tilt = (lattice_random(col, row, 0x6117_7e22) - 0.5) * 0.55 * lift;
+        let white = (lift * lift * (0.55 + 0.45 * lattice_random(col, row, 0x6117_7e23))).clamp(0.0, 0.92);
+        let rot = if vertical_sweep {
+            Transform3D::rotate_x(angle).then(Transform3D::rotate_y(tilt))
+        } else {
+            Transform3D::rotate_y(angle).then(Transform3D::rotate_x(tilt))
+        };
+        let transform = Transform3D::translate(-cx, -cy, 0.0)
+            .then(rot)
+            .then(Transform3D::translate(cx - w / 2.0, cy - h / 2.0, z))
+            .then(Transform3D::perspective(focal))
+            .then(Transform3D::translate(w / 2.0, h / 2.0, 0.0));
+        if let Some(mut card) = polygon_card(face, &poly, transform, 1.0, w, h) {
+            card.white = white;
+            card.shade = 0.85 + 0.15 * (1.0 - lift);
+            cards.push((z, card));
+        }
+    }
+    cards.sort_by(|a, b| a.0.total_cmp(&b.0));
+    cards.into_iter().map(|(_, c)| c).collect()
+}
+
+/// 華やか（プレステージ）at `q` (0 to 1, linear) in 3D: diagonal shimmering facets sweep across the slide, tilting in 3D
+/// with a bright metallic sheen (`white`) as the old slide gives way to the new one.
+pub(crate) fn prestige(q: f32, w: f32, h: f32) -> Vec<Card> {
+    let q = q.clamp(0.0, 1.0);
+    if q <= 0.0 {
+        return vec![Card::flat(Face::Old, Transform3D::identity(), false, 1.0)];
+    }
+    if q >= 1.0 {
+        return vec![Card::flat(Face::New, Transform3D::identity(), false, 1.0)];
+    }
+    const COLS: usize = 12;
+    const ROWS: usize = 7;
+    const SPAN: f32 = 0.42;
+    let focal = 1.8 * w;
+    let (cw, ch) = (w / COLS as f32, h / ROWS as f32);
+    let mut cards: Vec<(f32, Card)> = Vec::new();
+    for r in 0..ROWS {
+        for c in 0..COLS {
+            let (x0, y0) = (c as f32 * cw, r as f32 * ch);
+            let (x1, y1) = (x0 + cw, y0 + ch);
+            let tris = [
+                [(x0, y0), (x1, y0), (x0, y1)],
+                [(x1, y0), (x1, y1), (x0, y1)],
+            ];
+            for (k, tri) in tris.iter().enumerate() {
+                let cx = (tri[0].0 + tri[1].0 + tri[2].0) / 3.0;
+                let cy = (tri[0].1 + tri[1].1 + tri[2].1) / 3.0;
+                // Diagonal sweep from top-left to bottom-right.
+                let along = (0.72 * (cx / w) + 0.28 * (cy / h)).clamp(0.0, 1.0);
+                let jitter = (lattice_random(c as i32 * 2 + k as i32, r as i32, 0x92e5_716e) - 0.5) * 0.08;
+                let start = (along * (1.0 - SPAN) + jitter).clamp(0.0, 1.0 - SPAN);
+                let local = ((q - start) / SPAN).clamp(0.0, 1.0);
+                let (face, angle) = if local < 0.5 {
+                    (Face::Old, local * std::f32::consts::PI)
+                } else {
+                    (Face::New, (local - 1.0) * std::f32::consts::PI)
+                };
+                let bell = (local * std::f32::consts::PI).sin();
+                let z = bell * 0.08 * focal;
+                let sheen = (bell * bell * 0.85).clamp(0.0, 0.85);
+                let transform = Transform3D::translate(-cx, -cy, 0.0)
+                    .then(Transform3D::rotate_y(angle))
+                    .then(Transform3D::rotate_x(0.28 * bell * if k == 0 { 1.0 } else { -1.0 }))
+                    .then(Transform3D::translate(cx - w / 2.0, cy - h / 2.0, z))
+                    .then(Transform3D::perspective(focal))
+                    .then(Transform3D::translate(w / 2.0, h / 2.0, 0.0));
+                if let Some(mut card) = polygon_card(face, tri, transform, 1.0, w, h) {
+                    card.white = sheen;
+                    card.shade = 0.88 + 0.12 * (1.0 - bell);
+                    cards.push((z, card));
+                }
+            }
+        }
+    }
+    cards.sort_by(|a, b| a.0.total_cmp(&b.0));
+    cards.into_iter().map(|(_, c)| c).collect()
+}
+
+/// 割れる（フラクチャー）at `q` (0 to 1, linear) in 3D: the old slide shatters into irregular triangular glass shards that
+/// crack outward, tumble in 3D and fall under gravity, revealing the new slide behind them.
+pub(crate) fn fracture(q: f32, w: f32, h: f32) -> Vec<Card> {
+    let q = q.clamp(0.0, 1.0);
+    if q <= 0.0 {
+        return vec![Card::flat(Face::Old, Transform3D::identity(), false, 1.0)];
+    }
+    if q >= 1.0 {
+        return vec![Card::flat(Face::New, Transform3D::identity(), false, 1.0)];
+    }
+    const COLS: usize = 6;
+    const ROWS: usize = 4;
+    let focal = 1.6 * w;
+    // Jittered interior vertices so shards look like irregular fractured glass while tiling the slide seamlessly at q = 0.
+    let mut grid = vec![vec![(0.0f32, 0.0f32); COLS + 1]; ROWS + 1];
+    for r in 0..=ROWS {
+        for c in 0..=COLS {
+            let bx = w * c as f32 / COLS as f32;
+            let by = h * r as f32 / ROWS as f32;
+            let jx = if c == 0 || c == COLS { 0.0 } else { (lattice_random(c as i32, r as i32, 0xf2ac_0001) - 0.5) * (w / COLS as f32) * 0.55 };
+            let jy = if r == 0 || r == ROWS { 0.0 } else { (lattice_random(c as i32, r as i32, 0xf2ac_0002) - 0.5) * (h / ROWS as f32) * 0.55 };
+            grid[r][c] = ((bx + jx).clamp(0.0, w), (by + jy).clamp(0.0, h));
+        }
+    }
+    let mut cards = vec![Card::flat(Face::New, Transform3D::identity(), false, 1.0)];
+    let mut shards: Vec<(f32, Card)> = Vec::new();
+    for r in 0..ROWS {
+        for c in 0..COLS {
+            let (p00, p10, p01, p11) = (grid[r][c], grid[r][c + 1], grid[r + 1][c], grid[r + 1][c + 1]);
+            let flip_diag = lattice_random(c as i32, r as i32, 0xf2ac_0003) > 0.5;
+            let tris = if flip_diag {
+                [[p00, p10, p11], [p00, p11, p01]]
+            } else {
+                [[p00, p10, p01], [p10, p11, p01]]
+            };
+            for (k, tri) in tris.iter().enumerate() {
+                let cx = (tri[0].0 + tri[1].0 + tri[2].0) / 3.0;
+                let cy = (tri[0].1 + tri[1].1 + tri[2].1) / 3.0;
+                let id = (r * COLS + c) as i32 * 2 + k as i32;
+                let delay = lattice_random(id, 1, 0xf2ac_0004) * 0.16;
+                let t = ((q - delay) / (1.0 - delay)).clamp(0.0, 1.0);
+                if t <= 0.0 {
+                    if let Some(card) = polygon_card(Face::Old, tri, Transform3D::identity(), 1.0, w, h) {
+                        shards.push((0.0, card));
+                    }
+                    continue;
+                }
+                let vx = (cx - w * 0.5) * (0.45 + 0.5 * lattice_random(id, 2, 0xf2ac_0005));
+                let vy_burst = (cy - h * 0.5) * 0.25 - h * 0.12 * lattice_random(id, 3, 0xf2ac_0006);
+                let dx = vx * t;
+                let dy = vy_burst * t + 1.55 * h * t * t;
+                let z = (lattice_random(id, 4, 0xf2ac_0007) - 0.35) * 0.45 * focal * t;
+                let rx = (lattice_random(id, 5, 0xf2ac_0008) - 0.5) * 5.2 * t;
+                let ry = (lattice_random(id, 6, 0xf2ac_0009) - 0.5) * 5.2 * t;
+                let rz = (lattice_random(id, 7, 0xf2ac_000a) - 0.5) * 3.8 * t;
+                let opacity = (1.0 - ((t - 0.72) / 0.28).clamp(0.0, 1.0)).max(0.0);
+                if opacity <= 0.01 {
+                    continue;
+                }
+                let transform = Transform3D::translate(-cx, -cy, 0.0)
+                    .then(Transform3D::rotate_x(rx))
+                    .then(Transform3D::rotate_y(ry))
+                    .then(Transform3D::rotate_z(rz))
+                    .then(Transform3D::translate(cx + dx - w / 2.0, cy + dy - h / 2.0, z))
+                    .then(Transform3D::perspective(focal))
+                    .then(Transform3D::translate(w / 2.0, h / 2.0, 0.0));
+                if let Some(mut card) = polygon_card(Face::Old, tri, transform, opacity, w, h) {
+                    // Subtle glass glint on tumbling shards.
+                    card.white = (rx.sin().abs() * ry.cos().abs() * 0.35 * t).clamp(0.0, 0.35);
+                    card.shade = (0.72 + 0.28 * rx.cos().abs()).clamp(0.6, 1.0);
+                    shards.push((z, card));
+                }
+            }
+        }
+    }
+    shards.sort_by(|a, b| a.0.total_cmp(&b.0));
+    cards.extend(shards.into_iter().map(|(_, c)| c));
+    cards
+}
+
+/// くしゃくしゃ（クラッシュ）at `q` (0 to 1, linear) in 3D: the old slide crumples into a faceted 3D paper ball over the
+/// first half, then tumbles and drops off the bottom of the screen revealing the new slide behind it.
+pub(crate) fn crush(q: f32, w: f32, h: f32) -> Vec<Card> {
+    let q = q.clamp(0.0, 1.0);
+    if q <= 0.0 {
+        return vec![Card::flat(Face::Old, Transform3D::identity(), false, 1.0)];
+    }
+    if q >= 1.0 {
+        return vec![Card::flat(Face::New, Transform3D::identity(), false, 1.0)];
+    }
+    const COLS: usize = 8;
+    const ROWS: usize = 5;
+    let focal = 1.7 * w;
+    // Phase 1 (0..0.58): crumple inward into a tight 3D paper ball.
+    // Phase 2 (0.58..1.0): tumble and fall off the bottom.
+    let c_phase = (q / 0.58).clamp(0.0, 1.0);
+    let crumple = c_phase * c_phase * (3.0 - 2.0 * c_phase);
+    let drop_phase = ((q - 0.52) / 0.48).clamp(0.0, 1.0);
+    let drop_y = 1.45 * h * drop_phase * drop_phase;
+    let ball_rot_x = 0.65 * crumple + 2.2 * drop_phase;
+    let ball_rot_z = -0.35 * crumple + 1.8 * drop_phase;
+    let ball_radius = w.min(h) * 0.22;
+
+    // Deformed 3D positions for each grid vertex (shared by adjacent triangles so the sheet stays connected).
+    let mut pts = vec![vec![([0.0f32; 3], [0.0f32; 2]); COLS + 1]; ROWS + 1];
+    for r in 0..=ROWS {
+        for c in 0..=COLS {
+            let u = c as f32 / COLS as f32;
+            let v = r as f32 / ROWS as f32;
+            let sx = (u - 0.5) * w;
+            let sy = (v - 0.5) * h;
+            let nx = (lattice_random(c as i32, r as i32, 0xc205_0001) - 0.5) * 2.0;
+            let ny = (lattice_random(c as i32, r as i32, 0xc205_0002) - 0.5) * 2.0;
+            let nz = (lattice_random(c as i32, r as i32, 0xc205_0003) - 0.5) * 2.0;
+            // Target crumpled ball position: radial contraction + strong faceted Z ridges.
+            let tx = sx * 0.22 + nx * ball_radius * 0.42;
+            let ty = sy * 0.22 + ny * ball_radius * 0.42;
+            let tz = nz * ball_radius * 0.95;
+            let px = sx + (tx - sx) * crumple;
+            let py = sy + (ty - sy) * crumple;
+            let pz = tz * crumple;
+            pts[r][c] = ([px, py, pz], [u, v]);
+        }
+    }
+
+    let ball_transform = Transform3D::rotate_x(ball_rot_x)
+        .then(Transform3D::rotate_z(ball_rot_z))
+        .then(Transform3D::translate(0.0, drop_y, 0.0))
+        .then(Transform3D::perspective(focal))
+        .then(Transform3D::translate(w / 2.0, h / 2.0, 0.0));
+
+    let mut cards = vec![Card::flat(Face::New, Transform3D::identity(), false, 1.0)];
+    let mut facets: Vec<(f32, Card)> = Vec::new();
+    for r in 0..ROWS {
+        for c in 0..COLS {
+            let (p00, p10, p01, p11) = (pts[r][c], pts[r][c + 1], pts[r + 1][c], pts[r + 1][c + 1]);
+            for tri in [[p00, p10, p11], [p00, p11, p01]] {
+                let (a, b, d) = (tri[0].0, tri[1].0, tri[2].0);
+                let (e1, e2) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+                let nx = e1[1] * e2[2] - e1[2] * e2[1];
+                let ny = e1[2] * e2[0] - e1[0] * e2[2];
+                let nz = e1[0] * e2[1] - e1[1] * e2[0];
+                let len = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-5);
+                // Paper crease shading from facet normal (light from upper-left front).
+                let light = ((-0.35 * nx - 0.45 * ny + 0.82 * nz.abs()) / len).clamp(0.0, 1.0);
+                let shade = 1.0 - crumple * (0.55 - 0.55 * light);
+                let avg_z = (a[2] + b[2] + d[2]) / 3.0;
+                let vertices = Arc::new(vec![
+                    MeshVertex::new(tri[0].0, tri[0].1),
+                    MeshVertex::new(tri[1].0, tri[1].1),
+                    MeshVertex::new(tri[2].0, tri[2].1),
+                ]);
+                facets.push((
+                    avg_z,
+                    Card {
+                        face: Face::Old,
+                        transform: ball_transform,
+                        cull_back: false,
+                        shade: shade.clamp(0.35, 1.0),
+                        mesh: Some(Mesh { vertices, indices: vec![0, 1, 2] }),
+                        white: (crumple * light * 0.14).clamp(0.0, 0.14),
+                        opacity: 1.0,
+                    },
+                ));
+            }
+        }
+    }
+    facets.sort_by(|a, b| a.0.total_cmp(&b.0));
+    cards.extend(facets.into_iter().map(|(_, c)| c));
+    cards
+}
+
 #[cfg(test)]
 mod shred_tests {
     use super::*;
@@ -660,5 +988,30 @@ mod shred_tests {
             assert!(end.iter().all(|c| c.face == Face::New));
             assert!((area(&end) - w * h).abs() < w * h * 0.001, "{}", area(&end));
         }
+    }
+
+    #[test]
+    fn glitter_prestige_fracture_and_crush_build_3d_cards() {
+        let (w, h) = (1280.0, 720.0);
+        for hex in [true, false] {
+            let start = glitter(hex, (-1.0, 0.0), 0.0, w, h);
+            assert_eq!(start.len(), 1);
+            assert_eq!(start[0].face, Face::Old);
+            let mid = glitter(hex, (-1.0, 0.0), 0.5, w, h);
+            assert!(mid.len() > 20, "hex={hex} len={}", mid.len());
+            assert!(mid.iter().any(|c| c.white > 0.1), "specular glint expected");
+            let end = glitter(hex, (-1.0, 0.0), 1.0, w, h);
+            assert_eq!(end.len(), 1);
+            assert_eq!(end[0].face, Face::New);
+        }
+        let p_mid = prestige(0.5, w, h);
+        assert!(p_mid.len() > 40);
+        assert!(p_mid.iter().any(|c| c.white > 0.1));
+        let f_mid = fracture(0.4, w, h);
+        assert_eq!(f_mid[0].face, Face::New);
+        assert!(f_mid.iter().skip(1).any(|c| c.face == Face::Old));
+        let c_mid = crush(0.4, w, h);
+        assert_eq!(c_mid[0].face, Face::New);
+        assert!(c_mid.iter().skip(1).any(|c| c.face == Face::Old && c.shade < 0.99));
     }
 }
