@@ -436,6 +436,9 @@ pub(crate) const DRAW_IX: usize = usize::MAX - 1;
 const MORE_WIDTH: f32 = 24.0;
 /// Room left at the right end of the bar.
 const BAR_TRAILING: f32 = 8.0;
+/// Room reserved at the right end of the bar when an embedded workspace pane surfaces the format's
+/// primary mode button (e.g. PPTX's ▶ スライドショー pill) in the menu bar because `show_title_row` is false.
+const EMBEDDED_MODE_BUTTON_RESERVE: f32 = 168.0;
 /// The logo's height in the bar (the old `28 * 0.8 * 0.8`: it stays as it was).
 const LOGO_HEIGHT_IN_BAR: f32 = 28. * 0.8 * 0.8;
 /// How long a note shows in the bar, in seconds.
@@ -778,6 +781,13 @@ impl SlideEditor {
     pub(crate) fn render_menu_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let menus = self.bar_menu_ids();
         let layout = self.bar_layout_menus(&menus, window);
+        let trailing_mode_button = if self.has_document && self.embedded_chrome.is_some_and(|p| !p.show_title_row) {
+            let editor = cx.entity().downgrade();
+            crate::format::with_format!(self, title_mode_button(self, &editor, false))
+        } else {
+            None
+        };
+        let bar_height = if trailing_mode_button.is_some() { 34. } else { 28. };
         let open_ix = self.open_menu.as_ref().map(|o| o.ix);
         let logo_height = LOGO_HEIGHT_IN_BAR;
         let dark = crate::palette::is_dark();
@@ -857,7 +867,7 @@ impl SlideEditor {
             .when(window.viewport_size().width < px(600.), |bar| {
                 bar.overflow_x_scroll().track_scroll(&self.menu_bar_scroll)
             })
-            .h(px(28.))
+            .h(px(bar_height))
             .flex_shrink_0()
             .pl(px(layout.leading))
             .items_center()
@@ -924,6 +934,7 @@ impl SlideEditor {
             .child(div().flex_1())
             .when_some(self.menu_notice.clone(), |bar, text| bar.child(div().px(px(8.)).text_size(px(12.)).text_color(muted).child(text)))
             .when_some(help, |bar, ix| bar.child(one(cx, ix)))
+            .when_some(trailing_mode_button, |bar, btn| bar.child(div().flex_none().pl(px(8.)).child(btn)))
             .child(div().w(px(BAR_TRAILING)))
     }
 
@@ -937,11 +948,20 @@ impl SlideEditor {
     pub(crate) fn bar_layout_menus(&self, menus: &[BarMenu], window: &Window) -> BarLayout {
         let slots = bar_slots(menus, self.kind(), window);
         let viewport = f32::from(window.viewport_size().width);
-        let total: f32 = slots.iter().map(|s| s.width).sum();
         let logo_width = LOGO_HEIGHT_IN_BAR * crate::chrome::LOGO_ASPECT + 2.0 * MENU_BAR_BUTTON_PADDING;
-        let show_logo = viewport >= 8. + total + 16. + LOGO_HEIGHT_IN_BAR * crate::chrome::LOGO_ASPECT + 12.;
+        // Keep the brand logo visible on all desktop/tablet/web windows (>= 600px); overflow menus
+        // fold into ▾ instead of hiding the logo. Phone-narrow viewports (< 600px) keep the menu bar compact.
+        let show_logo = viewport >= 600.0;
         let leading = bar_leading(show_logo);
-        let available = viewport - leading - if show_logo { logo_width } else { 0.0 } - BAR_TRAILING;
+        let trailing_reserve = if self.has_document
+            && self.embedded_chrome.is_some_and(|p| !p.show_title_row)
+            && self.pages_are_slides()
+        {
+            EMBEDDED_MODE_BUTTON_RESERVE
+        } else {
+            0.0
+        };
+        let available = (viewport - leading - if show_logo { logo_width } else { 0.0 } - trailing_reserve - BAR_TRAILING).max(0.0);
         let (visible, hidden) = overflow_split(&slots, available, MORE_WIDTH);
         BarLayout { show_logo, leading, visible, hidden }
     }
