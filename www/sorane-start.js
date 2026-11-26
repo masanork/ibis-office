@@ -5,6 +5,27 @@
 
   const featuredItems = [
     {
+      title: 'Marp スライド（双方向 Split）',
+      subtitle: 'Markdown とスライド編集をリアルタイム同期・Mermaid 対応',
+      name: 'marp-deck-sample.md',
+      url: '/samples/marp-deck-sample.md',
+      badge: 'MARP',
+    },
+    {
+      title: 'Workbook Markdown（双方向 Split）',
+      subtitle: 'Markdown テーブルと数式・複数シートをリアルタイム同期',
+      name: 'workbook-sheet-sample.md',
+      url: '/samples/workbook-sheet-sample.md',
+      badge: 'SHEET',
+    },
+    {
+      title: '架空市デジタル行政推進条例（Lawtext）',
+      subtitle: '法令テキスト / e-Gov XML の双方向 Split とライブ法制執務 Lint',
+      name: 'sample-ordinance.lawtext',
+      url: '/samples/sample-ordinance.lawtext',
+      badge: 'LAW',
+    },
+    {
       title: '名簿の照合',
       subtitle: '異体字や伏字を含む名寄せデモ（架空データ）',
       name: 'roster-matching-sample.xlsx',

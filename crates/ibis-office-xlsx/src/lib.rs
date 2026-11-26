@@ -872,6 +872,30 @@ impl FormatEditor for Workbook {
         editor.xlsx_pdf_job()
     }
 
+    fn source_bytes_for_name(
+        editor: &SlideEditor,
+        name: &str,
+        _source: &ibis_formats::Source,
+    ) -> Option<Result<crate::shell::format::FileBytes, String>> {
+        use crate::shell::format::FileBytes;
+        let ext = std::path::Path::new(name).extension()?.to_str()?;
+        if ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown") {
+            if let Some(source_md) = editor.xlsx_markdown_source_text() {
+                return Some(Ok(FileBytes {
+                    bytes: source_md.as_bytes().to_vec(),
+                    protect: false,
+                    note: None,
+                }));
+            }
+            return Some(
+                ibis_formats::markdown::export_presentation_to_markdown(editor.presentation())
+                    .map(|md| FileBytes { bytes: md.into_bytes(), protect: false, note: None })
+                    .map_err(|e| e.to_string()),
+            );
+        }
+        None
+    }
+
     #[cfg(not(target_family = "wasm"))]
     fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_formats::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
         editor.xlsx_bytes_for_path(path, source, copy)

@@ -1880,13 +1880,18 @@ impl SlideEditor {
         }
     }
 
-    /// True when this embedded editor should automatically enter bidirectional Source `Split`
+    /// True when this editor should automatically enter bidirectional Source `Split`
     /// view on initial open (e.g. `.md` notes, Marp decks, workbooks, and `.lawtext`/e-Gov `.xml`
-    /// inside `SoraneWorkspace`).
+    /// inside `SoraneWorkspace` or standalone Web mode).
     pub fn should_auto_open_markdown_split(&self) -> bool {
-        self.embedded_chrome
-            .is_some_and(|policy| policy.default_markdown_split)
-            && (self.is_markdown_path() || self.is_law_path())
+        let auto_by_chrome = self
+            .embedded_chrome
+            .is_some_and(|policy| policy.default_markdown_split);
+        #[cfg(target_family = "wasm")]
+        let auto_on_web = !crate::host::is_connected();
+        #[cfg(not(target_family = "wasm"))]
+        let auto_on_web = false;
+        (auto_by_chrome || auto_on_web) && (self.is_markdown_path() || self.is_law_path())
     }
 
     /// Ensure all raster/SVG media embedded in `self.presentation().media` (including Marp Mermaid

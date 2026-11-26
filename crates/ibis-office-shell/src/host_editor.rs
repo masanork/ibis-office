@@ -212,6 +212,12 @@ impl SlideEditor {
             return Err(why);
         }
         let source = self.source.clone().ok_or_else(|| text("_shell.this-file-cannot-be-saved-yet").to_string())?;
+        if (self.is_markdown_path() || self.is_law_path())
+            && let Some(name) = self.file_name.as_deref()
+            && let Some(result) = crate::format::with_format!(self, source_bytes_for_name(self, name, &source))
+        {
+            return result.map(|fb| fb.bytes);
+        }
         let bytes = source.save(&self.presentation_for_save(), ibis_formats::SaveOptions::default()).map_err(|e| e.to_string())?;
         // A signed file that was edited is stored without the signatures; the bar goes with them.
         let (bytes, removed) = self.without_signatures(bytes, false);

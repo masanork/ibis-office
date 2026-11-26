@@ -875,7 +875,77 @@ async function fetchSameOriginUrl(url: string): Promise<PickedFile> {
 window.ibisOfficeDecodeHeic = decodeHeic;
 window.ibisOfficePickFile = () => pickDocumentFile();
 window.ibisOfficeFetchUrl = fetchSameOriginUrl;
+const WEB_STARTER_TEMPLATES: Record<string, { name: string; content: string }> = {
+  'new-marp': {
+    name: 'Untitled.marp.md',
+    content: [
+      '---',
+      'marp: true',
+      'theme: default',
+      'paginate: true',
+      '---',
+      '',
+      '# タイトル',
+      '',
+      'サブタイトル',
+      '',
+      '---',
+      '',
+      '## スライド 2',
+      '',
+      '- 箇条書き 1',
+      '- 箇条書き 2',
+      '',
+    ].join('\n'),
+  },
+  'new-workbook-md': {
+    name: 'Untitled.sheet.md',
+    content: [
+      '---',
+      'ibis-workbook: true',
+      '---',
+      '',
+      '<!-- ibis-sheet: Sheet1 -->',
+      '',
+      '# Sheet1',
+      '',
+      '| 項目 | 値 | メモ |',
+      '| --- | ---: | --- |',
+      '| A | 100 | |',
+      '| B | 200 | |',
+      '| 合計 | =SUM(B2:B3) | |',
+      '',
+    ].join('\n'),
+  },
+  'new-lawtext': {
+    name: 'Untitled.lawtext',
+    content: [
+      '令和六年架空規則第一号',
+      '新規法令案',
+      '',
+      '  （目的）',
+      '第一条　この規則は、必要な事項を定めることを目的とする。',
+      '',
+      '  附則',
+      'この規則は、公布の日から施行する。',
+      '',
+    ].join('\n'),
+  },
+};
+
 window.ibisOfficeStartAction = (action: string) => {
+  const starter = WEB_STARTER_TEMPLATES[action];
+  if (starter) {
+    const bytes = new TextEncoder().encode(starter.content);
+    queueMicrotask(() => {
+      try {
+        open_local_file(starter.name, bytes);
+      } catch (error) {
+        console.warn('ibisOffice: could not create starter draft', error);
+      }
+    });
+    return;
+  }
   window.dispatchEvent(new CustomEvent('sorane:start-action', { detail: { action } }));
 };
 window.ibisOfficePickIcc = pickIcc;
