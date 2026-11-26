@@ -751,6 +751,32 @@ mod tests {
     }
 
     #[test]
+    fn wpg2_shifted_circle_and_ellipse_preserve_gradient_geometry() {
+        let data = include_bytes!("../../../test/fixtures/wordperfect/gradient-geometry-wpg2.wpd");
+        let opened = open(data).unwrap();
+        assert_eq!(opened.import_warning, None);
+        let media = opened.presentation.media.first().unwrap();
+        let pixels = image::load_from_memory(&media.data).unwrap().to_rgba8();
+        assert_eq!(pixels.dimensions(), (300, 225));
+
+        // The circle's peak sits left and above the geometric center.
+        assert!(pixels.get_pixel(58, 98).0[0] > 225);
+        assert!(pixels.get_pixel(72, 112).0[0] < 165);
+        for (x, y) in [(86, 98), (58, 126), (31, 98), (58, 71)] {
+            let pixel = pixels.get_pixel(x, y).0;
+            assert!(pixel[0].abs_diff(131) <= 4 && pixel[2].abs_diff(125) <= 4);
+        }
+
+        // Equal fractions of the ellipse's two radii have the same color.
+        assert!(pixels.get_pixel(217, 112).0[0] > 225);
+        for (x, y) in [(249, 112), (217, 130), (186, 112), (217, 95)] {
+            let pixel = pixels.get_pixel(x, y).0;
+            assert!(pixel[0].abs_diff(131) <= 4 && pixel[2].abs_diff(125) <= 4);
+        }
+        assert_eq!(pixels.get_pixel(217, 150).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
     fn wpg2_linear_stops_and_centered_radial_fill_survive_docx_conversion() {
         let data = include_bytes!("../../../test/fixtures/wordperfect/gradient-stops-wpg2.wpd");
         let opened = open(data).unwrap();

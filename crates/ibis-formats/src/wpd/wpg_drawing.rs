@@ -52,6 +52,8 @@ enum Fill {
         stops: Vec<GradientStop>,
     },
     Radial {
+        reference: [u16; 2],
+        elliptical: bool,
         stops: Vec<GradientStop>,
     },
 }
@@ -99,7 +101,9 @@ impl Fill {
                     stops,
                 })
             }
-            (3, [32768, 32768]) if count == 2 => Some(Self::Radial {
+            (3 | 5, reference) if count == 2 => Some(Self::Radial {
+                reference,
+                elliptical: kind == 5,
                 stops: vec![
                     GradientStop::new(0.0, brush_color(colors)?),
                     GradientStop::new(1.0, brush_color(colors.get(4..)?)?),
@@ -127,19 +131,35 @@ impl Fill {
                     Transform::identity(),
                 )?;
             }
-            Self::Radial { stops } => {
-                let diameter = bounds.width().max(bounds.height());
-                if (bounds.width() - bounds.height()).abs() > diameter * 1e-5 {
+            Self::Radial {
+                reference,
+                elliptical,
+                stops,
+            } => {
+                let width = bounds.width();
+                let height = bounds.height();
+                if width <= 0.0 || height <= 0.0 {
                     return None;
                 }
-                let center = Point::from_xy(cx, cy);
+                if !elliptical && (width - height).abs() > width.max(height) * 1e-5 {
+                    return None;
+                }
+                // The reference is a fraction of the shape bounds in WPG's
+                // bottom-left coordinate system.
+                let [x, y] = reference.map(|value| f32::from(value) / 65536.0);
+                let x = bounds.left() + x * width;
+                let y = bounds.top() + y * height;
+                let radius_x = width * 0.5;
+                let radius_y = if *elliptical { height * 0.5 } else { radius_x };
+                let local = Transform::from_row(radius_x, 0.0, 0.0, radius_y, x, y);
+                let origin = Point::from_xy(0.0, 0.0);
                 paint.shader = RadialGradient::new(
-                    center,
-                    center,
-                    diameter * 0.5,
+                    origin,
+                    origin,
+                    1.0,
                     stops.clone(),
                     SpreadMode::Pad,
-                    Transform::identity(),
+                    local,
                 )?;
             }
         }
