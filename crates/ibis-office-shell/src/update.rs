@@ -576,7 +576,7 @@ fn fetch_bounded(url: &str, limit: u64) -> Result<String, String> {
 
 fn download_signed(log: &Log, version: &str, artifact: &ibis_office_updater::signed_manifest::Artifact) -> Result<PathBuf, String> {
     let dir = paths::update_dir(version).ok_or("no folder for update")?;
-    let url = format!("{RELEASES_URL}/download/v{version}/{}", artifact.filename);
+    let url = format!("{RELEASES_URL}/download/sorane-v{version}/{}", artifact.filename);
     let file = ibis_office_updater::update_transport::download_verified(&url, artifact, &dir)?;
     log.ok("verify", "signed size and SHA-256 match");
     Ok(file)
