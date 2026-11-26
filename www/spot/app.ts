@@ -11,9 +11,15 @@ import { renderQrSvg } from './qr.js';
 interface FormField {
   id: string;
   label: string;
-  type: 'text' | 'number' | 'textarea';
+  type: 'text' | 'number' | 'textarea' | 'date';
   required?: boolean;
   placeholder?: string;
+  claim_path?: string;
+}
+
+export interface SpotVerificationMeta {
+  method: string;
+  trust_status: 'verified' | 'unverified';
 }
 
 interface FormManifest {
@@ -135,10 +141,11 @@ async function main(): Promise<void> {
     input.id = `field-${field.id}`;
     input.name = field.id;
     if (input instanceof HTMLInputElement) {
-      input.type = field.type === 'number' ? 'number' : 'text';
+      input.type = field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : 'text';
     }
     if (field.required) input.required = true;
     if (field.placeholder) input.placeholder = field.placeholder;
+    if (field.claim_path) input.dataset.claimPath = field.claim_path;
     fieldsEl.appendChild(input);
   }
 
@@ -205,10 +212,14 @@ async function main(): Promise<void> {
       const el = document.getElementById(`field-${field.id}`) as HTMLInputElement | HTMLTextAreaElement;
       answers[field.id] = el.value;
     }
+    const verification: SpotVerificationMeta = {
+      method: 'self_asserted',
+      trust_status: 'unverified',
+    };
     const sealed = await sealSpotEnvelope(
       manifest.recipient_key ?? demoKeys.publicJwk,
       { tenantId: manifest.tenant_id, formId: manifest.form_id, version: manifest.version },
-      { answers, submitted_at: new Date().toISOString() },
+      { answers, verification, submitted_at: new Date().toISOString() },
     );
     await putQueueItem({
       envelope_id: sealed.envelopeId,
@@ -220,6 +231,22 @@ async function main(): Promise<void> {
     });
     await renderQueue();
     await flushQueue();
+  });
+
+  document.getElementById('btn-next-companion')!.addEventListener('click', () => {
+    const carryIds = new Set(['address', 'shelter', 'input_helper', 'group_id']);
+    const groupEl = document.getElementById('field-group_id') as HTMLInputElement | null;
+    if (groupEl && !groupEl.value.trim()) {
+      const bytes = crypto.getRandomValues(new Uint8Array(4));
+      groupEl.value = `grp-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+    }
+    for (const field of manifest.fields) {
+      if (carryIds.has(field.id)) continue;
+      const el = document.getElementById(`field-${field.id}`) as HTMLInputElement | HTMLTextAreaElement | null;
+      if (el) el.value = '';
+    }
+    const first = document.getElementById('field-name') as HTMLInputElement | null;
+    first?.focus();
   });
 
   document.getElementById('btn-flush')!.addEventListener('click', () => {

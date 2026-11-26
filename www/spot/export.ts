@@ -43,10 +43,15 @@ export function formatSpotCsv(records: SpotDecryptedRecord[]): string {
     }
   }
 
-  const header = ['record_id', 'submitted_at', 'source', ...answerKeys];
+  const header = ['record_id', 'submitted_at', 'source', 'trust_status', ...answerKeys];
   const lines = [header.map(escapeCsvCell).join(',')];
   for (const rec of records) {
     const submittedAt = typeof rec.payload.submitted_at === 'string' ? rec.payload.submitted_at : '';
+    const verification =
+      rec.payload.verification && typeof rec.payload.verification === 'object' && !Array.isArray(rec.payload.verification)
+        ? (rec.payload.verification as Record<string, unknown>)
+        : {};
+    const trustStatus = typeof verification.trust_status === 'string' ? verification.trust_status : '';
     const answers =
       rec.payload.answers && typeof rec.payload.answers === 'object' && !Array.isArray(rec.payload.answers)
         ? (rec.payload.answers as Record<string, unknown>)
@@ -55,6 +60,7 @@ export function formatSpotCsv(records: SpotDecryptedRecord[]): string {
       rec.envelope_id,
       submittedAt,
       rec.source,
+      trustStatus,
       ...answerKeys.map((k) => {
         const val = answers[k];
         return val === null || val === undefined ? '' : String(val);

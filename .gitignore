@@ -6,6 +6,8 @@
 !/www/sorane-start.js
 !/www/sorane-github-vault.js
 !/www/sw.template.js
+/www/spot/*.js
+!/www/spot/sw.js
 /www/*.d.ts
 /www/fonts/
 /www/loader-manifest.json

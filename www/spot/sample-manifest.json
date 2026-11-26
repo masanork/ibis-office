@@ -2,15 +2,18 @@
   "schema": "sorane.spot.form.v1",
   "tenant_id": "demo-city",
   "form_id": "evac-checkin",
-  "version": "1.0.0",
-  "title": "避難所受付票（PoC）",
-  "description": "オフライン時は端末内に保存し、回線復帰後または受付経由で暗号化提出します。",
+  "version": "1.1.0",
+  "title": "避難所受付票（個人単位・PoC）",
+  "description": "1人1件で記録します。オフライン時は端末内に保存し、回線復帰後または QR・受付経由で暗号化提出します。",
   "relay_url": "/api/relay/v1/submit",
   "inbox_url": "/api/relay/v1/inbox",
   "fields": [
-    { "id": "name", "label": "氏名", "type": "text", "required": true, "placeholder": "山田 太郎" },
-    { "id": "party_size", "label": "世帯人数", "type": "number", "required": true, "placeholder": "2" },
-    { "id": "shelter", "label": "避難場所・エリア", "type": "text", "required": false, "placeholder": "第一小学校 体育館" },
-    { "id": "needs", "label": "要配慮事項・必要な支援", "type": "textarea", "required": false, "placeholder": "アレルギー、常備薬など" }
+    { "id": "name", "label": "氏名", "type": "text", "required": true, "placeholder": "山田 太郎", "claim_path": "person.full_name" },
+    { "id": "birth_date", "label": "生年月日", "type": "text", "required": false, "placeholder": "1990-04-01", "claim_path": "person.birth_date" },
+    { "id": "address", "label": "住所・居住地", "type": "text", "required": false, "placeholder": "東京都千代田区霞が関1-1-1", "claim_path": "person.address" },
+    { "id": "shelter", "label": "避難場所・拠点", "type": "text", "required": false, "placeholder": "第一小学校 体育館" },
+    { "id": "needs", "label": "要配慮事項・必要な支援", "type": "textarea", "required": false, "placeholder": "アレルギー、常備薬、車椅子など" },
+    { "id": "input_helper", "label": "入力補助者・連絡窓口（代理入力時）", "type": "text", "required": false, "placeholder": "保護者・支援者名や連絡先" },
+    { "id": "group_id", "label": "同行者グループID（任意）", "type": "text", "required": false, "placeholder": "続けて登録すると自動引き継ぎ" }
   ]
 }

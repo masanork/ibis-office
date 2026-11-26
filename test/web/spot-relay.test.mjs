@@ -117,19 +117,20 @@ test('Spot TSV and BOM CSV export formats decrypted records cleanly', () => {
       source: 'relay',
       payload: {
         submitted_at: '2026-11-26T10:00:00Z',
-        answers: { name: '山田, 太郎', party_size: 3 },
+        verification: { method: 'self_asserted', trust_status: 'unverified' },
+        answers: { name: '山田, 太郎', input_helper: '代理 花子', group_id: 'grp-1' },
       },
     },
   ];
   const tsv = formatSpotTsv(records);
   assert.equal(
     tsv,
-    `${'a'.repeat(64)}\t2026-11-26T10:00:00Z\t{"submitted_at":"2026-11-26T10:00:00Z","answers":{"name":"山田, 太郎","party_size":3}}`,
+    `${'a'.repeat(64)}\t2026-11-26T10:00:00Z\t{"submitted_at":"2026-11-26T10:00:00Z","verification":{"method":"self_asserted","trust_status":"unverified"},"answers":{"name":"山田, 太郎","input_helper":"代理 花子","group_id":"grp-1"}}`,
   );
   const csv = formatSpotCsv(records);
   assert.equal(
     csv,
-    `\uFEFFrecord_id,submitted_at,source,name,party_size\r\n${'a'.repeat(64)},2026-11-26T10:00:00Z,relay,"山田, 太郎",3\r\n`,
+    `\uFEFFrecord_id,submitted_at,source,trust_status,name,input_helper,group_id\r\n${'a'.repeat(64)},2026-11-26T10:00:00Z,relay,unverified,"山田, 太郎",代理 花子,grp-1\r\n`,
   );
 });
 

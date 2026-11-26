@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-const CACHE_NAME = 'sorane-spot-poc-v3';
+const CACHE_NAME = 'sorane-spot-poc-v4';
 const PRECACHE_URLS = [
   './',
   './index.html',

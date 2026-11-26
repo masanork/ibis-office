@@ -8,18 +8,18 @@ ibis-workbook: true
 
 | record_id | source_ts | payload_json |
 | --- | --- | --- |
-| demo-001 | 2026-11-26T10:00:00Z | {"answers":{"name":"山田 太郎","party_size":3,"shelter":"第一小","needs":"アレルギー対応"},"submitted_at":"2026-11-26T10:00:00Z"} |
-| demo-002 | 2026-11-26T10:05:00Z | {"answers":{"name":"佐藤 花子","party_size":2,"shelter":"第一小","needs":""},"submitted_at":"2026-11-26T10:05:00Z"} |
-| demo-003 | 2026-11-26T10:12:00Z | {"answers":{"name":"髙橋 一郎","party_size":1,"shelter":"第二中","needs":"常備薬"},"submitted_at":"2026-11-26T10:12:00Z"} |
+| demo-001 | 2026-11-26T10:00:00Z | {"answers":{"name":"山田 太郎","birth_date":"1985-04-12","address":"東京都千代田区霞が関1-1-1","shelter":"第一小","needs":"アレルギー対応","input_helper":"","group_id":"grp-a1b2"},"verification":{"method":"self_asserted","trust_status":"unverified"},"submitted_at":"2026-11-26T10:00:00Z"} |
+| demo-002 | 2026-11-26T10:02:00Z | {"answers":{"name":"山田 花子","birth_date":"2018-09-03","address":"東京都千代田区霞が関1-1-1","shelter":"第一小","needs":"","input_helper":"山田 太郎","group_id":"grp-a1b2"},"verification":{"method":"self_asserted","trust_status":"unverified"},"submitted_at":"2026-11-26T10:02:00Z"} |
+| demo-003 | 2026-11-26T10:12:00Z | {"answers":{"name":"髙橋 一郎","birth_date":"1952-11-20","address":"東京都千代田区永田町2-2-2","shelter":"第二中","needs":"常備薬","input_helper":"","group_id":""},"verification":{"method":"mdoc_dc_api","trust_status":"verified"},"submitted_at":"2026-11-26T10:12:00Z"} |
 
 <!-- ibis-sheet: 一覧 -->
 
 # 一覧
 
-| 記録ID | 氏名 | 世帯人数 | 拠点 | 要配慮事項 | 提出時刻 |
-| --- | --- | ---: | --- | --- | --- |
-| record_id | answers.name | answers.party_size | answers.shelter | answers.needs | submitted_at |
-| =FILTER(Raw!A2:A1000,Raw!A2:A1000<>"") | =SORANE.JSONTABLE(FILTER(Raw!C2:C1000,Raw!C2:C1000<>""),B2:F2) | | | | |
+| 記録ID | 氏名 | 生年月日 | 住所 | 拠点 | 要配慮事項 | 入力補助者 | グループID | 本人確認 | 提出時刻 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| record_id | answers.name | answers.birth_date | answers.address | answers.shelter | answers.needs | answers.input_helper | answers.group_id | verification.trust_status | submitted_at |
+| =FILTER(Raw!A2:A1000,Raw!A2:A1000<>"") | =SORANE.JSONTABLE(FILTER(Raw!C2:C1000,Raw!C2:C1000<>""),B2:J2) | | | | | | | | |
 
 <!-- ibis-sheet: 突合・抽出 -->
 
@@ -33,6 +33,6 @@ ibis-workbook: true
 
 # 集計
 
-| 拠点 | 件数 | 合計人数 |
+| 拠点 | 人数 | 本人確認済 |
 | --- | ---: | ---: |
-| =UNIQUE(FILTER(一覧!D3:D1000,一覧!D3:D1000<>"")) | =COUNTIF(一覧!D3:D1000,A2#) | =SUMIF(一覧!D3:D1000,A2#,一覧!C3:C1000) |
+| =UNIQUE(FILTER(一覧!E3:E1000,一覧!E3:E1000<>"")) | =COUNTIF(一覧!E3:E1000,A2#) | =COUNTIFS(一覧!E3:E1000,A2#,一覧!I3:I1000,"verified") |
