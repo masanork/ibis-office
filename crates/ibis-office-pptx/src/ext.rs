@@ -51,6 +51,7 @@ pub use super::links::Links as _;
 pub(crate) use super::links::LinksCrate as _;
 pub use super::links::Links2 as _;
 pub(crate) use super::links::Links2Crate as _;
+pub(crate) use super::markdown_source::PptxMarkdownCrate as _;
 pub use super::master_view::MasterViewExt as _;
 pub(crate) use super::master_view::MasterViewExtCrate as _;
 pub use super::math_panel::MathPanelExt as _;

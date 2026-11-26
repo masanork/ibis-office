@@ -34,6 +34,9 @@ pub struct EmbeddedChromePolicy {
     pub manage_window_title: bool,
     /// When `false`, the outer workspace owns `OpenDocuments` / macOS menu sync.
     pub manage_window_chrome_sync: bool,
+    /// When `true`, opening a `.md` / `.markdown` file (Document, Marp, or Workbook)
+    /// automatically starts in bidirectional `Split` view (`Source | Visual`).
+    pub default_markdown_split: bool,
 }
 
 impl EmbeddedChromePolicy {
@@ -48,6 +51,7 @@ impl EmbeddedChromePolicy {
             show_status_bar: false,
             manage_window_title: false,
             manage_window_chrome_sync: false,
+            default_markdown_split: true,
         }
     }
 
@@ -63,6 +67,7 @@ impl EmbeddedChromePolicy {
             show_status_bar: false,
             manage_window_title: false,
             manage_window_chrome_sync: false,
+            default_markdown_split: false,
         }
     }
 
@@ -77,6 +82,7 @@ impl EmbeddedChromePolicy {
             show_status_bar: false,
             manage_window_title: false,
             manage_window_chrome_sync: false,
+            default_markdown_split: false,
         }
     }
 }

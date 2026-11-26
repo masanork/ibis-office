@@ -168,6 +168,8 @@ actions!(
         CopyAnimation,
         /// Paste animations onto selected shapes (Animation Painter).
         PasteAnimation,
+        /// Toggle Markdown Source / Split view (`Cmd/Ctrl+Shift+M`) across documents, Marp presentations, and workbooks.
+        ToggleMarkdownSource,
     ]
 );
 

@@ -402,6 +402,8 @@ pub struct State {
     pub(crate) page_movement_side_to_side: bool,
     /// Markdown ソースコード表示モードの状態 (レンダリング ⇄ ソース切替).
     pub(crate) markdown_source: Option<markdown_source::MarkdownSourceState>,
+    /// True once initial workspace auto-Split initialization has been evaluated.
+    pub(crate) auto_split_initialized: bool,
 }
 
 /// A document's editor: its pages are laid out from the text and shown
@@ -445,6 +447,7 @@ impl crate::shell::format::GestureView for State {
             characters: _,
             pending_page: _,
             markdown_source: _,
+            auto_split_initialized: _,
             mermaid_edit: _,
             caret,
             anchor,
@@ -1074,6 +1077,7 @@ impl FormatEditor for Document {
             .on_action(cx.listener(|this, _: &crate::ScrollToStart, _, cx| this.scroll_to_end(false, cx)))
             .on_action(cx.listener(|this, _: &crate::ScrollToEnd, _, cx| this.scroll_to_end(true, cx)))
             .on_action(cx.listener(|this, _: &crate::shell::split_axis::ToggleSplit, _, cx| this.toggle_document_split(cx)))
+            .on_action(cx.listener(|this, _: &crate::shell::actions::ToggleMarkdownSource, window, cx| this.toggle_markdown_source_mode(window, cx)))
     }
 
     fn infobar_kind(editor: &SlideEditor) -> Option<crate::shell::infobar::InfoBarKind> {
@@ -1302,6 +1306,15 @@ impl FormatEditor for Document {
     /// The page in view is the current one (for the status bar).
     fn before_render(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
         editor.relayout_if_changed();
+        let needs_auto_split = editor
+            .doc_state_mut()
+            .is_some_and(|s| !std::mem::replace(&mut s.auto_split_initialized, true));
+        if needs_auto_split
+            && editor.should_auto_open_markdown_split()
+            && !editor.is_markdown_source_mode()
+        {
+            editor.enter_markdown_source_mode(window, cx);
+        }
         editor.poll_markdown_bidirectional_sync(window, cx);
         let index = editor.visible_page();
         if let Some(slide) = editor.presentation().slides.get(index) {

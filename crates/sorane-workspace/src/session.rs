@@ -221,6 +221,71 @@ pub fn today_iso_date() -> String {
     format_unix_days_iso((secs / 86_400) as i64)
 }
 
+/// Starter Marp presentation template (slides + Mermaid flowchart) for quick creation in Vaults.
+pub const DEFAULT_MARP_TEMPLATE: &str = "\
+---
+marp: true
+paginate: true
+---
+
+# タイトルスライド
+
+サブタイトル・発表者名
+
+---
+
+## アジェンダ
+
+- 背景と目的
+- アーキテクチャ概要
+- 次のステップ
+
+---
+
+## フロー図（Mermaid）
+
+```mermaid
+flowchart LR
+  Markdown[Marp Markdown] --> Slides[ネイティブスライド]
+  Slides --> Markdown
+```
+";
+
+/// Starter multi-sheet Workbook Markdown template (GFM tables + cross-sheet formulas).
+pub const DEFAULT_WORKBOOK_MARKDOWN_TEMPLATE: &str = r#"<!-- xlsx-sheet "売上" -->
+
+## 売上
+
+| 品目 | 単価 | 数量 | 小計 |
+| :--- | ---: | ---: | ---: |
+| 項目A | 1200 | 3 | 3600 <!-- xlsx-formula:"=B2*C2" --> |
+| 項目B | 800 | 5 | 4000 <!-- xlsx-formula:"=B3*C3" --> |
+
+<!-- xlsx-sheet "サマリー" -->
+
+## サマリー
+
+| 指標 | 値 |
+| :--- | ---: |
+| 合計金額 | 7600 <!-- xlsx-formula:"=SUM(売上!D2:D3)" --> |
+"#;
+
+/// Pick the first non-existent `<stem>.md`, `<stem> 2.md`, `<stem> 3.md`, ... path in `vault_root`.
+pub fn next_numbered_markdown_path(vault_root: &Path, stem: &str) -> PathBuf {
+    let mut index = 1usize;
+    loop {
+        let candidate = if index == 1 {
+            vault_root.join(format!("{stem}.md"))
+        } else {
+            vault_root.join(format!("{stem} {index}.md"))
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
 /// Howard Hinnant's civil-from-days conversion (`days_since_1970_01_01` -> `YYYY-MM-DD`).
 pub(crate) fn format_unix_days_iso(days: i64) -> String {
     let z = days + 719_468;
@@ -318,5 +383,42 @@ mod tests {
         assert_eq!(format_unix_days_iso(0), "1970-01-01");
         assert_eq!(format_unix_days_iso(20_089), "2025-01-01");
         assert_eq!(format_unix_days_iso(19_782), "2024-02-29");
+    }
+
+    #[test]
+    fn starter_templates_open_as_marp_presentation_and_workbook() {
+        assert!(ibis_formats::markdown::is_presentation_markdown(
+            DEFAULT_MARP_TEMPLATE.as_bytes()
+        ));
+        let marp = ibis_formats::markdown::open_markdown_presentation(
+            DEFAULT_MARP_TEMPLATE.as_bytes().to_vec(),
+        )
+        .expect("open starter marp template");
+        assert_eq!(marp.presentation.slides.len(), 3);
+
+        assert!(ibis_formats::markdown::is_workbook_markdown(
+            DEFAULT_WORKBOOK_MARKDOWN_TEMPLATE.as_bytes()
+        ));
+        let wb = ibis_formats::markdown::open_markdown_workbook(
+            DEFAULT_WORKBOOK_MARKDOWN_TEMPLATE.as_bytes().to_vec(),
+        )
+        .expect("open starter workbook markdown template");
+        assert_eq!(wb.presentation.slides.len(), 2);
+    }
+
+    #[test]
+    fn next_numbered_markdown_path_avoids_overwriting_existing_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "sorane-ws-numbered-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = next_numbered_markdown_path(&dir, "Slides");
+        assert_eq!(first, dir.join("Slides.md"));
+        std::fs::write(&first, "# 1").unwrap();
+        let second = next_numbered_markdown_path(&dir, "Slides");
+        assert_eq!(second, dir.join("Slides 2.md"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
