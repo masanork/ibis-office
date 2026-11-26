@@ -214,3 +214,73 @@ fn detects_and_validates_ai_sft_and_rlhf_datasets_across_json_and_jsonl() {
         Some("AI SFT (Alpaca / Instruction)")
     );
 }
+
+#[test]
+fn detects_character_cards_personas_prompt_specs_evals_and_trajectories() {
+    use structured_preview::PreviewBlock;
+
+    let card = structured_preview::read(
+        "json",
+        r#"{
+            "spec": "chara_card_v2",
+            "data": {
+                "name": "Aoi",
+                "personality": "Calm and analytical",
+                "first_mes": "こんにちは、仕様を確認しましょう。",
+                "character_book": {
+                    "entries": [{"keys": ["API"], "content": "REST v2", "enabled": true}]
+                }
+            }
+        }"#
+        .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        card.summary.detected_schema.as_deref(),
+        Some("AI Character Card (v2/v3)")
+    );
+    assert!(card.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), .. } if t.contains("Lorebook")
+    )));
+
+    let prompt_yml = structured_preview::read(
+        "yml",
+        b"model: gpt-4o\nmodelParameters:\n  temperature: 0.2\nmessages:\n  - role: system\n    content: Be concise.\n  - role: user\n    content: Summarize.\n",
+    )
+    .unwrap();
+    assert_eq!(
+        prompt_yml.summary.detected_schema.as_deref(),
+        Some("AI Prompt Spec (.prompt.yml)")
+    );
+
+    let eval_jsonl = concat!(
+        r#"{"input":"2+2","expected":"4","actual":"4","pass":true,"score":1.0}"#,
+        "\n",
+        r#"{"input":"3+3","expected":"6","actual":"7","pass":false,"score":0.0}"#,
+        "\n"
+    );
+    let eval = structured_preview::read("jsonl", eval_jsonl.as_bytes()).unwrap();
+    assert_eq!(
+        eval.summary.detected_schema.as_deref(),
+        Some("AI Evaluation Results")
+    );
+    assert!(eval.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t == "Evaluation Cases" && rows.len() == 2
+    )));
+
+    let traj = structured_preview::read(
+        "json",
+        br#"{"steps":[{"thought":"Need schema","action":"read_file","observation":"OK"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        traj.summary.detected_schema.as_deref(),
+        Some("AI Agent Trajectory")
+    );
+    assert!(traj.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::ChatTurn { role, content, .. } if role == "tool" && content == "read_file"
+    )));
+}

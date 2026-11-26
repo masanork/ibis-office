@@ -90,6 +90,11 @@ pub(super) fn try_build_ai_blocks_from_value(
         Value::Object(_) => vec![val],
         _ => return None,
     };
+    if let Some(res) =
+        super::personas_evals::try_build_persona_eval_preview(&records, byte_size, fields.len())
+    {
+        return Some(res);
+    }
     let primary_kind = records.iter().find_map(|r| detect_record_kind(r))?;
     Some(build_ai_dataset_preview(
         &records,
@@ -148,6 +153,11 @@ pub(super) fn read_jsonl(
     }
 
     let refs: Vec<&Value> = parsed_records.iter().map(|(_, v)| v).collect();
+    if let Some((summary, blocks)) =
+        super::personas_evals::try_build_persona_eval_preview(&refs, byte_size, fields.len())
+    {
+        return Ok((fields, summary, blocks));
+    }
     if let Some(primary_kind) = refs.iter().find_map(|r| detect_record_kind(r)) {
         let (summary, blocks) = build_ai_dataset_preview(
             &refs,
