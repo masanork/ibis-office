@@ -43,11 +43,11 @@ impl Book for Sheet {
 }
 
 fn check(args: &str, expected: CellValue) {
-    let formula = format!("IBIS.FIELDMATCH({args})");
+    let formula = format!("SORANE.FIELDMATCH({args})");
     let sheet = Sheet { date1904: false };
     assert_eq!(evaluate(&sheet, (0, 2, 0), &formula), (expected.clone(), false), "{formula}");
     let stored = to_file(&formula);
-    assert!(stored.starts_with("_xlfn.IBIS.FIELDMATCH("), "{stored}");
+    assert!(stored.starts_with("_xlfn.SORANE.FIELDMATCH("), "{stored}");
     assert_eq!(evaluate(&sheet, (0, 2, 0), &stored), (expected, false), "{stored}");
 }
 
@@ -76,7 +76,7 @@ fn date_precision_and_era_bounds() {
         );
     }
     assert_eq!(
-        evaluate(&Sheet { date1904: true }, (0, 2, 0), r#"IBIS.FIELDMATCH(0,"1904-01-01","date")"#),
+        evaluate(&Sheet { date1904: true }, (0, 2, 0), r#"SORANE.FIELDMATCH(0,"1904-01-01","date")"#),
         (CellValue::Number(2.0), false)
     );
 }
@@ -113,7 +113,7 @@ fn arrays_can_filter_candidates() {
     let result = evaluate(
         &Sheet { date1904: false },
         (0, 2, 0),
-        r#"SUM(IBIS.FIELDMATCH({"1985-04-01","1985-04","1985-05"},"1985-04-01","date"))"#,
+        r#"SUM(SORANE.FIELDMATCH({"1985-04-01","1985-04","1985-05"},"1985-04-01","date"))"#,
     );
     assert_eq!(result, (CellValue::Number(3.0), false));
 }
@@ -123,15 +123,15 @@ fn a_broadcast_address_keeps_per_cell_modes_and_errors() {
     let sheet = Sheet { date1904: false };
     for (formula, expected) in [
         (
-            r#"SUM(IBIS.FIELDMATCH({"霞が関二丁目1番2号"},{"霞が関2-1-2","霞ヶ関2-1-2","霞が関2-1-3"},{"ADDRESS"}))"#,
+            r#"SUM(SORANE.FIELDMATCH({"霞が関二丁目1番2号"},{"霞が関2-1-2","霞ヶ関2-1-2","霞が関2-1-3"},{"ADDRESS"}))"#,
             CellValue::Number(3.0),
         ),
         (
-            r#"SUM(IBIS.FIELDMATCH("霞が関二丁目1番2号",{"霞が関2-1-2","霞が関2-1-2"},{"address","gender"}))"#,
+            r#"SUM(SORANE.FIELDMATCH("霞が関二丁目1番2号",{"霞が関2-1-2","霞が関2-1-2"},{"address","gender"}))"#,
             CellValue::Error(CellError::NA),
         ),
         (
-            r#"INDEX(IBIS.FIELDMATCH(" ",{"霞が関2-1-2",#DIV/0!},"address"),1,2)"#,
+            r#"INDEX(SORANE.FIELDMATCH(" ",{"霞が関2-1-2",#DIV/0!},"address"),1,2)"#,
             CellValue::Error(CellError::Div0),
         ),
     ] {
@@ -252,7 +252,7 @@ fn soroe_scenarios_keep_ambiguous_candidates_distinct() {
             let args = format!(r#""{a}","{b}","{mode}""#);
             check(&args, CellValue::Number(rank));
 
-            let review = format!(r#"IF(IFNA(IBIS.FIELDMATCH({args})=1,FALSE),"要確認","")"#);
+            let review = format!(r#"IF(IFNA(SORANE.FIELDMATCH({args})=1,FALSE),"要確認","")"#);
             let expected = if rank == 1.0 { "要確認" } else { "" };
             assert_eq!(
                 evaluate(&Sheet { date1904: false }, (0, 2, 0), &review),
@@ -276,9 +276,9 @@ fn soroe_marriage_scenario_can_be_filtered_by_date_and_address() {
     ] {
         let formula = format!(
             concat!(
-                r#"IF(IFNA(AND(IBIS.FIELDMATCH("鈴木 花子","{right_name}","name")=1,"#,
-                r#"IBIS.FIELDMATCH("1990-12-15","{date}","date")=2,"#,
-                r#"IBIS.FIELDMATCH("東京都千代田区霞が関2-1-2","東京都千代田区霞が関2-1-{lot}","address")=2),FALSE),"要確認","")"#,
+                r#"IF(IFNA(AND(SORANE.FIELDMATCH("鈴木 花子","{right_name}","name")=1,"#,
+                r#"SORANE.FIELDMATCH("1990-12-15","{date}","date")=2,"#,
+                r#"SORANE.FIELDMATCH("東京都千代田区霞が関2-1-2","東京都千代田区霞が関2-1-{lot}","address")=2),FALSE),"要確認","")"#,
             ),
             right_name = right_name,
             date = date,
@@ -560,14 +560,14 @@ fn record_match_keeps_conflicts_distinct_from_missing_evidence() {
         (r#"2,"1""#, CellValue::Error(CellError::Value)),
         ("2,TRUE", CellValue::Error(CellError::Value)),
     ] {
-        let formula = format!("IBIS.RECORDMATCH({args})");
+        let formula = format!("SORANE.RECORDMATCH({args})");
         let stored = to_file(&formula);
-        assert!(stored.starts_with("_xlfn.IBIS.RECORDMATCH("), "{stored}");
+        assert!(stored.starts_with("_xlfn.SORANE.RECORDMATCH("), "{stored}");
         for expression in [&formula, &stored] {
             assert_eq!(evaluate(&sheet, (0, 2, 0), expression), (expected.clone(), false), "{expression}");
         }
     }
-    let formula = r#"TEXTJOIN(",",FALSE,IBIS.RECORDMATCH({2,1,0,#N/A},2))"#;
+    let formula = r#"TEXTJOIN(",",FALSE,SORANE.RECORDMATCH({2,1,0,#N/A},2))"#;
     assert_eq!(evaluate(&sheet, (0, 2, 0), formula), (CellValue::Text("2,1,0,1".into()), false));
 }
 
@@ -575,8 +575,8 @@ fn record_match_keeps_conflicts_distinct_from_missing_evidence() {
 fn record_match_combines_name_date_and_address_formulas() {
     let sheet = Sheet { date1904: false };
     let formula = concat!(
-        r#"IF(IBIS.RECORDMATCH(IBIS.FIELDMATCH("鈴木 花子","田中 花子","name"),"#,
-        r#"IBIS.FIELDMATCH("1990-12-15","1990-12-15","date"),IBIS.FIELDMATCH(A1,B1,"address"))=1,"要確認","")"#,
+        r#"IF(SORANE.RECORDMATCH(SORANE.FIELDMATCH("鈴木 花子","田中 花子","name"),"#,
+        r#"SORANE.FIELDMATCH("1990-12-15","1990-12-15","date"),SORANE.FIELDMATCH(A1,B1,"address"))=1,"要確認","")"#,
     );
     assert_eq!(evaluate(&sheet, (0, 2, 0), formula), (CellValue::Text("要確認".into()), false));
 }
@@ -586,22 +586,35 @@ fn record_match_range_reduces_columns_and_spills_by_row() {
     let sheet = Sheet { date1904: false };
     for (formula, expected) in [
         (
-            r#"TEXTJOIN(",",FALSE,IFNA(IBIS.RECORDMATCH({2,2;2,1;2,0;2,#N/A;#N/A,#N/A}),"?"))"#,
+            r#"TEXTJOIN(",",FALSE,IFNA(SORANE.RECORDMATCH({2,2;2,1;2,0;2,#N/A;#N/A,#N/A}),"?"))"#,
             CellValue::Text("2,1,0,1,?".into()),
         ),
         (
-            r#"TEXTJOIN(",",FALSE,IBIS.RECORDMATCH({2,1;2,0},{2,2;1,2}))"#,
+            r#"TEXTJOIN(",",FALSE,SORANE.RECORDMATCH({2,1;2,0},{2,2;1,2}))"#,
             CellValue::Text("2,1,1,0".into()),
         ),
         (
-            r#"TEXTJOIN(",",FALSE,FILTER({"一致";"要確認";"除外"},IBIS.RECORDMATCH({2,2;2,1;2,0})>0))"#,
+            r#"TEXTJOIN(",",FALSE,FILTER({"一致";"要確認";"除外"},SORANE.RECORDMATCH({2,2;2,1;2,0})>0))"#,
             CellValue::Text("一致,要確認".into()),
         ),
-        ("IBIS.RECORDMATCH({2,1,2})", CellValue::Number(1.0)),
-        ("IBIS.RECORDMATCH(2)", CellValue::Number(2.0)),
-        ("IBIS.RECORDMATCH(C1)", CellValue::Error(CellError::NA)),
-        ("IBIS.RECORDMATCH(1/0)", CellValue::Error(CellError::Div0)),
+        ("SORANE.RECORDMATCH({2,1,2})", CellValue::Number(1.0)),
+        ("SORANE.RECORDMATCH(2)", CellValue::Number(2.0)),
+        ("SORANE.RECORDMATCH(C1)", CellValue::Error(CellError::NA)),
+        ("SORANE.RECORDMATCH(1/0)", CellValue::Error(CellError::Div0)),
     ] {
         assert_eq!(evaluate(&sheet, (0, 2, 0), formula), (expected, false), "{formula}");
     }
+}
+
+#[test]
+fn ibis_prefix_aliases_remain_compatible() {
+    let sheet = Sheet { date1904: false };
+    assert_eq!(
+        evaluate(&sheet, (0, 0, 0), r#"IBIS.FIELDMATCH("鈴木 花子","鈴木花子","name")"#),
+        evaluate(&sheet, (0, 0, 0), r#"SORANE.FIELDMATCH("鈴木 花子","鈴木花子","name")"#),
+    );
+    assert_eq!(
+        evaluate(&sheet, (0, 0, 0), "IBIS.RECORDMATCH({2,1,2})"),
+        (CellValue::Number(1.0), false),
+    );
 }

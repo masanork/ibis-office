@@ -219,9 +219,9 @@ mod tests {
         let book = crate::Presentation::empty(crate::geometry::EmuSize::WIDESCREEN);
         let view = crate::sheet_calc::BookView::new(&book);
         for (formula, rank) in [
-            (r#"IBIS.FIELDMATCH("塚本花子","塚本花子","name")"#, 1.0),
-            (r#"IBIS.FIELDMATCH("塚本花子","塚本花子","name")"#, 2.0),
-            (r#"IBIS.FIELDMATCH("髙橋花子","高橋花子","name")"#, 1.0),
+            (r#"SORANE.FIELDMATCH("塚本花子","塚本花子","name")"#, 1.0),
+            (r#"SORANE.FIELDMATCH("塚本花子","塚本花子","name")"#, 2.0),
+            (r#"SORANE.FIELDMATCH("髙橋花子","高橋花子","name")"#, 1.0),
         ] {
             assert_eq!(
                 ibis_calc::recalc::evaluate(&view, (0, 0, 0), formula),

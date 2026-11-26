@@ -526,7 +526,7 @@ ibisOffice が実装している Word (.docx)・Excel (.xlsx)・PowerPoint (.ppt
 
 #### 名簿を照合して要確認の行を取り出す
 
-`IBIS.FIELDMATCH` は項目別に比較し、`IBIS.RECORDMATCH` は複数項目の判定を行ごとにまとめます。
+`SORANE.FIELDMATCH` は項目別に比較し、`SORANE.RECORDMATCH` は複数項目の判定を行ごとにまとめます。
 
 まず試す場合は、[数式入りのサンプル XLSX](samples/field-match.xlsx) を ibisOffice で開きます。
 「基準」1件と「候補」13件は合成データです。基準の氏名は「髙橋花子」、生年月日は「1985-04-15」、住所は「千代田区霞が関2-1-2」です。
@@ -566,10 +566,10 @@ ibisOffice が実装している Word (.docx)・Excel (.xlsx)・PowerPoint (.ppt
 
 | セル | 数式 |
 | --- | --- |
-| F2 | `=IBIS.FIELDMATCH(基準!$B$2,B2:B5,"name-with-kana",基準!$C$2,C2:C5)` |
-| G2 | `=IBIS.FIELDMATCH(基準!$D$2,D2:D5,"date")` |
-| H2 | `=IBIS.FIELDMATCH(基準!$E$2,E2:E5,"address")` |
-| I2 | `=IBIS.RECORDMATCH(F2:H5)` |
+| F2 | `=SORANE.FIELDMATCH(基準!$B$2,B2:B5,"name-with-kana",基準!$C$2,C2:C5)` |
+| G2 | `=SORANE.FIELDMATCH(基準!$D$2,D2:D5,"date")` |
+| H2 | `=SORANE.FIELDMATCH(基準!$E$2,E2:E5,"address")` |
+| I2 | `=SORANE.RECORDMATCH(F2:H5)` |
 
 I列の `2` は全項目の一致、`1` は目視確認の候補、`0` はいずれかの項目の不一致です。全項目を比較できない場合は `#N/A` になります。
 F1・G1・H1 に「氏名・読み」「生年月日」「住所」と入れます。J2 の次の式で、確認が必要な項目を表示します。
