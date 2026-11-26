@@ -50,9 +50,12 @@ export const FILE_HANDLER_GROUPS: { description: string; accept: Record<string, 
     },
   },
   {
-    description: 'Markdown / Lawtext',
+    description: 'Markdown',
+    accept: { 'text/markdown': ['.md', '.markdown'] },
+  },
+  {
+    description: 'Lawtext',
     accept: {
-      'text/markdown': ['.md', '.markdown'],
       'text/plain': ['.lawtext', '.txt'],
       'application/xml': ['.xml'],
     },
