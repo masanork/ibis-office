@@ -168,3 +168,42 @@ fn json_keys_discovers_unique_paths_and_stores_xlfn_prefix() {
     let stored_val = to_file(r#"SORANE.JSONVALUE(A1,"answers.name")"#);
     assert!(stored_val.starts_with("_xlfn.SORANE.JSONVALUE("), "{stored_val}");
 }
+
+#[test]
+fn spot_roster_pipeline_evaluates_jsontable_fieldmatch_and_summary() {
+    let book = RawBook {
+        rows: vec![
+            r#"{"answers":{"name":"山田 太郎","shelter":"第一小","group_id":"grp-a1b2"},"verification":{"trust_status":"unverified"}}"#,
+            r#"{"answers":{"name":"山田 花子","shelter":"第一小","group_id":"grp-a1b2"},"verification":{"trust_status":"unverified"}}"#,
+            r#"{"answers":{"name":"髙橋 一郎","shelter":"第二中","group_id":""},"verification":{"trust_status":"verified"}}"#,
+        ],
+    };
+
+    // Expand 3 records into 2 columns (name, shelter) and count by shelter.
+    assert_eq!(
+        evaluate(
+            &book,
+            (0, 5, 0),
+            r#"COUNTIF(INDEX(SORANE.JSONTABLE(A1:A3,{"answers.shelter"}),0,1),"第一小")"#,
+        ),
+        (CellValue::Number(2.0), false),
+    );
+    // Count verified records at 第二中.
+    assert_eq!(
+        evaluate(
+            &book,
+            (0, 5, 0),
+            r#"COUNTIFS(INDEX(SORANE.JSONTABLE(A1:A3,{"answers.shelter","verification.trust_status"}),0,1),"第二中",INDEX(SORANE.JSONTABLE(A1:A3,{"answers.shelter","verification.trust_status"}),0,2),"verified")"#,
+        ),
+        (CellValue::Number(1.0), false),
+    );
+    // Match extracted names against reference name with SORANE.FIELDMATCH.
+    assert_eq!(
+        evaluate(
+            &book,
+            (0, 5, 0),
+            r#"TEXTJOIN(",",FALSE,SORANE.FIELDMATCH(INDEX(SORANE.JSONTABLE(A1:A3,{"answers.name"}),0,1),"山田 太郎","name"))"#,
+        ),
+        (CellValue::Text("2,0,0".into()), false),
+    );
+}
