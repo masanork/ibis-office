@@ -26,8 +26,42 @@ export class SpotTenantRelay extends DurableObject {
         received_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_envelopes_received_at ON envelopes(received_at);
+      CREATE TABLE IF NOT EXISTS tenant_meta (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        read_token_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
     `);
     this.initialized = true;
+  }
+
+  async registerTenant(
+    _tenantId: string,
+    readTokenHash: string,
+    now: number,
+  ): Promise<'created' | 'conflict'> {
+    this.ensureSchema();
+    const existing = this.ctx.storage.sql
+      .exec('SELECT read_token_hash FROM tenant_meta WHERE id = 1 LIMIT 1')
+      .toArray();
+    if (existing.length > 0) {
+      return 'conflict';
+    }
+    this.ctx.storage.sql.exec(
+      'INSERT INTO tenant_meta (id, read_token_hash, created_at) VALUES (1, ?1, ?2)',
+      readTokenHash,
+      now,
+    );
+    return 'created';
+  }
+
+  async getReadTokenHash(): Promise<string | null> {
+    this.ensureSchema();
+    const rows = this.ctx.storage.sql
+      .exec('SELECT read_token_hash FROM tenant_meta WHERE id = 1 LIMIT 1')
+      .toArray();
+    if (rows.length === 0) return null;
+    return String(rows[0].read_token_hash);
   }
 
   async putBatch(
@@ -86,6 +120,14 @@ function createDurableStore(namespace: DurableObjectNamespace<SpotTenantRelay>):
     async list(tenantId, since) {
       const stub = namespace.get(namespace.idFromName(tenantId));
       return stub.list(tenantId, since);
+    },
+    async registerTenant(tenantId, readTokenHash, now) {
+      const stub = namespace.get(namespace.idFromName(tenantId));
+      return stub.registerTenant(tenantId, readTokenHash, now);
+    },
+    async getReadTokenHash(tenantId) {
+      const stub = namespace.get(namespace.idFromName(tenantId));
+      return stub.getReadTokenHash();
     },
   };
 }

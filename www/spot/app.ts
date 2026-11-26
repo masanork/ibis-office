@@ -7,6 +7,13 @@ import {
 } from './cose-envelope.js';
 import { formatSpotCsv, formatSpotTsv, type SpotDecryptedRecord } from './export.js';
 import { renderQrSvg } from './qr.js';
+import {
+  buildShareableFormUrl,
+  decodeManifestParam,
+  generateReadToken,
+  type SpotFormManifest,
+  type SpotReceiverBundle,
+} from './tenant-setup.js';
 
 interface FormField {
   id: string;
@@ -96,12 +103,16 @@ async function ensureDemoKeys(kid: string): Promise<{ publicJwk: SpotRecipientJw
   return pair;
 }
 
-async function loadManifest(): Promise<FormManifest> {
+async function loadManifest(): Promise<SpotFormManifest> {
   const params = new URLSearchParams(location.search);
+  const inlineManifest = params.get('m');
+  if (inlineManifest) {
+    return decodeManifestParam(inlineManifest);
+  }
   const manifestUrl = params.get('manifest') || './sample-manifest.json';
   const res = await fetch(manifestUrl);
   if (!res.ok) throw new Error(`Failed to load manifest: ${res.status}`);
-  return (await res.json()) as FormManifest;
+  return (await res.json()) as SpotFormManifest;
 }
 
 async function main(): Promise<void> {
@@ -273,10 +284,38 @@ async function main(): Promise<void> {
     target.appendChild(table);
   };
 
+  const inboxTokenInput = document.getElementById('inbox-token') as HTMLInputElement;
+  const savedReadToken = localStorage.getItem(`sorane.spot.read-token.${manifest.tenant_id}`);
+  if (savedReadToken) inboxTokenInput.value = savedReadToken;
+
+  document.getElementById('receiver-bundle-file')!.addEventListener('change', async (event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    try {
+      const bundle = JSON.parse(await file.text()) as SpotReceiverBundle;
+      if (!bundle.private_jwk) return;
+      demoKeys = { publicJwk: demoKeys.publicJwk, privateJwk: bundle.private_jwk };
+      localStorage.setItem(KEY_STORAGE, JSON.stringify(demoKeys));
+      if (bundle.read_token) {
+        inboxTokenInput.value = bundle.read_token;
+        localStorage.setItem(`sorane.spot.read-token.${bundle.tenant_id || manifest.tenant_id}`, bundle.read_token);
+      }
+    } catch {
+      // Ignore invalid JSON file.
+    }
+  });
+
   document.getElementById('btn-fetch-inbox')!.addEventListener('click', async () => {
     const url = `${manifest.inbox_url ?? '/api/relay/v1/inbox'}?tenant_id=${encodeURIComponent(manifest.tenant_id)}`;
-    const res = await fetch(url);
-    if (!res.ok) return;
+    const token = inboxTokenInput.value.trim();
+    const headers: Record<string, string> = {};
+    if (token) headers.authorization = `Bearer ${token}`;
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      document.getElementById('inbox-list')!.textContent =
+        res.status === 401 ? '閲覧トークンが必要です（または一致しません）。' : `取得に失敗しました (${res.status})`;
+      return;
+    }
     const data = (await res.json()) as { items: Array<{ envelope: string }> };
     for (const row of data.items) {
       try {
@@ -400,22 +439,113 @@ async function main(): Promise<void> {
     URL.revokeObjectURL(url);
   });
 
+  const setupFieldsEl = document.getElementById('setup-fields') as HTMLTextAreaElement;
+  setupFieldsEl.value = JSON.stringify(manifest.fields, null, 2);
+
+  let issuedManifest: SpotFormManifest | null = null;
+  let issuedBundle: SpotReceiverBundle | null = null;
+
+  document.getElementById('btn-issue-tenant')!.addEventListener('click', async () => {
+    const statusEl = document.getElementById('setup-status')!;
+    const tenantId = (document.getElementById('setup-tenant') as HTMLInputElement).value.trim();
+    const formId = (document.getElementById('setup-form') as HTMLInputElement).value.trim();
+    const title = (document.getElementById('setup-title') as HTMLInputElement).value.trim() || '避難所受付票';
+    try {
+      const fields = JSON.parse(setupFieldsEl.value) as SpotFormManifest['fields'];
+      const kid = `${tenantId}-${formId}-${new Date().toISOString().slice(0, 10)}`;
+      const pair = await generateRecipientKeyPair(kid);
+      const { readToken, readTokenHash } = await generateReadToken();
+
+      const regRes = await fetch('/api/relay/v1/tenants', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenantId, read_token_hash: readTokenHash }),
+      });
+      if (regRes.status === 409) {
+        statusEl.textContent = `テナント "${tenantId}" はすでに登録済みです。別の tenant_id を指定してください。`;
+        return;
+      }
+      if (!regRes.ok) {
+        statusEl.textContent = `リレー登録エラー (${regRes.status})`;
+        return;
+      }
+
+      issuedManifest = {
+        schema: 'sorane.spot.form.v1',
+        tenant_id: tenantId,
+        form_id: formId,
+        version: '1.1.0',
+        title,
+        relay_url: `${location.origin}/api/relay/v1/submit`,
+        inbox_url: `${location.origin}/api/relay/v1/inbox`,
+        recipient_key: pair.publicJwk,
+        fields,
+      };
+      issuedBundle = {
+        schema: 'sorane.spot.receiver.v1',
+        tenant_id: tenantId,
+        form_id: formId,
+        version: '1.1.0',
+        read_token: readToken,
+        private_jwk: pair.privateJwk,
+      };
+      localStorage.setItem(`sorane.spot.read-token.${tenantId}`, readToken);
+
+      const shareUrl = buildShareableFormUrl(location.origin, location.pathname, issuedManifest);
+      (document.getElementById('setup-share-url') as HTMLInputElement).value = shareUrl;
+      const qrEl = document.getElementById('setup-share-qr')!;
+      try {
+        qrEl.innerHTML = renderQrSvg(shareUrl);
+      } catch {
+        qrEl.textContent = 'URL が長いため QR 化できませんでした（URL コピーまたはマニフェスト JSON をご利用ください）。';
+      }
+      document.getElementById('setup-output')!.classList.remove('hidden');
+      statusEl.textContent = `登録完了: "${tenantId}"（Inbox は閲覧トークンで保護されました）。下の受付鍵・トークン JSON を保存してください。`;
+    } catch (error) {
+      statusEl.textContent = `生成エラー: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  });
+
+  document.getElementById('btn-copy-share-url')!.addEventListener('click', async () => {
+    const val = (document.getElementById('setup-share-url') as HTMLInputElement).value;
+    if (val) await navigator.clipboard.writeText(val);
+  });
+
+  const downloadJson = (filename: string, obj: unknown) => {
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  document.getElementById('btn-download-manifest')!.addEventListener('click', () => {
+    if (issuedManifest) downloadJson(`${issuedManifest.tenant_id}-${issuedManifest.form_id}.manifest.json`, issuedManifest);
+  });
+
+  document.getElementById('btn-download-receiver')!.addEventListener('click', () => {
+    if (issuedBundle) downloadJson(`${issuedBundle.tenant_id}-${issuedBundle.form_id}.receiver.json`, issuedBundle);
+  });
+
   const tabSubmit = document.getElementById('tab-submit')!;
   const tabReceive = document.getElementById('tab-receive')!;
+  const tabSetup = document.getElementById('tab-setup')!;
   const panelSubmit = document.getElementById('panel-submit')!;
   const panelReceive = document.getElementById('panel-receive')!;
-  tabSubmit.addEventListener('click', () => {
-    tabSubmit.classList.add('active');
-    tabReceive.classList.remove('active');
-    panelSubmit.classList.remove('hidden');
-    panelReceive.classList.add('hidden');
-  });
-  tabReceive.addEventListener('click', () => {
-    tabReceive.classList.add('active');
-    tabSubmit.classList.remove('active');
-    panelReceive.classList.remove('hidden');
-    panelSubmit.classList.add('hidden');
-  });
+  const panelSetup = document.getElementById('panel-setup')!;
+  const activateTab = (which: 'submit' | 'receive' | 'setup') => {
+    tabSubmit.classList.toggle('active', which === 'submit');
+    tabReceive.classList.toggle('active', which === 'receive');
+    tabSetup.classList.toggle('active', which === 'setup');
+    panelSubmit.classList.toggle('hidden', which !== 'submit');
+    panelReceive.classList.toggle('hidden', which !== 'receive');
+    panelSetup.classList.toggle('hidden', which !== 'setup');
+  };
+  tabSubmit.addEventListener('click', () => activateTab('submit'));
+  tabReceive.addEventListener('click', () => activateTab('receive'));
+  tabSetup.addEventListener('click', () => activateTab('setup'));
 
   void recipientPub;
   await renderQueue();

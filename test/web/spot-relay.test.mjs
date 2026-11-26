@@ -8,6 +8,11 @@ import {
 } from '../../www/spot/cose-envelope.js';
 import { formatSpotCsv, formatSpotTsv } from '../../www/spot/export.js';
 import { encodeQrMatrix, renderQrSvg } from '../../www/spot/qr.js';
+import {
+  buildShareableFormUrl,
+  decodeManifestParam,
+  generateReadToken,
+} from '../../www/spot/tenant-setup.js';
 import { createMemoryRelayStore, dispatchSpotRelay } from '../../worker/spot-relay.js';
 
 test('COSE_Encrypt0 Spot envelope round-trips and rejects context or key tampering', async () => {
@@ -149,4 +154,71 @@ test('QR encoder generates valid matrix finder patterns and SVG for Spot envelop
   assert.equal(matrix.modules[3 * matrix.size + 3], 1);
   const svg = renderQrSvg(sealed.envelope);
   assert.ok(svg.startsWith('<svg ') && svg.includes('</svg>'));
+});
+
+test('Tenant registration enforces per-tenant Bearer read_token and ?m= manifest round-trips', async () => {
+  const store = createMemoryRelayStore();
+  const { readToken, readTokenHash } = await generateReadToken();
+
+  const reg = await dispatchSpotRelay(
+    new Request('https://spot.sorane.dev/api/relay/v1/tenants', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tenant_id: 'chiyoda-2026', read_token_hash: readTokenHash }),
+    }),
+    {},
+    store,
+  );
+  assert.equal(reg?.status, 201);
+
+  const dup = await dispatchSpotRelay(
+    new Request('https://spot.sorane.dev/api/relay/v1/tenants', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tenant_id: 'chiyoda-2026', read_token_hash: readTokenHash }),
+    }),
+    {},
+    store,
+  );
+  assert.equal(dup?.status, 409);
+
+  const denied = await dispatchSpotRelay(
+    new Request('https://spot.sorane.dev/api/relay/v1/inbox?tenant_id=chiyoda-2026'),
+    {},
+    store,
+  );
+  assert.equal(denied?.status, 401);
+
+  const wrong = await dispatchSpotRelay(
+    new Request('https://spot.sorane.dev/api/relay/v1/inbox?tenant_id=chiyoda-2026', {
+      headers: { authorization: 'Bearer wrong-token' },
+    }),
+    {},
+    store,
+  );
+  assert.equal(wrong?.status, 401);
+
+  const ok = await dispatchSpotRelay(
+    new Request('https://spot.sorane.dev/api/relay/v1/inbox?tenant_id=chiyoda-2026', {
+      headers: { authorization: `Bearer ${readToken}` },
+    }),
+    {},
+    store,
+  );
+  assert.equal(ok?.status, 200);
+
+  const shareUrl = buildShareableFormUrl('https://spot.sorane.dev', '/', {
+    schema: 'sorane.spot.form.v1',
+    tenant_id: 'chiyoda-2026',
+    form_id: 'evac-checkin',
+    version: '1.1.0',
+    title: '千代田区避難所受付',
+    relay_url: 'https://spot.sorane.dev/api/relay/v1/submit',
+    fields: [{ id: 'name', label: '氏名', type: 'text', required: true, claim_path: 'person.full_name' }],
+  });
+  const encoded = new URL(shareUrl).searchParams.get('m');
+  assert.ok(encoded);
+  const decoded = decodeManifestParam(encoded);
+  assert.equal(decoded.tenant_id, 'chiyoda-2026');
+  assert.equal(decoded.fields[0].claim_path, 'person.full_name');
 });

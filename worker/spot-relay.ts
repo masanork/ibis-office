@@ -18,6 +18,8 @@ export interface SpotRelayStore {
     duplicates: string[];
   }>;
   list(tenantId: string, since: number): Promise<SpotRelayStoredItem[]>;
+  registerTenant(tenantId: string, readTokenHash: string, now: number): Promise<'created' | 'conflict'>;
+  getReadTokenHash(tenantId: string): Promise<string | null>;
 }
 
 export interface SpotRelayEnv {
@@ -25,7 +27,7 @@ export interface SpotRelayEnv {
 }
 
 const TENANT_OR_FORM_RE = /^[a-zA-Z0-9._-]{1,64}$/;
-const ENVELOPE_ID_RE = /^[a-f0-9]{64}$/;
+const HEX_SHA256_RE = /^[a-f0-9]{64}$/;
 const MAX_BATCH_ITEMS = 50;
 const MAX_ENVELOPE_CHARS = 16_384;
 
@@ -46,8 +48,24 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+async function sha256Hex(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function timingSafeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
 export function createMemoryRelayStore(): SpotRelayStore {
   const byTenant = new Map<string, Map<string, SpotRelayStoredItem>>();
+  const tenantHashes = new Map<string, string>();
   return {
     async putBatch(tenantId, items, now) {
       let bucket = byTenant.get(tenantId);
@@ -78,6 +96,14 @@ export function createMemoryRelayStore(): SpotRelayStore {
         .filter((item) => item.received_at >= since)
         .sort((a, b) => a.received_at - b.received_at);
     },
+    async registerTenant(tenantId, readTokenHash) {
+      if (tenantHashes.has(tenantId)) return 'conflict';
+      tenantHashes.set(tenantId, readTokenHash);
+      return 'created';
+    },
+    async getReadTokenHash(tenantId) {
+      return tenantHashes.get(tenantId) ?? null;
+    },
   };
 }
 
@@ -95,6 +121,30 @@ export async function dispatchSpotRelay(
 
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
+  if (url.pathname === '/api/relay/v1/tenants' && request.method === 'POST') {
+    let body: { tenant_id?: unknown; read_token_hash?: unknown };
+    try {
+      body = (await request.json()) as { tenant_id?: unknown; read_token_hash?: unknown };
+    } catch {
+      return jsonResponse({ error: 'invalid_json' }, 400);
+    }
+
+    const tenantId = typeof body.tenant_id === 'string' ? body.tenant_id : '';
+    const readTokenHash = typeof body.read_token_hash === 'string' ? body.read_token_hash.toLowerCase() : '';
+    if (!TENANT_OR_FORM_RE.test(tenantId)) {
+      return jsonResponse({ error: 'invalid_tenant_id' }, 400);
+    }
+    if (!HEX_SHA256_RE.test(readTokenHash)) {
+      return jsonResponse({ error: 'invalid_read_token_hash' }, 400);
+    }
+
+    const outcome = await store.registerTenant(tenantId, readTokenHash, Date.now());
+    if (outcome === 'conflict') {
+      return jsonResponse({ error: 'tenant_already_registered' }, 409);
+    }
+    return jsonResponse({ ok: true, tenant_id: tenantId }, 201);
   }
 
   if (url.pathname === '/api/relay/v1/submit' && request.method === 'POST') {
@@ -122,7 +172,7 @@ export async function dispatchSpotRelay(
       const formId = typeof item.form_id === 'string' ? item.form_id : '';
       const envelope = typeof item.envelope === 'string' ? item.envelope : '';
       if (
-        !ENVELOPE_ID_RE.test(envelopeId)
+        !HEX_SHA256_RE.test(envelopeId)
         || !TENANT_OR_FORM_RE.test(formId)
         || !envelope.startsWith('spot1:')
         || envelope.length > MAX_ENVELOPE_CHARS
@@ -137,17 +187,29 @@ export async function dispatchSpotRelay(
   }
 
   if (url.pathname === '/api/relay/v1/inbox' && request.method === 'GET') {
-    if (env.SPOT_RELAY_READ_TOKEN) {
-      const auth = request.headers.get('authorization') ?? '';
-      if (auth !== `Bearer ${env.SPOT_RELAY_READ_TOKEN}`) {
-        return jsonResponse({ error: 'unauthorized' }, 401);
-      }
-    }
-
     const tenantId = url.searchParams.get('tenant_id') ?? '';
     if (!TENANT_OR_FORM_RE.test(tenantId)) {
       return jsonResponse({ error: 'invalid_tenant_id' }, 400);
     }
+
+    const tenantHash = await store.getReadTokenHash(tenantId);
+    const auth = request.headers.get('authorization') ?? '';
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+
+    if (tenantHash) {
+      if (!bearer) {
+        return jsonResponse({ error: 'unauthorized' }, 401);
+      }
+      const suppliedHash = await sha256Hex(bearer);
+      if (!timingSafeEqualHex(suppliedHash, tenantHash)) {
+        return jsonResponse({ error: 'unauthorized' }, 401);
+      }
+    } else if (env.SPOT_RELAY_READ_TOKEN) {
+      if (bearer !== env.SPOT_RELAY_READ_TOKEN) {
+        return jsonResponse({ error: 'unauthorized' }, 401);
+      }
+    }
+
     const sinceParam = Number(url.searchParams.get('since') ?? '0');
     const since = Number.isFinite(sinceParam) && sinceParam > 0 ? sinceParam : 0;
     const items = await store.list(tenantId, since);

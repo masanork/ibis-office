@@ -40,6 +40,7 @@
   <div class="tabs">
     <button id="tab-submit" class="active" type="button">避難者フォーム（提出）</button>
     <button id="tab-receive" type="button">受付ビュー（回収・復号）</button>
+    <button id="tab-setup" type="button">テナント・帳票設定（発行）</button>
   </div>
 
   <section id="panel-submit">
@@ -77,6 +78,10 @@
           <button id="btn-fetch-inbox" class="secondary" type="button">Inbox 取得・復号</button>
         </div>
       </div>
+      <label for="inbox-token">閲覧トークン（Bearer / テナント保護時のみ）</label>
+      <input id="inbox-token" type="password" placeholder="demo-city 等（未登録テナントは空欄可）" />
+      <label for="receiver-bundle-file">別端末の受付鍵・トークン JSON を読み込む</label>
+      <input id="receiver-bundle-file" type="file" accept="application/json,.json" />
       <div id="qr-scanner" class="hidden" style="margin-top: 10px;">
         <video id="qr-video" playsinline muted style="width: 100%; max-height: 280px; border-radius: 8px; background: #000;"></video>
         <div class="row" style="justify-content: space-between; margin-top: 6px;">
@@ -98,6 +103,36 @@
         </div>
       </div>
       <div id="inbox-list" class="muted" style="margin-top: 8px;">まだデータがありません。</div>
+    </div>
+  </section>
+
+  <section id="panel-setup" class="hidden">
+    <div class="card">
+      <strong>新規テナント・帳票マニフェスト発行</strong>
+      <p class="muted">自治体・避難所・イベント単位の公開鍵と閲覧トークンを生成し、自己完結 URL（<code>?m=...</code>）と掲示用 QR を発行します。</p>
+      <label for="setup-tenant">テナント ID（英数字・ハイフン・ドット）</label>
+      <input id="setup-tenant" type="text" value="demo-city-2" />
+      <label for="setup-form">帳票 ID</label>
+      <input id="setup-form" type="text" value="evac-checkin" />
+      <label for="setup-title">帳票タイトル</label>
+      <input id="setup-title" type="text" value="避難所受付票" />
+      <label for="setup-fields">項目定義（JSON 配列）</label>
+      <textarea id="setup-fields" rows="6"></textarea>
+      <div class="row" style="margin-top: 12px;">
+        <button id="btn-issue-tenant" class="primary" type="button" style="margin-top: 0;">鍵ペア・トークン生成＆リレー登録</button>
+      </div>
+      <div id="setup-status" class="muted" style="margin-top: 8px;"></div>
+    </div>
+
+    <div id="setup-output" class="card hidden">
+      <strong>配布用フォーム URL・掲示用 QR</strong>
+      <input id="setup-share-url" type="text" readonly style="margin-top: 8px;" />
+      <div class="row" style="margin-top: 8px;">
+        <button id="btn-copy-share-url" class="secondary" type="button">URL をコピー</button>
+        <button id="btn-download-manifest" class="secondary" type="button">マニフェスト JSON</button>
+        <button id="btn-download-receiver" class="secondary" type="button">受付鍵・トークン JSON</button>
+      </div>
+      <div id="setup-share-qr" style="max-width: 240px; margin-top: 12px;"></div>
     </div>
   </section>
 
