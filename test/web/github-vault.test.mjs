@@ -459,6 +459,73 @@ test('POST /api/github/repos/create returns alreadyExists guidance on 422', asyn
   }
 });
 
+test('GET /api/ai/models and POST /api/ai/chat proxy authenticated requests to GitHub Models', async () => {
+  const unauth = await dispatchGitHubVault(
+    new Request('https://docs.sorane.dev/api/ai/models'),
+    TEST_ENV,
+  );
+  assert.equal(unauth.status, 401);
+
+  const sealed = await sealSession(
+    { accessToken: 'ghu_ai_tok', login: 'masanork', vault: null, iat: 1700000000000 },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const modelsRes = await dispatchGitHubVault(
+    new Request('https://docs.sorane.dev/api/ai/models', {
+      headers: { Cookie: `sorane_gh_session=${sealed}` },
+    }),
+    TEST_ENV,
+  );
+  assert.equal(modelsRes.status, 200);
+  const catalog = await modelsRes.json();
+  assert.ok(typeof catalog.csrf === 'string' && catalog.csrf.length > 10);
+  assert.ok(Array.isArray(catalog.models) && catalog.models.length >= 1);
+  assert.equal(catalog.models[0].key, 'openai/gpt-4.1-mini');
+
+  const badCsrf = await dispatchGitHubVault(
+    new Request('https://docs.sorane.dev/api/ai/chat', {
+      method: 'POST',
+      headers: {
+        Cookie: `sorane_gh_session=${sealed}`,
+        'Content-Type': 'application/json',
+        'X-Sorane-CSRF': 'wrong',
+      },
+      body: JSON.stringify({ model: 'openai/gpt-4.1-mini', messages: [{ role: 'user', content: 'hi' }] }),
+    }),
+    TEST_ENV,
+  );
+  assert.equal(badCsrf.status, 403);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), 'https://models.github.ai/inference/chat/completions');
+    assert.equal(init.headers.Authorization, 'Bearer ghu_ai_tok');
+    return new Response('data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  };
+  try {
+    const chatRes = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/ai/chat', {
+        method: 'POST',
+        headers: {
+          Cookie: `sorane_gh_session=${sealed}`,
+          'Content-Type': 'application/json',
+          'X-Sorane-CSRF': catalog.csrf,
+        },
+        body: JSON.stringify({ model: 'openai/gpt-4.1-mini', messages: [{ role: 'user', content: 'hi' }] }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(chatRes.status, 200);
+    const sseText = await chatRes.text();
+    assert.match(sseText, /"content":"hello"/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test('detectSoraneContentDir extracts build.content_dir from sorane.yaml', () => {
   assert.equal(
     detectSoraneContentDir('site:\n  title: Demo\nbuild:\n  content_dir: "docs/content"\n'),

@@ -556,5 +556,79 @@ if (!params.has('host')) {
     }
   });
 
+  let activeAiAbortController = null;
+
+  window.ibisOfficeAiAbort = () => {
+    if (activeAiAbortController) {
+      activeAiAbortController.abort();
+      activeAiAbortController = null;
+    }
+  };
+
+  window.ibisOfficeAiModels = async () => {
+    const res = await fetch('/api/ai/models', { credentials: 'same-origin' });
+    if (res.status === 401) {
+      throw new Error('login_required');
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'ai_failed');
+    }
+    return await res.text();
+  };
+
+  window.ibisOfficeAiStream = async (body, csrf, onLine) => {
+    window.ibisOfficeAiAbort();
+    const controller = new AbortController();
+    activeAiAbortController = controller;
+    try {
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Sorane-CSRF': csrf || '',
+        },
+        body,
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || (res.status === 401 ? 'login_required' : 'ai_failed'));
+      }
+      if (!res.body) {
+        throw new Error('ai_failed');
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nl).replace(/\r$/, '');
+          buffer = buffer.slice(nl + 1);
+          if (line.length > 0 && typeof onLine === 'function') {
+            onLine(line);
+          }
+        }
+      }
+      if (buffer.trim().length > 0 && typeof onLine === 'function') {
+        onLine(buffer.replace(/\r$/, ''));
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        throw new Error('aborted');
+      }
+      throw err;
+    } finally {
+      if (activeAiAbortController === controller) {
+        activeAiAbortController = null;
+      }
+    }
+  };
+
   void loadSession();
 }

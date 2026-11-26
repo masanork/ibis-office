@@ -382,6 +382,7 @@ fn default_reasoning_effort(model: &str, has_tools: bool) -> Option<&'static str
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConnectionChoice {
     Auto,
+    GitHubModels,
     OpenAi,
     Claude,
     Gemini,
@@ -391,8 +392,9 @@ pub(crate) enum ConnectionChoice {
 
 #[cfg(not(target_family = "wasm"))]
 impl ConnectionChoice {
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Auto,
+        Self::GitHubModels,
         Self::OpenAi,
         Self::Claude,
         Self::Gemini,
@@ -403,6 +405,7 @@ impl ConnectionChoice {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Auto => "自動選択",
+            Self::GitHubModels => "GitHub Models（ログイン済み）",
             Self::OpenAi => "OpenAI 互換 API",
             Self::Claude => "Claude API（環境変数）",
             Self::Gemini => "Google Gemini（環境変数）",
@@ -416,6 +419,24 @@ impl ConnectionChoice {
         saved: &AiConfig,
         env: impl Fn(&str) -> Option<String>,
     ) -> Result<NativeConnection, String> {
+        if self == Self::GitHubModels {
+            let token = load_github_session_token().ok_or_else(|| {
+                "GitHub にログインしてください（左サイドバーの Git パネルからログインできます）。".to_string()
+            })?;
+            let model = if saved.model.trim().contains('/') {
+                saved.model.trim().to_string()
+            } else {
+                sorane_github::DEFAULT_GITHUB_MODEL.to_string()
+            };
+            return Ok(NativeConnection {
+                provider: Provider::OpenAi,
+                config: AiConfig {
+                    base_url: sorane_github::GITHUB_MODELS_BASE_URL.to_string(),
+                    model,
+                    api_key: token,
+                },
+            });
+        }
         let (provider, config) = Provider::resolve(saved, |name| match (self, name) {
             (Self::OpenAi, "IBIS_AI_PROVIDER") => Some("openai".into()),
             (Self::Claude, "IBIS_AI_PROVIDER") => Some("anthropic".into()),
@@ -424,6 +445,26 @@ impl ConnectionChoice {
             (Self::BedrockProfile, "AWS_BEARER_TOKEN_BEDROCK") => None,
             _ => env(name),
         })?;
+        if self == Self::Auto
+            && provider == Provider::OpenAi
+            && config.base_url == DEFAULT_BASE_URL
+            && config.api_key.is_empty()
+            && let Some(token) = load_github_session_token()
+        {
+            let model = if saved.model.trim().contains('/') {
+                saved.model.trim().to_string()
+            } else {
+                sorane_github::DEFAULT_GITHUB_MODEL.to_string()
+            };
+            return Ok(NativeConnection {
+                provider: Provider::OpenAi,
+                config: AiConfig {
+                    base_url: sorane_github::GITHUB_MODELS_BASE_URL.to_string(),
+                    model,
+                    api_key: token,
+                },
+            });
+        }
         if self == Self::BedrockKey && provider != Provider::Bedrock {
             return Err("AWS_BEARER_TOKEN_BEDROCK を設定してください。".into());
         }
@@ -448,6 +489,21 @@ impl ConnectionChoice {
 }
 
 #[cfg(not(target_family = "wasm"))]
+fn load_github_session_token() -> Option<String> {
+    let path = crate::app_data::base()?
+        .join("ibisOffice")
+        .join("sorane-github-session.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(not(target_family = "wasm"))]
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct NativeConnection {
     provider: Provider,
@@ -469,6 +525,9 @@ impl NativeConnection {
 
     pub(crate) fn caption(&self) -> (&'static str, String) {
         let choice = match self.provider {
+            Provider::OpenAi if self.config.base_url == sorane_github::GITHUB_MODELS_BASE_URL => {
+                ConnectionChoice::GitHubModels
+            }
             Provider::OpenAi if self.config.base_url == GEMINI_BASE_URL => ConnectionChoice::Gemini,
             Provider::OpenAi | Provider::OpenAiResponses => ConnectionChoice::OpenAi,
             Provider::Anthropic => ConnectionChoice::Claude,
@@ -1223,7 +1282,7 @@ pub fn browser_csrf() -> String {
 /// Turn a Worker error code into a sentence for the Assistant pane.
 pub fn explain_ai_error(code: &str) -> String {
     match code {
-        "login_required" => "ログインが必要です。保存したファイルの画面から Mikaki でログインしてください。".to_string(),
+        "login_required" => "ログインが必要です。スタート画面の「GitHub でログイン」からログインしてください。".to_string(),
         "invalid_csrf" => "ログイン情報を確認できませんでした。アシスタントを開き直してください。".to_string(),
         "invalid_origin" => "このページからはアシスタントを使えません。docs.sorane.dev で開いてください。".to_string(),
         "invalid_model" => "選んだモデルは使えません。アシスタントを開き直してください。".to_string(),
@@ -1231,7 +1290,7 @@ pub fn explain_ai_error(code: &str) -> String {
         "too_long" => "文書が選んだモデルの上限を超えています。".to_string(),
         "rate_limited" => "短時間に送りすぎました。少し待ってからもう一度試してください。".to_string(),
         "quota_exceeded" => "今日の利用回数の上限に達しました。".to_string(),
-        "ai_not_configured" => "アシスタントの準備がまだです。".to_string(),
+        "ai_not_configured" => "GitHub Models へのアクセス権限（Models: Read）が未承認です。GitHub App の権限を更新して再ログインしてください。".to_string(),
         "ai_failed" => "応答を受け取れませんでした。".to_string(),
         "aborted" => String::new(),
         other => other.to_string(),

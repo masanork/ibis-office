@@ -16,6 +16,9 @@ pub const GITHUB_APP_SLUG: &str = "soranedocs";
 pub const GITHUB_APP_INSTALL_URL: &str =
     "https://github.com/apps/soranedocs/installations/new";
 pub const GITHUB_API_BASE: &str = "https://api.github.com";
+pub const GITHUB_MODELS_BASE_URL: &str = "https://models.github.ai/inference";
+pub const GITHUB_MODELS_CHAT_URL: &str = "https://models.github.ai/inference/chat/completions";
+pub const DEFAULT_GITHUB_MODEL: &str = "openai/gpt-4.1-mini";
 pub const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 pub const GITHUB_OAUTH_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 pub const DEFAULT_VAULT_REPO_NAME: &str = "soraneDocs";

@@ -177,8 +177,26 @@ async function githubFetch(path: string, accessToken: string, init?: RequestInit
   return fetch(`${GITHUB_API}${path}`, { ...init, headers });
 }
 
+const GITHUB_MODELS_CHAT_URL = 'https://models.github.ai/inference/chat/completions';
+const AI_MODELS = [
+  { key: 'openai/gpt-4.1-mini', label: 'GitHub Models: GPT-4.1 mini (標準)', maxInputChars: 24000 },
+  { key: 'openai/gpt-4.1', label: 'GitHub Models: GPT-4.1', maxInputChars: 24000 },
+  { key: 'openai/gpt-4o-mini', label: 'GitHub Models: GPT-4o mini', maxInputChars: 24000 },
+  { key: 'openai/gpt-4o', label: 'GitHub Models: GPT-4o', maxInputChars: 24000 },
+] as const;
+
+async function deriveCsrfToken(session: GitHubSessionPayload, secret: string): Promise<string> {
+  const data = new TextEncoder().encode(`sorane-ai-csrf:${secret}:${session.login}:${session.iat}`);
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+  return toBase64Url(hash.slice(0, 24));
+}
+
 export function isGitHubVaultRoute(pathname: string): boolean {
-  return pathname.startsWith('/auth/github/') || pathname.startsWith('/api/github/');
+  return (
+    pathname.startsWith('/auth/github/') ||
+    pathname.startsWith('/api/github/') ||
+    pathname.startsWith('/api/ai/')
+  );
 }
 
 export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv): Promise<Response | null> {
@@ -860,6 +878,81 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
       sha: putData.content?.sha ?? null,
       commitSha: putData.commit?.sha ?? null,
       commitUrl: putData.commit?.html_url ?? null,
+    });
+  }
+
+  if (pathname === '/api/ai/models' && request.method === 'GET') {
+    const csrf = await deriveCsrfToken(session, env.GITHUB_SESSION_SECRET!);
+    return json({ csrf, models: AI_MODELS });
+  }
+
+  if (pathname === '/api/ai/chat' && request.method === 'POST') {
+    const expectedCsrf = await deriveCsrfToken(session, env.GITHUB_SESSION_SECRET!);
+    const suppliedCsrf = request.headers.get('X-Sorane-CSRF')?.trim() || '';
+    if (!suppliedCsrf || suppliedCsrf !== expectedCsrf) {
+      return json({ error: 'invalid_csrf' }, 403);
+    }
+
+    const body = (await request.json().catch(() => null)) as {
+      model?: unknown;
+      messages?: unknown;
+    } | null;
+    if (!body || !Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > 24) {
+      return json({ error: 'invalid_message' }, 400);
+    }
+    const requestedModel = typeof body.model === 'string' && body.model.trim()
+      ? body.model.trim()
+      : AI_MODELS[0].key;
+    const allowedModel = AI_MODELS.find(m => m.key === requestedModel);
+    if (!allowedModel) {
+      return json({ error: 'invalid_model' }, 400);
+    }
+
+    const totalChars = body.messages.reduce<number>((sum, item) => {
+      if (item && typeof item === 'object' && 'content' in item && typeof item.content === 'string') {
+        return sum + item.content.length;
+      }
+      return sum;
+    }, 0);
+    if (totalChars > allowedModel.maxInputChars) {
+      return json({ error: 'too_long' }, 413);
+    }
+
+    const upstream = await fetch(GITHUB_MODELS_CHAT_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${session.accessToken}`,
+        Accept: 'text/event-stream',
+        'Content-Type': 'application/json',
+        'User-Agent': 'soraneDocs-Web',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({
+        model: allowedModel.key,
+        messages: body.messages,
+        stream: true,
+      }),
+    });
+
+    if (!upstream.ok) {
+      const code = upstream.status === 401
+        ? 'login_required'
+        : upstream.status === 403
+          ? 'ai_not_configured'
+          : upstream.status === 429
+            ? 'rate_limited'
+            : upstream.status === 413
+              ? 'too_long'
+              : 'ai_failed';
+      return json({ error: code }, upstream.status === 401 ? 401 : 502);
+    }
+
+    return new Response(upstream.body, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-store',
+      },
     });
   }
 
