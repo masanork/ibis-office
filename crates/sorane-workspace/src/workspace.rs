@@ -376,6 +376,27 @@ mod web_platform {
         pub fn outgoing_links_for(&self, rel: &str) -> Vec<String> {
             self.outgoing_by_file.get(rel).cloned().unwrap_or_default()
         }
+
+        pub fn vault_profiles(&self) -> &[ibis_formats::form_assist::VaultProfile] {
+            &[]
+        }
+
+        pub fn vault_credentials(&self) -> &[ibis_formats::form_assist::VaultCredentialSummary] {
+            &[]
+        }
+
+        pub fn vault_form_mappings(&self) -> &[ibis_formats::form_assist::FormMapping] {
+            &[]
+        }
+
+        pub fn matching_form_mappings_for_sheet(
+            &self,
+            _presentation: &ibis_doc_model::Presentation,
+            _slide: ibis_doc_model::SlideId,
+            _file_sha256: Option<&str>,
+        ) -> Vec<ibis_formats::form_assist::FormMapping> {
+            Vec::new()
+        }
     }
 
     pub trait SlideEditorWebExt {
@@ -498,6 +519,7 @@ pub struct SoraneWorkspace {
     cached_search_query: String,
     cached_search_hits: Vec<ContentSearchHit>,
     vault_status: Option<SharedString>,
+    pub(crate) form_assist: crate::form_assist::FormAssistState,
 
     // Quick Switcher / Command Palette overlay (`Cmd/Ctrl+O` / `Cmd/Ctrl+P`)
     pub(crate) quick_switcher: Option<QuickSwitcherState>,
@@ -583,6 +605,7 @@ impl SoraneWorkspace {
             cached_search_query: String::new(),
             cached_search_hits: Vec::new(),
             vault_status: None,
+            form_assist: crate::form_assist::FormAssistState::default(),
             quick_switcher: None,
             github_session: saved_github_session,
             github_catalog: None,
@@ -2813,6 +2836,26 @@ impl SoraneWorkspace {
                     )
                     .child(
                         ribbon_btn(
+                            "ribbon-form-assist",
+                            "📝",
+                            "フォーム入力支援 (Form Assist)",
+                            self.right_sidebar_open
+                                && self.right_panel == RightPanelKind::FormAssist,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.right_sidebar_open
+                                && this.right_panel == RightPanelKind::FormAssist
+                            {
+                                this.right_sidebar_open = false;
+                            } else {
+                                this.right_sidebar_open = true;
+                                this.right_panel = RightPanelKind::FormAssist;
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        ribbon_btn(
                             "ribbon-ai",
                             "✨",
                             "AI アシスタント (⇧⌘L)",
@@ -3952,6 +3995,9 @@ impl SoraneWorkspace {
                     );
                 }
             },
+            RightPanelKind::FormAssist => {
+                content = content.child(self.render_form_assist_panel(cx));
+            }
         }
 
         let dragging = self.right_sidebar_drag.is_some();
@@ -4078,6 +4124,17 @@ impl SoraneWorkspace {
                                     )
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.right_panel = RightPanelKind::Graph;
+                                        cx.notify();
+                                    })),
+                                )
+                                .child(
+                                    dock_tab(
+                                        "ws-right-tab-form-assist",
+                                        "フォーム",
+                                        self.right_panel == RightPanelKind::FormAssist,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.right_panel = RightPanelKind::FormAssist;
                                         cx.notify();
                                     })),
                                 )

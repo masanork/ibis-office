@@ -22,7 +22,10 @@ const SCAN_LIMIT: usize = 10_000;
 const TEXT_BYTES: usize = 512 * 1024;
 const RESULT_BYTES: usize = 24 * 1024;
 pub(crate) const OFFICE: &[&str] = &["docx", "docm", "dotx", "xlsx", "xlsm", "pptx", "pptm"];
-const TEXT: &[&str] = &["md", "markdown", "txt", "csv", "tsv", "json", "jsonl", "ndjson", "yaml", "yml"];
+const TEXT: &[&str] = &[
+    "md", "markdown", "txt", "csv", "tsv", "json", "jsonl", "ndjson", "yaml", "yml", "sd-jwt",
+    "mdoc",
+];
 
 pub(crate) fn extension(path: &Path) -> String {
     path.extension()
@@ -745,6 +748,42 @@ impl Folder {
             }
         }
         (!parts.is_empty()).then(|| parts.join("/"))
+    }
+
+    pub fn vault_profiles(&self) -> &[ibis_formats::form_assist::VaultProfile] {
+        self.markdown_index.profiles()
+    }
+
+    pub fn vault_credentials(&self) -> &[ibis_formats::form_assist::VaultCredentialSummary] {
+        self.markdown_index.credentials()
+    }
+
+    pub fn vault_form_mappings(&self) -> &[ibis_formats::form_assist::FormMapping] {
+        self.markdown_index.form_mappings()
+    }
+
+    pub fn matching_form_mappings_for_sheet(
+        &self,
+        presentation: &ibis_doc_model::Presentation,
+        slide: ibis_doc_model::SlideId,
+        file_sha256: Option<&str>,
+    ) -> Vec<ibis_formats::form_assist::FormMapping> {
+        let mut scored: Vec<(u32, ibis_formats::form_assist::FormMapping)> = self
+            .markdown_index
+            .form_mappings()
+            .iter()
+            .filter_map(|m| {
+                ibis_formats::form_assist::score_form_mapping_match(
+                    m,
+                    presentation,
+                    slide,
+                    file_sha256,
+                )
+                .map(|score| (score, m.clone()))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.path.cmp(&b.1.path)));
+        scored.into_iter().map(|(_, m)| m).collect()
     }
 }
 
@@ -1832,5 +1871,43 @@ example: "[ignored](/資料/共通要件.md)"
         // Path traversal and hidden paths are refused.
         assert_eq!(vault.create_wikilink_note(&source, "[[../outside]]").unwrap(), None);
         assert_eq!(vault.create_wikilink_note(&source, "[[.hidden]]").unwrap(), None);
+    }
+
+    #[test]
+    fn vault_db_v2_indexes_and_caches_profiles_form_mappings_and_credentials() {
+        let fixture = Fixture::new();
+        for dir in ["profiles", "forms", "credentials"] {
+            std::fs::create_dir_all(fixture.0.join(dir)).unwrap();
+        }
+        let (_, company_md) = ibis_formats::form_assist::starter_profile_markdown("organization");
+        fixture.write("profiles/company.md", company_md);
+        fixture.write(
+            "forms/invoice.form-map.md",
+            "---\ntype: form-mapping\ntitle: テスト請求書\nx-sorane-form-mapping:\n  version: 1\n  form_id: invoice-test\n  format: xlsx\n  match:\n    sheet: 請求書\n  fields:\n    - id: org\n      label: 会社名\n      target: { cell: B3 }\n      sources:\n        - any: organization.name\n---\n",
+        );
+        fixture.write(
+            "credentials/training.sd-jwt",
+            include_str!("../../../test/fixtures/structured-preview/training.sd-jwt"),
+        );
+
+        let first = Folder::scan(&fixture.0).unwrap();
+        assert_eq!(first.vault_profiles().len(), 1);
+        assert_eq!(first.vault_profiles()[0].scope, "organization");
+        assert_eq!(first.vault_form_mappings().len(), 1);
+        assert_eq!(first.vault_form_mappings()[0].form_id, "invoice-test");
+        assert_eq!(first.vault_credentials().len(), 1);
+        assert_eq!(first.vault_credentials()[0].format, "sd-jwt");
+        assert!(
+            first.vault_credentials()[0]
+                .claims
+                .contains_key("研修名")
+        );
+
+        // Second scan hits SQLite v2 cache and preserves all indexed profiles, mappings, and credentials.
+        let second = Folder::scan(&fixture.0).unwrap();
+        assert!(second.markdown_index.cache_hits >= 2);
+        assert_eq!(second.vault_profiles(), first.vault_profiles());
+        assert_eq!(second.vault_form_mappings(), first.vault_form_mappings());
+        assert_eq!(second.vault_credentials(), first.vault_credentials());
     }
 }

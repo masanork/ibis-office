@@ -52,6 +52,7 @@ pub(crate) enum WorkspaceCommand {
     ShowBacklinksPanel,
     ShowOutlinePanel,
     ShowGraphPanel,
+    ShowFormAssistPanel,
     OpenAiAssistant,
     ToggleInspectorPanel,
     ToggleMarkdownSource,
@@ -219,6 +220,12 @@ const ALL_COMMANDS: &[(WorkspaceCommand, &str, &str, Option<&str>)] = &[
         WorkspaceCommand::ShowGraphPanel,
         "右ドック: ローカルグラフを表示 (Local Graph)",
         "アクティブノート周辺のリンク構造を可視化",
+        None,
+    ),
+    (
+        WorkspaceCommand::ShowFormAssistPanel,
+        "右ドック: フォーム入力支援を表示 (Form Assist)",
+        "Vault プロフィールと保有 VC からスプレッドシートを自動入力",
         None,
     ),
     (
@@ -499,6 +506,11 @@ impl SoraneWorkspace {
             WorkspaceCommand::ShowGraphPanel => {
                 self.right_sidebar_open = true;
                 self.right_panel = RightPanelKind::Graph;
+                cx.notify();
+            }
+            WorkspaceCommand::ShowFormAssistPanel => {
+                self.right_sidebar_open = true;
+                self.right_panel = RightPanelKind::FormAssist;
                 cx.notify();
             }
             WorkspaceCommand::OpenAiAssistant => self.open_ai_assistant_for_active_pane(window, cx),

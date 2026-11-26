@@ -10,6 +10,7 @@ use gpui_kit::component::Root;
 use gpui_kit::*;
 use ibis_office_shell::window_editors::{WindowSetup, WorkspaceWindowFactory};
 
+pub mod form_assist;
 pub mod github;
 pub mod local_graph;
 pub mod model;

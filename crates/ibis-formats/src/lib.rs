@@ -56,6 +56,7 @@ pub mod structured_preview;
 pub mod sbom_review;
 mod workbook_assembly;
 pub mod student_record;
+pub mod form_assist;
 pub mod form_template;
 pub mod dpc;
 pub mod fhir;

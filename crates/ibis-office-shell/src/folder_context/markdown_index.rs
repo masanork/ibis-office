@@ -46,6 +46,11 @@ pub(super) struct RawLink {
     pub(super) excerpt: String,
 }
 
+use ibis_formats::form_assist::{
+    FormMapping, VaultCredentialSummary, VaultProfile, parse_credential_bytes,
+    parse_form_mapping_markdown, parse_profile_markdown,
+};
+
 #[derive(Clone, Debug)]
 pub(super) struct CachedFile {
     pub(super) stamp: Stamp,
@@ -53,6 +58,14 @@ pub(super) struct CachedFile {
     pub(super) tags: Vec<String>,
     pub(super) aliases: Vec<String>,
     pub(super) links: Vec<RawLink>,
+    pub(super) profile: Option<VaultProfile>,
+    pub(super) form_mapping: Option<FormMapping>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct CachedCredential {
+    pub(super) stamp: Stamp,
+    pub(super) summary: Option<VaultCredentialSummary>,
 }
 
 #[derive(Clone, Debug)]
@@ -68,6 +81,9 @@ pub(super) struct MarkdownIndex {
     backlinks: BTreeMap<String, Vec<Backlink>>,
     tags: BTreeMap<String, Vec<String>>,
     aliases: BTreeMap<String, Vec<String>>,
+    profiles: Vec<VaultProfile>,
+    form_mappings: Vec<FormMapping>,
+    credentials: Vec<VaultCredentialSummary>,
     pub(super) partial: bool,
     #[cfg(test)]
     pub(super) cache_hits: usize,
@@ -144,6 +160,8 @@ impl MarkdownIndex {
             incomplete |= partial;
 
             let (tags, aliases, links) = extract_markdown_metadata(relative, &content);
+            let profile = parse_profile_markdown(relative, &content);
+            let form_mapping = parse_form_mapping_markdown(relative, &content);
             current_files.insert(
                 relative.clone(),
                 CachedFile {
@@ -152,6 +170,8 @@ impl MarkdownIndex {
                     tags,
                     aliases,
                     links,
+                    profile,
+                    form_mapping,
                 },
             );
             updated_paths.push(relative.clone());
@@ -185,8 +205,54 @@ impl MarkdownIndex {
             log::warn!("Failed to persist vault index cache: {err}");
         }
 
+        // Incrementally index `.sd-jwt` and `.mdoc` credentials inside the Vault.
+        let mut cached_creds = vault_db::load_credentials(&folder.root).unwrap_or_default();
+        let mut current_creds = BTreeMap::<String, CachedCredential>::new();
+        let mut updated_cred_paths = Vec::<String>::new();
+        for relative in folder
+            .files
+            .iter()
+            .filter(|path| matches!(extension(Path::new(path)).as_str(), "sd-jwt" | "mdoc"))
+            .take(512)
+        {
+            let Ok(path) = folder.resolve(relative) else {
+                continue;
+            };
+            let Some(stamp) = Stamp::read(&path) else {
+                continue;
+            };
+            if let Some(entry) = cached_creds
+                .remove(relative)
+                .filter(|entry| entry.stamp == stamp)
+            {
+                current_creds.insert(relative.clone(), entry);
+                continue;
+            }
+            let summary = if stamp.size <= 1024 * 1024 {
+                std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| parse_credential_bytes(relative, &extension(&path), &bytes))
+            } else {
+                None
+            };
+            current_creds.insert(relative.clone(), CachedCredential { stamp, summary });
+            updated_cred_paths.push(relative.clone());
+        }
+        let removed_creds: Vec<String> = cached_creds.into_keys().collect();
+        let updated_creds: Vec<(String, &CachedCredential)> = updated_cred_paths
+            .iter()
+            .filter_map(|path| current_creds.get(path).map(|entry| (path.clone(), entry)))
+            .collect();
+        if let Err(err) =
+            vault_db::sync_credentials_diff(&folder.root, &removed_creds, &updated_creds)
+        {
+            log::warn!("Failed to persist vault credentials cache: {err}");
+        }
+
         let mut tags = BTreeMap::<String, Vec<String>>::new();
         let mut aliases = BTreeMap::<String, Vec<String>>::new();
+        let mut profiles = Vec::new();
+        let mut form_mappings = Vec::new();
         for (path, entry) in &current_files {
             if !entry.tags.is_empty() {
                 tags.insert(path.clone(), entry.tags.clone());
@@ -194,7 +260,17 @@ impl MarkdownIndex {
             for alias in &entry.aliases {
                 aliases.entry(alias.clone()).or_default().push(path.clone());
             }
+            if let Some(profile) = &entry.profile {
+                profiles.push(profile.clone());
+            }
+            if let Some(mapping) = &entry.form_mapping {
+                form_mappings.push(mapping.clone());
+            }
         }
+        let credentials: Vec<VaultCredentialSummary> = current_creds
+            .into_values()
+            .filter_map(|entry| entry.summary)
+            .collect();
 
         let mut backlinks = BTreeMap::<String, Vec<Backlink>>::new();
         for (source, entry) in &current_files {
@@ -238,6 +314,9 @@ impl MarkdownIndex {
             backlinks,
             tags,
             aliases,
+            profiles,
+            form_mappings,
+            credentials,
             partial: incomplete
                 || markdown.next().is_some()
                 || folder.truncated
@@ -283,6 +362,18 @@ impl MarkdownIndex {
 
     pub(super) fn aliases(&self) -> &BTreeMap<String, Vec<String>> {
         &self.aliases
+    }
+
+    pub(super) fn profiles(&self) -> &[VaultProfile] {
+        &self.profiles
+    }
+
+    pub(super) fn form_mappings(&self) -> &[FormMapping] {
+        &self.form_mappings
+    }
+
+    pub(super) fn credentials(&self) -> &[VaultCredentialSummary] {
+        &self.credentials
     }
 
     pub(super) fn search(

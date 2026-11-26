@@ -124,6 +124,7 @@ pub enum RightPanelKind {
     Backlinks,
     Outline,
     Graph,
+    FormAssist,
 }
 
 /// Record of a recently closed file-backed tab for `Cmd/Ctrl+Shift+T` reopen.
