@@ -389,6 +389,12 @@ mod web_platform {
             &[]
         }
 
+        pub fn vault_presentation_requests(
+            &self,
+        ) -> &[ibis_formats::form_assist::PresentationRequestNote] {
+            &[]
+        }
+
         pub fn matching_form_mappings_for_sheet(
             &self,
             _presentation: &ibis_doc_model::Presentation,
@@ -605,7 +611,7 @@ impl SoraneWorkspace {
             cached_search_query: String::new(),
             cached_search_hits: Vec::new(),
             vault_status: None,
-            form_assist: crate::form_assist::FormAssistState::default(),
+            form_assist: crate::form_assist::FormAssistState::new(window, cx),
             quick_switcher: None,
             github_session: saved_github_session,
             github_catalog: None,

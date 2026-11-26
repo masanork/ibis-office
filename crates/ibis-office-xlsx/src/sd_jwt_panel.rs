@@ -72,6 +72,9 @@ pub(crate) struct SdJwtPanel {
     pub(crate) oid4vp_request: Entity<InputState>,
     pub(crate) include_cnf: bool,
     pub(crate) using_sandbox_keys: bool,
+    pub(crate) holder_key_info: String,
+    pub(crate) issuer_key_info: String,
+    pub(crate) direct_post_busy: bool,
     pub(crate) bindings: SheetClaimBindings,
     pub(crate) output: Option<SdJwtOutput>,
     pub(crate) kb_output: Option<KeyBindingJwtOutput>,
@@ -132,17 +135,31 @@ impl SlideEditor {
             SdJwtRoleTab::Present
         };
         let now = current_unix_timestamp();
-        let holder_key = Es256KeyPair::demo_holder_key();
+        let holder_loaded = crate::shell::vc_transport::load_or_create_holder_key();
+        let issuer_loaded = crate::shell::vc_transport::load_issuer_key()
+            .unwrap_or_else(crate::shell::vc_transport::LoadedKey::sandbox_issuer);
         let mut options = SdJwtOptions::default();
         options.default_iat = Some(now);
-        options.holder_public_jwk = Some(holder_key.to_public_jwk());
-        let sd_out = issue_sd_jwt(&bindings, &options, &Es256KeyPair::demo_issuer_key());
-        let mdoc_out = issue_mdoc(&bindings, &MdocOptions::default(), &Es256KeyPair::demo_issuer_key());
+        options.holder_public_jwk = Some(holder_loaded.key.to_public_jwk());
+        let sd_out = issue_sd_jwt(&bindings, &options, &issuer_loaded.key);
+        let mdoc_out = issue_mdoc(&bindings, &MdocOptions::default(), &issuer_loaded.key);
         let kb_out = sd_out.attach_key_binding(
             "https://verifier.example.com",
             "n-0S6_WzA2Mj",
             now,
-            &holder_key,
+            &holder_loaded.key,
+        );
+        let using_sandbox_keys =
+            issuer_loaded.backend.is_sandbox() || holder_loaded.backend.is_sandbox();
+        let holder_key_info = format!(
+            "{} [{}]",
+            holder_loaded.backend.label_ja(),
+            holder_loaded.thumbprint
+        );
+        let issuer_key_info = format!(
+            "{} [{}]",
+            issuer_loaded.backend.label_ja(),
+            issuer_loaded.thumbprint
         );
 
         let panel = SdJwtPanel {
@@ -155,7 +172,10 @@ impl SlideEditor {
             import_token,
             oid4vp_request,
             include_cnf: true,
-            using_sandbox_keys: true,
+            using_sandbox_keys,
+            holder_key_info,
+            issuer_key_info,
+            direct_post_busy: false,
             bindings,
             output: Some(sd_out),
             kb_output: Some(kb_out),
@@ -182,11 +202,18 @@ impl SlideEditor {
         let oid4vp_val = p.oid4vp_request.read(cx).value().trim().to_string();
         let include_cnf = p.include_cnf;
 
-        let (key, using_demo_issuer) = if jwk_val.is_empty() {
-            (Es256KeyPair::demo_issuer_key(), true)
+        let (key, using_demo_issuer, issuer_key_info) = if jwk_val.is_empty() {
+            let loaded = crate::shell::vc_transport::load_issuer_key()
+                .unwrap_or_else(crate::shell::vc_transport::LoadedKey::sandbox_issuer);
+            let info = format!("{} [{}]", loaded.backend.label_ja(), loaded.thumbprint);
+            let sandbox = loaded.backend.is_sandbox();
+            (loaded.key, sandbox, info)
         } else {
             match Es256KeyPair::from_jwk_json(&jwk_val) {
-                Some(k) => (k, false),
+                Some(k) => {
+                    let info = format!("手入力 JWK [{}]", k.thumbprint_short());
+                    (k, false, info)
+                }
                 None => {
                     if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
                         panel.message = text("xlsx.sd-jwt.invalid-jwk").to_string();
@@ -216,7 +243,12 @@ impl SlideEditor {
             },
         );
         let now = current_unix_timestamp();
-        let holder_key = Es256KeyPair::demo_holder_key();
+        let holder_loaded = crate::shell::vc_transport::load_or_create_holder_key();
+        let holder_key_info = format!(
+            "{} [{}]",
+            holder_loaded.backend.label_ja(),
+            holder_loaded.thumbprint
+        );
         let mut options = SdJwtOptions::default();
         options.default_iat = Some(now);
         options.default_iss = if iss_val.is_empty() {
@@ -230,7 +262,7 @@ impl SlideEditor {
             Some(vct_val)
         };
         options.holder_public_jwk = if include_cnf {
-            Some(holder_key.to_public_jwk())
+            Some(holder_loaded.key.to_public_jwk())
         } else {
             None
         };
@@ -240,11 +272,14 @@ impl SlideEditor {
         }
         let mdoc_output = issue_mdoc(&bindings, &mdoc_opts, &key);
         let output = issue_sd_jwt(&bindings, &options, &key);
-        let kb_output = output.attach_key_binding(&aud, &nonce, now, &holder_key);
-        let using_sandbox_keys = using_demo_issuer || include_cnf;
+        let kb_output = output.attach_key_binding(&aud, &nonce, now, &holder_loaded.key);
+        let using_sandbox_keys =
+            using_demo_issuer || (include_cnf && holder_loaded.backend.is_sandbox());
         if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
             panel.bindings = bindings;
             panel.using_sandbox_keys = using_sandbox_keys;
+            panel.holder_key_info = holder_key_info;
+            panel.issuer_key_info = issuer_key_info;
             panel.output = Some(output);
             panel.kb_output = Some(kb_output);
             panel.mdoc_output = Some(mdoc_output);
@@ -520,11 +555,142 @@ impl SlideEditor {
         cx.notify();
     }
 
+    pub(crate) fn send_sd_jwt_direct_post(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.regenerate_sd_jwt(cx);
+        let Some(p) = self.sheet_state().and_then(|s| s.panels.sd_jwt.as_ref()) else {
+            return;
+        };
+        if p.direct_post_busy {
+            return;
+        }
+        let raw_req = p.oid4vp_request.read(cx).value().trim().to_string();
+        let Some(req) = Oid4vpRequest::parse(&raw_req) else {
+            if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+                panel.message = text("xlsx.sd-jwt.invalid-oid4vp").to_string();
+                panel.is_error = true;
+            }
+            cx.notify();
+            return;
+        };
+        let Some(response_uri) = req.response_uri.clone() else {
+            if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+                panel.message = "OID4VP 要求に response_uri が含まれていません。".to_string();
+                panel.is_error = true;
+            }
+            cx.notify();
+            return;
+        };
+        if let Err(err) = crate::shell::vc_transport::validate_direct_post_uri(&response_uri) {
+            if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+                panel.message = err;
+                panel.is_error = true;
+            }
+            cx.notify();
+            return;
+        }
+        let Some(vp_token) = p.kb_output.as_ref().map(|k| k.vp_token.clone()) else {
+            return;
+        };
+        let form_body = req.build_direct_post_body(&vp_token);
+        if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+            panel.direct_post_busy = true;
+            panel.message = format!("送信中: {response_uri}");
+            panel.is_error = false;
+        }
+        cx.notify();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::shell::vc_transport::send_oid4vp_direct_post(&response_uri, &form_body)
+                })
+                .await;
+            let _ = this.update_in(cx, |editor, _, cx| {
+                if let Some(panel) = editor.wb_mut().panels.sd_jwt.as_mut() {
+                    panel.direct_post_busy = false;
+                    match res {
+                        Ok(outcome) if (200..300).contains(&outcome.status) => {
+                            let extra = outcome
+                                .redirect_uri
+                                .as_deref()
+                                .map(|r| format!(" · redirect_uri={r}"))
+                                .unwrap_or_default();
+                            panel.message = format!(
+                                "OID4VP direct_post 送信完了 (HTTP {}){extra}",
+                                outcome.status
+                            );
+                            panel.is_error = false;
+                        }
+                        Ok(outcome) => {
+                            panel.message = format!(
+                                "提出先がエラーを返しました (HTTP {}): {}",
+                                outcome.status,
+                                outcome.body.trim()
+                            );
+                            panel.is_error = true;
+                        }
+                        Err(err) => {
+                            panel.message = err;
+                            panel.is_error = true;
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn generate_persistent_issuer_key(&mut self, cx: &mut Context<Self>) {
+        match crate::shell::vc_transport::generate_and_save_key(
+            crate::shell::vc_transport::KeyRole::Issuer,
+        ) {
+            Ok(loaded) => {
+                self.regenerate_sd_jwt(cx);
+                if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+                    panel.message = format!(
+                        "永続発行鍵を生成しました ({} [{}])",
+                        loaded.backend.label_ja(),
+                        loaded.thumbprint
+                    );
+                    panel.is_error = false;
+                }
+            }
+            Err(err) => {
+                if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+                    panel.message = err;
+                    panel.is_error = true;
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn clear_persistent_issuer_key(&mut self, cx: &mut Context<Self>) {
+        let _ = crate::shell::vc_transport::clear_key(crate::shell::vc_transport::KeyRole::Issuer);
+        self.regenerate_sd_jwt(cx);
+        if let Some(panel) = self.wb_mut().panels.sd_jwt.as_mut() {
+            panel.message = "永続発行鍵を削除し、Sandbox モードに戻しました。".to_string();
+            panel.is_error = false;
+        }
+        cx.notify();
+    }
+
     pub fn sd_jwt_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.sheet_state()?.panels.sd_jwt.as_ref()?;
         let active_tab = p.active_tab;
         let include_cnf = p.include_cnf;
         let using_sandbox_keys = p.using_sandbox_keys;
+        let holder_key_info = p.holder_key_info.clone();
+        let issuer_key_info = p.issuer_key_info.clone();
+        let direct_post_busy = p.direct_post_busy;
+        let parsed_oid4vp_uri = Oid4vpRequest::parse(p.oid4vp_request.read(cx).value().trim())
+            .and_then(|r| r.response_uri);
         let last_verified = p.last_verified.clone();
         let total_claims = p.bindings.claims.len();
         let disclosed_count = p
@@ -635,6 +801,17 @@ impl SlideEditor {
                     )),
             );
 
+        if active_tab != SdJwtRoleTab::Verify {
+            body = body.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x4A5568))
+                    .child(SharedString::from(format!(
+                        "Holder 鍵: {holder_key_info} · Issuer 鍵: {issuer_key_info}"
+                    ))),
+            );
+        }
+
         if using_sandbox_keys && active_tab != SdJwtRoleTab::Verify {
             body = body.child(
                 v_flex()
@@ -663,6 +840,27 @@ impl SlideEditor {
         match active_tab {
             SdJwtRoleTab::Present => {
                 // OID4VP request input right up front for Holder presentation
+                let mut req_actions = h_flex().gap_2().flex_wrap().child(
+                    crate::shell::chrome::action_button("sd-jwt-apply-oid4vp")
+                        .small()
+                        .label(text("xlsx.sd-jwt.apply-oid4vp"))
+                        .on_click(cx.listener(|this, _, _, cx| this.apply_oid4vp_request(cx))),
+                );
+                if parsed_oid4vp_uri.is_some() {
+                    req_actions = req_actions.child(
+                        crate::shell::chrome::action_button("sd-jwt-send-direct-post")
+                            .primary()
+                            .small()
+                            .label(if direct_post_busy {
+                                "送信中…"
+                            } else {
+                                "OID4VP 送信 (direct_post)"
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.send_sd_jwt_direct_post(window, cx)
+                            })),
+                    );
+                }
                 body = body
                     .child(div().text_sm().child(text("xlsx.sd-jwt.oid4vp-request")))
                     .child(mark(
@@ -671,12 +869,7 @@ impl SlideEditor {
                             .full_width()
                             .into_any_element(),
                     ))
-                    .child(
-                        crate::shell::chrome::action_button("sd-jwt-apply-oid4vp")
-                            .small()
-                            .label(text("xlsx.sd-jwt.apply-oid4vp"))
-                            .on_click(cx.listener(|this, _, _, cx| this.apply_oid4vp_request(cx))),
-                    )
+                    .child(req_actions)
                     .child(div().text_sm().child(text("xlsx.sd-jwt.step2")));
 
                 if claims.is_empty() {
@@ -918,6 +1111,27 @@ impl SlideEditor {
                             .full_width()
                             .into_any_element(),
                     ))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .child(
+                                crate::shell::chrome::action_button("sd-jwt-gen-issuer-key")
+                                    .small()
+                                    .label("永続発行鍵を生成・保存")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.generate_persistent_issuer_key(cx)
+                                    })),
+                            )
+                            .child(
+                                crate::shell::chrome::action_button("sd-jwt-clear-issuer-key")
+                                    .small()
+                                    .label("発行鍵をクリア")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.clear_persistent_issuer_key(cx)
+                                    })),
+                            ),
+                    )
                     .child(mark(
                         "include_cnf",
                         {

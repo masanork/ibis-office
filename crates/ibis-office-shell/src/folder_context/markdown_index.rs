@@ -47,8 +47,9 @@ pub(super) struct RawLink {
 }
 
 use ibis_formats::form_assist::{
-    FormMapping, VaultCredentialSummary, VaultProfile, parse_credential_bytes,
-    parse_form_mapping_markdown, parse_profile_markdown,
+    FormMapping, PresentationRequestNote, VaultCredentialSummary, VaultProfile,
+    parse_credential_bytes, parse_form_mapping_markdown, parse_presentation_request_markdown,
+    parse_profile_markdown,
 };
 
 #[derive(Clone, Debug)]
@@ -60,6 +61,7 @@ pub(super) struct CachedFile {
     pub(super) links: Vec<RawLink>,
     pub(super) profile: Option<VaultProfile>,
     pub(super) form_mapping: Option<FormMapping>,
+    pub(super) presentation_request: Option<PresentationRequestNote>,
 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +85,7 @@ pub(super) struct MarkdownIndex {
     aliases: BTreeMap<String, Vec<String>>,
     profiles: Vec<VaultProfile>,
     form_mappings: Vec<FormMapping>,
+    presentation_requests: Vec<PresentationRequestNote>,
     credentials: Vec<VaultCredentialSummary>,
     pub(super) partial: bool,
     #[cfg(test)]
@@ -162,6 +165,7 @@ impl MarkdownIndex {
             let (tags, aliases, links) = extract_markdown_metadata(relative, &content);
             let profile = parse_profile_markdown(relative, &content);
             let form_mapping = parse_form_mapping_markdown(relative, &content);
+            let presentation_request = parse_presentation_request_markdown(relative, &content);
             current_files.insert(
                 relative.clone(),
                 CachedFile {
@@ -172,6 +176,7 @@ impl MarkdownIndex {
                     links,
                     profile,
                     form_mapping,
+                    presentation_request,
                 },
             );
             updated_paths.push(relative.clone());
@@ -253,6 +258,7 @@ impl MarkdownIndex {
         let mut aliases = BTreeMap::<String, Vec<String>>::new();
         let mut profiles = Vec::new();
         let mut form_mappings = Vec::new();
+        let mut presentation_requests = Vec::new();
         for (path, entry) in &current_files {
             if !entry.tags.is_empty() {
                 tags.insert(path.clone(), entry.tags.clone());
@@ -265,6 +271,9 @@ impl MarkdownIndex {
             }
             if let Some(mapping) = &entry.form_mapping {
                 form_mappings.push(mapping.clone());
+            }
+            if let Some(req) = &entry.presentation_request {
+                presentation_requests.push(req.clone());
             }
         }
         let credentials: Vec<VaultCredentialSummary> = current_creds
@@ -316,6 +325,7 @@ impl MarkdownIndex {
             aliases,
             profiles,
             form_mappings,
+            presentation_requests,
             credentials,
             partial: incomplete
                 || markdown.next().is_some()
@@ -370,6 +380,10 @@ impl MarkdownIndex {
 
     pub(super) fn form_mappings(&self) -> &[FormMapping] {
         &self.form_mappings
+    }
+
+    pub(super) fn presentation_requests(&self) -> &[PresentationRequestNote] {
+        &self.presentation_requests
     }
 
     pub(super) fn credentials(&self) -> &[VaultCredentialSummary] {

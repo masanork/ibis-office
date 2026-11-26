@@ -75,6 +75,7 @@ pub mod host_editor;
 pub mod host_file_dialog;
 mod visio;
 pub mod file_actions;
+pub mod vc_transport;
 mod image_provenance;
 mod signature_ui;
 pub mod file_watch;
