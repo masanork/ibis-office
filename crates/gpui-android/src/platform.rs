@@ -30,6 +30,18 @@ use std::time::{Duration, Instant};
 const TAP_SLOP_PX: f32 = 8.0;
 const DOUBLE_TAP_MAX_DIST_PX: f32 = 24.0;
 const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(400);
+const FLING_DECEL: f32 = 4.2;
+const MIN_FLING_VELOCITY_PX_S: f32 = 80.0;
+const STOP_FLING_VELOCITY_PX_S: f32 = 15.0;
+const MAX_FLING_VELOCITY_PX_S: f32 = 6000.0;
+const FLING_STALE_WINDOW: Duration = Duration::from_millis(80);
+
+#[derive(Debug, Clone, Copy)]
+struct FlingState {
+    pos: (f32, f32),
+    velocity: (f32, f32),
+    last_tick: Instant,
+}
 
 #[derive(Debug, Clone, Copy)]
 enum TouchState {
@@ -38,7 +50,10 @@ enum TouchState {
         pointer_id: i32,
         start: (f32, f32),
         last: (f32, f32),
+        last_time: Instant,
+        velocity: (f32, f32),
         panning: bool,
+        suppressed_tap: bool,
     },
     Pinch {
         p1_id: i32,
@@ -88,6 +103,7 @@ pub struct AndroidPlatform {
     callbacks: RefCell<PlatformCallbacks>,
     quit_requested: Cell<bool>,
     touch_state: Cell<TouchState>,
+    fling: Cell<Option<FlingState>>,
     last_tap: Cell<Option<(Instant, (f32, f32), usize)>>,
 }
 
@@ -115,6 +131,7 @@ impl AndroidPlatform {
             callbacks: RefCell::new(PlatformCallbacks::default()),
             quit_requested: Cell::new(false),
             touch_state: Cell::new(TouchState::Idle),
+            fling: Cell::new(None),
             last_tap: Cell::new(None),
         }
     }
@@ -309,6 +326,49 @@ impl AndroidPlatform {
         }
     }
 
+    fn step_fling(&self) {
+        let Some(mut fling) = self.fling.get() else {
+            return;
+        };
+        let Some(window) = self.window.borrow().clone() else {
+            self.fling.set(None);
+            return;
+        };
+        let now = Instant::now();
+        let dt = now.duration_since(fling.last_tick).as_secs_f32().min(0.05);
+        if dt < 0.001 {
+            window.request_frame();
+            return;
+        }
+        let decay = (-FLING_DECEL * dt).exp();
+        let step_x = fling.velocity.0 * (1.0 - decay) / FLING_DECEL;
+        let step_y = fling.velocity.1 * (1.0 - decay) / FLING_DECEL;
+        fling.velocity.0 *= decay;
+        fling.velocity.1 *= decay;
+        fling.last_tick = now;
+
+        window.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: point(px(fling.pos.0), px(fling.pos.1)),
+            delta: ScrollDelta::Pixels(point(px(step_x), px(step_y))),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        }));
+
+        let speed = (fling.velocity.0.powi(2) + fling.velocity.1.powi(2)).sqrt();
+        if speed < STOP_FLING_VELOCITY_PX_S {
+            self.fling.set(None);
+            window.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position: point(px(fling.pos.0), px(fling.pos.1)),
+                delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Ended,
+            }));
+        } else {
+            self.fling.set(Some(fling));
+        }
+        window.request_frame();
+    }
+
     fn handle_input_events(&self) {
         let Ok(mut iter) = self.app.input_events_iter() else {
             return;
@@ -317,9 +377,24 @@ impl AndroidPlatform {
             return;
         };
         let scale = self.current_scale_factor();
+        let mut pending_scroll: Option<((f32, f32), (f32, f32))> = None;
+        let flush_scroll = |pending: &mut Option<((f32, f32), (f32, f32))>| {
+            if let Some((pos, (dx, dy))) = pending.take() {
+                window.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    position: point(px(pos.0), px(pos.1)),
+                    delta: ScrollDelta::Pixels(point(px(dx), px(dy))),
+                    modifiers: Modifiers::default(),
+                    touch_phase: TouchPhase::Moved,
+                }));
+                window.request_frame();
+            }
+        };
 
         while iter.next(|event| match event {
-            InputEvent::KeyEvent(key_event) => self.handle_hardware_key(&window, key_event),
+            InputEvent::KeyEvent(key_event) => {
+                flush_scroll(&mut pending_scroll);
+                self.handle_hardware_key(&window, key_event)
+            }
             InputEvent::MotionEvent(motion) => {
                 let action_idx = motion.pointer_index();
                 let active_ptr = motion.pointer_at_index(action_idx);
@@ -328,11 +403,26 @@ impl AndroidPlatform {
 
                 match motion.action() {
                     MotionAction::Down => {
+                        flush_scroll(&mut pending_scroll);
+                        let was_flinging = self.fling.take().is_some();
+                        if was_flinging {
+                            window.dispatch_input(PlatformInput::ScrollWheel(
+                                ScrollWheelEvent {
+                                    position: point(px(pos.0), px(pos.1)),
+                                    delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
+                                    modifiers: Modifiers::default(),
+                                    touch_phase: TouchPhase::Ended,
+                                },
+                            ));
+                        }
                         self.touch_state.set(TouchState::Single {
                             pointer_id: ptr_id,
                             start: pos,
                             last: pos,
+                            last_time: Instant::now(),
+                            velocity: (0.0, 0.0),
                             panning: false,
+                            suppressed_tap: was_flinging,
                         });
                         window.dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
                             position: point(px(pos.0), px(pos.1)),
@@ -343,6 +433,8 @@ impl AndroidPlatform {
                         InputStatus::Handled
                     }
                     MotionAction::PointerDown => {
+                        flush_scroll(&mut pending_scroll);
+                        self.fling.set(None);
                         if let TouchState::Single {
                             pointer_id: p1_id,
                             last: p1,
@@ -376,8 +468,13 @@ impl AndroidPlatform {
                                 pointer_id,
                                 start,
                                 last,
+                                last_time,
+                                mut velocity,
                                 mut panning,
+                                suppressed_tap,
                             } if pointer_id == ptr_id => {
+                                let now = Instant::now();
+                                let dt = now.duration_since(last_time).as_secs_f32();
                                 if !panning && distance(start, pos) >= TAP_SLOP_PX {
                                     panning = true;
                                     window.dispatch_input(PlatformInput::ScrollWheel(
@@ -389,24 +486,32 @@ impl AndroidPlatform {
                                         },
                                     ));
                                 }
+                                let dx = pos.0 - last.0;
+                                let dy = pos.1 - last.1;
+                                if dt >= 0.001 && dt <= 0.1 {
+                                    let inst_vx = (dx / dt).clamp(-MAX_FLING_VELOCITY_PX_S, MAX_FLING_VELOCITY_PX_S);
+                                    let inst_vy = (dy / dt).clamp(-MAX_FLING_VELOCITY_PX_S, MAX_FLING_VELOCITY_PX_S);
+                                    velocity = (
+                                        velocity.0 * 0.55 + inst_vx * 0.45,
+                                        velocity.1 * 0.55 + inst_vy * 0.45,
+                                    );
+                                } else if dt > 0.1 {
+                                    velocity = (0.0, 0.0);
+                                }
                                 if panning {
-                                    let dx = pos.0 - last.0;
-                                    let dy = pos.1 - last.1;
-                                    window.dispatch_input(PlatformInput::ScrollWheel(
-                                        ScrollWheelEvent {
-                                            position: point(px(pos.0), px(pos.1)),
-                                            delta: ScrollDelta::Pixels(point(px(dx), px(dy))),
-                                            modifiers: Modifiers::default(),
-                                            touch_phase: TouchPhase::Moved,
-                                        },
-                                    ));
-                                    window.request_frame();
+                                    let acc = pending_scroll
+                                        .map(|(_, (ax, ay))| (ax + dx, ay + dy))
+                                        .unwrap_or((dx, dy));
+                                    pending_scroll = Some((pos, acc));
                                 }
                                 self.touch_state.set(TouchState::Single {
                                     pointer_id,
                                     start,
                                     last: pos,
+                                    last_time: now,
+                                    velocity,
                                     panning,
+                                    suppressed_tap,
                                 });
                             }
                             TouchState::Pinch {
@@ -448,6 +553,7 @@ impl AndroidPlatform {
                         InputStatus::Handled
                     }
                     MotionAction::PointerUp => {
+                        flush_scroll(&mut pending_scroll);
                         if let TouchState::Pinch { p1, p2, .. } = self.touch_state.get() {
                             let mid = midpoint(p1, p2);
                             window.dispatch_input(PlatformInput::Pinch(PinchEvent {
@@ -462,20 +568,41 @@ impl AndroidPlatform {
                         InputStatus::Handled
                     }
                     MotionAction::Up | MotionAction::Cancel => {
+                        flush_scroll(&mut pending_scroll);
                         match self.touch_state.get() {
-                            TouchState::Single { panning: true, .. } => {
-                                window.dispatch_input(PlatformInput::ScrollWheel(
-                                    ScrollWheelEvent {
-                                        position: point(px(pos.0), px(pos.1)),
-                                        delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
-                                        modifiers: Modifiers::default(),
-                                        touch_phase: TouchPhase::Ended,
-                                    },
-                                ));
+                            TouchState::Single {
+                                panning: true,
+                                last_time,
+                                velocity,
+                                ..
+                            } => {
+                                let now = Instant::now();
+                                let speed = (velocity.0.powi(2) + velocity.1.powi(2)).sqrt();
+                                if motion.action() == MotionAction::Up
+                                    && now.duration_since(last_time) <= FLING_STALE_WINDOW
+                                    && speed >= MIN_FLING_VELOCITY_PX_S
+                                {
+                                    self.fling.set(Some(FlingState {
+                                        pos,
+                                        velocity,
+                                        last_tick: now,
+                                    }));
+                                } else {
+                                    window.dispatch_input(PlatformInput::ScrollWheel(
+                                        ScrollWheelEvent {
+                                            position: point(px(pos.0), px(pos.1)),
+                                            delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
+                                            modifiers: Modifiers::default(),
+                                            touch_phase: TouchPhase::Ended,
+                                        },
+                                    ));
+                                }
                             }
-                            TouchState::Single { panning: false, .. }
-                                if motion.action() == MotionAction::Up =>
-                            {
+                            TouchState::Single {
+                                panning: false,
+                                suppressed_tap: false,
+                                ..
+                            } if motion.action() == MotionAction::Up => {
                                 let now = Instant::now();
                                 let click_count = match self.last_tap.get() {
                                     Some((prev_t, prev_pos, prev_count))
@@ -530,6 +657,7 @@ impl AndroidPlatform {
             }
             _ => InputStatus::Unhandled,
         }) {}
+        flush_scroll(&mut pending_scroll);
     }
 }
 
@@ -551,6 +679,7 @@ impl Platform for AndroidPlatform {
 
         while !self.quit_requested.get() {
             let needs_immediate = self.dispatcher.has_pending_main_tasks()
+                || self.fling.get().is_some()
                 || self
                     .window
                     .borrow()
@@ -643,6 +772,7 @@ impl Platform for AndroidPlatform {
             self.handle_input_events();
             self.handle_ime_events();
             self.handle_open_paths();
+            self.step_fling();
             self.dispatcher.drain_main_tasks();
 
             if let Some(window) = self.window.borrow().clone() {
