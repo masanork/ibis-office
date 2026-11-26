@@ -294,11 +294,11 @@ impl Drawing {
             0x2f => {
                 let degrees = f32::from(word(record, 2)?) + f32::from(word(record, 0)?) / 65536.0;
                 let reference = [word(record, 4)?, word(record, 6)?];
-                let anchor = match word(record, 8)? {
+                let anchor = match *record.get(8)? {
                     0 => Some(None),
                     0x80 if canvas.coordinate_bytes == 2 => {
                         let coord = |offset| Some(f32::from(word(record, offset)? as i16));
-                        Rect::from_ltrb(coord(10)?, coord(12)?, coord(14)?, coord(16)?)
+                        Rect::from_ltrb(coord(9)?, coord(11)?, coord(13)?, coord(15)?)
                             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
                             .map(Some)
                     }
