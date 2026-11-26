@@ -17,15 +17,15 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ibis_formats::Kind;
 use ibis_office_shell::editor::SlideEditor;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use ibis_office_shell::folder_context::{ContentSearchHit, Folder};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use ibis_office_shell::git_workspace::{GitSnapshot, inspect_git_snapshot};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use ibis_office_shell::open_guard::same_file as same_workspace_file;
 use ibis_office_shell::window_editors::{WindowSetup, WorkspaceEditorHost};
 
-#[cfg(target_family = "wasm")]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 mod web_platform {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -413,6 +413,7 @@ mod web_platform {
             _window: &mut Window,
             _cx: &mut Context<SlideEditor>,
         );
+        #[cfg(target_family = "wasm")]
         fn open_path(
             &mut self,
             _path: PathBuf,
@@ -426,6 +427,7 @@ mod web_platform {
             _window: &mut Window,
             _cx: &mut Context<SlideEditor>,
         );
+        #[cfg(target_family = "wasm")]
         fn shows_path(&self, _path: &Path) -> bool;
     }
 
@@ -442,6 +444,7 @@ mod web_platform {
         ) {
         }
 
+        #[cfg(target_family = "wasm")]
         fn open_path(
             &mut self,
             _path: PathBuf,
@@ -459,13 +462,14 @@ mod web_platform {
         ) {
         }
 
+        #[cfg(target_family = "wasm")]
         fn shows_path(&self, _path: &Path) -> bool {
             false
         }
     }
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 use web_platform::{ContentSearchHit, Folder, GitSnapshot, SlideEditorWebExt as _, inspect_git_snapshot, same_workspace_file};
 
 use sorane_github::{
