@@ -930,14 +930,47 @@ impl FormatEditor for Document {
         }
         let law_xml = extension.eq_ignore_ascii_case("xml");
         if law_xml || extension.eq_ignore_ascii_case("lawtext") {
-            let parse = ibis_lawtext::parse_markdown_law_with_diagnostics;
-            let parsed = if let Some(markdown) = editor.markdown_source_text() {
-                parse(markdown)
+            let target_dialect = if law_xml {
+                crate::shell::markdown_split::SourceDialect::LawXml
             } else {
-                ibis_formats::markdown::export_presentation_to_markdown(editor.presentation())
-                    .and_then(|markdown| parse(&markdown))
+                crate::shell::markdown_split::SourceDialect::Lawtext
             };
-            return Some(parsed.map(|(law, diagnostics)| {
+            if let Some(exact) = editor.law_source_text(target_dialect) {
+                return Some(Ok(FileBytes {
+                    bytes: exact.as_bytes().to_vec(),
+                    protect: false,
+                    note: None,
+                }));
+            }
+            let parse = ibis_lawtext::parse_markdown_law_with_diagnostics;
+            let md_owned;
+            let markdown = if let Some(md) = editor.markdown_source_text() {
+                md
+            } else {
+                match ibis_formats::markdown::export_presentation_to_markdown(editor.presentation()) {
+                    Ok(md) => {
+                        md_owned = md;
+                        md_owned.as_str()
+                    }
+                    Err(e) => return Some(Err(e.to_string())),
+                }
+            };
+            if law_xml
+                && let Some(orig_xml) = editor.law_original_xml()
+                && let Ok(patch) = ibis_lawtext::apply_law_source_edits(
+                    orig_xml,
+                    markdown,
+                    ibis_lawtext::LawEditFormat::Markdown,
+                )
+                && let Some(patched_xml) = patch.xml
+            {
+                return Some(Ok(FileBytes {
+                    bytes: patched_xml.into_bytes(),
+                    protect: false,
+                    note: None,
+                }));
+            }
+            return Some(parse(markdown).map(|(law, diagnostics)| {
                 let text = if law_xml {
                     ibis_lawtext::to_law_xml(&law)
                 } else {
@@ -1343,7 +1376,7 @@ impl FormatEditor for Document {
             return pages.child(editor.render_markdown_source_view(cx)).into_any_element();
         }
         let is_markdown_split = editor.is_markdown_split_mode();
-        if !is_focus && (is_markdown_split || editor.is_markdown_file()) {
+        if !is_focus && (is_markdown_split || editor.is_markdown_file() || editor.is_law_path()) {
             pages = pages.child(editor.render_markdown_mode_bar(cx));
         }
         let show_v_ruler = !is_focus && !is_markdown_split && editor.doc_prefs().vertical_ruler_open;
