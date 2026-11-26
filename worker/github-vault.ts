@@ -131,6 +131,30 @@ function sanitizeRootPath(raw: unknown): string {
   return parts.join('/');
 }
 
+/**
+ * Extract `build.content_dir` from a `sorane.yaml` file (defaults to `"content"`
+ * when `sorane.yaml` exists without an explicit `build.content_dir`).
+ */
+export function detectSoraneContentDir(yamlText: string): string {
+  let inBuild = false;
+  for (const rawLine of yamlText.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    if (!/^\s/.test(rawLine)) {
+      inBuild = /^build\s*:/.test(rawLine);
+      continue;
+    }
+    if (inBuild) {
+      const m = /^\s+content_dir\s*:\s*["']?([^"'#\r\n]+?)["']?\s*(?:#.*)?$/.exec(rawLine);
+      if (m && m[1]) {
+        const sanitized = sanitizeRootPath(m[1]);
+        if (sanitized) return sanitized;
+      }
+    }
+  }
+  return 'content';
+}
+
 function sanitizeRelativeFilePath(raw: string | null): string | null {
   if (!raw) return null;
   const cleaned = raw.trim().replace(/^\/+/, '');
@@ -678,7 +702,7 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     if (branch && !SAFE_BRANCH_RE.test(branch)) {
       return json({ error: 'Invalid branch name.' }, 400);
     }
-    const rootPath = sanitizeRootPath(body.rootPath);
+    let rootPath = sanitizeRootPath(body.rootPath);
 
     const checkRes = await githubFetch(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, session.accessToken);
     if (!checkRes.ok) {
@@ -687,10 +711,34 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     const repoMeta = (await checkRes.json()) as { default_branch?: string };
     if (!branch) branch = repoMeta.default_branch || 'main';
 
+    let detectedSoraneContentDir: string | null = null;
+    if (!rootPath && body.rootPath === undefined) {
+      try {
+        const cfgRes = await githubFetch(
+          `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/sorane.yaml?ref=${encodeURIComponent(branch)}`,
+          session.accessToken,
+        );
+        if (cfgRes.ok) {
+          const cfgData = (await cfgRes.json()) as { content?: string; encoding?: string };
+          if (cfgData.encoding === 'base64' && typeof cfgData.content === 'string') {
+            const cleanedB64 = cfgData.content.replace(/\s+/g, '');
+            const bin = atob(cleanedB64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            const yamlText = new TextDecoder('utf-8').decode(bytes);
+            detectedSoraneContentDir = detectSoraneContentDir(yamlText);
+            rootPath = detectedSoraneContentDir;
+          }
+        }
+      } catch {
+        /* Best-effort sorane.yaml detection; keep empty rootPath on failure. */
+      }
+    }
+
     const nextVault: VaultSelection = { owner, repo, branch, rootPath };
     const sealed = await sealSession({ ...session, vault: nextVault }, env.GITHUB_SESSION_SECRET!);
     return json(
-      { ok: true, vault: nextVault },
+      { ok: true, vault: nextVault, ...(detectedSoraneContentDir ? { detectedSoraneContentDir } : {}) },
       200,
       { 'Set-Cookie': `${SESSION_COOKIE}=${sealed}; Max-Age=${SESSION_MAX_AGE}; ${cookieFlags(request)}` },
     );

@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  detectSoraneContentDir,
   dispatchGitHubVault,
   isGitHubVaultRoute,
   sealSession,
@@ -453,6 +454,63 @@ test('POST /api/github/repos/create returns alreadyExists guidance on 422', asyn
     assert.equal(body.alreadyExists, true);
     assert.equal(body.installSettingsUrl, 'https://github.com/settings/installations/42');
     assert.match(body.error, /すでに存在するため/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('detectSoraneContentDir extracts build.content_dir from sorane.yaml', () => {
+  assert.equal(
+    detectSoraneContentDir('site:\n  title: Demo\nbuild:\n  content_dir: "docs/content"\n'),
+    'docs/content',
+  );
+  assert.equal(
+    detectSoraneContentDir('site:\n  title: Demo\nbuild:\n  out_dir: dist\n'),
+    'content',
+  );
+  assert.equal(
+    detectSoraneContentDir('build:\n  content_dir: ../escape\n'),
+    'content',
+  );
+});
+
+test('POST /api/github/vault auto-detects build.content_dir from sorane.yaml when rootPath is omitted', async () => {
+  const sealed = await sealSession(
+    { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const yaml = 'site:\n  title: Demo\nbuild:\n  content_dir: docs/pages\n';
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith('/repos/masanork/site')) {
+      return new Response(JSON.stringify({ default_branch: 'main' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/repos/masanork/site/contents/sorane.yaml?ref=main')) {
+      return new Response(
+        JSON.stringify({ encoding: 'base64', content: Buffer.from(yaml, 'utf8').toString('base64') }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/github/vault', {
+        method: 'POST',
+        headers: { Cookie: `sorane_gh_session=${sealed}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner: 'masanork', repo: 'site' }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.vault.rootPath, 'docs/pages');
+    assert.equal(body.detectedSoraneContentDir, 'docs/pages');
   } finally {
     globalThis.fetch = origFetch;
   }
