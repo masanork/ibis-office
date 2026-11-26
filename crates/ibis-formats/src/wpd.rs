@@ -751,6 +751,40 @@ mod tests {
     }
 
     #[test]
+    fn wpg2_anchored_linear_fill_keeps_drawing_coordinates_after_transform() {
+        let anchored =
+            include_bytes!("../../../test/fixtures/wordperfect/anchored-linear-wpg2.wpd");
+        let unanchored =
+            include_bytes!("../../../test/fixtures/wordperfect/unanchored-linear-wpg2.wpd");
+        let read_image = |data: &[u8]| {
+            let opened = open(data).unwrap();
+            assert_eq!(opened.import_warning, None);
+            image::load_from_memory(&opened.presentation.media.first().unwrap().data)
+                .unwrap()
+                .to_rgba8()
+        };
+        let pixels = read_image(anchored);
+        assert_eq!(pixels.dimensions(), (300, 225));
+        for (x, y, red) in [
+            (50, 100, 53),
+            (100, 100, 97),
+            (160, 100, 151),
+            (200, 100, 187),
+            (160, 135, 151),
+        ] {
+            let pixel = pixels.get_pixel(x, y).0;
+            assert_eq!(pixel[3], 255);
+            assert!(
+                pixel[0].abs_diff(red) <= 2,
+                "pixel at ({x}, {y}): {pixel:?}"
+            );
+        }
+        let local = read_image(unanchored);
+        assert_eq!(local.get_pixel(160, 100), local.get_pixel(200, 100));
+        assert!(local.get_pixel(160, 100).0[0].abs_diff(local.get_pixel(160, 135).0[0]) > 70);
+    }
+
+    #[test]
     fn wpg2_shifted_circle_and_ellipse_preserve_gradient_geometry() {
         let data = include_bytes!("../../../test/fixtures/wordperfect/gradient-geometry-wpg2.wpd");
         let opened = open(data).unwrap();

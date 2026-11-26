@@ -43,12 +43,14 @@ struct Style {
 struct GradientGeometry {
     angle: f32,
     reference: [u16; 2],
+    anchor: Option<Rect>,
 }
 
 enum Fill {
     Solid(Color),
     Linear {
         angle: f32,
+        anchor: Option<Rect>,
         stops: Vec<GradientStop>,
     },
     Radial {
@@ -98,10 +100,11 @@ impl Fill {
                 stops.reverse();
                 Some(Self::Linear {
                     angle: geometry.angle,
+                    anchor: geometry.anchor,
                     stops,
                 })
             }
-            (3 | 5, reference) if count == 2 => Some(Self::Radial {
+            (3 | 5, reference) if count == 2 && geometry.anchor.is_none() => Some(Self::Radial {
                 reference,
                 elliptical: kind == 5,
                 stops: vec![
@@ -113,14 +116,24 @@ impl Fill {
         }
     }
 
-    fn paint(&self, path: &Path) -> Option<Paint<'static>> {
+    fn paint(&self, path: &Path, object: Transform) -> Option<Paint<'static>> {
         let mut paint = Paint::default();
         let bounds = path.bounds();
-        let cx = (bounds.left() + bounds.right()) * 0.5;
-        let cy = (bounds.top() + bounds.bottom()) * 0.5;
         match self {
             Self::Solid(color) => paint.set_color(*color),
-            Self::Linear { angle, stops } => {
+            Self::Linear {
+                angle,
+                anchor,
+                stops,
+            } => {
+                let (bounds, shader_transform) = match anchor {
+                    // Anchor extents are in drawing coordinates; undo the
+                    // object transform for the shader alone.
+                    Some(extent) => (*extent, object.invert()?),
+                    None => (bounds, Transform::identity()),
+                };
+                let cx = (bounds.left() + bounds.right()) * 0.5;
+                let cy = (bounds.top() + bounds.bottom()) * 0.5;
                 let (dx, dy) = angle.sin_cos();
                 let extent = (dx.abs() * bounds.width() + dy.abs() * bounds.height()) * 0.5;
                 paint.shader = LinearGradient::new(
@@ -128,7 +141,7 @@ impl Fill {
                     Point::from_xy(cx + dx * extent, cy + dy * extent),
                     stops.clone(),
                     SpreadMode::Pad,
-                    Transform::identity(),
+                    shader_transform,
                 )?;
             }
             Self::Radial {
@@ -281,10 +294,20 @@ impl Drawing {
             0x2f => {
                 let degrees = f32::from(word(record, 2)?) + f32::from(word(record, 0)?) / 65536.0;
                 let reference = [word(record, 4)?, word(record, 6)?];
-                // Anchored and granular gradients require separate geometry.
-                self.style.gradient = (word(record, 8)? == 0).then_some(GradientGeometry {
+                let anchor = match word(record, 8)? {
+                    0 => Some(None),
+                    0x80 if canvas.coordinate_bytes == 2 => {
+                        let coord = |offset| Some(f32::from(word(record, offset)? as i16));
+                        Rect::from_ltrb(coord(10)?, coord(12)?, coord(14)?, coord(16)?)
+                            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+                            .map(Some)
+                    }
+                    _ => None,
+                };
+                self.style.gradient = anchor.map(|anchor| GradientGeometry {
                     angle: degrees.to_radians(),
                     reference,
+                    anchor,
                 });
             }
             0x31 => self.style.fill = Fill::read(record, self.style.gradient)?,
@@ -370,7 +393,7 @@ impl Drawing {
             return None;
         }
         if flags & 0x2000 != 0 {
-            let paint = self.style.fill.paint(path)?;
+            let paint = self.style.fill.paint(path, transform)?;
             let rule = if flags & 0x1000 != 0 {
                 FillRule::Winding
             } else {
