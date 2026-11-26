@@ -441,6 +441,7 @@ pub struct SlideEditor {
     pub(crate) assistant_socket: Option<ibis_mcp::assistant_endpoint::SocketLifetime>,
     pub ai_assistant: Option<crate::ai_assistant::AiAssistantState>,
     pub inline_completion: crate::markdown_split::InlineCompletionState,
+    pub compact_viewport: bool,
     _zoom_subscription: Subscription,
     /// The status bar's list of zooms is open.
     pub zoom_menu_open: bool,
@@ -889,6 +890,7 @@ impl SlideEditor {
             assistant_socket: None,
             ai_assistant: None,
             inline_completion: Default::default(),
+            compact_viewport: false,
             _zoom_subscription: zoom_subscription,
             zoom_menu_open: false,
             zoom_input,
@@ -1112,12 +1114,18 @@ impl SlideEditor {
         { false }
     }
 
+    /// Android Material Design 3 Compact Window Size Class (`width < 600dp`).
+    /// Tablets, Chromebooks (Googlebook), and desktop windows (`>= 600dp`) return `false`.
+    pub fn is_compact_viewport(window: &Window) -> bool {
+        window.viewport_size().width < px(600.)
+    }
+
     pub(crate) fn narrow_phone_editor(window: &Window) -> bool {
         #[cfg(not(target_family = "wasm"))]
         let enabled = cfg!(target_os = "android");
         #[cfg(target_family = "wasm")]
-        let enabled = crate::embed::phone_editor();
-        enabled && window.viewport_size().width < px(600.)
+        let enabled = crate::embed::phone_editor() || !crate::host::is_connected();
+        enabled && Self::is_compact_viewport(window)
     }
 
     #[cfg(any(target_os = "android", target_family = "wasm"))]
@@ -4710,6 +4718,7 @@ impl SlideEditor {
         // and the toolbar (the first two hidden by the toolbar's ^), the
         // document with the sidebar on its right, and the status bar.
         let narrow_phone = Self::narrow_phone_editor(window);
+        self.compact_viewport = Self::is_compact_viewport(window);
         let embedded = self.embedded_chrome;
         if !self.has_document {
             // A host that has no start window (`ui.startWindow` off: ibisWorks) gets a blank window until its document comes (no flash of the start view; K0037).
@@ -4725,13 +4734,14 @@ impl SlideEditor {
                 let _ = self.render_sidebar(window, cx);
             }
             // Windows and Linux: the start window's menus below the title row (macOS has them in the system's menu bar).
+            // Compact (< 600px) mobile viewports hide the desktop menu bar per Android guidelines.
             let show_start_title = embedded.is_none_or(|p| p.show_title_row);
-            let show_start_menu = embedded.is_none_or(|p| p.show_menu_bar) && crate::start_menu::shows_bar();
+            let show_start_menu = !narrow_phone && embedded.is_none_or(|p| p.show_menu_bar) && crate::start_menu::shows_bar();
             let d = d
                 .when(show_start_title, |d| d.child(self.render_title_row(window, cx)))
                 .when(show_start_menu, |d| d.child(self.render_menu_bar(window, cx)));
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            if embedded.is_none_or(|p| p.show_left_pane)
+            if !narrow_phone && embedded.is_none_or(|p| p.show_left_pane)
                 && let Some(pane) = self.render_folder_pane(cx).or_else(|| self.render_git_workspace(cx))
             {
                 return d.child(div().flex().flex_1().min_h_0().child(pane).child(
@@ -4744,7 +4754,7 @@ impl SlideEditor {
         if let Some(view) = self.web.structured_view.clone() {
             return d
                 .child(self.render_title_row(window, cx))
-                .when(self.show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
+                .when(!narrow_phone && self.show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
                 .child(div().flex_1().min_h_0().w_full().child(view));
         }
         #[cfg(any(target_os = "android", target_family = "wasm"))]
@@ -4754,8 +4764,8 @@ impl SlideEditor {
         let mobile_viewer = mobile_viewer || (crate::embed::phone_viewer() && self.is_read_only() && !self.show_menu_bar && window.viewport_size().width < px(600.));
         let compact = self.chrome_compact;
         let focus = with_format!(self, chrome_hidden(self));
-        let show_menu_bar = self.show_menu_bar && embedded.is_none_or(|p| p.show_menu_bar);
-        let show_toolbar = self.show_toolbar && embedded.is_none_or(|p| p.show_toolbar);
+        let show_menu_bar = !narrow_phone && self.show_menu_bar && embedded.is_none_or(|p| p.show_menu_bar);
+        let show_toolbar = !narrow_phone && self.show_toolbar && embedded.is_none_or(|p| p.show_toolbar);
         let show_title_row = embedded.is_none_or(|p| p.show_title_row)
             && (!self.is_read_only() || show_menu_bar || {
                 #[cfg(target_arch = "wasm32")]
@@ -4768,9 +4778,9 @@ impl SlideEditor {
                 }
             });
         let show_right_sidebar = embedded.is_none_or(|p| p.show_right_sidebar);
-        let show_left_pane = embedded.is_none_or(|p| p.show_left_pane);
-        let show_status_bar = embedded.is_none_or(|p| p.show_status_bar);
-        let sidebar = if focus || self.grid_only || self.phone_view_only() || !show_right_sidebar {
+        let show_left_pane = !narrow_phone && embedded.is_none_or(|p| p.show_left_pane);
+        let show_status_bar = !narrow_phone && embedded.is_none_or(|p| p.show_status_bar);
+        let sidebar = if focus || self.grid_only || (self.phone_view_only() && self.ai_assistant.is_none()) || !show_right_sidebar {
             self.right_pane = Default::default();
             None
         } else {
@@ -4793,42 +4803,82 @@ impl SlideEditor {
         if self.grid_only {
             return d.child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)));
         }
+        let main_area = if narrow_phone && sidebar.is_some() {
+            div()
+                .flex()
+                .flex_row()
+                .flex_1()
+                .min_h_0()
+                .child(div().flex_1().min_w_0().min_h_0().children(sidebar))
+        } else {
+            div()
+                .flex()
+                .flex_row()
+                .flex_1()
+                .min_h_0()
+                .children(left_pane)
+                // Text input goes to the format (shell/input.rs).
+                .child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)))
+                .children(sidebar)
+        };
         d.when((mobile_viewer || narrow_phone) && !focus && show_title_row, |d| d.child(self.render_mobile_viewer_bar(narrow_phone, cx)))
             .when(!narrow_phone && !compact && !focus && show_title_row, |d| d.child(self.render_title_row(window, cx)))
             .when(!mobile_viewer && !compact && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
             .when(!mobile_viewer && !focus && show_toolbar, |d| d.child(self.render_toolbar(window, cx)))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_1()
-                    .min_h_0()
-                    .children(left_pane)
-                    // Text input goes to the format (shell/input.rs).
-                    .child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)))
-                    .children(sidebar),
-            )
+            .child(main_area)
             .when(!focus && show_status_bar, |d| d.child(self.render_status_bar(window, cx)))
     }
 
-    /// Compact document controls for phone-sized windows.
+    /// Compact document controls for phone-sized windows (Android Material Design 3 Top App Bar).
     fn render_mobile_viewer_bar(&self, narrow_phone: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let name = self.file_name.clone().unwrap_or_else(|| "Docs".into());
-        h_flex().h(px(48.)).flex_shrink_0().px_3().gap_3().items_center()
+        let can_edit = narrow_phone && !self.file_is_read_only() && self.host.read_only.is_none();
+        let ai_open = self.ai_assistant.is_some();
+        h_flex().h(px(48.)).flex_shrink_0().px_2().gap_1().items_center()
             .bg(theme.title_bar).border_b_1().border_color(theme.title_bar_border)
-            .child(div().flex_1().min_w_0().truncate().text_sm().child(name))
+            .child(div().flex_1().min_w_0().px_1().truncate().text_sm().font_weight(FontWeight::MEDIUM).child(name))
+            .when(can_edit, |bar| {
+                bar.child(
+                    div().id("mobile-save-file").flex().items_center().justify_center()
+                        .min_w(px(48.)).h(px(40.)).px_2().rounded_md().cursor_pointer()
+                        .text_sm().text_color(theme.foreground)
+                        .child(crate::i18n::text("menu.file.save"))
+                        .on_click(cx.listener(|this, _, window, cx| this.save(&crate::actions::Save, window, cx))),
+                )
+            })
+            .when(narrow_phone, |bar| {
+                bar.child(
+                    div().id("mobile-ai-toggle").flex().items_center().justify_center()
+                        .min_w(px(44.)).h(px(40.)).px_2().rounded_md().cursor_pointer()
+                        .when(ai_open, |d| d.bg(theme.accent).text_color(theme.accent_foreground).font_weight(FontWeight::SEMIBOLD))
+                        .when(!ai_open, |d| d.text_color(theme.foreground))
+                        .text_sm()
+                        .child("AI")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.ai_assistant.is_some() {
+                                this.ai_assistant = None;
+                                this.sidebar_open = false;
+                                cx.notify();
+                            } else {
+                                this.open_ai_assistant_panel(window, cx);
+                            }
+                        })),
+                )
+            })
             .child(div().id("mobile-open-file").flex().items_center().justify_center()
-                .min_w(px(72.)).h(px(40.)).px_3().rounded_md().cursor_pointer()
+                .min_w(px(52.)).h(px(40.)).px_2().rounded_md().cursor_pointer()
                 .text_sm().text_color(theme.foreground)
                 .child(crate::i18n::text("start.open"))
                 .on_click(cx.listener(|this, _, window, cx| this.open_file(&Open, window, cx))))
-            .when(narrow_phone && !self.file_is_read_only() && self.host.read_only.is_none(), |bar| {
+            .when(can_edit, |bar| {
                 #[cfg(any(target_os = "android", target_family = "wasm"))]
                 let bar = bar.child(
                     div().id("mobile-switch-mode").flex().items_center().justify_center()
-                        .min_w(px(72.)).h(px(44.)).px_3().rounded_md().cursor_pointer()
-                        .text_sm().text_color(theme.foreground)
+                        .min_w(px(56.)).h(px(40.)).px_2().rounded_md().cursor_pointer()
+                        .when(self.phone_editing, |d| d.bg(theme.accent).text_color(theme.accent_foreground).font_weight(FontWeight::SEMIBOLD))
+                        .when(!self.phone_editing, |d| d.text_color(theme.foreground))
+                        .text_sm()
                         .child(crate::i18n::text(if self.phone_editing { "docx.interaction.viewing" } else { "menu.edit" }))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.phone_editing = !this.phone_editing;

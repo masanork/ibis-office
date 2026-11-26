@@ -1357,6 +1357,7 @@ impl FormatEditor for Document {
             .doc_state_mut()
             .is_some_and(|s| !std::mem::replace(&mut s.auto_split_initialized, true));
         if needs_auto_split
+            && !SlideEditor::is_compact_viewport(window)
             && editor.should_auto_open_markdown_split()
             && !editor.is_markdown_source_mode()
         {
@@ -1389,14 +1390,14 @@ impl FormatEditor for Document {
         if editor.is_markdown_source_only() {
             return pages.child(editor.render_markdown_source_view(cx)).into_any_element();
         }
-        let is_markdown_split = editor.is_markdown_split_mode();
+        let is_markdown_split = editor.is_markdown_split_mode() && !editor.compact_viewport;
         if !is_focus && (is_markdown_split || editor.is_markdown_file() || editor.is_law_path()) {
             pages = pages.child(editor.render_markdown_mode_bar(cx));
         }
-        let show_v_ruler = !is_focus && !is_markdown_split && editor.doc_prefs().vertical_ruler_open;
+        let show_v_ruler = !is_focus && !is_markdown_split && !editor.compact_viewport && editor.doc_prefs().vertical_ruler_open;
         let theme = cx.theme().clone();
         let mut visual_body = div().flex().flex_col().flex_1().min_w_0().min_h_0();
-        if !is_focus && !is_markdown_split && editor.doc_prefs().ruler_open {
+        if !is_focus && !is_markdown_split && !editor.compact_viewport && editor.doc_prefs().ruler_open {
             if show_v_ruler {
                 let corner = SlideEditor::render_ruler_corner(theme.border, editor.ruler_unit)
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.cycle_ruler_unit(cx)));

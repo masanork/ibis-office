@@ -1965,6 +1965,7 @@ impl SlideEditor {
         let on_select_visual = callbacks.on_select_mode.clone();
         let on_toggle_sync = callbacks.on_toggle_sync_scroll.clone();
 
+        let compact_mobile = self.compact_viewport;
         let mode_btn = |suffix: &'static str,
                         label_key: &'static str,
                         target: MarkdownViewMode,
@@ -1972,11 +1973,11 @@ impl SlideEditor {
             let active = mode == target;
             div()
                 .id(SharedString::from(format!("{id_prefix}-{suffix}")))
-                .px(px(9.))
-                .py(px(3.))
+                .px(px(if compact_mobile { 12. } else { 9. }))
+                .py(px(if compact_mobile { 6. } else { 3. }))
                 .rounded(px(4.))
                 .cursor_pointer()
-                .text_size(px(11.5))
+                .text_size(px(if compact_mobile { 12. } else { 11.5 }))
                 .when(active, |d| {
                     d.bg(theme.background)
                         .border_1()
@@ -2007,7 +2008,7 @@ impl SlideEditor {
             .items_center()
             .justify_between()
             .px(px(12.))
-            .py(px(4.))
+            .py(px(if compact_mobile { 6. } else { 4. }))
             .bg(theme.title_bar)
             .border_b_1()
             .border_color(theme.border)
@@ -2029,14 +2030,16 @@ impl SlideEditor {
                             .text_color(theme.foreground)
                             .child(format_badge),
                     )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.foreground)
-                            .truncate()
-                            .child(title),
-                    )
+                    .when(!compact_mobile, |row| {
+                        row.child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.foreground)
+                                .truncate()
+                                .child(title),
+                        )
+                    })
                     .when_some(status_label, |row, label| {
                         row.child(
                             div()
@@ -2045,7 +2048,7 @@ impl SlideEditor {
                                 .child(label),
                         )
                     })
-                    .when_some(section_badge, |row, badge| {
+                    .when_some(section_badge.filter(|_| !compact_mobile), |row, badge| {
                         row.child(
                             div()
                                 .px(px(6.))
@@ -2064,7 +2067,7 @@ impl SlideEditor {
                     .flex_row()
                     .items_center()
                     .gap(px(6.))
-                    .when(mode == MarkdownViewMode::Split, |row| {
+                    .when(!compact_mobile && mode == MarkdownViewMode::Split, |row| {
                         row.child(
                             div()
                                 .id(SharedString::from(format!("{id_prefix}-sync-scroll")))
@@ -2109,12 +2112,14 @@ impl SlideEditor {
                                 MarkdownViewMode::Source,
                                 on_select_source,
                             ))
-                            .child(mode_btn(
-                                "mode-split",
-                                "docx.markdown-source.mode-split",
-                                MarkdownViewMode::Split,
-                                on_select_split,
-                            ))
+                            .when(!compact_mobile, |bar| {
+                                bar.child(mode_btn(
+                                    "mode-split",
+                                    "docx.markdown-source.mode-split",
+                                    MarkdownViewMode::Split,
+                                    on_select_split,
+                                ))
+                            })
                             .child(mode_btn(
                                 "mode-visual",
                                 "docx.markdown-source.mode-visual",

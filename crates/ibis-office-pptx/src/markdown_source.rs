@@ -690,7 +690,7 @@ impl SlideEditor {
             (MarkdownViewMode::Source, Some(ms)) => {
                 self.render_shared_markdown_source_pane("pptx-markdown", ms, self.is_read_only(), cx)
             }
-            (MarkdownViewMode::Split, Some(ms)) => {
+            (MarkdownViewMode::Split, Some(ms)) if !self.compact_viewport => {
                 let source_pane = self.render_shared_markdown_source_pane(
                     "pptx-markdown",
                     ms,

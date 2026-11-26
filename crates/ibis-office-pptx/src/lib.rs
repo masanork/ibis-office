@@ -989,6 +989,7 @@ impl FormatEditor for Presentation {
             .pptx_mut()
             .is_some_and(|s| !std::mem::replace(&mut s.auto_split_initialized, true));
         if needs_auto_split
+            && !SlideEditor::is_compact_viewport(window)
             && editor.should_auto_open_markdown_split()
             && !editor.pptx_is_markdown_source_mode()
         {

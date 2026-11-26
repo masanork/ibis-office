@@ -2198,11 +2198,13 @@ impl SlideEditor {
                                 "docx.markdown-source.mode-source",
                                 MarkdownViewMode::Source,
                             ))
-                            .child(mode_btn(
-                                "markdown-mode-split",
-                                "docx.markdown-source.mode-split",
-                                MarkdownViewMode::Split,
-                            ))
+                            .when(!self.compact_viewport, |bar| {
+                                bar.child(mode_btn(
+                                    "markdown-mode-split",
+                                    "docx.markdown-source.mode-split",
+                                    MarkdownViewMode::Split,
+                                ))
+                            })
                             .child(mode_btn(
                                 "markdown-mode-visual",
                                 "docx.markdown-source.mode-visual",
