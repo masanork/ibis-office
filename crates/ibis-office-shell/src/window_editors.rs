@@ -41,10 +41,11 @@ pub struct EmbeddedChromePolicy {
 
 impl EmbeddedChromePolicy {
     /// Minimal chrome for Markdown panes inside an Obsidian-style workspace.
+    /// Keeps the menu bar visible by default so menus and brand logo stay discoverable.
     pub const fn workspace_markdown() -> Self {
         Self {
             show_title_row: false,
-            show_menu_bar: false,
+            show_menu_bar: true,
             show_toolbar: false,
             show_left_pane: false,
             show_right_sidebar: false,
@@ -55,12 +56,12 @@ impl EmbeddedChromePolicy {
         }
     }
 
-    /// Office editing pane inside a workspace: keep the format toolbar available,
-    /// while delegating title bar, left vault/git pane, and status bar to the workspace.
+    /// Office editing pane inside a workspace: keep the menu bar and format toolbar
+    /// available, while delegating title bar, left vault/git pane, and status bar to the workspace.
     pub const fn workspace_office() -> Self {
         Self {
             show_title_row: false,
-            show_menu_bar: false,
+            show_menu_bar: true,
             show_toolbar: true,
             show_left_pane: false,
             show_right_sidebar: true,
@@ -72,10 +73,11 @@ impl EmbeddedChromePolicy {
     }
 
     /// Lightweight viewer pane (PDF / JTD / XDW / images) inside a workspace.
+    /// Keeps the menu bar visible by default so actions and brand logo stay discoverable.
     pub const fn workspace_viewer() -> Self {
         Self {
             show_title_row: false,
-            show_menu_bar: false,
+            show_menu_bar: true,
             show_toolbar: false,
             show_left_pane: false,
             show_right_sidebar: false,
@@ -290,7 +292,7 @@ mod tests {
     fn embedded_chrome_presets_delegate_window_ownership() {
         let md = EmbeddedChromePolicy::workspace_markdown();
         assert!(!md.show_title_row);
-        assert!(!md.show_menu_bar);
+        assert!(md.show_menu_bar);
         assert!(!md.show_toolbar);
         assert!(!md.show_left_pane);
         assert!(!md.show_right_sidebar);
@@ -299,6 +301,7 @@ mod tests {
         assert!(!md.manage_window_chrome_sync);
 
         let office = EmbeddedChromePolicy::workspace_office();
+        assert!(office.show_menu_bar);
         assert!(office.show_toolbar);
         assert!(office.show_right_sidebar);
         assert!(!office.show_title_row);
@@ -306,6 +309,7 @@ mod tests {
         assert!(!office.manage_window_title);
 
         let viewer = EmbeddedChromePolicy::workspace_viewer();
+        assert!(viewer.show_menu_bar);
         assert!(!viewer.show_toolbar);
         assert!(!viewer.show_right_sidebar);
         assert!(!viewer.manage_window_title);

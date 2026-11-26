@@ -61,7 +61,7 @@ fn logos(){
     let _probe=buttons::Probe::new();let mut s=Scenario::start_view();s.size(1200.,800.);let b=buttons::bounds("start-app-logo").unwrap();assert!(f32::from(b.size.height)>80.);s.screenshot("start-logo");
     s.size(760.,800.);let b=buttons::bounds("start-app-logo").unwrap();assert!((f32::from(b.size.width)/f32::from(b.size.height)-crate::shell::chrome::LOGO_ASPECT).abs()<0.1);s.screenshot("start-logo-narrow");
     for (kind,name)in [(ibis_formats::Kind::Document,"docx"),(ibis_formats::Kind::Workbook,"xlsx"),(ibis_formats::Kind::Presentation,"pptx")]{
-        s.update(|e,w,cx|e.new_file(kind,w,cx));s.size(1200.,800.);assert!(buttons::bounds("editor-app-logo").is_some());s.screenshot(&format!("{name}-logo"));buttons::clear();s.size(400.,800.);assert!(buttons::bounds("editor-app-logo").is_none(),"narrow {name}");s.screenshot(&format!("{name}-logo-hidden"));buttons::clear();s.size(1200.,800.);assert!(buttons::bounds("editor-app-logo").is_some());
+        s.update(|e,w,cx|e.new_file(kind,w,cx));s.size(1200.,800.);assert!(buttons::bounds("editor-app-logo").is_some());s.screenshot(&format!("{name}-logo"));buttons::clear();s.size(400.,800.);assert!(buttons::bounds("editor-app-logo").is_some(),"narrow {name} keeps logo visible");s.screenshot(&format!("{name}-logo-narrow"));buttons::clear();s.size(1200.,800.);assert!(buttons::bounds("editor-app-logo").is_some());
     }
 }
 struct Capture;

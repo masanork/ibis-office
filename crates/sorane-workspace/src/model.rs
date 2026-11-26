@@ -639,14 +639,17 @@ mod tests {
     #[test]
     fn chrome_policy_distinguishes_markdown_office_and_viewer() {
         let md = chrome_policy_for(Some(Path::new("notes/arch.md")), None, Kind::Document, false, None, None);
+        assert!(md.show_menu_bar);
         assert!(!md.show_toolbar);
         assert!(!md.show_right_sidebar);
         assert!(md.default_markdown_split);
 
         let marp = chrome_policy_for(Some(Path::new("deck.md")), None, Kind::Presentation, false, None, None);
+        assert!(marp.show_menu_bar);
         assert!(marp.default_markdown_split);
 
         let wb_md = chrome_policy_for(Some(Path::new("budget.md")), None, Kind::Workbook, false, None, None);
+        assert!(wb_md.show_menu_bar);
         assert!(wb_md.default_markdown_split);
 
         let md_override = chrome_policy_for(
@@ -657,21 +660,25 @@ mod tests {
             Some(true),
             Some(true),
         );
+        assert!(md_override.show_menu_bar);
         assert!(md_override.show_toolbar);
         assert!(md_override.show_right_sidebar);
         assert!(md_override.default_markdown_split);
 
         let docx = chrome_policy_for(Some(Path::new("spec.docx")), None, Kind::Document, false, None, None);
+        assert!(docx.show_menu_bar);
         assert!(docx.show_toolbar);
         assert!(docx.show_right_sidebar);
         assert!(!docx.default_markdown_split);
 
         let pdf = chrome_policy_for(Some(Path::new("ref.pdf")), None, Kind::Pdf, true, None, None);
+        assert!(pdf.show_menu_bar);
         assert!(!pdf.show_toolbar);
         assert!(!pdf.show_right_sidebar);
         assert!(!pdf.default_markdown_split);
 
         let jtd = chrome_policy_for(Some(Path::new("doc.jtd")), None, Kind::Document, true, None, None);
+        assert!(jtd.show_menu_bar);
         assert!(!jtd.show_toolbar);
         assert!(!jtd.default_markdown_split);
 
