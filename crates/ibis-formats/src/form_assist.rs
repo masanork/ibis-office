@@ -2408,6 +2408,874 @@ pub fn render_submission_receipt_markdown(receipt: &SubmissionReceipt) -> String
     out
 }
 
+// ---------------------------------------------------------------------------
+// 8. Unified DOCX & Markdown (`FlowDocument`) Form Assist (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Kind of form target discovered inside an open DOCX or Markdown [`ibis_doc_model::FlowDocument`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FlowFormFieldKind {
+    /// Word `w:sdt` plain-text or rich-text content control (including Markdown `{{form:<id>}}`).
+    ContentControlText {
+        /// True when the control tag starts with `ibis.form.` (e.g. imported from Markdown `{{form:<id>}}`).
+        is_ibis_form_tag: bool,
+    },
+    /// Word `w:sdt` date picker content control.
+    DatePicker { date_format: String },
+    /// Word `w:sdt` checkbox content control.
+    CheckBox { checked: bool },
+    /// Word `w:sdt` dropdown list / combo box content control (`(display, value)` items).
+    DropDownList {
+        items: Vec<(String, String)>,
+        selected: usize,
+    },
+    /// Legacy Word `FORMTEXT` field (`w:ffData`).
+    LegacyTextInput,
+    /// Literal `{{form:<id>}}` placeholder inside a plain text run (if not yet converted to a control).
+    TextPlaceholder {
+        /// End character offset within the paragraph (exclusive).
+        end_offset: usize,
+    },
+}
+
+/// A single form field target discovered in a [`ibis_doc_model::FlowDocument`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlowFormTarget {
+    pub id: String,
+    pub label: String,
+    pub pos: ibis_doc_model::FlowPos,
+    pub kind: FlowFormFieldKind,
+    pub current_display: String,
+    pub is_empty_or_placeholder: bool,
+    pub locked: bool,
+    pub max_chars: Option<usize>,
+}
+
+fn normalize_form_field_key(raw: &str) -> String {
+    let trimmed = raw.trim();
+    for prefix in ["ibis.form.", "claim.", "sd.", "form."] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return rest.trim().to_string();
+        }
+    }
+    // Strip XFA / AcroForm hierarchical index wrappers like `form1[0].Page1[0].company_name[0]`
+    if let Some(last) = trimmed.rsplit('.').next()
+        && trimmed.contains('[')
+    {
+        let stripped = last.split('[').next().unwrap_or(last).trim();
+        if !stripped.is_empty() {
+            return stripped.to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn heuristic_key_for_label_or_id(raw: &str) -> Option<&'static str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    HEURISTIC_LABEL_RULES
+        .iter()
+        .find(|(patterns, _, _, _)| {
+            patterns
+                .iter()
+                .any(|pat| trimmed.contains(pat) || lower.contains(pat))
+        })
+        .map(|(_, field_id, _, _)| *field_id)
+}
+
+fn resolve_multi_format_value(
+    field_id: &str,
+    label: &str,
+    profiles: &[&VaultProfile],
+    credentials: &[&VaultCredentialSummary],
+    today_ymd: Option<&str>,
+) -> Option<(Value, FieldProvenance)> {
+    let mut keys = Vec::new();
+    let norm = normalize_form_field_key(field_id);
+    if !norm.is_empty() {
+        keys.push(norm.clone());
+    }
+    if let Some(h) = heuristic_key_for_label_or_id(&norm)
+        && !keys.iter().any(|k| k == h)
+    {
+        keys.push(h.to_string());
+    }
+    if let Some(h) = heuristic_key_for_label_or_id(label)
+        && !keys.iter().any(|k| k == h)
+    {
+        keys.push(h.to_string());
+    }
+
+    let sources: Vec<FormSourceRef> = keys.into_iter().map(FormSourceRef::Any).collect();
+    let default = if sources.iter().any(|s| match s {
+        FormSourceRef::Any(k) => k == "document.date" || k == "date" || k == "issue_date",
+        _ => false,
+    }) {
+        Some("today".to_string())
+    } else {
+        None
+    };
+
+    let synthetic = FormField {
+        id: field_id.to_string(),
+        label: label.to_string(),
+        target: FormTarget::Cell("A1".to_string()),
+        sources,
+        value_type: FormValueType::Text,
+        required: false,
+        max_chars: None,
+        default,
+    };
+    resolve_field_source(&synthetic, profiles, credentials, today_ymd)
+}
+
+fn format_flow_value_for_target(target: &FlowFormTarget, raw: &Value) -> Result<String, String> {
+    let s = value_as_display_string(raw).ok_or_else(|| "unsupported value".to_string())?;
+    match &target.kind {
+        FlowFormFieldKind::DatePicker { date_format } => {
+            if let Some(d) = parse_date_ymd(&s) {
+                let want_ja = date_format.contains('g')
+                    || date_format.contains('e')
+                    || date_format.contains('年')
+                    || target.label.contains("和暦");
+                if want_ja {
+                    Ok(format_date_ja(d))
+                } else {
+                    Ok(format!("{:04}-{:02}-{:02}", d.year, d.month, d.day))
+                }
+            } else {
+                Ok(s)
+            }
+        }
+        FlowFormFieldKind::CheckBox { .. } => {
+            let b = raw
+                .as_bool()
+                .or_else(|| match s.trim().to_ascii_lowercase().as_str() {
+                    "true" | "1" | "yes" | "on" | "はい" | "有" | "☑" => Some(true),
+                    "false" | "0" | "no" | "off" | "いいえ" | "無" | "□" => Some(false),
+                    _ => None,
+                })
+                .ok_or_else(|| "invalid boolean".to_string())?;
+            Ok(if b { "☑ (true)" } else { "☐ (false)" }.to_string())
+        }
+        FlowFormFieldKind::DropDownList { items, .. } => {
+            let needle = s.trim().to_ascii_lowercase();
+            items
+                .iter()
+                .find(|(disp, val)| {
+                    disp.trim().to_ascii_lowercase() == needle
+                        || val.trim().to_ascii_lowercase() == needle
+                })
+                .map(|(disp, _)| disp.clone())
+                .ok_or_else(|| format!("dropdown option not found: {s}"))
+        }
+        _ => Ok(s),
+    }
+}
+
+/// Discovers all DOCX content controls, legacy Word form fields, and `{{form:<id>}}` placeholders
+/// across body paragraphs and tables in a [`ibis_doc_model::FlowDocument`].
+pub fn discover_flow_form_targets(doc: &ibis_doc_model::FlowDocument) -> Vec<FlowFormTarget> {
+    use ibis_doc_model::flow::{FlowRunKind, FormFieldKind};
+    use ibis_doc_model::flow_command::{FlowPos, all_paragraphs};
+
+    let mut targets = Vec::new();
+    for para in all_paragraphs(doc) {
+        let mut offset = 0usize;
+        for run in &para.runs {
+            let pos = FlowPos::new(para.id, offset);
+            let ctrl = run.control.as_deref();
+            let locked = ctrl.is_some_and(|c| c.lock.keeps_content());
+            let ctrl_tag = ctrl.map(|c| c.tag.trim()).unwrap_or("");
+            let ctrl_title = ctrl.map(|c| c.title.trim()).unwrap_or("");
+
+            match &run.kind {
+                FlowRunKind::PlainText { text, placeholder }
+                | FlowRunKind::RichText { text, placeholder } => {
+                    let is_ibis_form_tag = ctrl_tag.starts_with(crate::form_template::PREFIX);
+                    let raw_id = if !ctrl_tag.is_empty() {
+                        ctrl_tag
+                    } else if !ctrl_title.is_empty() {
+                        ctrl_title
+                    } else {
+                        ""
+                    };
+                    if !raw_id.is_empty() {
+                        let id = normalize_form_field_key(raw_id);
+                        let label = if !ctrl_title.is_empty() {
+                            ctrl_title.to_string()
+                        } else {
+                            id.clone()
+                        };
+                        let trimmed = text.trim();
+                        let is_empty = *placeholder
+                            || trimmed.is_empty()
+                            || trimmed == "…"
+                            || trimmed == "...";
+                        targets.push(FlowFormTarget {
+                            id,
+                            label,
+                            pos,
+                            kind: FlowFormFieldKind::ContentControlText { is_ibis_form_tag },
+                            current_display: if is_empty {
+                                String::new()
+                            } else {
+                                text.clone()
+                            },
+                            is_empty_or_placeholder: is_empty,
+                            locked,
+                            max_chars: None,
+                        });
+                    }
+                }
+                FlowRunKind::DatePicker {
+                    full_date,
+                    date_format,
+                    text,
+                } => {
+                    let raw_id = if !ctrl_tag.is_empty() {
+                        ctrl_tag
+                    } else if !ctrl_title.is_empty() {
+                        ctrl_title
+                    } else {
+                        "document.date"
+                    };
+                    let id = normalize_form_field_key(raw_id);
+                    let label = if !ctrl_title.is_empty() {
+                        ctrl_title.to_string()
+                    } else {
+                        id.clone()
+                    };
+                    let is_empty = full_date.trim().is_empty() && text.trim().is_empty();
+                    targets.push(FlowFormTarget {
+                        id,
+                        label,
+                        pos,
+                        kind: FlowFormFieldKind::DatePicker {
+                            date_format: date_format.clone(),
+                        },
+                        current_display: if text.trim().is_empty() {
+                            full_date.clone()
+                        } else {
+                            text.clone()
+                        },
+                        is_empty_or_placeholder: is_empty,
+                        locked,
+                        max_chars: None,
+                    });
+                }
+                FlowRunKind::CheckBox { checked, .. } => {
+                    let raw_id = if !ctrl_tag.is_empty() {
+                        ctrl_tag
+                    } else {
+                        ctrl_title
+                    };
+                    if !raw_id.is_empty() {
+                        let id = normalize_form_field_key(raw_id);
+                        let label = if !ctrl_title.is_empty() {
+                            ctrl_title.to_string()
+                        } else {
+                            id.clone()
+                        };
+                        targets.push(FlowFormTarget {
+                            id,
+                            label,
+                            pos,
+                            kind: FlowFormFieldKind::CheckBox { checked: *checked },
+                            current_display: if *checked { "☑" } else { "☐" }.to_string(),
+                            is_empty_or_placeholder: !*checked,
+                            locked,
+                            max_chars: None,
+                        });
+                    }
+                }
+                FlowRunKind::DropDownList {
+                    items, selected, ..
+                } => {
+                    let raw_id = if !ctrl_tag.is_empty() {
+                        ctrl_tag
+                    } else {
+                        ctrl_title
+                    };
+                    if !raw_id.is_empty() {
+                        let id = normalize_form_field_key(raw_id);
+                        let label = if !ctrl_title.is_empty() {
+                            ctrl_title.to_string()
+                        } else {
+                            id.clone()
+                        };
+                        let current = items
+                            .get(*selected)
+                            .map(|(d, _)| d.clone())
+                            .unwrap_or_default();
+                        targets.push(FlowFormTarget {
+                            id,
+                            label,
+                            pos,
+                            kind: FlowFormFieldKind::DropDownList {
+                                items: items.clone(),
+                                selected: *selected,
+                            },
+                            current_display: current.clone(),
+                            is_empty_or_placeholder: current.trim().is_empty() || *selected == 0,
+                            locked,
+                            max_chars: None,
+                        });
+                    }
+                }
+                FlowRunKind::FormField(ff) => {
+                    if let FormFieldKind::TextInput {
+                        value, max_length, ..
+                    } = &ff.kind
+                    {
+                        let raw_id = ff.name.trim();
+                        if !raw_id.is_empty() {
+                            let id = normalize_form_field_key(raw_id);
+                            let is_empty = value.trim().is_empty();
+                            targets.push(FlowFormTarget {
+                                id: id.clone(),
+                                label: raw_id.to_string(),
+                                pos,
+                                kind: FlowFormFieldKind::LegacyTextInput,
+                                current_display: value.clone(),
+                                is_empty_or_placeholder: is_empty,
+                                locked: !ff.enabled,
+                                max_chars: (*max_length > 0).then_some(*max_length),
+                            });
+                        }
+                    }
+                }
+                FlowRunKind::Text(text) if text.contains("{{form:") => {
+                    let mut search_byte = 0usize;
+                    while let Some(rel) = text[search_byte..].find("{{form:") {
+                        let start_byte = search_byte + rel;
+                        let after = &text[start_byte + "{{form:".len()..];
+                        let Some(close_rel) = after.find("}}") else {
+                            break;
+                        };
+                        let raw_id = after[..close_rel].trim();
+                        let end_byte = start_byte + "{{form:".len() + close_rel + "}}".len();
+                        if crate::form_template::valid_field_id(raw_id) {
+                            let start_chars = text[..start_byte].chars().count();
+                            let end_chars = text[..end_byte].chars().count();
+                            let id = normalize_form_field_key(raw_id);
+                            targets.push(FlowFormTarget {
+                                id: id.clone(),
+                                label: id,
+                                pos: FlowPos::new(para.id, offset + start_chars),
+                                kind: FlowFormFieldKind::TextPlaceholder {
+                                    end_offset: offset + end_chars,
+                                },
+                                current_display: String::new(),
+                                is_empty_or_placeholder: true,
+                                locked: false,
+                                max_chars: None,
+                            });
+                        }
+                        search_byte = end_byte;
+                    }
+                }
+                _ => {}
+            }
+
+            offset += run.len();
+        }
+    }
+    targets
+}
+
+/// Evaluates all discovered DOCX / Markdown form targets against Vault profiles and VCs.
+pub fn evaluate_flow_form(
+    doc: &ibis_doc_model::FlowDocument,
+    profiles: &[&VaultProfile],
+    credentials: &[&VaultCredentialSummary],
+    today_ymd: Option<&str>,
+) -> (Vec<FlowFormTarget>, FormEvaluation) {
+    let targets = discover_flow_form_targets(doc);
+    let mut plans = Vec::with_capacity(targets.len());
+    let mut ready_count = 0usize;
+    let mut occupied_count = 0usize;
+    let mut vc_backed_count = 0usize;
+    let mut overflow_count = 0usize;
+
+    for target in &targets {
+        let target_summary = match &target.kind {
+            FlowFormFieldKind::ContentControlText {
+                is_ibis_form_tag: true,
+            } => format!("form:{}", target.id),
+            FlowFormFieldKind::ContentControlText { .. } => "テキスト欄".to_string(),
+            FlowFormFieldKind::DatePicker { .. } => "日付選択".to_string(),
+            FlowFormFieldKind::CheckBox { .. } => "チェックボックス".to_string(),
+            FlowFormFieldKind::DropDownList { .. } => "ドロップダウン".to_string(),
+            FlowFormFieldKind::LegacyTextInput => "フォーム入力".to_string(),
+            FlowFormFieldKind::TextPlaceholder { .. } => format!("{{{{form:{}}}}}", target.id),
+        };
+
+        let source_hit = resolve_multi_format_value(
+            &target.id,
+            &target.label,
+            profiles,
+            credentials,
+            today_ymd,
+        );
+        let (proposed_raw, provenance) = match source_hit {
+            Some((v, prov)) => (Some(v), Some(prov)),
+            None => (None, None),
+        };
+
+        let (status, proposed_display) = if target.locked {
+            (FieldStatus::BlockedTarget, None)
+        } else if let Some(ref raw) = proposed_raw {
+            match format_flow_value_for_target(target, raw) {
+                Ok(disp) => {
+                    if target.is_empty_or_placeholder {
+                        (FieldStatus::Ready, Some(disp))
+                    } else {
+                        (FieldStatus::Occupied, Some(disp))
+                    }
+                }
+                Err(_) => (FieldStatus::UnsupportedValue, value_as_display_string(raw)),
+            }
+        } else {
+            (FieldStatus::MissingSource, None)
+        };
+
+        let effective = proposed_display
+            .as_deref()
+            .filter(|_| matches!(status, FieldStatus::Ready | FieldStatus::Occupied))
+            .unwrap_or(&target.current_display);
+        let char_count = effective.chars().count();
+        let exceeds_max_chars = target.max_chars.is_some_and(|limit| char_count > limit);
+
+        if status == FieldStatus::Ready {
+            ready_count += 1;
+        }
+        if status == FieldStatus::Occupied {
+            occupied_count += 1;
+        }
+        if matches!(provenance, Some(FieldProvenance::Credential { .. }))
+            && matches!(status, FieldStatus::Ready | FieldStatus::Occupied)
+        {
+            vc_backed_count += 1;
+        }
+        if exceeds_max_chars {
+            overflow_count += 1;
+        }
+
+        plans.push(FormFieldPlan {
+            id: target.id.clone(),
+            label: target.label.clone(),
+            target_summary,
+            current_display: target.current_display.clone(),
+            proposed_display,
+            proposed_raw,
+            provenance,
+            status,
+            required: false,
+            max_chars: target.max_chars,
+            char_count,
+            exceeds_max_chars,
+        });
+    }
+
+    (
+        targets,
+        FormEvaluation {
+            fields: plans,
+            ready_count,
+            occupied_count,
+            vc_backed_count,
+            missing_required_count: 0,
+            overflow_count,
+        },
+    )
+}
+
+fn flatten_block_form_controls(
+    blocks: &mut [ibis_doc_model::flow::Block],
+    replacements: &BTreeMap<(u32, usize), String>,
+    placeholder_replacements: &BTreeMap<(u32, usize, usize), String>,
+    applied: &mut usize,
+) {
+    use ibis_doc_model::flow::{Block, FlowRunKind};
+    for block in blocks {
+        match block {
+            Block::Paragraph(para) => {
+                let mut offset = 0usize;
+                for run in &mut para.runs {
+                    let run_len = run.len();
+                    if let Some(new_text) = replacements.get(&(para.id, offset)) {
+                        run.kind = FlowRunKind::Text(new_text.clone());
+                        run.control = None;
+                        *applied += 1;
+                    } else if let FlowRunKind::Text(text) = &mut run.kind {
+                        let matching: Vec<(usize, usize, String)> = placeholder_replacements
+                            .iter()
+                            .filter(|&(&(pid, start, end), _)| {
+                                pid == para.id && start >= offset && end <= offset + run_len
+                            })
+                            .map(|(&(_, start, end), val)| (start - offset, end - offset, val.clone()))
+                            .collect();
+                        if !matching.is_empty() {
+                            let mut chars: Vec<char> = text.chars().collect();
+                            for (start_c, end_c, val) in matching.into_iter().rev() {
+                                if end_c <= chars.len() && start_c <= end_c {
+                                    chars.splice(start_c..end_c, val.chars());
+                                    *applied += 1;
+                                }
+                            }
+                            *text = chars.into_iter().collect();
+                        }
+                    }
+                    offset += run_len;
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        flatten_block_form_controls(
+                            &mut cell.blocks,
+                            replacements,
+                            placeholder_replacements,
+                            applied,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Builds undoable `Command::Flow(...)` edits for all eligible fields in a DOCX or Markdown document.
+///
+/// When `flatten_markdown_controls` is `true` (e.g. an open `.md` file containing `{{form:<id>}}`
+/// controls), replaces each `ibis.form.*` control run with a plain `FlowRunKind::Text` run via an
+/// atomic `FlowCommand::ReplaceDocument` so saving the Markdown file persists the filled text.
+pub fn build_flow_form_apply_commands(
+    doc: &ibis_doc_model::FlowDocument,
+    targets: &[FlowFormTarget],
+    evaluation: &FormEvaluation,
+    allow_overwrite: bool,
+    flatten_markdown_controls: bool,
+) -> Result<(Vec<Command>, usize), String> {
+    use ibis_doc_model::flow_command::{FlowCommand, FlowPos};
+
+    if flatten_markdown_controls {
+        let mut control_replacements = BTreeMap::new();
+        let mut placeholder_replacements = BTreeMap::new();
+        for (target, plan) in targets.iter().zip(evaluation.fields.iter()) {
+            let allowed = plan.status == FieldStatus::Ready
+                || (allow_overwrite && plan.status == FieldStatus::Occupied);
+            if !allowed {
+                continue;
+            }
+            let Some(ref raw) = plan.proposed_raw else {
+                continue;
+            };
+            let display_text = format_flow_value_for_target(target, raw)?;
+            match &target.kind {
+                FlowFormFieldKind::ContentControlText { .. } => {
+                    control_replacements.insert((target.pos.para, target.pos.offset), display_text);
+                }
+                FlowFormFieldKind::TextPlaceholder { end_offset } => {
+                    placeholder_replacements.insert(
+                        (target.pos.para, target.pos.offset, *end_offset),
+                        display_text,
+                    );
+                }
+                _ => {}
+            }
+        }
+        if !control_replacements.is_empty() || !placeholder_replacements.is_empty() {
+            let mut updated = doc.clone();
+            let mut applied = 0usize;
+            flatten_block_form_controls(
+                &mut updated.body,
+                &control_replacements,
+                &placeholder_replacements,
+                &mut applied,
+            );
+            flatten_block_form_controls(
+                &mut updated.header,
+                &control_replacements,
+                &placeholder_replacements,
+                &mut applied,
+            );
+            flatten_block_form_controls(
+                &mut updated.footer,
+                &control_replacements,
+                &placeholder_replacements,
+                &mut applied,
+            );
+            if applied > 0 {
+                return Ok((
+                    vec![Command::Flow(FlowCommand::ReplaceDocument(Box::new(updated)))],
+                    applied,
+                ));
+            }
+        }
+    }
+
+    // Process targets in reverse paragraph/offset/run order so earlier edits (including expanding
+    // a zero-length empty DatePicker or PlainText) never shift subsequent target offsets.
+    let mut indices: Vec<usize> = (0..targets.len()).collect();
+    indices.sort_by(|&a, &b| {
+        targets[b]
+            .pos
+            .para
+            .cmp(&targets[a].pos.para)
+            .then_with(|| targets[b].pos.offset.cmp(&targets[a].pos.offset))
+            .then_with(|| b.cmp(&a))
+    });
+
+    let mut cmds = Vec::new();
+    let mut applied = 0usize;
+
+    for idx in indices {
+        let target = &targets[idx];
+        let plan = &evaluation.fields[idx];
+        let allowed = plan.status == FieldStatus::Ready
+            || (allow_overwrite && plan.status == FieldStatus::Occupied);
+        if !allowed {
+            continue;
+        }
+        let Some(ref raw) = plan.proposed_raw else {
+            continue;
+        };
+        let display_text = format_flow_value_for_target(target, raw)?;
+
+        match &target.kind {
+            FlowFormFieldKind::ContentControlText { .. } => {
+                cmds.push(Command::Flow(FlowCommand::SetContentControlText {
+                    at: target.pos,
+                    text: display_text,
+                    placeholder: false,
+                }));
+                applied += 1;
+            }
+            FlowFormFieldKind::DatePicker { .. } => {
+                let s = value_as_display_string(raw).unwrap_or_else(|| display_text.clone());
+                let full_date = parse_date_ymd(&s)
+                    .map(|d| format!("{:04}-{:02}-{:02}T00:00:00Z", d.year, d.month, d.day))
+                    .unwrap_or(s);
+                cmds.push(Command::Flow(FlowCommand::SetDatePickerDate {
+                    at: target.pos,
+                    full_date,
+                    text: display_text,
+                }));
+                applied += 1;
+            }
+            FlowFormFieldKind::CheckBox { checked } => {
+                let desired = display_text.starts_with('☑');
+                if desired != *checked {
+                    cmds.push(Command::Flow(FlowCommand::ToggleCheckBox {
+                        at: target.pos,
+                    }));
+                }
+                applied += 1;
+            }
+            FlowFormFieldKind::DropDownList { items, .. } => {
+                let needle = value_as_display_string(raw)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                if let Some(index) = items.iter().position(|(disp, val)| {
+                    disp.trim().to_ascii_lowercase() == needle
+                        || val.trim().to_ascii_lowercase() == needle
+                }) {
+                    cmds.push(Command::Flow(FlowCommand::SelectDropDownItem {
+                        at: target.pos,
+                        index,
+                    }));
+                    applied += 1;
+                }
+            }
+            FlowFormFieldKind::LegacyTextInput => {
+                cmds.push(Command::Flow(FlowCommand::SetFormFieldText {
+                    at: target.pos,
+                    text: display_text,
+                }));
+                applied += 1;
+            }
+            FlowFormFieldKind::TextPlaceholder { end_offset } => {
+                let to = FlowPos::new(target.pos.para, *end_offset);
+                cmds.push(Command::Flow(FlowCommand::Delete {
+                    from: target.pos,
+                    to,
+                }));
+                cmds.push(Command::Flow(FlowCommand::InsertText {
+                    at: target.pos,
+                    text: display_text,
+                    format: None,
+                }));
+                applied += 1;
+            }
+        }
+    }
+
+    if cmds.is_empty() {
+        return Err("適用できるフォーム入力候補がありません。".to_string());
+    }
+    Ok((cmds, applied))
+}
+
+// ---------------------------------------------------------------------------
+// 9. Unified PDF AcroForm Form Assist (Phase 3, native)
+// ---------------------------------------------------------------------------
+
+/// Editable text field discovered in a PDF AcroForm.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PdfFormFieldTarget {
+    pub name: String,
+    pub current_value: String,
+    pub max_len: Option<usize>,
+    pub multiline: bool,
+    pub widget_count: usize,
+}
+
+/// Inspects editable AcroForm text fields in any PDF file (including PDF/A-2b and standard forms).
+#[cfg(not(target_family = "wasm"))]
+pub fn inspect_pdf_form_fields(bytes: Vec<u8>) -> Result<(bool, Vec<PdfFormFieldTarget>), String> {
+    let mut pdf =
+        ibis_pdf::PdfContainer::from_bytes(bytes).map_err(|e| format!("PDF 読込エラー: {e}"))?;
+    let is_pdfa2b = ibis_pdf::pdfa::inspect(&mut pdf)
+        .ok()
+        .and_then(|info| info.declared_profile().map(|p| p == "PDF/A-2b"))
+        .unwrap_or(false);
+    let fields =
+        ibis_pdf::acroform::text_fields_any(&mut pdf).map_err(|e| format!("AcroForm 解析エラー: {e}"))?;
+    let targets = fields
+        .into_iter()
+        .map(|(name, field)| PdfFormFieldTarget {
+            name,
+            current_value: field.current_value(),
+            max_len: field.max_len,
+            multiline: field.multiline,
+            widget_count: field.widget_count(),
+        })
+        .collect();
+    Ok((is_pdfa2b, targets))
+}
+
+/// Evaluates discovered PDF AcroForm fields against Vault profiles and VCs using the unified IR.
+pub fn evaluate_pdf_form(
+    targets: &[PdfFormFieldTarget],
+    profiles: &[&VaultProfile],
+    credentials: &[&VaultCredentialSummary],
+    today_ymd: Option<&str>,
+) -> FormEvaluation {
+    let mut plans = Vec::with_capacity(targets.len());
+    let mut ready_count = 0usize;
+    let mut occupied_count = 0usize;
+    let mut vc_backed_count = 0usize;
+    let mut overflow_count = 0usize;
+
+    for target in targets {
+        let norm_id = normalize_form_field_key(&target.name);
+        let source_hit =
+            resolve_multi_format_value(&norm_id, &target.name, profiles, credentials, today_ymd);
+        let (proposed_raw, provenance) = match source_hit {
+            Some((v, prov)) => (Some(v), Some(prov)),
+            None => (None, None),
+        };
+        let proposed_display = proposed_raw.as_ref().and_then(value_as_display_string);
+        let is_empty = target.current_value.trim().is_empty();
+        let status = match &proposed_display {
+            Some(_) if is_empty => FieldStatus::Ready,
+            Some(_) => FieldStatus::Occupied,
+            None => FieldStatus::MissingSource,
+        };
+        let effective = proposed_display
+            .as_deref()
+            .filter(|_| matches!(status, FieldStatus::Ready | FieldStatus::Occupied))
+            .unwrap_or(&target.current_value);
+        let char_count = effective.chars().count();
+        let exceeds_max_chars = target.max_len.is_some_and(|limit| char_count > limit);
+
+        if status == FieldStatus::Ready {
+            ready_count += 1;
+        }
+        if status == FieldStatus::Occupied {
+            occupied_count += 1;
+        }
+        if matches!(provenance, Some(FieldProvenance::Credential { .. }))
+            && matches!(status, FieldStatus::Ready | FieldStatus::Occupied)
+        {
+            vc_backed_count += 1;
+        }
+        if exceeds_max_chars {
+            overflow_count += 1;
+        }
+
+        plans.push(FormFieldPlan {
+            id: target.name.clone(),
+            label: norm_id,
+            target_summary: format!("PDF:{}", target.name),
+            current_display: target.current_value.clone(),
+            proposed_display,
+            proposed_raw,
+            provenance,
+            status,
+            required: false,
+            max_chars: target.max_len,
+            char_count,
+            exceeds_max_chars,
+        });
+    }
+
+    FormEvaluation {
+        fields: plans,
+        ready_count,
+        occupied_count,
+        vc_backed_count,
+        missing_required_count: 0,
+        overflow_count,
+    }
+}
+
+/// Fills matching PDF AcroForm text fields and returns an incrementally saved PDF copy.
+#[cfg(not(target_family = "wasm"))]
+pub fn fill_pdf_form_values(
+    bytes: Vec<u8>,
+    values: &BTreeMap<String, String>,
+) -> Result<(Vec<u8>, usize), String> {
+    let mut pdf =
+        ibis_pdf::PdfContainer::from_bytes(bytes).map_err(|e| format!("PDF 読込エラー: {e}"))?;
+    let fields =
+        ibis_pdf::acroform::text_fields_any(&mut pdf).map_err(|e| format!("AcroForm 解析エラー: {e}"))?;
+    let mut applied = 0usize;
+    for (name, field) in fields {
+        if let Some(val) = values.get(&name) {
+            if let Some(limit) = field.max_len
+                && val.encode_utf16().count() > limit
+            {
+                return Err(format!("PDF 欄 `{name}` の文字数上限 ({limit}) を超過しています。"));
+            }
+            let sanitized = if field.multiline {
+                val.replace('\t', " ")
+            } else {
+                val.replace(['\r', '\n', '\t'], " ")
+            };
+            field
+                .set_text_value(&mut pdf, &sanitized)
+                .map_err(|e| format!("PDF 欄 `{name}` の書き込みに失敗しました: {e}"))?;
+            applied += 1;
+        }
+    }
+    if applied == 0 {
+        return Err("PDF に書き込む入力候補がありません。".to_string());
+    }
+    ibis_pdf::acroform::set_need_appearances(&mut pdf)
+        .map_err(|e| format!("NeedAppearances 設定に失敗しました: {e}"))?;
+    let out = pdf
+        .save(ibis_pdf::SaveMode::Incremental)
+        .map_err(|e| format!("PDF 保存に失敗しました: {e}"))?;
+    Ok((out, applied))
+}
+
 #[allow(dead_code)]
 fn _ensure_map_import(_: &Map<String, Value>) {}
 
@@ -2695,5 +3563,189 @@ x-sorane-form-mapping:
         assert!(rendered.contains("[[forms/invoice.form-map]]"));
         assert!(rendered.contains("[[requests/sample-verifier.req]]"));
     }
+
+    #[test]
+    fn flow_document_docx_and_markdown_form_assist_roundtrip() {
+        use ibis_doc_model::flow::{
+            Block, ControlInfo, FlowDocument, FlowParagraph, FlowRun, FlowRunKind, FlowRunStyle,
+            FormFieldData, FormFieldKind,
+        };
+
+        let (_, org_md) = starter_profile_markdown("organization");
+        let profile = parse_profile_markdown("profiles/company.md", org_md).unwrap();
+
+        // 1. Markdown `{{form:...}}` imported via `markdown::read_markdown`
+        let md_src = "# 申請書\n\n会社名: {{form:organization.name}}\n\n登録番号: {{form:organization.invoice_number}}\n";
+        let md_pres = crate::markdown::read_markdown(md_src.as_bytes()).expect("read markdown");
+        let md_flow = md_pres.flow.as_ref().expect("markdown has FlowDocument");
+        let (md_targets, md_eval) =
+            evaluate_flow_form(md_flow, &[&profile], &[], Some("2026-11-26"));
+        assert_eq!(md_targets.len(), 2);
+        assert_eq!(md_eval.ready_count, 2);
+        let (md_cmds, md_count) =
+            build_flow_form_apply_commands(md_flow, &md_targets, &md_eval, false, true).unwrap();
+        assert_eq!(md_count, 2);
+        let mut md_doc = Document::new(md_pres);
+        md_doc.execute(md_cmds).expect("apply markdown form");
+        let exported_md =
+            crate::markdown::export_markdown(md_doc.presentation().flow.as_ref().unwrap(), &[]);
+        assert!(exported_md.contains("株式会社サンプル"));
+        assert!(exported_md.contains("T1234567890123"));
+        assert!(!exported_md.contains("{{form:"));
+
+        // 2. DOCX content controls (PlainText + DatePicker + Legacy FORMTEXT) with 1-Undo apply
+        let mut p1 = FlowParagraph {
+            id: 1,
+            ..Default::default()
+        };
+        let mut r_company = FlowRun::new(
+            FlowRunKind::PlainText {
+                text: "クリックして入力".into(),
+                placeholder: true,
+            },
+            FlowRunStyle::default(),
+        );
+        r_company.control = Some(Box::new(ControlInfo {
+            title: "会社名".into(),
+            tag: "ibis.form.organization.name".into(),
+            ..Default::default()
+        }));
+        p1.runs.push(r_company);
+
+        let mut r_date = FlowRun::new(
+            FlowRunKind::DatePicker {
+                full_date: String::new(),
+                date_format: "ggge年M月d日".into(),
+                text: String::new(),
+            },
+            FlowRunStyle::default(),
+        );
+        r_date.control = Some(Box::new(ControlInfo {
+            title: "作成日".into(),
+            tag: "document.date".into(),
+            ..Default::default()
+        }));
+        p1.runs.push(r_date);
+
+        let r_legacy = FlowRun::new(
+            FlowRunKind::FormField(FormFieldData {
+                name: "postal_code".into(),
+                enabled: true,
+                calc_on_exit: false,
+                kind: FormFieldKind::TextInput {
+                    value: String::new(),
+                    default: String::new(),
+                    max_length: 10,
+                },
+            }),
+            FlowRunStyle::default(),
+        );
+        p1.runs.push(r_legacy);
+
+        let mut flow = FlowDocument::default();
+        flow.body.push(Block::Paragraph(p1));
+        let mut docx_pres = Presentation::default();
+        docx_pres.flow = Some(Arc::new(flow));
+
+        let docx_flow = docx_pres.flow.as_ref().unwrap();
+        let (targets, eval) =
+            evaluate_flow_form(docx_flow, &[&profile], &[], Some("2026-11-26"));
+        assert_eq!(targets.len(), 3);
+        assert_eq!(eval.ready_count, 3);
+        let (cmds, applied) =
+            build_flow_form_apply_commands(docx_flow, &targets, &eval, false, false).unwrap();
+        assert_eq!(applied, 3);
+
+        let mut docx_doc = Document::new(docx_pres);
+        docx_doc.execute(cmds).expect("apply docx controls");
+        let after = docx_doc.presentation().flow.as_ref().unwrap();
+        let Block::Paragraph(para) = &after.body[0] else {
+            panic!("expected paragraph");
+        };
+        assert!(matches!(
+            &para.runs[0].kind,
+            FlowRunKind::PlainText { text, placeholder: false } if text == "株式会社サンプル"
+        ));
+        assert!(matches!(
+            &para.runs[1].kind,
+            FlowRunKind::DatePicker { text, .. } if text == "令和8年11月26日"
+        ));
+        assert!(matches!(
+            &para.runs[2].kind,
+            FlowRunKind::FormField(FormFieldData {
+                kind: FormFieldKind::TextInput { value, .. },
+                ..
+            }) if value == "100-0001"
+        ));
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn pdf_acroform_form_assist_roundtrip() {
+        fn build_minimal_acroform_pdf() -> Vec<u8> {
+            let objects: Vec<&[u8]> = vec![
+                b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R 5 0 R] >> >>\nendobj\n",
+                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+                b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [4 0 R 5 0 R] >>\nendobj\n",
+                b"4 0 obj\n<< /Type /Annot /Subtype /Widget /FT /Tx /T (company_name) /Rect [50 700 300 720] /P 3 0 R /MaxLen 40 >>\nendobj\n",
+                b"5 0 obj\n<< /Type /Annot /Subtype /Widget /FT /Tx /T (postal_code) /Rect [50 660 200 680] /P 3 0 R /MaxLen 10 >>\nendobj\n",
+            ];
+            let mut out = Vec::from(&b"%PDF-1.7\n"[..]);
+            let mut offsets = Vec::new();
+            for obj in &objects {
+                offsets.push(out.len());
+                out.extend_from_slice(obj);
+            }
+            let xref_pos = out.len();
+            out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+            for off in offsets {
+                out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+            }
+            out.extend_from_slice(
+                format!(
+                    "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n",
+                    objects.len() + 1
+                )
+                .as_bytes(),
+            );
+            out
+        }
+
+        let pdf_bytes = build_minimal_acroform_pdf();
+        let (_, org_md) = starter_profile_markdown("organization");
+        let profile = parse_profile_markdown("profiles/company.md", org_md).unwrap();
+
+        let (is_pdfa2b, targets) = inspect_pdf_form_fields(pdf_bytes.clone()).expect("inspect pdf");
+        assert!(!is_pdfa2b);
+        assert_eq!(targets.len(), 2);
+
+        let eval = evaluate_pdf_form(&targets, &[&profile], &[], Some("2026-11-26"));
+        assert_eq!(eval.ready_count, 2);
+
+        let mut fill_map = BTreeMap::new();
+        for field in &eval.fields {
+            if let Some(val) = &field.proposed_display {
+                fill_map.insert(field.id.clone(), val.clone());
+            }
+        }
+        let (filled_bytes, applied) = fill_pdf_form_values(pdf_bytes, &fill_map).expect("fill pdf");
+        assert_eq!(applied, 2);
+
+        // Re-inspect filled PDF and confirm both UTF-16BE Japanese & ASCII values persisted!
+        let (_, after_targets) = inspect_pdf_form_fields(filled_bytes).expect("re-inspect pdf");
+        let after_map: BTreeMap<String, String> = after_targets
+            .into_iter()
+            .map(|t| (t.name, t.current_value))
+            .collect();
+        assert_eq!(
+            after_map.get("company_name").map(String::as_str),
+            Some("株式会社サンプル")
+        );
+        assert_eq!(
+            after_map.get("postal_code").map(String::as_str),
+            Some("100-0001")
+        );
+    }
 }
+
 

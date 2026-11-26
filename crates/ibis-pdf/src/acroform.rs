@@ -18,15 +18,38 @@ impl TextField {
     pub fn widget_count(&self) -> usize {
         self.widgets.len()
     }
+
+    /// Reads the current `/V` text value of this field, if any.
+    pub fn current_value(&self) -> String {
+        match self.dict.get(b"V") {
+            Some(CosObj::Str(s)) => s.to_text_lossy(),
+            _ => String::new(),
+        }
+    }
 }
 
 pub fn text_fields(pdf: &mut PdfContainer) -> Result<BTreeMap<String, TextField>> {
+    text_fields_inner(pdf, false)
+}
+
+/// Reads editable AcroForm text fields, also allowing PDFs with `/NeedAppearances true`
+/// (e.g. standard fillable PDFs or previously filled copies).
+pub fn text_fields_any(pdf: &mut PdfContainer) -> Result<BTreeMap<String, TextField>> {
+    text_fields_inner(pdf, true)
+}
+
+fn text_fields_inner(
+    pdf: &mut PdfContainer,
+    allow_need_appearances: bool,
+) -> Result<BTreeMap<String, TextField>> {
     let (_, catalog) = pdf.catalog()?;
     let acro = dictionary(pdf, &catalog, b"AcroForm")?;
     if acro.get(b"XFA").is_some() {
         return Err(Error::new("XFA forms are unsupported"));
     }
-    if matches!(acro.get(b"NeedAppearances"), Some(CosObj::Bool(true))) {
+    if !allow_need_appearances
+        && matches!(acro.get(b"NeedAppearances"), Some(CosObj::Bool(true)))
+    {
         return Err(Error::new("AcroForm requests viewer-generated appearances"));
     }
     let mut result = BTreeMap::new();
@@ -298,4 +321,50 @@ impl TextField {
         pdf.set_object(self.id, CosObj::Dict(field));
         Ok(())
     }
+
+    /// Updates this text field's `/V` value as UTF-16BE and clears stale `/AP` streams so
+    /// standard PDF viewers regenerate visible text when `/NeedAppearances true` is set.
+    pub fn set_text_value(self, pdf: &mut PdfContainer, value: &str) -> Result<()> {
+        let pdf_value = CosObj::Str(CosString::Hex(
+            [0xfe, 0xff]
+                .into_iter()
+                .chain(value.encode_utf16().flat_map(u16::to_be_bytes))
+                .collect(),
+        ));
+        let mut field = self.dict;
+        field.set(b"V", pdf_value.clone());
+        field.remove(b"AP");
+        for (id, mut widget) in self.widgets {
+            if id != self.id {
+                if widget.get(b"V").is_some() {
+                    widget.set(b"V", pdf_value.clone());
+                }
+                widget.remove(b"AP");
+                pdf.set_object(id, CosObj::Dict(widget));
+            }
+        }
+        pdf.set_object(self.id, CosObj::Dict(field));
+        Ok(())
+    }
 }
+
+/// Sets `/NeedAppearances true` on the document's `/AcroForm` dictionary.
+pub fn set_need_appearances(pdf: &mut PdfContainer) -> Result<()> {
+    let (catalog_id, mut catalog) = pdf.catalog()?;
+    match catalog.get(b"AcroForm").cloned() {
+        Some(CosObj::Ref(acro_id)) => {
+            if let CosObj::Dict(mut acro) = pdf.resolve(acro_id)? {
+                acro.set(b"NeedAppearances", CosObj::Bool(true));
+                pdf.set_object(acro_id, CosObj::Dict(acro));
+            }
+        }
+        Some(CosObj::Dict(mut acro)) => {
+            acro.set(b"NeedAppearances", CosObj::Bool(true));
+            catalog.set(b"AcroForm", CosObj::Dict(acro));
+            pdf.set_object(catalog_id, CosObj::Dict(catalog));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+

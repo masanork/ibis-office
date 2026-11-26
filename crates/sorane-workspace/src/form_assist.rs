@@ -2,18 +2,23 @@
 // Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/226)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
-//! Phase 1 & 2 Right-Dock Form Assist & VC Submission panel for `SoraneWorkspace`.
+//! Phase 1–3 Right-Dock Form Assist, VC Submission, and Verifier Batch BI panel for `SoraneWorkspace`.
 //!
-//! - **Fill mode**: connects Obsidian-style Vault profiles (`type: profile`), received VCs
-//!   (`.sd-jwt` / `.mdoc`), and form mappings (`type: form-mapping` / `DefinedName` / heuristic drafts)
-//!   to active spreadsheets with 1-Undo apply.
+//! - **Fill mode (`入力`)**: connects Obsidian-style Vault profiles (`type: profile`) and received VCs
+//!   (`.sd-jwt` / `.mdoc`) to **Spreadsheets (`.xlsx` / `.ods` / `.sheet.md`)**, **Documents
+//!   (`.docx` content controls / legacy fields & `.md` `{{form:...}}`)**, and **PDF AcroForms (`.pdf`)**
+//!   through a single unified IR and UI.
 //! - **Structured Preview Reverse Links**: when viewing a `.sd-jwt` / `.mdoc` credential tab, offers
-//!   1-click actions to jump to an open spreadsheet for form filling or present it via OID4VP.
-//! - **Submit mode**: manages persistent desktop ES256 keys (outside Vault/Git), loads Vault
+//!   1-click actions to jump to an open form for filling or present it via OID4VP.
+//! - **Submit mode (`提出`)**: manages persistent desktop ES256 keys (outside Vault/Git), loads Vault
 //!   `requests/*.req.md` or pasted `openid4vp://` requests, selectively re-presents Vault `.sd-jwt`
 //!   credentials or active-sheet claims via `direct_post`, and records OKF `type: submission-receipt`
 //!   notes with `[[Wiki links]]` under `submissions/`.
+//! - **Verify mode (`検証`)**: batch-verifies all `.sd-jwt` / `.mdoc` credentials in the Vault against
+//!   optional `requests/*.req.md` policies & Issuer public JWKs, and exports live formula-driven
+//!   `.sheet.md` BI workbooks (`SORANE.JSONTABLE`, `COUNTIFS`, `SORANE.FIELDMATCH`), CSV, and JSON.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -28,11 +33,19 @@ use ibis_doc_model::{
 };
 use ibis_formats::Kind;
 use ibis_formats::form_assist::{
-    FieldProvenance, FieldStatus, FormMapping, PresentationRequestNote, SubmissionReceipt,
-    VaultCredentialSummary, VaultProfile, build_form_apply_command, current_date_ymd,
-    current_utc_timestamp_iso, evaluate_form_mapping, infer_draft_form_mapping_from_sheet,
-    render_submission_receipt_markdown, sha256_hex, starter_presentation_request_markdown,
-    starter_profile_markdown, submission_receipt_relative_path, synthesize_form_mapping_from_sheet,
+    FieldProvenance, FieldStatus, FormEvaluation, FormMapping, PdfFormFieldTarget,
+    PresentationRequestNote, SubmissionReceipt, VaultCredentialSummary, VaultProfile,
+    build_flow_form_apply_commands, build_form_apply_command, current_date_ymd,
+    current_utc_timestamp_iso, evaluate_flow_form, evaluate_form_mapping, evaluate_pdf_form,
+    infer_draft_form_mapping_from_sheet, render_submission_receipt_markdown, sha256_hex,
+    starter_presentation_request_markdown, starter_profile_markdown,
+    submission_receipt_relative_path, synthesize_form_mapping_from_sheet,
+};
+#[cfg(not(target_family = "wasm"))]
+use ibis_formats::form_assist::{fill_pdf_form_values, inspect_pdf_form_fields};
+use ibis_formats::verifier_batch::{
+    BatchVerifyPolicy, BatchVerifyReport, VerifyVerdict, render_batch_verify_csv,
+    render_batch_verify_json, render_batch_verify_sheet_md, verify_credential_batch,
 };
 use ibis_office_shell::vc_transport::{
     KeyRole, LoadedKey, generate_and_save_key, generate_random_nonce, load_issuer_key,
@@ -48,7 +61,10 @@ pub enum FormAssistMode {
     #[default]
     Fill,
     Submit,
+    Verify,
 }
+
+type PdfInspectCache = Option<(PathBuf, Result<(bool, Vec<PdfFormFieldTarget>), String>)>;
 
 #[derive(Clone, Debug)]
 pub struct FormAssistState {
@@ -57,7 +73,7 @@ pub struct FormAssistState {
     pub selected_profile_path: Option<String>,
     /// Selected form-mapping path (`None` = auto-detect best match).
     pub selected_mapping_path: Option<String>,
-    /// Allow overwriting occupied cells when applying candidates.
+    /// Allow overwriting occupied cells / controls when applying candidates.
     pub allow_overwrite: bool,
     /// Selected Vault `.sd-jwt` path for Submit mode (`None` = active spreadsheet bindings).
     pub selected_credential_path: Option<String>,
@@ -78,6 +94,14 @@ pub struct FormAssistState {
     pub submit_busy: bool,
     /// Most recently written `submissions/*.md` receipt path (absolute) for quick jump.
     pub last_receipt_path: Option<PathBuf>,
+    /// Phase 3: cached AcroForm inspection result for the active PDF tab (avoids re-reading on repaint).
+    pub cached_pdf_fields: RefCell<PdfInspectCache>,
+    /// Phase 3: selected Vault `requests/*.req.md` policy for Verifier batch checks (`None` = all).
+    pub verifier_request_path: Option<String>,
+    /// Phase 3: optional trusted Issuer Public P-256 JWK JSON for Verifier batch checks.
+    pub verifier_jwk_input: Entity<InputState>,
+    /// Phase 3: most recent batch verification report.
+    pub last_verify_report: Option<BatchVerifyReport>,
     /// Last action feedback message `(message, is_error)`.
     pub status_message: Option<(String, bool)>,
 }
@@ -86,6 +110,9 @@ impl FormAssistState {
     pub fn new(window: &mut Window, cx: &mut Context<SoraneWorkspace>) -> Self {
         let oid4vp_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("openid4vp://?... または JSON 要求を貼り付け")
+        });
+        let verifier_jwk_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("任意: 信頼する Issuer 公開鍵 JWK JSON")
         });
         let mut state = Self {
             mode: FormAssistMode::Fill,
@@ -103,6 +130,10 @@ impl FormAssistState {
             issuer_key_is_sandbox: true,
             submit_busy: false,
             last_receipt_path: None,
+            cached_pdf_fields: RefCell::new(None),
+            verifier_request_path: None,
+            verifier_jwk_input,
+            last_verify_report: None,
             status_message: None,
         };
         state.refresh_key_badges();
@@ -150,6 +181,12 @@ fn current_unix_timestamp() -> i64 {
     }
 }
 
+fn is_markdown_path(path: Option<&std::path::Path>) -> bool {
+    path.and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+}
+
 impl SoraneWorkspace {
     fn resolve_active_sheet_mapping(
         &self,
@@ -189,35 +226,47 @@ impl SoraneWorkspace {
         all.iter().collect()
     }
 
+    fn active_tab_path(&self) -> Option<PathBuf> {
+        self.panes
+            .iter()
+            .find(|p| p.id == self.active_pane)
+            .and_then(|p| p.tabs.get(p.active_tab))
+            .and_then(|t| t.path.clone())
+    }
+
     fn active_tab_vault_credential<'a>(
         &self,
         all_credentials: &'a [VaultCredentialSummary],
     ) -> Option<&'a VaultCredentialSummary> {
         let vault = self.vault.as_ref()?;
-        let active_path = self
-            .panes
-            .iter()
-            .find(|p| p.id == self.active_pane)
-            .and_then(|p| p.tabs.get(p.active_tab))
-            .and_then(|t| t.path.as_ref())?;
-        let rel = vault.relative_path_for(active_path)?;
+        let active_path = self.active_tab_path()?;
+        let rel = vault.relative_path_for(&active_path)?;
         all_credentials.iter().find(|c| c.path == rel)
     }
 
-    fn has_open_workbook_tab(&self) -> bool {
-        self.panes
-            .iter()
-            .any(|p| p.tabs.iter().any(|t| t.kind == Kind::Workbook))
-    }
-
-    fn focus_first_open_workbook(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let target = self.panes.iter().find_map(|p| {
+    fn has_open_fillable_tab(&self) -> bool {
+        self.panes.iter().any(|p| {
             p.tabs
                 .iter()
-                .enumerate()
-                .find(|(_, t)| t.kind == Kind::Workbook)
-                .map(|(idx, _)| (p.id, idx))
-        });
+                .any(|t| matches!(t.kind, Kind::Workbook | Kind::Document | Kind::Pdf))
+        })
+    }
+
+    fn focus_first_open_fillable_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // Prefer an open Workbook first, then a DOCX/Markdown Document, then a PDF.
+        let active_path = self.active_tab_path();
+        let find_kind = |wanted: Kind| {
+            self.panes.iter().find_map(|p| {
+                p.tabs
+                    .iter()
+                    .enumerate()
+                    .find(|(_, t)| t.kind == wanted && t.path != active_path)
+                    .map(|(idx, _)| (p.id, idx))
+            })
+        };
+        let target = find_kind(Kind::Workbook)
+            .or_else(|| find_kind(Kind::Document))
+            .or_else(|| find_kind(Kind::Pdf));
         let Some((pane_id, tab_idx)) = target else {
             return false;
         };
@@ -231,6 +280,21 @@ impl SoraneWorkspace {
         }
         cx.notify();
         true
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn inspect_active_pdf_cached(&self, pdf_path: &std::path::Path) -> Result<(bool, Vec<PdfFormFieldTarget>), String> {
+        let mut cache = self.form_assist.cached_pdf_fields.borrow_mut();
+        if let Some((cached_path, res)) = cache.as_ref()
+            && cached_path == pdf_path
+        {
+            return res.clone();
+        }
+        let res = std::fs::read(pdf_path)
+            .map_err(|e| format!("PDF の読み込みに失敗しました: {e}"))
+            .and_then(inspect_pdf_form_fields);
+        *cache = Some((pdf_path.to_path_buf(), res.clone()));
+        res
     }
 
     fn select_vault_credential_for_submit(&mut self, rel_path: Option<String>, cx: &mut Context<Self>) {
@@ -402,7 +466,6 @@ impl SoraneWorkspace {
             }
         }
 
-        // Source = active spreadsheet bindings
         let editor = self
             .active_editor(cx)
             .ok_or_else(|| "アクティブなスプレッドシートがありません。".to_string())?;
@@ -717,9 +780,7 @@ impl SoraneWorkspace {
             let (bindings, sheet_rel) = {
                 let ed = editor.read(cx);
                 let b = extract_sheet_claims(ed.presentation(), ed.current_slide);
-                let rel = ed
-                    .file_path()
-                    .and_then(|p| vault.relative_path_for(&p));
+                let rel = ed.file_path().and_then(|p| vault.relative_path_for(&p));
                 (b, rel)
             };
             let Some(bindings) = bindings else {
@@ -754,11 +815,8 @@ impl SoraneWorkspace {
                 return;
             }
             let artifact_rel = vault.relative_path_for(&target);
-            let disclosed_fields: Vec<String> = bindings
-                .claims
-                .iter()
-                .map(|c| c.path_str.clone())
-                .collect();
+            let disclosed_fields: Vec<String> =
+                bindings.claims.iter().map(|c| c.path_str.clone()).collect();
             let receipt = SubmissionReceipt {
                 submitted_at: current_utc_timestamp_iso(),
                 recipient: "local-vault".to_string(),
@@ -1052,6 +1110,327 @@ impl SoraneWorkspace {
         cx.notify();
     }
 
+    pub(crate) fn apply_form_assist_to_active_document(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor(cx) else {
+            return;
+        };
+        let Some(vault) = self.vault.clone() else {
+            self.form_assist.status_message =
+                Some(("Vault を開くと自動入力できます。".into(), true));
+            cx.notify();
+            return;
+        };
+
+        let profiles = self.selected_profiles(vault.vault_profiles());
+        let credentials: Vec<&VaultCredentialSummary> = vault.vault_credentials().iter().collect();
+        let today = current_date_ymd();
+        let allow_overwrite = self.form_assist.allow_overwrite;
+
+        let build_result = {
+            let ed = editor.read(cx);
+            if ed.is_read_only() || ed.is_protected() {
+                Err("読み取り専用または保護された文書には適用できません。".to_string())
+            } else if let Some(flow) = ed.presentation().flow.as_ref() {
+                let flatten_md = is_markdown_path(ed.file_path().as_deref());
+                let (targets, eval) =
+                    evaluate_flow_form(flow, &profiles, &credentials, today.as_deref());
+                build_flow_form_apply_commands(flow, &targets, &eval, allow_overwrite, flatten_md)
+            } else {
+                Err("開いている文書にフォーム欄が見つかりません。".to_string())
+            }
+        };
+
+        match build_result {
+            Ok((cmds, applied_count)) => {
+                editor.update(cx, |ed, cx| {
+                    ed.execute(cmds, cx);
+                });
+                self.form_assist.status_message = Some((
+                    format!(
+                        "{applied_count} 項目を文書に適用しました（Ctrl/Cmd+Z で元に戻せます）"
+                    ),
+                    false,
+                ));
+            }
+            Err(err) => {
+                self.form_assist.status_message = Some((err, true));
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn apply_form_assist_to_active_pdf(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let Some(vault) = self.vault.clone() else {
+                self.form_assist.status_message =
+                    Some(("Vault を開くと PDF フォームを自動入力できます。".into(), true));
+                cx.notify();
+                return;
+            };
+            let Some(pdf_path) = self.active_tab_path() else {
+                return;
+            };
+            let Ok(pdf_bytes) = std::fs::read(&pdf_path) else {
+                self.form_assist.status_message =
+                    Some(("PDF ファイルの読み込みに失敗しました。".into(), true));
+                cx.notify();
+                return;
+            };
+            let Ok((_, targets)) = inspect_pdf_form_fields(pdf_bytes.clone()) else {
+                self.form_assist.status_message =
+                    Some(("この PDF に入力可能な AcroForm テキスト欄が見つかりませんでした。".into(), true));
+                cx.notify();
+                return;
+            };
+
+            let profiles = self.selected_profiles(vault.vault_profiles());
+            let credentials: Vec<&VaultCredentialSummary> =
+                vault.vault_credentials().iter().collect();
+            let today = current_date_ymd();
+            let allow_overwrite = self.form_assist.allow_overwrite;
+            let eval = evaluate_pdf_form(&targets, &profiles, &credentials, today.as_deref());
+
+            let mut values = BTreeMap::new();
+            for field in &eval.fields {
+                let allowed = field.status == FieldStatus::Ready
+                    || (allow_overwrite && field.status == FieldStatus::Occupied);
+                if allowed && let Some(ref disp) = field.proposed_display {
+                    values.insert(field.id.clone(), disp.clone());
+                }
+            }
+            if values.is_empty() {
+                self.form_assist.status_message =
+                    Some(("PDF に適用できる入力候補がありません。".into(), true));
+                cx.notify();
+                return;
+            }
+
+            match fill_pdf_form_values(pdf_bytes, &values) {
+                Ok((filled, applied_count)) => {
+                    let stem = pdf_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("form");
+                    let rel_dir = pdf_path
+                        .parent()
+                        .and_then(|p| p.strip_prefix(vault.root()).ok())
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+                    let rel_out = if rel_dir.is_empty() {
+                        format!("{stem}-filled.pdf")
+                    } else {
+                        format!("{rel_dir}/{stem}-filled.pdf")
+                    };
+                    let target = non_clobbering_path(vault.root(), &rel_out);
+                    if let Err(err) = std::fs::write(&target, filled) {
+                        self.form_assist.status_message =
+                            Some((format!("記入済み PDF の保存に失敗しました: {err}"), true));
+                    } else {
+                        self.refresh_vault_folder(window, cx);
+                        self.form_assist.status_message = Some((
+                            format!(
+                                "{applied_count} 項目を記入した PDF を保存しました: {}",
+                                target.file_name().unwrap_or_default().to_string_lossy()
+                            ),
+                            false,
+                        ));
+                        self.open_path_in_split_pane(target, window, cx);
+                    }
+                }
+                Err(err) => {
+                    self.form_assist.status_message = Some((err, true));
+                }
+            }
+            cx.notify();
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = window;
+            self.form_assist.status_message =
+                Some(("PDF AcroForm 自動記入はデスクトップ版で利用できます。".into(), true));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn run_vault_batch_verify(&mut self, cx: &mut Context<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let Some(vault) = self.vault.clone() else {
+                self.form_assist.status_message =
+                    Some(("先に Vault フォルダを開いてください。".into(), true));
+                cx.notify();
+                return;
+            };
+            let jwk_raw = self
+                .form_assist
+                .verifier_jwk_input
+                .read(cx)
+                .value()
+                .trim()
+                .to_string();
+            let issuer_jwk_json = (!jwk_raw.is_empty()).then_some(jwk_raw);
+            let now = Some(current_unix_timestamp());
+
+            let policy = if let Some(req_path) = &self.form_assist.verifier_request_path
+                && let Some(note) = vault
+                    .vault_presentation_requests()
+                    .iter()
+                    .find(|r| &r.path == req_path)
+            {
+                BatchVerifyPolicy::from_request_note(note, issuer_jwk_json, now)
+            } else {
+                BatchVerifyPolicy {
+                    label: "Vault 全件検証".to_string(),
+                    expected_paths: Vec::new(),
+                    expected_vct: None,
+                    issuer_jwk_json,
+                    expected_audience: None,
+                    expected_nonce: None,
+                    now_unix: now,
+                }
+            };
+
+            let mut loaded: Vec<(String, String, Vec<u8>)> = Vec::new();
+            for cred in vault.vault_credentials() {
+                let full = vault.root().join(&cred.path);
+                let ext = full
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or(&cred.format)
+                    .to_string();
+                if let Ok(bytes) = std::fs::read(&full) {
+                    loaded.push((cred.path.clone(), ext, bytes));
+                }
+            }
+            let refs: Vec<(&str, &str, &[u8])> = loaded
+                .iter()
+                .map(|(p, ext, b)| (p.as_str(), ext.as_str(), b.as_slice()))
+                .collect();
+            let report = verify_credential_batch(&refs, &policy);
+            self.form_assist.status_message = Some((
+                format!(
+                    "{} 件の VC を検証しました（検証済 {} · ダイジェストOK {} · 要確認 {} · 無効 {}）",
+                    report.total,
+                    report.verified_count,
+                    report.unchecked_ok_count,
+                    report.needs_review_count,
+                    report.invalid_count
+                ),
+                report.invalid_count > 0,
+            ));
+            self.form_assist.last_verify_report = Some(report);
+            cx.notify();
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            self.form_assist.status_message =
+                Some(("一括 VC 検証はデスクトップ版で利用できます。".into(), true));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn export_batch_verify_sheet_md(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let Some(vault) = self.vault.clone() else {
+                return;
+            };
+            let Some(report) = self.form_assist.last_verify_report.as_ref() else {
+                return;
+            };
+            let date = current_date_ymd().unwrap_or_else(|| "undated".to_string());
+            let rel = format!("verifications/{date}-vc-verify.sheet.md");
+            let target = non_clobbering_path(vault.root(), &rel);
+            if let Some(parent) = target.parent()
+                && let Err(err) = std::fs::create_dir_all(parent)
+            {
+                self.form_assist.status_message =
+                    Some((format!("verifications/ 作成失敗: {err}"), true));
+                cx.notify();
+                return;
+            }
+            let md = render_batch_verify_sheet_md(report);
+            if let Err(err) = std::fs::write(&target, md) {
+                self.form_assist.status_message =
+                    Some((format!("BI シート保存失敗: {err}"), true));
+                cx.notify();
+                return;
+            }
+            self.refresh_vault_folder(window, cx);
+            self.form_assist.status_message = Some((
+                format!(
+                    "BI 集計シートを保存して開きました: {}",
+                    target.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                false,
+            ));
+            self.open_path_in_split_pane(target, window, cx);
+            cx.notify();
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = window;
+            self.form_assist.status_message =
+                Some(("BI シート出力はデスクトップ版で利用できます。".into(), true));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn export_batch_verify_csv(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let Some(vault) = self.vault.clone() else {
+                return;
+            };
+            let Some(report) = self.form_assist.last_verify_report.as_ref() else {
+                return;
+            };
+            let date = current_date_ymd().unwrap_or_else(|| "undated".to_string());
+            let rel = format!("verifications/{date}-vc-verify.csv");
+            let target = non_clobbering_path(vault.root(), &rel);
+            if let Some(parent) = target.parent()
+                && let Err(err) = std::fs::create_dir_all(parent)
+            {
+                self.form_assist.status_message =
+                    Some((format!("verifications/ 作成失敗: {err}"), true));
+                cx.notify();
+                return;
+            }
+            let csv = render_batch_verify_csv(report);
+            if let Err(err) = std::fs::write(&target, csv) {
+                self.form_assist.status_message = Some((format!("CSV 保存失敗: {err}"), true));
+                cx.notify();
+                return;
+            }
+            self.refresh_vault_folder(window, cx);
+            self.form_assist.status_message = Some((
+                format!(
+                    "検証結果 CSV を保存しました: {}",
+                    target.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                false,
+            ));
+            self.open_path_in_split_pane(target, window, cx);
+            cx.notify();
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = window;
+            self.form_assist.status_message =
+                Some(("CSV 出力はデスクトップ版で利用できます。".into(), true));
+            cx.notify();
+        }
+    }
+
     pub(crate) fn render_form_assist_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let mut root = v_flex().gap_2().w_full();
@@ -1067,7 +1446,7 @@ impl SoraneWorkspace {
                         .bg(theme.background)
                         .text_xs()
                         .text_color(theme.muted_foreground)
-                        .child("Vault フォルダを開くと、profiles/*.md（自社・個人プロフィール）と credentials/*.sd-jwt / *.mdoc から申請書の自動入力と OID4VP 提出ができます。"),
+                        .child("Vault フォルダを開くと、Excel / Word / Markdown / PDF のフォーム自動入力、OID4VP 提出、および保有 VC の一括検証・BI 集計ができます。"),
                 )
                 .child(
                     Button::new("ws-form-open-vault")
@@ -1086,7 +1465,7 @@ impl SoraneWorkspace {
         let all_mappings = vault.vault_form_mappings();
         let all_requests = vault.vault_presentation_requests();
 
-        // Mode switcher: 入力 (Fill) | 提出・証明 (Submit)
+        // 3-Mode switcher: 入力 (Fill) | 提出 (Submit) | 検証 (Verify)
         let mode = self.form_assist.mode;
         root = root.child(
             h_flex()
@@ -1097,10 +1476,10 @@ impl SoraneWorkspace {
                         .id("ws-form-mode-fill")
                         .flex_1()
                         .cursor_pointer()
-                        .px(px(8.))
+                        .px(px(6.))
                         .py(px(4.))
                         .rounded(px(5.))
-                        .text_xs()
+                        .text_size(px(11.))
                         .text_center()
                         .when(mode == FormAssistMode::Fill, |d| {
                             d.bg(theme.accent)
@@ -1112,7 +1491,7 @@ impl SoraneWorkspace {
                                 .text_color(theme.muted_foreground)
                                 .hover(|h| h.bg(theme.secondary))
                         })
-                        .child("📝 入力 (Fill)")
+                        .child("📝 入力")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.form_assist.mode = FormAssistMode::Fill;
                             cx.notify();
@@ -1123,10 +1502,10 @@ impl SoraneWorkspace {
                         .id("ws-form-mode-submit")
                         .flex_1()
                         .cursor_pointer()
-                        .px(px(8.))
+                        .px(px(6.))
                         .py(px(4.))
                         .rounded(px(5.))
-                        .text_xs()
+                        .text_size(px(11.))
                         .text_center()
                         .when(mode == FormAssistMode::Submit, |d| {
                             d.bg(theme.accent)
@@ -1138,10 +1517,36 @@ impl SoraneWorkspace {
                                 .text_color(theme.muted_foreground)
                                 .hover(|h| h.bg(theme.secondary))
                         })
-                        .child("🛡 提出 (Submit)")
+                        .child("🛡 提出")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.form_assist.mode = FormAssistMode::Submit;
                             this.form_assist.refresh_key_badges();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .id("ws-form-mode-verify")
+                        .flex_1()
+                        .cursor_pointer()
+                        .px(px(6.))
+                        .py(px(4.))
+                        .rounded(px(5.))
+                        .text_size(px(11.))
+                        .text_center()
+                        .when(mode == FormAssistMode::Verify, |d| {
+                            d.bg(theme.accent)
+                                .text_color(theme.accent_foreground)
+                                .font_weight(FontWeight::SEMIBOLD)
+                        })
+                        .when(mode != FormAssistMode::Verify, |d| {
+                            d.bg(theme.muted)
+                                .text_color(theme.muted_foreground)
+                                .hover(|h| h.bg(theme.secondary))
+                        })
+                        .child("✅ 検証")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.form_assist.mode = FormAssistMode::Verify;
                             cx.notify();
                         })),
                 ),
@@ -1151,19 +1556,19 @@ impl SoraneWorkspace {
         if let Some(active_cred) = self.active_tab_vault_credential(all_credentials) {
             let cred_path = active_cred.path.clone();
             let is_sd_jwt = active_cred.format == "sd-jwt";
-            let has_wb = self.has_open_workbook_tab();
+            let has_fillable = self.has_open_fillable_tab();
             let mut rev_actions = h_flex().gap_1().flex_wrap().pt_1();
-            if has_wb {
+            if has_fillable {
                 rev_actions = rev_actions.child(
                     Button::new("ws-cred-use-for-sheet")
                         .primary()
                         .xsmall()
-                        .label("開いているシートへ入力に使う")
+                        .label("開いているフォームへ入力に使う")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.form_assist.mode = FormAssistMode::Fill;
-                            if this.focus_first_open_workbook(window, cx) {
+                            if this.focus_first_open_fillable_tab(window, cx) {
                                 this.form_assist.status_message = Some((
-                                    "開いているシートに切り替えました。保有 VC の値が優先候補として表示されます。"
+                                    "開いているフォームに切り替えました。保有 VC の値が優先候補として表示されます。"
                                         .into(),
                                     false,
                                 ));
@@ -1220,17 +1625,23 @@ impl SoraneWorkspace {
             );
         }
 
-        if mode == FormAssistMode::Submit {
-            root = self.render_submit_mode(root, vault.root(), all_credentials, all_requests, cx);
-        } else {
-            root = self.render_fill_mode(
-                root,
-                vault.root(),
-                all_profiles,
-                all_credentials,
-                all_mappings,
-                cx,
-            );
+        match mode {
+            FormAssistMode::Fill => {
+                root = self.render_fill_mode(
+                    root,
+                    vault.root(),
+                    all_profiles,
+                    all_credentials,
+                    all_mappings,
+                    cx,
+                );
+            }
+            FormAssistMode::Submit => {
+                root = self.render_submit_mode(root, vault.root(), all_credentials, all_requests, cx);
+            }
+            FormAssistMode::Verify => {
+                root = self.render_verify_mode(root, vault.root(), all_credentials, all_requests, cx);
+            }
         }
 
         if let Some((msg, is_err)) = &self.form_assist.status_message {
@@ -1265,6 +1676,236 @@ impl SoraneWorkspace {
         }
 
         root.into_any_element()
+    }
+
+    fn append_field_plan_cards(&self, mut root: Div, eval: &FormEvaluation, cx: &App) -> Div {
+        let theme = cx.theme().clone();
+        for (idx, field) in eval.fields.iter().enumerate() {
+            let status_label = match field.status {
+                FieldStatus::Ready => "入力候補",
+                FieldStatus::Occupied => "入力済み",
+                FieldStatus::MissingSource => "手入力 / 未取得",
+                FieldStatus::BlockedTarget => "保護・不可",
+                FieldStatus::UnsupportedValue => "形式不一致",
+            };
+            let prov_badge = match &field.provenance {
+                Some(FieldProvenance::Credential {
+                    format,
+                    verified_digests,
+                    ..
+                }) => {
+                    let mark = if *verified_digests { "🛡" } else { "⚠" };
+                    Some((format!("VC:{format} {mark}"), rgb(0x1B5E20), rgb(0xE8F5E9)))
+                }
+                Some(FieldProvenance::Profile { title, .. }) => {
+                    Some((format!("Vault:{title}"), rgb(0x0D47A1), rgb(0xE3F2FD)))
+                }
+                Some(FieldProvenance::DefaultValue) => {
+                    Some(("既定値".to_string(), rgb(0x4E342E), rgb(0xEFEBE9)))
+                }
+                None => None,
+            };
+
+            let mut card = v_flex()
+                .id(SharedString::from(format!("ws-form-field:{idx}")))
+                .p(px(6.))
+                .gap(px(3.))
+                .rounded(px(5.))
+                .border_1()
+                .border_color(if field.exceeds_max_chars {
+                    Hsla::from(rgb(0xD32F2F))
+                } else {
+                    theme.border
+                })
+                .bg(theme.background)
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .truncate()
+                                .child(format!(
+                                    "{}{} ({})",
+                                    field.label,
+                                    if field.required { " *" } else { "" },
+                                    field.target_summary
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(theme.muted_foreground)
+                                .child(status_label),
+                        ),
+                );
+
+            if let Some((badge_text, fg, bg)) = prov_badge {
+                card = card.child(
+                    div()
+                        .px(px(5.))
+                        .py(px(1.))
+                        .rounded(px(3.))
+                        .bg(bg)
+                        .text_size(px(10.))
+                        .text_color(fg)
+                        .child(badge_text),
+                );
+            }
+
+            if !field.current_display.is_empty() {
+                card = card.child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(theme.muted_foreground)
+                        .truncate()
+                        .child(format!("現在: {}", field.current_display)),
+                );
+            }
+            if let Some(proposed) = &field.proposed_display {
+                card = card.child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.foreground)
+                        .truncate()
+                        .child(format!("候補: {proposed}")),
+                );
+            }
+            if let Some(limit) = field.max_chars {
+                card = card.child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(if field.exceeds_max_chars {
+                            Hsla::from(rgb(0xC62828))
+                        } else {
+                            theme.muted_foreground
+                        })
+                        .child(format!("文字数: {} / {limit}", field.char_count)),
+                );
+            }
+            root = root.child(card);
+        }
+        root
+    }
+
+    fn append_vault_assets_overview(
+        &self,
+        mut root: Div,
+        vault_root: &std::path::Path,
+        all_profiles: &[VaultProfile],
+        all_credentials: &[VaultCredentialSummary],
+        all_mappings: &[FormMapping],
+        hint: &str,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let theme = cx.theme().clone();
+        root = root.child(
+            div()
+                .p_2()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.background)
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(hint.to_string()),
+        );
+
+        if !all_profiles.is_empty() {
+            root = root.child(
+                div()
+                    .px_1()
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.muted_foreground)
+                    .child("プロフィール（クリックで開く）"),
+            );
+            for (idx, prof) in all_profiles.iter().enumerate() {
+                let full = vault_root.join(&prof.path);
+                root = root.child(
+                    div()
+                        .id(SharedString::from(format!("ws-form-asset-prof:{idx}")))
+                        .cursor_pointer()
+                        .px(px(6.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .hover(|h| h.bg(theme.secondary))
+                        .text_xs()
+                        .child(format!("{}（{} 項目）", prof.title, prof.fields.len()))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_path_in_active_pane(full.clone(), window, cx);
+                        })),
+                );
+            }
+        }
+
+        if !all_credentials.is_empty() {
+            root = root.child(
+                div()
+                    .px_1()
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.muted_foreground)
+                    .child("保有 VC（.sd-jwt / .mdoc）"),
+            );
+            for (idx, cred) in all_credentials.iter().enumerate() {
+                let full = vault_root.join(&cred.path);
+                root = root.child(
+                    div()
+                        .id(SharedString::from(format!("ws-form-asset-cred:{idx}")))
+                        .cursor_pointer()
+                        .px(px(6.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .hover(|h| h.bg(theme.secondary))
+                        .text_xs()
+                        .child(format!(
+                            "🛡 [{}] {}（{} クレーム）",
+                            cred.format,
+                            cred.path,
+                            cred.claims.len()
+                        ))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_path_in_active_pane(full.clone(), window, cx);
+                        })),
+                );
+            }
+        }
+
+        if !all_mappings.is_empty() {
+            root = root.child(
+                div()
+                    .px_1()
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.muted_foreground)
+                    .child("フォーム対応表（forms/）"),
+            );
+            for (idx, map) in all_mappings.iter().enumerate() {
+                let full = vault_root.join(&map.path);
+                root = root.child(
+                    div()
+                        .id(SharedString::from(format!("ws-form-asset-map:{idx}")))
+                        .cursor_pointer()
+                        .px(px(6.))
+                        .py(px(4.))
+                        .rounded(px(4.))
+                        .hover(|h| h.bg(theme.secondary))
+                        .text_xs()
+                        .child(format!("{}（{} 項目）", map.title, map.fields.len()))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_path_in_active_pane(full.clone(), window, cx);
+                        })),
+                );
+            }
+        }
+        root
     }
 
     fn render_fill_mode(
@@ -1337,7 +1978,7 @@ impl SoraneWorkspace {
                         div()
                             .text_size(px(11.))
                             .text_color(theme.muted_foreground)
-                            .child("自社や個人の基本情報を Vault に置くと、あらゆる申請書・請求書へ 1 クリック入力できます。"),
+                            .child("自社や個人の基本情報を Vault に置くと、Excel / Word / Markdown / PDF フォームへ 1 クリック入力できます。"),
                     )
                     .child(
                         h_flex()
@@ -1364,7 +2005,6 @@ impl SoraneWorkspace {
                     ),
             );
         } else {
-            // Profile selector pills
             let mut pill_row = h_flex().gap(px(4.)).flex_wrap().items_center();
             let all_selected = self.form_assist.selected_profile_path.is_none();
             pill_row = pill_row.child(
@@ -1429,69 +2069,248 @@ impl SoraneWorkspace {
             root = root.child(pill_row);
         }
 
-        // Check active tab kind
         let active_editor = self.active_editor(cx);
-        let active_is_workbook = active_editor
+        let active_kind = active_editor
             .as_ref()
-            .is_some_and(|ed| Kind::of(ed.read(cx).presentation()) == Kind::Workbook);
+            .map(|ed| ed.read(cx).format.kind());
+        let selected_profiles = self.selected_profiles(all_profiles);
+        let cred_refs: Vec<&VaultCredentialSummary> = all_credentials.iter().collect();
+        let today = current_date_ymd();
+        let allow_overwrite = self.form_assist.allow_overwrite;
 
-        if active_is_workbook && let Some(editor) = active_editor {
-            let selected_profiles = self.selected_profiles(all_profiles);
-            let cred_refs: Vec<&VaultCredentialSummary> = all_credentials.iter().collect();
-            let today = current_date_ymd();
-            let allow_overwrite = self.form_assist.allow_overwrite;
-
-            let (resolved, evaluation_opt) = {
-                let ed = editor.read(cx);
-                let slide = ed.current_slide;
-                let resolved = self.resolve_active_sheet_mapping(ed.presentation(), slide);
-                let eval = match &resolved {
-                    ResolvedSheetMapping::Vault(m)
-                    | ResolvedSheetMapping::Synthesized(m)
-                    | ResolvedSheetMapping::HeuristicDraft(m) => Some(evaluate_form_mapping(
-                        ed.presentation(),
-                        slide,
-                        m,
-                        &selected_profiles,
-                        &cred_refs,
-                        today.as_deref(),
-                    )),
-                    ResolvedSheetMapping::None => None,
+        match (active_kind, active_editor) {
+            (Some(Kind::Workbook), Some(editor)) => {
+                let (resolved, evaluation_opt) = {
+                    let ed = editor.read(cx);
+                    let slide = ed.current_slide;
+                    let resolved = self.resolve_active_sheet_mapping(ed.presentation(), slide);
+                    let eval = match &resolved {
+                        ResolvedSheetMapping::Vault(m)
+                        | ResolvedSheetMapping::Synthesized(m)
+                        | ResolvedSheetMapping::HeuristicDraft(m) => Some(evaluate_form_mapping(
+                            ed.presentation(),
+                            slide,
+                            m,
+                            &selected_profiles,
+                            &cred_refs,
+                            today.as_deref(),
+                        )),
+                        ResolvedSheetMapping::None => None,
+                    };
+                    (resolved, eval)
                 };
-                (resolved, eval)
-            };
 
-            match (&resolved, evaluation_opt) {
-                (ResolvedSheetMapping::None, _) => {
-                    root = root.child(
-                        div()
+                match (&resolved, evaluation_opt) {
+                    (ResolvedSheetMapping::None, _) => {
+                        root = root.child(
+                            div()
+                                .p_2()
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.background)
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child("このシートに一致するフォーム対応表・名前付きセル・標準見出しが見つかりませんでした。forms/*.form-map.md を作成するか、セルに名前（または見出し）を付けてください。"),
+                        );
+                    }
+                    (mode, Some(eval)) => {
+                        let (mapping_title, mode_badge, edit_vault_path, is_draft) = match mode {
+                            ResolvedSheetMapping::Vault(m) => (
+                                m.title.clone(),
+                                "Vault 対応表",
+                                Some(vault_root.join(&m.path)),
+                                false,
+                            ),
+                            ResolvedSheetMapping::Synthesized(m) => {
+                                (m.title.clone(), "名前付きセル", None, false)
+                            }
+                            ResolvedSheetMapping::HeuristicDraft(m) => {
+                                (m.title.clone(), "見出し自動検出", None, true)
+                            }
+                            ResolvedSheetMapping::None => unreachable!(),
+                        };
+
+                        let mut header_card = v_flex()
+                            .gap_1()
                             .p_2()
                             .rounded(px(6.))
                             .border_1()
                             .border_color(theme.border)
                             .bg(theme.background)
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child("このシートに一致するフォーム対応表・名前付きセル・標準見出しが見つかりませんでした。forms/*.form-map.md を作成するか、セルに名前（または見出し）を付けてください。"),
-                    );
-                }
-                (mode, Some(eval)) => {
-                    let (mapping_title, mode_badge, edit_vault_path, is_draft) = match mode {
-                        ResolvedSheetMapping::Vault(m) => (
-                            m.title.clone(),
-                            "Vault 対応表",
-                            Some(vault_root.join(&m.path)),
-                            false,
-                        ),
-                        ResolvedSheetMapping::Synthesized(m) => {
-                            (m.title.clone(), "名前付きセル", None, false)
-                        }
-                        ResolvedSheetMapping::HeuristicDraft(m) => {
-                            (m.title.clone(), "見出し自動検出", None, true)
-                        }
-                        ResolvedSheetMapping::None => unreachable!(),
-                    };
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_xs()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .truncate()
+                                            .child(mapping_title),
+                                    )
+                                    .child(
+                                        div()
+                                            .px(px(5.))
+                                            .py(px(1.))
+                                            .rounded(px(4.))
+                                            .bg(theme.muted)
+                                            .text_size(px(10.))
+                                            .text_color(theme.muted_foreground)
+                                            .child(mode_badge),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!(
+                                        "入力候補 {} · 入力済み {} · VC由来 {} 件",
+                                        eval.ready_count, eval.occupied_count, eval.vc_backed_count
+                                    )),
+                            );
 
+                        if eval.missing_required_count > 0 || eval.overflow_count > 0 {
+                            header_card = header_card.child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(rgb(0xC62828))
+                                    .child(format!(
+                                        "要確認: 必須未入力 {} · 字数超過 {}",
+                                        eval.missing_required_count, eval.overflow_count
+                                    )),
+                            );
+                        }
+
+                        let applicable = eval.ready_count
+                            + if allow_overwrite {
+                                eval.occupied_count
+                            } else {
+                                0
+                            };
+                        let mut action_row = h_flex().gap_1().flex_wrap().pt_1().child(
+                            Button::new("ws-form-apply-all")
+                                .primary()
+                                .xsmall()
+                                .label(format!("一括適用 ({applicable} 件)"))
+                                .disabled(applicable == 0)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.apply_form_assist_to_active_sheet(cx);
+                                })),
+                        );
+                        if eval.occupied_count > 0 {
+                            action_row = action_row.child(
+                                Button::new("ws-form-toggle-overwrite")
+                                    .xsmall()
+                                    .label(if allow_overwrite {
+                                        "上書き: ON"
+                                    } else {
+                                        "上書き: OFF"
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.form_assist.allow_overwrite =
+                                            !this.form_assist.allow_overwrite;
+                                        cx.notify();
+                                    })),
+                            );
+                        }
+                        if is_draft {
+                            action_row = action_row.child(
+                                Button::new("ws-form-save-draft-map")
+                                    .xsmall()
+                                    .label("対応表を Vault に保存")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.save_inferred_form_mapping(window, cx);
+                                    })),
+                            );
+                        } else if let Some(map_path) = edit_vault_path {
+                            action_row = action_row.child(
+                                Button::new("ws-form-edit-map")
+                                    .xsmall()
+                                    .label("対応表を編集")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_path_in_split_pane(map_path.clone(), window, cx);
+                                    })),
+                            );
+                        }
+                        action_row = action_row.child(
+                            Button::new("ws-form-goto-submit")
+                                .xsmall()
+                                .label("提出へ進む →")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.form_assist.mode = FormAssistMode::Submit;
+                                    this.form_assist.refresh_key_badges();
+                                    cx.notify();
+                                })),
+                        );
+                        header_card = header_card.child(action_row);
+                        root = root.child(header_card);
+                        root = self.append_field_plan_cards(root, &eval, cx);
+                    }
+                    _ => {}
+                }
+            }
+            (Some(Kind::Document), Some(editor)) => {
+                let (is_md, doc_title, eval_opt) = {
+                    let ed = editor.read(cx);
+                    let is_md = is_markdown_path(ed.file_path().as_deref());
+                    let title = ed
+                        .file_name
+                        .clone()
+                        .unwrap_or_else(|| SharedString::from("文書フォーム"));
+                    let eval = ed.presentation().flow.as_ref().and_then(|flow| {
+                        let (targets, eval) = evaluate_flow_form(
+                            flow,
+                            &selected_profiles,
+                            &cred_refs,
+                            today.as_deref(),
+                        );
+                        (!targets.is_empty()).then_some(eval)
+                    });
+                    (is_md, title, eval)
+                };
+
+                if let Some(eval) = eval_opt {
+                    let badge = if is_md {
+                        "Markdown {{form:*}}"
+                    } else {
+                        "DOCX フォーム欄"
+                    };
+                    let applicable = eval.ready_count
+                        + if allow_overwrite {
+                            eval.occupied_count
+                        } else {
+                            0
+                        };
+                    let mut action_row = h_flex().gap_1().flex_wrap().pt_1().child(
+                        Button::new("ws-form-apply-doc")
+                            .primary()
+                            .xsmall()
+                            .label(format!("文書へ一括適用 ({applicable} 件)"))
+                            .disabled(applicable == 0)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.apply_form_assist_to_active_document(cx);
+                            })),
+                    );
+                    if eval.occupied_count > 0 {
+                        action_row = action_row.child(
+                            Button::new("ws-form-doc-toggle-overwrite")
+                                .xsmall()
+                                .label(if allow_overwrite {
+                                    "上書き: ON"
+                                } else {
+                                    "上書き: OFF"
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.form_assist.allow_overwrite =
+                                        !this.form_assist.allow_overwrite;
+                                    cx.notify();
+                                })),
+                        );
+                    }
                     let mut header_card = v_flex()
                         .gap_1()
                         .p_2()
@@ -1511,7 +2330,7 @@ impl SoraneWorkspace {
                                         .text_xs()
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .truncate()
-                                        .child(mapping_title),
+                                        .child(doc_title),
                                 )
                                 .child(
                                     div()
@@ -1521,7 +2340,7 @@ impl SoraneWorkspace {
                                         .bg(theme.muted)
                                         .text_size(px(10.))
                                         .text_color(theme.muted_foreground)
-                                        .child(mode_badge),
+                                        .child(badge),
                                 ),
                         )
                         .child(
@@ -1532,298 +2351,177 @@ impl SoraneWorkspace {
                                     "入力候補 {} · 入力済み {} · VC由来 {} 件",
                                     eval.ready_count, eval.occupied_count, eval.vc_backed_count
                                 )),
-                        );
-
-                    if eval.missing_required_count > 0 || eval.overflow_count > 0 {
+                        )
+                        .child(action_row);
+                    if eval.overflow_count > 0 {
                         header_card = header_card.child(
                             div()
                                 .text_size(px(10.5))
                                 .text_color(rgb(0xC62828))
-                                .child(format!(
-                                    "要確認: 必須未入力 {} · 字数超過 {}",
-                                    eval.missing_required_count, eval.overflow_count
-                                )),
+                                .child(format!("要確認: 字数超過 {} 件", eval.overflow_count)),
                         );
                     }
-
-                    let applicable = eval.ready_count
-                        + if allow_overwrite {
-                            eval.occupied_count
-                        } else {
-                            0
-                        };
-                    let mut action_row = h_flex().gap_1().flex_wrap().pt_1().child(
-                        Button::new("ws-form-apply-all")
-                            .primary()
-                            .xsmall()
-                            .label(format!("一括適用 ({applicable} 件)"))
-                            .disabled(applicable == 0)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.apply_form_assist_to_active_sheet(cx);
-                            })),
-                    );
-                    if eval.occupied_count > 0 {
-                        action_row = action_row.child(
-                            Button::new("ws-form-toggle-overwrite")
-                                .xsmall()
-                                .label(if allow_overwrite {
-                                    "上書き: ON"
-                                } else {
-                                    "上書き: OFF"
-                                })
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.form_assist.allow_overwrite =
-                                        !this.form_assist.allow_overwrite;
-                                    cx.notify();
-                                })),
-                        );
-                    }
-                    if is_draft {
-                        action_row = action_row.child(
-                            Button::new("ws-form-save-draft-map")
-                                .xsmall()
-                                .label("対応表を Vault に保存")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.save_inferred_form_mapping(window, cx);
-                                })),
-                        );
-                    } else if let Some(map_path) = edit_vault_path {
-                        action_row = action_row.child(
-                            Button::new("ws-form-edit-map")
-                                .xsmall()
-                                .label("対応表を編集")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_path_in_split_pane(map_path.clone(), window, cx);
-                                })),
-                        );
-                    }
-                    action_row = action_row.child(
-                        Button::new("ws-form-goto-submit")
-                            .xsmall()
-                            .label("提出へ進む →")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.form_assist.mode = FormAssistMode::Submit;
-                                this.form_assist.refresh_key_badges();
-                                cx.notify();
-                            })),
-                    );
-                    header_card = header_card.child(action_row);
                     root = root.child(header_card);
-
-                    for (idx, field) in eval.fields.iter().enumerate() {
-                        let status_label = match field.status {
-                            FieldStatus::Ready => "入力候補",
-                            FieldStatus::Occupied => "入力済み",
-                            FieldStatus::MissingSource => "手入力 / 未取得",
-                            FieldStatus::BlockedTarget => "保護・不可",
-                            FieldStatus::UnsupportedValue => "形式不一致",
-                        };
-                        let prov_badge = match &field.provenance {
-                            Some(FieldProvenance::Credential {
-                                format,
-                                verified_digests,
-                                ..
-                            }) => {
-                                let mark = if *verified_digests { "🛡" } else { "⚠" };
-                                Some((format!("VC:{format} {mark}"), rgb(0x1B5E20), rgb(0xE8F5E9)))
-                            }
-                            Some(FieldProvenance::Profile { title, .. }) => {
-                                Some((format!("Vault:{title}"), rgb(0x0D47A1), rgb(0xE3F2FD)))
-                            }
-                            Some(FieldProvenance::DefaultValue) => {
-                                Some(("既定値".to_string(), rgb(0x4E342E), rgb(0xEFEBE9)))
-                            }
-                            None => None,
-                        };
-
-                        let mut card = v_flex()
-                            .id(SharedString::from(format!("ws-form-field:{idx}")))
-                            .p(px(6.))
-                            .gap(px(3.))
-                            .rounded(px(5.))
-                            .border_1()
-                            .border_color(if field.exceeds_max_chars {
-                                Hsla::from(rgb(0xD32F2F))
+                    root = self.append_field_plan_cards(root, &eval, cx);
+                } else {
+                    root = self.append_vault_assets_overview(
+                        root,
+                        vault_root,
+                        all_profiles,
+                        all_credentials,
+                        all_mappings,
+                        "Excel (.xlsx) / Word (.docx) フォーム / Markdown ({{form:キー名}}) / 入力可能 PDF を開くと、プロフィールと保有 VC から自動で入力候補が表示されます。",
+                        cx,
+                    );
+                }
+            }
+            (Some(Kind::Pdf), _) => {
+                #[cfg(not(target_family = "wasm"))]
+                if let Some(pdf_path) = self.active_tab_path() {
+                    match self.inspect_active_pdf_cached(&pdf_path) {
+                        Ok((is_pdfa2b, targets)) if !targets.is_empty() => {
+                            let eval = evaluate_pdf_form(
+                                &targets,
+                                &selected_profiles,
+                                &cred_refs,
+                                today.as_deref(),
+                            );
+                            let badge = if is_pdfa2b {
+                                "PDF/A-2b AcroForm"
                             } else {
-                                theme.border
-                            })
-                            .bg(theme.background)
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_xs()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .truncate()
-                                            .child(format!(
-                                                "{}{} ({})",
-                                                field.label,
-                                                if field.required { " *" } else { "" },
-                                                field.target_summary
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(10.))
-                                            .text_color(theme.muted_foreground)
-                                            .child(status_label),
-                                    ),
+                                "PDF AcroForm"
+                            };
+                            let applicable = eval.ready_count
+                                + if allow_overwrite {
+                                    eval.occupied_count
+                                } else {
+                                    0
+                                };
+                            let title = pdf_path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned();
+                            let mut action_row = h_flex().gap_1().flex_wrap().pt_1().child(
+                                Button::new("ws-form-apply-pdf")
+                                    .primary()
+                                    .xsmall()
+                                    .label(format!("記入済み PDF を保存 ({applicable} 件)"))
+                                    .disabled(applicable == 0)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.apply_form_assist_to_active_pdf(window, cx);
+                                    })),
                             );
-
-                        if let Some((badge_text, fg, bg)) = prov_badge {
-                            card = card.child(
-                                div()
-                                    .px(px(5.))
-                                    .py(px(1.))
-                                    .rounded(px(3.))
-                                    .bg(bg)
-                                    .text_size(px(10.))
-                                    .text_color(fg)
-                                    .child(badge_text),
+                            if eval.occupied_count > 0 {
+                                action_row = action_row.child(
+                                    Button::new("ws-form-pdf-toggle-overwrite")
+                                        .xsmall()
+                                        .label(if allow_overwrite {
+                                            "上書き: ON"
+                                        } else {
+                                            "上書き: OFF"
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.form_assist.allow_overwrite =
+                                                !this.form_assist.allow_overwrite;
+                                            cx.notify();
+                                        })),
+                                );
+                            }
+                            let mut header_card = v_flex()
+                                .gap_1()
+                                .p_2()
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.background)
+                                .child(
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .text_xs()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .truncate()
+                                                .child(title),
+                                        )
+                                        .child(
+                                            div()
+                                                .px(px(5.))
+                                                .py(px(1.))
+                                                .rounded(px(4.))
+                                                .bg(theme.muted)
+                                                .text_size(px(10.))
+                                                .text_color(theme.muted_foreground)
+                                                .child(badge),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(theme.muted_foreground)
+                                        .child(format!(
+                                            "入力候補 {} · 入力済み {} · VC由来 {} 件",
+                                            eval.ready_count,
+                                            eval.occupied_count,
+                                            eval.vc_backed_count
+                                        )),
+                                )
+                                .child(action_row);
+                            if eval.overflow_count > 0 {
+                                header_card = header_card.child(
+                                    div()
+                                        .text_size(px(10.5))
+                                        .text_color(rgb(0xC62828))
+                                        .child(format!(
+                                            "要確認: /MaxLen 字数超過 {} 件",
+                                            eval.overflow_count
+                                        )),
+                                );
+                            }
+                            root = root.child(header_card);
+                            root = self.append_field_plan_cards(root, &eval, cx);
+                        }
+                        _ => {
+                            root = self.append_vault_assets_overview(
+                                root,
+                                vault_root,
+                                all_profiles,
+                                all_credentials,
+                                all_mappings,
+                                "この PDF には編集可能な AcroForm テキスト欄が見つかりませんでした。フォーム付き PDF / Excel / Word / Markdown を開くと自動入力できます。",
+                                cx,
                             );
                         }
-
-                        if !field.current_display.is_empty() {
-                            card = card.child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(theme.muted_foreground)
-                                    .truncate()
-                                    .child(format!("現在: {}", field.current_display)),
-                            );
-                        }
-                        if let Some(proposed) = &field.proposed_display {
-                            card = card.child(
-                                div()
-                                    .text_size(px(11.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme.foreground)
-                                    .truncate()
-                                    .child(format!("候補: {proposed}")),
-                            );
-                        }
-                        if let Some(limit) = field.max_chars {
-                            card = card.child(
-                                div()
-                                    .text_size(px(10.))
-                                    .text_color(if field.exceeds_max_chars {
-                                        Hsla::from(rgb(0xC62828))
-                                    } else {
-                                        theme.muted_foreground
-                                    })
-                                    .child(format!("文字数: {} / {limit}", field.char_count)),
-                            );
-                        }
-                        root = root.child(card);
                     }
                 }
-                _ => {}
-            }
-        } else {
-            root = root.child(
-                div()
-                    .p_2()
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.background)
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child("Excel (.xlsx) 等のスプレッドシートを開くと、Vault のプロフィールと保有 VC から自動で入力候補が表示されます。"),
-            );
-
-            if !all_profiles.is_empty() {
-                root = root.child(
-                    div()
-                        .px_1()
-                        .text_size(px(10.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.muted_foreground)
-                        .child("プロフィール（クリックで開く）"),
-                );
-                for (idx, prof) in all_profiles.iter().enumerate() {
-                    let full = vault_root.join(&prof.path);
-                    root = root.child(
-                        div()
-                            .id(SharedString::from(format!("ws-form-asset-prof:{idx}")))
-                            .cursor_pointer()
-                            .px(px(6.))
-                            .py(px(4.))
-                            .rounded(px(4.))
-                            .hover(|h| h.bg(theme.secondary))
-                            .text_xs()
-                            .child(format!("{}（{} 項目）", prof.title, prof.fields.len()))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_path_in_active_pane(full.clone(), window, cx);
-                            })),
+                #[cfg(target_family = "wasm")]
+                {
+                    root = self.append_vault_assets_overview(
+                        root,
+                        vault_root,
+                        all_profiles,
+                        all_credentials,
+                        all_mappings,
+                        "PDF AcroForm 自動入力はデスクトップ版で利用できます。",
+                        cx,
                     );
                 }
             }
-
-            if !all_credentials.is_empty() {
-                root = root.child(
-                    div()
-                        .px_1()
-                        .text_size(px(10.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.muted_foreground)
-                        .child("保有 VC（.sd-jwt / .mdoc）"),
+            _ => {
+                root = self.append_vault_assets_overview(
+                    root,
+                    vault_root,
+                    all_profiles,
+                    all_credentials,
+                    all_mappings,
+                    "Excel (.xlsx) / Word (.docx) フォーム / Markdown ({{form:キー名}}) / 入力可能 PDF を開くと、プロフィールと保有 VC から自動で入力候補が表示されます。",
+                    cx,
                 );
-                for (idx, cred) in all_credentials.iter().enumerate() {
-                    let full = vault_root.join(&cred.path);
-                    root = root.child(
-                        div()
-                            .id(SharedString::from(format!("ws-form-asset-cred:{idx}")))
-                            .cursor_pointer()
-                            .px(px(6.))
-                            .py(px(4.))
-                            .rounded(px(4.))
-                            .hover(|h| h.bg(theme.secondary))
-                            .text_xs()
-                            .child(format!(
-                                "🛡 [{}] {}（{} クレーム）",
-                                cred.format,
-                                cred.path,
-                                cred.claims.len()
-                            ))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_path_in_active_pane(full.clone(), window, cx);
-                            })),
-                    );
-                }
-            }
-
-            if !all_mappings.is_empty() {
-                root = root.child(
-                    div()
-                        .px_1()
-                        .text_size(px(10.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.muted_foreground)
-                        .child("フォーム対応表（forms/）"),
-                );
-                for (idx, map) in all_mappings.iter().enumerate() {
-                    let full = vault_root.join(&map.path);
-                    root = root.child(
-                        div()
-                            .id(SharedString::from(format!("ws-form-asset-map:{idx}")))
-                            .cursor_pointer()
-                            .px(px(6.))
-                            .py(px(4.))
-                            .rounded(px(4.))
-                            .hover(|h| h.bg(theme.secondary))
-                            .text_xs()
-                            .child(format!("{}（{} 項目）", map.title, map.fields.len()))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_path_in_active_pane(full.clone(), window, cx);
-                            })),
-                    );
-                }
             }
         }
 
@@ -2242,6 +2940,298 @@ impl SoraneWorkspace {
                 )
                 .child(submit_actions),
         );
+
+        root
+    }
+
+    fn render_verify_mode(
+        &self,
+        mut root: Div,
+        vault_root: &std::path::Path,
+        all_credentials: &[VaultCredentialSummary],
+        all_requests: &[PresentationRequestNote],
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let theme = cx.theme().clone();
+
+        // 1. Batch Verification Policy Card
+        let mut policy_pills = h_flex().gap(px(4.)).flex_wrap();
+        let all_policy_sel = self.form_assist.verifier_request_path.is_none();
+        policy_pills = policy_pills.child(
+            div()
+                .id("ws-verify-pol-all")
+                .cursor_pointer()
+                .px(px(6.))
+                .py(px(2.))
+                .rounded(px(4.))
+                .text_size(px(10.5))
+                .when(all_policy_sel, |d| {
+                    d.bg(theme.accent)
+                        .text_color(theme.accent_foreground)
+                        .font_weight(FontWeight::SEMIBOLD)
+                })
+                .when(!all_policy_sel, |d| {
+                    d.bg(theme.muted)
+                        .text_color(theme.foreground)
+                        .hover(|h| h.bg(theme.secondary))
+                })
+                .child("全件チェック")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.form_assist.verifier_request_path = None;
+                    cx.notify();
+                })),
+        );
+        for (idx, req_note) in all_requests.iter().enumerate() {
+            let is_sel = self.form_assist.verifier_request_path.as_deref()
+                == Some(req_note.path.as_str());
+            let rel = req_note.path.clone();
+            policy_pills = policy_pills.child(
+                div()
+                    .id(SharedString::from(format!("ws-verify-pol:{idx}")))
+                    .cursor_pointer()
+                    .px(px(6.))
+                    .py(px(2.))
+                    .rounded(px(4.))
+                    .text_size(px(10.5))
+                    .when(is_sel, |d| {
+                        d.bg(theme.accent)
+                            .text_color(theme.accent_foreground)
+                            .font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .when(!is_sel, |d| {
+                        d.bg(theme.muted)
+                            .text_color(theme.foreground)
+                            .hover(|h| h.bg(theme.secondary))
+                    })
+                    .child(req_note.title.clone())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.form_assist.verifier_request_path = Some(rel.clone());
+                        cx.notify();
+                    })),
+            );
+        }
+
+        root = root.child(
+            v_flex()
+                .gap_1()
+                .p_2()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.background)
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!(
+                            "受領 VC 一括検証（対象 {} 件）",
+                            all_credentials.len()
+                        )),
+                )
+                .child(policy_pills)
+                .child(Input::new(&self.form_assist.verifier_jwk_input).xsmall())
+                .child(
+                    Button::new("ws-verify-run-batch")
+                        .primary()
+                        .xsmall()
+                        .label("Vault 内 VC を一括検証")
+                        .disabled(all_credentials.is_empty())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.run_vault_batch_verify(cx);
+                        })),
+                ),
+        );
+
+        // 2. Results KPI + BI Export Card
+        if let Some(report) = &self.form_assist.last_verify_report {
+            let json_for_copy = render_batch_verify_json(report);
+            root = root.child(
+                v_flex()
+                    .gap_1()
+                    .p_2()
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.background)
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("検証サマリー（{}）", report.policy_label)),
+                    )
+                    .child(
+                        h_flex()
+                            .gap(px(4.))
+                            .flex_wrap()
+                            .child(
+                                div()
+                                    .px(px(5.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .bg(rgb(0xE8F5E9))
+                                    .text_size(px(10.))
+                                    .text_color(rgb(0x1B5E20))
+                                    .child(format!("検証済 {}", report.verified_count)),
+                            )
+                            .child(
+                                div()
+                                    .px(px(5.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .bg(rgb(0xE3F2FD))
+                                    .text_size(px(10.))
+                                    .text_color(rgb(0x0D47A1))
+                                    .child(format!("ダイジェストOK {}", report.unchecked_ok_count)),
+                            )
+                            .child(
+                                div()
+                                    .px(px(5.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .bg(rgb(0xFFF8E1))
+                                    .text_size(px(10.))
+                                    .text_color(rgb(0x8A5A00))
+                                    .child(format!("要確認 {}", report.needs_review_count)),
+                            )
+                            .child(
+                                div()
+                                    .px(px(5.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .bg(rgb(0xFFEBEE))
+                                    .text_size(px(10.))
+                                    .text_color(rgb(0xC62828))
+                                    .child(format!("無効 {}", report.invalid_count)),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .flex_wrap()
+                            .pt_1()
+                            .child(
+                                Button::new("ws-verify-export-sheet")
+                                    .primary()
+                                    .xsmall()
+                                    .label("BI シート (.sheet.md) 展開")
+                                    .disabled(report.items.is_empty())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.export_batch_verify_sheet_md(window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("ws-verify-export-csv")
+                                    .xsmall()
+                                    .label("CSV 保存")
+                                    .disabled(report.items.is_empty())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.export_batch_verify_csv(window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("ws-verify-copy-json")
+                                    .xsmall()
+                                    .label("JSON コピー")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            json_for_copy.clone(),
+                                        ));
+                                        this.form_assist.status_message = Some((
+                                            "検証結果 JSON をクリップボードにコピーしました。"
+                                                .into(),
+                                            false,
+                                        ));
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            );
+
+            // 3. Per-credential verdict cards
+            for (idx, item) in report.items.iter().enumerate() {
+                let (fg, bg) = match item.verdict {
+                    VerifyVerdict::Verified => (rgb(0x1B5E20), rgb(0xE8F5E9)),
+                    VerifyVerdict::DigestsOkUncheckedSig => (rgb(0x0D47A1), rgb(0xE3F2FD)),
+                    VerifyVerdict::NeedsReview => (rgb(0x8A5A00), rgb(0xFFF8E1)),
+                    VerifyVerdict::Invalid => (rgb(0xC62828), rgb(0xFFEBEE)),
+                };
+                let full_path = vault_root.join(&item.path);
+                let mut card = v_flex()
+                    .id(SharedString::from(format!("ws-verify-item:{idx}")))
+                    .cursor_pointer()
+                    .p(px(6.))
+                    .gap(px(2.))
+                    .rounded(px(5.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.background)
+                    .hover(|h| h.bg(theme.secondary))
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(item.path.clone()),
+                            )
+                            .child(
+                                div()
+                                    .px(px(5.))
+                                    .py(px(1.))
+                                    .rounded(px(3.))
+                                    .bg(bg)
+                                    .text_size(px(9.5))
+                                    .text_color(fg)
+                                    .child(item.verdict.label_ja()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(theme.muted_foreground)
+                            .truncate()
+                            .child(format!(
+                                "[{}] {} · ダイジェスト {}/{} · クレーム {}",
+                                item.format,
+                                item.issuer.as_deref().unwrap_or("(発行者なし)"),
+                                item.digests_verified,
+                                item.digests_total,
+                                item.claims.len()
+                            )),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_path_in_split_pane(full_path.clone(), window, cx);
+                    }));
+
+                if !item.issues.is_empty() {
+                    card = card.child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(fg)
+                            .child(item.issues.join(" / ")),
+                    );
+                }
+                root = root.child(card);
+            }
+        } else if all_credentials.is_empty() {
+            root = root.child(
+                div()
+                    .p_2()
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.background)
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child("Vault 内に .sd-jwt または .mdoc ファイルがありません。受領した証明書を credentials/ 等に配置すると一括検証・BI シート展開できます。"),
+            );
+        }
 
         root
     }
