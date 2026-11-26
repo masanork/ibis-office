@@ -79,3 +79,48 @@ fn native_file_reader_renders_dpo_jsonl_comparison_table() {
     // summary table + statistics table + DPO Chosen/Rejected table.
     assert_eq!(tables, 3, "expected summary + stats + DPO pair table");
 }
+
+#[test]
+fn native_file_reader_adds_outline_headings_and_tree_connectors() {
+    let path = std::env::temp_dir().join(format!(
+        "ibis-structured-preview-tree-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &path,
+        br#"{"service":{"host":"localhost","port":8080}}"#,
+    )
+    .unwrap();
+    let loaded = ibis_office_shell::read_file::read_file(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let flow = loaded.presentation.flow.as_ref().unwrap();
+    let headings: Vec<&str> = flow
+        .body
+        .iter()
+        .filter_map(|b| match b {
+            Block::Paragraph(p) => p.style.as_deref(),
+            _ => None,
+        })
+        .collect();
+    assert!(headings.contains(&"Heading1"), "expected Heading1 on title");
+    assert!(headings.contains(&"Heading2"), "expected Heading2 on section");
+
+    let text: String = flow
+        .body
+        .iter()
+        .filter_map(|b| match b {
+            Block::Paragraph(p) => Some(
+                p.runs
+                    .iter()
+                    .filter_map(|r| match &r.kind {
+                        FlowRunKind::Text(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("├─ ") && text.contains("└─ "), "{text}");
+}
