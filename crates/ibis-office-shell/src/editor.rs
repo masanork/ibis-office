@@ -1573,9 +1573,9 @@ impl SlideEditor {
             self.host_after_unsaved_check(crate::host_editor::HostAfter::Open, window, cx);
             return;
         }
-        // The browser's page has one editor, so the file replaces the document: not before the question about a document that was changed, or a new one that was typed in
+        // The browser's page and Android's NativeActivity have one editor, so the file replaces the document: not before the question about a document that was changed, or a new one that was typed in
         // (K0054; on the desktop `open_path_or_raise` opens it in a window of its own).
-        #[cfg(target_family = "wasm")]
+        #[cfg(any(target_family = "wasm", target_os = "android"))]
         if self.has_document && !self.replaceable_by_open() && (self.is_dirty() || self.file_path().is_none()) {
             self.commit_pending_edit(window, cx);
             self.host.after_confirm = Some(crate::host_editor::HostAfter::OpenLocal);
