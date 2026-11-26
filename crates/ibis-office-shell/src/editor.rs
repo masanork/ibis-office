@@ -1073,6 +1073,19 @@ impl SlideEditor {
         self.file_is_read_only() || self.phone_view_only() || self.host.read_only.is_some()
     }
 
+    /// Whether the active sheet has worksheet protection (`sheetProtection`) or (on native) the open file is password-protected.
+    pub fn is_protected(&self) -> bool {
+        let sheet_protected = self.current_sheet().is_some_and(|(_, sheet)| sheet.protection.is_some());
+        #[cfg(not(target_family = "wasm"))]
+        {
+            sheet_protected || self.protection_password.is_some()
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            sheet_protected
+        }
+    }
+
     fn file_is_read_only(&self) -> bool {
         self.read_only || self.standard_read_only || self.structured_preview || self.is_fixed_layout_read_only() || self.is_jtd_read_only() || self.is_csv_streaming || self.is_xlsx_mark_as_final() || self.is_modify_locked()
     }

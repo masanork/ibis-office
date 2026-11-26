@@ -216,7 +216,7 @@ impl SoraneWorkspace {
 
         let build_result = {
             let ed = editor.read(cx);
-            if ed.is_read_only() || ed.protection_password.is_some() {
+            if ed.is_read_only() || ed.is_protected() {
                 Err("読み取り専用または保護されたシートには適用できません。".to_string())
             } else {
                 let slide = ed.current_slide;
