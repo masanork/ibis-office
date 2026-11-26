@@ -49,6 +49,7 @@ harfrust = "=0.5.2"
 # A maths font's OpenType MATH table and glyph shapes, for typesetting formulas (render/math_font.rs). Already in the tree
 # (MIT OR Apache-2.0).
 ttf-parser = "0.25"
+sorane-workspace.workspace = true
 
 # For the `export` feature: GPUI's headless renderer is part of its test
 # support, which also turns on GPUI's entity leak tracking (a small cost).

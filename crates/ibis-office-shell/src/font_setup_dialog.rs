@@ -146,7 +146,7 @@ fn show_in_a_window(rows: Vec<Row>, cx: &mut App) -> bool {
     let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied()) else { return false };
     let Some(root) = window.downcast::<gpui_kit::component::Root>() else { return false };
     root.update(cx, |root, window, app| {
-        let Ok(editor) = root.view().clone().downcast::<SlideEditor>() else { return false };
+        let Some(editor) = crate::window_editors::active_in_root(root, app) else { return false };
         editor.update(app, |editor, cx| {
             if editor.dialog.active || editor.font_setup_state().is_some() || editor.interaction_layer().is_confirmation() {
                 return false;

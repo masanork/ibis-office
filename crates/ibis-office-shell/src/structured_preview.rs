@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Render the parsed preview as literal, selectable document text.
 
-use ibis_doc_model::{Block, FlowParagraph, FlowRun, FlowRunKind, FlowRunStyle};
+use ibis_doc_model::{
+    Block, BorderStyle, FlowAlign, FlowBorder, FlowCell, FlowParagraph, FlowRow, FlowRun,
+    FlowRunKind, FlowRunStyle, FlowTable, ParaFormat, Rgb, TableLook, TableStyleRef,
+};
 use ibis_formats::{Kind, Opened, structured_preview};
 use std::sync::Arc;
 
@@ -9,7 +12,9 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
 
-use ibis_formats::structured_preview::{Preview, xml_view};
+use ibis_formats::structured_preview::{
+    CalloutTone, Preview, PreviewBlock, TableCellValue, ValueKind, xml_view,
+};
 
 pub(crate) const XML_VIEW_CONFLICT: &str = "\u{1}xml-view-conflict:";
 
@@ -40,68 +45,599 @@ pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<O
         .flow
         .as_mut()
         .ok_or("Cannot create structured preview")?;
+    let mut next_id: u32 = 1;
+    let mut fresh_id = || {
+        let id = next_id;
+        next_id += 1;
+        id
+    };
     let mut body = Vec::new();
-    let mut line = |label: &str, value: &str, path: Option<&str>| {
-        let mut runs = vec![FlowRun::new(
-            FlowRunKind::Text(literal(label)),
-            FlowRunStyle {
-                bold: true,
-                ..Default::default()
-            },
-        )];
-        if !value.is_empty() {
-            runs.push(FlowRun::new(
-                FlowRunKind::Text(format!("  {}", literal(value))),
-                FlowRunStyle::default(),
-            ));
-        }
-        if let Some(path) = path.filter(|path| *path != label) {
-            runs.push(FlowRun::new(
-                FlowRunKind::Text(format!("  ·  {}", literal(path))),
+    let t = crate::i18n::text;
+
+    // Header title & read-only notice
+    body.push(Block::Paragraph(FlowParagraph {
+        id: fresh_id(),
+        runs: vec![
+            FlowRun::new(
+                FlowRunKind::Text(format!("{}  ", literal(&t("structured-preview.title")))),
                 FlowRunStyle {
-                    size: 900,
-                    color: ibis_doc_model::Rgb(0x595959),
+                    bold: true,
+                    size: 1300,
+                    color: Rgb(0x0F172A),
                     ..Default::default()
                 },
+            ),
+            FlowRun::new(
+                FlowRunKind::Text(format!("[{}]", literal(preview.format))),
+                FlowRunStyle {
+                    bold: true,
+                    size: 1100,
+                    color: Rgb(0x1D4ED8),
+                    ..Default::default()
+                },
+            ),
+        ],
+        direct: ParaFormat {
+            after: Some(60_000),
+            ..Default::default()
+        },
+        ..Default::default()
+    }));
+
+    // Summary card table
+    let mut summary_rows: Vec<(String, String)> = vec![(
+        t("structured-preview.read-only").to_string(),
+        if let Some(schema) = &preview.summary.detected_schema {
+            schema.clone()
+        } else {
+            preview.format.to_string()
+        },
+    )];
+    if preview.summary.byte_size > 0 {
+        summary_rows.push((
+            "Size / Fields".to_string(),
+            format!(
+                "{} B · {} fields · depth {} · {} tables",
+                preview.summary.byte_size,
+                preview.summary.field_count,
+                preview.summary.max_depth,
+                preview.summary.table_count
+            ),
+        ));
+    }
+    if let Some(credential) = &preview.credential {
+        if let Some(credential_type) = &credential.credential_type {
+            summary_rows.push((
+                t("structured-preview.credential-type").to_string(),
+                credential_type.clone(),
             ));
         }
-        body.push(Block::Paragraph(FlowParagraph {
-            id: body.len() as u32 + 1,
-            runs,
-            ..Default::default()
-        }));
-    };
-    let t = crate::i18n::text;
-    line(&t("structured-preview.title"), preview.format, None);
-    line(&t("structured-preview.read-only"), "", None);
-    if let Some(credential) = preview.credential {
-        if let Some(credential_type) = credential.credential_type {
-            line(
-                &t("structured-preview.credential-type"),
-                &credential_type,
-                None,
-            );
+        if let Some(issuer) = &credential.issuer {
+            summary_rows.push((t("structured-preview.issuer").to_string(), issuer.clone()));
         }
-        if let Some(issuer) = credential.issuer {
-            line(&t("structured-preview.issuer"), &issuer, None);
+        summary_rows.push((t("structured-preview.received-only").to_string(), String::new()));
+        summary_rows.push((t("structured-preview.unverified").to_string(), String::new()));
+        summary_rows.push((
+            t("structured-preview.matching-digests").to_string(),
+            credential.matching_digests.to_string(),
+        ));
+    }
+    let summary_table_rows: Vec<Vec<TableCellValue>> = summary_rows
+        .into_iter()
+        .map(|(k, v)| {
+            vec![
+                TableCellValue {
+                    text: k,
+                    kind: ValueKind::Attribute,
+                },
+                TableCellValue {
+                    text: v,
+                    kind: ValueKind::String,
+                },
+            ]
+        })
+        .collect();
+    body.push(build_styled_table(
+        &["Property", "Detail"],
+        &summary_table_rows,
+        0,
+        &mut fresh_id,
+    ));
+
+    // Render visual blocks (or fallback to flat fields if blocks is empty).
+    if preview.blocks.is_empty() {
+        for field in &preview.fields {
+            body.push(build_kv_paragraph(
+                0,
+                &field.name,
+                &field.value,
+                (!field.path.is_empty()).then_some(field.path.as_str()),
+                ValueKind::String,
+                &mut fresh_id,
+            ));
         }
-        line(&t("structured-preview.received-only"), "", None);
-        line(&t("structured-preview.unverified"), "", None);
-        line(
-            &t("structured-preview.matching-digests"),
-            &credential.matching_digests.to_string(),
-            None,
-        );
+    } else {
+        for block in &preview.blocks {
+            match block {
+                PreviewBlock::Section {
+                    title,
+                    badge,
+                    depth,
+                } => {
+                    let mut runs = vec![FlowRun::new(
+                        FlowRunKind::Text(literal(title)),
+                        FlowRunStyle {
+                            bold: true,
+                            size: 1100,
+                            color: Rgb(0x0F172A),
+                            ..Default::default()
+                        },
+                    )];
+                    if let Some(b) = badge {
+                        runs.push(FlowRun::new(
+                            FlowRunKind::Text(format!("  {}", literal(b))),
+                            FlowRunStyle {
+                                size: 950,
+                                color: Rgb(0x475569),
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                    let indent = (*depth as i64) * 180_000;
+                    body.push(Block::Paragraph(FlowParagraph {
+                        id: fresh_id(),
+                        runs,
+                        direct: ParaFormat {
+                            left: (indent > 0).then_some(indent),
+                            before: Some(60_000),
+                            after: Some(20_000),
+                            shading: Some(Some(Rgb(0xF1F5F9))),
+                            borders: [
+                                None,
+                                None,
+                                None,
+                                Some(Some(FlowBorder {
+                                    color: Rgb(0x94A3B8),
+                                    width: 12,
+                                    style: BorderStyle::Single,
+                                    space: 6,
+                                    art: None,
+                                })),
+                            ],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }));
+                }
+                PreviewBlock::KeyValue {
+                    depth,
+                    key,
+                    path,
+                    value,
+                    kind,
+                } => {
+                    body.push(build_kv_paragraph(
+                        *depth,
+                        key,
+                        value,
+                        (!path.is_empty() && path != key).then_some(path.as_str()),
+                        *kind,
+                        &mut fresh_id,
+                    ));
+                }
+                PreviewBlock::Table {
+                    title,
+                    depth,
+                    headers,
+                    rows,
+                } => {
+                    if let Some(t) = title {
+                        let indent = (*depth as i64) * 180_000;
+                        body.push(Block::Paragraph(FlowParagraph {
+                            id: fresh_id(),
+                            runs: vec![FlowRun::new(
+                                FlowRunKind::Text(literal(t)),
+                                FlowRunStyle {
+                                    bold: true,
+                                    size: 1050,
+                                    color: Rgb(0x1E293B),
+                                    ..Default::default()
+                                },
+                            )],
+                            direct: ParaFormat {
+                                left: (indent > 0).then_some(indent),
+                                before: Some(60_000),
+                                after: Some(20_000),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }));
+                    }
+                    let hdr_refs: Vec<&str> = headers.iter().map(String::as_str).collect();
+                    body.push(build_styled_table(&hdr_refs, rows, *depth, &mut fresh_id));
+                }
+                PreviewBlock::Callout { tone, title, body: msg } => {
+                    let (bg, border, fg) = match tone {
+                        CalloutTone::Info => (Rgb(0xEFF6FF), Rgb(0x3B82F6), Rgb(0x1E3A8A)),
+                        CalloutTone::Warning => (Rgb(0xFEFCE8), Rgb(0xEAB308), Rgb(0x854D0E)),
+                        CalloutTone::Success => (Rgb(0xF0FDF4), Rgb(0x22C55E), Rgb(0x166534)),
+                        CalloutTone::Danger => (Rgb(0xFEF2F2), Rgb(0xEF4444), Rgb(0x991B1B)),
+                    };
+                    body.push(Block::Paragraph(FlowParagraph {
+                        id: fresh_id(),
+                        runs: vec![
+                            FlowRun::new(
+                                FlowRunKind::Text(format!("{}: ", literal(title))),
+                                FlowRunStyle {
+                                    bold: true,
+                                    color: fg,
+                                    ..Default::default()
+                                },
+                            ),
+                            FlowRun::new(
+                                FlowRunKind::Text(literal(msg)),
+                                FlowRunStyle {
+                                    color: fg,
+                                    ..Default::default()
+                                },
+                            ),
+                        ],
+                        direct: ParaFormat {
+                            before: Some(40_000),
+                            after: Some(40_000),
+                            shading: Some(Some(bg)),
+                            borders: [
+                                None,
+                                None,
+                                None,
+                                Some(Some(FlowBorder {
+                                    color: border,
+                                    width: 18,
+                                    style: BorderStyle::Single,
+                                    space: 8,
+                                    art: None,
+                                })),
+                            ],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }));
+                }
+                PreviewBlock::ChatTurn {
+                    role,
+                    content,
+                    tool_calls,
+                    depth,
+                } => {
+                    let (bg, border_col, role_col) = match role.to_ascii_lowercase().as_str() {
+                        "system" | "developer" => (Rgb(0xF1F5F9), Rgb(0x64748B), Rgb(0x334155)),
+                        "user" | "human" => (Rgb(0xEFF6FF), Rgb(0x2563EB), Rgb(0x1D4ED8)),
+                        "assistant" | "gpt" | "model" => {
+                            (Rgb(0xECFDF5), Rgb(0x10B981), Rgb(0x047857))
+                        }
+                        "tool" | "function" => (Rgb(0xFFFBEB), Rgb(0xF59E0B), Rgb(0xB45309)),
+                        "rejected" => (Rgb(0xFEF2F2), Rgb(0xEF4444), Rgb(0xB91C1C)),
+                        _ => (Rgb(0xF8FAFC), Rgb(0x94A3B8), Rgb(0x1E293B)),
+                    };
+                    let mut runs = vec![
+                        FlowRun::new(
+                            FlowRunKind::Text(format!("[{}] ", literal(role))),
+                            FlowRunStyle {
+                                bold: true,
+                                color: role_col,
+                                ..Default::default()
+                            },
+                        ),
+                        FlowRun::new(
+                            FlowRunKind::Text(literal(content)),
+                            FlowRunStyle {
+                                color: Rgb(0x0F172A),
+                                ..Default::default()
+                            },
+                        ),
+                    ];
+                    if let Some(tc) = tool_calls {
+                        runs.push(FlowRun::new(
+                            FlowRunKind::Text(format!("\n[tool_calls] {}", literal(tc))),
+                            FlowRunStyle {
+                                size: 900,
+                                color: Rgb(0x92400E),
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                    let indent = (*depth as i64) * 180_000;
+                    body.push(Block::Paragraph(FlowParagraph {
+                        id: fresh_id(),
+                        runs,
+                        direct: ParaFormat {
+                            left: (indent > 0).then_some(indent),
+                            before: Some(25_000),
+                            after: Some(25_000),
+                            shading: Some(Some(bg)),
+                            borders: [
+                                None,
+                                None,
+                                None,
+                                Some(Some(FlowBorder {
+                                    color: border_col,
+                                    width: 16,
+                                    style: BorderStyle::Single,
+                                    space: 6,
+                                    art: None,
+                                })),
+                            ],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }));
+                }
+                PreviewBlock::PreferencePair {
+                    prompt,
+                    chosen,
+                    rejected,
+                    warnings,
+                } => {
+                    if !prompt.is_empty() {
+                        body.push(Block::Paragraph(FlowParagraph {
+                            id: fresh_id(),
+                            runs: vec![
+                                FlowRun::new(
+                                    FlowRunKind::Text("[prompt] ".to_string()),
+                                    FlowRunStyle {
+                                        bold: true,
+                                        color: Rgb(0x1D4ED8),
+                                        ..Default::default()
+                                    },
+                                ),
+                                FlowRun::new(
+                                    FlowRunKind::Text(literal(prompt)),
+                                    FlowRunStyle {
+                                        color: Rgb(0x0F172A),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ],
+                            direct: ParaFormat {
+                                left: Some(180_000),
+                                before: Some(25_000),
+                                after: Some(20_000),
+                                shading: Some(Some(Rgb(0xEFF6FF))),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }));
+                    }
+                    if !warnings.is_empty() {
+                        body.push(Block::Paragraph(FlowParagraph {
+                            id: fresh_id(),
+                            runs: vec![FlowRun::new(
+                                FlowRunKind::Text(format!("! {}", literal(&warnings.join("; ")))),
+                                FlowRunStyle {
+                                    bold: true,
+                                    color: Rgb(0xB45309),
+                                    ..Default::default()
+                                },
+                            )],
+                            direct: ParaFormat {
+                                left: Some(180_000),
+                                shading: Some(Some(Rgb(0xFEFCE8))),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }));
+                    }
+                    let pair_rows = vec![vec![
+                        TableCellValue {
+                            text: chosen.clone(),
+                            kind: ValueKind::String,
+                        },
+                        TableCellValue {
+                            text: rejected.clone(),
+                            kind: ValueKind::Null,
+                        },
+                    ]];
+                    body.push(build_styled_table(
+                        &["✓ Chosen", "✗ Rejected"],
+                        &pair_rows,
+                        1,
+                        &mut fresh_id,
+                    ));
+                }
+            }
+        }
     }
-    for field in preview.fields {
-        line(
-            &field.name,
-            &field.value,
-            (!field.path.is_empty()).then_some(&field.path),
-        );
-    }
+
     Arc::make_mut(flow).body = body;
     Ok(opened)
+}
+
+fn value_run_style(kind: ValueKind) -> FlowRunStyle {
+    match kind {
+        ValueKind::String => FlowRunStyle {
+            color: Rgb(0x047857),
+            ..Default::default()
+        },
+        ValueKind::Number => FlowRunStyle {
+            color: Rgb(0x1D4ED8),
+            ..Default::default()
+        },
+        ValueKind::Boolean => FlowRunStyle {
+            bold: true,
+            color: Rgb(0xB45309),
+            ..Default::default()
+        },
+        ValueKind::Null | ValueKind::Empty => FlowRunStyle {
+            italic: true,
+            color: Rgb(0x64748B),
+            ..Default::default()
+        },
+        ValueKind::Attribute => FlowRunStyle {
+            bold: true,
+            color: Rgb(0x7C3AED),
+            ..Default::default()
+        },
+        ValueKind::Container => FlowRunStyle {
+            color: Rgb(0x334155),
+            ..Default::default()
+        },
+    }
+}
+
+fn build_kv_paragraph(
+    depth: usize,
+    key: &str,
+    value: &str,
+    path: Option<&str>,
+    kind: ValueKind,
+    fresh_id: &mut dyn FnMut() -> u32,
+) -> Block {
+    let key_color = if kind == ValueKind::Attribute {
+        Rgb(0x7C3AED)
+    } else {
+        Rgb(0x0F172A)
+    };
+    let mut runs = vec![FlowRun::new(
+        FlowRunKind::Text(literal(key)),
+        FlowRunStyle {
+            bold: true,
+            color: key_color,
+            ..Default::default()
+        },
+    )];
+    if !value.is_empty() {
+        runs.push(FlowRun::new(
+            FlowRunKind::Text(format!("  {}", literal(value))),
+            value_run_style(kind),
+        ));
+    }
+    if let Some(p) = path {
+        runs.push(FlowRun::new(
+            FlowRunKind::Text(format!("  ·  {}", literal(p))),
+            FlowRunStyle {
+                size: 850,
+                color: Rgb(0x94A3B8),
+                ..Default::default()
+            },
+        ));
+    }
+    let indent = (depth as i64) * 180_000;
+    let left_border = (depth > 0).then_some(Some(FlowBorder {
+        color: Rgb(0xCBD5E1),
+        width: 6,
+        style: BorderStyle::Single,
+        space: 6,
+        art: None,
+    }));
+    Block::Paragraph(FlowParagraph {
+        id: fresh_id(),
+        runs,
+        direct: ParaFormat {
+            left: (indent > 0).then_some(indent),
+            before: Some(15_000),
+            after: Some(15_000),
+            borders: [None, None, None, left_border],
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+}
+
+fn build_styled_table(
+    headers: &[&str],
+    rows: &[Vec<TableCellValue>],
+    depth: usize,
+    fresh_id: &mut dyn FnMut() -> u32,
+) -> Block {
+    let ncols = headers.len().max(1);
+    let total_w: i64 = (8_200_000 - (depth as i64) * 180_000).max(3_600_000);
+    let col_w = total_w / ncols as i64;
+    let columns = vec![col_w; ncols];
+    let border = FlowBorder {
+        color: Rgb(0xCBD5E1),
+        width: 4,
+        style: BorderStyle::Single,
+        space: 0,
+        art: None,
+    };
+
+    let make_cell = |text: &str, style: FlowRunStyle, shading: Option<Rgb>, fresh: &mut dyn FnMut() -> u32| {
+        let para = FlowParagraph {
+            id: fresh(),
+            runs: vec![FlowRun::new(FlowRunKind::Text(literal(text)), style)],
+            ..Default::default()
+        };
+        FlowCell {
+            id: fresh(),
+            blocks: vec![Block::Paragraph(para)],
+            span: 1,
+            shading,
+            borders: [Some(border), Some(border), Some(border), Some(border)],
+            margins: [40 * 635, 90 * 635, 40 * 635, 90 * 635],
+            ..FlowCell::default()
+        }
+    };
+
+    let mut flow_rows = Vec::with_capacity(1 + rows.len());
+    let header_cells: Vec<FlowCell> = headers
+        .iter()
+        .map(|h| {
+            make_cell(
+                h,
+                FlowRunStyle {
+                    bold: true,
+                    size: 950,
+                    color: Rgb(0x0F172A),
+                    ..Default::default()
+                },
+                Some(Rgb(0xE2E8F0)),
+                fresh_id,
+            )
+        })
+        .collect();
+    flow_rows.push(FlowRow {
+        id: fresh_id(),
+        header: true,
+        cells: header_cells,
+        ..FlowRow::default()
+    });
+
+    for (ri, row) in rows.iter().enumerate() {
+        let row_bg = (ri % 2 == 1).then_some(Rgb(0xF8FAFC));
+        let cells: Vec<FlowCell> = row
+            .iter()
+            .map(|cell| make_cell(&cell.text, value_run_style(cell.kind), row_bg, fresh_id))
+            .collect();
+        flow_rows.push(FlowRow {
+            id: fresh_id(),
+            header: false,
+            cells,
+            ..FlowRow::default()
+        });
+    }
+
+    Block::Table(FlowTable {
+        id: fresh_id(),
+        columns,
+        rows: flow_rows,
+        indent: (depth as i64) * 180_000,
+        align: FlowAlign::Left,
+        borders: [Some(Some(border)); 6],
+        style: Some(TableStyleRef {
+            id: "TableGrid".to_string(),
+            look: TableLook {
+                first_row: true,
+                last_row: false,
+                first_column: false,
+                last_column: false,
+                no_hband: false,
+                no_vband: true,
+            },
+            row_band: 1,
+            col_band: 1,
+        }),
+        ..FlowTable::default()
+    })
 }
 
 fn read_preview(

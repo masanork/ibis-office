@@ -122,7 +122,7 @@ impl SlideEditor {
             self.relayout_now(cx);
         }
         if reveal && let Some((para, offset, text)) = want {
-            let lines = self.flow_lines();
+            let lines = self.flow_lines_arc();
             // The end of the composing text: the layout has it typed in.
             if let Some((page, _, y, h)) = self.caret_box(&lines, FlowPos::new(para, offset + text.chars().count())) {
                 self.scroll_into_view(page, y, h, cx);
@@ -186,7 +186,8 @@ impl SlideEditor {
         // The text being composed is laid out in the paragraph after the caret, so a position inside it is that many characters on
         // (wrapped text: the rectangle of the line the position is on, which puts the input method's candidates under the last line
         // of it and not over the first).
-        let vertical = Self::line_of(&self.flow_lines(), caret).is_some_and(|l| l.vertical);
+        let lines = self.flow_lines_arc();
+        let vertical = Self::line_of(&lines, caret).is_some_and(|l| l.vertical);
         if let (false, Some(marked), Some(start)) = (vertical, self.doc_state().and_then(|s| s.marked.clone()), self.input_paragraph().and_then(|(c, _, offsets)| offsets.get(c.offset).copied())) {
             let mut units = 0;
             let mut chars = 0;
@@ -197,7 +198,6 @@ impl SlideEditor {
             }
             caret = FlowPos::new(caret.para, caret.offset + chars);
         }
-        let lines = self.flow_lines();
         let (page, x, y, h) = self.caret_box(&lines, caret)?;
         let (origin, k) = self.page_origin(page)?;
         let at = point(origin.x + px(x * k), origin.y + px(y * k));
@@ -219,7 +219,7 @@ impl SlideEditor {
             return false;
         }
         let Some((_, caret)) = self.text_selection() else { return false };
-        Self::line_of(&self.flow_lines(), caret).is_some_and(|l| l.vertical)
+        Self::line_of(&self.flow_lines_arc(), caret).is_some_and(|l| l.vertical)
     }
 
     pub(crate) fn doc_character_index_for_point(&mut self, point: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
@@ -229,8 +229,8 @@ impl SlideEditor {
         None
     }
 
-    pub(crate) fn doc_accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
-        if self.is_markdown_source_mode() {
+    pub(crate) fn doc_accepts_text_input(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.is_markdown_source_only() || self.is_markdown_source_focused(window, cx) {
             return false;
         }
         self.doc_state().is_some_and(|s| s.box_edit.is_some() || s.caret.is_some())

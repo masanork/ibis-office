@@ -2931,8 +2931,8 @@ xlsx.validation.list-needs-extension	This setting is not in Excel (the data vali
 xlsx.design-mode.close	Close Design Mode
 xlsx.sheet.delete-ask	Do you want to delete the sheet?
 
-xlsx.sd-jwt	Generate SD-JWT…
-xlsx.sd-jwt.title	SD-JWT Generation & Preview
+xlsx.sd-jwt	Submit & Credentials (SD-JWT / VC)…
+xlsx.sd-jwt.title	Submit & Credentials (SD-JWT / VC)
 xlsx.sd-jwt.iss	Issuer (iss)
 xlsx.sd-jwt.vct	Verifiable Credential Type (vct)
 xlsx.sd-jwt.include-cnf	Include Holder Key (cnf.jwk)
@@ -2983,6 +2983,14 @@ xlsx.sd-jwt.import-input	Paste .sd-jwt or .mdoc (Base64 / Hex)
 xlsx.sd-jwt.import-apply	Verify & Expand to Sheet
 xlsx.sd-jwt.import-ok	Imported {format} (digests {verified}/{total} verified, signature: {sig}).
 xlsx.sd-jwt.copy-vp-short	Copy VP (Presentation)
+xlsx.sd-jwt.tab-present	Submit (Holder)
+xlsx.sd-jwt.tab-issue	Issue (Issuer)
+xlsx.sd-jwt.tab-verify	Verify & Import
+xlsx.sd-jwt.sandbox-badge	Sandbox (Using Test Keys)
+xlsx.sd-jwt.sandbox-note	Signed with built-in demo keys. Provide a real issuer JWK for production credentials.
+xlsx.sd-jwt.present-empty	No bound claims on this sheet. Scaffold a template in Issue or import a credential in Verify.
+xlsx.sd-jwt.verify-summary	Verification: {format} / Type: {vct} / Issuer: {issuer} / Digests: {verified}/{total} / Signature: {sig}
+xlsx.sd-jwt.open-prefill	Open Form Input Assist…
 xlsx.date-review.title	Review Dates…
 xlsx.date-review.explanation	Review plain text in the selection. Formulas, numbers, rich text and phonetic cells are excluded. Apply can be undone together.
 xlsx.date-review.pivot	Year/month/day order; two-digit years 00–29 are inferred as 2000–2029; 30–99 as 1930–1999.
@@ -3118,7 +3126,7 @@ query.json-no-arrays	No JSON arrays to import
 xlsx.query-from-delimited	From CSV or TSV (Query)
 query.delimited-headers	Use First Row as Column Headers
 xlsx.query-from-parquet-folder	From Parquet Folder
-xlsx.prefill.title	Preview form input…
+xlsx.prefill.title	Form Input Assist (Prefill)…
 xlsx.prefill.select-source	Choose the source record
 xlsx.prefill.select-mapping	Choose the field mapping
 xlsx.prefill.too-large	The preview accepts files up to 1 MiB.
@@ -3144,6 +3152,11 @@ xlsx.prefill.changed	The source or workbook changed. Preview it again.
 xlsx.prefill.save-unavailable	The workbook copy could not be saved.
 xlsx.prefill.saved	Saved the filled copy to {path}
 xlsx.prefill.long-value	This value is too long to select in this preview.
+xlsx.prefill.allow-overwrite	Allow overwriting already filled cells
+xlsx.prefill.select-all	Select all ready fields
+xlsx.prefill.apply-sheet	Apply to open sheet (Undoable)
+xlsx.prefill.applied	Applied {count} selected field(s) to the open sheet (undoable)
+xlsx.prefill.apply-unavailable	Cannot apply to the open sheet (read-only or protected).
 xlsx.ai-explain-formula	Explain selected cell formula
 xlsx.ai-explain-formula-incomplete	Could not get an explanation for this formula. Try again.
 query.report-refresh-title	Refresh SQL reports

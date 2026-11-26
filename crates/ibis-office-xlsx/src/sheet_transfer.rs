@@ -81,15 +81,21 @@ pub(crate) fn other_workbooks(me: gpui::EntityId, workbook_id: u64, cx: &mut App
     let mut found = Vec::new();
     for &w in &cx.windows() {
         let Some(root) = w.downcast::<gpui_kit::component::Root>() else { continue };
-        if let Ok(Some(entity)) = root.update(cx, |root, _, app| {
-            let entity = root.view().clone().downcast::<SlideEditor>().ok()?;
-            if entity.entity_id() == me {
-                return None;
-            }
-            let e = entity.read(app);
-            (e.is_workbook() && (workbook_id == 0 || e.file_id != workbook_id)).then_some(entity)
+        if let Ok(entities) = root.update(cx, |root, _, app| {
+            crate::shell::window_editors::all_in_root(root, app)
+                .into_iter()
+                .filter(|entity| {
+                    if entity.entity_id() == me {
+                        return false;
+                    }
+                    let e = entity.read(app);
+                    e.is_workbook() && (workbook_id == 0 || e.file_id != workbook_id)
+                })
+                .collect::<Vec<_>>()
         }) {
-            found.push((w, entity));
+            for entity in entities {
+                found.push((w, entity));
+            }
         }
     }
     found

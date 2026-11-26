@@ -1268,7 +1268,7 @@ impl SlideEditor {
     /// Trigger animations tied to clicking a specific shape (OnShapeClick, PPTX-ANIM-015).
     pub(crate) fn trigger_animations_for_shape_click(&mut self, clicked_shape: ibis_doc_model::ShapeId, cx: &mut Context<Self>) -> bool {
         let indices: Vec<usize> = self.slide().animations.iter().enumerate()
-            .filter(|(_, a)| matches!(a.trigger, ibis_doc_model::AnimationTrigger::OnShapeClick(s) if s == clicked_shape))
+            .filter(|(_, a)| a.trigger.matches_click(clicked_shape))
             .map(|(i, _)| i)
             .collect();
         if indices.is_empty() {
@@ -2012,13 +2012,17 @@ impl SlideEditor {
                                 (None, Turn3dKind::Shred { particle }) => crate::turn3d_tiles::shred(particle, q, zw, zh),
                                 (None, Turn3dKind::Checker) => crate::turn3d_tiles::checker(motion.0 != 0.0, q, zw, zh),
                                 (None, Turn3dKind::Blinds) => crate::turn3d_tiles::blinds(motion.0 != 0.0, if motion.0 != 0.0 { ibis_doc_model::transition_plan::BLINDS_HORIZONTAL } else { ibis_doc_model::transition_plan::BLINDS_VERTICAL }, q, zw, zh),
+                                (None, Turn3dKind::Glitter { hexagon }) => crate::turn3d_tiles::glitter(hexagon, motion, q, zw, zh),
+                                (None, Turn3dKind::Prestige) => crate::turn3d_tiles::prestige(q, zw, zh),
+                                (None, Turn3dKind::Fracture) => crate::turn3d_tiles::fracture(q, zw, zh),
+                                (None, Turn3dKind::Crush) => crate::turn3d_tiles::crush(q, zw, zh),
                                 (None, _) if rigid.is_some() => turn3d::rigid(rigid.unwrap_or(turn3d::Rigid::Switch), motion, q, zw, zh),
                                 _ => turn3d::flip(motion, q, zw, zh).to_vec(),
                             };
                             // Rotate and orbit turn the shapes alone, over the slide's own background.
                             let content_only = prism.is_some_and(Prism::content_only) || kind == Turn3dKind::Conveyor;
                             // Black behind the cube, the box, the flip, the gallery and the switch (as in PowerPoint's video), white behind the others.
-                            let dark_background = !content_only && rigid.map_or(matches!(kind, Turn3dKind::Cube | Turn3dKind::Box | Turn3dKind::Flip | Turn3dKind::Gallery | Turn3dKind::Ripple | Turn3dKind::Checker | Turn3dKind::Honeycomb | Turn3dKind::Shred { .. } | Turn3dKind::Vortex | Turn3dKind::Doors { .. }), turn3d::Rigid::dark_background);
+                            let dark_background = !content_only && rigid.map_or(matches!(kind, Turn3dKind::Cube | Turn3dKind::Box | Turn3dKind::Flip | Turn3dKind::Gallery | Turn3dKind::Ripple | Turn3dKind::Checker | Turn3dKind::Honeycomb | Turn3dKind::Shred { .. } | Turn3dKind::Vortex | Turn3dKind::Doors { .. } | Turn3dKind::Glitter { .. } | Turn3dKind::Prestige), turn3d::Rigid::dark_background);
                             let (old_id, new_id, white_id) = (OffscreenId(0x5301), OffscreenId(0x5302), OffscreenId(0x5303));
                             let texture = |id: OffscreenId, s: &ibis_doc_model::Slide| {
                                 div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(offscreen(id, div().relative().w(px(zw)).h(px(zh)).child(page_layers(s, zoomed_scale, !content_only, false))))
@@ -3911,8 +3915,33 @@ pub(crate) fn motion_at(a: &ibis_doc_model::Animation, from: ShapeMotion, p: f32
             let (x, y) = if a.path.is_empty() { (x as f32 * p, y as f32 * p) } else { point_on_path(&a.path, p, slide) };
             ShapeMotion { dx: from.dx + slide.0 * x / 100_000.0, dy: from.dy + slide.1 * y / 100_000.0, ..from }
         }
-        (AnimationClass::Emphasis, AnimationLook::Spin(by)) => ShapeMotion { turn: from.turn + by as f32 / 60_000.0 * p, ..from },
-        (AnimationClass::Emphasis, AnimationLook::Scale(x, y)) => ShapeMotion { grow: (from.grow.0 * (1.0 + (x as f32 / 100_000.0 - 1.0) * p), from.grow.1 * (1.0 + (y as f32 / 100_000.0 - 1.0) * p)), ..from },
+        (AnimationClass::Emphasis, AnimationLook::Spin(by)) => {
+            let deg = by as f32 / 60_000.0 * p;
+            if let Some((px, py)) = a.group_pivot {
+                let (gx, gy) = (px as f32 / 100_000.0 * slide.0, py as f32 / 100_000.0 * slide.1);
+                let (ox, oy) = (frame.0 + frame.2 / 2.0 + from.dx - gx, frame.1 + frame.3 / 2.0 + from.dy - gy);
+                let (s, c) = deg.to_radians().sin_cos();
+                let (rx, ry) = (ox * c - oy * s, ox * s + oy * c);
+                ShapeMotion { dx: from.dx + (rx - ox), dy: from.dy + (ry - oy), turn: from.turn + deg, ..from }
+            } else {
+                ShapeMotion { turn: from.turn + deg, ..from }
+            }
+        }
+        (AnimationClass::Emphasis, AnimationLook::Scale(x, y)) => {
+            let (kx, ky) = (1.0 + (x as f32 / 100_000.0 - 1.0) * p, 1.0 + (y as f32 / 100_000.0 - 1.0) * p);
+            if let Some((px, py)) = a.group_pivot {
+                let (gx, gy) = (px as f32 / 100_000.0 * slide.0, py as f32 / 100_000.0 * slide.1);
+                let (ox, oy) = (frame.0 + frame.2 / 2.0 + from.dx - gx, frame.1 + frame.3 / 2.0 + from.dy - gy);
+                ShapeMotion {
+                    dx: from.dx + ox * (kx - 1.0),
+                    dy: from.dy + oy * (ky - 1.0),
+                    grow: (from.grow.0 * kx, from.grow.1 * ky),
+                    ..from
+                }
+            } else {
+                ShapeMotion { grow: (from.grow.0 * kx, from.grow.1 * ky), ..from }
+            }
+        }
         _ => from,
     };
     if p >= 1.0 {
@@ -4205,4 +4234,56 @@ fn notes_button(id: &'static str, text: String, on: bool, listener: impl Fn(&Cli
         .child(text)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(listener)
+}
+
+#[cfg(test)]
+mod group_pivot_tests {
+    use super::{motion_at, ShapeMotion};
+    use ibis_doc_model::{Animation, AnimationAfterEffect, AnimationClass, AnimationLook, AnimationRepeat, AnimationStart, AnimationTrigger, ShapeId};
+
+    fn group_anim(look: AnimationLook, pivot: (i32, i32)) -> Animation {
+        Animation {
+            shape: ShapeId(1),
+            class: AnimationClass::Emphasis,
+            start: AnimationStart::OnClick,
+            look,
+            delay: 0,
+            duration: 1000,
+            preset: (8, 0),
+            repeat_count: AnimationRepeat::None,
+            auto_reverse: false,
+            rewind: false,
+            accel: 0,
+            decel: 0,
+            after_effect: AnimationAfterEffect::Hold,
+            trigger: AnimationTrigger::None,
+            paragraph: None,
+            chars: None,
+            text_unit: None,
+            path: Vec::new(),
+            chart_element: None,
+            chart_build: None,
+            dgm_element: None,
+            dgm_build: None,
+            behaviors: Vec::new(),
+            group_pivot: Some(pivot),
+        }
+    }
+
+    #[test]
+    fn group_spin_and_scale_transform_around_group_pivot() {
+        // Slide 1000x500; group center at (500, 250) -> (50_000, 50_000).
+        // Member shape centered at (600, 250): offset (+100, 0) from group center.
+        let slide = (1000.0, 500.0);
+        let frame = (550.0, 225.0, 100.0, 50.0);
+        let spin = group_anim(AnimationLook::Spin(5_400_000), (50_000, 50_000)); // 90 deg CW
+        let m = motion_at(&spin, ShapeMotion::at_rest(1.0), 1.0, frame, slide);
+        // Rotating (+100, 0) by +90 deg yields (0, +100) -> dx = -100, dy = +100.
+        assert!((m.dx + 100.0).abs() < 1e-3 && (m.dy - 100.0).abs() < 1e-3 && (m.turn - 90.0).abs() < 1e-3, "{m:?}");
+
+        let scale = group_anim(AnimationLook::Scale(150_000, 150_000), (50_000, 50_000)); // 150%
+        let ms = motion_at(&scale, ShapeMotion::at_rest(1.0), 1.0, frame, slide);
+        // Scaling (+100, 0) by 1.5x yields (+150, 0) -> dx = +50, dy = 0, grow = (1.5, 1.5).
+        assert!((ms.dx - 50.0).abs() < 1e-3 && ms.dy.abs() < 1e-3 && (ms.grow.0 - 1.5).abs() < 1e-3, "{ms:?}");
+    }
 }

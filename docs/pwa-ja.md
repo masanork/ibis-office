@@ -8,7 +8,7 @@ soraneDocs（docs.sorane.dev / ibis.sorane.dev）はインストール可能な�
 
 - 画面遷移とハッシュのないシェル（`index.html`、`main.js` など）は **network-first** です。オンラインなら新しい版を取り、オフラインならキャッシュ、それも無ければ `offline.html` を出します。
 - ハッシュ付きの wasm チャンクとフォントは **cache-first** です。
-- `/auth/`、`/api/`、`/files`、`/ai/`、他オリジン、POST はキャッシュしません。`sw.js` 自身もキャッシュしません。
+- `/auth/`、`/api/`、他オリジン、POST はキャッシュしません。`sw.js` 自身もキャッシュしません。
 - 新しいサービスワーカーは待たせたままにし、画面の「新しいバージョンがあります。再読み込み」を押したときだけ `skipWaiting` します。
 
 プリキャッシュの大きさはビルド時に `www/pwa-precache.json` へ書き出します。圧縮した wasm シングルトンと既定のフォントチャンク、HTML / JS のシェルを合わせて、この執筆時点のリリースビルドではおよそ 35 MiB です。非圧縮の wasm チャンクは入れません。Cloudflare Worker は `/sw.js` を `Cache-Control: no-cache` と `Service-Worker-Allowed: /` で返します。

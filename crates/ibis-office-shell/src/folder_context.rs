@@ -22,7 +22,10 @@ const SCAN_LIMIT: usize = 10_000;
 const TEXT_BYTES: usize = 512 * 1024;
 const RESULT_BYTES: usize = 24 * 1024;
 pub(crate) const OFFICE: &[&str] = &["docx", "docm", "dotx", "xlsx", "xlsm", "pptx", "pptm"];
-const TEXT: &[&str] = &["md", "markdown", "txt", "csv", "tsv", "json", "jsonl", "ndjson", "yaml", "yml"];
+const TEXT: &[&str] = &[
+    "md", "markdown", "txt", "csv", "tsv", "json", "jsonl", "ndjson", "yaml", "yml", "sd-jwt",
+    "mdoc",
+];
 
 pub(crate) fn extension(path: &Path) -> String {
     path.extension()
@@ -88,7 +91,7 @@ pub(crate) fn is_obsidian_vault(path: &Path) -> bool {
 }
 
 #[derive(Clone)]
-pub(crate) struct Folder {
+pub struct Folder {
     root: PathBuf,
     files: Vec<String>,
     concepts: BTreeMap<String, ConceptFilter>,
@@ -593,10 +596,195 @@ pub(crate) fn tools() -> [ToolDefinition; 8] {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ContentSearchHit {
-    pub(super) path: String,
-    pub(super) line: usize,
-    pub(super) excerpt: String,
+pub struct ContentSearchHit {
+    pub path: String,
+    pub line: usize,
+    pub excerpt: String,
+}
+
+/// Public snapshot of a Markdown backlink inside an open Vault folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultBacklink {
+    pub path: String,
+    pub line: usize,
+    pub excerpt: String,
+}
+
+impl Folder {
+    /// Scan a directory (including `.obsidian` vault detection, Git detection, and Markdown index).
+    pub fn scan_dir(path: &Path) -> Result<Self, String> {
+        Self::scan(path)
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn files(&self) -> &[String] {
+        &self.files
+    }
+
+    pub fn display_name(&self) -> String {
+        self.name()
+    }
+
+    pub fn is_obsidian_vault(&self) -> bool {
+        self.is_obsidian_vault
+    }
+
+    pub fn has_git(&self) -> bool {
+        self.has_git
+    }
+
+    pub fn matches_query(&self, path: &str, query: &str) -> bool {
+        self.matches(path, query)
+    }
+
+    pub fn resolve_file_path(&self, relative: &str) -> Result<PathBuf, String> {
+        self.resolve(relative)
+    }
+
+    pub fn search_content(&self, query: &str, limit: usize) -> Vec<ContentSearchHit> {
+        self.search_markdown_content(query, limit)
+    }
+
+    pub fn backlinks_for(&self, relative: &str) -> Vec<VaultBacklink> {
+        self.markdown_index
+            .backlinks(relative)
+            .iter()
+            .map(|b| VaultBacklink {
+                path: b.source.path.clone(),
+                line: b.line,
+                excerpt: b.excerpt.clone(),
+            })
+            .collect()
+    }
+
+    /// Unique Vault-relative paths linked from `relative` via Markdown or Wiki links.
+    pub fn outgoing_links_for(&self, relative: &str) -> Vec<String> {
+        self.markdown_index.outgoing_links(relative)
+    }
+
+    /// Tags attached to `relative` (frontmatter `tags`, inline `#tag`, and OKF concept tags).
+    pub fn tags_for(&self, relative: &str) -> Vec<String> {
+        let mut tags: Vec<String> = self.markdown_index.tags(relative).to_vec();
+        if let Some(concept) = self.concepts.get(relative) {
+            for t in &concept.tags {
+                if !tags.iter().any(|existing| existing.eq_ignore_ascii_case(t)) {
+                    tags.push(t.clone());
+                }
+            }
+        }
+        tags.sort();
+        tags
+    }
+
+    /// Every tag found across the Vault with its file count, sorted by frequency then name.
+    pub fn all_tags(&self) -> Vec<(String, usize)> {
+        let mut counts: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for (path, tags) in self.markdown_index.all_tags_map() {
+            for tag in tags {
+                let normalized = tag.trim_start_matches('#').trim().to_owned();
+                if !normalized.is_empty() {
+                    counts.entry(normalized).or_default().insert(path.clone());
+                }
+            }
+        }
+        for (path, concept) in &self.concepts {
+            for tag in &concept.tags {
+                let normalized = tag.trim_start_matches('#').trim().to_owned();
+                if !normalized.is_empty() {
+                    counts.entry(normalized).or_default().insert(path.clone());
+                }
+            }
+        }
+        let mut items: Vec<(String, usize)> = counts
+            .into_iter()
+            .map(|(tag, files)| (tag, files.len()))
+            .collect();
+        items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        items
+    }
+
+    /// Vault-relative paths carrying `tag` (supports Obsidian hierarchical tag prefixes like `a/b`).
+    pub fn files_with_tag(&self, tag: &str) -> Vec<String> {
+        let needle = tag.trim_start_matches('#').trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let matches_tag = |actual: &str| {
+            let a = actual.trim_start_matches('#').trim().to_lowercase();
+            a == needle || a.starts_with(&format!("{needle}/"))
+        };
+        let mut files: Vec<String> = self
+            .files
+            .iter()
+            .filter(|path| {
+                self.markdown_index
+                    .tags(path)
+                    .iter()
+                    .any(|t| matches_tag(t))
+                    || self
+                        .concepts
+                        .get(path.as_str())
+                        .is_some_and(|c| c.tags.iter().any(|t| matches_tag(t)))
+            })
+            .cloned()
+            .collect();
+        files.sort();
+        files
+    }
+
+    pub fn relative_path_for(&self, path: &Path) -> Option<String> {
+        let canonical = path.canonicalize().ok()?;
+        let rel = canonical.strip_prefix(&self.root).ok()?;
+        let mut parts = Vec::new();
+        for comp in rel.components() {
+            if let Component::Normal(s) = comp {
+                parts.push(s.to_str()?);
+            } else {
+                return None;
+            }
+        }
+        (!parts.is_empty()).then(|| parts.join("/"))
+    }
+
+    pub fn vault_profiles(&self) -> &[ibis_formats::form_assist::VaultProfile] {
+        self.markdown_index.profiles()
+    }
+
+    pub fn vault_credentials(&self) -> &[ibis_formats::form_assist::VaultCredentialSummary] {
+        self.markdown_index.credentials()
+    }
+
+    pub fn vault_form_mappings(&self) -> &[ibis_formats::form_assist::FormMapping] {
+        self.markdown_index.form_mappings()
+    }
+
+    pub fn matching_form_mappings_for_sheet(
+        &self,
+        presentation: &ibis_doc_model::Presentation,
+        slide: ibis_doc_model::SlideId,
+        file_sha256: Option<&str>,
+    ) -> Vec<ibis_formats::form_assist::FormMapping> {
+        let mut scored: Vec<(u32, ibis_formats::form_assist::FormMapping)> = self
+            .markdown_index
+            .form_mappings()
+            .iter()
+            .filter_map(|m| {
+                ibis_formats::form_assist::score_form_mapping_match(
+                    m,
+                    presentation,
+                    slide,
+                    file_sha256,
+                )
+                .map(|score| (score, m.clone()))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.path.cmp(&b.1.path)));
+        scored.into_iter().map(|(_, m)| m).collect()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1683,5 +1871,43 @@ example: "[ignored](/資料/共通要件.md)"
         // Path traversal and hidden paths are refused.
         assert_eq!(vault.create_wikilink_note(&source, "[[../outside]]").unwrap(), None);
         assert_eq!(vault.create_wikilink_note(&source, "[[.hidden]]").unwrap(), None);
+    }
+
+    #[test]
+    fn vault_db_v2_indexes_and_caches_profiles_form_mappings_and_credentials() {
+        let fixture = Fixture::new();
+        for dir in ["profiles", "forms", "credentials"] {
+            std::fs::create_dir_all(fixture.0.join(dir)).unwrap();
+        }
+        let (_, company_md) = ibis_formats::form_assist::starter_profile_markdown("organization");
+        fixture.write("profiles/company.md", company_md);
+        fixture.write(
+            "forms/invoice.form-map.md",
+            "---\ntype: form-mapping\ntitle: テスト請求書\nx-sorane-form-mapping:\n  version: 1\n  form_id: invoice-test\n  format: xlsx\n  match:\n    sheet: 請求書\n  fields:\n    - id: org\n      label: 会社名\n      target: { cell: B3 }\n      sources:\n        - any: organization.name\n---\n",
+        );
+        fixture.write(
+            "credentials/training.sd-jwt",
+            include_str!("../../../test/fixtures/structured-preview/training.sd-jwt"),
+        );
+
+        let first = Folder::scan(&fixture.0).unwrap();
+        assert_eq!(first.vault_profiles().len(), 1);
+        assert_eq!(first.vault_profiles()[0].scope, "organization");
+        assert_eq!(first.vault_form_mappings().len(), 1);
+        assert_eq!(first.vault_form_mappings()[0].form_id, "invoice-test");
+        assert_eq!(first.vault_credentials().len(), 1);
+        assert_eq!(first.vault_credentials()[0].format, "sd-jwt");
+        assert!(
+            first.vault_credentials()[0]
+                .claims
+                .contains_key("研修名")
+        );
+
+        // Second scan hits SQLite v2 cache and preserves all indexed profiles, mappings, and credentials.
+        let second = Folder::scan(&fixture.0).unwrap();
+        assert!(second.markdown_index.cache_hits >= 2);
+        assert_eq!(second.vault_profiles(), first.vault_profiles());
+        assert_eq!(second.vault_form_mappings(), first.vault_form_mappings());
+        assert_eq!(second.vault_credentials(), first.vault_credentials());
     }
 }

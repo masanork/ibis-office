@@ -12,6 +12,10 @@ on:
         description: Build and verify only the Linux AppImage
         type: boolean
         default: false
+      publish_release:
+        description: Publish a GitHub Release with build-numbered packages (e.g. 0.8.9.<run_number>)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -32,21 +36,45 @@ jobs:
   validate-source:
     name: Validate release source
     runs-on: ubuntu-latest
+    outputs:
+      publish_release: ${{ steps.meta.outputs.publish_release }}
+      release_version: ${{ steps.meta.outputs.release_version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.EXPECTED_SOURCE_SHA }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Require tagged commit in sorane history
-        if: github.ref_type == 'tag'
+      - name: Require tagged or sorane commit and compute release version
+        id: meta
         env:
           TAG: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+          INPUT_PUBLISH: ${{ inputs.publish_release }}
         run: |
           set -euo pipefail
-          [[ "$TAG" =~ ^sorane-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
-          git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/sorane
-          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            [[ "$TAG" =~ ^sorane-v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+            git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/sorane
+            test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+            rel_ver="${TAG#sorane-v}"
+            echo "publish_release=true" >> "$GITHUB_OUTPUT"
+            echo "release_version=$rel_ver" >> "$GITHUB_OUTPUT"
+            echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "$INPUT_PUBLISH" == "true" ]]; then
+            git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/sorane
+            base_ver=$(awk -F'\t' '$1 == "Windows" { sub(/\r$/, "", $2); print $2 }' version.txt)
+            [[ "$base_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            rel_ver="${base_ver}.${RUN_NUMBER}"
+            echo "publish_release=true" >> "$GITHUB_OUTPUT"
+            echo "release_version=$rel_ver" >> "$GITHUB_OUTPUT"
+            echo "release_tag=sorane-v${rel_ver}" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish_release=false" >> "$GITHUB_OUTPUT"
+            echo "release_version=" >> "$GITHUB_OUTPUT"
+            echo "release_tag=" >> "$GITHUB_OUTPUT"
+          fi
 
   desktop:
     if: github.event_name != 'workflow_dispatch' || !inputs.appimage_only
@@ -119,6 +147,15 @@ jobs:
       - name: Test image provenance in the native editor
         if: matrix.platform == 'macos-arm64'
         run: cargo run --locked -p ibis-image-provenance-check
+      - name: Apply build-numbered release version
+        if: needs.validate-source.outputs.publish_release == 'true'
+        shell: bash
+        env:
+          REL_VER: ${{ needs.validate-source.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          ${{ matrix.python }} -c 'import os; v=os.environ["REL_VER"]; open("version.txt","w",newline="\n").write("".join(f"{p}\t{v}\n" for p in ("Windows","macOS","wasm","Linux","Android","iOS")))'
+          cat version.txt
       - name: Build and verify macOS app
         if: matrix.platform == 'macos-arm64'
         shell: bash
@@ -395,7 +432,7 @@ jobs:
 
   milestone-flatpak:
     name: Build milestone Flatpak packages
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: needs.validate-source.outputs.publish_release == 'true'
     needs: validate-source
     uses: ./.github/workflows/build-flatpak.yml
     with:
@@ -404,7 +441,7 @@ jobs:
 
   release:
     name: Publish milestone release
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: needs.validate-source.outputs.publish_release == 'true'
     needs: [validate-source, desktop, linux, android, ios, verify-linux-provenance, verify-package-boms, milestone-flatpak]
     runs-on: ubuntu-latest
     permissions:
@@ -423,11 +460,16 @@ jobs:
       - name: Verify and publish the built packages
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.validate-source.outputs.release_tag }}
+          REL_VERSION: ${{ needs.validate-source.outputs.release_version }}
+          SORANE_UPDATE_SIGNING_KEY: ${{ secrets.SORANE_UPDATE_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG" +refs/heads/sorane:refs/remotes/origin/sorane
-          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+          git fetch --force origin +refs/heads/sorane:refs/remotes/origin/sorane
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+          fi
           git merge-base --is-ancestor "$EXPECTED_SOURCE_SHA" origin/sorane
           mkdir release
           for platform in linux-x64 macos-arm64 windows-x64 android-arm64 ios-arm64; do
@@ -464,9 +506,29 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/linux-appimage-builder.yml" \
             --signer-digest "$APPIMAGE_BUILDER_SHA" --source-digest "$EXPECTED_SOURCE_SHA" \
             --source-ref "$GITHUB_REF" --deny-self-hosted-runners
+          if [[ -n "$SORANE_UPDATE_SIGNING_KEY" ]]; then
+            key_file=$(mktemp)
+            trap 'rm -f "$key_file"' EXIT
+            printf '%s\n' "$SORANE_UPDATE_SIGNING_KEY" > "$key_file"
+            python3 scripts/sorane-update-manifest.py \
+              --version "$REL_VERSION" \
+              --private-key "$key_file" \
+              --days 30 \
+              --out update-meta \
+              macos-arm64=release/desktop-macos-arm64-ci.zip \
+              windows-x64=release/desktop-windows-x64-ci.zip \
+              linux-x64-appimage=release/desktop-linux-x64-ci.AppImage
+            cp update-meta/sorane-update.json update-meta/sorane-update.json.sig release/
+            rm -f "$key_file"
+          fi
           (cd release && sha256sum * > SHA256SUMS)
           release_flags=()
           [[ "$TAG" == *-*.*.*-* ]] && release_flags+=(--prerelease)
-          gh release create "$TAG" --verify-tag "${release_flags[@]}" --title "Docs $TAG" \
-            --notes "Milestone build from commit $EXPECTED_SOURCE_SHA. macOS is ad-hoc signed and not notarized; Windows is unsigned. These builds are not an automatic update feed." \
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            release_flags+=(--verify-tag)
+          else
+            release_flags+=(--target "$EXPECTED_SOURCE_SHA")
+          fi
+          gh release create "$TAG" "${release_flags[@]}" --title "Docs $TAG" \
+            --notes "Release build $REL_VERSION from commit $EXPECTED_SOURCE_SHA. macOS is ad-hoc signed and not notarized; Windows is unsigned." \
             release/*

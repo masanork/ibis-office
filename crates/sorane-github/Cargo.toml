@@ -1,0 +1,12 @@
+[package]
+name = "sorane-github"
+description = "Platform-agnostic GitHub App Vault client models, OKF help template, and protocol helpers shared across desktop and WASM."
+license = "AGPL-3.0-only"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

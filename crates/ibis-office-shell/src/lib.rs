@@ -60,9 +60,9 @@ pub mod gesture;
 pub mod document_memory;
 mod document_compare;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-mod git_workspace;
+pub mod git_workspace;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-mod folder_context;
+pub mod folder_context;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_family = "wasm"))]
 mod structured_view;
 pub mod selection_handles;
@@ -90,6 +90,7 @@ pub mod comments;
 pub mod open_guard;
 pub mod chrome;
 pub mod links;
+pub mod markdown_split;
 pub mod dialog;
 pub mod color_palette;
 mod design_tokens;
@@ -174,13 +175,14 @@ pub mod password_window;
 pub mod icons;
 pub mod palette;
 #[cfg(target_os = "macos")]
-mod macos_menu;
+pub mod macos_menu;
 pub mod menu_bar;
 pub mod menu_context;
 #[cfg(not(target_family = "wasm"))]
 pub mod open_documents;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod window_switcher;
+pub mod window_editors;
 pub mod commands;
 pub mod menu_layout;
 mod menu_layout_data;

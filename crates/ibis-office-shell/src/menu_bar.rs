@@ -512,12 +512,36 @@ fn bar_slots(menus: &[BarMenu], kind: ibis_formats::Kind, window: &Window) -> Ve
         .collect()
 }
 
+struct BarWidthEntry {
+    ts_gen: u64,
+    font: gpui_kit::Font,
+    bold: bool,
+    label: String,
+    width: f32,
+}
+
 fn cached_bar_label_width(window: &Window, label: &str, bold: bool) -> f32 {
+    use std::hash::{Hash, Hasher};
+    let ts_gen = (std::sync::Arc::as_ptr(window.text_system()) as usize as u64)
+        ^ crate::render::shape_view::fonts_generation().wrapping_mul(0xA24B_AED4_963E_E407);
+    let font = window.text_style().font();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ts_gen.hash(&mut hasher);
+    font.hash(&mut hasher);
+    bold.hash(&mut hasher);
+    label.hash(&mut hasher);
+    let key = hasher.finish();
     thread_local! {
-        static WIDTHS: std::cell::RefCell<std::collections::HashMap<(String, bool), f32>> =
+        static WIDTHS: std::cell::RefCell<std::collections::HashMap<u64, BarWidthEntry>> =
             std::cell::RefCell::new(std::collections::HashMap::new());
     }
-    if let Some(width) = WIDTHS.with(|cache| cache.borrow().get(&(label.to_owned(), bold)).copied()) {
+    if let Some(width) = WIDTHS.with(|cache| {
+        cache
+            .borrow()
+            .get(&key)
+            .filter(|e| e.ts_gen == ts_gen && e.bold == bold && e.label == label && e.font == font)
+            .map(|e| e.width)
+    }) {
         return width;
     }
     let width = if bold {
@@ -530,7 +554,16 @@ fn cached_bar_label_width(window: &Window, label: &str, bold: bool) -> f32 {
         if map.len() >= 256 {
             map.clear();
         }
-        map.insert((label.to_owned(), bold), width);
+        map.insert(
+            key,
+            BarWidthEntry {
+                ts_gen,
+                font,
+                bold,
+                label: label.to_owned(),
+                width,
+            },
+        );
     });
     width
 }

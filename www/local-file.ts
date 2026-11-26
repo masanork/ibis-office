@@ -54,6 +54,13 @@ export const FILE_HANDLER_GROUPS: { description: string; accept: Record<string, 
     accept: { 'text/markdown': ['.md', '.markdown'] },
   },
   {
+    description: 'Lawtext',
+    accept: {
+      'text/plain': ['.lawtext', '.txt'],
+      'application/xml': ['.xml'],
+    },
+  },
+  {
     description: 'OpenDocument',
     accept: {
       'application/vnd.oasis.opendocument.spreadsheet': ['.ods', '.ots'],
@@ -90,6 +97,9 @@ const MIME_BY_EXT: Record<string, string> = {
   ppsx: 'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
   md: 'text/markdown',
   markdown: 'text/markdown',
+  lawtext: 'text/plain; charset=utf-8',
+  txt: 'text/plain; charset=utf-8',
+  xml: 'application/xml; charset=utf-8',
   vsdx: 'application/vnd.ms-visio.drawing.main+xml',
   pdf: 'application/pdf',
   epub: 'application/epub+zip',

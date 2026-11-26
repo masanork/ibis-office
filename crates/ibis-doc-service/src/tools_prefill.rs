@@ -206,7 +206,9 @@ pub fn review_prefill(
             })
             || sheet.hidden_rows.contains_key(&row)
             || sheet.hidden_columns.contains_key(&col)
-            || sheet.merge_at(row, col).is_some()
+            || sheet
+                .merge_at(row, col)
+                .is_some_and(|range| range.first_row != row || range.first_column != col)
             || current.is_some_and(|cell| cell.formula.is_some())
         {
             "blocked_target"
@@ -286,6 +288,18 @@ pub fn reviewed_prefill_command(
     sheet: SlideId,
     targets: &Value,
 ) -> Result<Command, ToolError> {
+    reviewed_prefill_command_with_options(report, sheet, targets, false)
+}
+
+/// Build the single undoable edit for explicit selections from a freshly checked preview.
+/// When `allow_overwrite` is `true`, targets with status `"occupied"` may also be selected;
+/// `"blocked_target"`, `"manual"`, `"not_in_source"`, and `"unsupported_value"` remain refused.
+pub fn reviewed_prefill_command_with_options(
+    report: &Value,
+    sheet: SlideId,
+    targets: &Value,
+    allow_overwrite: bool,
+) -> Result<Command, ToolError> {
     let invalid = || ToolError::invalid("invalid prefill plan");
     let changes = report["changes"].as_array().ok_or_else(invalid)?;
     let targets = targets
@@ -303,7 +317,11 @@ pub fn reviewed_prefill_command(
         }
         let change = changes
             .iter()
-            .find(|change| change["target"] == name && change["status"] == "ready")
+            .find(|change| {
+                change["target"] == name
+                    && (change["status"] == "ready"
+                        || (allow_overwrite && change["status"] == "occupied"))
+            })
             .ok_or_else(|| ToolError::invalid("selected target is not ready in the preview"))?;
         let cell = parse_range(change["cell"].as_str().ok_or_else(invalid)?)?;
         let value = literal_cell_value(&change["proposed_value"]).ok_or_else(invalid)?;
@@ -314,4 +332,170 @@ pub fn reviewed_prefill_command(
         });
     }
     Ok(Command::Sheet(SheetCommand::SetCells { sheet, edits }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use ibis_doc_model::sheet::{SheetCell, SheetState, WorkbookSheet};
+    use ibis_doc_model::{
+        CellRange, DefinedName, EmuRect, Shape, ShapeId, ShapeKind, Sheet, Slide, Workbook,
+    };
+
+    fn workbook_for_prefill_tests() -> (Presentation, SlideId) {
+        let slide_id = SlideId(1);
+        let mut sheet = Sheet::default();
+        // Merge B4:D4 (0-based: row 3, col 1..=3)
+        sheet.merges.push(CellRange {
+            first_row: 3,
+            first_column: 1,
+            last_row: 3,
+            last_column: 3,
+        });
+        // Occupied cell at B5 (0-based: row 4, col 1)
+        sheet.cells.push(SheetCell {
+            row: 4,
+            column: 1,
+            value: CellValue::Text("OldValue".into()),
+            text: "OldValue".into(),
+            kind: ibis_doc_model::sheet::CellKind::Text,
+            formula: None,
+            style: 0,
+            phonetic: None,
+            runs: None,
+        });
+        // Formula cell at B6 (0-based: row 5, col 1)
+        sheet.cells.push(SheetCell {
+            row: 5,
+            column: 1,
+            value: CellValue::Number(2.0),
+            text: "2".into(),
+            kind: ibis_doc_model::sheet::CellKind::Number,
+            formula: Some("1+1".into()),
+            style: 0,
+            phonetic: None,
+            runs: None,
+        });
+
+        let mut slide = Slide::new(slide_id);
+        slide.name = Some("Form".into());
+        slide.shapes.push(Shape::new(
+            ShapeId(1),
+            EmuRect::default(),
+            ShapeKind::Sheet(Arc::new(sheet)),
+        ));
+        let workbook = Workbook {
+            sheets: vec![WorkbookSheet {
+                name: "Form".into(),
+                state: SheetState::Visible,
+                slide: Some(slide_id),
+                hidden: None,
+                other: false,
+            }],
+            names: vec![
+                DefinedName {
+                    name: "merged_anchor".into(),
+                    formula: "Form!$B$4".into(),
+                    sheet: None,
+                    hidden: false,
+                },
+                DefinedName {
+                    name: "merged_interior".into(),
+                    formula: "Form!$C$4".into(),
+                    sheet: None,
+                    hidden: false,
+                },
+                DefinedName {
+                    name: "existing_cell".into(),
+                    formula: "Form!$B$5".into(),
+                    sheet: None,
+                    hidden: false,
+                },
+                DefinedName {
+                    name: "formula_cell".into(),
+                    formula: "Form!$B$6".into(),
+                    sheet: None,
+                    hidden: false,
+                },
+            ],
+            ..Workbook::default()
+        };
+        let mut presentation = Presentation::default();
+        presentation.slides = vec![slide];
+        presentation.workbook = Some(Arc::new(workbook));
+        (presentation, slide_id)
+    }
+
+    #[test]
+    fn merged_top_left_anchor_is_ready_and_interior_is_blocked() {
+        let (presentation, slide_id) = workbook_for_prefill_tests();
+        let source = r#"{"company":"株式会社サンプル","extra":"ignored","formula_val":"x"}"#;
+        let mappings = json!([
+            {"target": "merged_anchor", "source_path": "/company"},
+            {"target": "merged_interior", "source_path": "/extra"},
+            {"target": "existing_cell", "source_path": "/company"},
+            {"target": "formula_cell", "source_path": "/formula_val"}
+        ]);
+
+        let report = review_prefill(&presentation, slide_id, false, "json", source, &mappings)
+            .expect("review_prefill succeeds");
+        let changes = report["changes"].as_array().unwrap();
+        assert_eq!(changes[0]["status"], "ready");
+        assert_eq!(changes[0]["cell"], "B4");
+        assert_eq!(changes[1]["status"], "blocked_target");
+        assert_eq!(changes[1]["cell"], "C4");
+        assert_eq!(changes[2]["status"], "occupied");
+        assert_eq!(changes[3]["status"], "blocked_target");
+
+        // Top-left merged anchor succeeds in default command builder.
+        let cmd = reviewed_prefill_command(&report, slide_id, &json!(["merged_anchor"]))
+            .expect("merged anchor command succeeds");
+        match cmd {
+            Command::Sheet(SheetCommand::SetCells { sheet, edits }) => {
+                assert_eq!(sheet, slide_id);
+                assert_eq!(edits.len(), 1);
+                assert_eq!((edits[0].row, edits[0].column), (3, 1));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        // Occupied cell is refused by default, allowed with explicit allow_overwrite = true.
+        assert!(reviewed_prefill_command(&report, slide_id, &json!(["existing_cell"])).is_err());
+        let overwrite_cmd = reviewed_prefill_command_with_options(
+            &report,
+            slide_id,
+            &json!(["merged_anchor", "existing_cell"]),
+            true,
+        )
+        .expect("explicit overwrite succeeds");
+        match overwrite_cmd {
+            Command::Sheet(SheetCommand::SetCells { edits, .. }) => {
+                assert_eq!(edits.len(), 2);
+                assert_eq!((edits[1].row, edits[1].column), (4, 1));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        // Blocked targets (merged interior & formula) stay refused even with allow_overwrite = true.
+        assert!(
+            reviewed_prefill_command_with_options(
+                &report,
+                slide_id,
+                &json!(["merged_interior"]),
+                true,
+            )
+            .is_err()
+        );
+        assert!(
+            reviewed_prefill_command_with_options(
+                &report,
+                slide_id,
+                &json!(["formula_cell"]),
+                true,
+            )
+            .is_err()
+        );
+    }
 }

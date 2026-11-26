@@ -8,7 +8,12 @@ use ibis_doc_model::sd_jwt_import::{
 };
 use serde_json::Value;
 
+pub mod ai_datasets;
+pub mod personas_evals;
+pub mod visual;
 pub mod xml_view;
+
+pub use visual::{CalloutTone, PreviewBlock, PreviewSummary, TableCellValue, ValueKind};
 
 const MAX_BYTES: usize = 1024 * 1024;
 pub const SIZE_LIMIT_ERROR: &str = "Structured preview accepts files up to 1 MiB";
@@ -25,6 +30,8 @@ pub struct Preview {
     pub format: &'static str,
     pub fields: Vec<Field>,
     pub credential: Option<CredentialDetails>,
+    pub summary: PreviewSummary,
+    pub blocks: Vec<PreviewBlock>,
 }
 
 pub struct CredentialDetails {
@@ -34,43 +41,69 @@ pub struct CredentialDetails {
 }
 
 pub fn supports_extension(extension: &str) -> bool {
-    ["json", "xml", "sd-jwt", "mdoc"]
+    ["json", "jsonl", "ndjson", "yaml", "yml", "xml", "sd-jwt", "mdoc"]
         .iter()
         .any(|candidate| extension.eq_ignore_ascii_case(candidate))
 }
 
 pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
-    if bytes.len() > MAX_BYTES {
+    let raw_len = bytes.len();
+    if raw_len > MAX_BYTES {
         return Err(SIZE_LIMIT_ERROR.into());
     }
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let text =
         || std::str::from_utf8(bytes).map_err(|_| "The preview requires UTF-8 text".to_string());
     let mut fields = Vec::new();
+    let mut blocks = Vec::new();
+    let mut ai_override: Option<(PreviewSummary, Vec<PreviewBlock>)> = None;
     let format = match extension.to_ascii_lowercase().as_str() {
         "json" => {
             let data: Value = serde_json::from_slice(bytes).map_err(|_| "Invalid JSON")?;
             json_fields(&data, "", "/", 0, &mut fields)?;
+            ai_override = ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields);
+            if ai_override.is_none() {
+                visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
+            }
             "JSON"
+        }
+        "jsonl" | "ndjson" => {
+            let src = text()?;
+            let (j_fields, summary, j_blocks) = ai_datasets::read_jsonl(src, raw_len)?;
+            return Ok(Preview {
+                format: "JSONL",
+                fields: j_fields,
+                credential: None,
+                summary,
+                blocks: j_blocks,
+            });
+        }
+        "yaml" | "yml" => {
+            let src = text()?;
+            let data: Value = serde_saphyr::from_str(src).map_err(|_| "Invalid YAML")?;
+            json_fields(&data, "", "/", 0, &mut fields)?;
+            ai_override = ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields);
+            if ai_override.is_none() {
+                visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
+            }
+            "YAML"
         }
         "xml" => {
             let doc = parse_xml(bytes)?;
             let root = doc.root_element();
-            xml_fields(
-                root,
-                &format!(
-                    "/{}",
-                    xml_name(root.tag_name().namespace(), root.tag_name().name())
-                ),
-                0,
-                &mut fields,
-            )?;
+            let root_path = format!(
+                "/{}",
+                xml_name(root.tag_name().namespace(), root.tag_name().name())
+            );
+            xml_fields(root, &root_path, 0, &mut fields)?;
+            visual::build_xml_blocks(root, &root_path, 0, &mut blocks)?;
             "XML"
         }
-        "sd-jwt" => return credential("SD-JWT", parse_sd_jwt(text()?, None)),
+        "sd-jwt" => return credential("SD-JWT", raw_len, parse_sd_jwt(text()?, None)),
         "mdoc" => {
             return credential(
                 "mdoc",
+                raw_len,
                 match std::str::from_utf8(bytes) {
                     Ok(text)
                         if text
@@ -86,15 +119,25 @@ pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
         }
         _ => return Err("Unsupported structured preview format".into()),
     };
+    let (summary, blocks) = match ai_override {
+        Some((s, b)) => (s, b),
+        None => (
+            visual::summarize_blocks(raw_len, fields.len(), &blocks, None, Vec::new()),
+            blocks,
+        ),
+    };
     Ok(Preview {
         format,
         fields,
         credential: None,
+        summary,
+        blocks,
     })
 }
 
 fn credential(
     format: &'static str,
+    byte_size: usize,
     parsed: Result<ParsedCredential, String>,
 ) -> Result<Preview, String> {
     let parsed = parsed.map_err(|_| "Invalid or unsupported credential data")?;
@@ -121,6 +164,8 @@ fn credential(
         };
         push(&mut fields, &path, &name, claim.value.to_json())?;
     }
+    let blocks = visual::blocks_from_fields(&fields);
+    let summary = visual::summarize_blocks(byte_size, fields.len(), &blocks, None, Vec::new());
     Ok(Preview {
         format,
         fields,
@@ -132,6 +177,8 @@ fn credential(
             issuer: parsed.issuer,
             matching_digests: parsed.digests_verified,
         }),
+        summary,
+        blocks,
     })
 }
 

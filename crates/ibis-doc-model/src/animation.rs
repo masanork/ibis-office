@@ -153,6 +153,11 @@ pub enum AnimationTrigger {
     None,
     /// オブジェクトのクリック時: plays when this shape is clicked in the slide show.
     OnShapeClick(ShapeId),
+    /// グループのクリック時: plays when any shape in this group is clicked in the slide show.
+    OnGroupClick {
+        native_id: String,
+        shapes: Vec<ShapeId>,
+    },
     /// メディアブックマーク時: plays when this media shape's bookmark is reached.
     OnMediaBookmark {
         shape: ShapeId,
@@ -228,8 +233,18 @@ impl AnimationTrigger {
     pub fn trigger_shape(&self) -> Option<ShapeId> {
         match self {
             Self::OnShapeClick(s) => Some(*s),
+            Self::OnGroupClick { shapes, .. } => shapes.first().copied(),
             Self::OnMediaBookmark { shape, .. } => Some(*shape),
             Self::None => None,
+        }
+    }
+
+    /// Whether clicking `shape` fires this trigger.
+    pub fn matches_click(&self, shape: ShapeId) -> bool {
+        match self {
+            Self::OnShapeClick(s) => *s == shape,
+            Self::OnGroupClick { shapes, .. } => shapes.contains(&shape),
+            Self::OnMediaBookmark { .. } | Self::None => false,
         }
     }
 }
@@ -288,6 +303,9 @@ pub struct Animation {
     pub dgm_build: Option<DiagramBuildStep>,
     /// The effect's behaviours (`p:set`, `p:anim`, `p:animEffect`…) for [`AnimationLook::Preset`]; empty for the others.
     pub behaviors: Vec<crate::animation_preset::AnimBehavior>,
+    /// When this effect targeted a group (`p:grpSp`), the group's centre in 1/100 000 of the slide's width and height,
+    /// so Spin and Scale transform the members around the group's centre rather than each shape's own centre.
+    pub group_pivot: Option<(i32, i32)>,
 }
 
 /// How a chart's elements are built in animation (`ST_ChartBuildStep` in ECMA-376 Part 1 19.5.15).

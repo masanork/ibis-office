@@ -166,7 +166,7 @@ mod desktop {
         for window in cx.windows() {
             let Some(root) = window.downcast::<Root>() else { continue };
             root.update(cx, |root, _, cx| {
-                if let Ok(editor) = root.view().clone().downcast::<SlideEditor>() {
+                for editor in crate::window_editors::all_in_root(root, cx) {
                     editor.update(cx, |editor, cx| editor.check_external_update(cx));
                 }
             })

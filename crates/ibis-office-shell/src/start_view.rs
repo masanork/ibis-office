@@ -494,6 +494,12 @@ impl SlideEditor {
             row.child(self.render_new_tile("vsdx", 0x2563a8, |this, window, cx| this.new_visio_draft(window, cx), cx))
         });
         let new_files = new_files.child(self.new_markdown_tile(cx));
+        #[cfg(target_family = "wasm")]
+        let new_files = new_files.when(!crate::host::is_connected(), |row| {
+            row.child(self.render_new_tile("marp", 0x0f766e, |_, _, _| crate::web::trigger_start_action("new-marp"), cx))
+                .child(self.render_new_tile("sheet", 0x15803d, |_, _, _| crate::web::trigger_start_action("new-workbook-md"), cx))
+                .child(self.render_new_tile("law", 0x7c3aed, |_, _, _| crate::web::trigger_start_action("new-lawtext"), cx))
+        });
 
         div()
             .id("start-view")

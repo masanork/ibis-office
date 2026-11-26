@@ -69,6 +69,27 @@ if (!params.has('host')) {
       repoItems = [];
     }
     applyStartViewConfig();
+    if (session.loggedIn && session.vault && repoItems.length > 0) {
+      const label = `${session.vault.owner}/${session.vault.repo}`;
+      const relPaths = repoItems.map((f) => f.subtitle);
+      window.ibisOfficeSetWebVaultTree?.(label, relPaths);
+      const textItems = repoItems
+        .filter((f) => /\.(md|markdown|lawtext|txt)$/i.test(f.name))
+        .slice(0, 30);
+      void (async () => {
+        for (const item of textItems) {
+          try {
+            const r = await fetch(item.url, { credentials: 'same-origin' });
+            if (r.ok) {
+              const text = await r.text();
+              window.ibisOfficeHydrateWebVaultFile?.(item.subtitle, text);
+            }
+          } catch {
+            /* ignore transient fetch failures */
+          }
+        }
+      })();
+    }
   }
 
   async function loadSession() {
@@ -362,7 +383,7 @@ if (!params.has('host')) {
 
     let needsInstallRefresh = false;
 
-    function updateInstallBanner(installed, canCreateRepo, installHref, repoSelection, installSettingsUrl) {
+    function updateInstallBanner(installed, canCreateRepo, installHref, repoSelection, installSettingsUrl, hasSoraneDocsRepo) {
       const href = installHref || session.installUrl;
       if (installed === false && href) {
         needsInstallRefresh = true;
@@ -391,7 +412,7 @@ if (!params.has('host')) {
         installBanner.append(heading, desc, actions);
         return;
       }
-      if (installed === true && canCreateRepo === false) {
+      if (installed === true && canCreateRepo === false && !hasSoraneDocsRepo) {
         needsInstallRefresh = true;
         installBanner.style.display = 'flex';
         installBanner.innerHTML = '';
@@ -443,12 +464,21 @@ if (!params.has('host')) {
         }
         if (res.ok && Array.isArray(data.repos)) {
           allRepos = data.repos;
+          const loginLower = String(session.login || '').toLowerCase();
+          const hasSoraneDocsRepo = allRepos.some(
+            (r) => r.owner?.toLowerCase() === loginLower && r.repo?.toLowerCase() === 'soranedocs',
+          );
+          createBox.style.display = hasSoraneDocsRepo ? 'none' : 'flex';
+          existingHeading.textContent = hasSoraneDocsRepo
+            ? '接続するリポジトリを選択'
+            : 'または既存のリポジトリを選択';
           updateInstallBanner(
             data.installed,
             data.canCreateRepo,
             data.installUrl,
             data.repoSelection,
             data.installSettingsUrl,
+            hasSoraneDocsRepo,
           );
           if (data.installed === false) {
             showStatus('GitHub App がまだインストールされていません。上のボタンからインストールしてください。');
@@ -500,19 +530,36 @@ if (!params.has('host')) {
     }
   });
 
-  // Intercept save/download when a GitHub repository file is open so the user can commit directly back to GitHub.
-  window.addEventListener('ibisoffice:download', async (event) => {
-    if (!openedRepoFile || !session.loggedIn || !session.vault) return;
-    const bytes = event.detail?.bytes;
-    if (!(bytes instanceof Uint8Array)) return;
+  async function saveToGitHub(name, bytes) {
+    if (!session.loggedIn || !session.vault) {
+      return { handled: false, name: null };
+    }
+    if (!(bytes instanceof Uint8Array)) {
+      return { handled: false, name: null };
+    }
+    const existingPath = openedRepoFile?.path || null;
+    let targetPath = existingPath;
+    if (!targetPath) {
+      const suggested = name || 'Untitled.md';
+      const chosen = window.prompt(
+        `GitHub (${session.vault.owner}/${session.vault.repo}) へ新規ファイルとして保存するパスを入力してください。\n（キャンセルするとローカル保存になります）`,
+        suggested,
+      );
+      if (!chosen || !chosen.trim()) {
+        return { handled: false, name: null };
+      }
+      targetPath = chosen.trim().replace(/^\/+/, '');
+    }
     const message = window.prompt(
       `GitHub (${session.vault.owner}/${session.vault.repo}) へコミットするメッセージを入力してください。\n（キャンセルするとコミットしません）`,
-      `Update ${openedRepoFile.path}`,
+      `${existingPath ? 'Update' : 'Add'} ${targetPath}`,
     );
-    if (!message || !message.trim()) return;
+    if (!message || !message.trim()) {
+      return { handled: Boolean(existingPath), name: null };
+    }
     const headers = { 'X-Commit-Message': message.trim() };
-    if (openedRepoFile.etag) headers['If-Match'] = openedRepoFile.etag;
-    const res = await fetch(`/api/github/file?path=${encodeURIComponent(openedRepoFile.path)}`, {
+    if (openedRepoFile?.etag) headers['If-Match'] = openedRepoFile.etag;
+    const res = await fetch(`/api/github/file?path=${encodeURIComponent(targetPath)}`, {
       method: 'PUT',
       credentials: 'same-origin',
       headers,
@@ -520,12 +567,102 @@ if (!params.has('host')) {
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.sha) {
-      openedRepoFile.etag = `"${data.sha}"`;
-      alert(`GitHub にコミットしました (${data.commitSha?.slice(0, 7) || 'ok'})`);
-    } else {
-      alert(`GitHub コミットに失敗しました: ${data.error || `HTTP ${res.status}`}`);
+      const savedName = targetPath.split('/').pop() || targetPath;
+      openedRepoFile = { path: targetPath, name: savedName, etag: `"${data.sha}"` };
+      void refreshRepoTree();
+      return { handled: true, name: savedName };
     }
+    const errMsg = data.error || `HTTP ${res.status}`;
+    alert(`GitHub コミットに失敗しました: ${errMsg}`);
+    throw new Error(errMsg);
+  }
+
+  window.soraneSaveToGitHub = saveToGitHub;
+
+  // Keep supporting ibisoffice:download if dispatched by embed/export callers.
+  window.addEventListener('ibisoffice:download', (event) => {
+    const bytes = event.detail?.bytes;
+    if (!(bytes instanceof Uint8Array)) return;
+    void saveToGitHub(event.detail?.name || 'Untitled.md', bytes).then((result) => {
+      if (result.handled && result.name) {
+        alert(`GitHub にコミットしました (${result.name})`);
+      }
+    }).catch(() => {});
   });
+
+  let activeAiAbortController = null;
+
+  window.ibisOfficeAiAbort = () => {
+    if (activeAiAbortController) {
+      activeAiAbortController.abort();
+      activeAiAbortController = null;
+    }
+  };
+
+  window.ibisOfficeAiModels = async () => {
+    const res = await fetch('/api/ai/models', { credentials: 'same-origin' });
+    if (res.status === 401) {
+      throw new Error('login_required');
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'ai_failed');
+    }
+    return await res.text();
+  };
+
+  window.ibisOfficeAiStream = async (body, csrf, onLine) => {
+    window.ibisOfficeAiAbort();
+    const controller = new AbortController();
+    activeAiAbortController = controller;
+    try {
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Sorane-CSRF': csrf || '',
+        },
+        body,
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || (res.status === 401 ? 'login_required' : 'ai_failed'));
+      }
+      if (!res.body) {
+        throw new Error('ai_failed');
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nl).replace(/\r$/, '');
+          buffer = buffer.slice(nl + 1);
+          if (line.length > 0 && typeof onLine === 'function') {
+            onLine(line);
+          }
+        }
+      }
+      if (buffer.trim().length > 0 && typeof onLine === 'function') {
+        onLine(buffer.replace(/\r$/, ''));
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        throw new Error('aborted');
+      }
+      throw err;
+    } finally {
+      if (activeAiAbortController === controller) {
+        activeAiAbortController = null;
+      }
+    }
+  };
 
   void loadSession();
 }

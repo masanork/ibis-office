@@ -16,6 +16,8 @@ import init, {
   host_snapshot_name,
   host_editor_ready,
   open_local_file,
+  set_web_vault_tree,
+  hydrate_web_vault_file,
 } from './pkg/ibis_office_app.js';
 import { installHostLoader, resolveOptionUrls, waitForEditor, type HostSession } from './host-loader.js';
 import { APP_VERSION } from './build-info.js';
@@ -94,6 +96,9 @@ declare global {
     ibisOfficeFetchUrl: (url: string) => Promise<PickedFile>;
     /** Called from Rust when a host-configured Web start-view action button is clicked. */
     ibisOfficeStartAction: (action: string) => void;
+    ibisOfficeNotifyGitHubFile?: (path: string, name: string) => void;
+    ibisOfficeSetWebVaultTree?: (label: string, files: string[]) => void;
+    ibisOfficeHydrateWebVaultFile?: (relPath: string, content: string) => void;
     /** Optional runtime updater for the Web start view configuration. */
     ibisOfficeSetStartView?: (config: Record<string, unknown>) => void;
     /** Record a file in the local recent-files history (no contents). */
@@ -128,6 +133,8 @@ declare global {
     ibisOfficeSaveFile: (name: string, mime: string, bytes: Uint8Array) => void;
     /** Called from Rust for 保存 / 名前を付けて保存: in-place File System Access, a save picker, or a download. */
     ibisOfficeSaveLocal: (name: string, mime: string, bytes: Uint8Array, saveAs: boolean) => Promise<string | null>;
+    /** Optional hook installed by sorane-github-vault.js to commit saves directly to GitHub. */
+    soraneSaveToGitHub?: (name: string, bytes: Uint8Array) => Promise<{ handled: boolean; name: string | null }>;
     /** Called from Rust at a print click, before the PDF is made: a blank tab opened while the click still counts (the popup blocker lets it). `null` when the browser refused. */
     ibisOfficeBlankTab: () => Window | null;
     /** Called from Rust when the print's PDF is made: shown in `tab` (a Blob URL), or in a new tab when `tab` is `null`; a tab left over is closed with `bytes` empty. */
@@ -888,9 +895,79 @@ async function fetchSameOriginUrl(url: string): Promise<PickedFile> {
 window.ibisOfficeDecodeHeic = decodeHeic;
 window.ibisOfficePickFile = () => pickDocumentFile();
 window.ibisOfficeFetchUrl = fetchSameOriginUrl;
+const WEB_STARTER_TEMPLATES: Record<string, { name: string; content: string }> = {
+  'new-marp': {
+    name: 'Untitled.marp.md',
+    content: [
+      '---',
+      'marp: true',
+      'theme: default',
+      'paginate: true',
+      '---',
+      '',
+      '# タイトル',
+      '',
+      'サブタイトル',
+      '',
+      '---',
+      '',
+      '## スライド 2',
+      '',
+      '- 箇条書き 1',
+      '- 箇条書き 2',
+      '',
+    ].join('\n'),
+  },
+  'new-workbook-md': {
+    name: 'Untitled.sheet.md',
+    content: [
+      '---',
+      'ibis-workbook: true',
+      '---',
+      '',
+      '<!-- ibis-sheet: Sheet1 -->',
+      '',
+      '# Sheet1',
+      '',
+      '| 項目 | 値 | メモ |',
+      '| --- | ---: | --- |',
+      '| A | 100 | |',
+      '| B | 200 | |',
+      '| 合計 | =SUM(B2:B3) | |',
+      '',
+    ].join('\n'),
+  },
+  'new-lawtext': {
+    name: 'Untitled.lawtext',
+    content: [
+      '令和六年架空規則第一号',
+      '新規法令案',
+      '',
+      '  （目的）',
+      '第一条　この規則は、必要な事項を定めることを目的とする。',
+      '',
+      '  附則',
+      'この規則は、公布の日から施行する。',
+      '',
+    ].join('\n'),
+  },
+};
+
 window.ibisOfficeStartAction = (action: string) => {
   if (action === 'clear-recents' || action.startsWith('open-recent:') || action.startsWith('remove-recent:')) {
     void handleRecentAction(action);
+    return;
+  }
+  const starter = WEB_STARTER_TEMPLATES[action];
+  if (starter) {
+    const bytes = new TextEncoder().encode(starter.content);
+    queueMicrotask(() => {
+      try {
+        open_local_file(starter.name, bytes);
+      } catch (error) {
+        console.warn('ibisOffice: could not create starter draft', error);
+      }
+    });
     return;
   }
   window.dispatchEvent(new CustomEvent('sorane:start-action', { detail: { action } }));
@@ -921,6 +998,12 @@ window.ibisOfficeFontLoadOne = fontLoadOne;
 window.ibisOfficeEmbedAction = embedAction;
 window.ibisOfficeSaveFile = saveFile;
 window.ibisOfficeSaveLocal = async (name, mime, bytes, saveAs) => {
+  if (!saveAs && window.soraneSaveToGitHub) {
+    const githubResult = await window.soraneSaveToGitHub(name, bytes);
+    if (githubResult.handled) {
+      return githubResult.name;
+    }
+  }
   const result = await saveLocalFile(name, mime, bytes, saveAs);
   return result ? result.name : null;
 };
@@ -928,6 +1011,7 @@ window.ibisOfficeSaveLocal = async (name, mime, bytes, saveAs) => {
 async function pickDocumentFile(): Promise<PickedFile | null> {
   const picked = await pickLocalFile({ remember: true });
   if (!picked) return null;
+  window.dispatchEvent(new CustomEvent('sorane:github-file-opened', { detail: null }));
   await rememberLocalOpen(picked);
   return { name: picked.name, bytes: picked.bytes };
 }
@@ -935,6 +1019,7 @@ async function pickDocumentFile(): Promise<PickedFile | null> {
 function openLocalPicked(file: PickedLocalFile): void {
   void rememberLocalOpen(file);
   try {
+    window.dispatchEvent(new CustomEvent('sorane:github-file-opened', { detail: null }));
     open_local_file(file.name, file.bytes);
   } catch (error) {
     console.warn('ibisOffice: could not open the local file', error);
@@ -982,12 +1067,14 @@ async function handleRecentAction(action: string): Promise<void> {
       const entry = (await loadRecents()).find((row) => row.id === id);
       const resolved = await resolveRecentOpen(entry);
       if (resolved.mode === 'handle') {
+        window.dispatchEvent(new CustomEvent('sorane:github-file-opened', { detail: null }));
         await rememberLocalOpen(resolved.file);
         open_local_file(resolved.file.name, resolved.file.bytes);
         return;
       }
       if (resolved.mode === 'picker') {
         if (resolved.file) {
+          window.dispatchEvent(new CustomEvent('sorane:github-file-opened', { detail: null }));
           await rememberLocalOpen(resolved.file);
           open_local_file(resolved.file.name, resolved.file.bytes);
         }
@@ -1018,6 +1105,7 @@ async function openGithubRecent(github: RecentGithub): Promise<void> {
   const url = `/api/github/file?path=${encodeURIComponent(github.path)}`;
   const file = await fetchSameOriginUrl(url);
   open_local_file(file.name, file.bytes);
+  window.dispatchEvent(new CustomEvent('sorane:github-file-opened', { detail: { path: github.path, name: file.name } }));
 }
 
 window.soraneRecordRecent = (input) => rememberRecent(input);
@@ -1148,9 +1236,44 @@ if (!('gpu' in navigator)) {
       applyStartView(window.ibisOfficeOptions?.startView);
       window.ibisOfficeSetStartView = applyStartView;
     }
+    let pendingVaultTree: { label: string; files: string[] } | null = null;
+    const pendingVaultContents: Array<{ relPath: string; content: string }> = [];
+    window.ibisOfficeNotifyGitHubFile = (path, name) => {
+      window.dispatchEvent(new CustomEvent('sorane:github-file-opened', { detail: { path, name, etag: null } }));
+    };
+    window.ibisOfficeSetWebVaultTree = (label, files) => {
+      try {
+        set_web_vault_tree(label, files.join('\n'));
+        pendingVaultTree = null;
+      } catch {
+        pendingVaultTree = { label, files };
+      }
+    };
+    window.ibisOfficeHydrateWebVaultFile = (relPath, content) => {
+      try {
+        hydrate_web_vault_file(relPath, content);
+      } catch {
+        pendingVaultContents.push({ relPath, content });
+      }
+    };
     await run(base, file?.name, file?.bytes);
     installLocalFileDrop();
     status?.remove();
+    if (!hostLoader) {
+      void waitForEditor(host_editor_ready, 'timeout').then(() => {
+        if (pendingVaultTree) {
+          try {
+            set_web_vault_tree(pendingVaultTree.label, pendingVaultTree.files.join('\n'));
+          } catch { /* single-editor mode */ }
+          pendingVaultTree = null;
+        }
+        for (const item of pendingVaultContents.splice(0)) {
+          try {
+            hydrate_web_vault_file(item.relPath, item.content);
+          } catch { /* single-editor mode */ }
+        }
+      }).catch(() => {});
+    }
     if (hostLoader && hostSession) {
       // `run` returns before the editor window exists (it opens when the GPU is ready): `ready` means load is accepted, so wait for it.
       await waitForEditor(host_editor_ready, ja ? 'エディターの準備が間に合いませんでした' : 'The editor did not become ready in time');

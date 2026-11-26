@@ -150,7 +150,7 @@ pub(crate) fn refresh(cx: &mut App) -> bool {
     true
 }
 
-pub(crate) fn sync(editor: &SlideEditor, window: &Window, cx: &mut Context<SlideEditor>) {
+pub fn sync(editor: &SlideEditor, window: &Window, cx: &mut Context<SlideEditor>) {
     let handle = window.window_handle();
     if cx.active_window() != Some(handle) {
         return;

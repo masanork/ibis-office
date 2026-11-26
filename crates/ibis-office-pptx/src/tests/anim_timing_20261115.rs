@@ -143,7 +143,7 @@ fn clock_arithmetic() {
         chart_build: None,
         dgm_element: None,
         dgm_build: None,
-        behaviors: Vec::new(),
+        behaviors: Vec::new(), group_pivot: None,
     };
     let near = |a: (f32, bool), b: (f32, bool)| (a.0 - b.0).abs() < 1e-4 && a.1 == b.1;
     let a = anim(AnimationRepeat::Count(3), false);

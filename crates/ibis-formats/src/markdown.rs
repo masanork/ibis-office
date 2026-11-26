@@ -33,6 +33,11 @@
 
 mod marp;
 mod metafile_preview;
+
+pub use crate::markdown_source_map::{
+    MarkdownBlockSpan, MarkdownSourceMap, patch_markdown_from_visual_edit,
+    try_patch_markdown_from_visual_edit,
+};
 mod myst;
 mod obsidian;
 mod okf_metadata;
@@ -242,6 +247,54 @@ pub fn is_presentation_markdown(data: &[u8]) -> bool {
     })
 }
 
+/// Return `true` when the Markdown bytes represent a spreadsheet workbook:
+/// either via YAML frontmatter (`type: workbook`, `type: spreadsheet`, `type: xlsx`,
+/// `workbook: true`, `x-ibis-format: workbook|spreadsheet|xlsx`) or via ibisOffice
+/// workbook sheet/metadata markers (`<!-- xlsx-sheet ... -->`, `<!-- xlsx-date-system:1904 -->`,
+/// `<!-- xlsx-defined-names ... -->`) outside fenced code blocks.
+pub fn is_workbook_markdown(data: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return false;
+    };
+    let trimmed = text.trim_start_matches('\u{feff}').trim_start();
+    if let Some((fm, _)) = roundtrip::frontmatter(trimmed) {
+        if let Some(format) = roundtrip::metadata_value(fm, "x-ibis-format") {
+            return matches!(format, "workbook" | "spreadsheet" | "xlsx");
+        }
+        if fm.lines().any(|line| {
+            let Some((key, value)) = line.split_once(':') else {
+                return false;
+            };
+            let key = key.trim().to_ascii_lowercase();
+            let value = value.trim().trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase();
+            matches!(
+                (key.as_str(), value.as_str()),
+                ("workbook", "true")
+                    | ("type", "workbook" | "spreadsheet" | "xlsx")
+            )
+        }) {
+            return true;
+        }
+        if is_presentation_markdown(data) {
+            return false;
+        }
+    }
+    let mut fence = None;
+    for line in trimmed.lines() {
+        let line_trimmed = line.trim_end();
+        if is_fenced_line(line_trimmed, &mut fence) {
+            continue;
+        }
+        if line_trimmed.starts_with(XLSX_SHEET_MARKER)
+            || line_trimmed == XLSX_1904_MARKER
+            || line_trimmed.starts_with(XLSX_DEFINED_NAMES_MARKER)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Return the source body after a recognized frontmatter block, without rewriting it.
 pub fn body_without_frontmatter(text: &str) -> &str {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -348,7 +401,7 @@ pub fn open_markdown_with_design_system_dirs(
     .clone();
 
     let mut media_list: Vec<Media> = opened.presentation.media.clone();
-    let ds_theme = parse_markdown_into(
+    let (source_map, ds_theme) = parse_markdown_into(
         text,
         &mut doc,
         &mut media_list,
@@ -375,8 +428,9 @@ pub fn open_markdown_with_design_system_dirs(
             };
         }
     }
-    opened.presentation.flow = Some(document);
+    opened.presentation.flow = Some(document.clone());
     opened.source.mark_generated_from_markdown();
+    opened.source.set_original_markdown(text.to_owned(), source_map, document);
     Ok(opened)
 }
 
@@ -391,6 +445,27 @@ pub fn reparse_markdown_document(
     baseline_pres: Option<&Presentation>,
     base_dir: Option<&std::path::Path>,
 ) -> Result<FlowDocument, Error> {
+    reparse_markdown_document_with_source_map(
+        text,
+        current_doc,
+        media,
+        source,
+        baseline_pres,
+        base_dir,
+    )
+    .map(|(doc, _)| doc)
+}
+
+/// Like [`reparse_markdown_document`], also returning the block-level [`MarkdownSourceMap`]
+/// mapping each top-level `FlowDocument::body` block back to its line/byte span in `text`.
+pub fn reparse_markdown_document_with_source_map(
+    text: &str,
+    current_doc: &FlowDocument,
+    media: &mut Vec<Media>,
+    source: Option<&crate::Source>,
+    baseline_pres: Option<&Presentation>,
+    base_dir: Option<&std::path::Path>,
+) -> Result<(FlowDocument, MarkdownSourceMap), Error> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let opened = crate::save::open(crate::blank::blank_file(crate::Kind::Document)?)?;
     let fallback_baseline = opened.presentation;
@@ -402,7 +477,7 @@ pub fn reparse_markdown_document(
     doc.view_mode = current_doc.view_mode;
     doc.interaction_mode = current_doc.interaction_mode;
 
-    let _ = parse_markdown_into(
+    let (source_map, _) = parse_markdown_into(
         text,
         &mut doc,
         media,
@@ -411,7 +486,7 @@ pub fn reparse_markdown_document(
         base_dir,
         None,
     )?;
-    Ok(doc)
+    Ok((doc, source_map))
 }
 
 /// Parse a Markdown text fragment into [`Block`]s using `doc`'s styles/numbering (e.g. for clipboard paste).
@@ -502,6 +577,10 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
 
     let text = std::str::from_utf8(&data).map_err(|_| Error::new("Markdown ファイルが UTF-8 ではありません"))?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let text = match roundtrip::frontmatter(text.trim_start()) {
+        Some((_, body)) => body.trim_start_matches(['\r', '\n']),
+        None => text,
+    };
     let date1904 = text.lines().next().is_some_and(|line| line == XLSX_1904_MARKER);
     let (defined_names, text) = parse_markdown_defined_names(text)?;
     let sections = markdown_workbook_sections(text)?;
@@ -1624,8 +1703,10 @@ fn parse_markdown_into(
     baseline_pres: Option<&Presentation>,
     base_dir: Option<&std::path::Path>,
     system_design_systems_dir: Option<&std::path::Path>,
-) -> Result<Option<crate::design_system::DesignSystemTheme>, Error> {
+) -> Result<(MarkdownSourceMap, Option<crate::design_system::DesignSystemTheme>), Error> {
+    let original_text = text;
     let text = shape_text::strip(metafile_preview::strip(text));
+    let text_unmodified = std::ptr::eq(text.as_ptr(), original_text.as_ptr()) && text.len() == original_text.len();
     let trimmed_start = text.trim_start_matches(['\n', '\r']);
     let frontmatter = roundtrip::document_frontmatter(trimmed_start);
     let mut body_text = frontmatter.as_ref().map_or(text, |frame| frame.body);
@@ -1675,9 +1756,20 @@ fn parse_markdown_into(
         doc.bibliography_sources.push(xml.to_owned());
         body_text = rest;
     }
+    let body_line_offset = if text_unmodified
+        && body_text.as_ptr() as usize >= original_text.as_ptr() as usize
+        && (body_text.as_ptr() as usize - original_text.as_ptr() as usize) <= original_text.len()
+    {
+        let byte_offset = body_text.as_ptr() as usize - original_text.as_ptr() as usize;
+        original_text[..byte_offset].bytes().filter(|&b| b == b'\n').count()
+    } else {
+        0
+    };
     let mut footnote_defs: HashMap<String, String> = HashMap::new();
-    let body_text = collect_markdown_links(body_text, &mut ctx);
-    let mut blocks = parse_blocks(&body_text, &mut ctx, &mut footnote_defs)?;
+    let body_text_cow = collect_markdown_links(body_text, &mut ctx);
+    let body_borrowed = matches!(body_text_cow, std::borrow::Cow::Borrowed(_));
+    let mut raw_block_lines: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut blocks = parse_blocks_with_lines(&body_text_cow, &mut ctx, &mut footnote_defs, Some(&mut raw_block_lines))?;
     if let Some(Block::Paragraph(paragraph)) = blocks.last()
         && paragraph.section_break == ibis_doc_model::SectionBreak::None
         && let Some(section) = &paragraph.section
@@ -1706,6 +1798,7 @@ fn parse_markdown_into(
             *target = section.parts[index].clone().unwrap_or_default();
         }
         blocks.pop();
+        raw_block_lines.truncate(blocks.len());
     }
     if blocks.iter().any(|block| matches!(block, Block::Paragraph(p)
         if p.section.is_some() && p.section_break == ibis_doc_model::SectionBreak::None))
@@ -1718,6 +1811,7 @@ fn parse_markdown_into(
         _ => None,
     });
 
+    let blocks_were_nonempty = !blocks.is_empty();
     doc.styles = Arc::new(ctx.styles.clone());
     doc.body = if blocks.is_empty() {
         let mut p = FlowParagraph {
@@ -1871,7 +1965,19 @@ fn parse_markdown_into(
         let _ = ibis_doc_model::flow_command::apply_to(doc, command);
     }
 
-    Ok(resolved_design_system)
+    let patchable = text_unmodified
+        && body_borrowed
+        && blocks_were_nonempty
+        && doc.body.len() == raw_block_lines.len();
+    let source_map = MarkdownSourceMap::from_line_spans(
+        original_text,
+        doc,
+        body_line_offset,
+        raw_block_lines,
+        patchable,
+    );
+
+    Ok((source_map, resolved_design_system))
 }
 
 // Private anchor namespace used only while a MyST reference awaits a target.
@@ -3236,7 +3342,16 @@ fn parse_blocks(
     ctx: &mut ParseContext<'_>,
     footnote_defs: &mut HashMap<String, String>,
 ) -> Result<Vec<Block>, Error> {
-    parse_blocks_at_quote_depth(body_text, ctx, footnote_defs, 0)
+    parse_blocks_with_lines(body_text, ctx, footnote_defs, None)
+}
+
+fn parse_blocks_with_lines(
+    body_text: &str,
+    ctx: &mut ParseContext<'_>,
+    footnote_defs: &mut HashMap<String, String>,
+    block_lines: Option<&mut Vec<std::ops::Range<usize>>>,
+) -> Result<Vec<Block>, Error> {
+    parse_blocks_at_quote_depth(body_text, ctx, footnote_defs, 0, block_lines)
 }
 
 fn parse_blocks_at_quote_depth(
@@ -3244,6 +3359,7 @@ fn parse_blocks_at_quote_depth(
     ctx: &mut ParseContext<'_>,
     footnote_defs: &mut HashMap<String, String>,
     quote_depth: usize,
+    mut block_lines: Option<&mut Vec<std::ops::Range<usize>>>,
 ) -> Result<Vec<Block>, Error> {
     let lines: Vec<&str> = body_text.lines().collect();
     let mut quoted_items = HashMap::new();
@@ -3252,8 +3368,17 @@ fn parse_blocks_at_quote_depth(
     let mut continuations = markdown_continuations(body_text, &lines, &mut quoted_items, quote_depth > 0, &mut item_paragraph_ends);
     let mut blocks: Vec<Block> = Vec::new();
     let mut i = 0;
+    let mut last_start_line = 0usize;
+    let mut last_block_len = 0usize;
 
     while i < lines.len() {
+        if let Some(spans) = block_lines.as_deref_mut()
+            && blocks.len() > last_block_len
+        {
+            spans.resize(blocks.len(), last_start_line..i);
+            last_block_len = blocks.len();
+        }
+        last_start_line = i;
         let raw = lines[i];
         let trimmed = raw.trim();
 
@@ -3732,6 +3857,10 @@ fn parse_blocks_at_quote_depth(
                 "mermaid" => {
                     blocks.push(build_mermaid_block(&content, ctx)?);
                 }
+                "plantuml" | "puml" => {
+                    let fence_lang = lang.split_whitespace().next().unwrap_or("plantuml");
+                    blocks.push(build_plantuml_block(fence_lang, fence_info, &content, ctx));
+                }
                 _ => {
                     let mut block = build_code_block(&content, ctx);
                     if let Block::Paragraph(paragraph) = &mut block
@@ -3991,6 +4120,12 @@ fn parse_blocks_at_quote_depth(
             p.normalize();
             blocks.push(Block::Paragraph(p));
         }
+    }
+
+    if let Some(spans) = block_lines.as_deref_mut()
+        && blocks.len() > last_block_len
+    {
+        spans.resize(blocks.len(), last_start_line..i);
     }
 
     Ok(blocks)
@@ -4519,7 +4654,7 @@ fn parse_structured_quote(
         return Ok(None);
     }
 
-    let mut blocks = parse_blocks_at_quote_depth(&source, ctx, &mut HashMap::new(), quote_depth + 1)?;
+    let mut blocks = parse_blocks_at_quote_depth(&source, ctx, &mut HashMap::new(), quote_depth + 1, None)?;
     if !has_nested && blocks.len() != count {
         return Ok(None);
     }
@@ -5485,10 +5620,52 @@ fn is_literal_mermaid_fence(text: &str) -> bool {
     closes_fence(last, marker) && !lines.any(|line| closes_fence(line.trim(), marker))
 }
 
+fn build_plantuml_block(
+    fence_lang: &str,
+    fence_info: &str,
+    content: &str,
+    ctx: &mut ParseContext<'_>,
+) -> Block {
+    let rendered = crate::mermaid::render_plantuml(content);
+    let has_blocking = rendered
+        .unsupported
+        .iter()
+        .any(|u| matches!(u.kind, "macro" | "timing" | "diagram-type"));
+    if !has_blocking
+        && let Some(crate::mermaid::MermaidOutput::Svg {
+            bytes,
+            width_px,
+            height_px,
+        }) = rendered.output
+    {
+        let marker = format!("__plantuml__:{fence_lang}");
+        return build_diagram_svg_paragraph(bytes, width_px, height_px, &marker, content, ctx);
+    }
+    let mut block = build_code_block(content, ctx);
+    if let Block::Paragraph(paragraph) = &mut block
+        && let Some(style) = ctx.code_language_style(fence_info)
+    {
+        paragraph.style = Some(style);
+        paragraph.resolve(&ctx.styles);
+    }
+    block
+}
+
 fn build_mermaid_svg_paragraph(
     bytes: Vec<u8>,
     width_px: u32,
     height_px: u32,
+    content: &str,
+    ctx: &mut ParseContext<'_>,
+) -> Block {
+    build_diagram_svg_paragraph(bytes, width_px, height_px, "__mermaid__", content, ctx)
+}
+
+fn build_diagram_svg_paragraph(
+    bytes: Vec<u8>,
+    width_px: u32,
+    height_px: u32,
+    marker_title: &str,
     content: &str,
     ctx: &mut ParseContext<'_>,
 ) -> Block {
@@ -5509,7 +5686,7 @@ fn build_mermaid_svg_paragraph(
         data: bytes.into(),
     });
     let mut look = PictureLook::default();
-    look.alt_text.title = "__mermaid__".to_string();
+    look.alt_text.title = marker_title.to_string();
     look.alt_text.description = content.to_string();
     let mut p = FlowParagraph {
         id: ctx.fresh_id(),
@@ -6529,7 +6706,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                             base: base.to_string(),
                             text: ruby.to_string(),
                             align: RubyAlign::DistributeSpace,
-                            size: 1000,
+                            size: 0,
                             raise: 0,
                         },
                         style: FlowRunStyle::default(),
@@ -6561,7 +6738,7 @@ fn parse_inlines(text: &str, ctx: &mut ParseContext<'_>, base_fmt: &RunFormat) -
                                     base: base.to_string(),
                                     text: ruby.to_string(),
                                     align: RubyAlign::DistributeSpace,
-                                    size: 1000,
+                                    size: 0,
                                     raise: 0,
                                 },
                                 style: FlowRunStyle::default(),
@@ -7456,6 +7633,22 @@ fn encode_base64(data: &[u8]) -> String {
 /// Export a [`FlowDocument`] and its media to deterministic Rich Markdown.
 pub fn export_markdown(doc: &FlowDocument, media: &[Media]) -> String {
     export_markdown_with_positions(doc, media, &mut Vec::new(), |_, _, _| {})
+}
+
+/// Export a [`FlowDocument`] and its media to deterministic Rich Markdown together with a
+/// block-level [`MarkdownSourceMap`] covering every top-level `doc.body` block.
+pub fn export_markdown_with_source_map(
+    doc: &FlowDocument,
+    media: &[Media],
+) -> (String, MarkdownSourceMap) {
+    let mut spans: Vec<(usize, usize, usize)> = Vec::with_capacity(doc.body.len());
+    let text = export_markdown_with_positions(doc, media, &mut Vec::new(), |source, start, end| {
+        if let MarkdownSource::Body(index, _) = source {
+            spans.push((index, start, end));
+        }
+    });
+    let map = MarkdownSourceMap::from_byte_spans(&text, doc, spans, true);
+    (text, map)
 }
 
 enum MarkdownSource<'a> {
@@ -8854,6 +9047,19 @@ fn serialize_paragraph(
             }
             FlowRunKind::Picture { look, .. } if look.alt_text.title == "__mermaid__" => {
                 write_mermaid_fence(&look.alt_text.description, out);
+                return;
+            }
+            FlowRunKind::Picture { look, .. }
+                if look.alt_text.title == "__plantuml__"
+                    || look.alt_text.title.starts_with("__plantuml__:") =>
+            {
+                let fence = look
+                    .alt_text
+                    .title
+                    .strip_prefix("__plantuml__:")
+                    .filter(|lang| !lang.is_empty())
+                    .unwrap_or("plantuml");
+                write_named_fence(fence, &look.alt_text.description, out);
                 return;
             }
             _ => {}
@@ -10476,6 +10682,13 @@ pub fn export_presentation_markdown(p: &Presentation) -> String {
                         .unwrap_or(&pic.alt_text);
                     if alt.title == "__mermaid__" {
                         write_mermaid_fence(&alt.description, &mut out);
+                    } else if alt.title == "__plantuml__" || alt.title.starts_with("__plantuml__:") {
+                        let fence = alt
+                            .title
+                            .strip_prefix("__plantuml__:")
+                            .filter(|lang| !lang.is_empty())
+                            .unwrap_or("plantuml");
+                        write_named_fence(fence, &alt.description, &mut out);
                     } else if let Some(media) = p.media(pic.media) {
                         use base64::Engine as _;
                         let mime = match media.format {
@@ -12047,6 +12260,25 @@ Table {{seq:table}} {#tbl_results}
         paragraph.direct.borders[3] = Some(Some(markdown_quote_border(Rgb(0x0969DA))));
         let docx = opened.source.save(&presentation, SaveOptions::default()).unwrap();
         assert_eq!(export_docx_to_markdown(&docx).unwrap(), "> [!NOTE]\n> Old callout.\n");
+    }
+
+    #[test]
+    fn markdown_rubies_save_a_smaller_annotation_above_the_base() {
+        let bytes = super::import_markdown_to_docx_bytes("# {山路|やまみち}\n\n｜漢字《かんじ》\n".as_bytes()).unwrap();
+        let opened = crate::open(bytes).unwrap();
+        let flow = opened.presentation.flow.unwrap();
+        let paragraphs = ibis_doc_model::flow_command::all_paragraphs(&flow);
+        let mut found = 0;
+        for paragraph in paragraphs {
+            for run in &paragraph.runs {
+                if let FlowRunKind::Ruby { size, raise, .. } = &run.kind {
+                    assert!(*size > 0 && *size < run.style.size);
+                    assert!(*raise >= run.style.size);
+                    found += 1;
+                }
+            }
+        }
+        assert_eq!(found, 2);
     }
 
     #[test]
@@ -13632,6 +13864,28 @@ xychart-beta
         assert!(exported.contains("| Product | Qty | Price |"));
         assert!(exported.contains("| Apple | 10 | 120 |"));
         assert!(exported.contains("| Orange | 5 | 80 |"));
+    }
+
+    #[test]
+    fn is_workbook_markdown_detects_frontmatter_and_xlsx_sheet_markers() {
+        let fm_wb = "---\ntype: workbook\n---\n\n| Item | Cost |\n| --- | ---: |\n| A | 10 |\n";
+        assert!(is_workbook_markdown(fm_wb.as_bytes()));
+        assert!(!is_presentation_markdown(fm_wb.as_bytes()));
+        let opened = open_markdown_workbook(fm_wb.as_bytes().to_vec()).expect("open fm workbook");
+        assert!(opened.presentation.workbook.is_some());
+
+        let marker_wb = "<!-- xlsx-sheet \"Sales\" -->\n\n## Sales\n\n| Q | Rev |\n| --- | --- |\n| Q1 | 100 |\n";
+        assert!(is_workbook_markdown(marker_wb.as_bytes()));
+
+        let marp_doc = "---\nmarp: true\n---\n\n# Slide 1\n\n---\n\n# Slide 2\n";
+        assert!(is_presentation_markdown(marp_doc.as_bytes()));
+        assert!(!is_workbook_markdown(marp_doc.as_bytes()));
+
+        let plain_doc = "# Note\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n";
+        assert!(!is_workbook_markdown(plain_doc.as_bytes()));
+
+        let fenced = "# Docs\n\n```markdown\n<!-- xlsx-sheet \"Fake\" -->\n```\n";
+        assert!(!is_workbook_markdown(fenced.as_bytes()));
     }
 
     #[test]

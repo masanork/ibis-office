@@ -6501,7 +6501,7 @@ pub(crate) fn paragraph_animations() {
         trigger: AnimationTrigger::None,
         paragraph: Some((i, i)), chars: None, text_unit: None, path: Vec::new(),
         chart_element: None, chart_build: None,
-        dgm_element: None, dgm_build: None, behaviors: Vec::new(),
+        dgm_element: None, dgm_build: None, behaviors: Vec::new(), group_pivot: None,
     };
     let animations: Vec<Animation> = (0..paragraphs as u32).map(effect).collect();
     s.update(|e, _, cx| e.run(vec![Command::SetAnimations { slide, animations: animations.clone() }], cx));

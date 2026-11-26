@@ -93,6 +93,7 @@ pub(crate) mod media_compress;
 pub(crate) use media_compress::MediaQuality;
 pub(crate) mod threed_and_nav;
 pub(crate) mod visio_stencil;
+pub(crate) mod markdown_source;
 
 use gpui_kit::*;
 use ibis_doc_model::Presentation as Model;
@@ -227,11 +228,15 @@ pub struct State {
     pub(crate) visio_fill_override: Option<u32>,
     /// Currently hovered cardinal connection site `(shape_id, site_index)` in Visio connector mode.
     pub(crate) visio_hover_site: Option<(u64, u32)>,
+    /// Active bidirectional Marp Markdown Split / Source view state.
+    pub(crate) markdown_source: Option<crate::shell::markdown_split::MarkdownSplitHost>,
+    /// True once initial workspace auto-Split initialization has been evaluated.
+    pub(crate) auto_split_initialized: bool,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { mermaid_edit: None, slideshow: None, master_view: None, notes_format: None, animation_copy: None, photo_album: None, section_panel: None, layout_panel: None, print_panel: None, #[cfg(feature = "export")] edit_points: None, path_draw: None, notes_marks_panel: None, print_settings: Default::default(), folded_sections: Default::default(), section_selection: None, cell_size_panel: None, comments: None, animation_pane: false, animation_expanded: Default::default(), animation_drag_folded: Vec::new(), animation_table: Default::default(), animation_dnd: Default::default(), sidebar_settings: None, smartart_text_pane: false, smartart_reorder: Default::default(), animation_options_panel: None, reading_order_pane: None, link_panel: None, clips: Vec::new(), transition_sound: None, clip_hover: None, clip_seek: None, clip_volume: Default::default(), timing_panel: None, show_panel: None, notes_field: None, notes_hidden: false, notes_touched: Default::default(), pane_width: None, notes_height: notes::PANE_HEIGHT, notes_open_percent: None, pane_drag: None, grid_view: false, outline_view: false, outline_edit: None, ink: None, math_panel: None, notes_page_view: false, slide_selection: Vec::new(), properties_panel: None, inspect_panel: None, accessibility_panel: None, compatibility_panel: None, slide_zoom_dialog: None, section_zoom_dialog: None, summary_zoom_dialog: None, compare_panel: None, audio_record: None, threed_panel: None, record_preview: None, screen_reader: None, ribbon_qat: None, trust_center: None, visio_auto_connect: true, visio_fill_override: None, visio_hover_site: None }
+        Self { mermaid_edit: None, slideshow: None, master_view: None, notes_format: None, animation_copy: None, photo_album: None, section_panel: None, layout_panel: None, print_panel: None, #[cfg(feature = "export")] edit_points: None, path_draw: None, notes_marks_panel: None, print_settings: Default::default(), folded_sections: Default::default(), section_selection: None, cell_size_panel: None, comments: None, animation_pane: false, animation_expanded: Default::default(), animation_drag_folded: Vec::new(), animation_table: Default::default(), animation_dnd: Default::default(), sidebar_settings: None, smartart_text_pane: false, smartart_reorder: Default::default(), animation_options_panel: None, reading_order_pane: None, link_panel: None, clips: Vec::new(), transition_sound: None, clip_hover: None, clip_seek: None, clip_volume: Default::default(), timing_panel: None, show_panel: None, notes_field: None, notes_hidden: false, notes_touched: Default::default(), pane_width: None, notes_height: notes::PANE_HEIGHT, notes_open_percent: None, pane_drag: None, grid_view: false, outline_view: false, outline_edit: None, ink: None, math_panel: None, notes_page_view: false, slide_selection: Vec::new(), properties_panel: None, inspect_panel: None, accessibility_panel: None, compatibility_panel: None, slide_zoom_dialog: None, section_zoom_dialog: None, summary_zoom_dialog: None, compare_panel: None, audio_record: None, threed_panel: None, record_preview: None, screen_reader: None, ribbon_qat: None, trust_center: None, visio_auto_connect: true, visio_fill_override: None, visio_hover_site: None, markdown_source: None, auto_split_initialized: false }
     }
 }
 
@@ -329,6 +334,8 @@ impl crate::shell::format::GestureView for State {
             visio_auto_connect: _,
             visio_fill_override: _,
             visio_hover_site: _,
+            markdown_source: _,
+            auto_split_initialized: _,
         } = self;
         GestureSnapshot {
             slide_selection: slide_selection.clone(),
@@ -460,6 +467,30 @@ impl FormatEditor for Presentation {
         true
     }
 
+    fn source_bytes_for_name(
+        editor: &SlideEditor,
+        name: &str,
+        _source: &ibis_formats::Source,
+    ) -> Option<Result<crate::shell::format::FileBytes, String>> {
+        use crate::shell::format::FileBytes;
+        let extension = std::path::Path::new(name).extension()?.to_str()?;
+        if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
+            if let Some(source_md) = editor.pptx_markdown_source_text() {
+                return Some(Ok(FileBytes {
+                    bytes: source_md.as_bytes().to_vec(),
+                    protect: false,
+                    note: None,
+                }));
+            }
+            return Some(
+                ibis_formats::markdown::export_presentation_to_markdown(&Self::model_for_save(editor))
+                    .map(|md| FileBytes { bytes: md.into_bytes(), protect: false, note: None })
+                    .map_err(|e| e.to_string()),
+            );
+        }
+        None
+    }
+
     /// A presentation as .odp (OpenDocument), as a template, as a slide show (.ppsx) and as .pptx (whatever it was opened as).
     #[cfg(not(target_family = "wasm"))]
     fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_formats::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
@@ -473,12 +504,10 @@ impl FormatEditor for Presentation {
             // Saved, the file's password encrypts it; a copy is left as it is (as the shell did before the formats were cut apart).
             return Some(ibis_odf::write_odp(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
         }
-        if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
-            return Some(
-                ibis_formats::markdown::export_presentation_to_markdown(&Self::model_for_save(editor))
-                    .map(|md| FileBytes { bytes: md.into_bytes(), protect: false, note: None })
-                    .map_err(|e| e.to_string()),
-            );
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && let Some(res) = Self::source_bytes_for_name(editor, name, source)
+        {
+            return Some(res);
         }
         fn package<E: ToString>(bytes: Result<Vec<u8>, E>) -> Option<Result<FileBytes, String>> {
             Some(bytes.map(|bytes| FileBytes { bytes, protect: true, note: None }).map_err(|e| e.to_string()))
@@ -784,6 +813,7 @@ impl FormatEditor for Presentation {
             .on_action(cx.listener(|this, _: &crate::shell::actions::SwitchToNotesPageView, window, cx| this.switch_to_notes_page_view(window, cx)))
             .on_action(cx.listener(|this, _: &crate::shell::actions::CopyAnimation, _, cx| this.copy_shape_animations(cx)))
             .on_action(cx.listener(|this, _: &crate::shell::actions::PasteAnimation, _, cx| this.paste_shape_animations(cx)))
+            .on_action(cx.listener(|this, _: &crate::shell::actions::ToggleMarkdownSource, window, cx| this.pptx_toggle_markdown_source_mode(window, cx)))
     }
 
     fn infobar_kind(editor: &SlideEditor) -> Option<crate::shell::infobar::InfoBarKind> {
@@ -822,14 +852,21 @@ impl FormatEditor for Presentation {
     const SLIDES: bool = true;
 
     fn new_state(_: &Model, _: &mut Window, cx: &mut Context<SlideEditor>) -> Box<dyn FormatState> {
+        let md_toggle_key = if crate::shell::app::is_mac() { "cmd-shift-m" } else { "ctrl-shift-m" };
         for context in [slide_view::CONTEXT,crate::shell::editor::WORKSPACE_CONTEXT,crate::shell::editor::LIST_CONTEXT] {
             cx.bind_keys([
                 KeyBinding::new("ctrl-m",crate::shell::actions::AddSlide,Some(context)),
                 KeyBinding::new("cmd-shift-n",crate::shell::actions::AddSlide,Some(context)),
                 // Not in the start window, where ⌘D makes a new document (`shell/start_menu.rs`).
                 KeyBinding::new("cmd-d",crate::shell::actions::DuplicatePresentationSelection,Some(&format!("{context} && !{}",crate::shell::start_menu::START_CONTEXT))),
+                KeyBinding::new(md_toggle_key, crate::shell::actions::ToggleMarkdownSource, Some(context)),
             ]);
         }
+        cx.bind_keys([KeyBinding::new(
+            md_toggle_key,
+            crate::shell::actions::ToggleMarkdownSource,
+            Some(crate::shell::markdown_split::MARKDOWN_SOURCE_CONTEXT),
+        )]);
         // ⌃D is forward-delete while text is edited on a Mac, so it duplicates only off the Mac.
         if !crate::shell::app::is_mac() {
             for context in [slide_view::CONTEXT,crate::shell::editor::WORKSPACE_CONTEXT,crate::shell::editor::LIST_CONTEXT] {
@@ -937,6 +974,7 @@ impl FormatEditor for Presentation {
                 .into_any_element()
         };
         let banner = editor.render_recovery_banner(cx);
+        let content = editor.render_pptx_markdown_body(content, cx);
         gpui_kit::component::v_flex()
             .size_full()
             .children(infobar)
@@ -945,8 +983,22 @@ impl FormatEditor for Presentation {
             .into_any_element()
     }
 
-    fn before_render(editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) {
+    fn before_render(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
         editor.sync_selection();
+        let needs_auto_split = editor
+            .pptx_mut()
+            .is_some_and(|s| !std::mem::replace(&mut s.auto_split_initialized, true));
+        if needs_auto_split
+            && editor.should_auto_open_markdown_split()
+            && !editor.pptx_is_markdown_source_mode()
+        {
+            editor.pptx_set_markdown_view_mode(
+                crate::shell::markdown_split::MarkdownViewMode::Split,
+                window,
+                cx,
+            );
+        }
+        editor.poll_pptx_markdown_bidirectional_sync(window, cx);
     }
 
     /// The tool's hint (the mock's status bar).
@@ -959,7 +1011,10 @@ impl FormatEditor for Presentation {
 
     // The text input (typing, the input method) of the text being edited.
 
-    fn wants_text_input(editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
+    fn wants_text_input(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> bool {
+        if editor.pptx_is_markdown_source_focused(window, cx) {
+            return false;
+        }
         editor.text_editing().is_some() || editor.is_outline_editing()
     }
 

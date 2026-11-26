@@ -16,6 +16,11 @@ test('index.html boots the WASM app directly with start-view and GitHub repo int
   assert.match(editor, /<script src="\.\/sorane-start\.js"><\/script>/);
 });
 
+test('index.html and editor.html disable pointer events on the hidden IME textarea', () => {
+  assert.match(home, /body\s*>\s*textarea\s*\{[^}]*pointer-events:\s*none/);
+  assert.match(editor, /body\s*>\s*textarea\s*\{[^}]*pointer-events:\s*none/);
+});
+
 test('sorane-start.js configures the featured samples and all bundled files exist', () => {
   const win = {};
   runInNewContext(startScript, {
@@ -25,16 +30,21 @@ test('sorane-start.js configures the featured samples and all bundled files exis
   });
   const startView = win.ibisOfficeOptions?.startView;
   assert.ok(startView, 'startView config should be installed');
-  assert.equal(startView.items.length, 7);
+  assert.equal(startView.items.length, 12);
   assert.equal(startView.selectAction?.action, 'github-vault');
   for (const name of [
-    'roster-matching-sample.xlsx',
+    'sorane-knowledge-note.md',
+    'marp-deck-sample.md',
+    'workbook-sheet-sample.md',
+    'sample-ordinance.lawtext',
     'mermaid-showcase.md',
+    'ai-eval-results-sample.jsonl',
+    'ibis-office-wasm.sbom.cdx.json',
+    'roster-matching-sample.xlsx',
+    'standard-linkage.csv',
     'mynumber-law-2023-comparison.jtd',
     'urban-comfort-analysis.xlsx',
-    'standard-linkage.csv',
-    'visio-multi-page-handbook.vsdx',
-    'ibis-office-wasm.sbom.cdx.json',
+    'anim_stress_test.pptx',
   ]) {
     assert.ok(startView.items.some((item) => item.url === `/samples/${name}`), `missing sample ${name}`);
     assert.ok(existsSync(new URL(`../../www/samples/${name}`, import.meta.url)), `file missing: ${name}`);

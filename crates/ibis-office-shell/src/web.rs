@@ -51,10 +51,44 @@ extern "C" {
     /// (such as opening the GitHub login / repository picker modal).
     #[wasm_bindgen(catch, js_name = ibisOfficeStartAction)]
     fn start_action_js(action: &str) -> Result<(), JsValue>;
+    /// Defined by `www/main.ts`: notifies GitHub Vault integration that a repo file was opened.
+    #[wasm_bindgen(catch, js_name = ibisOfficeNotifyGitHubFile)]
+    fn notify_github_file_js(path: &str, name: &str) -> Result<(), JsValue>;
 }
 
-pub(crate) fn trigger_start_action(action: &str) {
+pub fn trigger_start_action(action: &str) {
     let _ = start_action_js(action);
+}
+
+pub fn notify_github_file_opened(path: &str, name: &str) {
+    let _ = notify_github_file_js(path, name);
+}
+
+pub fn local_storage_get(key: &str) -> Option<String> {
+    let storage = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("localStorage")).ok()?;
+    if storage.is_null() || storage.is_undefined() {
+        return None;
+    }
+    let get_item = js_sys::Reflect::get(&storage, &JsValue::from_str("getItem"))
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let val = get_item.call1(&storage, &JsValue::from_str(key)).ok()?;
+    val.as_string()
+}
+
+pub fn local_storage_set(key: &str, value: &str) {
+    let Ok(storage) = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("localStorage")) else {
+        return;
+    };
+    if storage.is_null() || storage.is_undefined() {
+        return;
+    }
+    if let Ok(set_item) = js_sys::Reflect::get(&storage, &JsValue::from_str("setItem"))
+        .and_then(|v| v.dyn_into::<js_sys::Function>())
+    {
+        let _ = set_item.call2(&storage, &JsValue::from_str(key), &JsValue::from_str(value));
+    }
 }
 
 #[wasm_bindgen]
@@ -183,6 +217,8 @@ pub fn mime_for_file_name(name: &str) -> &'static str {
         "ppsx" | "ppsm" => "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
         "potx" | "potm" => "application/vnd.openxmlformats-officedocument.presentationml.template",
         "md" | "markdown" => "text/markdown",
+        "lawtext" | "txt" => "text/plain; charset=utf-8",
+        "xml" => "application/xml; charset=utf-8",
         "vsdx" => "application/vnd.ms-visio.drawing.main+xml",
         "pdf" => "application/pdf",
         "ods" | "ots" => "application/vnd.oasis.opendocument.spreadsheet",

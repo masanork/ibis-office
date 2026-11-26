@@ -4221,6 +4221,11 @@ impl FlowParagraph {
         para.apply_to(self);
         for run in &mut self.runs {
             run.style = styles.run_format(&base, run.char_style.as_deref(), &run.format).style();
+            if let FlowRunKind::Ruby { size, raise, .. } = &mut run.kind
+                && *size == 0 && *raise == 0
+            {
+                (*size, *raise) = default_ruby_metrics(run.style.size);
+            }
         }
         let mut mark = base;
         mark.overlay(&self.mark_format);
@@ -4244,6 +4249,12 @@ impl FlowParagraph {
     pub fn is_empty(&self) -> bool {
         self.runs.is_empty()
     }
+}
+
+/// Size and baseline lift, in hundredths of a point, for a ruby with no authored metrics.
+pub fn default_ruby_metrics(base_size: u32) -> (u32, u32) {
+    // Match OOXML's half-point size and the reader's whole-point baseline lift.
+    ((base_size / 100 * 50).max(50), base_size.div_ceil(100).saturating_mul(100).max(100))
 }
 
 impl FlowDocument {

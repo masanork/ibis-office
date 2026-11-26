@@ -438,6 +438,7 @@ pub struct SlideEditor {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) assistant_socket: Option<ibis_mcp::assistant_endpoint::SocketLifetime>,
     pub ai_assistant: Option<crate::ai_assistant::AiAssistantState>,
+    pub inline_completion: crate::markdown_split::InlineCompletionState,
     _zoom_subscription: Subscription,
     /// The status bar's list of zooms is open.
     pub zoom_menu_open: bool,
@@ -589,6 +590,8 @@ pub struct SlideEditor {
     pub gridlines_open: bool,
     /// The title row and the menu bar are hidden (the toolbar's ^).
     pub chrome_compact: bool,
+    /// Optional chrome & window-ownership policy when embedded inside an outer workspace shell.
+    pub embedded_chrome: Option<crate::window_editors::EmbeddedChromePolicy>,
     /// Where the toolbar's bar was drawn last (for the scenarios: its left edge is clear of the Mac window's buttons).
     pub toolbar_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     /// Where the open file came from, for saving it (`shell/save.rs`);
@@ -883,6 +886,7 @@ impl SlideEditor {
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             assistant_socket: None,
             ai_assistant: None,
+            inline_completion: Default::default(),
             _zoom_subscription: zoom_subscription,
             zoom_menu_open: false,
             zoom_input,
@@ -967,6 +971,7 @@ impl SlideEditor {
             ruler_unit: RulerUnit::default(),
             gridlines_open: false,
             chrome_compact: false,
+            embedded_chrome: None,
             toolbar_bounds: Default::default(),
             source: None,
             current_csv_format: None,
@@ -1066,6 +1071,19 @@ impl SlideEditor {
     /// Whether this editor is currently in read-only / viewing mode (either via `--read-only` or during CSV streaming).
     pub fn is_read_only(&self) -> bool {
         self.file_is_read_only() || self.phone_view_only() || self.host.read_only.is_some()
+    }
+
+    /// Whether the active sheet has worksheet protection (`sheetProtection`) or (on native) the open file is password-protected.
+    pub fn is_protected(&self) -> bool {
+        let sheet_protected = self.current_sheet().is_some_and(|(_, sheet)| sheet.protection.is_some());
+        #[cfg(not(target_family = "wasm"))]
+        {
+            sheet_protected || self.protection_password.is_some()
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            sheet_protected
+        }
     }
 
     fn file_is_read_only(&self) -> bool {
@@ -1462,7 +1480,9 @@ impl SlideEditor {
         self.sidebar_scroll.set_offset(Point::default());
         // The document's split, reading mode, focus mode and the way its pages move are in its own state, which is
         // new (`docx::State`).
-        window.set_window_title(&format!("{name} - Docs"));
+        if self.manages_window_title() {
+            window.set_window_title(&format!("{name} - Docs"));
+        }
         self.file_name = Some(name);
         self.has_document = true;
         crate::app::track_start_window(cx.entity_id(),None,false,cx);
@@ -2330,7 +2350,7 @@ impl SlideEditor {
 
     /// The window's close button (the red button on a Mac, × elsewhere): whether the window may close now. With edits
     /// not saved in the last window on its file, it stays and asks whether to save them (GitHub issue #27).
-    pub(crate) fn window_should_close(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+    pub fn window_should_close(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
         if self.save_confirm_dialog_open {
             // Already asking: the answer closes it.
             return false;
@@ -2427,7 +2447,9 @@ impl SlideEditor {
         self.file_name = None;
         self.file_id = 0;
         self.window_number = None;
-        window.set_window_title(&crate::start_view::start_title());
+        if self.manages_window_title() {
+            window.set_window_title(&crate::start_view::start_title());
+        }
         self.recent_scroll.set_offset(Point::default());
         // The file just closed is first, as other windows may have opened
         // files since this one's list was read.
@@ -2891,15 +2913,15 @@ impl SlideEditor {
         let mut matching = Vec::new();
         for &w in &cx.windows() {
             if let Some(root) = w.downcast::<gpui_kit::component::Root>() {
-                if let Ok(Some(entity)) = root.update(cx, |root, _, app| {
-                    if let Ok(entity) = root.view().clone().downcast::<SlideEditor>() {
-                        if entity.entity_id() != my_entity_id && entity.read(app).file_id == file_id {
-                            return Some(entity);
-                        }
-                    }
-                    None
+                if let Ok(entities) = root.update(cx, |root, _, app| {
+                    crate::window_editors::all_in_root(root, app)
+                        .into_iter()
+                        .filter(|entity| entity.entity_id() != my_entity_id && entity.read(app).file_id == file_id)
+                        .collect::<Vec<_>>()
                 }) {
-                    matching.push((w, entity));
+                    for entity in entities {
+                        matching.push((w, entity));
+                    }
                 }
             }
         }
@@ -2914,15 +2936,15 @@ impl SlideEditor {
         let mut matching = Vec::new();
         for &w in &cx.windows() {
             if let Some(root) = w.downcast::<gpui_kit::component::Root>() {
-                if let Ok(Some(entity)) = root.update(cx, |root, _, app| {
-                    if let Ok(entity) = root.view().clone().downcast::<SlideEditor>() {
-                        if entity.read(app).file_id == file_id {
-                            return Some(entity);
-                        }
-                    }
-                    None
+                if let Ok(entities) = root.update(cx, |root, _, app| {
+                    crate::window_editors::all_in_root(root, app)
+                        .into_iter()
+                        .filter(|entity| entity.read(app).file_id == file_id)
+                        .collect::<Vec<_>>()
                 }) {
-                    matching.push((w, entity));
+                    for entity in entities {
+                        matching.push((w, entity));
+                    }
                 }
             }
         }
@@ -2945,8 +2967,10 @@ impl SlideEditor {
             let _ = w.update(cx, |_, window, app| {
                 editor_entity.update(app, |editor, cx| {
                     editor.window_number = num;
-                    let title = editor.display_title_formatted();
-                    window.set_window_title(&format!("{title} - Docs"));
+                    if editor.manages_window_title() {
+                        let title = editor.display_title_formatted();
+                        window.set_window_title(&format!("{title} - Docs"));
+                    }
                     cx.notify();
                     window.refresh();
                 });
@@ -2974,7 +2998,8 @@ impl SlideEditor {
         for &w in &cx.windows() {
             if let Some(root) = w.downcast::<gpui_kit::component::Root>() {
                 if let Ok(root_ref) = root.read(cx) {
-                    if let Ok(peer_entity) = root_ref.view().clone().downcast::<SlideEditor>() {
+                    let peers = crate::window_editors::all_in_root(root_ref, cx);
+                    for peer_entity in peers {
                         if peer_entity.entity_id() == my_entity_id {
                             continue;
                         }
@@ -3005,19 +3030,22 @@ impl SlideEditor {
         let mut different = Vec::new();
         for &w in &cx.windows() {
             if let Some(root) = w.downcast::<gpui_kit::component::Root>() {
-                if let Ok(Some((entity, is_same))) = root.update(cx, |root, _, app| {
-                    if let Ok(entity) = root.view().clone().downcast::<SlideEditor>() {
-                        if entity.entity_id() != my_entity_id && entity.read(app).kind() == kind {
+                if let Ok(found) = root.update(cx, |root, _, app| {
+                    crate::window_editors::all_in_root(root, app)
+                        .into_iter()
+                        .filter(|entity| entity.entity_id() != my_entity_id && entity.read(app).kind() == kind)
+                        .map(|entity| {
                             let is_same = file_id != 0 && entity.read(app).file_id == file_id;
-                            return Some((entity, is_same));
-                        }
-                    }
-                    None
+                            (entity, is_same)
+                        })
+                        .collect::<Vec<_>>()
                 }) {
-                    if is_same {
-                        same.push((w, entity));
-                    } else {
-                        different.push((w, entity));
+                    for (entity, is_same) in found {
+                        if is_same {
+                            same.push((w, entity));
+                        } else {
+                            different.push((w, entity));
+                        }
                     }
                 }
             }
@@ -4603,17 +4631,43 @@ impl Render for SlideEditor {
                 d
             });
         #[cfg(target_os = "macos")]
-        crate::macos_menu::sync(self, window, cx);
+        if self.manages_window_chrome_sync() {
+            crate::macos_menu::sync(self, window, cx);
+        }
         root
     }
 }
 
 impl SlideEditor {
+    /// Whether this editor owns OS window title updates (false when embedded in a workspace).
+    pub fn manages_window_title(&self) -> bool {
+        self.embedded_chrome.is_none_or(|p| p.manage_window_title)
+    }
+
+    /// Whether this editor owns OpenDocuments / macOS menu bar sync.
+    pub fn manages_window_chrome_sync(&self) -> bool {
+        self.embedded_chrome.is_none_or(|p| p.manage_window_chrome_sync)
+    }
+
+    /// Configure embedded chrome policy when hosted inside an outer workspace shell.
+    pub fn set_embedded_chrome(&mut self, policy: Option<crate::window_editors::EmbeddedChromePolicy>, cx: &mut Context<Self>) {
+        self.embedded_chrome = policy;
+        cx.notify();
+    }
+
+    /// Reveal and scroll to body paragraph `id` in a flowing document (`.md` / `.docx` / `.jtd`).
+    pub fn reveal_body_paragraph(&mut self, id: u32, cx: &mut Context<Self>) {
+        crate::format::with_format!(self, reveal_ai_paragraph(self, id, cx));
+        cx.notify();
+    }
+
     /// The editor window's parts, into `d`: the title bar, and the start view
     /// or the chrome, the document and the status bar.
     fn render_window(&mut self, d: Stateful<Div>, window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
         #[cfg(not(target_family = "wasm"))]
-        self.sync_open_documents(window, cx);
+        if self.manages_window_chrome_sync() {
+            self.sync_open_documents(window, cx);
+        }
         // A host that embeds the editor is told when the unsaved-changes mark changes (the browser version too: it has no table of
         // open documents, but it has hosts).
         self.host_sync_dirty();
@@ -4624,21 +4678,30 @@ impl SlideEditor {
         // and the toolbar (the first two hidden by the toolbar's ^), the
         // document with the sidebar on its right, and the status bar.
         let narrow_phone = Self::narrow_phone_editor(window);
+        let embedded = self.embedded_chrome;
         if !self.has_document {
             // A host that has no start window (`ui.startWindow` off: ibisWorks) gets a blank window until its document comes (no flash of the start view; K0037).
             if crate::host::is_connected() && !crate::host::options().start_window {
                 return d;
             }
-            window.set_window_title(&crate::start_view::start_title());
+            if self.manages_window_title() {
+                window.set_window_title(&crate::start_view::start_title());
+            }
             // The settings dialog (modal) over the start view: its panel is built, and drawn, by the sidebar's code as in a document.
             // The セットアップ dialog (K0001) is shown the same way: the first window at launch is often this one.
             if self.settings.is_some() || self.font_setup_is_open() {
                 let _ = self.render_sidebar(window, cx);
             }
             // Windows and Linux: the start window's menus below the title row (macOS has them in the system's menu bar).
-            let d = d.child(self.render_title_row(window, cx)).when(crate::start_menu::shows_bar(), |d| d.child(self.render_menu_bar(window, cx)));
+            let show_start_title = embedded.is_none_or(|p| p.show_title_row);
+            let show_start_menu = embedded.is_none_or(|p| p.show_menu_bar) && crate::start_menu::shows_bar();
+            let d = d
+                .when(show_start_title, |d| d.child(self.render_title_row(window, cx)))
+                .when(show_start_menu, |d| d.child(self.render_menu_bar(window, cx)));
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            if let Some(pane) = self.render_folder_pane(cx).or_else(|| self.render_git_workspace(cx)) {
+            if embedded.is_none_or(|p| p.show_left_pane)
+                && let Some(pane) = self.render_folder_pane(cx).or_else(|| self.render_git_workspace(cx))
+            {
                 return d.child(div().flex().flex_1().min_h_0().child(pane).child(
                     div().flex_1().min_w_0().min_h_0().child(self.render_start_view(narrow_phone, cx)),
                 ));
@@ -4659,33 +4722,46 @@ impl SlideEditor {
         let mobile_viewer = mobile_viewer || (crate::embed::phone_viewer() && self.is_read_only() && !self.show_menu_bar && window.viewport_size().width < px(600.));
         let compact = self.chrome_compact;
         let focus = with_format!(self, chrome_hidden(self));
-        let show_menu_bar = self.show_menu_bar;
-        let show_toolbar = self.show_toolbar;
-        let show_title_row = !self.is_read_only() || show_menu_bar || {
-            #[cfg(target_arch = "wasm32")]
-            {
-                crate::embed::show_close() || crate::embed::show_download()
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                true
-            }
-        };
-        let sidebar = if focus || self.grid_only || self.phone_view_only() {
+        let show_menu_bar = self.show_menu_bar && embedded.is_none_or(|p| p.show_menu_bar);
+        let show_toolbar = self.show_toolbar && embedded.is_none_or(|p| p.show_toolbar);
+        let show_title_row = embedded.is_none_or(|p| p.show_title_row)
+            && (!self.is_read_only() || show_menu_bar || {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    crate::embed::show_close() || crate::embed::show_download()
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    true
+                }
+            });
+        let show_right_sidebar = embedded.is_none_or(|p| p.show_right_sidebar);
+        let show_left_pane = embedded.is_none_or(|p| p.show_left_pane);
+        let show_status_bar = embedded.is_none_or(|p| p.show_status_bar);
+        let sidebar = if focus || self.grid_only || self.phone_view_only() || !show_right_sidebar {
             self.right_pane = Default::default();
             None
         } else {
             self.render_sidebar(window, cx)
         };
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        let left_pane = if focus { None } else { self.render_folder_pane(cx).or_else(|| self.render_git_workspace(cx)) };
+        let left_pane = if focus || !show_left_pane {
+            None
+        } else if embedded.is_some() {
+            self.render_git_workspace(cx)
+        } else {
+            self.render_folder_pane(cx).or_else(|| self.render_git_workspace(cx))
+        };
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        let left_pane: Option<AnyElement> = None;
+        let left_pane: Option<AnyElement> = {
+            let _ = show_left_pane;
+            None
+        };
         let body = with_format!(self, render_body(self, window, cx));
         if self.grid_only {
             return d.child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)));
         }
-        d.when((mobile_viewer || narrow_phone) && !focus, |d| d.child(self.render_mobile_viewer_bar(narrow_phone, cx)))
+        d.when((mobile_viewer || narrow_phone) && !focus && show_title_row, |d| d.child(self.render_mobile_viewer_bar(narrow_phone, cx)))
             .when(!narrow_phone && !compact && !focus && show_title_row, |d| d.child(self.render_title_row(window, cx)))
             .when(!mobile_viewer && !compact && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
             .when(!mobile_viewer && !focus && show_toolbar, |d| d.child(self.render_toolbar(window, cx)))
@@ -4700,7 +4776,7 @@ impl SlideEditor {
                     .child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)))
                     .children(sidebar),
             )
-            .when(!focus, |d| d.child(self.render_status_bar(window, cx)))
+            .when(!focus && show_status_bar, |d| d.child(self.render_status_bar(window, cx)))
     }
 
     /// Compact document controls for phone-sized windows.
@@ -5235,6 +5311,7 @@ impl SlideEditor {
                 ruler_unit: _,
                 gridlines_open: _,
                 chrome_compact: _,
+                embedded_chrome: _,
                 toolbar_bounds: _,
                 source: _,
                 #[cfg(not(target_family = "wasm"))]

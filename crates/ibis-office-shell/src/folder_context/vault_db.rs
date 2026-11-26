@@ -16,9 +16,11 @@ use turso_core::{
     Connection, Database, Numeric, OpenFlags, OpenOptions, PlatformIO, SqliteDialect, Value,
 };
 
-use super::markdown_index::{CachedFile, RawLink, Stamp};
+use ibis_formats::form_assist::{FormMapping, VaultCredentialSummary, VaultProfile};
 
-const SCHEMA_VERSION: &str = "1";
+use super::markdown_index::{CachedCredential, CachedFile, RawLink, Stamp};
+
+const SCHEMA_VERSION: &str = "2";
 
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -50,6 +52,34 @@ const SCHEMA_SQL: &[&str] = &[
         excerpt TEXT NOT NULL
     )",
     "CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_path)",
+    "CREATE TABLE IF NOT EXISTS vault_profiles (
+        path TEXT PRIMARY KEY,
+        profile_json TEXT NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS frontmatter_props (
+        path TEXT NOT NULL,
+        doc_type TEXT NOT NULL,
+        key_path TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        PRIMARY KEY (path, key_path)
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_fm_type_key ON frontmatter_props(doc_type, key_path)",
+    "CREATE TABLE IF NOT EXISTS form_definitions (
+        path TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        form_id TEXT NOT NULL,
+        template_sha256 TEXT,
+        sheet_hint TEXT,
+        spec_json TEXT NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_form_def_sha ON form_definitions(template_sha256)",
+    "CREATE TABLE IF NOT EXISTS vault_credentials (
+        path TEXT PRIMARY KEY,
+        size INTEGER NOT NULL,
+        mtime_secs INTEGER NOT NULL,
+        mtime_nanos INTEGER NOT NULL,
+        summary_json TEXT
+    )",
 ];
 
 fn db_path_for_root(root: &Path) -> Option<PathBuf> {
@@ -209,6 +239,8 @@ pub(super) fn load_all(root: &Path) -> Option<BTreeMap<String, CachedFile>> {
                     tags: Vec::new(),
                     aliases: Vec::new(),
                     links: Vec::new(),
+                    profile: None,
+                    form_mapping: None,
                 },
             );
         }
@@ -281,7 +313,75 @@ pub(super) fn load_all(root: &Path) -> Option<BTreeMap<String, CachedFile>> {
         }
     }
 
+    {
+        let mut stmt = conn
+            .prepare("SELECT path, profile_json FROM vault_profiles")
+            .ok()?;
+        let rows = stmt.run_collect_rows().ok()?;
+        for row in rows {
+            if row.len() != 2 {
+                continue;
+            }
+            if let (Some(path), Some(json_str)) = (value_text(&row[0]), value_text(&row[1]))
+                && let Some(entry) = files.get_mut(&path)
+                && let Ok(profile) = serde_json::from_str::<VaultProfile>(&json_str)
+            {
+                entry.profile = Some(profile);
+            }
+        }
+    }
+
+    {
+        let mut stmt = conn
+            .prepare("SELECT path, spec_json FROM form_definitions WHERE kind = 'form-mapping'")
+            .ok()?;
+        let rows = stmt.run_collect_rows().ok()?;
+        for row in rows {
+            if row.len() != 2 {
+                continue;
+            }
+            if let (Some(path), Some(json_str)) = (value_text(&row[0]), value_text(&row[1]))
+                && let Some(entry) = files.get_mut(&path)
+                && let Ok(mapping) = serde_json::from_str::<FormMapping>(&json_str)
+            {
+                entry.form_mapping = Some(mapping);
+            }
+        }
+    }
+
     Some(files)
+}
+
+pub(super) fn load_credentials(root: &Path) -> Option<BTreeMap<String, CachedCredential>> {
+    let (_db, conn) = open_or_recreate(root)?;
+    let mut creds = BTreeMap::new();
+    let mut stmt = conn
+        .prepare("SELECT path, size, mtime_secs, mtime_nanos, summary_json FROM vault_credentials")
+        .ok()?;
+    let rows = stmt.run_collect_rows().ok()?;
+    for row in rows {
+        if row.len() != 5 {
+            continue;
+        }
+        let (Some(path), Some(size), Some(secs), Some(nanos)) = (
+            value_text(&row[0]),
+            value_i64(&row[1]),
+            value_i64(&row[2]),
+            value_i64(&row[3]),
+        ) else {
+            continue;
+        };
+        let Some(stamp) = stamp_from_parts(size, secs, nanos) else {
+            continue;
+        };
+        let summary = match &row[4] {
+            Value::Null => None,
+            other => value_text(other)
+                .and_then(|s| serde_json::from_str::<VaultCredentialSummary>(&s).ok()),
+        };
+        creds.insert(path, CachedCredential { stamp, summary });
+    }
+    Some(creds)
 }
 
 pub(super) fn sync_diff(
@@ -310,9 +410,26 @@ pub(super) fn sync_diff(
         let mut del_links = conn
             .prepare("DELETE FROM links WHERE source_path = ?1")
             .map_err(|err| err.to_string())?;
+        let mut del_profile = conn
+            .prepare("DELETE FROM vault_profiles WHERE path = ?1")
+            .map_err(|err| err.to_string())?;
+        let mut del_props = conn
+            .prepare("DELETE FROM frontmatter_props WHERE path = ?1")
+            .map_err(|err| err.to_string())?;
+        let mut del_form_def = conn
+            .prepare("DELETE FROM form_definitions WHERE path = ?1")
+            .map_err(|err| err.to_string())?;
 
         for path in removed {
-            for stmt in [&mut del_file, &mut del_tags, &mut del_aliases, &mut del_links] {
+            for stmt in [
+                &mut del_file,
+                &mut del_tags,
+                &mut del_aliases,
+                &mut del_links,
+                &mut del_profile,
+                &mut del_props,
+                &mut del_form_def,
+            ] {
                 stmt.reset().map_err(|err| err.to_string())?;
                 bind(stmt, 1, Value::from_text(path.clone()))?;
                 stmt.run_ignore_rows().map_err(|err| err.to_string())?;
@@ -337,9 +454,31 @@ pub(super) fn sync_diff(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
             .map_err(|err| err.to_string())?;
+        let mut ins_profile = conn
+            .prepare("INSERT OR REPLACE INTO vault_profiles (path, profile_json) VALUES (?1, ?2)")
+            .map_err(|err| err.to_string())?;
+        let mut ins_prop = conn
+            .prepare(
+                "INSERT OR REPLACE INTO frontmatter_props (path, doc_type, key_path, value_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )
+            .map_err(|err| err.to_string())?;
+        let mut ins_form_def = conn
+            .prepare(
+                "INSERT OR REPLACE INTO form_definitions (path, kind, form_id, template_sha256, sheet_hint, spec_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .map_err(|err| err.to_string())?;
 
         for (path, entry) in updated {
-            for stmt in [&mut del_tags, &mut del_aliases, &mut del_links] {
+            for stmt in [
+                &mut del_tags,
+                &mut del_aliases,
+                &mut del_links,
+                &mut del_profile,
+                &mut del_props,
+                &mut del_form_def,
+            ] {
                 stmt.reset().map_err(|err| err.to_string())?;
                 bind(stmt, 1, Value::from_text(path.clone()))?;
                 stmt.run_ignore_rows().map_err(|err| err.to_string())?;
@@ -396,6 +535,111 @@ pub(super) fn sync_diff(
                 bind(&mut ins_link, 6, Value::from_text(link.excerpt.clone()))?;
                 ins_link.run_ignore_rows().map_err(|err| err.to_string())?;
             }
+            if let Some(profile) = &entry.profile
+                && let Ok(json_str) = serde_json::to_string(profile)
+            {
+                ins_profile.reset().map_err(|err| err.to_string())?;
+                bind(&mut ins_profile, 1, Value::from_text(path.clone()))?;
+                bind(&mut ins_profile, 2, Value::from_text(json_str))?;
+                ins_profile.run_ignore_rows().map_err(|err| err.to_string())?;
+
+                for (k, v) in &profile.fields {
+                    if let Ok(v_json) = serde_json::to_string(v) {
+                        ins_prop.reset().map_err(|err| err.to_string())?;
+                        bind(&mut ins_prop, 1, Value::from_text(path.clone()))?;
+                        bind(&mut ins_prop, 2, Value::from_text("profile".to_string()))?;
+                        bind(&mut ins_prop, 3, Value::from_text(k.clone()))?;
+                        bind(&mut ins_prop, 4, Value::from_text(v_json))?;
+                        ins_prop.run_ignore_rows().map_err(|err| err.to_string())?;
+                    }
+                }
+            }
+            if let Some(mapping) = &entry.form_mapping
+                && let Ok(json_str) = serde_json::to_string(mapping)
+            {
+                ins_form_def.reset().map_err(|err| err.to_string())?;
+                bind(&mut ins_form_def, 1, Value::from_text(path.clone()))?;
+                bind(&mut ins_form_def, 2, Value::from_text("form-mapping".to_string()))?;
+                bind(&mut ins_form_def, 3, Value::from_text(mapping.form_id.clone()))?;
+                bind(
+                    &mut ins_form_def,
+                    4,
+                    match &mapping.matcher.template_sha256 {
+                        Some(sha) => Value::from_text(sha.clone()),
+                        None => Value::Null,
+                    },
+                )?;
+                bind(
+                    &mut ins_form_def,
+                    5,
+                    match &mapping.matcher.sheet {
+                        Some(sheet) => Value::from_text(sheet.clone()),
+                        None => Value::Null,
+                    },
+                )?;
+                bind(&mut ins_form_def, 6, Value::from_text(json_str))?;
+                ins_form_def.run_ignore_rows().map_err(|err| err.to_string())?;
+            }
+        }
+        Ok(())
+    })();
+
+    match outcome {
+        Ok(()) => {
+            conn.execute("COMMIT").map_err(|err| err.to_string())?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = conn.execute("ROLLBACK");
+            Err(err)
+        }
+    }
+}
+
+pub(super) fn sync_credentials_diff(
+    root: &Path,
+    removed: &[String],
+    updated: &[(String, &CachedCredential)],
+) -> Result<(), String> {
+    if removed.is_empty() && updated.is_empty() {
+        return Ok(());
+    }
+    let Some((_db, conn)) = open_or_recreate(root) else {
+        return Ok(());
+    };
+    conn.execute("BEGIN IMMEDIATE")
+        .map_err(|err| err.to_string())?;
+    let outcome = (|| -> Result<(), String> {
+        let mut del_cred = conn
+            .prepare("DELETE FROM vault_credentials WHERE path = ?1")
+            .map_err(|err| err.to_string())?;
+        for path in removed {
+            del_cred.reset().map_err(|err| err.to_string())?;
+            bind(&mut del_cred, 1, Value::from_text(path.clone()))?;
+            del_cred.run_ignore_rows().map_err(|err| err.to_string())?;
+        }
+        let mut upsert_cred = conn
+            .prepare(
+                "INSERT OR REPLACE INTO vault_credentials (path, size, mtime_secs, mtime_nanos, summary_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .map_err(|err| err.to_string())?;
+        for (path, entry) in updated {
+            let (size, secs, nanos) = stamp_to_parts(entry.stamp);
+            let summary_val = match &entry.summary {
+                Some(summary) => match serde_json::to_string(summary) {
+                    Ok(s) => Value::from_text(s),
+                    Err(_) => Value::Null,
+                },
+                None => Value::Null,
+            };
+            upsert_cred.reset().map_err(|err| err.to_string())?;
+            bind(&mut upsert_cred, 1, Value::from_text(path.clone()))?;
+            bind(&mut upsert_cred, 2, Value::Numeric(Numeric::Integer(size)))?;
+            bind(&mut upsert_cred, 3, Value::Numeric(Numeric::Integer(secs)))?;
+            bind(&mut upsert_cred, 4, Value::Numeric(Numeric::Integer(nanos)))?;
+            bind(&mut upsert_cred, 5, summary_val)?;
+            upsert_cred.run_ignore_rows().map_err(|err| err.to_string())?;
         }
         Ok(())
     })();

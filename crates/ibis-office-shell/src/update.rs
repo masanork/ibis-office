@@ -389,6 +389,11 @@ fn check() -> Found {
     let Some(log) = log_for(&latest) else { return Found::Failed };
     log.ok("check", &format!("a newer version: {latest} (current {CURRENT})"));
 
+    #[cfg(target_os = "macos")]
+    if TEAM_ID.is_empty() {
+        log.info("check", "Apple signing team is not configured: offering manual download");
+        return Found::Manual { version: latest, kind: ManualKind::Other };
+    }
     if attempts(&latest) >= MAX_ATTEMPTS {
         log.info("check", &format!("{MAX_ATTEMPTS} attempts at {latest} did not end in it running: no more offers"));
         return Found::Manual { version: latest, kind: ManualKind::Other };
@@ -576,7 +581,7 @@ fn fetch_bounded(url: &str, limit: u64) -> Result<String, String> {
 
 fn download_signed(log: &Log, version: &str, artifact: &ibis_office_updater::signed_manifest::Artifact) -> Result<PathBuf, String> {
     let dir = paths::update_dir(version).ok_or("no folder for update")?;
-    let url = format!("{RELEASES_URL}/download/v{version}/{}", artifact.filename);
+    let url = format!("{RELEASES_URL}/download/sorane-v{version}/{}", artifact.filename);
     let file = ibis_office_updater::update_transport::download_verified(&url, artifact, &dir)?;
     log.ok("verify", "signed size and SHA-256 match");
     Ok(file)
@@ -694,12 +699,11 @@ fn unpack(log: &Log, version: &str, zip: &Path) -> Result<Unpacked, String> {
 
 /// Whether any window has edits not yet saved (the same sign the close confirmation uses).
 fn any_unsaved(cx: &mut App) -> bool {
-    use crate::editor::SlideEditor;
     let mut unsaved = false;
     for window in cx.windows() {
         if let Some(root) = window.downcast::<gpui_kit::component::Root>() {
             let _ = root.update(cx, |root, _, app| {
-                if let Ok(editor) = root.view().clone().downcast::<SlideEditor>() {
+                for editor in crate::window_editors::all_in_root(root, app) {
                     let editor = editor.read(app);
                     unsaved |= editor.has_document && editor.document.can_undo();
                 }

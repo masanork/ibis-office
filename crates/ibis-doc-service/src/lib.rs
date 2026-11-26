@@ -22,7 +22,9 @@ mod tools_wallet;
 mod tools_prefill;
 mod wallet_dcql;
 mod wallet_direct_post;
-pub use tools_prefill::{review_prefill, reviewed_prefill_command};
+pub use tools_prefill::{
+    review_prefill, reviewed_prefill_command, reviewed_prefill_command_with_options,
+};
 pub use tools_wallet::run_cli as compare_presentation;
 
 pub use catalog::{Access, Tool, catalog, document_tools};

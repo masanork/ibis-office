@@ -93,3 +93,194 @@ fn nested_values_keep_distinct_paths_and_xml_does_not_resolve_entities() {
     );
     assert!(structured_preview::read("json", b"{not-json").is_err());
 }
+
+#[test]
+fn builds_visual_hierarchy_and_promotes_uniform_arrays_and_xml_elements_to_tables() {
+    use structured_preview::{PreviewBlock, ValueKind};
+
+    let json = structured_preview::read(
+        "json",
+        br#"{
+            "service": "auth-api",
+            "replicas": 3,
+            "enabled": true,
+            "endpoints": [
+                {"method": "POST", "path": "/login", "status": 200},
+                {"method": "GET", "path": "/me", "status": 200}
+            ]
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(json.summary.table_count, 1);
+    assert!(json.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::KeyValue { key, kind: ValueKind::Boolean, .. } if key == "enabled"
+    )));
+    assert!(json.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { headers, rows, .. }
+            if headers == &["method", "path", "status"] && rows.len() == 2
+    )));
+
+    let yaml = structured_preview::read(
+        "yaml",
+        b"name: staging\nports:\n  - container: 8080\n    protocol: TCP\n  - container: 8443\n    protocol: TCP\n",
+    )
+    .unwrap();
+    assert_eq!(yaml.format, "YAML");
+    assert_eq!(yaml.summary.table_count, 1);
+
+    let xml = structured_preview::read(
+        "xml",
+        br#"<catalog><book id="1"><title>Rust</title><price>3200</price></book><book id="2"><title>Go</title><price>2800</price></book></catalog>"#,
+    )
+    .unwrap();
+    assert_eq!(xml.summary.table_count, 1);
+    assert!(xml.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { headers, rows, .. }
+            if headers == &["@id", "title", "price"] && rows.len() == 2
+    )));
+}
+
+#[test]
+fn detects_and_validates_ai_sft_and_rlhf_datasets_across_json_and_jsonl() {
+    use structured_preview::{CalloutTone, PreviewBlock};
+
+    let sft_jsonl = concat!(
+        r#"{"messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"Hi"},{"role":"assistant","content":"Hello!"}]}"#,
+        "\n",
+        r#"{"messages":[{"role":"user","content":"Empty?"},{"role":"assistant","content":""}]}"#,
+        "\n",
+        "{broken json line\n"
+    );
+    let sft = structured_preview::read("jsonl", sft_jsonl.as_bytes()).unwrap();
+    assert_eq!(sft.format, "JSONL");
+    assert_eq!(
+        sft.summary.detected_schema.as_deref(),
+        Some("AI SFT (OpenAI / ChatML)")
+    );
+    assert_eq!(sft.summary.warnings.len(), 2);
+    assert!(sft.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Callout { tone: CalloutTone::Danger, .. }
+    )));
+    assert!(sft.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::ChatTurn { role, content, .. } if role == "assistant" && content == "Hello!"
+    )));
+
+    let dpo_jsonl = concat!(
+        r#"{"prompt":"Explain Rust","chosen":"Rust ensures memory safety.","rejected":"I don't know."}"#,
+        "\n",
+        r#"{"prompt":"Dup","chosen":"Same","rejected":"Same"}"#,
+        "\n"
+    );
+    let dpo = structured_preview::read("ndjson", dpo_jsonl.as_bytes()).unwrap();
+    assert_eq!(
+        dpo.summary.detected_schema.as_deref(),
+        Some("AI RLHF / DPO Preference Pairs")
+    );
+    assert!(dpo
+        .summary
+        .warnings
+        .iter()
+        .any(|w| w.contains("identical chosen and rejected")));
+    assert!(dpo.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::PreferencePair { prompt, chosen, rejected, .. }
+            if prompt == "Explain Rust" && chosen.contains("memory safety") && rejected == "I don't know."
+    )));
+
+    let kto = structured_preview::read(
+        "jsonl",
+        br#"{"prompt":"Q1","completion":"Good","label":true}
+{"prompt":"Q2","completion":"Bad","label":false}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        kto.summary.detected_schema.as_deref(),
+        Some("AI RLHF / KTO Binary Feedback")
+    );
+    assert!(kto.summary.warnings.is_empty());
+
+    let alpaca = structured_preview::read(
+        "json",
+        r#"{"instruction":"Translate","input":"Hello","output":"こんにちは"}"#.as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        alpaca.summary.detected_schema.as_deref(),
+        Some("AI SFT (Alpaca / Instruction)")
+    );
+}
+
+#[test]
+fn detects_character_cards_personas_prompt_specs_evals_and_trajectories() {
+    use structured_preview::PreviewBlock;
+
+    let card = structured_preview::read(
+        "json",
+        r#"{
+            "spec": "chara_card_v2",
+            "data": {
+                "name": "Aoi",
+                "personality": "Calm and analytical",
+                "first_mes": "こんにちは、仕様を確認しましょう。",
+                "character_book": {
+                    "entries": [{"keys": ["API"], "content": "REST v2", "enabled": true}]
+                }
+            }
+        }"#
+        .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        card.summary.detected_schema.as_deref(),
+        Some("AI Character Card (v2/v3)")
+    );
+    assert!(card.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), .. } if t.contains("Lorebook")
+    )));
+
+    let prompt_yml = structured_preview::read(
+        "yml",
+        b"model: gpt-4o\nmodelParameters:\n  temperature: 0.2\nmessages:\n  - role: system\n    content: Be concise.\n  - role: user\n    content: Summarize.\n",
+    )
+    .unwrap();
+    assert_eq!(
+        prompt_yml.summary.detected_schema.as_deref(),
+        Some("AI Prompt Spec (.prompt.yml)")
+    );
+
+    let eval_jsonl = concat!(
+        r#"{"input":"2+2","expected":"4","actual":"4","pass":true,"score":1.0}"#,
+        "\n",
+        r#"{"input":"3+3","expected":"6","actual":"7","pass":false,"score":0.0}"#,
+        "\n"
+    );
+    let eval = structured_preview::read("jsonl", eval_jsonl.as_bytes()).unwrap();
+    assert_eq!(
+        eval.summary.detected_schema.as_deref(),
+        Some("AI Evaluation Results")
+    );
+    assert!(eval.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t == "Evaluation Cases" && rows.len() == 2
+    )));
+
+    let traj = structured_preview::read(
+        "json",
+        br#"{"steps":[{"thought":"Need schema","action":"read_file","observation":"OK"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        traj.summary.detected_schema.as_deref(),
+        Some("AI Agent Trajectory")
+    );
+    assert!(traj.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::ChatTurn { role, content, .. } if role == "tool" && content == "read_file"
+    )));
+}

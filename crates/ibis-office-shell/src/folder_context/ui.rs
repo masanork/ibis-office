@@ -485,13 +485,17 @@ impl SlideEditor {
             return;
         }
         if let Some(handle) = crate::open_guard::find_open_window(&path, Some(cx.entity_id()), cx) {
+            let _ = crate::window_editors::activate_path_in_window(handle, &path, cx);
             crate::open_guard::raise(handle, cx);
             if let Some(root) = handle.downcast::<Root>() {
                 let _ = root.update(cx, |root, _, cx| {
-                    if let Ok(editor) = root.view().clone().downcast::<SlideEditor>() {
-                        editor.update(cx, |editor, cx| {
-                            editor.reveal_folder_position(reference.position.as_ref(), cx)
-                        });
+                    for editor in crate::window_editors::all_in_root(root, cx) {
+                        if editor.read(cx).shows_path(&path) {
+                            editor.update(cx, |editor, cx| {
+                                editor.reveal_folder_position(reference.position.as_ref(), cx)
+                            });
+                            break;
+                        }
                     }
                 });
             }
@@ -505,6 +509,33 @@ impl SlideEditor {
         }
         if matches!(ext.as_str(), "txt" | "yaml" | "yml") {
             self.open_folder_text(path, window, cx);
+            return;
+        }
+        // When embedded inside an outer workspace (e.g. SoraneWorkspace), delegate link
+        // navigation to the workspace so it opens cleanly in a tab rather than overwriting
+        // the current editor in place or spawning an extra OS window.
+        if self.embedded_chrome.is_some() {
+            let target_path = path.clone();
+            let target_pos = position.clone();
+            cx.defer(move |cx| {
+                if crate::window_editors::try_open_path_via_factory(&target_path, cx)
+                    && let Some(pos) = target_pos
+                    && let Some(handle) =
+                        crate::open_guard::find_open_window(&target_path, None, cx)
+                    && let Some(root) = handle.downcast::<Root>()
+                {
+                    let _ = root.update(cx, |root, _, cx| {
+                        for editor in crate::window_editors::all_in_root(root, cx) {
+                            if editor.read(cx).shows_path(&target_path) {
+                                editor.update(cx, |ed, cx| {
+                                    ed.reveal_folder_position(Some(&pos), cx)
+                                });
+                                break;
+                            }
+                        }
+                    });
+                }
+            });
             return;
         }
         let in_place = self.can_navigate_in_place();
@@ -616,6 +647,35 @@ impl SlideEditor {
             _ => {}
         }
         cx.notify();
+    }
+
+    /// Attach or detach a Vault `Folder` on this embedded editor so the AI Assistant
+    /// receives Vault instructions, skills, and folder tools even when the editor's
+    /// own left pane is hidden by `EmbeddedChromePolicy`.
+    pub fn attach_vault_folder(
+        &mut self,
+        folder: Option<Arc<Folder>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match folder {
+            Some(folder) => {
+                let already_same = self
+                    .folder_pane
+                    .as_ref()
+                    .is_some_and(|p| Arc::ptr_eq(&p.folder, &folder));
+                if !already_same {
+                    self.set_folder_pane(folder, window, cx);
+                }
+            }
+            None => {
+                if self.folder_pane.is_some() {
+                    self.reset_ai_folder_context(cx);
+                    self.folder_pane = None;
+                    cx.notify();
+                }
+            }
+        }
     }
 
     pub(crate) fn render_folder_pane(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

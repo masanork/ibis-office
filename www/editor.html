@@ -13,6 +13,8 @@
       html, body { width: 100vw; height: 100vh; overflow: hidden; background: #fff; }
       /* gpui_web draws the whole window into one canvas appended to <body>. */
       body > canvas { position: fixed; inset: 0; display: block; width: 100%; height: 100%; }
+      /* gpui_web places its hidden IME textarea over the caret; keep it from intercepting canvas clicks. */
+      body > textarea { pointer-events: none; }
       #status { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
                 gap: 12px; font: 14px system-ui, sans-serif; color: #555; pointer-events: none; }
       /* Download progress of the app; shown once the size (Content-Length) is known. */

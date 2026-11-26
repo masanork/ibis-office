@@ -1,4 +1,4 @@
-# 医療ドメイン拡張設計書（`masanork/ibis-office`）
+# 医療ドメイン拡張設計書（`sorane-dev/docs`）
 
 本設計書は、政府・自治体向け機能（Lawtext・SD-JWT/mDOC/OID4VP・Harunobu 機械可読性・日本語データ正規化・Pure-Rust PDF/XPS/OFD）の先行実装を踏まえ、医療分野へ段階的に拡張するためのアーキテクチャ・ライセンス衛生・非 SaMD ガバナンスを定義する。
 
@@ -16,7 +16,7 @@ ibisOffice / Sorane Docs は **「クライアント完結型の構造化文書�
 
 ---
 
-## 2. 既存の `masanork/ibis-office` 資産との接続
+## 2. 既存の `sorane-dev/docs` 資産との接続
 
 | 既存モジュール | 既存機能 | 医療ドメインでの転用先 |
 | :--- | :--- | :--- |

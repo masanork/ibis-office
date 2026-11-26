@@ -209,6 +209,8 @@ pub enum Command {
     Sheet(crate::sheet_command::SheetCommand),
     /// A flowing document's edit (see `flow_command.rs`).
     Flow(crate::flow_command::FlowCommand),
+    /// Replace the entire presentation model (slides/workbook/media); its own inverse.
+    ReplacePresentation(Box<Presentation>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1021,6 +1023,10 @@ impl Presentation {
             }
             Command::Sheet(command) => crate::sheet_command::apply(self, command),
             Command::Flow(command) => crate::flow_command::apply(self, command),
+            Command::ReplacePresentation(next) => {
+                let prev = std::mem::replace(self, *next);
+                Ok(Command::ReplacePresentation(Box::new(prev)))
+            }
             Command::SetTextBody { slide, shape, body } => {
                 let target = self.shape_mut(slide, shape)?.text_body_mut().ok_or(EditError::NotText(shape))?;
                 let old = std::mem::replace(target, body);
@@ -1104,6 +1110,8 @@ pub struct Document {
     /// A touch gesture that can still be taken back (`begin_gesture`).
     gesture: Option<GestureState>,
     gesture_serial: u64,
+    /// Monotonic counter incremented whenever the underlying `Presentation` changes.
+    revision: u64,
 }
 
 /// What `Document` keeps while a gesture is open, to put the history back at `rollback_gesture`.
@@ -1156,7 +1164,7 @@ impl Default for Document {
 
 impl Document {
     pub fn new(presentation: Presentation) -> Self {
-        Self { presentation, read_only: false, undo: Vec::new(), redo: Vec::new(), repeat_sheet:Vec::new(), repeat_sheet_group:false, clean_undo_len: Some(0), file: None, csv_edits: None, gesture: None, gesture_serial: 0 }
+        Self { presentation, read_only: false, undo: Vec::new(), redo: Vec::new(), repeat_sheet:Vec::new(), repeat_sheet_group:false, clean_undo_len: Some(0), file: None, csv_edits: None, gesture: None, gesture_serial: 0, revision: 0 }
     }
 
     /// Start a journal only after the source bytes and model describe the same
@@ -1270,7 +1278,13 @@ impl Document {
 
     pub fn presentation_mut(&mut self) -> &mut Presentation {
         self.invalidate_csv_edits();
+        self.revision = self.revision.wrapping_add(1);
         &mut self.presentation
+    }
+
+    /// Monotonic counter incremented whenever the underlying [`Presentation`] changes.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// For id allocation only; edits must go through [`Document::execute`].
@@ -1529,6 +1543,9 @@ impl Document {
                     return Err(err);
                 }
             }
+        }
+        if !inverses.is_empty() {
+            self.revision = self.revision.wrapping_add(1);
         }
         inverses.reverse();
         Ok(inverses)
@@ -1993,5 +2010,35 @@ mod tests {
         doc.undo();
         assert!(!doc.gesture_is_open(&mark));
         assert!(!doc.rollback_gesture(mark));
+    }
+
+    #[test]
+    fn replace_presentation_roundtrips_with_undo_redo_and_bumps_revision() {
+        let (mut doc, _, _) = doc_with_box();
+        let rev0 = doc.revision();
+        let orig_slides = doc.presentation().slides.len();
+
+        let mut replacement = Presentation::default();
+        let s1 = replacement.new_slide_id();
+        let s2 = replacement.new_slide_id();
+        replacement.slides.push(Slide::new(s1));
+        replacement.slides.push(Slide::new(s2));
+        let replaced_slides = replacement.slides.len();
+        assert_ne!(replaced_slides, orig_slides);
+
+        doc.execute(vec![Command::ReplacePresentation(Box::new(replacement))])
+            .expect("replace presentation");
+        assert_eq!(doc.presentation().slides.len(), replaced_slides);
+        let rev1 = doc.revision();
+        assert!(rev1 > rev0);
+
+        assert!(doc.undo());
+        assert_eq!(doc.presentation().slides.len(), orig_slides);
+        let rev2 = doc.revision();
+        assert!(rev2 > rev1);
+
+        assert!(doc.redo());
+        assert_eq!(doc.presentation().slides.len(), replaced_slides);
+        assert!(doc.revision() > rev2);
     }
 }

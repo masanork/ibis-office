@@ -36,13 +36,29 @@
 | `autonumber <start> [step]` / `stop` / `resume` | 対応（番号制御を反映） | 単純 `autonumber` 化・`stop`/`resume` は診断（`autonumber`） |
 | `note across` | 対応（全参加者確定後に両端へ展開） | 既知範囲で近似（`layout` 診断） |
 
-## 3. 共有 IR ネイティブ描画でも対象外とするもの（割り切る範囲）
+## 3. 共有 IR ネイティブ描画・統合ディスパッチャで対象外とするもの（割り切る範囲）
 
 | 種別（`kind`） | 対象構文の例 | 方針と理由 |
 | --- | --- | --- |
-| `macro` | `!include`、`!define`、`!procedure` / `!function`、`!if` / `!endif`、`!theme`、`!pragma`、`$macro(...)` | テキスト展開言語・外部ファイル参照はオフライン安全性の観点からも展開しない |
-| `timing` | `robust`、`concise`、`clock`、`binary`、`analog`、`mode`、`@0` / `@+100` | 既存 IR とレイアウトモデルが異なるため `output: None`＋行番号診断 |
-| `diagram-type` | `class` / `state` / `usecase` / `er` / `activity` / `@startmindmap` / `@startwbs` / `@startgantt` 等 | Phase 1 のシーケンス IR では `output: None`。Phase 2・3 で既存の `class.rs` / `state.rs` / `usecase.rs` / `er.rs` / `flowchart.rs` / `mindmap.rs` / `treeview.rs` / `gantt.rs` へ段階的に共有 IR 接続する予定 |
-| `styling` | `skinparam`、`<style> ... </style>`、`hide`/`show`（`hide footbox` 除く）、参加者/矢印/活性化バー/`else` の `#Color`・`<<stereotype>>`・`bold` | 構造の描画を優先し、未反映装飾を行番号で報告 |
+| `macro` | `!include`（C4 標準除く）、`!define`、`!procedure` / `!function`、`!if` / `!endif`、未登録 `!theme`、`!pragma`、`$macro(...)` | テキスト展開言語・外部ファイル参照はオフライン安全性の観点からも展開しない |
+| `diagram-type` | `@startsalt` / `@startditaa` / `@startmath` / `@startlatex` / `@startdot` 等の未対応外枠 | 仕様書の論理図種の枠外として `output: None`＋行番号診断（Markdown ではコードブロックのまま保持） |
+| `styling` | ブロック形式や未対応キーの `skinparam`、`<style> ... </style>`、`hide`/`show`（`hide footbox` 除く）、未登録色名や細かな装飾 | CSS エンジンは持たず、軽量テーマ／主要色指定以外の未反映装飾を行番号で報告 |
 | `layout` | `\|\|\|`、`newpage`、`header` / `footer` / `legend` / `caption`、`scale`、Teoz 並列 `& ...`、横並び `/ note ...`、`box`/`create` 上の `order N` | 単一 SVG・1 イベント 1 行モデルと構造が異なるため診断を記録 |
 | `syntax` | `autoactivate`、先行活性化のない `return`、対応のない `else` / `end` / 未閉じブロック、その他未解釈行 | 行番号付きで報告 |
+
+## 4. 統合ディスパッチャ（`render_plantuml`）と Markdown コードブロック対応
+
+`render_plantuml` は既存の Mermaid レイアウト・SVG 描画器を重複実装せずに再利用し、以下の **18 図種**（UML 2.x 主要図種＋仕様書頻出の非 UML 図種）を自動判別して SVG 描画します。
+
+| 導入段階 | PlantUML 図種・機能 | 再利用・追加モジュール |
+| --- | --- | --- |
+| Phase 1 | シーケンス図（`@startuml`） | `sequence.rs`（共有 `SeqDiagram` IR） |
+| Phase 2 | クラス図 / 状態遷移図 / ユースケース図 / ER 図（`@startuml`） | `class.rs` / `state.rs` / `usecase.rs` / `er.rs` |
+| Phase 3 | マインドマップ（`@startmindmap`）/ WBS（`@startwbs`）/ ガントチャート（`@startgantt`）/ アクティビティ図 / コンポーネント・配置図（`@startuml`） | `mindmap.rs` / `treeview.rs` / `gantt.rs` / `flowchart.rs` |
+| Phase 4 | オブジェクト・マップ図（`object`/`map`）、タイミング図（`robust`/`concise`/`binary`/`clock`/`analog`）、状態遷移図の並列・選択・分岐・履歴（`--`/`<<choice>>`/`<<fork>>`/`<<join>>`/`[H]`）、アクティビティ図のスイムレーン（`\|Lane\|`）・`switch`/`split`・旧記法 | `class.rs` / `plantuml_timing.rs` / `state.rs` / `swimlanes.rs` / `flowchart.rs` |
+| Phase 5 | C4-PlantUML（`Person`/`System`/`Container`/`Component`/`*_Boundary`/`Rel*`）、JSON（`@startjson`）、YAML（`@startyaml`）、EBNF 文法図（`@startebnf`）、ネットワーク図（`@startnwdiag`）、年表（`@startchronology`） | `c4.rs` / `treeview.rs` / `railroad.rs` / `flowchart.rs` / `timeline.rs` |
+| Phase 6 | 軽量デザイン・テキスト装飾（定番 `!theme`、`skinparam monochrome true`、主要グローバル色 `backgroundColor`/`ArrowColor`/`defaultFontColor`/`*BackgroundColor`/`*BorderColor`、要素単体の `#Color`、基本 Creole `**太字**`/`//斜体//`） | `config.rs` / `text.rs` / `plantuml_style.rs` |
+
+- Markdown 内の ` ```plantuml ` / ` ```puml ` コードブロックは `render_plantuml` で自動判別して SVG 図として描画します。
+- マクロ（`macro`、ただし C4 標準 `!include <C4/...>` および定番 `!theme` は静的認識）・未対応図種（`diagram-type`）を含むブロックは安全のため通常のコードブロックのまま保持します。
+- SVG 描画された図も `alt_text`（`__plantuml__:<lang>`）に原本ソースを保持しており、Markdown へ再書き出しすると元の ` ```plantuml ` / ` ```puml ` フェンスをそのまま復元します。

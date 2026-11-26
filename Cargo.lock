@@ -5797,6 +5797,7 @@ dependencies = [
  "same-file",
  "serde_json",
  "skrifa 0.42.1",
+ "sorane-workspace",
  "subsetter",
  "tempfile",
  "ttf-parser",
@@ -5863,6 +5864,7 @@ dependencies = [
  "ibis-ofd",
  "ibis-office-base",
  "ibis-office-docx",
+ "ibis-office-render",
  "ibis-office-shell",
  "ibis-pdf",
  "ibis-vsdx",
@@ -5970,6 +5972,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "similar",
+ "sorane-github",
  "time",
  "ttf-parser",
  "turso_core",
@@ -10963,6 +10966,30 @@ name = "solana-nohash-hasher"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b8a731ed60e89177c8a7ab05fe0f1511cedd3e70e773f288f9de33a9cfdc21e"
+
+[[package]]
+name = "sorane-github"
+version = "0.8.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "sorane-workspace"
+version = "0.8.0"
+dependencies = [
+ "gpui-kit",
+ "ibis-doc-model",
+ "ibis-formats",
+ "ibis-lawtext",
+ "ibis-office-shell",
+ "log",
+ "serde",
+ "serde_json",
+ "sorane-github",
+]
 
 [[package]]
 name = "spin"

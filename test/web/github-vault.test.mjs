@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  detectSoraneContentDir,
   dispatchGitHubVault,
   isGitHubVaultRoute,
   sealSession,
@@ -357,12 +358,13 @@ test('POST /api/github/repos/create fails with initFailed when index.md commit i
   }
 });
 
-test('POST /api/github/repos/create succeeds and sets vault cookie when index.md commit succeeds', async () => {
+test('POST /api/github/repos/create succeeds with structured OKF help index.md and sets vault cookie', async () => {
   const sealed = await sealSession(
     { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
     TEST_ENV.GITHUB_SESSION_SECRET,
   );
   const origFetch = globalThis.fetch;
+  let capturedIndexMarkdown = '';
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     if (url.endsWith('/user/repos') && init?.method === 'POST') {
@@ -377,6 +379,8 @@ test('POST /api/github/repos/create succeeds and sets vault cookie when index.md
       );
     }
     if (url.includes('/contents/index.md') && init?.method === 'PUT') {
+      const payload = JSON.parse(String(init.body));
+      capturedIndexMarkdown = Buffer.from(payload.content, 'base64').toString('utf8');
       return new Response(JSON.stringify({ content: { sha: 'abc123' } }), {
         status: 201,
         headers: { 'Content-Type': 'application/json' },
@@ -398,6 +402,182 @@ test('POST /api/github/repos/create succeeds and sets vault cookie when index.md
     assert.equal(body.ok, true);
     assert.deepEqual(body.vault, { owner: 'masanork', repo: 'soraneDocs', branch: 'main', rootPath: '' });
     assert.match(res.headers.get('Set-Cookie') || '', /sorane_gh_session=/);
+    assert.match(capturedIndexMarkdown, /profile: sorane-okf\/0\.1/);
+    assert.match(capturedIndexMarkdown, /## 1\. 基本的な使い方/);
+    assert.match(capturedIndexMarkdown, /## 2\. 対応しているファイル形式/);
+    assert.match(capturedIndexMarkdown, /## 3\. おすすめのフォルダ構成/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('POST /api/github/repos/create returns alreadyExists guidance on 422', async () => {
+  const sealed = await sealSession(
+    { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/user/repos') && init?.method === 'POST') {
+      return new Response(
+        JSON.stringify({ message: 'Repository creation failed.' }),
+        { status: 422, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url.includes('/user/installations')) {
+      return new Response(
+        JSON.stringify({
+          installations: [
+            {
+              account: { login: 'masanork' },
+              html_url: 'https://github.com/settings/installations/42',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/github/repos/create', {
+        method: 'POST',
+        headers: { Cookie: `sorane_gh_session=${sealed}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'soraneDocs' }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(res.status, 422);
+    const body = await res.json();
+    assert.equal(body.alreadyExists, true);
+    assert.equal(body.installSettingsUrl, 'https://github.com/settings/installations/42');
+    assert.match(body.error, /すでに存在するため/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('GET /api/ai/models and POST /api/ai/chat proxy authenticated requests to GitHub Models', async () => {
+  const unauth = await dispatchGitHubVault(
+    new Request('https://docs.sorane.dev/api/ai/models'),
+    TEST_ENV,
+  );
+  assert.equal(unauth.status, 401);
+
+  const sealed = await sealSession(
+    { accessToken: 'ghu_ai_tok', login: 'masanork', vault: null, iat: 1700000000000 },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const modelsRes = await dispatchGitHubVault(
+    new Request('https://docs.sorane.dev/api/ai/models', {
+      headers: { Cookie: `sorane_gh_session=${sealed}` },
+    }),
+    TEST_ENV,
+  );
+  assert.equal(modelsRes.status, 200);
+  const catalog = await modelsRes.json();
+  assert.ok(typeof catalog.csrf === 'string' && catalog.csrf.length > 10);
+  assert.ok(Array.isArray(catalog.models) && catalog.models.length >= 1);
+  assert.equal(catalog.models[0].key, 'openai/gpt-4.1-mini');
+
+  const badCsrf = await dispatchGitHubVault(
+    new Request('https://docs.sorane.dev/api/ai/chat', {
+      method: 'POST',
+      headers: {
+        Cookie: `sorane_gh_session=${sealed}`,
+        'Content-Type': 'application/json',
+        'X-Sorane-CSRF': 'wrong',
+      },
+      body: JSON.stringify({ model: 'openai/gpt-4.1-mini', messages: [{ role: 'user', content: 'hi' }] }),
+    }),
+    TEST_ENV,
+  );
+  assert.equal(badCsrf.status, 403);
+
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), 'https://models.github.ai/inference/chat/completions');
+    assert.equal(init.headers.Authorization, 'Bearer ghu_ai_tok');
+    return new Response('data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n', {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  };
+  try {
+    const chatRes = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/ai/chat', {
+        method: 'POST',
+        headers: {
+          Cookie: `sorane_gh_session=${sealed}`,
+          'Content-Type': 'application/json',
+          'X-Sorane-CSRF': catalog.csrf,
+        },
+        body: JSON.stringify({ model: 'openai/gpt-4.1-mini', messages: [{ role: 'user', content: 'hi' }] }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(chatRes.status, 200);
+    const sseText = await chatRes.text();
+    assert.match(sseText, /"content":"hello"/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('detectSoraneContentDir extracts build.content_dir from sorane.yaml', () => {
+  assert.equal(
+    detectSoraneContentDir('site:\n  title: Demo\nbuild:\n  content_dir: "docs/content"\n'),
+    'docs/content',
+  );
+  assert.equal(
+    detectSoraneContentDir('site:\n  title: Demo\nbuild:\n  out_dir: dist\n'),
+    'content',
+  );
+  assert.equal(
+    detectSoraneContentDir('build:\n  content_dir: ../escape\n'),
+    'content',
+  );
+});
+
+test('POST /api/github/vault auto-detects build.content_dir from sorane.yaml when rootPath is omitted', async () => {
+  const sealed = await sealSession(
+    { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const yaml = 'site:\n  title: Demo\nbuild:\n  content_dir: docs/pages\n';
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith('/repos/masanork/site')) {
+      return new Response(JSON.stringify({ default_branch: 'main' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/repos/masanork/site/contents/sorane.yaml?ref=main')) {
+      return new Response(
+        JSON.stringify({ encoding: 'base64', content: Buffer.from(yaml, 'utf8').toString('base64') }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/github/vault', {
+        method: 'POST',
+        headers: { Cookie: `sorane_gh_session=${sealed}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ owner: 'masanork', repo: 'site' }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.vault.rootPath, 'docs/pages');
+    assert.equal(body.detectedSoraneContentDir, 'docs/pages');
   } finally {
     globalThis.fetch = origFetch;
   }

@@ -1,0 +1,491 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) ibis inc.
+// Additional terms under AGPL-3.0 section 7(b): see NOTICE.
+//! Workspace session persistence (Vault-keyed layout & tab restore),
+//! daily note date formatting, and safe Vault-relative note path resolution.
+
+#[cfg(not(target_family = "wasm"))]
+use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+
+use crate::model::{
+    DEFAULT_LEFT_SIDEBAR_WIDTH, DEFAULT_RIGHT_SIDEBAR_WIDTH, LeftPanelKind, RightPanelKind,
+};
+
+#[cfg(not(target_family = "wasm"))]
+const SESSION_FILE_NAME: &str = "sorane-workspace-session.json";
+#[cfg(not(target_family = "wasm"))]
+const MAX_VAULT_SESSIONS: usize = 16;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedTab {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedPane {
+    pub tabs: Vec<PersistedTab>,
+    #[serde(default)]
+    pub active_tab: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceSession {
+    pub vault_root: Option<PathBuf>,
+    #[serde(default)]
+    pub left_sidebar_open: bool,
+    #[serde(default)]
+    pub left_panel: LeftPanelKind,
+    #[serde(default = "default_left_width")]
+    pub left_sidebar_width: f32,
+    #[serde(default)]
+    pub right_sidebar_open: bool,
+    #[serde(default)]
+    pub right_panel: RightPanelKind,
+    #[serde(default = "default_right_width")]
+    pub right_sidebar_width: f32,
+    #[serde(default)]
+    pub split_ratio: Option<f32>,
+    #[serde(default)]
+    pub active_pane_index: usize,
+    #[serde(default)]
+    pub panes: Vec<PersistedPane>,
+}
+
+fn default_left_width() -> f32 {
+    DEFAULT_LEFT_SIDEBAR_WIDTH
+}
+
+fn default_right_width() -> f32 {
+    DEFAULT_RIGHT_SIDEBAR_WIDTH
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct SessionStore {
+    last_vault: Option<PathBuf>,
+    last_session: Option<WorkspaceSession>,
+    #[serde(default)]
+    by_vault: BTreeMap<String, WorkspaceSession>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn store_path() -> Option<PathBuf> {
+    let base = ibis_office_shell::app_data::base()?;
+    Some(base.join("ibisOffice").join(SESSION_FILE_NAME))
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn vault_key(root: &Path) -> String {
+    root.canonicalize()
+        .unwrap_or_else(|_| root.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn load_store(path: &Path) -> SessionStore {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<SessionStore>(&raw).ok())
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn write_store(path: &Path, store: &SessionStore) {
+    let Ok(json) = serde_json::to_string_pretty(store) else {
+        return;
+    };
+    let result = match path.parent() {
+        Some(dir) => std::fs::create_dir_all(dir).and_then(|()| std::fs::write(path, json)),
+        None => std::fs::write(path, json),
+    };
+    if let Err(err) = result {
+        log::warn!("failed to write workspace session {}: {err}", path.display());
+    }
+}
+
+#[cfg(target_family = "wasm")]
+const WEB_SESSION_STORAGE_KEY: &str = "sorane.workspace.session.v1";
+
+/// Save the latest workspace session (both globally and keyed by `vault_root` when open).
+pub fn save_session(session: &WorkspaceSession) {
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(path) = store_path() {
+        save_session_to(&path, session);
+    }
+    #[cfg(target_family = "wasm")]
+    if let Ok(json) = serde_json::to_string(session) {
+        ibis_office_shell::web::local_storage_set(WEB_SESSION_STORAGE_KEY, &json);
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn save_session_to(store_file: &Path, session: &WorkspaceSession) {
+    let mut store = load_store(store_file);
+    store.last_vault = session.vault_root.clone();
+    store.last_session = Some(session.clone());
+    if let Some(root) = session.vault_root.as_deref() {
+        store.by_vault.insert(vault_key(root), session.clone());
+        while store.by_vault.len() > MAX_VAULT_SESSIONS {
+            let Some(oldest) = store.by_vault.keys().next().cloned() else {
+                break;
+            };
+            store.by_vault.remove(&oldest);
+        }
+    }
+    write_store(store_file, &store);
+}
+
+/// Load the most recent saved workspace session, filtering out paths that no longer exist.
+pub fn load_last_session() -> Option<WorkspaceSession> {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let path = store_path()?;
+        load_last_session_from(&path)
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        let raw = ibis_office_shell::web::local_storage_get(WEB_SESSION_STORAGE_KEY)?;
+        let session: WorkspaceSession = serde_json::from_str(&raw).ok()?;
+        if session.vault_root.is_none() && session.panes.iter().all(|p| p.tabs.is_empty()) {
+            return None;
+        }
+        Some(session)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn load_last_session_from(store_file: &Path) -> Option<WorkspaceSession> {
+    let store = load_store(store_file);
+    let mut session = store.last_session?;
+    prune_missing_paths(&mut session);
+    if session.vault_root.is_none() && session.panes.iter().all(|p| p.tabs.is_empty()) {
+        return None;
+    }
+    Some(session)
+}
+
+/// Load a previously saved session for a specific Vault root (used when switching Vaults).
+pub fn load_vault_session(root: &Path) -> Option<WorkspaceSession> {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let path = store_path()?;
+        load_vault_session_from(&path, root)
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = root;
+        None
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn load_vault_session_from(store_file: &Path, root: &Path) -> Option<WorkspaceSession> {
+    let store = load_store(store_file);
+    let mut session = store.by_vault.get(&vault_key(root)).cloned()?;
+    prune_missing_paths(&mut session);
+    Some(session)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn prune_missing_paths(session: &mut WorkspaceSession) {
+    if session
+        .vault_root
+        .as_deref()
+        .is_some_and(|root| !root.is_dir())
+    {
+        session.vault_root = None;
+    }
+    for pane in &mut session.panes {
+        pane.tabs.retain(|t| t.path.is_file());
+        if pane.tabs.is_empty() {
+            pane.active_tab = 0;
+        } else if pane.active_tab >= pane.tabs.len() {
+            pane.active_tab = pane.tabs.len() - 1;
+        }
+    }
+    session.panes.retain(|p| !p.tabs.is_empty());
+    if session.panes.len() < 2 {
+        session.split_ratio = None;
+    }
+    if session.active_pane_index >= session.panes.len() {
+        session.active_pane_index = 0;
+    }
+}
+
+/// Resolve a user-typed note name (e.g. `"design/spec"` or `"Memo.md"`) safely inside `vault_root`.
+/// Rejects absolute paths, parent traversal (`..`), empty names, and hidden dotfiles.
+pub fn resolve_new_note_path(vault_root: &Path, raw_name: &str) -> Option<PathBuf> {
+    let trimmed = raw_name.trim().trim_start_matches('/').trim_end_matches('/');
+    if trimmed.is_empty() || trimmed.contains('\0') {
+        return None;
+    }
+    let with_ext = if Path::new(trimmed).extension().is_some() {
+        trimmed.to_owned()
+    } else {
+        format!("{trimmed}.md")
+    };
+    let rel = Path::new(&with_ext);
+    let mut clean = PathBuf::new();
+    for comp in rel.components() {
+        match comp {
+            Component::Normal(part) => {
+                let s = part.to_str()?;
+                if s.is_empty() || s.starts_with('.') {
+                    return None;
+                }
+                clean.push(part);
+            }
+            _ => return None,
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        return None;
+    }
+    Some(vault_root.join(clean))
+}
+
+/// Format today's UTC date as `YYYY-MM-DD` for Daily Notes (pure Rust, zero extra dependencies).
+pub fn today_iso_date() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format_unix_days_iso((secs / 86_400) as i64)
+}
+
+/// Starter Marp presentation template (slides + Mermaid flowchart) for quick creation in Vaults.
+pub const DEFAULT_MARP_TEMPLATE: &str = "\
+---
+marp: true
+paginate: true
+---
+
+# タイトルスライド
+
+サブタイトル・発表者名
+
+---
+
+## アジェンダ
+
+- 背景と目的
+- アーキテクチャ概要
+- 次のステップ
+
+---
+
+## フロー図（Mermaid）
+
+```mermaid
+flowchart LR
+  Markdown[Marp Markdown] --> Slides[ネイティブスライド]
+  Slides --> Markdown
+```
+";
+
+/// Starter multi-sheet Workbook Markdown template (GFM tables + cross-sheet formulas).
+pub const DEFAULT_WORKBOOK_MARKDOWN_TEMPLATE: &str = r#"<!-- xlsx-sheet "売上" -->
+
+## 売上
+
+| 品目 | 単価 | 数量 | 小計 |
+| :--- | ---: | ---: | ---: |
+| 項目A | 1200 | 3 | 3600 <!-- xlsx-formula:"=B2*C2" --> |
+| 項目B | 800 | 5 | 4000 <!-- xlsx-formula:"=B3*C3" --> |
+
+<!-- xlsx-sheet "サマリー" -->
+
+## サマリー
+
+| 指標 | 値 |
+| :--- | ---: |
+| 合計金額 | 7600 <!-- xlsx-formula:"=SUM(売上!D2:D3)" --> |
+"#;
+
+/// Starter Lawtext statutory draft template for quick legislative drafting in Vaults.
+pub const DEFAULT_LAWTEXT_TEMPLATE: &str = "\
+デジタル手続モデル法（令和七年法律第一号）
+
+第一章 総則
+
+（目的）
+第一条 この法律は、電子手続の標準化に関する基本事項を定めることを目的とする。
+
+（定義）
+第二条 この法律において「電子手続」とは、電子情報処理組織を使用して行う申請又は届出をいう。
+
+附則
+この法律は、公布の日から施行する。
+";
+
+/// Pick the first non-existent `<stem>.<ext>`, `<stem> 2.<ext>`, ... path in `vault_root`.
+pub fn next_numbered_file_path(vault_root: &Path, stem: &str, ext: &str) -> PathBuf {
+    let mut index = 1usize;
+    loop {
+        let candidate = if index == 1 {
+            vault_root.join(format!("{stem}.{ext}"))
+        } else {
+            vault_root.join(format!("{stem} {index}.{ext}"))
+        };
+        if !candidate.exists() {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+/// Pick the first non-existent `<stem>.md`, `<stem> 2.md`, `<stem> 3.md`, ... path in `vault_root`.
+pub fn next_numbered_markdown_path(vault_root: &Path, stem: &str) -> PathBuf {
+    next_numbered_file_path(vault_root, stem, "md")
+}
+
+/// Howard Hinnant's civil-from-days conversion (`days_since_1970_01_01` -> `YYYY-MM-DD`).
+pub(crate) fn format_unix_days_iso(days: i64) -> String {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = y + i64::from(m <= 2);
+    format!("{year:04}-{m:02}-{d:02}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_store_roundtrips_and_prunes_missing_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "sorane-ws-session-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let vault = dir.join("vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        let existing = vault.join("keep.md");
+        std::fs::write(&existing, "# Keep\n").unwrap();
+        let missing = vault.join("deleted.md");
+        let store_file = dir.join("session.json");
+
+        let session = WorkspaceSession {
+            vault_root: Some(vault.clone()),
+            left_sidebar_open: true,
+            left_panel: LeftPanelKind::Vault,
+            left_sidebar_width: 280.0,
+            right_sidebar_open: true,
+            right_panel: RightPanelKind::Outline,
+            right_sidebar_width: 300.0,
+            split_ratio: Some(0.55),
+            active_pane_index: 0,
+            panes: vec![
+                PersistedPane {
+                    tabs: vec![
+                        PersistedTab {
+                            path: existing.clone(),
+                            pinned: true,
+                        },
+                        PersistedTab {
+                            path: missing,
+                            pinned: false,
+                        },
+                    ],
+                    active_tab: 1,
+                },
+            ],
+        };
+
+        save_session_to(&store_file, &session);
+        let loaded = load_last_session_from(&store_file).expect("load session");
+        assert_eq!(loaded.vault_root.as_deref(), Some(vault.as_path()));
+        assert_eq!(loaded.panes.len(), 1);
+        assert_eq!(loaded.panes[0].tabs.len(), 1);
+        assert_eq!(loaded.panes[0].tabs[0].path, existing);
+        assert!(loaded.panes[0].tabs[0].pinned);
+        assert_eq!(loaded.panes[0].active_tab, 0);
+        assert_eq!(loaded.split_ratio, None, "single pane clears split_ratio");
+
+        let by_vault = load_vault_session_from(&store_file, &vault).expect("load by vault");
+        assert_eq!(by_vault.left_sidebar_width, 280.0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_new_note_path_enforces_vault_boundary() {
+        let root = Path::new("/tmp/vault");
+        assert_eq!(
+            resolve_new_note_path(root, "Architecture"),
+            Some(PathBuf::from("/tmp/vault/Architecture.md"))
+        );
+        assert_eq!(
+            resolve_new_note_path(root, "docs/spec.md"),
+            Some(PathBuf::from("/tmp/vault/docs/spec.md"))
+        );
+        assert_eq!(resolve_new_note_path(root, "../escape"), None);
+        assert_eq!(resolve_new_note_path(root, ".hidden"), None);
+        assert_eq!(resolve_new_note_path(root, "   "), None);
+    }
+
+    #[test]
+    fn unix_days_formats_known_iso_dates() {
+        assert_eq!(format_unix_days_iso(0), "1970-01-01");
+        assert_eq!(format_unix_days_iso(20_089), "2025-01-01");
+        assert_eq!(format_unix_days_iso(19_782), "2024-02-29");
+    }
+
+    #[test]
+    fn starter_templates_open_as_marp_presentation_and_workbook() {
+        assert!(ibis_formats::markdown::is_presentation_markdown(
+            DEFAULT_MARP_TEMPLATE.as_bytes()
+        ));
+        let marp = ibis_formats::markdown::open_markdown_presentation(
+            DEFAULT_MARP_TEMPLATE.as_bytes().to_vec(),
+        )
+        .expect("open starter marp template");
+        assert_eq!(marp.presentation.slides.len(), 3);
+
+        assert!(ibis_formats::markdown::is_workbook_markdown(
+            DEFAULT_WORKBOOK_MARKDOWN_TEMPLATE.as_bytes()
+        ));
+        let wb = ibis_formats::markdown::open_markdown_workbook(
+            DEFAULT_WORKBOOK_MARKDOWN_TEMPLATE.as_bytes().to_vec(),
+        )
+        .expect("open starter workbook markdown template");
+        assert_eq!(wb.presentation.slides.len(), 2);
+
+        let law = ibis_lawtext::parse_lawtext(DEFAULT_LAWTEXT_TEMPLATE)
+            .expect("parse starter lawtext template");
+        let xml = ibis_lawtext::to_law_xml(&law);
+        assert!(ibis_lawtext::is_law_xml(xml.as_bytes()));
+        let report = ibis_lawtext::lint_law(&law);
+        assert_eq!(report.error_count, 0, "starter lawtext should have 0 lint errors: {:?}", report.findings);
+    }
+
+    #[test]
+    fn next_numbered_markdown_path_avoids_overwriting_existing_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "sorane-ws-numbered-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = next_numbered_markdown_path(&dir, "Slides");
+        assert_eq!(first, dir.join("Slides.md"));
+        std::fs::write(&first, "# 1").unwrap();
+        let second = next_numbered_markdown_path(&dir, "Slides");
+        assert_eq!(second, dir.join("Slides 2.md"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

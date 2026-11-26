@@ -87,7 +87,7 @@ fn zoom_is_continuous() {
         chart_build: None,
         dgm_element: None,
         dgm_build: None,
-        behaviors,
+        behaviors, group_pivot: None,
     };
     let grow = |name: &str| AnimBehavior { kind: BehaviorKind::Anim { attr: name.into(), keys: vec![(0, "0".into()), (100_000, format!("#{name}"))], formula: None, discrete: false }, begin: 0, dur: 500, time: Default::default() };
     let from = ShapeMotion::at_rest(0.0);

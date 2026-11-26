@@ -242,7 +242,6 @@ pub struct ShapeRules {
 /// What is written to a file whose extension is not the format's own package (`FormatEditor::bytes_for_path`): the bytes, whether
 /// the file's password may encrypt them (an OOXML package), and, for a kind of file the format has something to say of after a
 /// save, what the status bar says in place of 「保存しました」 (`Some(None)`: nothing this time).
-#[cfg(not(target_family = "wasm"))]
 pub struct FileBytes {
     pub bytes: Vec<u8>,
     pub protect: bool,
@@ -1182,6 +1181,16 @@ pub trait FormatEditor {
         None
     }
 
+    /// Cross-platform source export for `.md` / `.markdown` / `.lawtext` / e-Gov `.xml` when saving
+    /// by file name (used on Web/WASM and shared with `bytes_for_path` on desktop).
+    fn source_bytes_for_name(
+        _editor: &SlideEditor,
+        _name: &str,
+        _source: &ibis_formats::Source,
+    ) -> Option<Result<FileBytes, String>> {
+        None
+    }
+
     /// The folder the save dialog opens in for a new file, when the format has a setting of its own for it (a workbook's
     /// 既定のローカル ファイルの保存場所).
     #[cfg(not(target_family = "wasm"))]
@@ -1580,6 +1589,12 @@ pub trait FormatDriver: Sync {
     fn pdf_job(&self, editor: &SlideEditor, _printing: bool) -> Result<PdfJob, String>;
     #[cfg(not(target_family = "wasm"))]
     fn bytes_for_path(&self, _editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_formats::Source, _copy: bool) -> Option<Result<FileBytes, String>>;
+    fn source_bytes_for_name(
+        &self,
+        _editor: &SlideEditor,
+        _name: &str,
+        _source: &ibis_formats::Source,
+    ) -> Option<Result<FileBytes, String>>;
     #[cfg(not(target_family = "wasm"))]
     fn new_file_save_folder(&self, _editor: &SlideEditor) -> Option<std::path::PathBuf>;
     fn export_args(&self, _editor: &SlideEditor) -> Vec<&'static str>;
@@ -2192,6 +2207,14 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     #[cfg(not(target_family = "wasm"))]
     fn bytes_for_path(&self, _editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_formats::Source, _copy: bool) -> Option<Result<FileBytes, String>> {
         F::bytes_for_path(_editor, _path, _source, _copy)
+    }
+    fn source_bytes_for_name(
+        &self,
+        _editor: &SlideEditor,
+        _name: &str,
+        _source: &ibis_formats::Source,
+    ) -> Option<Result<FileBytes, String>> {
+        F::source_bytes_for_name(_editor, _name, _source)
     }
     #[cfg(not(target_family = "wasm"))]
     fn new_file_save_folder(&self, _editor: &SlideEditor) -> Option<std::path::PathBuf> {

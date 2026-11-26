@@ -2928,8 +2928,8 @@ xlsx.validation.list-needs-extension	この設定は Excel にない機能です
 xlsx.design-mode.close	デザイン モードを閉じる
 xlsx.sheet.delete-ask	シートを削除してよろしいですか？
 
-xlsx.sd-jwt	SD-JWT の生成…
-xlsx.sd-jwt.title	SD-JWT の生成とプレビュー
+xlsx.sd-jwt	提出・証明（SD-JWT / VC）…
+xlsx.sd-jwt.title	提出・証明 (SD-JWT / VC)
 xlsx.sd-jwt.iss	発行者 (iss)
 xlsx.sd-jwt.vct	クレデンシャル種別 (vct)
 xlsx.sd-jwt.include-cnf	保有者鍵 (cnf.jwk) を含める
@@ -2980,6 +2980,14 @@ xlsx.sd-jwt.import-input	.sd-jwt または .mdoc（Base64 / Hex）を貼り付�
 xlsx.sd-jwt.import-apply	検証してシートに展開
 xlsx.sd-jwt.import-ok	{format} を読み込みました（ダイジェスト {verified}/{total} 一致・署名: {sig}）。
 xlsx.sd-jwt.copy-vp-short	VP をコピー (提示用)
+xlsx.sd-jwt.tab-present	提出 (Holder)
+xlsx.sd-jwt.tab-issue	発行 (Issuer)
+xlsx.sd-jwt.tab-verify	検証・読込 (Verify)
+xlsx.sd-jwt.sandbox-badge	Sandbox（テスト鍵使用中）
+xlsx.sd-jwt.sandbox-note	テスト用のデモ鍵で署名しています。本番の証明には発行者 JWK を指定してください。
+xlsx.sd-jwt.present-empty	提出できる項目がありません。「発行」タブでひな形を作成するか、「検証・読込」タブから手元の証明書を読み込んでください。
+xlsx.sd-jwt.verify-summary	検証結果: {format} / 種別: {vct} / 発行者: {issuer} / ダイジェスト: {verified}/{total} / 署名: {sig}
+xlsx.sd-jwt.open-prefill	フォーム入力支援を開く…
 xlsx.date-review.title	日付の表記を確認…
 xlsx.date-review.explanation	選択範囲の通常の文字列を確認します。数式・数値・文字ごとの書式やふりがな付きのセルは対象外です。適用後はまとめて元に戻せます。
 xlsx.date-review.pivot	年/月/日の順で、2桁の年は 00〜29 を2000〜2029年、30〜99 を1930〜1999年と推定します。
@@ -3115,7 +3123,7 @@ query.json-no-arrays	取り込める JSON 配列がありません
 xlsx.query-from-delimited	CSV／TSV クエリ
 query.delimited-headers	先頭行を列名にする
 xlsx.query-from-parquet-folder	Parquet フォルダから
-xlsx.prefill.title	フォームの入力候補を確認…
+xlsx.prefill.title	フォーム入力支援（プレフィル）…
 xlsx.prefill.select-source	入力に使う記録を選択
 xlsx.prefill.select-mapping	項目の対応表を選択
 xlsx.prefill.too-large	1 MiB以下のファイルを選択してください。
@@ -3141,6 +3149,11 @@ xlsx.prefill.changed	転記元またはブックが変わりました。入力�
 xlsx.prefill.save-unavailable	入力済みのコピーを保存できませんでした。
 xlsx.prefill.saved	入力済みのコピーを {path} に保存しました
 xlsx.prefill.long-value	この画面で選択するには値が長すぎます。
+xlsx.prefill.allow-overwrite	入力済みセルの上書きを許可する
+xlsx.prefill.select-all	入力候補をすべて選択
+xlsx.prefill.apply-sheet	開いているシートに適用（元に戻す可）
+xlsx.prefill.applied	選んだ {count} 件をシートに適用しました（元に戻す可能）
+xlsx.prefill.apply-unavailable	現在のシートには適用できません（読み取り専用または保護されています）。
 xlsx.ai-explain-formula	選択セルの数式を説明
 xlsx.ai-explain-formula-incomplete	数式の説明を取得できませんでした。もう一度お試しください。
 query.report-refresh-title	SQLレポートの更新

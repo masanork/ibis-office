@@ -1450,7 +1450,29 @@ impl<'p, 'd, 'i> Reader<'p, 'd, 'i> {
         }
         let mut group_targets = HashMap::new();
         collect(&slide.groups, &mut group_targets);
-        slide.animations = crate::animation::read(ctx.slide.root, &self.last_native_ids, &group_targets);
+        let slide_size = slide.size.unwrap_or(self.presentation.slide_size);
+        let mut group_pivots: HashMap<String, (i32, i32)> = HashMap::new();
+        if slide_size.width > 0 && slide_size.height > 0 {
+            for (gid, members) in &group_targets {
+                let mut bounds: Option<(i64, i64, i64, i64)> = None;
+                for &sid in members {
+                    if let Some(sh) = slide.shapes.iter().find(|s| s.id == sid) {
+                        let (x0, y0) = (sh.frame.x, sh.frame.y);
+                        let (x1, y1) = (sh.frame.x + sh.frame.width, sh.frame.y + sh.frame.height);
+                        bounds = Some(match bounds {
+                            None => (x0, y0, x1, y1),
+                            Some((ax0, ay0, ax1, ay1)) => (ax0.min(x0), ay0.min(y0), ax1.max(x1), ay1.max(y1)),
+                        });
+                    }
+                }
+                if let Some((x0, y0, x1, y1)) = bounds {
+                    let cx = ((x0 + x1) as f64 / 2.0 / slide_size.width as f64 * 100_000.0).round() as i32;
+                    let cy = ((y0 + y1) as f64 / 2.0 / slide_size.height as f64 * 100_000.0).round() as i32;
+                    group_pivots.insert(gid.clone(), (cx, cy));
+                }
+            }
+        }
+        slide.animations = crate::animation::read(ctx.slide.root, &self.last_native_ids, &group_targets, &group_pivots, Some(&ctx.colors));
         read_media_nodes(ctx.slide.root, &self.last_native_ids, &mut slide.shapes);
         slide
     }

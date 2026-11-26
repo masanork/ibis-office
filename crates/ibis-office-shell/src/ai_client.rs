@@ -382,6 +382,7 @@ fn default_reasoning_effort(model: &str, has_tools: bool) -> Option<&'static str
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConnectionChoice {
     Auto,
+    GitHubModels,
     OpenAi,
     Claude,
     Gemini,
@@ -391,8 +392,9 @@ pub(crate) enum ConnectionChoice {
 
 #[cfg(not(target_family = "wasm"))]
 impl ConnectionChoice {
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Auto,
+        Self::GitHubModels,
         Self::OpenAi,
         Self::Claude,
         Self::Gemini,
@@ -403,6 +405,7 @@ impl ConnectionChoice {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Auto => "自動選択",
+            Self::GitHubModels => "GitHub Models（ログイン済み）",
             Self::OpenAi => "OpenAI 互換 API",
             Self::Claude => "Claude API（環境変数）",
             Self::Gemini => "Google Gemini（環境変数）",
@@ -416,6 +419,24 @@ impl ConnectionChoice {
         saved: &AiConfig,
         env: impl Fn(&str) -> Option<String>,
     ) -> Result<NativeConnection, String> {
+        if self == Self::GitHubModels {
+            let token = load_github_session_token().ok_or_else(|| {
+                "GitHub にログインしてください（左サイドバーの Git パネルからログインできます）。".to_string()
+            })?;
+            let model = if saved.model.trim().contains('/') {
+                saved.model.trim().to_string()
+            } else {
+                sorane_github::DEFAULT_GITHUB_MODEL.to_string()
+            };
+            return Ok(NativeConnection {
+                provider: Provider::OpenAi,
+                config: AiConfig {
+                    base_url: sorane_github::GITHUB_MODELS_BASE_URL.to_string(),
+                    model,
+                    api_key: token,
+                },
+            });
+        }
         let (provider, config) = Provider::resolve(saved, |name| match (self, name) {
             (Self::OpenAi, "IBIS_AI_PROVIDER") => Some("openai".into()),
             (Self::Claude, "IBIS_AI_PROVIDER") => Some("anthropic".into()),
@@ -424,6 +445,26 @@ impl ConnectionChoice {
             (Self::BedrockProfile, "AWS_BEARER_TOKEN_BEDROCK") => None,
             _ => env(name),
         })?;
+        if self == Self::Auto
+            && provider == Provider::OpenAi
+            && config.base_url == DEFAULT_BASE_URL
+            && config.api_key.is_empty()
+            && let Some(token) = load_github_session_token()
+        {
+            let model = if saved.model.trim().contains('/') {
+                saved.model.trim().to_string()
+            } else {
+                sorane_github::DEFAULT_GITHUB_MODEL.to_string()
+            };
+            return Ok(NativeConnection {
+                provider: Provider::OpenAi,
+                config: AiConfig {
+                    base_url: sorane_github::GITHUB_MODELS_BASE_URL.to_string(),
+                    model,
+                    api_key: token,
+                },
+            });
+        }
         if self == Self::BedrockKey && provider != Provider::Bedrock {
             return Err("AWS_BEARER_TOKEN_BEDROCK を設定してください。".into());
         }
@@ -448,6 +489,21 @@ impl ConnectionChoice {
 }
 
 #[cfg(not(target_family = "wasm"))]
+fn load_github_session_token() -> Option<String> {
+    let path = crate::app_data::base()?
+        .join("ibisOffice")
+        .join("sorane-github-session.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(not(target_family = "wasm"))]
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct NativeConnection {
     provider: Provider,
@@ -469,6 +525,9 @@ impl NativeConnection {
 
     pub(crate) fn caption(&self) -> (&'static str, String) {
         let choice = match self.provider {
+            Provider::OpenAi if self.config.base_url == sorane_github::GITHUB_MODELS_BASE_URL => {
+                ConnectionChoice::GitHubModels
+            }
             Provider::OpenAi if self.config.base_url == GEMINI_BASE_URL => ConnectionChoice::Gemini,
             Provider::OpenAi | Provider::OpenAiResponses => ConnectionChoice::OpenAi,
             Provider::Anthropic => ConnectionChoice::Claude,
@@ -1223,7 +1282,7 @@ pub fn browser_csrf() -> String {
 /// Turn a Worker error code into a sentence for the Assistant pane.
 pub fn explain_ai_error(code: &str) -> String {
     match code {
-        "login_required" => "ログインが必要です。保存したファイルの画面から Mikaki でログインしてください。".to_string(),
+        "login_required" => "ログインが必要です。スタート画面の「GitHub でログイン」からログインしてください。".to_string(),
         "invalid_csrf" => "ログイン情報を確認できませんでした。アシスタントを開き直してください。".to_string(),
         "invalid_origin" => "このページからはアシスタントを使えません。docs.sorane.dev で開いてください。".to_string(),
         "invalid_model" => "選んだモデルは使えません。アシスタントを開き直してください。".to_string(),
@@ -1231,7 +1290,7 @@ pub fn explain_ai_error(code: &str) -> String {
         "too_long" => "文書が選んだモデルの上限を超えています。".to_string(),
         "rate_limited" => "短時間に送りすぎました。少し待ってからもう一度試してください。".to_string(),
         "quota_exceeded" => "今日の利用回数の上限に達しました。".to_string(),
-        "ai_not_configured" => "アシスタントの準備がまだです。".to_string(),
+        "ai_not_configured" => "GitHub Models へのアクセス権限（Models: Read）が未承認です。GitHub App の権限を更新して再ログインしてください。".to_string(),
         "ai_failed" => "応答を受け取れませんでした。".to_string(),
         "aborted" => String::new(),
         other => other.to_string(),
@@ -1408,6 +1467,117 @@ fn accept_sse_line(parser: &mut SseStreamParser, line: &str, on_delta: &mut impl
         Some(SseEvent::Done) | None => {}
     }
     Ok(())
+}
+
+/// Extract bounded UTF-8 prefix and suffix slices around a 0-based `(line, character)` cursor.
+pub(crate) fn slice_prefix_suffix(text: &str, cursor_line: usize, cursor_col: usize) -> (String, String) {
+    let mut byte_offset = text.len();
+    let mut current_line = 0usize;
+    let mut line_start = 0usize;
+    for (idx, ch) in text.char_indices() {
+        if current_line == cursor_line {
+            line_start = idx;
+            break;
+        }
+        if ch == '\n' {
+            current_line += 1;
+            line_start = idx + 1;
+        }
+    }
+    if current_line == cursor_line || line_start <= text.len() {
+        let rest = &text[line_start.min(text.len())..];
+        let mut col = 0usize;
+        let mut found = false;
+        for (rel, ch) in rest.char_indices() {
+            if col == cursor_col || ch == '\n' {
+                byte_offset = line_start + rel;
+                found = true;
+                break;
+            }
+            col += 1;
+        }
+        if !found {
+            byte_offset = text.len();
+        }
+    }
+
+    let before = &text[..byte_offset];
+    let after = &text[byte_offset..];
+    let prefix: String = before
+        .chars()
+        .rev()
+        .take(1200)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let suffix: String = after.chars().take(400).collect();
+    (prefix, suffix)
+}
+
+pub(crate) fn build_inline_completion_messages(prefix: &str, suffix: &str) -> Vec<ChatMessage> {
+    let prompt = format!(
+        "あなたは Markdown 文書作成の先読み補完アシスタントです。\n\
+         次の <prefix> の直後（カーソル位置）に続く自然な日本語または Markdown の続きを 1〜2 文（最大 120 文字程度）だけ出力してください。\n\
+         制約:\n\
+         - 補完テキスト本体のみを出力し、説明・挨拶・前後を囲む ``` は絶対に出力しないこと。\n\
+         - <prefix> の末尾に続く文字から始め、重複させないこと。\n\n\
+         <prefix>\n{prefix}\n</prefix>\n\
+         <suffix>\n{suffix}\n</suffix>"
+    );
+    vec![ChatMessage::user(prompt)]
+}
+
+pub(crate) fn clean_inline_suggestion(raw: &str) -> String {
+    let trimmed = raw.trim_matches(|c| c == '\r' || c == '\n');
+    let without_fence = trimmed
+        .strip_prefix("```markdown")
+        .or_else(|| trimmed.strip_prefix("```md"))
+        .or_else(|| trimmed.strip_prefix("```"))
+        .unwrap_or(trimmed);
+    let without_end = without_fence.strip_suffix("```").unwrap_or(without_fence);
+    without_end.trim_end().chars().take(200).collect()
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) async fn complete_inline_suggestion(prefix: &str, suffix: &str) -> Result<String, String> {
+    if browser_csrf().is_empty() {
+        let catalog = load_browser_catalog().await?;
+        set_browser_csrf(&catalog.csrf);
+    }
+    let saved_model = AiConfig::load_saved().model;
+    let model = if saved_model.is_empty() {
+        sorane_github::DEFAULT_GITHUB_MODEL.to_string()
+    } else {
+        saved_model
+    };
+    let config = AiConfig {
+        base_url: String::new(),
+        model,
+        api_key: String::new(),
+    };
+    let messages = build_inline_completion_messages(prefix, suffix);
+    let mut collected = String::new();
+    let outcome = stream_chat_completion(&config, &messages, Vec::new(), |delta| {
+        collected.push_str(delta);
+    })
+    .await?;
+    let text = if collected.is_empty() { outcome.content } else { collected };
+    Ok(clean_inline_suggestion(&text))
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) async fn complete_inline_suggestion(prefix: &str, suffix: &str) -> Result<String, String> {
+    let mut connection = ConnectionChoice::Auto.load()?;
+    connection.check_connection()?;
+    let messages = build_inline_completion_messages(prefix, suffix);
+    let mut collected = String::new();
+    let outcome = stream_chat_completion(&connection, &messages, Vec::new(), |delta| {
+        collected.push_str(delta);
+    })
+    .await?;
+    let text = if collected.is_empty() { outcome.content } else { collected };
+    Ok(clean_inline_suggestion(&text))
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -2090,5 +2260,19 @@ mod tests {
             .feed_line(r#"data: {"error":{"message":"invalid api key"}}"#)
             .unwrap_err();
         assert_eq!(err, "invalid api key");
+    }
+
+    #[test]
+    fn slice_prefix_suffix_handles_multibyte_utf8_cursor() {
+        let text = "# 見出し\nこんにちは世界\n次の行";
+        let (prefix, suffix) = slice_prefix_suffix(text, 1, 5);
+        assert_eq!(prefix, "# 見出し\nこんにちは");
+        assert_eq!(suffix, "世界\n次の行");
+    }
+
+    #[test]
+    fn clean_inline_suggestion_strips_markdown_fences() {
+        let raw = "\n```markdown\nこれは補完テキストです。\n```\n";
+        assert_eq!(clean_inline_suggestion(raw), "これは補完テキストです。");
     }
 }

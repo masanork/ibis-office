@@ -70,7 +70,7 @@ JTD の `FlowRowLine` は表示上の行内線分であり、現在の DOCX 書�
 
 新規 DOCX 表の `vMerge` 保存はフォークに統合済みで、上流への提案は
 [ibisjp/ibis-office#222](https://github.com/ibisjp/ibis-office/issues/222)、
-その差分レビューは[フォークの PR #71](https://github.com/masanork/ibis-office/pull/71)。
+その差分レビューは[フォークの PR #71](https://github.com/sorane-dev/docs/pull/71)。
 これは部分線分の DOCX 出力や縦書き表の転置の完成を意味しない。
 
 ## 直近の検証と次の作業

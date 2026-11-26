@@ -12,4 +12,4 @@ Markdown の `mermaid` コードブロックを文書やスライドに読み込
 
 テスト対象と既知の構文差は [Mermaid compatibility corpus](../crates/ibis-formats/tests/mermaid/README.md) と [features.txt](../crates/ibis-formats/tests/mermaid/features.txt) に記載しています。コーパスで描画できることや参照実装とのラベル一致は、図の意味やレイアウトの完全な一致を保証しません。
 
-既存の PlantUML 基本シーケンス図を Mermaid `sequenceDiagram` へ機械変換する範囲と非対応構文の境界は [PlantUML 基本シーケンス図の変換](plantuml-sequence-conversion.md) を参照してください。
+PlantUML コードブロックのネイティブ IR 描画（18 図種対応）および互換性・変換境界の詳細は [PlantUML 対応と変換境界](plantuml-sequence-conversion.md) を参照してください。

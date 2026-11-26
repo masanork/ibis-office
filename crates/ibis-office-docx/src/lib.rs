@@ -42,6 +42,7 @@ pub(crate) mod link_panel;
 pub(crate) mod picture_crop;
 pub(crate) mod view_mode;
 pub(crate) mod markdown_source;
+pub use markdown_source::MarkdownViewMode;
 pub(crate) mod replace_fonts;
 pub(crate) mod view_state;
 pub(crate) mod prefs;
@@ -401,6 +402,8 @@ pub struct State {
     pub(crate) page_movement_side_to_side: bool,
     /// Markdown ソースコード表示モードの状態 (レンダリング ⇄ ソース切替).
     pub(crate) markdown_source: Option<markdown_source::MarkdownSourceState>,
+    /// True once initial workspace auto-Split initialization has been evaluated.
+    pub(crate) auto_split_initialized: bool,
 }
 
 /// A document's editor: its pages are laid out from the text and shown
@@ -444,6 +447,7 @@ impl crate::shell::format::GestureView for State {
             characters: _,
             pending_page: _,
             markdown_source: _,
+            auto_split_initialized: _,
             mermaid_edit: _,
             caret,
             anchor,
@@ -588,7 +592,6 @@ fn outer_contexts(state: &crate::shell::menu_context::ContextState) -> Vec<crate
     out
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn source_export_note(
     diagnostics: &[ibis_formats::markdown::SourceDiagnostic],
 ) -> Option<Option<SharedString>> {
@@ -609,7 +612,7 @@ fn source_export_note(
 impl FormatEditor for Document {
     fn ai_editable_source(editor: &SlideEditor, kind: crate::shell::ai_tools::EditableSourceKind) -> Result<crate::shell::ai_tools::EditableSource, String> {
         use crate::shell::ai_tools::{EditableSource, EditableSourceKind};
-        if editor.is_markdown_source_mode() {
+        if editor.is_markdown_source_only() || editor.is_markdown_source_dirty() {
             return Err("return to the rendered document before editing source with the assistant".into());
         }
         match kind {
@@ -878,6 +881,98 @@ impl FormatEditor for Document {
         args
     }
 
+    fn source_bytes_for_name(
+        editor: &SlideEditor,
+        name: &str,
+        source: &ibis_formats::Source,
+    ) -> Option<Result<crate::shell::format::FileBytes, String>> {
+        use crate::shell::format::FileBytes;
+        let extension = std::path::Path::new(name).extension()?.to_str()?;
+        if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
+            if let Some(raw_md) = editor.markdown_source_text() {
+                return Some(Ok(FileBytes { bytes: raw_md.as_bytes().to_vec(), protect: false, note: None }));
+            }
+            return Some(
+                ibis_formats::markdown::export_document_markdown_with_diagnostics(editor.presentation(), Default::default())
+                    .map(|export| {
+                        let bytes = if export.diagnostics.is_empty()
+                            && let Some(flow) = editor.presentation().flow.as_deref()
+                            && let Some((orig_text, orig_map, orig_doc)) = source.original_markdown()
+                            && let Some((patched, _)) = ibis_formats::markdown::try_patch_markdown_from_visual_edit(
+                                orig_text,
+                                orig_doc,
+                                orig_map,
+                                flow,
+                                &editor.presentation().media,
+                            )
+                        {
+                            patched.into_bytes()
+                        } else {
+                            export.markdown.into_bytes()
+                        };
+                        FileBytes {
+                            bytes,
+                            protect: false,
+                            note: source_export_note(&export.diagnostics),
+                        }
+                    })
+                    .map_err(|e| e.to_string()),
+            );
+        }
+        let law_xml = extension.eq_ignore_ascii_case("xml");
+        if law_xml || extension.eq_ignore_ascii_case("lawtext") {
+            let target_dialect = if law_xml {
+                crate::shell::markdown_split::SourceDialect::LawXml
+            } else {
+                crate::shell::markdown_split::SourceDialect::Lawtext
+            };
+            if let Some(exact) = editor.law_source_text(target_dialect) {
+                return Some(Ok(FileBytes {
+                    bytes: exact.as_bytes().to_vec(),
+                    protect: false,
+                    note: None,
+                }));
+            }
+            let parse = ibis_lawtext::parse_markdown_law_with_diagnostics;
+            let md_owned;
+            let markdown = if let Some(md) = editor.markdown_source_text() {
+                md
+            } else {
+                match ibis_formats::markdown::export_presentation_to_markdown(editor.presentation()) {
+                    Ok(md) => {
+                        md_owned = md;
+                        md_owned.as_str()
+                    }
+                    Err(e) => return Some(Err(e.to_string())),
+                }
+            };
+            if law_xml
+                && let Some(orig_xml) = editor.law_original_xml()
+                && let Ok(patch) = ibis_lawtext::apply_law_source_edits(
+                    orig_xml,
+                    markdown,
+                    ibis_lawtext::LawEditFormat::Markdown,
+                )
+                && let Some(patched_xml) = patch.xml
+            {
+                return Some(Ok(FileBytes {
+                    bytes: patched_xml.into_bytes(),
+                    protect: false,
+                    note: None,
+                }));
+            }
+            return Some(parse(markdown).map(|(law, diagnostics)| {
+                let text = if law_xml {
+                    ibis_lawtext::to_law_xml(&law)
+                } else {
+                    ibis_lawtext::to_lawtext(&law)
+                };
+                FileBytes { bytes: text.into_bytes(), protect: false, note: source_export_note(&diagnostics) }
+            }).map_err(|e| e.to_string()));
+        }
+        None
+    }
+
     /// A document as .odt (OpenDocument) and as a template (.dotx, .dotm).
     #[cfg(not(target_family = "wasm"))]
     fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_formats::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
@@ -893,37 +988,10 @@ impl FormatEditor for Document {
             // Saved, the file's password encrypts it; a copy is left as it is (as the shell did before the formats were cut apart).
             return Some(ibis_odf::export_docx_to_odt(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
         }
-        if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
-            if let Some(raw_md) = editor.markdown_source_text() {
-                return Some(Ok(FileBytes { bytes: raw_md.as_bytes().to_vec(), protect: false, note: None }));
-            }
-            return Some(
-                ibis_formats::markdown::export_document_markdown_with_diagnostics(editor.presentation(), Default::default())
-                    .map(|export| FileBytes {
-                        bytes: export.markdown.into_bytes(),
-                        protect: false,
-                        note: source_export_note(&export.diagnostics),
-                    })
-                    .map_err(|e| e.to_string()),
-            );
-        }
-        let law_xml = extension.eq_ignore_ascii_case("xml");
-        if law_xml || extension.eq_ignore_ascii_case("lawtext") {
-            let parse = ibis_lawtext::parse_markdown_law_with_diagnostics;
-            let parsed = if let Some(markdown) = editor.markdown_source_text() {
-                parse(markdown)
-            } else {
-                ibis_formats::markdown::export_presentation_to_markdown(editor.presentation())
-                    .and_then(|markdown| parse(&markdown))
-            };
-            return Some(parsed.map(|(law, diagnostics)| {
-                let text = if law_xml {
-                    ibis_lawtext::to_law_xml(&law)
-                } else {
-                    ibis_lawtext::to_lawtext(&law)
-                };
-                FileBytes { bytes: text.into_bytes(), protect: false, note: source_export_note(&diagnostics) }
-            }).map_err(|e| e.to_string()));
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && let Some(res) = Self::source_bytes_for_name(editor, name, source)
+        {
+            return Some(res);
         }
         if extension.eq_ignore_ascii_case("dotx") || extension.eq_ignore_ascii_case("dotm") {
             return Some(source.save_template(editor.presentation(), ibis_formats::SaveOptions::default()).map(|bytes| FileBytes { bytes, protect: true, note: None }).map_err(|e| e.to_string()));
@@ -1056,6 +1124,7 @@ impl FormatEditor for Document {
             .on_action(cx.listener(|this, _: &crate::ScrollToStart, _, cx| this.scroll_to_end(false, cx)))
             .on_action(cx.listener(|this, _: &crate::ScrollToEnd, _, cx| this.scroll_to_end(true, cx)))
             .on_action(cx.listener(|this, _: &crate::shell::split_axis::ToggleSplit, _, cx| this.toggle_document_split(cx)))
+            .on_action(cx.listener(|this, _: &crate::shell::actions::ToggleMarkdownSource, window, cx| this.toggle_markdown_source_mode(window, cx)))
     }
 
     fn infobar_kind(editor: &SlideEditor) -> Option<crate::shell::infobar::InfoBarKind> {
@@ -1282,8 +1351,18 @@ impl FormatEditor for Document {
     }
 
     /// The page in view is the current one (for the status bar).
-    fn before_render(editor: &mut SlideEditor, _: &mut Window, _: &mut Context<SlideEditor>) {
+    fn before_render(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) {
         editor.relayout_if_changed();
+        let needs_auto_split = editor
+            .doc_state_mut()
+            .is_some_and(|s| !std::mem::replace(&mut s.auto_split_initialized, true));
+        if needs_auto_split
+            && editor.should_auto_open_markdown_split()
+            && !editor.is_markdown_source_mode()
+        {
+            editor.enter_markdown_source_mode(window, cx);
+        }
+        editor.poll_markdown_bidirectional_sync(window, cx);
         let index = editor.visible_page();
         if let Some(slide) = editor.presentation().slides.get(index) {
             editor.current_slide = slide.id;
@@ -1307,12 +1386,17 @@ impl FormatEditor for Document {
         if editor.is_repaired {
             pages = pages.child(editor.render_docx_repair_banner(cx));
         }
-        if editor.is_markdown_source_mode() {
+        if editor.is_markdown_source_only() {
             return pages.child(editor.render_markdown_source_view(cx)).into_any_element();
         }
-        let show_v_ruler = !is_focus && editor.doc_prefs().vertical_ruler_open;
+        let is_markdown_split = editor.is_markdown_split_mode();
+        if !is_focus && (is_markdown_split || editor.is_markdown_file() || editor.is_law_path()) {
+            pages = pages.child(editor.render_markdown_mode_bar(cx));
+        }
+        let show_v_ruler = !is_focus && !is_markdown_split && editor.doc_prefs().vertical_ruler_open;
         let theme = cx.theme().clone();
-        if !is_focus && editor.doc_prefs().ruler_open {
+        let mut visual_body = div().flex().flex_col().flex_1().min_w_0().min_h_0();
+        if !is_focus && !is_markdown_split && editor.doc_prefs().ruler_open {
             if show_v_ruler {
                 let corner = SlideEditor::render_ruler_corner(theme.border, editor.ruler_unit)
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.cycle_ruler_unit(cx)));
@@ -1324,9 +1408,9 @@ impl FormatEditor for Document {
                     .w_full()
                     .child(corner)
                     .child(div().flex_1().min_w_0().child(h_ruler));
-                pages = pages.child(ruler_row);
+                visual_body = visual_body.child(ruler_row);
             } else {
-                pages = pages.child(editor.render_ruler(theme.border, theme.font_family.clone()));
+                visual_body = visual_body.child(editor.render_ruler(theme.border, theme.font_family.clone()));
             }
         }
         let mut content_row = div().flex().flex_1().min_w_0().min_h_0().relative();
@@ -1346,7 +1430,7 @@ impl FormatEditor for Document {
             (None, None, None)
         };
         if let Some(bg) = imm_bg {
-            pages = pages.bg(bg);
+            visual_body = visual_body.bg(bg);
         }
 
         let doc_ws = editor.render_document_workspace(cx);
@@ -1359,7 +1443,12 @@ impl FormatEditor for Document {
             content_row = content_row.child(overlay);
         }
 
-        let pages = pages.child(content_row);
+        let visual_body = visual_body.child(content_row);
+        let pages = if is_markdown_split {
+            pages.child(editor.render_markdown_split_view(visual_body.into_any_element(), cx))
+        } else {
+            pages.child(visual_body)
+        };
         // Word's Navigation Pane (ナビゲーション ウィンドウ):
         // left of the pages: Headings (見出し), Pages (ページ), Results (検索結果).
         let outline = (!is_focus && editor.outline_open).then(|| {
@@ -1835,16 +1924,20 @@ impl FormatEditor for Document {
             }
             ibis_doc_model::DocumentInteractionMode::Editing => {}
         }
-        if editor.is_markdown_source_mode() {
-            items.push(crate::shell::i18n::text("docx.status.markdown-source"));
-        } else {
-            match editor.document_view_mode() {
+        match editor.markdown_view_mode() {
+            MarkdownViewMode::Source => {
+                items.push(crate::shell::i18n::text("docx.status.markdown-source"));
+            }
+            MarkdownViewMode::Split => {
+                items.push(crate::shell::i18n::text("docx.status.markdown-split"));
+            }
+            MarkdownViewMode::Visual => match editor.document_view_mode() {
                 ibis_doc_model::DocumentViewMode::Reading => items.push(crate::shell::i18n::text("docx.status.read-mode")),
                 ibis_doc_model::DocumentViewMode::Web => items.push(crate::shell::i18n::text("docx.status.web-layout")),
                 ibis_doc_model::DocumentViewMode::Outline => items.push(crate::shell::i18n::text("docx.status.outline")),
                 ibis_doc_model::DocumentViewMode::Draft => items.push(crate::shell::i18n::text("docx.status.draft")),
                 ibis_doc_model::DocumentViewMode::Print => {}
-            }
+            },
         }
         items
     }

@@ -94,7 +94,7 @@ fn catalogue_effects_are_written_as_behaviours_and_read_back() {
                         chart_build: None,
                         dgm_element: None,
                         dgm_build: None,
-                        behaviors: Vec::new(),
+                        behaviors: Vec::new(), group_pivot: None,
                     };
                     a.shape = shape;
                     a
@@ -122,7 +122,7 @@ fn an_unknown_fly_in_is_kept_as_its_behaviours() {
     let opened = ibis_formats::open(std::fs::read(plan()).unwrap()).unwrap();
     let shape = opened.presentation.slides[0].shapes[0].id;
     let mut edited = opened.presentation.clone();
-    let mut a = ibis_doc_model::Animation { shape, class: AnimationClass::Entrance, start: ibis_doc_model::AnimationStart::OnClick, look: AnimationLook::Preset, delay: 0, duration: 500, preset: (2, 12), repeat_count: ibis_doc_model::AnimationRepeat::None, auto_reverse: false, rewind: false, accel: 0, decel: 0, after_effect: ibis_doc_model::AnimationAfterEffect::Hold, trigger: ibis_doc_model::AnimationTrigger::None, paragraph: None, chars: None, text_unit: None, path: Vec::new(), chart_element: None, chart_build: None, dgm_element: None, dgm_build: None, behaviors: Vec::new() };
+    let mut a = ibis_doc_model::Animation { shape, class: AnimationClass::Entrance, start: ibis_doc_model::AnimationStart::OnClick, look: AnimationLook::Preset, delay: 0, duration: 500, preset: (2, 12), repeat_count: ibis_doc_model::AnimationRepeat::None, auto_reverse: false, rewind: false, accel: 0, decel: 0, after_effect: ibis_doc_model::AnimationAfterEffect::Hold, trigger: ibis_doc_model::AnimationTrigger::None, paragraph: None, chars: None, text_unit: None, path: Vec::new(), chart_element: None, chart_build: None, dgm_element: None, dgm_build: None, behaviors: Vec::new(), group_pivot: None };
     use ibis_doc_model::{AnimBehavior, BehaviorKind};
     a.behaviors = vec![
         AnimBehavior { kind: BehaviorKind::Set { attr: "style.visibility".into(), value: "visible".into() }, begin: 0, dur: 1, time: Default::default() },

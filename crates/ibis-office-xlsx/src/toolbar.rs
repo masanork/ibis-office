@@ -4795,22 +4795,29 @@ pub(crate) fn menus(editor: &SlideEditor, menus: &mut Menus) {
             })
             .into(),
     );
-    menus.items_mut(crate::shell::chrome::MenuId::Format).push(
-        MenuItem::tr("xlsx.sd-jwt")
-            .icon("verified_user")
-            .on(|this, window, cx| {
-                this.open_sd_jwt_panel(window, cx);
-            })
-            .into(),
-    );
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
-        menus.items_mut(crate::shell::chrome::MenuId::Format).push(
-            MenuItem::tr("xlsx.prefill.title").icon("preview")
-                .on(|this, window, cx| this.open_prefill_preview(window, cx)).into(),
+        let data = menus.items_mut(crate::shell::chrome::MenuId::Data);
+        data.push(MenuEntry::Separator);
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        data.push(
+            MenuItem::tr("xlsx.prefill.title")
+                .icon("preview")
+                .on(|this, window, cx| this.open_prefill_preview(window, cx))
+                .into(),
         );
-        menus.connect("xlsx.prefill.title", |this, window, cx| this.open_prefill_preview(window, cx));
+        data.push(
+            MenuItem::tr("xlsx.sd-jwt")
+                .icon("verified_user")
+                .on(|this, window, cx| {
+                    this.open_sd_jwt_panel(window, cx);
+                })
+                .into(),
+        );
     }
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    menus.connect("xlsx.prefill.title", |this, window, cx| {
+        this.open_prefill_preview(window, cx)
+    });
     menus.connect("xlsx.sd-jwt", |this, window, cx| {
         this.open_sd_jwt_panel(window, cx);
     });
