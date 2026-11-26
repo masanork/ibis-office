@@ -58,6 +58,18 @@ pub enum PreviewBlock {
         title: String,
         body: String,
     },
+    ChatTurn {
+        role: String,
+        content: String,
+        tool_calls: Option<String>,
+        depth: usize,
+    },
+    PreferencePair {
+        prompt: String,
+        chosen: String,
+        rejected: String,
+        warnings: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -91,11 +103,16 @@ pub(super) fn summarize_blocks(
     let mut table_count = 0usize;
     for block in blocks {
         match block {
-            PreviewBlock::Section { depth, .. } | PreviewBlock::KeyValue { depth, .. } => {
+            PreviewBlock::Section { depth, .. }
+            | PreviewBlock::KeyValue { depth, .. }
+            | PreviewBlock::ChatTurn { depth, .. } => {
                 max_depth = max_depth.max(*depth);
             }
             PreviewBlock::Table { depth, .. } => {
                 max_depth = max_depth.max(*depth);
+                table_count += 1;
+            }
+            PreviewBlock::PreferencePair { .. } => {
                 table_count += 1;
             }
             PreviewBlock::Callout { .. } => {}

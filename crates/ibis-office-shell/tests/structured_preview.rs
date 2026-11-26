@@ -56,3 +56,26 @@ fn native_file_reader_renders_summary_and_auto_tables_for_json_arrays() {
     // 1 summary card table + 1 auto-detected `users` array table.
     assert_eq!(tables, 2, "expected summary table + users table");
 }
+
+#[test]
+fn native_file_reader_renders_dpo_jsonl_comparison_table() {
+    let path = std::env::temp_dir().join(format!(
+        "ibis-structured-preview-dpo-{}.jsonl",
+        std::process::id()
+    ));
+    std::fs::write(
+        &path,
+        br#"{"prompt":"Summarize","chosen":"Concise summary","rejected":"Too verbose"}"#,
+    )
+    .unwrap();
+    let loaded = ibis_office_shell::read_file::read_file(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let flow = loaded.presentation.flow.as_ref().unwrap();
+    let tables = flow
+        .body
+        .iter()
+        .filter(|b| matches!(b, Block::Table(_)))
+        .count();
+    // summary table + statistics table + DPO Chosen/Rejected table.
+    assert_eq!(tables, 3, "expected summary + stats + DPO pair table");
+}
