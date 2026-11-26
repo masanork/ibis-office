@@ -129,7 +129,7 @@ pub(super) fn decode(data: &[u8]) -> Option<(Vec<u8>, EmuSize)> {
                 let (bounds, transform) = bitmap_box.take()?;
                 drawing.bitmap(canvas?, bitmap_v2(record, &palette)?, bounds, transform)?
             }
-            (2, 0x15 | 0x17..=0x19 | 0x25 | 0x29 | 0x2b | 0x2c | 0x31) => {
+            (2, 0x08 | 0x15 | 0x17..=0x19 | 0x25 | 0x29 | 0x2b | 0x2c | 0x31) => {
                 drawing.record(canvas?, kind, record, parent)?;
             }
             (1, 0x02..=0x0a | 0x11..=0x13 | 0x15..=0x1b)

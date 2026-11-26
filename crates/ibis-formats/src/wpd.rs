@@ -751,6 +751,45 @@ mod tests {
     }
 
     #[test]
+    fn wpg2_pen_patterns_survive_docx_conversion() {
+        let dashed = include_bytes!("../../../test/fixtures/wordperfect/dashed-grid-wpg2.wpd");
+        let dash_dot = include_bytes!("../../../test/fixtures/wordperfect/dash-dot-grid-wpg2.wpd");
+        for (data, samples) in [
+            (
+                dashed.as_slice(),
+                [
+                    (45, 55, true),
+                    (90, 55, false),
+                    (90, 130, true),
+                    (110, 55, true),
+                ],
+            ),
+            (
+                dash_dot.as_slice(),
+                [
+                    (85, 55, true),
+                    (100, 55, false),
+                    (125, 55, true),
+                    (76, 130, false),
+                ],
+            ),
+        ] {
+            let opened = open(data).unwrap();
+            assert_eq!(opened.import_warning, None);
+            let media = opened.presentation.media.first().unwrap();
+            let pixels = image::load_from_memory(&media.data).unwrap().to_rgba8();
+            for (x, y, ink) in samples {
+                let expected = if ink {
+                    [15, 110, 80, 255]
+                } else {
+                    [0, 0, 0, 0]
+                };
+                assert_eq!(pixels.get_pixel(x, y).0, expected, "pixel at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
     fn reports_omitted_graphics_and_keeps_the_other_image_and_text() {
         let data =
             include_bytes!("../../../test/fixtures/wordperfect/partially-unsupported-wpg2.wpd");

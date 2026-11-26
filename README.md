@@ -51,7 +51,7 @@ Each area below summarizes what this fork has built and contributed — noting i
 - **Ichitaro (`.jtd`, `.jtt`, `.jttc`)** *(Fork)*: Read-only preview restoring logical records, vertical text, ruby, borders, images, thumbnails, and TOC, with DOCX/HTML export ([docs/jtd-preview.md](docs/jtd-preview.md)).
 - **Microsoft Visio (`.vsdx`)** *(Proposed: [#292](https://github.com/ibisjp/ibis-office/issues/292))*: Viewing, creation, editing, stencil palette, flowchart shapes, snap highlights, and Web/Wasm support.
 - **Unified Office Format (UOF / `.uot`)** *(Fork)*: Native UOT document and embedded image import.
-- **WordPerfect (`.wpd`) & WPG 2** *(Fork)*: WordPerfect text/table import with WPG 2 vector, bitmap, curve, arc, and compound-path image composition.
+- **WordPerfect (`.wpd`) & WPG 2** *(Fork)*: WordPerfect text/table import with WPG 2 vector, bitmap, curve, arc, dashed stroke, and compound-path image composition.
 - **DocuWorks (`.xdw`, `.xbd`) & Hancom (`.hwp`, `.hwpx`)** *(Proposed: [#254](https://github.com/ibisjp/ibis-office/issues/254), [#288](https://github.com/ibisjp/ibis-office/issues/288))*: Fixed-layout DocuWorks viewing and editable DOCX import for HWP 5.0 / HWPX.
 - **EPUB 3 & Production Images** *(Fork)*: Native EPUB 3 import, plus HEIC, DPX, Cineon, OpenEXR, and JPEG 2000 preview ([docs/production-image-preview-ja.md](docs/production-image-preview-ja.md)).
 - **OOXML & ODF Compatibility** *(Adopted: [#190](https://github.com/ibisjp/ibis-office/issues/190), [#221](https://github.com/ibisjp/ibis-office/issues/221))*: Office 2007 Standard encryption decryption, DOCX `w14:paraId` preservation, and extended ODF nested/hidden-row/column import.

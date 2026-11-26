@@ -2,10 +2,12 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
+use std::collections::HashMap;
+
 use image::RgbaImage;
 use tiny_skia::{
     ColorU8, FillRule, IntSize, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke,
-    Transform,
+    StrokeDash, Transform,
 };
 
 use super::{
@@ -18,6 +20,7 @@ pub(super) struct Drawing {
     blend: Option<Pixmap>,
     first_bitmap: Option<(RgbaImage, Bounds)>,
     style: Style,
+    pen_patterns: HashMap<u16, Vec<f32>>,
     compound: Option<Compound>,
 }
 
@@ -32,6 +35,7 @@ struct Style {
     fill: [u8; 4],
     pen: [u8; 4],
     pen_width: f32,
+    pen_pattern: u16,
 }
 
 impl Default for Style {
@@ -40,6 +44,7 @@ impl Default for Style {
             fill: [0, 0, 0, 255],
             pen: [0, 0, 0, 255],
             pen_width: 0.0,
+            pen_pattern: 0,
         }
     }
 }
@@ -139,7 +144,24 @@ impl Drawing {
                 self.style.pen_width = u32::from_le_bytes(record.get(..4)?.try_into().ok()?) as f32
             }
             0x31 if record.first() == Some(&0) => self.style.fill = color(record.get(1..)?)?,
-            0x29 if word(record, 0)? == 0 => {}
+            0x08 => {
+                let id = word(record, 0)?;
+                let pairs = usize::from(word(record, 2)?);
+                let bytes = canvas.coordinate_bytes;
+                let values = record.get(4..4 + pairs * 2 * bytes)?;
+                let lengths = values
+                    .chunks_exact(bytes)
+                    .map(|value| {
+                        if let Ok(double) = <[u8; 4]>::try_from(value) {
+                            u32::from_le_bytes(double) as f32 / 65536.0
+                        } else {
+                            f32::from(word(value, 0).unwrap())
+                        }
+                    })
+                    .collect();
+                self.pen_patterns.insert(id, lengths);
+            }
+            0x29 => self.style.pen_pattern = word(record, 0)?,
             0x15 | 0x17..=0x19 => {
                 let (flags, local, mut shape) = canvas.object(record)?;
                 let map = parent.pre_concat(local);
@@ -222,7 +244,18 @@ impl Drawing {
                 width: self.style.pen_width,
                 ..Stroke::default()
             };
-            surface.stroke_path(path, &paint, &stroke, map, None);
+            if self.style.pen_pattern == 0 {
+                surface.stroke_path(path, &paint, &stroke, map, None);
+            } else {
+                // Match the WPG 2 pen-pattern scale used by libwpg. Pattern lengths
+                // are relative to the pen width and follow the object's transform.
+                let scale = self.style.pen_width * (72.0 * 3.6 / 218.0);
+                let intervals = self.pen_patterns.get(&self.style.pen_pattern)?;
+                let dash =
+                    StrokeDash::new(intervals.iter().map(|length| length * scale).collect(), 0.0)?;
+                let dashed = path.dash(&dash, 1.0)?;
+                surface.stroke_path(&dashed, &paint, &stroke, map, None);
+            }
         }
         Some(())
     }
