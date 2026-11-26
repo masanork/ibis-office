@@ -93,3 +93,52 @@ fn nested_values_keep_distinct_paths_and_xml_does_not_resolve_entities() {
     );
     assert!(structured_preview::read("json", b"{not-json").is_err());
 }
+
+#[test]
+fn builds_visual_hierarchy_and_promotes_uniform_arrays_and_xml_elements_to_tables() {
+    use structured_preview::{PreviewBlock, ValueKind};
+
+    let json = structured_preview::read(
+        "json",
+        br#"{
+            "service": "auth-api",
+            "replicas": 3,
+            "enabled": true,
+            "endpoints": [
+                {"method": "POST", "path": "/login", "status": 200},
+                {"method": "GET", "path": "/me", "status": 200}
+            ]
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(json.summary.table_count, 1);
+    assert!(json.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::KeyValue { key, kind: ValueKind::Boolean, .. } if key == "enabled"
+    )));
+    assert!(json.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { headers, rows, .. }
+            if headers == &["method", "path", "status"] && rows.len() == 2
+    )));
+
+    let yaml = structured_preview::read(
+        "yaml",
+        b"name: staging\nports:\n  - container: 8080\n    protocol: TCP\n  - container: 8443\n    protocol: TCP\n",
+    )
+    .unwrap();
+    assert_eq!(yaml.format, "YAML");
+    assert_eq!(yaml.summary.table_count, 1);
+
+    let xml = structured_preview::read(
+        "xml",
+        br#"<catalog><book id="1"><title>Rust</title><price>3200</price></book><book id="2"><title>Go</title><price>2800</price></book></catalog>"#,
+    )
+    .unwrap();
+    assert_eq!(xml.summary.table_count, 1);
+    assert!(xml.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { headers, rows, .. }
+            if headers == &["@id", "title", "price"] && rows.len() == 2
+    )));
+}

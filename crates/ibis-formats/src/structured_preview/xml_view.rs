@@ -158,10 +158,15 @@ impl Definition {
         let mut fields = Vec::new();
         push(&mut fields, "", &self.title, String::new())?;
         self.render(root, &self.entries, 0, &mut fields)?;
+        let blocks = super::visual::blocks_from_fields(&fields);
+        let summary =
+            super::visual::summarize_blocks(0, fields.len(), &blocks, Some(self.title.clone()), Vec::new());
         Ok(Preview {
             format: "XML",
             fields,
             credential: None,
+            summary,
+            blocks,
         })
     }
 
