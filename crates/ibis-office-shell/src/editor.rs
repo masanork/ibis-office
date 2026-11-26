@@ -4640,6 +4640,12 @@ impl SlideEditor {
         cx.notify();
     }
 
+    /// Reveal and scroll to body paragraph `id` in a flowing document (`.md` / `.docx` / `.jtd`).
+    pub fn reveal_body_paragraph(&mut self, id: u32, cx: &mut Context<Self>) {
+        crate::format::with_format!(self, reveal_ai_paragraph(self, id, cx));
+        cx.notify();
+    }
+
     /// The editor window's parts, into `d`: the title bar, and the start view
     /// or the chrome, the document and the status bar.
     fn render_window(&mut self, d: Stateful<Div>, window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {

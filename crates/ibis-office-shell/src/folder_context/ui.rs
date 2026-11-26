@@ -678,12 +678,6 @@ impl SlideEditor {
         }
     }
 
-    /// Reveal and scroll to body paragraph `id` in a flowing document (`.md` / `.docx` / `.jtd`).
-    pub fn reveal_body_paragraph(&mut self, id: u32, cx: &mut Context<Self>) {
-        with_format!(self, reveal_ai_paragraph(self, id, cx));
-        cx.notify();
-    }
-
     pub(crate) fn render_folder_pane(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let pane = self.folder_pane.as_ref()?;
         let query = pane.filter.read(cx).value().trim().to_lowercase();

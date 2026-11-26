@@ -4,6 +4,8 @@
 //! Desktop GitHub App integration (OAuth Device Flow, REST API transport via `curl`,
 //! session persistence, and `GIT_ASKPASS`-based `git` synchronization).
 
+#[cfg(not(target_family = "wasm"))]
+mod desktop {
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -439,3 +441,85 @@ pub fn git_commit_and_push(
     run_git_with_token(access_token, Some(repo_root), &["push"])?;
     Ok("GitHub へプッシュしました。".to_string())
 }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub use desktop::*;
+
+#[cfg(target_family = "wasm")]
+mod wasm_stub {
+    use std::path::{Path, PathBuf};
+
+    use serde::{Deserialize, Serialize};
+    use sorane_github::{DeviceCodeResponse, DeviceTokenPoll, GitHubRepo, GitHubUser, RepoCatalog};
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct GitHubSession {
+        pub access_token: String,
+        pub login: String,
+        #[serde(default)]
+        pub name: Option<String>,
+    }
+
+    pub fn load_session() -> Option<GitHubSession> {
+        None
+    }
+
+    pub fn save_session(_session: &GitHubSession) -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn clear_session() {}
+
+    pub fn default_clone_target(repo_name: &str) -> PathBuf {
+        PathBuf::from(repo_name)
+    }
+
+    pub fn start_device_flow() -> Result<DeviceCodeResponse, String> {
+        Err("Web 版ではページ側の GitHub ログインを利用してください。".to_string())
+    }
+
+    pub fn poll_device_token(_device_code: &str) -> Result<DeviceTokenPoll, String> {
+        Err("Web 版ではページ側の GitHub ログインを利用してください。".to_string())
+    }
+
+    pub fn fetch_user(_access_token: &str) -> Result<GitHubUser, String> {
+        Err("Web 版ではページ側の GitHub ログインを利用してください。".to_string())
+    }
+
+    pub fn fetch_repo_catalog(_access_token: &str, _login: &str) -> Result<RepoCatalog, String> {
+        Err("Web 版ではページ側の GitHub ログインを利用してください。".to_string())
+    }
+
+    pub fn create_private_vault_repo(
+        _access_token: &str,
+        _login: &str,
+        _name: &str,
+    ) -> Result<GitHubRepo, String> {
+        Err("Web 版ではページ側の GitHub ログインを利用してください。".to_string())
+    }
+
+    pub fn clone_or_open_repo(
+        _access_token: &str,
+        _repo: &GitHubRepo,
+        _target_dir: &Path,
+    ) -> Result<PathBuf, String> {
+        Err("Web 版ではローカル git クローンは不要です。".to_string())
+    }
+
+    pub fn git_pull(_access_token: &str, _repo_root: &Path) -> Result<String, String> {
+        Err("Web 版ではページ側の GitHub 同期を利用してください。".to_string())
+    }
+
+    pub fn git_commit_and_push(
+        _access_token: &str,
+        _repo_root: &Path,
+        _login: &str,
+        _message: &str,
+    ) -> Result<String, String> {
+        Err("Web 版ではページ側の GitHub 保存を利用してください。".to_string())
+    }
+}
+
+#[cfg(target_family = "wasm")]
+pub use wasm_stub::*;

@@ -467,19 +467,13 @@ impl FormatEditor for Presentation {
         true
     }
 
-    /// A presentation as .odp (OpenDocument), as a template, as a slide show (.ppsx) and as .pptx (whatever it was opened as).
-    #[cfg(not(target_family = "wasm"))]
-    fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_formats::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
+    fn source_bytes_for_name(
+        editor: &SlideEditor,
+        name: &str,
+        _source: &ibis_formats::Source,
+    ) -> Option<Result<crate::shell::format::FileBytes, String>> {
         use crate::shell::format::FileBytes;
-        // Every kind of file made here (.odp, templates, slide shows, packages) is refused while the master view or the notes formatting is open.
-        if let Some(why) = Self::save_refused(editor) {
-            return Some(Err(why));
-        }
-        let extension = path.extension()?;
-        if extension.eq_ignore_ascii_case("odp") {
-            // Saved, the file's password encrypts it; a copy is left as it is (as the shell did before the formats were cut apart).
-            return Some(ibis_odf::write_odp(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
-        }
+        let extension = std::path::Path::new(name).extension()?.to_str()?;
         if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
             if let Some(source_md) = editor.pptx_markdown_source_text() {
                 return Some(Ok(FileBytes {
@@ -493,6 +487,27 @@ impl FormatEditor for Presentation {
                     .map(|md| FileBytes { bytes: md.into_bytes(), protect: false, note: None })
                     .map_err(|e| e.to_string()),
             );
+        }
+        None
+    }
+
+    /// A presentation as .odp (OpenDocument), as a template, as a slide show (.ppsx) and as .pptx (whatever it was opened as).
+    #[cfg(not(target_family = "wasm"))]
+    fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_formats::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
+        use crate::shell::format::FileBytes;
+        // Every kind of file made here (.odp, templates, slide shows, packages) is refused while the master view or the notes formatting is open.
+        if let Some(why) = Self::save_refused(editor) {
+            return Some(Err(why));
+        }
+        let extension = path.extension()?;
+        if extension.eq_ignore_ascii_case("odp") {
+            // Saved, the file's password encrypts it; a copy is left as it is (as the shell did before the formats were cut apart).
+            return Some(ibis_odf::write_odp(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
+        }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && let Some(res) = Self::source_bytes_for_name(editor, name, source)
+        {
+            return Some(res);
         }
         fn package<E: ToString>(bytes: Result<Vec<u8>, E>) -> Option<Result<FileBytes, String>> {
             Some(bytes.map(|bytes| FileBytes { bytes, protect: true, note: None }).map_err(|e| e.to_string()))

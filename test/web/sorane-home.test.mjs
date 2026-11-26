@@ -25,9 +25,12 @@ test('sorane-start.js configures the featured samples and all bundled files exis
   });
   const startView = win.ibisOfficeOptions?.startView;
   assert.ok(startView, 'startView config should be installed');
-  assert.equal(startView.items.length, 7);
+  assert.equal(startView.items.length, 10);
   assert.equal(startView.selectAction?.action, 'github-vault');
   for (const name of [
+    'marp-deck-sample.md',
+    'workbook-sheet-sample.md',
+    'sample-ordinance.lawtext',
     'roster-matching-sample.xlsx',
     'mermaid-showcase.md',
     'mynumber-law-2023-comparison.jtd',

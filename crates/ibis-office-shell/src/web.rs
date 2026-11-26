@@ -53,7 +53,7 @@ extern "C" {
     fn start_action_js(action: &str) -> Result<(), JsValue>;
 }
 
-pub(crate) fn trigger_start_action(action: &str) {
+pub fn trigger_start_action(action: &str) {
     let _ = start_action_js(action);
 }
 
@@ -183,6 +183,8 @@ pub fn mime_for_file_name(name: &str) -> &'static str {
         "ppsx" | "ppsm" => "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
         "potx" | "potm" => "application/vnd.openxmlformats-officedocument.presentationml.template",
         "md" | "markdown" => "text/markdown",
+        "lawtext" | "txt" => "text/plain; charset=utf-8",
+        "xml" => "application/xml; charset=utf-8",
         "vsdx" => "application/vnd.ms-visio.drawing.main+xml",
         "pdf" => "application/pdf",
         "ods" | "ots" => "application/vnd.oasis.opendocument.spreadsheet",

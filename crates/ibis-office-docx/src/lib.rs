@@ -592,7 +592,6 @@ fn outer_contexts(state: &crate::shell::menu_context::ContextState) -> Vec<crate
     out
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn source_export_note(
     diagnostics: &[ibis_formats::markdown::SourceDiagnostic],
 ) -> Option<Option<SharedString>> {
@@ -882,21 +881,13 @@ impl FormatEditor for Document {
         args
     }
 
-    /// A document as .odt (OpenDocument) and as a template (.dotx, .dotm).
-    #[cfg(not(target_family = "wasm"))]
-    fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_formats::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
+    fn source_bytes_for_name(
+        editor: &SlideEditor,
+        name: &str,
+        source: &ibis_formats::Source,
+    ) -> Option<Result<crate::shell::format::FileBytes, String>> {
         use crate::shell::format::FileBytes;
-        let extension = path.extension()?;
-        if extension.eq_ignore_ascii_case("hwp") || extension.eq_ignore_ascii_case("hwpx") {
-            return Some(Err("HWP・HWPX の編集結果は .docx 形式で保存してください".into()));
-        }
-        if extension.to_str().is_some_and(ibis_formats::wpd::is_extension) {
-            return Some(Err("WordPerfect 文書の編集結果は .docx 形式で保存してください".into()));
-        }
-        if extension.eq_ignore_ascii_case("odt") {
-            // Saved, the file's password encrypts it; a copy is left as it is (as the shell did before the formats were cut apart).
-            return Some(ibis_odf::export_docx_to_odt(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
-        }
+        let extension = std::path::Path::new(name).extension()?.to_str()?;
         if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
             if let Some(raw_md) = editor.markdown_source_text() {
                 return Some(Ok(FileBytes { bytes: raw_md.as_bytes().to_vec(), protect: false, note: None }));
@@ -978,6 +969,29 @@ impl FormatEditor for Document {
                 };
                 FileBytes { bytes: text.into_bytes(), protect: false, note: source_export_note(&diagnostics) }
             }).map_err(|e| e.to_string()));
+        }
+        None
+    }
+
+    /// A document as .odt (OpenDocument) and as a template (.dotx, .dotm).
+    #[cfg(not(target_family = "wasm"))]
+    fn bytes_for_path(editor: &SlideEditor, path: &std::path::Path, source: &ibis_formats::Source, copy: bool) -> Option<Result<crate::shell::format::FileBytes, String>> {
+        use crate::shell::format::FileBytes;
+        let extension = path.extension()?;
+        if extension.eq_ignore_ascii_case("hwp") || extension.eq_ignore_ascii_case("hwpx") {
+            return Some(Err("HWP・HWPX の編集結果は .docx 形式で保存してください".into()));
+        }
+        if extension.to_str().is_some_and(ibis_formats::wpd::is_extension) {
+            return Some(Err("WordPerfect 文書の編集結果は .docx 形式で保存してください".into()));
+        }
+        if extension.eq_ignore_ascii_case("odt") {
+            // Saved, the file's password encrypts it; a copy is left as it is (as the shell did before the formats were cut apart).
+            return Some(ibis_odf::export_docx_to_odt(editor.presentation()).map(|bytes| FileBytes { bytes, protect: !copy, note: None }).map_err(|e| e.to_string()));
+        }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && let Some(res) = Self::source_bytes_for_name(editor, name, source)
+        {
+            return Some(res);
         }
         if extension.eq_ignore_ascii_case("dotx") || extension.eq_ignore_ascii_case("dotm") {
             return Some(source.save_template(editor.presentation(), ibis_formats::SaveOptions::default()).map(|bytes| FileBytes { bytes, protect: true, note: None }).map_err(|e| e.to_string()));
