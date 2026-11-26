@@ -8,6 +8,7 @@ use ibis_doc_model::sd_jwt_import::{
 };
 use serde_json::Value;
 
+pub mod ai_datasets;
 pub mod visual;
 pub mod xml_view;
 
@@ -39,7 +40,7 @@ pub struct CredentialDetails {
 }
 
 pub fn supports_extension(extension: &str) -> bool {
-    ["json", "yaml", "yml", "xml", "sd-jwt", "mdoc"]
+    ["json", "jsonl", "ndjson", "yaml", "yml", "xml", "sd-jwt", "mdoc"]
         .iter()
         .any(|candidate| extension.eq_ignore_ascii_case(candidate))
 }
@@ -54,18 +55,36 @@ pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
         || std::str::from_utf8(bytes).map_err(|_| "The preview requires UTF-8 text".to_string());
     let mut fields = Vec::new();
     let mut blocks = Vec::new();
+    let mut ai_override: Option<(PreviewSummary, Vec<PreviewBlock>)> = None;
     let format = match extension.to_ascii_lowercase().as_str() {
         "json" => {
             let data: Value = serde_json::from_slice(bytes).map_err(|_| "Invalid JSON")?;
             json_fields(&data, "", "/", 0, &mut fields)?;
-            visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
+            ai_override = ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields);
+            if ai_override.is_none() {
+                visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
+            }
             "JSON"
+        }
+        "jsonl" | "ndjson" => {
+            let src = text()?;
+            let (j_fields, summary, j_blocks) = ai_datasets::read_jsonl(src, raw_len)?;
+            return Ok(Preview {
+                format: "JSONL",
+                fields: j_fields,
+                credential: None,
+                summary,
+                blocks: j_blocks,
+            });
         }
         "yaml" | "yml" => {
             let src = text()?;
             let data: Value = serde_saphyr::from_str(src).map_err(|_| "Invalid YAML")?;
             json_fields(&data, "", "/", 0, &mut fields)?;
-            visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
+            ai_override = ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields);
+            if ai_override.is_none() {
+                visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
+            }
             "YAML"
         }
         "xml" => {
@@ -99,7 +118,13 @@ pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
         }
         _ => return Err("Unsupported structured preview format".into()),
     };
-    let summary = visual::summarize_blocks(raw_len, fields.len(), &blocks, None, Vec::new());
+    let (summary, blocks) = match ai_override {
+        Some((s, b)) => (s, b),
+        None => (
+            visual::summarize_blocks(raw_len, fields.len(), &blocks, None, Vec::new()),
+            blocks,
+        ),
+    };
     Ok(Preview {
         format,
         fields,

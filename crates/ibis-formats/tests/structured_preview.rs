@@ -142,3 +142,75 @@ fn builds_visual_hierarchy_and_promotes_uniform_arrays_and_xml_elements_to_table
             if headers == &["@id", "title", "price"] && rows.len() == 2
     )));
 }
+
+#[test]
+fn detects_and_validates_ai_sft_and_rlhf_datasets_across_json_and_jsonl() {
+    use structured_preview::{CalloutTone, PreviewBlock};
+
+    let sft_jsonl = concat!(
+        r#"{"messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"Hi"},{"role":"assistant","content":"Hello!"}]}"#,
+        "\n",
+        r#"{"messages":[{"role":"user","content":"Empty?"},{"role":"assistant","content":""}]}"#,
+        "\n",
+        "{broken json line\n"
+    );
+    let sft = structured_preview::read("jsonl", sft_jsonl.as_bytes()).unwrap();
+    assert_eq!(sft.format, "JSONL");
+    assert_eq!(
+        sft.summary.detected_schema.as_deref(),
+        Some("AI SFT (OpenAI / ChatML)")
+    );
+    assert_eq!(sft.summary.warnings.len(), 2);
+    assert!(sft.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Callout { tone: CalloutTone::Danger, .. }
+    )));
+    assert!(sft.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::ChatTurn { role, content, .. } if role == "assistant" && content == "Hello!"
+    )));
+
+    let dpo_jsonl = concat!(
+        r#"{"prompt":"Explain Rust","chosen":"Rust ensures memory safety.","rejected":"I don't know."}"#,
+        "\n",
+        r#"{"prompt":"Dup","chosen":"Same","rejected":"Same"}"#,
+        "\n"
+    );
+    let dpo = structured_preview::read("ndjson", dpo_jsonl.as_bytes()).unwrap();
+    assert_eq!(
+        dpo.summary.detected_schema.as_deref(),
+        Some("AI RLHF / DPO Preference Pairs")
+    );
+    assert!(dpo
+        .summary
+        .warnings
+        .iter()
+        .any(|w| w.contains("identical chosen and rejected")));
+    assert!(dpo.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::PreferencePair { prompt, chosen, rejected, .. }
+            if prompt == "Explain Rust" && chosen.contains("memory safety") && rejected == "I don't know."
+    )));
+
+    let kto = structured_preview::read(
+        "jsonl",
+        br#"{"prompt":"Q1","completion":"Good","label":true}
+{"prompt":"Q2","completion":"Bad","label":false}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        kto.summary.detected_schema.as_deref(),
+        Some("AI RLHF / KTO Binary Feedback")
+    );
+    assert!(kto.summary.warnings.is_empty());
+
+    let alpaca = structured_preview::read(
+        "json",
+        r#"{"instruction":"Translate","input":"Hello","output":"こんにちは"}"#.as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        alpaca.summary.detected_schema.as_deref(),
+        Some("AI SFT (Alpaca / Instruction)")
+    );
+}

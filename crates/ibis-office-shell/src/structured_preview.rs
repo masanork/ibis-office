@@ -303,6 +303,147 @@ pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<O
                         ..Default::default()
                     }));
                 }
+                PreviewBlock::ChatTurn {
+                    role,
+                    content,
+                    tool_calls,
+                    depth,
+                } => {
+                    let (bg, border_col, role_col) = match role.to_ascii_lowercase().as_str() {
+                        "system" | "developer" => (Rgb(0xF1F5F9), Rgb(0x64748B), Rgb(0x334155)),
+                        "user" | "human" => (Rgb(0xEFF6FF), Rgb(0x2563EB), Rgb(0x1D4ED8)),
+                        "assistant" | "gpt" | "model" => {
+                            (Rgb(0xECFDF5), Rgb(0x10B981), Rgb(0x047857))
+                        }
+                        "tool" | "function" => (Rgb(0xFFFBEB), Rgb(0xF59E0B), Rgb(0xB45309)),
+                        "rejected" => (Rgb(0xFEF2F2), Rgb(0xEF4444), Rgb(0xB91C1C)),
+                        _ => (Rgb(0xF8FAFC), Rgb(0x94A3B8), Rgb(0x1E293B)),
+                    };
+                    let mut runs = vec![
+                        FlowRun::new(
+                            FlowRunKind::Text(format!("[{}] ", literal(role))),
+                            FlowRunStyle {
+                                bold: true,
+                                color: role_col,
+                                ..Default::default()
+                            },
+                        ),
+                        FlowRun::new(
+                            FlowRunKind::Text(literal(content)),
+                            FlowRunStyle {
+                                color: Rgb(0x0F172A),
+                                ..Default::default()
+                            },
+                        ),
+                    ];
+                    if let Some(tc) = tool_calls {
+                        runs.push(FlowRun::new(
+                            FlowRunKind::Text(format!("\n[tool_calls] {}", literal(tc))),
+                            FlowRunStyle {
+                                size: 900,
+                                color: Rgb(0x92400E),
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                    let indent = (*depth as i64) * 180_000;
+                    body.push(Block::Paragraph(FlowParagraph {
+                        id: fresh_id(),
+                        runs,
+                        direct: ParaFormat {
+                            left: (indent > 0).then_some(indent),
+                            before: Some(25_000),
+                            after: Some(25_000),
+                            shading: Some(Some(bg)),
+                            borders: [
+                                None,
+                                None,
+                                None,
+                                Some(Some(FlowBorder {
+                                    color: border_col,
+                                    width: 16,
+                                    style: BorderStyle::Single,
+                                    space: 6,
+                                    art: None,
+                                })),
+                            ],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }));
+                }
+                PreviewBlock::PreferencePair {
+                    prompt,
+                    chosen,
+                    rejected,
+                    warnings,
+                } => {
+                    if !prompt.is_empty() {
+                        body.push(Block::Paragraph(FlowParagraph {
+                            id: fresh_id(),
+                            runs: vec![
+                                FlowRun::new(
+                                    FlowRunKind::Text("[prompt] ".to_string()),
+                                    FlowRunStyle {
+                                        bold: true,
+                                        color: Rgb(0x1D4ED8),
+                                        ..Default::default()
+                                    },
+                                ),
+                                FlowRun::new(
+                                    FlowRunKind::Text(literal(prompt)),
+                                    FlowRunStyle {
+                                        color: Rgb(0x0F172A),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ],
+                            direct: ParaFormat {
+                                left: Some(180_000),
+                                before: Some(25_000),
+                                after: Some(20_000),
+                                shading: Some(Some(Rgb(0xEFF6FF))),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }));
+                    }
+                    if !warnings.is_empty() {
+                        body.push(Block::Paragraph(FlowParagraph {
+                            id: fresh_id(),
+                            runs: vec![FlowRun::new(
+                                FlowRunKind::Text(format!("! {}", literal(&warnings.join("; ")))),
+                                FlowRunStyle {
+                                    bold: true,
+                                    color: Rgb(0xB45309),
+                                    ..Default::default()
+                                },
+                            )],
+                            direct: ParaFormat {
+                                left: Some(180_000),
+                                shading: Some(Some(Rgb(0xFEFCE8))),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }));
+                    }
+                    let pair_rows = vec![vec![
+                        TableCellValue {
+                            text: chosen.clone(),
+                            kind: ValueKind::String,
+                        },
+                        TableCellValue {
+                            text: rejected.clone(),
+                            kind: ValueKind::Null,
+                        },
+                    ]];
+                    body.push(build_styled_table(
+                        &["✓ Chosen", "✗ Rejected"],
+                        &pair_rows,
+                        1,
+                        &mut fresh_id,
+                    ));
+                }
             }
         }
     }
