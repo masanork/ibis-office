@@ -17,9 +17,196 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ibis_formats::Kind;
 use ibis_office_shell::editor::SlideEditor;
+#[cfg(not(target_family = "wasm"))]
 use ibis_office_shell::folder_context::{ContentSearchHit, Folder};
+#[cfg(not(target_family = "wasm"))]
 use ibis_office_shell::git_workspace::{GitSnapshot, inspect_git_snapshot};
+#[cfg(not(target_family = "wasm"))]
+use ibis_office_shell::open_guard::same_file as same_workspace_file;
 use ibis_office_shell::window_editors::{WindowSetup, WorkspaceEditorHost};
+
+#[cfg(target_family = "wasm")]
+mod web_platform {
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use gpui_kit::{Context, Window};
+    use ibis_office_shell::editor::SlideEditor;
+
+    #[derive(Clone, Debug)]
+    pub struct ContentSearchHit {
+        pub path: String,
+        pub line: usize,
+        pub excerpt: String,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct BacklinkHit {
+        pub path: String,
+        pub line: usize,
+        pub excerpt: String,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct GitChange {
+        pub path: String,
+        pub status: String,
+        pub staged: bool,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct GitCommit {
+        pub short_id: String,
+        pub title: String,
+        pub date: String,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct GitSnapshot {
+        pub branch: String,
+        pub head_short: String,
+        pub changes: Vec<GitChange>,
+        pub commits: Vec<GitCommit>,
+    }
+
+    pub fn inspect_git_snapshot(_root: &Path, _limit: usize) -> Option<GitSnapshot> {
+        None
+    }
+
+    pub fn same_workspace_file(a: &Path, b: &Path) -> bool {
+        a == b
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct Folder {
+        root: PathBuf,
+        files: Vec<String>,
+    }
+
+    impl Folder {
+        pub fn scan_dir(root: &Path) -> Result<Self, String> {
+            Ok(Self {
+                root: root.to_path_buf(),
+                files: Vec::new(),
+            })
+        }
+
+        pub fn root(&self) -> &Path {
+            &self.root
+        }
+
+        pub fn display_name(&self) -> String {
+            self.root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("soraneDocs")
+                .to_string()
+        }
+
+        pub fn files(&self) -> &[String] {
+            &self.files
+        }
+
+        pub fn has_git(&self) -> bool {
+            false
+        }
+
+        pub fn relative_path_for(&self, _path: &Path) -> Option<String> {
+            None
+        }
+
+        pub fn matches_query(&self, rel: &str, query: &str) -> bool {
+            rel.to_lowercase().contains(query)
+        }
+
+        pub fn search_content(&self, _query: &str, _limit: usize) -> Vec<ContentSearchHit> {
+            Vec::new()
+        }
+
+        pub fn files_with_tag(&self, _tag: &str) -> Vec<String> {
+            Vec::new()
+        }
+
+        pub fn tags_for(&self, _rel: &str) -> Vec<String> {
+            Vec::new()
+        }
+
+        pub fn all_tags(&self) -> Vec<(String, usize)> {
+            Vec::new()
+        }
+
+        pub fn backlinks_for(&self, _rel: &str) -> Vec<BacklinkHit> {
+            Vec::new()
+        }
+
+        pub fn outgoing_links_for(&self, _rel: &str) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    pub trait SlideEditorWebExt {
+        fn has_git_workspace(&self) -> bool;
+        fn attach_vault_folder(
+            &mut self,
+            _folder: Option<Arc<Folder>>,
+            _window: &mut Window,
+            _cx: &mut Context<SlideEditor>,
+        );
+        fn open_path(
+            &mut self,
+            _path: PathBuf,
+            _line: Option<usize>,
+            _window: &mut Window,
+            _cx: &mut Context<SlideEditor>,
+        );
+        fn open_git_workspace_for_root(
+            &mut self,
+            _root: PathBuf,
+            _window: &mut Window,
+            _cx: &mut Context<SlideEditor>,
+        );
+        fn shows_path(&self, _path: &Path) -> bool;
+    }
+
+    impl SlideEditorWebExt for SlideEditor {
+        fn has_git_workspace(&self) -> bool {
+            false
+        }
+
+        fn attach_vault_folder(
+            &mut self,
+            _folder: Option<Arc<Folder>>,
+            _window: &mut Window,
+            _cx: &mut Context<SlideEditor>,
+        ) {
+        }
+
+        fn open_path(
+            &mut self,
+            _path: PathBuf,
+            _line: Option<usize>,
+            _window: &mut Window,
+            _cx: &mut Context<SlideEditor>,
+        ) {
+        }
+
+        fn open_git_workspace_for_root(
+            &mut self,
+            _root: PathBuf,
+            _window: &mut Window,
+            _cx: &mut Context<SlideEditor>,
+        ) {
+        }
+
+        fn shows_path(&self, _path: &Path) -> bool {
+            false
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+use web_platform::{ContentSearchHit, Folder, GitSnapshot, SlideEditorWebExt as _, inspect_git_snapshot, same_workspace_file};
 
 use sorane_github::{
     DeviceCodeResponse, DeviceTokenPoll, GITHUB_APP_INSTALL_URL, GitHubRepo, RepoCatalog,
@@ -963,7 +1150,78 @@ impl SoraneWorkspace {
         cx.notify();
     }
 
+    #[cfg(target_family = "wasm")]
+    pub fn open_web_bytes_tab(
+        &mut self,
+        name: String,
+        data: Vec<u8>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let reuse_active = self
+            .active_editor(cx)
+            .is_some_and(|ed| !ed.read(cx).has_document);
+        let editor = if reuse_active {
+            let Some(ed) = self.active_editor(cx) else {
+                return;
+            };
+            ed.update(cx, |e, cx| {
+                e.open_web_bytes(name.clone(), data, false, window, cx);
+                e.embedded_chrome = Some(Self::policy_for_editor(e, None, None));
+            });
+            ed
+        } else {
+            let tab_id = self.alloc_tab_id();
+            let seq = self.next_seq();
+            let editor = cx.new(|cx| {
+                let mut e = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
+                e.open_web_bytes(name.clone(), data, false, window, cx);
+                e.embedded_chrome = Some(Self::policy_for_editor(&e, None, None));
+                e
+            });
+            let (path, title, resolved_kind) = Self::editor_metadata(&editor, cx);
+            let tab = TabEntry {
+                id: tab_id,
+                path,
+                title,
+                kind: resolved_kind,
+                pinned: false,
+                last_used_seq: seq,
+                toolbar_override: None,
+                right_sidebar_override: None,
+                state: TabState::Resident(editor.clone()),
+            };
+            if let Some(pane) = self.pane_mut(self.active_pane) {
+                pane.tabs.push(tab);
+                pane.active_tab = pane.tabs.len() - 1;
+            }
+            editor
+        };
+        let (path, title, resolved_kind) = Self::editor_metadata(&editor, cx);
+        if let Some(pane) = self.pane_mut(self.active_pane)
+            && let Some(tab) = pane.tabs.get_mut(pane.active_tab)
+        {
+            tab.path = path;
+            tab.title = title;
+            tab.kind = resolved_kind;
+        }
+        self.enforce_tab_budget(cx);
+        self.focus_active_editor(window, cx);
+        cx.notify();
+    }
+
     pub(crate) fn new_markdown_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        {
+            self.open_web_bytes_tab(
+                "Untitled.md".to_string(),
+                b"# Untitled\n\n".to_vec(),
+                window,
+                cx,
+            );
+            return;
+        }
+        #[cfg(not(target_family = "wasm"))]
         if let Some(vault) = self.vault.clone() {
             let note_path = crate::session::next_numbered_markdown_path(vault.root(), "Untitled");
             if std::fs::write(&note_path, "# Untitled\n\n").is_ok() {
@@ -972,10 +1230,22 @@ impl SoraneWorkspace {
                 return;
             }
         }
+        #[cfg(not(target_family = "wasm"))]
         self.new_tab_in_pane(self.active_pane, Some(Kind::Document), window, cx);
     }
 
     pub(crate) fn new_marp_deck(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        {
+            self.open_web_bytes_tab(
+                "Slides.marp.md".to_string(),
+                crate::session::DEFAULT_MARP_TEMPLATE.as_bytes().to_vec(),
+                window,
+                cx,
+            );
+            return;
+        }
+        #[cfg(not(target_family = "wasm"))]
         if let Some(vault) = self.vault.clone() {
             let deck_path = crate::session::next_numbered_markdown_path(vault.root(), "Slides");
             if std::fs::write(&deck_path, crate::session::DEFAULT_MARP_TEMPLATE).is_ok() {
@@ -984,10 +1254,24 @@ impl SoraneWorkspace {
                 return;
             }
         }
+        #[cfg(not(target_family = "wasm"))]
         self.new_tab_in_pane(self.active_pane, Some(Kind::Presentation), window, cx);
     }
 
     pub(crate) fn new_workbook_markdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        {
+            self.open_web_bytes_tab(
+                "Workbook.sheet.md".to_string(),
+                crate::session::DEFAULT_WORKBOOK_MARKDOWN_TEMPLATE
+                    .as_bytes()
+                    .to_vec(),
+                window,
+                cx,
+            );
+            return;
+        }
+        #[cfg(not(target_family = "wasm"))]
         if let Some(vault) = self.vault.clone() {
             let sheet_path = crate::session::next_numbered_markdown_path(vault.root(), "Workbook");
             if std::fs::write(
@@ -1001,10 +1285,22 @@ impl SoraneWorkspace {
                 return;
             }
         }
+        #[cfg(not(target_family = "wasm"))]
         self.new_tab_in_pane(self.active_pane, Some(Kind::Workbook), window, cx);
     }
 
     pub(crate) fn new_lawtext_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        {
+            self.open_web_bytes_tab(
+                "法令案.lawtext".to_string(),
+                crate::session::DEFAULT_LAWTEXT_TEMPLATE.as_bytes().to_vec(),
+                window,
+                cx,
+            );
+            return;
+        }
+        #[cfg(not(target_family = "wasm"))]
         if let Some(vault) = self.vault.clone() {
             let law_path =
                 crate::session::next_numbered_file_path(vault.root(), "法令案", "lawtext");
@@ -1014,6 +1310,7 @@ impl SoraneWorkspace {
                 return;
             }
         }
+        #[cfg(not(target_family = "wasm"))]
         self.new_tab_in_pane(self.active_pane, Some(Kind::Document), window, cx);
     }
 
@@ -1206,24 +1503,47 @@ impl SoraneWorkspace {
     }
 
     pub(crate) fn pick_vault_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            extensions: Vec::new(),
-            prompt: Some(ibis_office_shell::i18n::text("file.open-folder")),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else { return };
-            let Some(path) = paths.into_iter().next() else { return };
-            let _ = this.update_in(cx, |ws, window, cx| {
-                ws.open_vault_path(path, window, cx);
+        #[cfg(target_family = "wasm")]
+        {
+            cx.spawn_in(window, async move |this, cx| {
+                if let Ok(Some((name, bytes))) = ibis_office_shell::web::pick_file().await {
+                    let _ = this.update_in(cx, |ws, window, cx| {
+                        ws.open_web_bytes_tab(name, bytes, window, cx);
+                    });
+                }
+            })
+            .detach();
+            return;
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let picked = cx.prompt_for_paths(PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                extensions: Vec::new(),
+                prompt: Some(ibis_office_shell::i18n::text("file.open-folder")),
             });
-        })
-        .detach();
+            cx.spawn_in(window, async move |this, cx| {
+                let Ok(Ok(Some(paths))) = picked.await else { return };
+                let Some(path) = paths.into_iter().next() else { return };
+                let _ = this.update_in(cx, |ws, window, cx| {
+                    ws.open_vault_path(path, window, cx);
+                });
+            })
+            .detach();
+        }
     }
 
     pub(crate) fn start_github_login(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = (window, cx);
+            ibis_office_shell::web::trigger_start_action("github-vault");
+            return;
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
         if self.github_busy {
             return;
         }
@@ -1378,6 +1698,7 @@ impl SoraneWorkspace {
             }
         })
         .detach();
+        }
     }
 
     pub(crate) fn cancel_github_login(&mut self, cx: &mut Context<Self>) {
@@ -3858,7 +4179,7 @@ impl WorkspaceEditorHost for SoraneWorkspace {
                 let matches_path = tab
                     .path
                     .as_deref()
-                    .is_some_and(|p| ibis_office_shell::open_guard::same_file(p, path));
+                    .is_some_and(|p| same_workspace_file(p, path));
                 if matches_resident || matches_path {
                     found = Some((pane.id, idx));
                     break;

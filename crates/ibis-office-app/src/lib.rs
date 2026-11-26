@@ -1426,9 +1426,29 @@ mod web {
     /// File System Access after startup).
     #[wasm_bindgen]
     pub fn open_local_file(name: String, bytes: Vec<u8>) -> Result<(), JsValue> {
-        let opened = with_app(|cx| crate::shell::host_editor::with_editor(cx, |editor, window, cx| {
-            editor.open_web_bytes(name, bytes, false, window, cx);
-        }));
+        let opened = with_app(|cx| {
+            for window in cx.windows() {
+                if let Some(root) = window.downcast::<gpui_kit::component::Root>()
+                    && let Ok(Some(ws)) = root.update(cx, |root, _, _| {
+                        root.view().clone().downcast::<sorane_workspace::SoraneWorkspace>().ok()
+                    })
+                {
+                    let mut name_opt = Some(name);
+                    let mut bytes_opt = Some(bytes);
+                    let res = window.update(cx, |_, window, cx| {
+                        ws.update(cx, |ws, cx| {
+                            if let (Some(n), Some(b)) = (name_opt.take(), bytes_opt.take()) {
+                                ws.open_web_bytes_tab(n, b, window, cx);
+                            }
+                        });
+                    });
+                    return res.ok();
+                }
+            }
+            crate::shell::host_editor::with_editor(cx, |editor, window, cx| {
+                editor.open_web_bytes(name, bytes, false, window, cx);
+            })
+        });
         if opened.flatten().is_some() { Ok(()) } else { Err(JsValue::from_str("the editor is not running")) }
     }
 
@@ -1534,6 +1554,9 @@ mod web {
             crate::shell::web::load_subset_blocks(cx, Vec::new(), true);
             Theme::global_mut(cx).font_family = "IBM Plex Sans".into();
             let blank = initial_file.is_none().then(crate::shell::web::new_kind_of_address).flatten();
+            if initial_file.is_none() && blank.is_none() && !crate::shell::host::is_connected() {
+                sorane_workspace::install(cx);
+            }
             if let Some((name, data)) = initial_file {
                 super::open_window_with(cx, move |editor, window, cx| editor.open_web_bytes(name, data, true, window, cx));
             } else {

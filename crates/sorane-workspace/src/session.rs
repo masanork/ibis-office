@@ -4,6 +4,7 @@
 //! Workspace session persistence (Vault-keyed layout & tab restore),
 //! daily note date formatting, and safe Vault-relative note path resolution.
 
+#[cfg(not(target_family = "wasm"))]
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,7 +15,9 @@ use crate::model::{
     DEFAULT_LEFT_SIDEBAR_WIDTH, DEFAULT_RIGHT_SIDEBAR_WIDTH, LeftPanelKind, RightPanelKind,
 };
 
+#[cfg(not(target_family = "wasm"))]
 const SESSION_FILE_NAME: &str = "sorane-workspace-session.json";
+#[cfg(not(target_family = "wasm"))]
 const MAX_VAULT_SESSIONS: usize = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +65,7 @@ fn default_right_width() -> f32 {
     DEFAULT_RIGHT_SIDEBAR_WIDTH
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct SessionStore {
     last_vault: Option<PathBuf>,
@@ -70,11 +74,13 @@ struct SessionStore {
     by_vault: BTreeMap<String, WorkspaceSession>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn store_path() -> Option<PathBuf> {
     let base = ibis_office_shell::app_data::base()?;
     Some(base.join("ibisOffice").join(SESSION_FILE_NAME))
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn vault_key(root: &Path) -> String {
     root.canonicalize()
         .unwrap_or_else(|_| root.to_path_buf())
@@ -82,6 +88,7 @@ fn vault_key(root: &Path) -> String {
         .into_owned()
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn load_store(path: &Path) -> SessionStore {
     std::fs::read_to_string(path)
         .ok()
@@ -89,6 +96,7 @@ fn load_store(path: &Path) -> SessionStore {
         .unwrap_or_default()
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn write_store(path: &Path, store: &SessionStore) {
     let Ok(json) = serde_json::to_string_pretty(store) else {
         return;
@@ -104,12 +112,15 @@ fn write_store(path: &Path, store: &SessionStore) {
 
 /// Save the latest workspace session (both globally and keyed by `vault_root` when open).
 pub fn save_session(session: &WorkspaceSession) {
-    let Some(path) = store_path() else {
-        return;
-    };
-    save_session_to(&path, session);
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(path) = store_path() {
+        save_session_to(&path, session);
+    }
+    #[cfg(target_family = "wasm")]
+    let _ = session;
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn save_session_to(store_file: &Path, session: &WorkspaceSession) {
     let mut store = load_store(store_file);
     store.last_vault = session.vault_root.clone();
@@ -128,10 +139,18 @@ pub(crate) fn save_session_to(store_file: &Path, session: &WorkspaceSession) {
 
 /// Load the most recent saved workspace session, filtering out paths that no longer exist.
 pub fn load_last_session() -> Option<WorkspaceSession> {
-    let path = store_path()?;
-    load_last_session_from(&path)
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let path = store_path()?;
+        load_last_session_from(&path)
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        None
+    }
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn load_last_session_from(store_file: &Path) -> Option<WorkspaceSession> {
     let store = load_store(store_file);
     let mut session = store.last_session?;
@@ -144,10 +163,19 @@ pub(crate) fn load_last_session_from(store_file: &Path) -> Option<WorkspaceSessi
 
 /// Load a previously saved session for a specific Vault root (used when switching Vaults).
 pub fn load_vault_session(root: &Path) -> Option<WorkspaceSession> {
-    let path = store_path()?;
-    load_vault_session_from(&path, root)
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let path = store_path()?;
+        load_vault_session_from(&path, root)
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = root;
+        None
+    }
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn load_vault_session_from(store_file: &Path, root: &Path) -> Option<WorkspaceSession> {
     let store = load_store(store_file);
     let mut session = store.by_vault.get(&vault_key(root)).cloned()?;
@@ -155,6 +183,7 @@ pub(crate) fn load_vault_session_from(store_file: &Path, root: &Path) -> Option<
     Some(session)
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn prune_missing_paths(session: &mut WorkspaceSession) {
     if session
         .vault_root

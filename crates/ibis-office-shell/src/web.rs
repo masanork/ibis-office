@@ -53,7 +53,7 @@ extern "C" {
     fn start_action_js(action: &str) -> Result<(), JsValue>;
 }
 
-pub(crate) fn trigger_start_action(action: &str) {
+pub fn trigger_start_action(action: &str) {
     let _ = start_action_js(action);
 }
 
