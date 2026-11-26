@@ -675,6 +675,19 @@ impl WrapObstacle {
     }
 }
 
+struct StyleFontEntry {
+    name: Option<String>,
+    size: u32,
+    bold: bool,
+    italic: bool,
+    base_size_bits: u32,
+    installed: bool,
+    font: Font,
+    font_id: FontId,
+    ascent: f32,
+    line: f32,
+}
+
 pub(crate) struct Layouter<'r> {
     res: &'r Resources,
     doc: &'r FlowDocument,
@@ -723,6 +736,9 @@ pub(crate) struct Layouter<'r> {
     /// 同じスタイルの段落間にスペースを追加しない: the paragraphs whose
     /// space before (first) or after (second) is not added, by paragraph.
     contextual: std::collections::HashMap<u32, (bool, bool)>,
+    /// Small MRU cache of resolved `(name, size, bold, italic, base_size)` -> `(installed, Font, FontId, ascent, line)`
+    /// shared across all paragraphs in a pagination pass.
+    style_font_cache: std::cell::RefCell<Vec<StyleFontEntry>>,
     /// The table and cell coordinate (table_id, row_index, grid_col_index) being laid out, for formula evaluation.
     current_cell: std::cell::Cell<Option<(u32, usize, usize)>>,
     /// The paragraph whose fields are being made into text (a `STYLEREF` in the body looks back from it).
@@ -1859,6 +1875,43 @@ impl<'r> Layouter<'r> {
         })
     }
 
+    fn resolve_style_font(&self, style: &FlowRunStyle, name: Option<&str>, size: u32, base_size: f32) -> (bool, Font, FontId, f32, f32) {
+        let base_size_bits = base_size.to_bits();
+        {
+            let cache = self.style_font_cache.borrow();
+            if let Some(entry) = cache.iter().find(|e| {
+                e.size == size
+                    && e.bold == style.bold
+                    && e.italic == style.italic
+                    && e.base_size_bits == base_size_bits
+                    && e.name.as_deref() == name
+            }) {
+                return (entry.installed, entry.font.clone(), entry.font_id, entry.ascent, entry.line);
+            }
+        }
+        let installed = name.is_some_and(|n| self.res.has_typeface(n));
+        let font = self.font_for_size(style, name, size);
+        let font_id = self.res.resolve_font_cached(&font);
+        let (ascent, line) = self.line_metrics(name, &font, base_size);
+        let mut cache = self.style_font_cache.borrow_mut();
+        if cache.len() >= 32 {
+            cache.remove(0);
+        }
+        cache.push(StyleFontEntry {
+            name: name.map(str::to_string),
+            size,
+            bold: style.bold,
+            italic: style.italic,
+            base_size_bits,
+            installed,
+            font: font.clone(),
+            font_id,
+            ascent,
+            line,
+        });
+        (installed, font, font_id, ascent, line)
+    }
+
     /// Where Word puts the single line of an underline for a run of `size` points in typeface `name` (`UnderlineBox::band`): from the files of the typeface (GitHub issue #192,
     /// Word's XPS). An East Asian typeface (`OS/2` ulCodePageRange1 bit 17 to 20) is `size / 20` thick, and its top stays where it was (Word's `0.7 usWinDescent + 0.5 pt` is not
     /// understood yet); the others have `post`'s underlinePosition and underlineThickness, the line cut back to usWinDescent. A vertical column keeps the older lines.
@@ -2887,8 +2940,16 @@ impl<'r> Layouter<'r> {
             }
         }
         // The paragraph's text and where each run's begins in it (the neighbours of a space may be in another run).
-        let para_chars: Vec<char> = p.runs.iter().filter_map(|r| if let FlowRunKind::Text(t) = &r.kind { Some(t.chars()) } else { None }).flatten().collect();
-        let run_offsets: Vec<usize> = p.runs.iter().scan(0usize, |sum, r| { let start = *sum; if let FlowRunKind::Text(t) = &r.kind { *sum += t.chars().count(); } Some(start) }).collect();
+        // Only needed when `balance_single_double_byte_width` is active and at least one run contains an ASCII space.
+        let need_space_context = self.doc.balance_single_double_byte_width
+            && p.runs.iter().any(|r| matches!(&r.kind, FlowRunKind::Text(t) if t.contains(' ')));
+        let (para_chars, run_offsets): (Vec<char>, Vec<usize>) = if need_space_context {
+            let chars = p.runs.iter().filter_map(|r| if let FlowRunKind::Text(t) = &r.kind { Some(t.chars()) } else { None }).flatten().collect();
+            let offsets = p.runs.iter().scan(0usize, |sum, r| { let start = *sum; if let FlowRunKind::Text(t) = &r.kind { *sum += t.chars().count(); } Some(start) }).collect();
+            (chars, offsets)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         for (index, run) in p.runs.iter().enumerate() {
             let before = out.len();
             let style = &run.style;
@@ -2901,6 +2962,20 @@ impl<'r> Layouter<'r> {
                 if no_char_before {
                     carry.borrow_mut().reset();
                 }
+                // 1-slot cache for the run's resolved font, FontId, and line metrics: consecutive
+                // characters in a run almost always share `(name, char_style_size, base_size)`.
+                struct CachedRunFont<'a> {
+                    name: Option<&'a str>,
+                    char_style_size: u32,
+                    base_size_bits: u32,
+                    installed: bool,
+                    font: Font,
+                    font_id: FontId,
+                    ascent: f32,
+                    line: f32,
+                    lead: f32,
+                }
+                let mut cached_font: Option<CachedRunFont<'_>> = None;
                 for (at, &c) in all.iter().enumerate() {
                     // The optional hyphen of `w:softHyphen` is U+00AD to the rest of this layout. A U+00AD written in `w:t` is no optional hyphen: Word draws it as a hyphen
                     // of the typeface in its own cell (its PDFs of `fullwidth-symbols-all.docx`, #M125 and #M136: 5.28 pt of ＭＳ 明朝's 10.56 pt text, 7.5 pt of 游明朝's, in a line and
@@ -2940,10 +3015,6 @@ impl<'r> Layouter<'r> {
                         }
                         name
                     };
-                    // The stand-in for ＭＳ 明朝 / ＭＳ ゴシック (Hiragino Mincho ProN / Hiragino Sans) has half-width
-                    // (0.5 em) ASCII glyphs under its OpenType `hwid` (`Half Widths`) feature, matching Word's 0.5 em
-                    // cell without overflowing into the neighbour (`w2_ms_halfwidth_latin_drawn_half_em`).
-                    let installed = name.is_some_and(|n| self.res.has_typeface(n));
                     // A superscript or subscript is a size of the typeface it is in (`script_size`).
                     let (base_size, char_size) = if style.position == VerticalPosition::Baseline {
                         (base_size, char_size)
@@ -2951,13 +3022,36 @@ impl<'r> Layouter<'r> {
                         let scaled = self.script_size(name, char_style_size as f32 / 100.0, style.position);
                         (scaled, char_size * scaled / base_size.max(0.01))
                     };
-                    let mut font = self.font_for_size(style, name, char_style_size);
+                    let base_size_bits = base_size.to_bits();
+                    let cache_hit = cached_font.as_ref().is_some_and(|cf| {
+                        cf.name == name && cf.char_style_size == char_style_size && cf.base_size_bits == base_size_bits
+                    });
+                    if !cache_hit {
+                        let (installed, font, font_id, ascent, line) = self.resolve_style_font(style, name, char_style_size, base_size);
+                        let lead = self.lead_in(p, name) * base_size;
+                        cached_font = Some(CachedRunFont {
+                            name,
+                            char_style_size,
+                            base_size_bits,
+                            installed,
+                            font,
+                            font_id,
+                            ascent,
+                            line,
+                            lead,
+                        });
+                    }
+                    let cf = cached_font.as_ref().unwrap();
+                    let installed = cf.installed;
+                    let mut font = cf.font.clone();
+                    let mut font_modified = false;
                     // An emoji (a pictograph, or a character with the emoji selector, or a joined sequence) is drawn in the OS's emoji
                     // typeface whatever the run's font (Word forces Segoe UI Emoji); the selectors and joined characters of a cluster have its
                     // font too, so that the cluster is one item to shape into one glyph, and take no room (#66, #79).
                     let emoji = crate::render::rich_text::is_emoji_cluster(&all[cluster_start..cluster_end]);
                     if emoji {
                         font = crate::render::rich_text::emoji_font(&font);
+                        font_modified = true;
                     }
                     // A combining mark ＭＳ 明朝 / ＭＳ ゴシック have a glyph for (U+0300..036F, 0.5 em in the font file) is a character of its own in Word: it takes the font's half
                     // em like any other character, one to a cell, where the zero-advance marks of an OpenType font join their base (Word's PDF of `fullwidth-symbols-all.docx`, #M125:
@@ -2980,10 +3074,19 @@ impl<'r> Layouter<'r> {
                         let mut features: Vec<(String, u32)> = font.features.0.iter().cloned().collect();
                         features.push(("hwid".into(), 1));
                         font.features = FontFeatures(Arc::new(features));
+                        font_modified = true;
                     }
-                    let mut actual = self.res.char_width(c, &font, char_size);
+                    let mut actual = if font_modified {
+                        self.res.char_width(c, &font, char_size)
+                    } else {
+                        self.res.char_width_for_id(cf.font_id, c, char_size)
+                    };
                     if matches!(c, '☐' | '☑' | '☒') && actual < char_size * 0.85 {
-                        let box_w = self.res.char_width('□', &font, char_size);
+                        let box_w = if font_modified {
+                            self.res.char_width('□', &font, char_size)
+                        } else {
+                            self.res.char_width_for_id(cf.font_id, '□', char_size)
+                        };
                         if box_w >= char_size * 0.9 {
                             actual = box_w;
                         }
@@ -3082,7 +3185,11 @@ impl<'r> Layouter<'r> {
                     // A substitute's glyph wider than the cell Word's font gives it is squeezed into it (it would
                     // overlap its neighbour); a space has no ink to overlap (and a squeezed one is drawn as nothing: GitHub issue #188, U+202F).
                     let fits = if !emoji && !c.is_whitespace() && name.is_some_and(|n| fixed_width(n) || proportional_ms(n)) && actual > cell + 0.05 && cell > 0.0 { cell / actual } else { 1.0 };
-                    let (mut ascent, mut line) = self.line_metrics(name, &font, base_size);
+                    let (mut ascent, mut line) = if font_modified {
+                        self.line_metrics(name, &font, base_size)
+                    } else {
+                        (cf.ascent, cf.line)
+                    };
                     // A line with Hangul is 1.72 em high in Word (18.1 pt of 10.5 pt text, DNUM: its fallback font for
                     // Hangul), the text sitting low in it.
                     if is_hangul(c) && line < base_size * HANGUL_LINE {
@@ -3113,8 +3220,8 @@ impl<'r> Layouter<'r> {
                     }
                     // An optional hyphen (`w:softHyphen`) takes no room and is not shown, unless a line ends after it: then it is a hyphen. Its `auto_space` is the
                     // hyphen's width, negative: taking the gap off the width at the end of a line (`end_of_line`) adds it.
-                    let auto_space = if c == '\u{00ad}' { -self.res.text_width("-", &font, char_size) } else { 0.0 };
-                    out.push(Unit::Char { c, width, inset, font, size: char_size, style: index, line, plain_line, ascent, lead: self.lead_in(p, name) * base_size, auto_space, squeeze: style.scale as f32 / 100.0 * fits, squeezed: false });
+                    let auto_space = if c == '\u{00ad}' { -self.res.char_width('-', &font, char_size) } else { 0.0 };
+                    out.push(Unit::Char { c, width, inset, font, size: char_size, style: index, line, plain_line, ascent, lead: cf.lead, auto_space, squeeze: style.scale as f32 / 100.0 * fits, squeezed: false });
                 }
             };
             // Tracked changes visibility: All shows both; Simple and None hide deleted text; Original hides inserted text.
@@ -6243,7 +6350,12 @@ impl<'r> Layouter<'r> {
     /// out only the blocks it changed.
     fn pieces(&self, block: &Block, width: f32, page_number: u32, obstacles: &[WrapObstacleInPara], in_table: bool) -> Vec<Piece> {
         // Group membership can change without changing the paragraph's runs.
-        if !obstacles.is_empty() || has_top_bottom_shapes(block) {
+        // Skip whole-table caching for large tables (> 32 rows): each cell paragraph is already
+        // cached individually, avoiding multi-megabyte deep clones of `FlowTable` + `Piece`s on open.
+        if !obstacles.is_empty()
+            || matches!(block, Block::Table(t) if t.rows.len() > 32)
+            || has_top_bottom_shapes(block)
+        {
             return self.lay_out_block(block, width, page_number, obstacles, in_table);
         }
         let id = match block {
@@ -6284,6 +6396,9 @@ impl<'r> Layouter<'r> {
     /// The numbers of the notes marked in a block, as (a key apart from the
     /// paragraphs' ids, the number shown).
     fn block_note_numbers(&self, block: &Block) -> Vec<(u32, String)> {
+        if self.note_numbers.is_empty() {
+            return Vec::new();
+        }
         fn walk(b: &Block, numbers: &std::collections::HashMap<(bool, u32), String>, out: &mut Vec<(u32, String)>) {
             match b {
                 Block::Paragraph(p) => {
@@ -6304,6 +6419,9 @@ impl<'r> Layouter<'r> {
 
     /// The list labels of a block's paragraphs (a table's too).
     fn block_labels(&self, block: &Block) -> Vec<(u32, String)> {
+        if self.labels.is_empty() {
+            return Vec::new();
+        }
         fn walk(b: &Block, labels: &std::collections::HashMap<u32, String>, out: &mut Vec<(u32, String)>) {
             match b {
                 Block::Paragraph(p) => {
@@ -9445,6 +9563,7 @@ fn paginate_whole(doc: &FlowDocument, res: &Resources) -> Pagination {
             note_numbers: known_notes.unwrap_or_else(|| note_numbers(doc)),
             current_note: std::cell::RefCell::new(String::new()),
             contextual: contextual_spacing(doc),
+            style_font_cache: std::cell::RefCell::new(Vec::with_capacity(16)),
             current_cell: std::cell::Cell::new(None),
             field_paragraph: std::cell::Cell::new(None),
             comment_runs: map_comment_runs(doc),

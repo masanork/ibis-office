@@ -1016,7 +1016,7 @@ impl Resources {
         id
     }
 
-    fn char_width_for_id(&self, id: FontId, c: char, size: f32) -> f32 {
+    pub fn char_width_for_id(&self, id: FontId, c: char, size: f32) -> f32 {
         let key = (id, size.to_bits(), c);
         if let Some(&w) = self.char_widths.borrow().get(&key) {
             return w;
