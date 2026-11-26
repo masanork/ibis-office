@@ -30,19 +30,20 @@ test('sorane-start.js configures the featured samples and all bundled files exis
   });
   const startView = win.ibisOfficeOptions?.startView;
   assert.ok(startView, 'startView config should be installed');
-  assert.equal(startView.items.length, 10);
+  assert.equal(startView.items.length, 11);
   assert.equal(startView.selectAction?.action, 'github-vault');
   for (const name of [
+    'sorane-knowledge-note.md',
     'marp-deck-sample.md',
     'workbook-sheet-sample.md',
     'sample-ordinance.lawtext',
-    'roster-matching-sample.xlsx',
     'mermaid-showcase.md',
+    'ai-eval-results-sample.jsonl',
+    'ibis-office-wasm.sbom.cdx.json',
+    'roster-matching-sample.xlsx',
+    'standard-linkage.csv',
     'mynumber-law-2023-comparison.jtd',
     'urban-comfort-analysis.xlsx',
-    'standard-linkage.csv',
-    'visio-multi-page-handbook.vsdx',
-    'ibis-office-wasm.sbom.cdx.json',
   ]) {
     assert.ok(startView.items.some((item) => item.url === `/samples/${name}`), `missing sample ${name}`);
     assert.ok(existsSync(new URL(`../../www/samples/${name}`, import.meta.url)), `file missing: ${name}`);

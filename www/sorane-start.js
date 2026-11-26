@@ -5,6 +5,13 @@
 
   const featuredItems = [
     {
+      title: '機械可読ナレッジノート（Obsidian 互換）',
+      subtitle: 'YAML・#tag・[[リンク]]・Mermaid を備えた Markdown 双方向 Split',
+      name: 'sorane-knowledge-note.md',
+      url: '/samples/sorane-knowledge-note.md',
+      badge: 'MD',
+    },
+    {
       title: 'Marp スライド（双方向 Split）',
       subtitle: 'Markdown とスライド編集をリアルタイム同期・Mermaid 対応',
       name: 'marp-deck-sample.md',
@@ -26,13 +33,6 @@
       badge: 'LAW',
     },
     {
-      title: '名簿の照合',
-      subtitle: '異体字や伏字を含む名寄せデモ（架空データ）',
-      name: 'roster-matching-sample.xlsx',
-      url: '/samples/roster-matching-sample.xlsx',
-      badge: 'XLSX',
-    },
-    {
       title: 'Mermaid 構文デモ集',
       subtitle: 'UML を含む主要 24 図種をまとめた Markdown 総集編',
       name: 'mermaid-showcase.md',
@@ -40,17 +40,24 @@
       badge: 'MD',
     },
     {
-      title: 'マイナンバー法改正案の新旧対照条文',
-      subtitle: '縦書き条文と罫線表を含む一太郎文書（2023年3月1日版）',
-      name: 'mynumber-law-2023-comparison.jtd',
-      url: '/samples/mynumber-law-2023-comparison.jtd',
-      badge: 'JTD',
+      title: 'AI 評価結果データ（JSONL）',
+      subtitle: 'プロンプト・Eval スコア・Pass/Fail を構造化プレビューで検証',
+      name: 'ai-eval-results-sample.jsonl',
+      url: '/samples/ai-eval-results-sample.jsonl',
+      badge: 'AI EVAL',
     },
     {
-      title: 'まちなかの居心地の良さを測る分析ツール',
-      subtitle: '複数シートの数式と50個のグラフを含む記入例',
-      name: 'urban-comfort-analysis.xlsx',
-      url: '/samples/urban-comfort-analysis.xlsx',
+      title: 'ibisOffice WASM SBOM（CycloneDX 1.6）',
+      subtitle: '本ビルド自身の依存部品目録 JSON を表計算として直接閲覧',
+      name: 'ibis-office-wasm.sbom.cdx.json',
+      url: '/samples/ibis-office-wasm.sbom.cdx.json',
+      badge: 'SBOM',
+    },
+    {
+      title: '名簿の照合（異体字・伏字名寄せ）',
+      subtitle: 'M365 では扱いづらい異体字・伏字を含む名寄せデモ（架空データ）',
+      name: 'roster-matching-sample.xlsx',
+      url: '/samples/roster-matching-sample.xlsx',
       badge: 'XLSX',
     },
     {
@@ -61,18 +68,18 @@
       badge: 'CSV',
     },
     {
-      title: 'Visio マルチページ図面ハンドブック',
-      subtitle: '複数ページのフロー図・構成図を含む Visio 図面（合成データ）',
-      name: 'visio-multi-page-handbook.vsdx',
-      url: '/samples/visio-multi-page-handbook.vsdx',
-      badge: 'VSDX',
+      title: 'マイナンバー法改正案の新旧対照条文',
+      subtitle: '縦書き条文と罫線表を含む一太郎文書（2023年3月1日版）',
+      name: 'mynumber-law-2023-comparison.jtd',
+      url: '/samples/mynumber-law-2023-comparison.jtd',
+      badge: 'JTD',
     },
     {
-      title: 'ibisOffice WASM SBOM（CycloneDX 1.6）',
-      subtitle: '本ビルド自身の依存部品目録 JSON を表計算として直接閲覧',
-      name: 'ibis-office-wasm.sbom.cdx.json',
-      url: '/samples/ibis-office-wasm.sbom.cdx.json',
-      badge: 'SBOM',
+      title: 'まちなかの居心地の良さを測る分析ツール',
+      subtitle: '複数シートの数式と50個のグラフによる Excel 互換性デモ',
+      name: 'urban-comfort-analysis.xlsx',
+      url: '/samples/urban-comfort-analysis.xlsx',
+      badge: 'XLSX',
     },
   ];
 
@@ -84,22 +91,22 @@
       action: 'github-vault',
     },
     panel: {
-      heading: '文書をひらく。ひらめきが、広がる。',
+      heading: 'Markdown と構造化ナレッジを、そのまま実務の文書へ。',
       body: [
-        'ブラウザだけでさまざまな文書をひらいて、読んで、編集できるオフィスアプリです。左のサンプルはページを切り替えずにそのまま開け、閉じるとこの画面に戻ります。',
+        'Obsidian 互換の機械可読 Markdown（ノート・Marp スライド・Workbook 表計算・Lawtext/e-Gov 法令XML）を中心に、双方向 Split 編集と GitHub Vault 連携をブラウザ完結で使えるワークスペースです。',
       ],
       features: [
         {
-          title: '幅広い文書形式をブラウザで直接表示',
-          description: 'Word・Excel・PowerPoint に加え、一太郎・DocuWorks・Visio・Markdown (Mermaid)・自治体連携標準 CSV に対応しています。',
+          title: '全 4 形式の双方向 Source ↔ Visual Split 編集',
+          description: 'Markdown ノート・Marp プレゼン・数式入り Workbook Markdown・Lawtext/e-Gov XML を左右リアルタイム同期で編集し、そのまま GitHub リポジトリへ保存できます。',
         },
         {
-          title: '端末内完結（WebAssembly + WebGPU）',
-          description: '文書の読み込み・編集・PDF 書き出しはすべてブラウザ内で処理されます。ローカルのファイルも「開く…」からそのまま試せます。',
+          title: 'AI・SBOM・一太郎・名寄せなど実務特化の可視化',
+          description: 'AI 評価データ（JSONL）・CycloneDX SBOM・自治体連携標準 294 列 CSV・一太郎縦書き文書・異体字名寄せや高密度 Excel グラフまで端末内（WASM + WebGPU）で高速に処理します。',
         },
         {
-          title: '日本語組版・GitHub リポジトリ連携',
-          description: '縦書き・罫線表・異体字対応フォントを備え、GitHub でログインすると自分の Private リポジトリを文書置き場として直接編集・保存できます。',
+          title: 'ブラウザ完結のナレッジ管理（GitHub Vault 連携）',
+          description: 'GitHub Private リポジトリをそのまま Vault として接続し、ファイルツリー・全文検索・タグ・Backlinks・Local Graph を使って執筆や資料作成を進められます。',
         },
       ],
       links: [
