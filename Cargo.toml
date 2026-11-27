@@ -10,7 +10,7 @@ version = "0.8.0"
 publish = false
 
 [workspace.dependencies]
-ibis-asr = { path = "crates/ibis-asr" }
+ibis-asr = { path = "crates/ibis-asr", default-features = false }
 ibis-calc = { path = "crates/ibis-calc" }
 ibis-m-lang = { path = "crates/ibis-m-lang" }
 ibis-ocr = { path = "crates/ibis-ocr", default-features = false }
