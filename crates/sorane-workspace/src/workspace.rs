@@ -691,8 +691,15 @@ impl SoraneWorkspace {
             last_window_title: String::new(),
         };
 
-        // Restore the last workspace session automatically only when launched without an explicit file.
-        if launched_empty && let Some(session) = load_last_session() {
+        // Restore the last workspace session automatically only on the very first launch window
+        // (and never when the user explicitly opens a new Start window while another window exists
+        // or after initial launch has already completed).
+        if should_restore_session_on_launch(
+            launched_empty,
+            cx.windows().len(),
+            &INITIAL_SESSION_RESTORE_DONE,
+        ) && let Some(session) = load_last_session()
+        {
             ws.restore_session(session, window, cx);
         }
 
@@ -4862,5 +4869,40 @@ fn current_help_locale() -> sorane_github::HelpLocale {
     match ibis_office_shell::i18n::language() {
         ibis_office_shell::i18n::Language::Japanese => sorane_github::HelpLocale::Ja,
         ibis_office_shell::i18n::Language::English => sorane_github::HelpLocale::En,
+    }
+}
+
+static INITIAL_SESSION_RESTORE_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn should_restore_session_on_launch(
+    launched_empty: bool,
+    window_count: usize,
+    flag: &std::sync::atomic::AtomicBool,
+) -> bool {
+    let already_done = flag.swap(true, std::sync::atomic::Ordering::AcqRel);
+    !already_done && launched_empty && window_count <= 1
+}
+
+#[cfg(test)]
+mod launch_restore_tests {
+    use super::should_restore_session_on_launch;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn restores_only_on_first_empty_launch_window_not_on_subsequent_start_window() {
+        let flag = AtomicBool::new(false);
+        assert!(should_restore_session_on_launch(true, 1, &flag));
+        // Second window (e.g. File -> Start Screen) must stay on Start Screen.
+        assert!(!should_restore_session_on_launch(true, 2, &flag));
+        // Even if the first window was closed and a new Start window is opened.
+        assert!(!should_restore_session_on_launch(true, 1, &flag));
+    }
+
+    #[test]
+    fn does_not_restore_later_when_first_window_opened_explicit_file() {
+        let flag = AtomicBool::new(false);
+        assert!(!should_restore_session_on_launch(false, 1, &flag));
+        assert!(!should_restore_session_on_launch(true, 2, &flag));
     }
 }
