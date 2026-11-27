@@ -281,20 +281,21 @@ try {
 
   await tap(viewerTouch, 101, 350, 24); // Edit
   await viewer.waitForTimeout(500);
-  await tap(viewerTouch, 102, 120, 200);
+  await tap(viewerTouch, 102, 120, 112);
   await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'text');
   await viewer.keyboard.insertText('Mode switch test');
   await viewer.waitForFunction(() => document.querySelector('textarea')?.value.includes('Mode switch test'));
 
   await tap(viewerTouch, 103, 350, 24); // Viewing
   await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'none');
-  await tap(viewerTouch, 104, 120, 150);
+  await tap(viewerTouch, 104, 120, 112);
   assert.equal(await viewerMirror.getAttribute('inputmode'), 'none', 'returning to viewing must suppress the keyboard');
 
   await tap(viewerTouch, 105, 350, 24); // Edit again
   await viewer.waitForTimeout(500);
-  await tap(viewerTouch, 106, 120, 200);
+  await tap(viewerTouch, 106, 120, 112);
   await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'text');
+  await viewer.waitForFunction(() => document.querySelector('textarea')?.value.includes('Mode switch test'), null, { timeout: 5000 });
   assert((await viewerMirror.inputValue()).includes('Mode switch test'), 'edits must survive a round trip through viewing mode');
   assert.deepEqual(failures, [], 'switching phone modes must not panic');
   await viewer.context().close();
