@@ -176,6 +176,7 @@ impl SlideEditor {
         let active_sheet_idx = self.xlsx_active_visible_sheet_index();
 
         let weak_editor = cx.weak_entity();
+        let immediate_once = self.inline_completion.immediate_once.clone();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language("markdown")
@@ -186,7 +187,7 @@ impl SlideEditor {
                 .default_value(initial.clone());
             state.set_highlighter_factory(markdown_highlighter_factory(), cx);
             state.set_readonly(readonly, cx);
-            Self::attach_inline_completion_provider(&mut state, weak_editor);
+            Self::attach_inline_completion_provider(&mut state, weak_editor, immediate_once);
             state
         });
 

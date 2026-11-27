@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::input::{
-    CompletionProvider, Editor, EditorState, FoldRange, HighlightStyleResolver, InputEdit,
-    InputHighlighter, InputHighlighterFactory, Rope,
+    CompletionProvider, Editor, EditorState, Escape, FoldRange, HighlightStyleResolver,
+    IndentInline, InputEdit, InputHighlighter, InputHighlighterFactory, Rope,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -233,6 +233,10 @@ pub struct InlineCompletionState {
     pub enabled: bool,
     /// Whether a completion request is currently in flight.
     pub loading: bool,
+    /// Whether an inline suggestion is currently displayed in the editor.
+    pub has_suggestion: bool,
+    /// One-shot flag to skip debounce when triggered explicitly (e.g. Alt+] or toggle ON).
+    pub immediate_once: Rc<Cell<bool>>,
     /// Last non-fatal error message from completion.
     pub error: Option<String>,
     /// Monotonic generation counter to track in-flight completion requests.
@@ -2265,6 +2269,23 @@ impl SlideEditor {
             .into_any_element()
     }
 
+    fn trigger_inline_completion_via_public_api(
+        immediate_once: &Rc<Cell<bool>>,
+        editor: &Entity<EditorState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        immediate_once.set(true);
+        editor.update(cx, |state, cx| {
+            if let Some(sel) = EntityInputHandler::selected_text_range(state, false, window, cx) {
+                let end = sel.range.end;
+                EntityInputHandler::replace_text_in_range(state, Some(end..end), "", window, cx);
+            } else {
+                EntityInputHandler::replace_text_in_range(state, None, "", window, cx);
+            }
+        });
+    }
+
     pub fn toggle_inline_completion(
         &mut self,
         editor: Option<Entity<EditorState>>,
@@ -2277,14 +2298,21 @@ impl SlideEditor {
         self.inline_completion.error = None;
         if let Some(ed) = editor {
             if self.inline_completion.enabled {
+                Self::trigger_inline_completion_via_public_api(
+                    &self.inline_completion.immediate_once,
+                    &ed,
+                    window,
+                    cx,
+                );
+            } else if self.inline_completion.has_suggestion {
+                self.inline_completion.has_suggestion = false;
                 ed.update(cx, |state, cx| {
-                    state.trigger_inline_completion(window, cx);
+                    state.focus(window, cx);
                 });
-            } else {
-                ed.update(cx, |state, cx| {
-                    state.clear_inline_completion(cx);
-                });
+                window.dispatch_action(Box::new(Escape), cx);
             }
+        } else {
+            self.inline_completion.has_suggestion = false;
         }
         cx.notify();
     }
@@ -2292,15 +2320,19 @@ impl SlideEditor {
     pub fn clear_inline_completion(
         &mut self,
         editor: Option<Entity<EditorState>>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let had_suggestion = self.inline_completion.has_suggestion;
         self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
         self.inline_completion.loading = false;
+        self.inline_completion.has_suggestion = false;
         self.inline_completion.error = None;
-        if let Some(ed) = editor {
+        if had_suggestion && let Some(ed) = editor {
             ed.update(cx, |state, cx| {
-                state.clear_inline_completion(cx);
+                state.focus(window, cx);
             });
+            window.dispatch_action(Box::new(Escape), cx);
         }
         cx.notify();
     }
@@ -2313,11 +2345,12 @@ impl SlideEditor {
     ) {
         self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
         self.inline_completion.loading = false;
+        self.inline_completion.has_suggestion = false;
         self.inline_completion.error = None;
         editor.update(cx, |state, cx| {
-            state.accept_inline_completion(window, cx);
             state.focus(window, cx);
         });
+        window.dispatch_action(Box::new(IndentInline), cx);
         cx.notify();
     }
 
@@ -2339,11 +2372,22 @@ impl SlideEditor {
             && !ks.modifiers.platform
         {
             self.inline_completion.enabled = true;
-            editor.update(cx, |state, cx| {
-                state.trigger_inline_completion(window, cx);
-            });
+            Self::trigger_inline_completion_via_public_api(
+                &self.inline_completion.immediate_once,
+                &editor,
+                window,
+                cx,
+            );
             cx.notify();
             return true;
+        }
+        if self.inline_completion.has_suggestion
+            && !ks.modifiers.control
+            && !ks.modifiers.platform
+            && !ks.modifiers.alt
+        {
+            self.inline_completion.has_suggestion = false;
+            cx.notify();
         }
         false
     }
@@ -2351,9 +2395,11 @@ impl SlideEditor {
     pub fn attach_inline_completion_provider(
         state: &mut EditorState,
         slide_editor: WeakEntity<Self>,
+        immediate_once: Rc<Cell<bool>>,
     ) {
         state.lsp_mut().completion_provider = Some(Rc::new(CopilotInlineCompletionProvider {
             slide_editor,
+            immediate_once,
         }));
     }
 
@@ -2370,7 +2416,7 @@ impl SlideEditor {
         let theme = cx.theme().clone();
         let enabled = self.inline_completion.enabled;
         let loading = self.inline_completion.loading;
-        let has_suggestion = editor.read(cx).has_inline_completion();
+        let has_suggestion = self.inline_completion.has_suggestion;
         let error = self.inline_completion.error.clone();
 
         let toggle_label = if enabled {
@@ -2430,8 +2476,8 @@ impl SlideEditor {
                         .ghost()
                         .on_click(cx.listener({
                             let editor = editor.clone();
-                            move |this, _ev, _window, cx| {
-                                this.clear_inline_completion(Some(editor.clone()), cx);
+                            move |this, _ev, window, cx| {
+                                this.clear_inline_completion(Some(editor.clone()), window, cx);
                             }
                         })),
                 );
@@ -2465,8 +2511,8 @@ impl SlideEditor {
                         .ghost()
                         .on_click(cx.listener({
                             let editor = editor.clone();
-                            move |this, _ev, _window, cx| {
-                                this.clear_inline_completion(Some(editor.clone()), cx);
+                            move |this, _ev, window, cx| {
+                                this.clear_inline_completion(Some(editor.clone()), window, cx);
                             }
                         })),
                 );
@@ -2649,6 +2695,7 @@ impl SlideEditor {
 
 struct CopilotInlineCompletionProvider {
     slide_editor: WeakEntity<SlideEditor>,
+    immediate_once: Rc<Cell<bool>>,
 }
 
 impl CompletionProvider for CopilotInlineCompletionProvider {
@@ -2668,7 +2715,11 @@ impl CompletionProvider for CopilotInlineCompletionProvider {
     }
 
     fn inline_completion_debounce(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(700)
+        if self.immediate_once.replace(false) {
+            std::time::Duration::ZERO
+        } else {
+            std::time::Duration::from_millis(700)
+        }
     }
 
     fn inline_completion(
@@ -2697,6 +2748,7 @@ impl CompletionProvider for CopilotInlineCompletionProvider {
             }
             this.inline_completion.generation = this.inline_completion.generation.wrapping_add(1);
             this.inline_completion.loading = true;
+            this.inline_completion.has_suggestion = false;
             this.inline_completion.error = None;
             cx.notify();
             Some(this.inline_completion.generation)
@@ -2711,11 +2763,13 @@ impl CompletionProvider for CopilotInlineCompletionProvider {
 
         cx.spawn(async move |cx: &mut AsyncApp| {
             let result = crate::ai_client::complete_inline_suggestion(&prefix, &suffix).await;
+            let has_text = matches!(&result, Ok(s) if !s.trim().is_empty());
             let _ = weak_editor.update(cx, |this, cx| {
                 if this.inline_completion.generation != completion_gen {
                     return;
                 }
                 this.inline_completion.loading = false;
+                this.inline_completion.has_suggestion = has_text;
                 if let Err(err) = &result {
                     let explained = crate::ai_client::explain_ai_error(err);
                     this.inline_completion.error = if explained.is_empty() {
