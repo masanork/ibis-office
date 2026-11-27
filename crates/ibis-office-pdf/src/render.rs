@@ -13,6 +13,11 @@ use gpui_kit::{
 };
 use ibis_pdf::scene::{DisplayCmd, PageScene, PathCmd, PdfRect};
 
+#[cfg(target_os = "android")]
+const PDF_FALLBACK_FONT: &str = "sans-serif";
+#[cfg(not(target_os = "android"))]
+const PDF_FALLBACK_FONT: &str = ".SystemUIFont";
+
 fn rgba_to_hsla([r, g, b, a]: [u8; 4]) -> Hsla {
     Rgba {
         r: f32::from(r) / 255.0,
@@ -166,7 +171,7 @@ pub fn paint_page_scene(
                     let run = TextRun {
                         len: text.len(),
                         font: Font {
-                            family: SharedString::from(".SystemUIFont"),
+                            family: SharedString::from(PDF_FALLBACK_FONT),
                             ..Default::default()
                         },
                         color: rgba_to_hsla(*rgba),
@@ -308,7 +313,7 @@ fn pdf_resolve_font_family(window: &Window, ts_gen: u64, family: &str) -> Shared
         guard
             .as_ref()
             .and_then(|(_, map)| map.get(&key).cloned())
-            .unwrap_or_else(|| SharedString::from(".SystemUIFont"))
+            .unwrap_or_else(|| SharedString::from(PDF_FALLBACK_FONT))
     })
 }
 

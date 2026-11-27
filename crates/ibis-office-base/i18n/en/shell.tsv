@@ -1988,3 +1988,7 @@ fixed-layout.ocr.empty	No text was detected on this page
 fixed-layout.ocr.already	This page already contains text
 fixed-layout.ocr.failed	OCR failed: {error}
 fixed-layout.ocr.unavailable	OCR is not enabled in this build
+crash-report.banner	A crash report from the previous session is available
+crash-report.share	Share…
+crash-report.dismiss	Dismiss
+crash-report.copied-issue	Crash report copied to clipboard. Paste it into the GitHub Issue

@@ -473,6 +473,7 @@ impl SlideEditor {
                     .when(narrow, |column| column.px_4())
                     .when(!narrow, |column| column.px_8())
                     .pb(px(BOTTOM_MARGIN))
+                    .children(self.render_crash_report_banner(cx))
                     .child(section_title("start.new", BOTTOM_MARGIN, 0.0))
                     .child(new_files)
                     // The pages' padding (their hover) is part of the space above 選択.
@@ -502,6 +503,86 @@ impl SlideEditor {
         .into_any_element()
     }
 
+    fn render_crash_report_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = cx;
+            None
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            if !crate::crash_report::has_pending_report() {
+                return None;
+            }
+            let theme = cx.theme();
+            Some(
+                div().flex().flex_row()
+                    .id("start-crash-report-banner")
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .mb_2()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(rgb(0xf59e0b))
+                    .bg(rgb(0xfffbeb))
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        div().flex().flex_row()
+                            .items_center()
+                            .gap_2()
+                            .min_w_0()
+                            .child(Icon::new(Material("warning")).size(px(16.)).text_color(rgb(0xb45309)))
+                            .child(div().text_xs().text_color(theme.foreground).child(crate::i18n::text("crash-report.banner"))),
+                    )
+                    .child(
+                        div().flex().flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("start-crash-report-share")
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(px(6.))
+                                    .bg(rgb(0xb45309))
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(0xffffff))
+                                    .cursor_pointer()
+                                    .child(crate::i18n::text("crash-report.share"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(msg) = crate::crash_report::share_report(cx) {
+                                            this.set_status(msg, cx);
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("start-crash-report-dismiss")
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(px(6.))
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .cursor_pointer()
+                                    .child(crate::i18n::text("crash-report.dismiss"))
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        crate::crash_report::dismiss_report();
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .into_any_element(),
+            )
+        }
+    }
 
     /// Phone-sized start view (`narrow_phone_editor`: phone editor flag and width under 600 px).
     fn render_mobile_start_view(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -545,7 +626,8 @@ impl SlideEditor {
             .pb(px(MOBILE_TOUCH + 16.0 + MOBILE_SAFE_BOTTOM + 16.0))
             .gap_3()
             .overflow_y_scroll()
-            .track_scroll(&self.recent_scroll);
+            .track_scroll(&self.recent_scroll)
+            .children(self.render_crash_report_banner(cx));
 
         if !recents_empty {
             body = body

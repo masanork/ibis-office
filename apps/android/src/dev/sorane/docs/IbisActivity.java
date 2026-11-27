@@ -193,6 +193,23 @@ public class IbisActivity extends NativeActivity {
         });
     }
 
+    public void shareText(String subject, String text) {
+        mainHandler.post(() -> {
+            try {
+                Intent send = new Intent(Intent.ACTION_SEND);
+                send.setType("text/plain");
+                if (subject != null && !subject.isEmpty()) {
+                    send.putExtra(Intent.EXTRA_SUBJECT, subject);
+                }
+                send.putExtra(Intent.EXTRA_TEXT, text != null ? text : "");
+                Intent chooser = Intent.createChooser(send, subject);
+                startActivity(chooser);
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to share text", t);
+            }
+        });
+    }
+
     public String getClipboardText() {
         final String[] result = new String[1];
         final Object lock = new Object();

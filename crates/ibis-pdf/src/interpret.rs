@@ -28,6 +28,29 @@ pub fn interpret_page_scene(
     container: &mut PdfContainer,
     page_index: usize,
 ) -> Result<PageScene> {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        std::thread::scope(|scope| {
+            let handle = std::thread::Builder::new()
+                .name("pdf-interpret".into())
+                .stack_size(8 * 1024 * 1024)
+                .spawn_scoped(scope, || interpret_page_scene_inner(container, page_index))
+                .map_err(|e| Error::new(format!("failed to spawn pdf-interpret thread: {e}")))?;
+            handle
+                .join()
+                .map_err(|_| Error::new("pdf-interpret thread panicked"))?
+        })
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        interpret_page_scene_inner(container, page_index)
+    }
+}
+
+fn interpret_page_scene_inner(
+    container: &mut PdfContainer,
+    page_index: usize,
+) -> Result<PageScene> {
     let pages = collect_pages(container)?;
     let info = pages
         .get(page_index)

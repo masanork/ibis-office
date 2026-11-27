@@ -10,7 +10,7 @@ mod platform;
 mod window;
 
 pub use android_activity;
-pub use jni_bridge::sync_saved_file;
+pub use jni_bridge::{share_text, sync_saved_file};
 pub use platform::AndroidPlatform;
 
 pub fn init_logging() {

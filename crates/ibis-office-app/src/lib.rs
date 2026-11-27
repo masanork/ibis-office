@@ -1117,7 +1117,7 @@ fn url_path(url: &str) -> Option<std::path::PathBuf> {
 
 
 /// Native entry point; see [`Args`] for the command line.
-#[cfg(all(not(target_family = "wasm"), not(target_os = "android"), not(target_os = "ios")))]
+#[cfg(not(target_family = "wasm"))]
 fn install_native_panic_log_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -1154,6 +1154,8 @@ fn install_native_panic_log_hook() {
             std::env::consts::OS,
             std::env::consts::ARCH,
         );
+        #[cfg(target_os = "android")]
+        log::error!("{report}");
         if let Some(base) = crate::shell::app_data::base() {
             let dir = base.join("ibisOffice").join("crash-logs");
             if std::fs::create_dir_all(&dir).is_ok() {
@@ -1701,6 +1703,7 @@ mod android_entry {
     #[unsafe(no_mangle)]
     pub extern "Rust" fn android_main(android_app: gpui_android::android_activity::AndroidApp) {
         gpui_android::init_logging();
+        super::install_native_panic_log_hook();
         super::register_hooks();
         ibis_calc::eval::convert::set_clock(super::clock::calc_clock);
 

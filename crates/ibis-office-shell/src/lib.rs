@@ -38,6 +38,8 @@ pub mod headless;
 pub mod web;
 pub mod web_pdf;
 pub mod app;
+#[cfg(not(target_family = "wasm"))]
+pub mod crash_report;
 pub mod read_file;
 #[cfg(not(target_family = "wasm"))]
 mod structured_preview;

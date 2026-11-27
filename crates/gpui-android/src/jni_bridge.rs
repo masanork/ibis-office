@@ -151,6 +151,20 @@ pub fn open_url(url: &str) {
     });
 }
 
+pub fn share_text(subject: &str, text: &str) {
+    with_env(|env, activity| {
+        let jsubject = env.new_string(subject)?;
+        let jtext = env.new_string(text)?;
+        env.call_method(
+            activity,
+            "shareText",
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            &[JValue::Object(&jsubject), JValue::Object(&jtext)],
+        )?;
+        Ok(())
+    });
+}
+
 pub fn get_clipboard_text() -> Option<String> {
     with_env(|env, activity| {
         let res = env

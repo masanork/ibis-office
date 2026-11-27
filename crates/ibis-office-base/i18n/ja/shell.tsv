@@ -1986,3 +1986,7 @@ fixed-layout.ocr.empty	このページでは文字が検出されませんでし
 fixed-layout.ocr.already	このページには既にテキストが含まれています
 fixed-layout.ocr.failed	OCR に失敗しました: {error}
 fixed-layout.ocr.unavailable	このビルドでは OCR 機能が有効になっていません
+crash-report.banner	前回の異常終了ログがあります
+crash-report.share	共有…
+crash-report.dismiss	破棄
+crash-report.copied-issue	異常終了ログをクリップボードにコピーしました。Issue に貼り付けて送信できます
