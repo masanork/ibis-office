@@ -289,3 +289,55 @@ fn detects_character_cards_personas_prompt_specs_evals_and_trajectories() {
         PreviewBlock::ChatTurn { role, content, .. } if role == "tool" && content == "read_file"
     )));
 }
+
+#[test]
+fn reads_jupyter_notebook_toml_json_schema_and_openapi() {
+    use structured_preview::{CalloutTone, PreviewBlock};
+
+    let ipynb = r##"{
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python"}},
+        "cells": [
+            {"cell_type": "markdown", "source": ["# Analysis\n", "Summary"]},
+            {"cell_type": "code", "execution_count": 1, "source": ["print(1+1)"], "outputs": [
+                {"output_type": "stream", "name": "stdout", "text": ["2\n"]}
+            ]},
+            {"cell_type": "code", "execution_count": 2, "source": ["1/0"], "outputs": [
+                {"output_type": "error", "ename": "ZeroDivisionError", "evalue": "division by zero"}
+            ]}
+        ]
+    }"##;
+    let nb = structured_preview::read("ipynb", ipynb.as_bytes()).unwrap();
+    assert_eq!(nb.format, "Jupyter Notebook");
+    assert!(nb.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Callout { tone: CalloutTone::Danger, title, .. } if title == "ZeroDivisionError"
+    )));
+
+    let toml_src = b"[project]\nname = \"eval-pipeline\"\nversion = \"0.2.0\"\n\n[[models]]\nid = \"gpt-4o\"\ntemp = 0.2\n\n[[models]]\nid = \"claude\"\ntemp = 0.0\n";
+    let toml_prev = structured_preview::read("toml", toml_src).unwrap();
+    assert_eq!(toml_prev.format, "TOML");
+    assert_eq!(toml_prev.summary.table_count, 1);
+
+    let schema = br#"{
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "UserProfile",
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+            "id": {"type": "string", "format": "uuid", "description": "User ID"},
+            "age": {"type": "integer", "default": 20}
+        }
+    }"#;
+    let sch = structured_preview::read("json", schema).unwrap();
+    assert_eq!(sch.summary.detected_schema.as_deref(), Some("JSON Schema"));
+    assert!(sch.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Properties") && rows.len() == 2
+    )));
+
+    let openapi = b"openapi: '3.1.0'\ninfo:\n  title: Items API\n  version: '1.0'\npaths:\n  /items:\n    get:\n      summary: List items\n      responses:\n        '200':\n          description: OK\n";
+    let oa = structured_preview::read("yaml", openapi).unwrap();
+    assert_eq!(oa.summary.detected_schema.as_deref(), Some("OpenAPI (Items API)"));
+}

@@ -9,6 +9,7 @@ use ibis_doc_model::sd_jwt_import::{
 use serde_json::Value;
 
 pub mod ai_datasets;
+pub mod notebook_schema;
 pub mod personas_evals;
 pub mod visual;
 pub mod xml_view;
@@ -41,9 +42,11 @@ pub struct CredentialDetails {
 }
 
 pub fn supports_extension(extension: &str) -> bool {
-    ["json", "jsonl", "ndjson", "yaml", "yml", "xml", "sd-jwt", "mdoc"]
-        .iter()
-        .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+    [
+        "json", "jsonl", "ndjson", "yaml", "yml", "toml", "ipynb", "xml", "sd-jwt", "mdoc",
+    ]
+    .iter()
+    .any(|candidate| extension.eq_ignore_ascii_case(candidate))
 }
 
 pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
@@ -61,11 +64,26 @@ pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
         "json" => {
             let data: Value = serde_json::from_slice(bytes).map_err(|_| "Invalid JSON")?;
             json_fields(&data, "", "/", 0, &mut fields)?;
-            ai_override = ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields);
+            ai_override = notebook_schema::try_build_schema_or_openapi_blocks(
+                &data,
+                raw_len,
+                &fields,
+            )
+            .or_else(|| ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields));
             if ai_override.is_none() {
                 visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
             }
             "JSON"
+        }
+        "ipynb" => {
+            let (nb_fields, summary, nb_blocks) = notebook_schema::read_ipynb(bytes, raw_len)?;
+            return Ok(Preview {
+                format: "Jupyter Notebook",
+                fields: nb_fields,
+                credential: None,
+                summary,
+                blocks: nb_blocks,
+            });
         }
         "jsonl" | "ndjson" => {
             let src = text()?;
@@ -82,11 +100,23 @@ pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
             let src = text()?;
             let data: Value = serde_saphyr::from_str(src).map_err(|_| "Invalid YAML")?;
             json_fields(&data, "", "/", 0, &mut fields)?;
-            ai_override = ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields);
+            ai_override = notebook_schema::try_build_schema_or_openapi_blocks(
+                &data,
+                raw_len,
+                &fields,
+            )
+            .or_else(|| ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields));
             if ai_override.is_none() {
                 visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
             }
             "YAML"
+        }
+        "toml" => {
+            let src = text()?;
+            let data = notebook_schema::parse_toml_to_value(src)?;
+            json_fields(&data, "", "/", 0, &mut fields)?;
+            visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
+            "TOML"
         }
         "xml" => {
             let doc = parse_xml(bytes)?;
