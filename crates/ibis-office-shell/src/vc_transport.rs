@@ -603,7 +603,7 @@ mod wasm {
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct WebCryptoHolderInfo {
-        public_jwk: ibis_doc_model::PublicJwk,
+        public_jwk: serde_json::Value,
         #[allow(dead_code)]
         thumbprint: String,
     }
@@ -662,7 +662,7 @@ mod wasm {
     /// Loads (or creates) the browser WebCrypto non-extractable ES256 holder key
     /// persisted in IndexedDB (`sorane-vc-keys`) and returns its public JWK.
     #[allow(dead_code)]
-    pub async fn load_webcrypto_holder_public_jwk() -> Result<ibis_doc_model::PublicJwk, String> {
+    pub async fn load_webcrypto_holder_public_jwk() -> Result<serde_json::Value, String> {
         let promise = webcrypto_holder_info_js().map_err(js_error)?;
         let value = wasm_bindgen_futures::JsFuture::from(promise)
             .await

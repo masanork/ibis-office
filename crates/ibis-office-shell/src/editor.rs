@@ -1124,7 +1124,7 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         let enabled = cfg!(target_os = "android");
         #[cfg(target_family = "wasm")]
-        let enabled = crate::embed::phone_editor() || !crate::host::is_connected();
+        let enabled = crate::embed::phone_editor();
         enabled && Self::is_compact_viewport(window)
     }
 
