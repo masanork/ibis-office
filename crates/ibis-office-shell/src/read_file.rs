@@ -28,6 +28,7 @@ pub struct Loaded {
     pub jtd_original: Option<Vec<u8>>,
     pub jtd_gallery: bool,
     pub structured_preview: bool,
+    pub(crate) structured_bytes: Option<std::sync::Arc<Vec<u8>>>,
     pub(crate) bom_source: Option<BomSource>,
     pub(crate) image_provenance: Option<crate::image_provenance::Report>,
     pub(crate) exr_exposure: Option<ibis_formats::production_image::ExrExposure>,
@@ -38,12 +39,12 @@ pub struct Loaded {
 pub(crate) const LINKAGE_CSV_NEEDS_TREE: &str = "\u{1}linkage-csv-needs-tree";
 
 #[cfg(not(target_family = "wasm"))]
-fn read_only_preview(opened: ibis_formats::Opened) -> Loaded {
+fn read_only_preview(opened: ibis_formats::Opened, structured_bytes: Option<std::sync::Arc<Vec<u8>>>) -> Loaded {
     crate::render::preload::Preload::start_for_next(&opened.presentation);
     Loaded {
         presentation: opened.presentation, source: std::sync::Arc::new(opened.source),
         password: None, standard_encryption: false, editable_import: None, import_warning: None, csv_stream: None,
-        jtd_original: None, jtd_gallery: false, structured_preview: true, bom_source: None,
+        jtd_original: None, jtd_gallery: false, structured_preview: true, structured_bytes, bom_source: None,
         exr_exposure: None, image_provenance: None,
     }
 }
@@ -77,7 +78,6 @@ pub(crate) enum CommonOpen {
         bom_format: Option<ibis_formats::sbom_review::ReportFormat>,
         is_law: bool,
     },
-    #[cfg(not(target_family = "wasm"))]
     StructuredPreview(ibis_formats::Opened),
 }
 
@@ -130,10 +130,15 @@ pub(crate) fn open_document_bytes(
             is_law: false,
         }));
     }
-    #[cfg(not(target_family = "wasm"))]
     if let Some(ext) = extension.filter(|ext| ibis_formats::structured_preview::supports_extension(ext)) {
+        #[cfg(not(target_family = "wasm"))]
         let definition = base_dir.zip(virtual_path.file_name())
             .map(|(directory, file_name)| directory.join(file_name).with_extension("view.json"));
+        #[cfg(target_family = "wasm")]
+        let definition: Option<std::path::PathBuf> = {
+            let _ = base_dir;
+            None
+        };
         let opened = crate::structured_preview::open(ext, data, definition.as_deref())?;
         return Ok(Some(CommonOpen::StructuredPreview(opened)));
     }
@@ -263,7 +268,7 @@ fn load_production_image(
     image_provenance: Option<crate::image_provenance::Report>,
 ) -> Loaded {
     crate::render::preload::Preload::start_for_next(&opened.presentation);
-    Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, editable_import: None, import_warning: None, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source: None, exr_exposure, image_provenance }
+    Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: None, standard_encryption: false, editable_import: None, import_warning: None, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, structured_bytes: None, bom_source: None, exr_exposure, image_provenance }
 }
 
 /// Run `read` for the file at `path`. One file's reader going wrong must close that file only: every window shares this
@@ -589,14 +594,14 @@ fn read_file_data(
         let workbook = ibis_formats::csv::workbook_from_literal_fields(text, "Sheet1", font.as_ref())
             .map_err(|error| error.to_string())?;
         let opened = ibis_formats::open(workbook).map_err(|error| error.to_string())?;
-        return Ok(read_only_preview(opened));
+        return Ok(read_only_preview(opened, None));
     }
     let preview_import = PreviewImport::detect(extension, &data);
     if let Some(PreviewImport::FixedLayout(format)) = preview_import {
         let presentation = format.read(data.into())?;
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, editable_import: None, import_warning: None, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source: None, exr_exposure: None, image_provenance: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, editable_import: None, import_warning: None, csv_stream: None, jtd_original: None, jtd_gallery: false, structured_preview: false, structured_bytes: None, bom_source: None, exr_exposure: None, image_provenance: None });
     }
     let extension = path.extension().and_then(|e| e.to_str());
     if let Some((opened, exr_exposure)) = ibis_formats::production_image::open_with_exposure(extension, &data)? {
@@ -608,7 +613,7 @@ fn read_file_data(
         let blank = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
         let source = ibis_formats::open(blank).map_err(|e| e.to_string())?.source;
         crate::render::preload::Preload::start_for_next(&presentation);
-        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, editable_import: None, import_warning: None, csv_stream: None, jtd_original: Some(data), jtd_gallery, structured_preview: false, bom_source: None, exr_exposure: None, image_provenance: None });
+        return Ok(Loaded { presentation, source: std::sync::Arc::new(source), password: None, standard_encryption: false, editable_import: None, import_warning: None, csv_stream: None, jtd_original: Some(data), jtd_gallery, structured_preview: false, structured_bytes: None, bom_source: None, exr_exposure: None, image_provenance: None });
     }
     let standard_encryption = ibis_formats::ibis_ooxml::encryption::is_standard_encrypted(&data);
     let read_fs_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
@@ -631,10 +636,16 @@ fn read_file_data(
         note_open_failed(path);
         e
     })?;
+    let mut structured_bytes = None;
     let (opened, csv_stream) = match common {
-        Some(CommonOpen::StructuredPreview(opened)) => return Ok(read_only_preview(opened)),
+        Some(CommonOpen::StructuredPreview(opened)) => {
+            return Ok(read_only_preview(opened, Some(std::sync::Arc::new(data))));
+        }
         Some(CommonOpen::Standard { opened, editable_import, bom_format, .. }) => {
             opened_import = editable_import;
+            if bom_format.is_some() {
+                structured_bytes = Some(std::sync::Arc::new(data.clone()));
+            }
             if bom_format == Some(ibis_formats::sbom_review::ReportFormat::CycloneDx) {
                 use sha2::{Digest, Sha256};
                 bom_source = Some(BomSource {
@@ -666,7 +677,7 @@ fn read_file_data(
     let total_file_ms = read_t0.elapsed().as_secs_f64() * 1000.0;
     eprintln!("ibisOffice timing: read_file total: {total_file_ms:.1} ms (fs::read: {read_fs_ms:.1} ms, open: {open_ms:.1} ms)");
     crate::render::preload::Preload::start_for_next(&opened.presentation);
-    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, editable_import: opened_import, import_warning: opened.import_warning, jtd_original: None, jtd_gallery: false, structured_preview: false, bom_source, exr_exposure: None, image_provenance: None })
+    Ok(Loaded { presentation: opened.presentation, source: std::sync::Arc::new(opened.source), password: used, csv_stream, standard_encryption, editable_import: opened_import, import_warning: opened.import_warning, jtd_original: None, jtd_gallery: false, structured_preview: false, structured_bytes, bom_source, exr_exposure: None, image_provenance: None })
 }
 
 /// Tell every format that the file at `path` could not be parsed (in the order of their registration, as they were told

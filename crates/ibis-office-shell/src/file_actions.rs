@@ -220,7 +220,6 @@ impl SlideEditor {
         let bytes = content.as_bytes();
         let opened = match crate::read_file::open_document_bytes(file_name, None, bytes) {
             Ok(Some(crate::read_file::CommonOpen::Standard { opened, .. })) => Ok(opened),
-            #[cfg(not(target_family = "wasm"))]
             Ok(Some(crate::read_file::CommonOpen::StructuredPreview(opened))) => Ok(opened),
             Ok(None) => {
                 if std::path::Path::new(file_name)

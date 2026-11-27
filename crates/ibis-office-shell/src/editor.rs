@@ -734,6 +734,8 @@ pub struct SlideEditor {
     /// A Standard-encrypted document remains read-only until saved as a copy.
     pub standard_read_only: bool,
     pub(crate) structured_preview: bool,
+    pub(crate) structured_code_view: Option<Entity<crate::structured_code_view::StructuredCodeView>>,
+    pub(crate) structured_source: Option<crate::structured_code_view::StructuredSource>,
     #[cfg(not(target_family = "wasm"))]
     pub(crate) bom_source: Option<crate::read_file::BomSource>,
     /// Preserve the original path even after creating an editable copy.
@@ -1098,6 +1100,8 @@ impl SlideEditor {
             resumable_visio: Default::default(),
             standard_read_only: false,
             structured_preview: false,
+            structured_code_view: None,
+            structured_source: None,
             #[cfg(not(target_family = "wasm"))]
             bom_source: None,
             #[cfg(not(target_family = "wasm"))]
@@ -1832,12 +1836,52 @@ impl SlideEditor {
             let mut image_provenance = None;
             let mut law_source = None;
             let mut opened_import = None;
+            let mut structured_source = None;
             let common = crate::read_file::open_document_bytes(name.as_ref(), None, &data);
             let result = match common {
-                Ok(Some(CommonOpen::Standard { opened, editable_import, is_law, .. })) => {
+                Ok(Some(CommonOpen::Standard { opened, editable_import, bom_format, is_law })) => {
                     opened_import = editable_import;
                     if is_law {
                         law_source = Some(std::sync::Arc::new(data));
+                    } else if bom_format.is_some()
+                        && let Some(ext) = extension
+                    {
+                        let modes = Self::available_structured_modes(ext, &data);
+                        structured_source = Some(crate::structured_code_view::StructuredSource {
+                            name: name.clone(),
+                            extension: ext.to_string(),
+                            bytes: std::sync::Arc::new(data),
+                            available_modes: modes,
+                            active_mode: crate::structured_code_view::StructuredViewMode::Table,
+                        });
+                    }
+                    Ok((opened, None))
+                }
+                Ok(Some(CommonOpen::StructuredPreview(opened))) => {
+                    if let Some(ext) = extension
+                        && ibis_formats::structured_preview::code_tree::CodeFormat::from_extension(ext).is_some()
+                    {
+                        let modes = Self::available_structured_modes(ext, &data);
+                        let source = crate::structured_code_view::StructuredSource {
+                            name: name.clone(),
+                            extension: ext.to_string(),
+                            bytes: std::sync::Arc::new(data),
+                            available_modes: modes,
+                            active_mode: crate::structured_code_view::StructuredViewMode::Code,
+                        };
+                        this.update_in(cx, |this, window, cx| {
+                            if this.closed != closed || this.web.open_generation != generation {
+                                return;
+                            }
+                            if let Err(err) = this.open_structured_code_view(source, window, cx) {
+                                this.fail_loading(
+                                    crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]),
+                                    cx,
+                                );
+                            }
+                        })
+                        .ok();
+                        return;
                     }
                     Ok((opened, None))
                 }
@@ -1900,6 +1944,7 @@ impl SlideEditor {
                     };
                     this.load(opened.presentation, doc_name, window, cx);
                     this.web.law_source = law_source;
+                    this.structured_source = structured_source;
                     this.web.xmlss_import = opened_import == Some(crate::read_file::EditableImport::XmlSpreadsheet);
                     this.set_production_image_view(production_image, exposure);
                     this.image_provenance = image_provenance;
@@ -1919,6 +1964,158 @@ impl SlideEditor {
             .ok();
         })
         .detach();
+    }
+
+    pub(crate) fn available_structured_modes(
+        extension: &str,
+        bytes: &[u8],
+    ) -> Vec<crate::structured_code_view::StructuredViewMode> {
+        use crate::structured_code_view::StructuredViewMode;
+        use ibis_formats::structured_preview::code_tree::CodeFormat;
+        let mut modes = Vec::new();
+        if CodeFormat::from_extension(extension).is_some() {
+            modes.push(StructuredViewMode::Code);
+        }
+        if extension.eq_ignore_ascii_case("json")
+            && ibis_formats::sbom_review::open_table_with_format(("check.json", bytes))
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            modes.push(StructuredViewMode::Table);
+        }
+        if ibis_formats::structured_preview::supports_extension(extension) {
+            modes.push(StructuredViewMode::Document);
+        }
+        modes
+    }
+
+    pub(crate) fn open_structured_code_view(
+        &mut self,
+        mut source: crate::structured_code_view::StructuredSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        use crate::structured_code_view::{StructuredCodeView, StructuredViewMode};
+        source.active_mode = StructuredViewMode::Code;
+        let weak = cx.weak_entity();
+        let on_switch = Box::new(move |mode: StructuredViewMode, window: &mut Window, app: &mut App| {
+            let _ = weak.update(app, |editor, cx| {
+                editor.switch_structured_mode(mode, window, cx);
+            });
+        });
+        let name = source.name.clone();
+        let ext = source.extension.clone();
+        let bytes = source.bytes.clone();
+        let modes = source.available_modes.clone();
+        let view = cx.new(|cx| {
+            StructuredCodeView::new(name.clone(), &ext, &bytes, modes, Some(on_switch), window, cx)
+                .expect("structured code view should parse valid structured bytes")
+        });
+        self.loading = false;
+        self.has_document = true;
+        self.file_name = Some(name.clone());
+        self.structured_code_view = Some(view);
+        self.structured_source = Some(source);
+        self.status = None;
+        if self.manages_window_title() {
+            window.set_window_title(&format!("{name} — Docs"));
+        }
+        cx.notify();
+        Ok(())
+    }
+
+    pub(crate) fn switch_structured_mode(
+        &mut self,
+        mode: crate::structured_code_view::StructuredViewMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::structured_code_view::StructuredViewMode;
+        let Some(mut source) = self.structured_source.clone() else {
+            return;
+        };
+        if source.active_mode == mode {
+            return;
+        }
+        source.active_mode = mode;
+        match mode {
+            StructuredViewMode::Code => {
+                let _ = self.open_structured_code_view(source, window, cx);
+            }
+            StructuredViewMode::Table => {
+                match ibis_formats::sbom_review::open_table_with_format((
+                    source.name.as_ref(),
+                    &source.bytes,
+                )) {
+                    Ok(Some((opened, _))) => {
+                        self.structured_code_view = None;
+                        self.load(opened.presentation, source.name.clone(), window, cx);
+                        self.set_opened_source(std::sync::Arc::new(opened.source), false);
+                        self.structured_source = Some(source);
+                        with_format!(self, file_opened(self));
+                        cx.notify();
+                    }
+                    Ok(None) => self.set_status("表形式ビューはこのファイルに対応していません".to_string(), cx),
+                    Err(err) => self.set_status(err, cx),
+                }
+            }
+            StructuredViewMode::Document => {
+                match crate::structured_preview::open(&source.extension, &source.bytes, None) {
+                    Ok(opened) => {
+                        self.structured_code_view = None;
+                        self.load(opened.presentation, source.name.clone(), window, cx);
+                        self.structured_preview = true;
+                        self.document.set_read_only(true);
+                        self.sidebar_open = false;
+                        self.structured_source = Some(source);
+                        self.set_status(crate::i18n::text("structured-preview.read-only").to_string(), cx);
+                        cx.notify();
+                    }
+                    Err(err) => self.set_status(err, cx),
+                }
+            }
+        }
+    }
+
+    fn render_structured_mode_bar(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        use gpui_kit::component::button::{Button, ButtonVariants as _};
+        use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex};
+        let source = self.structured_source.as_ref()?;
+        if source.available_modes.len() <= 1 {
+            return None;
+        }
+        let theme = cx.theme();
+        let active = source.active_mode;
+        Some(
+            h_flex()
+                .w_full()
+                .px_3()
+                .py_1()
+                .gap_2()
+                .items_center()
+                .border_b_1()
+                .border_color(theme.border)
+                .bg(theme.secondary)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("表示モード:"),
+                )
+                .children(source.available_modes.iter().copied().map(|mode| {
+                    let is_active = mode == active;
+                    Button::new(("editor-structured-mode", mode as usize))
+                        .xsmall()
+                        .when(is_active, |b| b.primary())
+                        .when(!is_active, |b| b.outline())
+                        .label(mode.label())
+                        .on_click(cx.listener(move |editor, _, window, cx| {
+                            editor.switch_structured_mode(mode, window, cx);
+                        }))
+                }))
+                .into_any_element(),
+        )
     }
 
     fn show_import_warning(
@@ -2103,8 +2300,8 @@ impl SlideEditor {
                 // Specialized JSON imports have already been selected by the reader.
                 let json_tree = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
                     && (crate::structured_view::has_row_schema(&path) || match &result {
-                        Ok(loaded) => loaded.structured_preview,
                         Err(error) => error == ibis_formats::structured_preview::SIZE_LIMIT_ERROR,
+                        _ => false,
                     });
                 let csv_tree = result.as_ref().is_err_and(|error| error == crate::read_file::LINKAGE_CSV_NEEDS_TREE);
                 if json_tree || csv_tree {
@@ -2124,6 +2321,23 @@ impl SlideEditor {
                         this.set_file_path(Some(path.clone()));
                         this.watch.known = stamp_before_read;
                     } else if loaded.structured_preview {
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+                        if let Some(bytes) = loaded.structured_bytes.clone()
+                            && ibis_formats::structured_preview::code_tree::CodeFormat::from_extension(ext).is_some()
+                        {
+                            let modes = Self::available_structured_modes(ext, &bytes);
+                            let source = crate::structured_code_view::StructuredSource {
+                                name: name.clone(),
+                                extension: ext.to_string(),
+                                bytes,
+                                available_modes: modes,
+                                active_mode: crate::structured_code_view::StructuredViewMode::Code,
+                            };
+                            let _ = this.open_structured_code_view(source, window, cx);
+                            this.set_file_path(Some(path.clone()));
+                            this.watch.known = stamp_before_read;
+                            return;
+                        }
                         this.load(loaded.presentation, name, window, cx);
                         this.structured_preview = true;
                         this.document.set_read_only(true);
@@ -2149,6 +2363,19 @@ impl SlideEditor {
                         );
                         this.load(loaded.presentation, format!("{stem}.{extension}").into(), window, cx);
                         this.set_opened_source(loaded.source, production_image);
+                        if loaded.bom_source.is_some()
+                            && let Some(bytes) = loaded.structured_bytes
+                        {
+                            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("json");
+                            let modes = Self::available_structured_modes(ext, &bytes);
+                            this.structured_source = Some(crate::structured_code_view::StructuredSource {
+                                name: name.clone(),
+                                extension: ext.to_string(),
+                                bytes,
+                                available_modes: modes,
+                                active_mode: crate::structured_code_view::StructuredViewMode::Table,
+                            });
+                        }
                         this.bom_source = loaded.bom_source;
                         this.path = None;
                         this.document.set_file(None);
@@ -2378,7 +2605,9 @@ impl SlideEditor {
     pub(crate) fn fail_loading(&mut self, status: String, cx: &mut Context<Self>) {
         if self.loading {
             self.loading = false;
-            self.has_document = false;
+        self.has_document = false;
+        self.structured_code_view = None;
+        self.structured_source = None;
         #[cfg(target_family = "wasm")]
         {
             self.web.structured_view = None;
@@ -2573,6 +2802,8 @@ impl SlideEditor {
         self.load(Presentation::new(), SharedString::default(), window, cx);
         self.list_scroll.set_offset(Point::default());
         self.has_document = false;
+        self.structured_code_view = None;
+        self.structured_source = None;
         #[cfg(target_family = "wasm")]
         {
             self.web.structured_view = None;
@@ -4887,6 +5118,12 @@ impl SlideEditor {
                 .child(self.render_start_view(narrow_phone, cx))
                 .when(show_start_menu && at_bottom, |d| d.child(self.render_menu_bar(window, cx)));
         }
+        if let Some(view) = self.structured_code_view.clone() {
+            return d
+                .child(self.render_title_row(window, cx))
+                .when(!narrow_phone && self.show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
+                .child(div().flex_1().min_h_0().w_full().child(view));
+        }
         #[cfg(target_family = "wasm")]
         if let Some(view) = self.web.structured_view.clone() {
             return d
@@ -4974,6 +5211,7 @@ impl SlideEditor {
             .when(!narrow_phone && !compact && !focus && show_title_row, |d| d.child(self.render_title_row(window, cx)))
             .when(!mobile_viewer && !at_bottom && !compact && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
             .when(!mobile_viewer && !at_bottom && !focus && show_toolbar, |d| d.child(self.render_toolbar(window, cx)))
+            .children(self.render_structured_mode_bar(cx))
             .child(main_area)
             .when(!focus && show_status_bar && (bottom_bars || !at_bottom), |d| d.child(self.render_status_bar(at_bottom, cx)))
             .when(!mobile_viewer && at_bottom && bottom_bars && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))

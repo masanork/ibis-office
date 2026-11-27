@@ -9,6 +9,7 @@ use ibis_doc_model::sd_jwt_import::{
 use serde_json::Value;
 
 pub mod ai_datasets;
+pub mod code_tree;
 pub mod columnar_sql;
 pub mod notebook_schema;
 pub mod ontology;
