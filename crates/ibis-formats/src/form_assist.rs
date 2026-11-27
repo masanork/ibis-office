@@ -3137,7 +3137,6 @@ pub struct PdfFormFieldTarget {
 }
 
 /// Inspects editable AcroForm text fields in any PDF file (including PDF/A-2b and standard forms).
-#[cfg(not(target_family = "wasm"))]
 pub fn inspect_pdf_form_fields(bytes: Vec<u8>) -> Result<(bool, Vec<PdfFormFieldTarget>), String> {
     let mut pdf =
         ibis_pdf::PdfContainer::from_bytes(bytes).map_err(|e| format!("PDF 読込エラー: {e}"))?;
@@ -3237,7 +3236,6 @@ pub fn evaluate_pdf_form(
 }
 
 /// Fills matching PDF AcroForm text fields and returns an incrementally saved PDF copy.
-#[cfg(not(target_family = "wasm"))]
 pub fn fill_pdf_form_values(
     bytes: Vec<u8>,
     values: &BTreeMap<String, String>,

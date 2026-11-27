@@ -39,6 +39,8 @@ pub enum KeyStorageBackend {
     OsKeychain,
     /// Owner-only (`0600`) file in the application data directory (outside Vault/Git).
     LocalAppData,
+    /// Browser WebCrypto non-extractable ES256 keypair persisted in IndexedDB.
+    WebCryptoIndexedDb,
     /// Deterministic built-in demo key (not for production trust).
     SandboxDemo,
 }
@@ -52,6 +54,7 @@ impl KeyStorageBackend {
         match self {
             Self::OsKeychain => "os_keychain",
             Self::LocalAppData => "local_app_data",
+            Self::WebCryptoIndexedDb => "webcrypto_indexeddb",
             Self::SandboxDemo => "sandbox_demo",
         }
     }
@@ -60,6 +63,7 @@ impl KeyStorageBackend {
         match self {
             Self::OsKeychain => "OS キーチェーン",
             Self::LocalAppData => "ローカル鍵 (0600)",
+            Self::WebCryptoIndexedDb => "WebCrypto 非抽出鍵 (IndexedDB)",
             Self::SandboxDemo => "Sandbox / テスト鍵",
         }
     }
@@ -567,9 +571,115 @@ mod native {
 #[cfg(target_family = "wasm")]
 mod wasm {
     use super::{DirectPostOutcome, KeyRole, LoadedKey};
+    use wasm_bindgen::JsCast as _;
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(catch, js_name = ibisOfficeWebCryptoHolderInfo)]
+        fn webcrypto_holder_info_js() -> Result<js_sys::Promise, JsValue>;
+
+        #[wasm_bindgen(catch, js_name = ibisOfficeWebCryptoSignHolder)]
+        fn webcrypto_sign_holder_js(signing_input: &str) -> Result<js_sys::Promise, JsValue>;
+    }
+
+    fn js_error(err: JsValue) -> String {
+        err.as_string()
+            .or_else(|| {
+                js_sys::Reflect::get(&err, &JsValue::from_str("message"))
+                    .ok()
+                    .and_then(|message| message.as_string())
+            })
+            .unwrap_or_else(|| "WebCrypto bridge error".to_string())
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct WebCryptoHolderInfo {
+        public_jwk: ibis_doc_model::PublicJwk,
+        #[allow(dead_code)]
+        thumbprint: String,
+    }
+
+    fn decode_base64url_64(b64url: &str) -> Result<[u8; 64], String> {
+        fn val(b: u8) -> Result<u8, String> {
+            match b {
+                b'A'..=b'Z' => Ok(b - b'A'),
+                b'a'..=b'z' => Ok(b - b'a' + 26),
+                b'0'..=b'9' => Ok(b - b'0' + 52),
+                b'-' | b'+' => Ok(62),
+                b'_' | b'/' => Ok(63),
+                _ => Err("Invalid base64url character in WebCrypto signature".to_string()),
+            }
+        }
+        let s = b64url.trim_end_matches('=').as_bytes();
+        let mut out = Vec::with_capacity((s.len() * 3) / 4 + 1);
+        let mut i = 0;
+        while i < s.len() {
+            let rem = s.len() - i;
+            if rem == 1 {
+                return Err("Invalid base64url length".to_string());
+            }
+            let a = val(s[i])?;
+            let b = val(s[i + 1])?;
+            out.push((a << 2) | (b >> 4));
+            if rem >= 3 {
+                let c = val(s[i + 2])?;
+                out.push((b << 4) | (c >> 2));
+                if rem >= 4 {
+                    let d = val(s[i + 3])?;
+                    out.push((c << 6) | d);
+                }
+            }
+            i += 4;
+        }
+        let arr: [u8; 64] = out
+            .try_into()
+            .map_err(|_| "Expected 64-byte IEEE P1363 ES256 signature".to_string())?;
+        Ok(arr)
+    }
 
     pub fn generate_random_nonce() -> String {
+        if let Ok(ks) = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("soraneVcKeystore"))
+            && let Ok(func) =
+                js_sys::Reflect::get(&ks, &JsValue::from_str("generateRandomNonceBase64Url"))
+            && let Ok(fun) = func.dyn_into::<js_sys::Function>()
+            && let Ok(val) = fun.call0(&ks)
+            && let Some(nonce) = val.as_string()
+        {
+            return nonce;
+        }
         "n-wasm-sandbox".to_string()
+    }
+
+    /// Loads (or creates) the browser WebCrypto non-extractable ES256 holder key
+    /// persisted in IndexedDB (`sorane-vc-keys`) and returns its public JWK.
+    #[allow(dead_code)]
+    pub async fn load_webcrypto_holder_public_jwk() -> Result<ibis_doc_model::PublicJwk, String> {
+        let promise = webcrypto_holder_info_js().map_err(js_error)?;
+        let value = wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(js_error)?;
+        let text = value
+            .as_string()
+            .ok_or_else(|| "WebCrypto holder info was not a string".to_string())?;
+        let parsed: WebCryptoHolderInfo = serde_json::from_str(&text)
+            .map_err(|e| format!("Failed to parse WebCrypto holder info: {e}"))?;
+        Ok(parsed.public_jwk)
+    }
+
+    /// Signs a `kb+jwt` signing input using the browser's non-extractable ES256
+    /// holder key in IndexedDB and returns the raw 64-byte `r || s` signature.
+    #[allow(dead_code)]
+    pub async fn sign_with_webcrypto_holder(signing_input: &str) -> Result<[u8; 64], String> {
+        let promise = webcrypto_sign_holder_js(signing_input).map_err(js_error)?;
+        let value = wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(js_error)?;
+        let b64url = value
+            .as_string()
+            .ok_or_else(|| "WebCrypto signature was not a string".to_string())?;
+        decode_base64url_64(&b64url)
     }
 
     pub fn load_persisted_key(_role: KeyRole) -> Option<LoadedKey> {
@@ -585,11 +695,11 @@ mod wasm {
     }
 
     pub fn generate_and_save_key(_role: KeyRole) -> Result<LoadedKey, String> {
-        Err("永続鍵管理はデスクトップ版で利用できます。".to_string())
+        Err("永続鍵管理はデスクトップ版または WebCrypto 非抽出鍵ブリッジで利用できます。".to_string())
     }
 
     pub fn import_jwk_key(_role: KeyRole, _jwk_json: &str) -> Result<LoadedKey, String> {
-        Err("永続鍵管理はデスクトップ版で利用できます。".to_string())
+        Err("秘密鍵 JWK インポートはデスクトップ版で利用できます（Web 版は非抽出鍵のみ対応）。".to_string())
     }
 
     pub fn clear_key(_role: KeyRole) -> Result<(), String> {

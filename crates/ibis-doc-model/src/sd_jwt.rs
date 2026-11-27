@@ -1135,15 +1135,15 @@ impl SdJwtOutput {
     }
 }
 
-/// Issues an RFC 9901 §4.3 Key Binding JWT (`kb+jwt`) over `sd_jwt_presentation`
-/// (`<Issuer-JWT>~<D_1>~...~<D_m>~`) and returns the combined `vp_token`.
-pub fn issue_kb_jwt(
+/// Builds the RFC 9901 §4.3 `sd_hash` and JWS signing input (`<b64url(header)>.<b64url(payload)>`)
+/// for a Key Binding JWT (`kb+jwt`). Designed so external/non-extractable signers (e.g. browser
+/// WebCrypto `SubtleCrypto.sign`) can sign `kb+jwt` without exposing private key material.
+pub fn build_kb_jwt_signing_input(
     sd_jwt_presentation: &str,
     aud: &str,
     nonce: &str,
     iat: i64,
-    holder_key: &Es256KeyPair,
-) -> KeyBindingJwtOutput {
+) -> (String, String, String) {
     let normalized = if sd_jwt_presentation.ends_with('~') {
         sd_jwt_presentation.to_string()
     } else {
@@ -1163,14 +1163,49 @@ pub fn issue_kb_jwt(
     payload_map.insert("sd_hash".into(), ClaimValue::String(sd_hash.clone()));
     let payload_json = ClaimValue::Object(payload_map).to_json();
 
-    let kb_jwt = holder_key.sign_jws(&header_json, &payload_json);
-    let vp_token = format!("{normalized}{kb_jwt}");
+    let signing_input = format!(
+        "{}.{}",
+        base64url_encode(header_json.as_bytes()),
+        base64url_encode(payload_json.as_bytes())
+    );
+    (normalized, sd_hash, signing_input)
+}
 
+/// Assembles a [`KeyBindingJwtOutput`] from a precomputed `signing_input` and a 64-byte IEEE P1363
+/// ES256 signature (`r || s`, as produced by both `Es256KeyPair::sign_es256` and WebCrypto ECDSA).
+pub fn assemble_kb_jwt_from_raw_sig(
+    normalized_sd_jwt: &str,
+    sd_hash: String,
+    signing_input: &str,
+    sig_r_s: &[u8; 64],
+) -> KeyBindingJwtOutput {
+    let normalized = if normalized_sd_jwt.ends_with('~') {
+        normalized_sd_jwt.to_string()
+    } else {
+        format!("{normalized_sd_jwt}~")
+    };
+    let kb_jwt = format!("{signing_input}.{}", base64url_encode(sig_r_s));
+    let vp_token = format!("{normalized}{kb_jwt}");
     KeyBindingJwtOutput {
         sd_hash,
         kb_jwt,
         vp_token,
     }
+}
+
+/// Issues an RFC 9901 §4.3 Key Binding JWT (`kb+jwt`) over `sd_jwt_presentation`
+/// (`<Issuer-JWT>~<D_1>~...~<D_m>~`) and returns the combined `vp_token`.
+pub fn issue_kb_jwt(
+    sd_jwt_presentation: &str,
+    aud: &str,
+    nonce: &str,
+    iat: i64,
+    holder_key: &Es256KeyPair,
+) -> KeyBindingJwtOutput {
+    let (normalized, sd_hash, signing_input) =
+        build_kb_jwt_signing_input(sd_jwt_presentation, aud, nonce, iat);
+    let sig = holder_key.sign_es256(signing_input.as_bytes());
+    assemble_kb_jwt_from_raw_sig(&normalized, sd_hash, &signing_input, &sig)
 }
 
 struct ResolvedDisclosure {

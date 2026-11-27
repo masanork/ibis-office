@@ -651,3 +651,42 @@ fn present_existing_sd_jwt_and_direct_post_body_roundtrip() {
     assert!(body.starts_with("vp_token="));
     assert!(body.contains("&state=st-42"));
 }
+
+#[test]
+fn external_signer_kb_jwt_matches_issue_kb_jwt() {
+    use ibis_doc_model::{
+        Es256KeyPair, SdJwtOptions, assemble_kb_jwt_from_raw_sig, build_kb_jwt_signing_input,
+        issue_kb_jwt, issue_sheet_sd_jwt, parse_sd_jwt,
+    };
+
+    let (pres, slide_id, _) = sample_presentation();
+    let issuer = Es256KeyPair::demo_issuer_key();
+    let holder = Es256KeyPair::demo_holder_key();
+
+    let mut opts = SdJwtOptions::default();
+    opts.holder_public_jwk = Some(holder.to_public_jwk());
+    let (_bindings, issued) = issue_sheet_sd_jwt(&pres, slide_id, &opts, &issuer).unwrap();
+
+    let aud = "https://verifier.example/cb";
+    let nonce = "nonce-webcrypto-test";
+    let iat = 1_735_000_123;
+
+    // Direct issue_kb_jwt
+    let direct = issue_kb_jwt(&issued.sd_jwt_all, aud, nonce, iat, &holder);
+
+    // Split external-signer flow (simulating WebCrypto SubtleCrypto.sign)
+    let (normalized, sd_hash, signing_input) =
+        build_kb_jwt_signing_input(&issued.sd_jwt_all, aud, nonce, iat);
+    let raw_sig = holder.sign_es256(signing_input.as_bytes());
+    let assembled =
+        assemble_kb_jwt_from_raw_sig(&normalized, sd_hash, &signing_input, &raw_sig);
+
+    assert_eq!(assembled.kb_jwt, direct.kb_jwt);
+    assert_eq!(assembled.vp_token, direct.vp_token);
+    assert_eq!(assembled.sd_hash, direct.sd_hash);
+
+    let parsed = parse_sd_jwt(&assembled.vp_token, Some(&issuer.to_public_jwk_json()))
+        .expect("assembled kb+jwt should parse and verify");
+    assert_eq!(parsed.signature_valid, Some(true));
+    assert_eq!(parsed.kb_sd_hash_valid, Some(true));
+}
