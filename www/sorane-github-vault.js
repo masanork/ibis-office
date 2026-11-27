@@ -676,10 +676,15 @@ if (!params.has('host')) {
     }
   };
 
-  window.ibisOfficeAiModels = async () => {
+  window.ibisOfficeAiModels = async (copilotToken) => {
+    const headers = {};
+    const token = typeof copilotToken === 'string' ? copilotToken.trim() : '';
+    if (token) {
+      headers['X-Sorane-Copilot-Token'] = token;
+    }
     let res;
     try {
-      res = await fetch('/api/ai/models', { credentials: 'same-origin' });
+      res = await fetch('/api/ai/models', { credentials: 'same-origin', headers });
     } catch {
       throw new Error('network_error');
     }
@@ -688,25 +693,31 @@ if (!params.has('host')) {
     }
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || 'ai_failed');
+      const code = data.error || 'ai_failed';
+      throw new Error(data.detail ? `${code}: ${data.detail}` : code);
     }
     return await res.text();
   };
 
-  window.ibisOfficeAiStream = async (body, csrf, onLine) => {
+  window.ibisOfficeAiStream = async (body, csrf, onLine, copilotToken) => {
     window.ibisOfficeAiAbort();
     const controller = new AbortController();
     activeAiAbortController = controller;
     try {
+      const headers = {
+        'Content-Type': 'application/json',
+        'X-Sorane-CSRF': csrf || '',
+      };
+      const token = typeof copilotToken === 'string' ? copilotToken.trim() : '';
+      if (token) {
+        headers['X-Sorane-Copilot-Token'] = token;
+      }
       let res;
       try {
         res = await fetch('/api/ai/chat', {
           method: 'POST',
           credentials: 'same-origin',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Sorane-CSRF': csrf || '',
-          },
+          headers,
           body,
           signal: controller.signal,
         });
@@ -716,7 +727,8 @@ if (!params.has('host')) {
       }
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || (res.status === 401 ? 'login_required' : 'ai_failed'));
+        const code = data.error || (res.status === 401 ? 'login_required' : 'ai_failed');
+        throw new Error(data.detail ? `${code}: ${data.detail}` : code);
       }
       if (!res.body) {
         throw new Error('ai_failed');

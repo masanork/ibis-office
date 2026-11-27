@@ -16,6 +16,23 @@ pub const SETTING_BASE_URL: &str = "ai.base_url";
 pub const SETTING_MODEL: &str = "ai.model";
 pub const SETTING_API_KEY: &str = "ai.api_key";
 pub const SETTING_PROVIDER: &str = "ai.provider";
+pub const SETTING_COPILOT_TOKEN: &str = "ai.copilot_token";
+
+pub fn load_saved_copilot_token() -> String {
+    crate::settings::get(SETTING_COPILOT_TOKEN)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+pub fn save_copilot_token(token: &str) {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        crate::settings::remove(SETTING_COPILOT_TOKEN);
+    } else {
+        crate::settings::set(SETTING_COPILOT_TOKEN, trimmed);
+    }
+}
 
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
@@ -485,8 +502,8 @@ impl ConnectionChoice {
         env: impl Fn(&str) -> Option<String>,
     ) -> Result<NativeConnection, String> {
         if self == Self::GitHubCopilot {
-            let token = load_github_session_token().ok_or_else(|| {
-                "GitHub にログインしてください（左サイドバーの Git パネルからログインできます）。".to_string()
+            let token = load_github_copilot_token().ok_or_else(|| {
+                "GitHub にログインするか、設定欄に Copilot Requests (Read-only) 権限付きの Fine-grained PAT (github_pat_...) を入力してください。".to_string()
             })?;
             return Ok(NativeConnection {
                 provider: Provider::GitHubCopilot {
@@ -512,7 +529,7 @@ impl ConnectionChoice {
             && provider == Provider::OpenAi
             && config.base_url == DEFAULT_BASE_URL
             && config.api_key.is_empty()
-            && let Some(token) = load_github_session_token()
+            && let Some(token) = load_github_copilot_token()
         {
             return Ok(NativeConnection {
                 provider: Provider::GitHubCopilot {
@@ -547,6 +564,21 @@ impl ConnectionChoice {
     pub(crate) fn load(self) -> Result<NativeConnection, String> {
         self.resolve(&AiConfig::load_saved(), process_env)
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn load_github_copilot_token() -> Option<String> {
+    if let Ok(env_tok) = std::env::var("GITHUB_COPILOT_TOKEN") {
+        let trimmed = env_tok.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    let saved = load_saved_copilot_token();
+    if !saved.is_empty() {
+        return Some(saved);
+    }
+    load_github_session_token()
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -621,6 +653,45 @@ fn curl_get_json(url: &str, headers: &[(&str, String)]) -> Result<(u16, String),
 }
 
 #[cfg(not(target_family = "wasm"))]
+fn extract_json_error_message(body: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<Value>(body) {
+        if let Some(msg) = v.pointer("/error/message").and_then(Value::as_str)
+            .or_else(|| v.get("message").and_then(Value::as_str))
+        {
+            return msg.trim().to_string();
+        }
+    }
+    body.trim().chars().take(120).collect()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn fetch_copilot_models_with_token(
+    api_base: &str,
+    bearer_token: &str,
+    preferred_model: Option<&str>,
+    prefer_fast: bool,
+) -> Result<String, (u16, String)> {
+    let models_url = format!("{api_base}/models");
+    let model_headers = [
+        ("Authorization", format!("Bearer {bearer_token}")),
+        ("Accept", "application/json".to_string()),
+        ("User-Agent", "soraneDocs-Desktop".to_string()),
+        ("Editor-Version", sorane_github::COPILOT_EDITOR_VERSION.to_string()),
+        ("Editor-Plugin-Version", sorane_github::COPILOT_EDITOR_PLUGIN_VERSION.to_string()),
+        ("Copilot-Integration-Id", sorane_github::COPILOT_INTEGRATION_ID.to_string()),
+    ];
+    let (m_status, m_body) = curl_get_json(&models_url, &model_headers).map_err(|e| (0, e))?;
+    if m_status >= 400 {
+        return Err((m_status, extract_json_error_message(&m_body)));
+    }
+    let models = sorane_github::parse_copilot_models_response(&m_body)
+        .map_err(|e| (m_status, format!("モデル一覧解析失敗: {e}")))?;
+    let selected = sorane_github::select_copilot_model(&models, preferred_model, prefer_fast)
+        .ok_or_else(|| (m_status, "利用可能なチャットモデルがありません".to_string()))?;
+    Ok(selected.id.clone())
+}
+
+#[cfg(not(target_family = "wasm"))]
 fn resolve_copilot_session(
     github_token: &str,
     preferred_model: Option<&str>,
@@ -637,38 +708,46 @@ fn resolve_copilot_session(
     ];
     let (status, body) = curl_get_json(sorane_github::GITHUB_COPILOT_TOKEN_URL, &token_headers)?;
     if status == 401 {
-        return Err("GitHub の認証トークンが期限切れです。再ログインしてください。".into());
+        return Err("GitHub の認証トークンが期限切れです。再ログインするか PAT を更新してください。".into());
     }
     if status == 403 || status == 404 {
-        return Err(explain_ai_error("copilot_unavailable"));
+        let ex_msg = extract_json_error_message(&body);
+        // Direct Bearer fallback
+        match fetch_copilot_models_with_token(
+            sorane_github::GITHUB_COPILOT_API_BASE_URL,
+            github_token,
+            preferred_model,
+            prefer_fast,
+        ) {
+            Ok(model_id) => {
+                return Ok((
+                    sorane_github::GITHUB_COPILOT_API_BASE_URL.to_string(),
+                    github_token.to_string(),
+                    model_id,
+                ));
+            }
+            Err((d_status, d_msg)) => {
+                let detail = format!(
+                    "token_exchange: HTTP {status} ({ex_msg}); direct: HTTP {d_status} ({d_msg})"
+                );
+                return Err(explain_ai_error(&format!("copilot_unavailable: {detail}")));
+            }
+        }
     }
     if status >= 400 {
-        return Err(format!("GitHub Copilot トークン取得に失敗しました (HTTP {status})。"));
+        let msg = extract_json_error_message(&body);
+        return Err(format!("GitHub Copilot トークン取得に失敗しました (HTTP {status}: {msg})。"));
     }
     let copilot = sorane_github::parse_copilot_token_response(&body)
         .map_err(|e| format!("GitHub Copilot トークン応答の解析に失敗しました: {e}"))?;
 
-    let models_url = format!("{}/models", copilot.api_base);
-    let model_headers = [
-        ("Authorization", format!("Bearer {}", copilot.token)),
-        ("Accept", "application/json".to_string()),
-        ("User-Agent", "soraneDocs-Desktop".to_string()),
-        ("Editor-Version", sorane_github::COPILOT_EDITOR_VERSION.to_string()),
-        ("Editor-Plugin-Version", sorane_github::COPILOT_EDITOR_PLUGIN_VERSION.to_string()),
-        ("Copilot-Integration-Id", sorane_github::COPILOT_INTEGRATION_ID.to_string()),
-    ];
-    let (m_status, m_body) = curl_get_json(&models_url, &model_headers)?;
-    if m_status == 401 {
-        return Err("GitHub Copilot の認証に失敗しました。再ログインしてください。".into());
+    match fetch_copilot_models_with_token(&copilot.api_base, &copilot.token, preferred_model, prefer_fast) {
+        Ok(model_id) => Ok((copilot.api_base, copilot.token, model_id)),
+        Err((401, _)) => Err("GitHub Copilot の認証に失敗しました。再ログインしてください。".into()),
+        Err((m_status, m_msg)) => Err(explain_ai_error(&format!(
+            "copilot_unavailable: models: HTTP {m_status} ({m_msg})"
+        ))),
     }
-    if m_status >= 400 {
-        return Err(format!("GitHub Copilot モデル一覧の取得に失敗しました (HTTP {m_status})。"));
-    }
-    let models = sorane_github::parse_copilot_models_response(&m_body)
-        .map_err(|e| format!("GitHub Copilot モデル一覧の解析に失敗しました: {e}"))?;
-    let selected = sorane_github::select_copilot_model(&models, preferred_model, prefer_fast)
-        .ok_or_else(|| explain_ai_error("copilot_unavailable"))?;
-    Ok((copilot.api_base, copilot.token, selected.id.clone()))
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -1532,10 +1611,32 @@ pub fn cached_browser_catalog(provider: BrowserProvider) -> Option<BrowserCatalo
     })
 }
 
-/// Turn a Worker or direct-API error code into a sentence for the Assistant pane or inline completion bar.
-pub fn explain_ai_error(code: &str) -> String {
-    match code {
-        "login_required" => "ログインが必要です。スタート画面の「GitHub でログイン」からログインしてください。".to_string(),
+/// Turn a Worker or direct-API error code (optionally `"code: detail"`) into a sentence for the Assistant pane or inline completion bar.
+pub fn explain_ai_error(raw: &str) -> String {
+    let (code, detail) = match raw.split_once(": ") {
+        Some((c, d)) if matches!(
+            c,
+            "login_required"
+                | "invalid_csrf"
+                | "invalid_origin"
+                | "invalid_model"
+                | "invalid_message"
+                | "too_long"
+                | "rate_limited"
+                | "quota_exceeded"
+                | "copilot_unavailable"
+                | "ai_not_configured"
+                | "invalid_api_key"
+                | "network_error"
+                | "ai_failed"
+        ) =>
+        {
+            (c, Some(d.trim()))
+        }
+        _ => (raw, None),
+    };
+    let base = match code {
+        "login_required" => "ログインが必要です。スタート画面の「GitHub でログイン」からログインするか、設定で Copilot PAT (github_pat_...) を入力してください。".to_string(),
         "invalid_csrf" => "ログイン情報を確認できませんでした。アシスタントを開き直してください。".to_string(),
         "invalid_origin" => "このページからはアシスタントを使えません。docs.sorane.dev で開いてください。".to_string(),
         "invalid_model" => "選んだモデルは使えません。モデル一覧を再取得して選択し直してください。".to_string(),
@@ -1543,12 +1644,16 @@ pub fn explain_ai_error(code: &str) -> String {
         "too_long" => "文書が選んだモデルの上限を超えています。".to_string(),
         "rate_limited" => "短時間に送りすぎました。少し待ってからもう一度試してください。".to_string(),
         "quota_exceeded" => "今日の利用回数の上限に達しました。".to_string(),
-        "copilot_unavailable" | "ai_not_configured" => "GitHub Copilot API を利用できません（有効な Copilot サブスクリプション／トークン権限が必要です）。アシスタントの「設定」から OpenAI・Gemini・Claude などの別 API に切り替えることもできます。".to_string(),
+        "copilot_unavailable" | "ai_not_configured" => "GitHub Copilot API にアクセスできません。GitHub App トークンが拒否された場合は、アシスタントの「設定」で Copilot Requests (Read-only) 権限付きの Fine-grained PAT (github_pat_...) を設定するか、別 API（OpenAI・Gemini・Claude 等）に切り替えてください。".to_string(),
         "invalid_api_key" => "API キーが無効です。アシスタントの「設定」で API キーを確認してください。".to_string(),
         "network_error" | "Failed to fetch" => "API サーバーに接続できませんでした（ネットワーク・CORS・エンドポイント設定を確認してください）。".to_string(),
         "ai_failed" => "応答を受け取れませんでした。".to_string(),
         "aborted" => String::new(),
         other => other.to_string(),
+    };
+    match detail.filter(|d| !d.is_empty()) {
+        Some(d) if !base.is_empty() => format!("{base} [詳細: {d}]"),
+        _ => base,
     }
 }
 
@@ -1599,7 +1704,7 @@ pub async fn load_browser_catalog_for(
     #[wasm_bindgen]
     extern "C" {
         #[wasm_bindgen(catch, js_name = ibisOfficeAiModels)]
-        fn ai_models_js() -> Result<js_sys::Promise, JsValue>;
+        fn ai_models_js(copilot_token: &str) -> Result<js_sys::Promise, JsValue>;
         #[wasm_bindgen(catch, js_name = ibisOfficeAiDirectModels)]
         fn ai_direct_models_js(
             provider: &str,
@@ -1608,7 +1713,10 @@ pub async fn load_browser_catalog_for(
         ) -> Result<js_sys::Promise, JsValue>;
     }
     let promise = match provider {
-        BrowserProvider::GitHubCopilot => ai_models_js().map_err(js_error)?,
+        BrowserProvider::GitHubCopilot => {
+            let copilot_token = load_saved_copilot_token();
+            ai_models_js(&copilot_token).map_err(js_error)?
+        }
         BrowserProvider::OpenAi | BrowserProvider::Gemini | BrowserProvider::Anthropic => {
             let base = if config.base_url.trim().is_empty() {
                 provider.default_base_url()
@@ -1691,6 +1799,7 @@ async fn stream_browser_chat_completion(
             body: &str,
             csrf: &str,
             on_line: &js_sys::Function,
+            copilot_token: &str,
         ) -> Result<js_sys::Promise, JsValue>;
         #[wasm_bindgen(catch, js_name = ibisOfficeAiDirectStream)]
         fn ai_direct_stream_js(
@@ -1728,10 +1837,11 @@ async fn stream_browser_chat_completion(
     let promise = match provider {
         BrowserProvider::GitHubCopilot => {
             let csrf = browser_csrf();
-            if csrf.is_empty() {
+            let copilot_token = load_saved_copilot_token();
+            if csrf.is_empty() && copilot_token.is_empty() {
                 return Err("login_required".to_string());
             }
-            ai_stream_js(&body, &csrf, on_line_fn).map_err(js_error)?
+            ai_stream_js(&body, &csrf, on_line_fn, &copilot_token).map_err(js_error)?
         }
         BrowserProvider::OpenAi | BrowserProvider::Gemini | BrowserProvider::Anthropic => {
             let base = if config.base_url.trim().is_empty() {
@@ -1871,10 +1981,13 @@ pub(crate) fn clean_inline_suggestion(raw: &str) -> String {
 pub(crate) async fn complete_inline_suggestion(prefix: &str, suffix: &str) -> Result<String, String> {
     let provider = BrowserProvider::load();
     let saved = AiConfig::load_saved();
+    let copilot_token = load_saved_copilot_token();
     let catalog = match cached_browser_catalog(provider) {
         Some(c)
             if !c.models.is_empty()
-                && (provider != BrowserProvider::GitHubCopilot || !browser_csrf().is_empty()) =>
+                && (provider != BrowserProvider::GitHubCopilot
+                    || !browser_csrf().is_empty()
+                    || !copilot_token.is_empty()) =>
         {
             Some(c)
         }
@@ -1893,7 +2006,10 @@ pub(crate) async fn complete_inline_suggestion(prefix: &str, suffix: &str) -> Re
         && c.models.is_empty()
         && let Some(err) = &c.error
     {
-        return Err(err.clone());
+        return Err(match c.detail.as_deref().filter(|d| !d.is_empty()) {
+            Some(d) => format!("{err}: {d}"),
+            None => err.clone(),
+        });
     }
 
     let model = if let Some(c) = &catalog {

@@ -187,6 +187,7 @@ pub struct AiAssistantState {
     pub base_url_input: Entity<InputState>,
     pub model_input: Entity<InputState>,
     pub api_key_input: Entity<InputState>,
+    pub copilot_token_input: Entity<InputState>,
     pub show_settings: bool,
     #[cfg(not(target_family = "wasm"))]
     connection_choice: ConnectionChoice,
@@ -1220,6 +1221,12 @@ impl SlideEditor {
                     .placeholder("sk-... (ローカルLLMなら空でも可)")
                     .masked(true)
             });
+            let copilot_token_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(crate::ai_client::load_saved_copilot_token())
+                    .placeholder("github_pat_... (Copilot Requests: Read-only)")
+                    .masked(true)
+            });
             self.ai_assistant = Some(AiAssistantState {
                 prompt_input: prompt_input.clone(),
                 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -1227,6 +1234,7 @@ impl SlideEditor {
                 base_url_input,
                 model_input,
                 api_key_input,
+                copilot_token_input,
                 show_settings: false,
                 #[cfg(not(target_family = "wasm"))]
                 connection_choice: ConnectionChoice::Auto,
@@ -1960,6 +1968,7 @@ impl SlideEditor {
             api_key: p.api_key_input.read(cx).value().trim().to_string(),
         };
         cfg.save();
+        crate::ai_client::save_copilot_token(&p.copilot_token_input.read(cx).value());
         self.connect_ai_assistant(cx);
     }
 
@@ -3234,12 +3243,12 @@ impl SlideEditor {
                     set_browser_csrf(&catalog.csrf);
                 }
                 if let Some(err_code) = catalog.error.as_deref().filter(|s| !s.is_empty()) {
-                    let msg = explain_ai_error(err_code);
-                    panel.browser_status = if msg.is_empty() {
-                        err_code.to_string()
-                    } else {
-                        msg
+                    let combined = match catalog.detail.as_deref().filter(|d| !d.is_empty()) {
+                        Some(d) => format!("{err_code}: {d}"),
+                        None => err_code.to_string(),
                     };
+                    let msg = explain_ai_error(&combined);
+                    panel.browser_status = if msg.is_empty() { combined } else { msg };
                 } else {
                     panel.browser_status.clear();
                 }
@@ -3303,6 +3312,7 @@ impl SlideEditor {
             api_key: p.api_key_input.read(cx).value().trim().to_string(),
         };
         cfg.save();
+        crate::ai_client::save_copilot_token(&p.copilot_token_input.read(cx).value());
         self.load_ai_browser_catalog(cx);
     }
 
@@ -3352,7 +3362,8 @@ impl SlideEditor {
             return;
         }
         let provider = BrowserProvider::load();
-        if provider == BrowserProvider::GitHubCopilot && browser_csrf().is_empty() {
+        let has_copilot_pat = !crate::ai_client::load_saved_copilot_token().is_empty();
+        if provider == BrowserProvider::GitHubCopilot && browser_csrf().is_empty() && !has_copilot_pat {
             let message = if panel.browser_status.is_empty() {
                 "ログイン状態を確認しています。少し待ってからもう一度試してください。".to_string()
             } else {
@@ -5350,6 +5361,7 @@ impl SlideEditor {
         let base_url_input = panel.base_url_input.clone();
         let model_input = panel.model_input.clone();
         let api_key_input = panel.api_key_input.clone();
+        let copilot_token_input = panel.copilot_token_input.clone();
         #[cfg(target_family = "wasm")]
         let browser_models = panel.browser_models.clone();
         #[cfg(target_family = "wasm")]
@@ -5566,6 +5578,32 @@ impl SlideEditor {
                         .as_ref()
                         .map(|error| div().text_xs().child(error.clone())),
                 )
+                .when(choice == ConnectionChoice::GitHubCopilot, |settings| {
+                    settings
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("GitHub Copilot トークン（任意 / Fine-grained PAT）"),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("GitHub App トークンが拒否される場合は、Account permissions で Copilot Requests (Read-only) を付与した github_pat_... を入力してください。"),
+                        )
+                        .child(Input::new(&copilot_token_input).small())
+                        .child(
+                            Button::new("ai-assistant-save-copilot-token")
+                                .outline()
+                                .small()
+                                .disabled(disabled)
+                                .label("保存して接続")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.save_ai_assistant_settings(cx);
+                                })),
+                        )
+                })
                 .when(
                     matches!(choice, ConnectionChoice::Auto | ConnectionChoice::OpenAi),
                     |settings| {
@@ -5636,16 +5674,17 @@ impl SlideEditor {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("ログイン中の GitHub アカウントで GitHub Copilot API の利用可能モデルを取得します。"),
+                            .child("GitHub App ログインで拒否される場合は、Account permissions で Copilot Requests (Read-only) を付与した Fine-grained PAT (github_pat_...) を入力してください。"),
                     )
+                    .child(Input::new(&copilot_token_input).small())
                     .child(
-                        Button::new("ai-browser-refresh-models")
-                            .outline()
+                        Button::new("ai-browser-save-copilot")
+                            .primary()
                             .small()
                             .disabled(streaming)
-                            .label("モデル一覧を再取得")
+                            .label("保存してモデル一覧を取得")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.load_ai_browser_catalog(cx);
+                                this.save_browser_ai_settings(cx);
                             })),
                     );
             } else {

@@ -649,6 +649,72 @@ test('GET /api/ai/models and POST /api/ai/chat dynamically discover and proxy Gi
   }
 });
 
+test('GET /api/ai/models supports X-Sorane-Copilot-Token PAT, direct Bearer fallback, and rich diagnostics', async () => {
+  const origFetch = globalThis.fetch;
+  let directMode = true;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url === 'https://api.github.com/copilot_internal/v2/token') {
+      assert.equal(init.headers.Authorization, 'Bearer github_pat_copilot_test');
+      return new Response(JSON.stringify({ message: 'Resource not accessible by integration' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url === 'https://api.githubcopilot.com/models') {
+      assert.equal(init.headers.Authorization, 'Bearer github_pat_copilot_test');
+      if (directMode) {
+        return new Response(
+          JSON.stringify({
+            object: 'list',
+            data: [{ id: 'gpt-4.1-mini', name: 'GPT-4.1 mini', model_picker_enabled: true, capabilities: { type: 'chat' } }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ message: 'unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  try {
+    const okRes = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/ai/models', {
+        headers: {
+          Origin: 'https://docs.sorane.dev',
+          'X-Sorane-Copilot-Token': 'github_pat_copilot_test',
+        },
+      }),
+      TEST_ENV,
+    );
+    assert.equal(okRes.status, 200);
+    const okBody = await okRes.json();
+    assert.equal(okBody.models.length, 1);
+    assert.equal(okBody.models[0].key, 'gpt-4.1-mini');
+
+    directMode = false;
+    const failRes = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/ai/models', {
+        headers: {
+          Origin: 'https://docs.sorane.dev',
+          'X-Sorane-Copilot-Token': 'github_pat_copilot_test',
+        },
+      }),
+      TEST_ENV,
+    );
+    assert.equal(failRes.status, 200);
+    const failBody = await failRes.json();
+    assert.equal(failBody.error, 'copilot_unavailable');
+    assert.match(failBody.detail, /token_exchange: HTTP 403/);
+    assert.match(failBody.detail, /direct: HTTP 401/);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
 test('detectSoraneContentDir extracts build.content_dir from sorane.yaml', () => {
   assert.equal(
     detectSoraneContentDir('site:\n  title: Demo\nbuild:\n  content_dir: "docs/content"\n'),

@@ -419,6 +419,65 @@ async function fetchCopilotModelCatalog(
   return { ok: true, ...catalog };
 }
 
+async function resolveCopilotAccess(
+  rawToken: string,
+): Promise<
+  | {
+      ok: true;
+      copilot: CopilotTokenResult;
+      models: AiModelEntry[];
+      defaultModel: string | null;
+      completionModel: string | null;
+    }
+  | { ok: false; status: number; code: string; detail?: string }
+> {
+  const exchanged = await exchangeCopilotToken(rawToken);
+  if (exchanged.ok) {
+    const catalog = await fetchCopilotModelCatalog(exchanged.data);
+    if (catalog.ok) {
+      return {
+        ok: true,
+        copilot: exchanged.data,
+        models: catalog.models,
+        defaultModel: catalog.defaultModel,
+        completionModel: catalog.completionModel,
+      };
+    }
+    const detail = `models: HTTP ${catalog.status}${catalog.detail ? ` (${catalog.detail})` : ''}`;
+    return { ok: false, status: catalog.status, code: catalog.code, detail };
+  }
+
+  // Fallback: some Copilot tokens (e.g. direct PATs or enterprise tenants) may authenticate directly.
+  if (exchanged.status === 403 || exchanged.status === 404) {
+    const directCopilot: CopilotTokenResult = {
+      token: rawToken,
+      apiBase: GITHUB_COPILOT_API_BASE,
+      expiresAt: 0,
+    };
+    const directCatalog = await fetchCopilotModelCatalog(directCopilot);
+    if (directCatalog.ok) {
+      return {
+        ok: true,
+        copilot: directCopilot,
+        models: directCatalog.models,
+        defaultModel: directCatalog.defaultModel,
+        completionModel: directCatalog.completionModel,
+      };
+    }
+    const exDetail = `token_exchange: HTTP ${exchanged.status}${exchanged.detail ? ` (${exchanged.detail})` : ''}`;
+    const dirDetail = `direct: HTTP ${directCatalog.status}${directCatalog.detail ? ` (${directCatalog.detail})` : ''}`;
+    return {
+      ok: false,
+      status: exchanged.status,
+      code: 'copilot_unavailable',
+      detail: `${exDetail}; ${dirDetail}`,
+    };
+  }
+
+  const detail = `token_exchange: HTTP ${exchanged.status}${exchanged.detail ? ` (${exchanged.detail})` : ''}`;
+  return { ok: false, status: exchanged.status, code: exchanged.code, detail };
+}
+
 async function deriveCsrfToken(session: GitHubSessionPayload, secret: string): Promise<string> {
   const data = new TextEncoder().encode(`sorane-ai-csrf:${secret}:${session.login}:${session.iat}`);
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
@@ -562,11 +621,150 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     return new Response(null, { status: 302, headers });
   }
 
-  // All remaining /api/github/* endpoints require a valid session cookie.
+  // Parse session cookie if present. /api/ai/* may also authenticate with an explicit
+  // Copilot PAT (X-Sorane-Copilot-Token) from the same origin without requiring a GitHub App login.
   const cookies = parseCookies(request.headers.get('Cookie'));
   const session = cookies[SESSION_COOKIE]
     ? await unsealSession(cookies[SESSION_COOKIE], env.GITHUB_SESSION_SECRET!)
     : null;
+  const suppliedCopilotToken = request.headers.get('X-Sorane-Copilot-Token')?.trim() || '';
+
+  if (pathname === '/api/ai/models' && request.method === 'GET') {
+    const origin = request.headers.get('Origin');
+    if (origin && origin !== url.origin) {
+      return json({ error: 'invalid_origin' }, 403);
+    }
+    if (!session && !suppliedCopilotToken) {
+      return json({ error: 'Authentication required.' }, 401);
+    }
+    const csrf = session ? await deriveCsrfToken(session, env.GITHUB_SESSION_SECRET!) : '';
+    const token = suppliedCopilotToken || session!.accessToken;
+    const resolved = await resolveCopilotAccess(token);
+    if (!resolved.ok) {
+      return json({
+        csrf,
+        provider: 'github-copilot',
+        models: [],
+        defaultModel: null,
+        completionModel: null,
+        error: resolved.code,
+        ...(resolved.detail ? { detail: resolved.detail } : {}),
+      });
+    }
+    return json({
+      csrf,
+      provider: 'github-copilot',
+      models: resolved.models,
+      defaultModel: resolved.defaultModel,
+      completionModel: resolved.completionModel,
+    });
+  }
+
+  if (pathname === '/api/ai/chat' && request.method === 'POST') {
+    const origin = request.headers.get('Origin');
+    if (origin && origin !== url.origin) {
+      return json({ error: 'invalid_origin' }, 403);
+    }
+    if (!session && !suppliedCopilotToken) {
+      return json({ error: 'Authentication required.' }, 401);
+    }
+    if (session) {
+      const expectedCsrf = await deriveCsrfToken(session, env.GITHUB_SESSION_SECRET!);
+      const suppliedCsrf = request.headers.get('X-Sorane-CSRF')?.trim() || '';
+      if (!suppliedCsrf || suppliedCsrf !== expectedCsrf) {
+        return json({ error: 'invalid_csrf' }, 403);
+      }
+    }
+
+    const body = (await request.json().catch(() => null)) as {
+      model?: unknown;
+      messages?: unknown;
+      purpose?: unknown;
+    } | null;
+    if (!body || !Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > 24) {
+      return json({ error: 'invalid_message' }, 400);
+    }
+
+    const token = suppliedCopilotToken || session!.accessToken;
+    const resolved = await resolveCopilotAccess(token);
+    if (!resolved.ok) {
+      return json(
+        { error: resolved.code, ...(resolved.detail ? { detail: resolved.detail } : {}) },
+        resolved.status === 401 ? 401 : 502,
+      );
+    }
+
+    const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
+    const preferFast = body.purpose === 'completion';
+    const fallbackKey = preferFast
+      ? (resolved.completionModel || resolved.defaultModel)
+      : (resolved.defaultModel || resolved.completionModel);
+    const allowedModel =
+      (requestedModel ? resolved.models.find(m => m.key === requestedModel) : undefined) ??
+      (fallbackKey ? resolved.models.find(m => m.key === fallbackKey) : undefined) ??
+      resolved.models[0];
+    if (!allowedModel) {
+      return json({ error: 'copilot_unavailable' }, 502);
+    }
+
+    const totalChars = body.messages.reduce<number>((sum, item) => {
+      if (item && typeof item === 'object' && 'content' in item && typeof item.content === 'string') {
+        return sum + item.content.length;
+      }
+      return sum;
+    }, 0);
+    if (totalChars > allowedModel.maxInputChars) {
+      return json({ error: 'too_long' }, 413);
+    }
+
+    let upstream: Response;
+    try {
+      upstream = await fetch(`${resolved.copilot.apiBase}/chat/completions`, {
+        method: 'POST',
+        headers: copilotHeaders(resolved.copilot.token, {
+          Accept: 'text/event-stream',
+          'Content-Type': 'application/json',
+          'Openai-Intent': 'conversation-panel',
+        }),
+        body: JSON.stringify({
+          model: allowedModel.key,
+          messages: body.messages,
+          stream: true,
+        }),
+      });
+    } catch (err) {
+      return json(
+        { error: 'ai_failed', detail: err instanceof Error ? err.message : 'copilot_chat_fetch_failed' },
+        502,
+      );
+    }
+
+    if (!upstream.ok) {
+      const errBody = (await upstream.json().catch(() => ({}))) as { error?: { message?: string }; message?: string };
+      const detail = `chat: HTTP ${upstream.status}${errBody.error?.message || errBody.message ? ` (${errBody.error?.message || errBody.message})` : ''}`;
+      const code = upstream.status === 401
+        ? 'login_required'
+        : upstream.status === 403 || upstream.status === 404
+          ? 'copilot_unavailable'
+          : upstream.status === 429
+            ? 'rate_limited'
+            : upstream.status === 413
+              ? 'too_long'
+              : 'ai_failed';
+      return json({ error: code, detail }, upstream.status === 401 ? 401 : 502);
+    }
+
+    return new Response(upstream.body, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Sorane-Model': allowedModel.key,
+      },
+    });
+  }
+
+  // All remaining /api/github/* endpoints require a valid session cookie.
   if (!session) {
     return json({ error: 'Authentication required.' }, 401);
   }
@@ -1326,141 +1524,6 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
       sha: putData.content?.sha ?? null,
       commitSha: putData.commit?.sha ?? null,
       commitUrl: putData.commit?.html_url ?? null,
-    });
-  }
-
-  if (pathname === '/api/ai/models' && request.method === 'GET') {
-    const csrf = await deriveCsrfToken(session, env.GITHUB_SESSION_SECRET!);
-    const exchanged = await exchangeCopilotToken(session.accessToken);
-    if (!exchanged.ok) {
-      return json({
-        csrf,
-        provider: 'github-copilot',
-        models: [],
-        defaultModel: null,
-        completionModel: null,
-        error: exchanged.code,
-        ...(exchanged.detail ? { detail: exchanged.detail } : {}),
-      });
-    }
-    const catalog = await fetchCopilotModelCatalog(exchanged.data);
-    if (!catalog.ok) {
-      return json({
-        csrf,
-        provider: 'github-copilot',
-        models: [],
-        defaultModel: null,
-        completionModel: null,
-        error: catalog.code,
-        ...(catalog.detail ? { detail: catalog.detail } : {}),
-      });
-    }
-    return json({
-      csrf,
-      provider: 'github-copilot',
-      models: catalog.models,
-      defaultModel: catalog.defaultModel,
-      completionModel: catalog.completionModel,
-    });
-  }
-
-  if (pathname === '/api/ai/chat' && request.method === 'POST') {
-    const expectedCsrf = await deriveCsrfToken(session, env.GITHUB_SESSION_SECRET!);
-    const suppliedCsrf = request.headers.get('X-Sorane-CSRF')?.trim() || '';
-    if (!suppliedCsrf || suppliedCsrf !== expectedCsrf) {
-      return json({ error: 'invalid_csrf' }, 403);
-    }
-
-    const body = (await request.json().catch(() => null)) as {
-      model?: unknown;
-      messages?: unknown;
-      purpose?: unknown;
-    } | null;
-    if (!body || !Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > 24) {
-      return json({ error: 'invalid_message' }, 400);
-    }
-
-    const exchanged = await exchangeCopilotToken(session.accessToken);
-    if (!exchanged.ok) {
-      return json(
-        { error: exchanged.code, ...(exchanged.detail ? { detail: exchanged.detail } : {}) },
-        exchanged.status === 401 ? 401 : 502,
-      );
-    }
-
-    const catalog = await fetchCopilotModelCatalog(exchanged.data);
-    if (!catalog.ok) {
-      return json(
-        { error: catalog.code, ...(catalog.detail ? { detail: catalog.detail } : {}) },
-        catalog.status === 401 ? 401 : 502,
-      );
-    }
-
-    const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
-    const preferFast = body.purpose === 'completion';
-    const fallbackKey = preferFast
-      ? (catalog.completionModel || catalog.defaultModel)
-      : (catalog.defaultModel || catalog.completionModel);
-    const allowedModel =
-      (requestedModel ? catalog.models.find(m => m.key === requestedModel) : undefined) ??
-      (fallbackKey ? catalog.models.find(m => m.key === fallbackKey) : undefined) ??
-      catalog.models[0];
-    if (!allowedModel) {
-      return json({ error: 'copilot_unavailable' }, 502);
-    }
-
-    const totalChars = body.messages.reduce<number>((sum, item) => {
-      if (item && typeof item === 'object' && 'content' in item && typeof item.content === 'string') {
-        return sum + item.content.length;
-      }
-      return sum;
-    }, 0);
-    if (totalChars > allowedModel.maxInputChars) {
-      return json({ error: 'too_long' }, 413);
-    }
-
-    let upstream: Response;
-    try {
-      upstream = await fetch(`${exchanged.data.apiBase}/chat/completions`, {
-        method: 'POST',
-        headers: copilotHeaders(exchanged.data.token, {
-          Accept: 'text/event-stream',
-          'Content-Type': 'application/json',
-          'Openai-Intent': 'conversation-panel',
-        }),
-        body: JSON.stringify({
-          model: allowedModel.key,
-          messages: body.messages,
-          stream: true,
-        }),
-      });
-    } catch (err) {
-      return json(
-        { error: 'ai_failed', detail: err instanceof Error ? err.message : 'copilot_chat_fetch_failed' },
-        502,
-      );
-    }
-
-    if (!upstream.ok) {
-      const code = upstream.status === 401
-        ? 'login_required'
-        : upstream.status === 403 || upstream.status === 404
-          ? 'copilot_unavailable'
-          : upstream.status === 429
-            ? 'rate_limited'
-            : upstream.status === 413
-              ? 'too_long'
-              : 'ai_failed';
-      return json({ error: code }, upstream.status === 401 ? 401 : 502);
-    }
-
-    return new Response(upstream.body, {
-      status: 200,
-      headers: {
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-store',
-        'X-Sorane-Model': allowedModel.key,
-      },
     });
   }
 
