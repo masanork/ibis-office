@@ -87,6 +87,10 @@ mod web_platform {
         outgoing_by_file: std::collections::BTreeMap<String, Vec<String>>,
         backlinks_by_file: std::collections::BTreeMap<String, Vec<BacklinkHit>>,
         all_tags_cache: Vec<(String, usize)>,
+        profiles: Vec<ibis_formats::form_assist::VaultProfile>,
+        credentials: Vec<ibis_formats::form_assist::VaultCredentialSummary>,
+        form_mappings: Vec<ibis_formats::form_assist::FormMapping>,
+        presentation_requests: Vec<ibis_formats::form_assist::PresentationRequestNote>,
     }
 
     fn extract_tags(content: &str) -> Vec<String> {
@@ -215,6 +219,10 @@ mod web_platform {
                 outgoing_by_file: std::collections::BTreeMap::new(),
                 backlinks_by_file: std::collections::BTreeMap::new(),
                 all_tags_cache: Vec::new(),
+                profiles: Vec::new(),
+                credentials: Vec::new(),
+                form_mappings: Vec::new(),
+                presentation_requests: Vec::new(),
             })
         }
 
@@ -235,6 +243,10 @@ mod web_platform {
                 outgoing_by_file: std::collections::BTreeMap::new(),
                 backlinks_by_file: std::collections::BTreeMap::new(),
                 all_tags_cache: Vec::new(),
+                profiles: Vec::new(),
+                credentials: Vec::new(),
+                form_mappings: Vec::new(),
+                presentation_requests: Vec::new(),
             };
             folder.rebuild_index();
             folder
@@ -268,8 +280,47 @@ mod web_platform {
             self.tags_by_file.clear();
             self.outgoing_by_file.clear();
             self.backlinks_by_file.clear();
+            self.profiles.clear();
+            self.credentials.clear();
+            self.form_mappings.clear();
+            self.presentation_requests.clear();
 
             for (rel, content) in &self.contents {
+                let ext = Path::new(rel)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .unwrap_or_default();
+
+                if matches!(ext.as_str(), "sd-jwt" | "mdoc") {
+                    if let Some(summary) = ibis_formats::form_assist::parse_credential_bytes(
+                        rel,
+                        &ext,
+                        content.as_bytes(),
+                    ) {
+                        self.credentials.push(summary);
+                    }
+                    continue;
+                }
+
+                if matches!(ext.as_str(), "md" | "markdown") {
+                    if let Some(profile) =
+                        ibis_formats::form_assist::parse_profile_markdown(rel, content)
+                    {
+                        self.profiles.push(profile);
+                    }
+                    if let Some(mapping) =
+                        ibis_formats::form_assist::parse_form_mapping_markdown(rel, content)
+                    {
+                        self.form_mappings.push(mapping);
+                    }
+                    if let Some(req) =
+                        ibis_formats::form_assist::parse_presentation_request_markdown(rel, content)
+                    {
+                        self.presentation_requests.push(req);
+                    }
+                }
+
                 let tags = extract_tags(content);
                 for t in &tags {
                     *tag_counts.entry(t.clone()).or_default() += 1;
@@ -378,30 +429,44 @@ mod web_platform {
         }
 
         pub fn vault_profiles(&self) -> &[ibis_formats::form_assist::VaultProfile] {
-            &[]
+            &self.profiles
         }
 
         pub fn vault_credentials(&self) -> &[ibis_formats::form_assist::VaultCredentialSummary] {
-            &[]
+            &self.credentials
         }
 
         pub fn vault_form_mappings(&self) -> &[ibis_formats::form_assist::FormMapping] {
-            &[]
+            &self.form_mappings
         }
 
         pub fn vault_presentation_requests(
             &self,
         ) -> &[ibis_formats::form_assist::PresentationRequestNote] {
-            &[]
+            &self.presentation_requests
         }
 
         pub fn matching_form_mappings_for_sheet(
             &self,
-            _presentation: &ibis_doc_model::Presentation,
-            _slide: ibis_doc_model::SlideId,
-            _file_sha256: Option<&str>,
+            presentation: &ibis_doc_model::Presentation,
+            slide: ibis_doc_model::SlideId,
+            file_sha256: Option<&str>,
         ) -> Vec<ibis_formats::form_assist::FormMapping> {
-            Vec::new()
+            let mut scored: Vec<(u32, ibis_formats::form_assist::FormMapping)> = self
+                .form_mappings
+                .iter()
+                .filter_map(|m| {
+                    ibis_formats::form_assist::score_form_mapping_match(
+                        m,
+                        presentation,
+                        slide,
+                        file_sha256,
+                    )
+                    .map(|score| (score, m.clone()))
+                })
+                .collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.path.cmp(&b.1.path)));
+            scored.into_iter().map(|(_, m)| m).collect()
         }
     }
 

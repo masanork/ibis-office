@@ -73,9 +73,11 @@ if (!params.has('host')) {
       const label = `${session.vault.owner}/${session.vault.repo}`;
       const relPaths = repoItems.map((f) => f.subtitle);
       window.ibisOfficeSetWebVaultTree?.(label, relPaths);
+      const isFormAssistDir = (p) => /^(profiles|forms|requests|credentials)\//i.test(p);
       const textItems = repoItems
-        .filter((f) => /\.(md|markdown|lawtext|txt)$/i.test(f.name))
-        .slice(0, 30);
+        .filter((f) => /\.(md|markdown|lawtext|txt|sd-jwt|mdoc)$/i.test(f.name))
+        .sort((a, b) => Number(isFormAssistDir(b.subtitle)) - Number(isFormAssistDir(a.subtitle)))
+        .slice(0, 60);
       void (async () => {
         for (const item of textItems) {
           try {
