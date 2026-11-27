@@ -581,6 +581,13 @@ mod wasm {
 
         #[wasm_bindgen(catch, js_name = ibisOfficeWebCryptoSignHolder)]
         fn webcrypto_sign_holder_js(signing_input: &str) -> Result<js_sys::Promise, JsValue>;
+
+        #[wasm_bindgen(catch, js_name = ibisOfficeOid4vpDirectPost)]
+        fn oid4vp_direct_post_js(
+            response_uri: &str,
+            form_body: &str,
+            allow_relay: bool,
+        ) -> Result<js_sys::Promise, JsValue>;
     }
 
     fn js_error(err: JsValue) -> String {
@@ -706,11 +713,46 @@ mod wasm {
         Ok(())
     }
 
+    #[derive(serde::Deserialize)]
+    struct WasmDirectPostOutcome {
+        status: u16,
+        response_uri: String,
+        body: String,
+        redirect_uri: Option<String>,
+    }
+
+    /// Submits an OID4VP `direct_post` body from WASM, falling back to `/api/vc/direct-post`
+    /// when `allow_relay` is true and direct `fetch` is blocked by CORS.
+    #[allow(dead_code)]
+    pub async fn send_oid4vp_direct_post_async(
+        response_uri: &str,
+        form_body: &str,
+        allow_relay: bool,
+    ) -> Result<DirectPostOutcome, String> {
+        let validated = super::validate_direct_post_uri(response_uri)?;
+        let promise = oid4vp_direct_post_js(&validated.uri, form_body, allow_relay).map_err(js_error)?;
+        let value = wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(js_error)?;
+        let text = value
+            .as_string()
+            .ok_or_else(|| "OID4VP direct_post bridge did not return JSON string".to_string())?;
+        let parsed: WasmDirectPostOutcome = serde_json::from_str(&text)
+            .map_err(|e| format!("Failed to parse OID4VP direct_post response: {e}"))?;
+        Ok(DirectPostOutcome {
+            status: parsed.status,
+            response_uri: parsed.response_uri,
+            is_loopback: validated.is_loopback,
+            body: parsed.body,
+            redirect_uri: parsed.redirect_uri,
+        })
+    }
+
     pub fn send_oid4vp_direct_post(
         _response_uri: &str,
         _form_body: &str,
     ) -> Result<DirectPostOutcome, String> {
-        Err("OID4VP direct_post 送信はデスクトップ版で利用できます。".to_string())
+        Err("同期 OID4VP direct_post 送信はデスクトップ版のみ対応です（Web 版は send_oid4vp_direct_post_async を使用）。".to_string())
     }
 }
 

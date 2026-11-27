@@ -1,6 +1,6 @@
 # Phase 4 設計書：Web 版（GitHub Vault）・モバイル連携・制度ユースケース展開
 
-> **ステータス**: 設計策定（2026-11-26・Phase 4A Web Vault MVP 着手）  
+> **ステータス**: Phase 4A / 4B / 4C 実装完了（2026-11-26）  
 > **親設計書**: [soraneDocs フォーム入力支援 × Obsidian 風 Vault × Verifiable Credentials 統合設計書](vault-form-vc-architecture.md)  
 > **関連ドキュメント**: [Spot 中継プロトコル](spot-relay-protocol.md) / [就労証明書の XLSX 受け渡しと項目対応](../employment-certificate-xlsx-ja.md)
 

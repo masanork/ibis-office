@@ -270,6 +270,207 @@ export function generateRandomNonceBase64Url(byteLength = 12) {
   return `n-${bytesToBase64Url(bytes)}`;
 }
 
+/**
+ * Phase 4C: Submits an OID4VP `response_mode=direct_post` form body.
+ * Tries direct browser `fetch(responseUri)` first; if blocked by CORS/network error
+ * and `allowRelay === true`, relays through `/api/vc/direct-post`.
+ */
+export async function submitOid4vpDirectPost(
+  responseUri,
+  formBody,
+  { allowRelay = false, relayEndpoint = "/api/vc/direct-post" } = {}
+) {
+  if (typeof globalThis.fetch !== "function") {
+    throw new Error("fetch is not available in this environment.");
+  }
+  try {
+    const directRes = await globalThis.fetch(responseUri, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: formBody,
+    });
+    const text = await directRes.text();
+    let redirectUri = null;
+    if (text.trim().startsWith("{")) {
+      try {
+        const parsed = JSON.parse(text);
+        if (typeof parsed.redirect_uri === "string") {
+          redirectUri = parsed.redirect_uri;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return {
+      status: directRes.status,
+      response_uri: responseUri,
+      body: text,
+      redirect_uri: redirectUri,
+      relayed: false,
+    };
+  } catch (directErr) {
+    if (!allowRelay) {
+      throw directErr;
+    }
+    const relayRes = await globalThis.fetch(relayEndpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        response_uri: responseUri,
+        form_body: formBody,
+      }),
+    });
+    const relayJson = await relayRes.json();
+    if (!relayRes.ok) {
+      throw new Error(relayJson?.error || `OID4VP relay failed (${relayRes.status})`);
+    }
+    return relayJson;
+  }
+}
+
+/**
+ * Phase 4C: W3C Digital Credentials API detection and request helper.
+ */
+export function isDigitalCredentialsSupported() {
+  return (
+    typeof globalThis.navigator !== "undefined" &&
+    Boolean(globalThis.navigator.credentials) &&
+    typeof globalThis.navigator.credentials.get === "function" &&
+    typeof globalThis.DigitalCredential !== "undefined"
+  );
+}
+
+export async function requestDigitalCredential(requestObj, protocol = "openid4vp") {
+  if (
+    typeof globalThis.navigator === "undefined" ||
+    !globalThis.navigator.credentials ||
+    typeof globalThis.navigator.credentials.get !== "function"
+  ) {
+    throw new Error("W3C Digital Credentials API is not supported in this browser.");
+  }
+  const cred = await globalThis.navigator.credentials.get({
+    digital: {
+      providers: [
+        {
+          protocol,
+          request: requestObj,
+        },
+      ],
+    },
+  });
+  if (!cred) {
+    throw new Error("DigitalCredential request returned null.");
+  }
+  return cred;
+}
+
+/**
+ * Phase 4C: Ephemeral ECDH P-256 + AES-256-GCM cross-device QR session helpers.
+ * Used when a PC/Web form displays a QR code for a smartphone Wallet/PWA to return
+ * an encrypted `.sd-jwt` or `.mdoc` payload over `spot-relay`.
+ */
+export async function createCrossDeviceVcSession() {
+  const cryptoObj = getCrypto();
+  const keyPair = await cryptoObj.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    ["deriveBits"]
+  );
+  const publicJwk = await cryptoObj.subtle.exportKey("jwk", keyPair.publicKey);
+  return {
+    sessionId: generateRandomNonceBase64Url(12),
+    nonce: generateRandomNonceBase64Url(16),
+    privateKey: keyPair.privateKey,
+    publicJwk: {
+      kty: "EC",
+      crv: "P-256",
+      x: publicJwk.x,
+      y: publicJwk.y,
+    },
+  };
+}
+
+export async function encryptCrossDevicePayload(recipientPublicJwk, plaintext) {
+  const cryptoObj = getCrypto();
+  const ephemeral = await cryptoObj.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    ["deriveBits"]
+  );
+  const epkJwk = await cryptoObj.subtle.exportKey("jwk", ephemeral.publicKey);
+  const recipientKey = await cryptoObj.subtle.importKey(
+    "jwk",
+    { kty: "EC", crv: "P-256", x: recipientPublicJwk.x, y: recipientPublicJwk.y },
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    []
+  );
+  const sharedBits = await cryptoObj.subtle.deriveBits(
+    { name: "ECDH", public: recipientKey },
+    ephemeral.privateKey,
+    256
+  );
+  const aesKey = await cryptoObj.subtle.importKey(
+    "raw",
+    sharedBits,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt"]
+  );
+  const iv = new Uint8Array(12);
+  cryptoObj.getRandomValues(iv);
+  const ptBytes =
+    typeof plaintext === "string" ? new TextEncoder().encode(plaintext) : plaintext;
+  const ctBuf = await cryptoObj.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    aesKey,
+    ptBytes
+  );
+  return {
+    v: 1,
+    alg: "ECDH-ES+A256GCM",
+    epk: { kty: "EC", crv: "P-256", x: epkJwk.x, y: epkJwk.y },
+    iv: bytesToBase64Url(iv),
+    ct: bytesToBase64Url(new Uint8Array(ctBuf)),
+  };
+}
+
+export async function decryptCrossDevicePayload(recipientPrivateKey, envelope) {
+  const cryptoObj = getCrypto();
+  if (!envelope || envelope.alg !== "ECDH-ES+A256GCM" || !envelope.epk) {
+    throw new Error("Unsupported cross-device VC envelope format.");
+  }
+  const senderKey = await cryptoObj.subtle.importKey(
+    "jwk",
+    { kty: "EC", crv: "P-256", x: envelope.epk.x, y: envelope.epk.y },
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    []
+  );
+  const sharedBits = await cryptoObj.subtle.deriveBits(
+    { name: "ECDH", public: senderKey },
+    recipientPrivateKey,
+    256
+  );
+  const aesKey = await cryptoObj.subtle.importKey(
+    "raw",
+    sharedBits,
+    { name: "AES-GCM" },
+    false,
+    ["decrypt"]
+  );
+  const ptBuf = await cryptoObj.subtle.decrypt(
+    { name: "AES-GCM", iv: base64UrlToBytes(envelope.iv) },
+    aesKey,
+    base64UrlToBytes(envelope.ct)
+  );
+  return new TextDecoder().decode(ptBuf);
+}
+
 // Install browser global bridges for WASM (`ibis-office-shell::vc_transport::wasm`).
 if (typeof window !== "undefined") {
   window.soraneVcKeystore = {
@@ -283,6 +484,12 @@ if (typeof window !== "undefined") {
     generateRandomNonceBase64Url,
     bytesToBase64Url,
     base64UrlToBytes,
+    submitOid4vpDirectPost,
+    isDigitalCredentialsSupported,
+    requestDigitalCredential,
+    createCrossDeviceVcSession,
+    encryptCrossDevicePayload,
+    decryptCrossDevicePayload,
   };
 
   window.ibisOfficeWebCryptoHolderInfo = async () => {
@@ -293,5 +500,16 @@ if (typeof window !== "undefined") {
   window.ibisOfficeWebCryptoSignHolder = async (signingInput) => {
     const sig = await signEs256("holder", signingInput);
     return bytesToBase64Url(sig);
+  };
+
+  window.ibisOfficeOid4vpDirectPost = async (responseUri, formBody, allowRelay = true) => {
+    const outcome = await submitOid4vpDirectPost(responseUri, formBody, { allowRelay });
+    return JSON.stringify(outcome);
+  };
+
+  window.ibisOfficeRequestDigitalCredential = async (requestJson, protocol = "openid4vp") => {
+    const parsed = typeof requestJson === "string" ? JSON.parse(requestJson) : requestJson;
+    const cred = await requestDigitalCredential(parsed, protocol);
+    return JSON.stringify({ protocol: cred.protocol || protocol, data: cred.data ?? cred });
   };
 }
