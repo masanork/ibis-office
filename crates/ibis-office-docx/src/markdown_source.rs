@@ -1166,6 +1166,7 @@ impl SlideEditor {
             || self.is_viewing_mode()
             || self.is_protection_read_only();
 
+        let weak_editor = cx.weak_entity();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language(dialect.language_id())
@@ -1176,6 +1177,7 @@ impl SlideEditor {
                 .default_value(initial.clone());
             state.set_highlighter_factory(multi_source_highlighter_factory(), cx);
             state.set_readonly(readonly, cx);
+            Self::attach_inline_completion_provider(&mut state, weak_editor);
             state
         });
 
@@ -1209,7 +1211,6 @@ impl SlideEditor {
                 if should_schedule {
                     this.schedule_source_to_visual_sync(cx);
                 }
-                this.schedule_inline_completion(ed.clone(), cx);
                 this.schedule_text_content_auto_switch(ed.clone(), window, cx);
                 cx.notify();
             }

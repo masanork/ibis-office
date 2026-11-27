@@ -2158,6 +2158,15 @@ pub(crate) fn slice_prefix_suffix(text: &str, cursor_line: usize, cursor_col: us
         }
     }
 
+    slice_prefix_suffix_by_offset(text, byte_offset)
+}
+
+pub(crate) fn slice_prefix_suffix_by_offset(text: &str, byte_offset: usize) -> (String, String) {
+    let mut byte_offset = byte_offset.min(text.len());
+    while byte_offset > 0 && !text.is_char_boundary(byte_offset) {
+        byte_offset -= 1;
+    }
+
     let before = &text[..byte_offset];
     let after = &text[byte_offset..];
     let prefix: String = before
@@ -2988,6 +2997,25 @@ mod tests {
         let (prefix, suffix) = slice_prefix_suffix(text, 1, 5);
         assert_eq!(prefix, "# 見出し\nこんにちは");
         assert_eq!(suffix, "世界\n次の行");
+    }
+
+    #[test]
+    fn slice_prefix_suffix_by_offset_clamps_and_aligns_utf8() {
+        let text = "# 見出し\nこんにちは世界";
+        let split_at = "# 見出し\nこんにちは".len();
+        let (p1, s1) = slice_prefix_suffix_by_offset(text, split_at);
+        assert_eq!(p1, "# 見出し\nこんにちは");
+        assert_eq!(s1, "世界");
+
+        // Mid-codepoint byte offset snaps back to valid char boundary
+        let (p2, s2) = slice_prefix_suffix_by_offset(text, split_at + 1);
+        assert_eq!(p2, "# 見出し\nこんにちは");
+        assert_eq!(s2, "世界");
+
+        // Out-of-bounds offset clamps to text end
+        let (p3, s3) = slice_prefix_suffix_by_offset(text, usize::MAX);
+        assert_eq!(p3, text);
+        assert_eq!(s3, "");
     }
 
     #[test]

@@ -7696,6 +7696,7 @@ dependencies = [
 name = "ibis-office-shell"
 version = "0.8.0"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "c2pa",
  "core-foundation 0.10.1",
@@ -7734,6 +7735,7 @@ dependencies = [
  "js-sys",
  "krilla",
  "log",
+ "lsp-types",
  "miniz_oxide 0.8.9",
  "moxcms",
  "notify",
