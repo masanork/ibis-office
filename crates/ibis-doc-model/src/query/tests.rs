@@ -79,7 +79,8 @@ fn types_are_changed_by_the_culture() {
     let out = run(vec![Step::ChangeType { column: "x".into(), ty: QType::Decimal, culture: Culture::German, apart: false }], QTable::from_rows(vec!["x".into()], vec![vec![t("1.234,5")]]));
     assert_eq!(column(&out, "x"), [n(1234.5)]);
     let out = run(vec![Step::ChangeType { column: "x".into(), ty: QType::Whole, culture: Culture::Invariant, apart: false }], QTable::from_rows(vec!["x".into()], vec![vec![t("2.5")], vec![t("-2.5")]]));
-    assert_eq!(column(&out, "x"), [n(3.0), n(-3.0)]);
+    // Halves go to the even number, as Excel gives (Int64.Type of 2.5 is 2).
+    assert_eq!(column(&out, "x"), [n(2.0), n(-2.0)]);
     let dates = QTable::from_rows(vec!["d".into()], vec![vec![t("2024-03-05")], vec![t("3/5/2024")], vec![t("2024年3月5日")]]);
     let out = run(vec![Step::ChangeType { column: "d".into(), ty: QType::Date, culture: Culture::EnglishUs, apart: false }], dates);
     assert_eq!(column(&out, "d"), [n(45356.0), n(45356.0), n(45356.0)]);
@@ -88,6 +89,26 @@ fn types_are_changed_by_the_culture() {
     assert_eq!(column(&out, "d"), [n(45356.0)]);
     let out = run(vec![Step::ChangeType { column: "x".into(), ty: QType::Logical, culture: Culture::Invariant, apart: false }], QTable::from_rows(vec!["x".into()], vec![vec![t("true")], vec![n(0.0)]]));
     assert_eq!(column(&out, "x"), [CellValue::Bool(true), CellValue::Bool(false)]);
+}
+
+#[test]
+fn en_gb_and_thai_read_text_by_their_locale() {
+    let one = |culture, text: &str| {
+        let out = run(vec![Step::ChangeType { column: "d".into(), ty: QType::Date, culture, apart: false }], QTable::from_rows(vec!["d".into()], vec![vec![t(text)]]));
+        column(&out, "d")[0].clone()
+    };
+    // Day first in en-GB; the year of th-TH is the Buddhist one (Gregorian + 543).
+    assert_eq!(one(Culture::EnglishGb, "05/03/2024"), n(45356.0));
+    assert_eq!(one(Culture::Thai, "5/3/2567"), n(45356.0));
+    let out = run(vec![Step::ChangeType { column: "x".into(), ty: QType::Decimal, culture: Culture::Thai, apart: false }], QTable::from_rows(vec!["x".into()], vec![vec![t("1,234.5")]]));
+    assert_eq!(column(&out, "x"), [n(1234.5)]);
+    // The locales of the dialog are written in M by their names and read back.
+    for culture in Culture::LOCALES {
+        let step = Step::ChangeType { column: "x".into(), ty: QType::Decimal, culture, apart: false };
+        let q = crate::query::Query { name: "q".into(), source: crate::query::Source::Blank, steps: vec![step.clone()], output: None };
+        let m = crate::query::query_to_m(&q);
+        assert!(m.contains(&format!("\"{}\"", culture.name())), "{m}");
+    }
 }
 
 #[test]
@@ -602,7 +623,8 @@ fn more_types_are_read_converted_and_written() {
     assert_eq!(conv(t("$1,234.56789"), QType::Currency), n(1234.5679));
     assert_eq!(conv(n(0.123456), QType::Currency), n(0.1235));
     assert_eq!(conv(t("12%"), QType::Percentage), n(0.12));
-    assert_eq!(conv(t("2.5"), QType::Int32), n(3.0));
+    assert_eq!(conv(t("2.5"), QType::Int32), n(2.0));
+    assert_eq!(conv(t("3.5"), QType::Int32), n(4.0));
     assert_eq!(conv(n(3e9), QType::Int32), CellValue::Error(CellError::Value));
     // The zone is dropped; the clock time written stays.
     assert_eq!(conv(t("2024-03-05T10:00:00+09:00"), QType::DateTimeZone), conv(t("2024-03-05T10:00:00"), QType::DateTime));

@@ -41,8 +41,8 @@ use crate::ai_client::{AiConfig, BrowserModel, ChatMessage, ToolCall, stream_cha
 use crate::ai_client::{ConnectionChoice, NativeConnection, ToolDefinition};
 #[cfg(target_family = "wasm")]
 use crate::ai_client::{
-    abort_browser_stream, browser_csrf, explain_ai_error, fit_browser_messages, load_browser_catalog, set_browser_csrf,
-    utf16_units,
+    BrowserProvider, abort_browser_stream, browser_csrf, explain_ai_error, fit_browser_messages,
+    load_browser_catalog, set_browser_csrf, utf16_units,
 };
 use crate::ai_tools::{
     ApplyVcTemplateArgs, BindVcClaimArgs,
@@ -178,6 +178,15 @@ struct AcpScope {
     read_only: bool,
     workspace_context: Option<(bool, bool)>,
     analysis_sources: Option<Vec<std::path::PathBuf>>,
+    agent_id: Option<String>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum AssistantSettingsTab {
+    #[default]
+    Builtin,
+    ExternalAgents,
 }
 
 pub struct AiAssistantState {
@@ -187,6 +196,19 @@ pub struct AiAssistantState {
     pub base_url_input: Entity<InputState>,
     pub model_input: Entity<InputState>,
     pub api_key_input: Entity<InputState>,
+    pub copilot_token_input: Entity<InputState>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub agent_name_input: Entity<InputState>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub agent_command_input: Entity<InputState>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub agent_args_input: Entity<InputState>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    agent_form_error: Option<String>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    settings_tab: AssistantSettingsTab,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    selected_agent: Option<String>,
     pub show_settings: bool,
     #[cfg(not(target_family = "wasm"))]
     connection_choice: ConnectionChoice,
@@ -196,6 +218,12 @@ pub struct AiAssistantState {
     connecting: bool,
     #[cfg(not(target_family = "wasm"))]
     connection_error: Option<String>,
+    #[cfg(not(target_family = "wasm"))]
+    copilot_device_flow: Option<sorane_github::DeviceCodeResponse>,
+    #[cfg(not(target_family = "wasm"))]
+    copilot_device_polling: bool,
+    #[cfg(not(target_family = "wasm"))]
+    copilot_device_generation: u64,
     pub show_tool_logs: bool,
     pub messages: Vec<UiMessage>,
     pub history: Vec<ChatMessage>,
@@ -1220,6 +1248,33 @@ impl SlideEditor {
                     .placeholder("sk-... (ローカルLLMなら空でも可)")
                     .masked(true)
             });
+            let copilot_token_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(crate::ai_client::load_saved_copilot_token())
+                    .placeholder("github_pat_... (Copilot Requests: Read-only)")
+                    .masked(true)
+            });
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let agent_name_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("表示名（例: OpenCode, Claude Code）")
+            });
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let agent_command_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("コマンド（例: opencode, claude-agent-acp）")
+            });
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let agent_args_input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("引数（例: acp）")
+            });
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let selected_agent = crate::ai_assistant_acp::load_selected_agent().filter(|id| {
+                crate::ai_assistant_acp::available_external_agents()
+                    .iter()
+                    .any(|agent| agent.id == *id)
+            });
             self.ai_assistant = Some(AiAssistantState {
                 prompt_input: prompt_input.clone(),
                 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -1227,6 +1282,19 @@ impl SlideEditor {
                 base_url_input,
                 model_input,
                 api_key_input,
+                copilot_token_input,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                agent_name_input,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                agent_command_input,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                agent_args_input,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                agent_form_error: None,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                settings_tab: AssistantSettingsTab::default(),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                selected_agent,
                 show_settings: false,
                 #[cfg(not(target_family = "wasm"))]
                 connection_choice: ConnectionChoice::Auto,
@@ -1236,6 +1304,12 @@ impl SlideEditor {
                 connecting: false,
                 #[cfg(not(target_family = "wasm"))]
                 connection_error: None,
+                #[cfg(not(target_family = "wasm"))]
+                copilot_device_flow: None,
+                #[cfg(not(target_family = "wasm"))]
+                copilot_device_polling: false,
+                #[cfg(not(target_family = "wasm"))]
+                copilot_device_generation: 0,
                 #[cfg(not(target_family = "wasm"))]
                 show_tool_logs: self.assistant_output.is_some(),
                 #[cfg(target_family = "wasm")]
@@ -1960,7 +2034,174 @@ impl SlideEditor {
             api_key: p.api_key_input.read(cx).value().trim().to_string(),
         };
         cfg.save();
+        crate::ai_client::save_copilot_token(&p.copilot_token_input.read(cx).value());
         self.connect_ai_assistant(cx);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn start_copilot_device_sign_in(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = self.ai_assistant.as_mut() else {
+            return;
+        };
+        panel.copilot_device_generation = panel.copilot_device_generation.wrapping_add(1);
+        let flow_gen = panel.copilot_device_generation;
+        panel.copilot_device_polling = true;
+        panel.copilot_device_flow = None;
+        panel.connection_error = None;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let start_res = cx
+                .background_executor()
+                .spawn(async move { crate::ai_client::start_copilot_device_flow() })
+                .await;
+            let code = match start_res {
+                Ok(code) => code,
+                Err(err) => {
+                    let _ = this.update(cx, |editor, cx| {
+                        if let Some(panel) = editor.ai_assistant.as_mut()
+                            && panel.copilot_device_generation == flow_gen
+                        {
+                            panel.copilot_device_polling = false;
+                            panel.connection_error = Some(err);
+                            cx.notify();
+                        }
+                    });
+                    return;
+                }
+            };
+
+            let _ = this.update(cx, |editor, cx| {
+                if let Some(panel) = editor.ai_assistant.as_mut()
+                    && panel.copilot_device_generation == flow_gen
+                {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.user_code.clone()));
+                    cx.open_url(&code.verification_uri);
+                    panel.copilot_device_flow = Some(code.clone());
+                    cx.notify();
+                }
+            });
+
+            let mut interval_secs = code.interval.max(5);
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(code.expires_in.min(900));
+            let device_code = code.device_code.clone();
+
+            while std::time::Instant::now() < deadline {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(interval_secs))
+                    .await;
+
+                let still_active = this
+                    .read_with(cx, |editor, _| {
+                        editor.ai_assistant.as_ref().is_some_and(|p| {
+                            p.copilot_device_polling && p.copilot_device_generation == flow_gen
+                        })
+                    })
+                    .unwrap_or(false);
+                if !still_active {
+                    return;
+                }
+
+                let dc = device_code.clone();
+                let poll = cx
+                    .background_executor()
+                    .spawn(async move { crate::ai_client::poll_copilot_device_token(&dc) })
+                    .await;
+
+                match poll {
+                    Ok(sorane_github::DeviceTokenPoll::Pending) => continue,
+                    Ok(sorane_github::DeviceTokenPoll::SlowDown) => {
+                        interval_secs = (interval_secs + 5).min(30);
+                        continue;
+                    }
+                    Ok(sorane_github::DeviceTokenPoll::Authorized { access_token }) => {
+                        let save_res = crate::ai_client::save_sorane_copilot_session_token(&access_token);
+                        let _ = this.update(cx, |editor, cx| {
+                            if let Some(panel) = editor.ai_assistant.as_mut()
+                                && panel.copilot_device_generation == flow_gen
+                            {
+                                panel.copilot_device_polling = false;
+                                panel.copilot_device_flow = None;
+                                match save_res {
+                                    Ok(()) => {
+                                        panel.connection_choice = ConnectionChoice::GitHubCopilot;
+                                        panel.connection_error = None;
+                                        editor.connect_ai_assistant(cx);
+                                    }
+                                    Err(err) => {
+                                        panel.connection_error = Some(err);
+                                    }
+                                }
+                                cx.notify();
+                            }
+                        });
+                        return;
+                    }
+                    Ok(sorane_github::DeviceTokenPoll::Expired) => {
+                        let _ = this.update(cx, |editor, cx| {
+                            if let Some(panel) = editor.ai_assistant.as_mut()
+                                && panel.copilot_device_generation == flow_gen
+                            {
+                                panel.copilot_device_polling = false;
+                                panel.copilot_device_flow = None;
+                                panel.connection_error =
+                                    Some("認証コードの有効期限が切れました。もう一度お試しください。".into());
+                                cx.notify();
+                            }
+                        });
+                        return;
+                    }
+                    Ok(sorane_github::DeviceTokenPoll::AccessDenied) => {
+                        let _ = this.update(cx, |editor, cx| {
+                            if let Some(panel) = editor.ai_assistant.as_mut()
+                                && panel.copilot_device_generation == flow_gen
+                            {
+                                panel.copilot_device_polling = false;
+                                panel.copilot_device_flow = None;
+                                panel.connection_error = Some("認証がキャンセルされました。".into());
+                                cx.notify();
+                            }
+                        });
+                        return;
+                    }
+                    Ok(sorane_github::DeviceTokenPoll::Error(msg)) | Err(msg) => {
+                        let _ = this.update(cx, |editor, cx| {
+                            if let Some(panel) = editor.ai_assistant.as_mut()
+                                && panel.copilot_device_generation == flow_gen
+                            {
+                                panel.copilot_device_polling = false;
+                                panel.copilot_device_flow = None;
+                                panel.connection_error = Some(msg);
+                                cx.notify();
+                            }
+                        });
+                        return;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn cancel_copilot_device_sign_in(&mut self, cx: &mut Context<Self>) {
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.copilot_device_generation = panel.copilot_device_generation.wrapping_add(1);
+            panel.copilot_device_polling = false;
+            panel.copilot_device_flow = None;
+        }
+        cx.notify();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn sign_out_copilot_session(&mut self, cx: &mut Context<Self>) {
+        crate::ai_client::clear_sorane_copilot_session_token();
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.connection = None;
+            panel.connection_error = None;
+        }
+        cx.notify();
     }
 
     fn stop_ai_assistant(&mut self, cx: &mut Context<Self>) {
@@ -2068,28 +2309,120 @@ impl SlideEditor {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn send_acp_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(panel) = self.ai_assistant.as_ref() else { return };
-        let user = panel.prompt_input.read(cx).value().trim().to_owned();
-        let skill = panel.selected_skill.clone();
-        match self.submit_acp_prompt(user, ibis_mcp::assistant_endpoint::next_run_id(), skill, None, cx) {
-            Ok(()) => {
-                if let Some(panel) = self.ai_assistant.as_mut() {
-                    panel.selected_skill = None;
-                    panel.prompt_input.update(cx, |input, cx| input.set_value("", window, cx));
-                }
+    fn select_assistant_agent(&mut self, agent_id: Option<String>, cx: &mut Context<Self>) {
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            if panel.streaming {
+                return;
             }
-            Err(error) => {
-                if let Some(panel) = self.ai_assistant.as_mut() {
-                    panel.messages.push(UiMessage::new(UiMessageKind::Error, error));
-                    cx.notify();
-                }
+            if panel.selected_agent != agent_id {
+                panel.acp_session = None;
+                panel.selected_agent = agent_id.clone();
+                crate::ai_assistant_acp::save_selected_agent(agent_id.as_deref());
+                cx.notify();
             }
         }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn acp_resume_record(&self) -> Option<crate::ai_assistant_acp::ResumeRecord> {
+    fn open_external_agent_settings(&mut self, cx: &mut Context<Self>) {
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.show_settings = true;
+            panel.settings_tab = AssistantSettingsTab::ExternalAgents;
+            panel.agent_form_error = None;
+            cx.notify();
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn add_external_agent_preset(
+        &mut self,
+        preset: crate::ai_assistant_acp::ExternalAgentConfig,
+        cx: &mut Context<Self>,
+    ) {
+        let mut agents = crate::ai_assistant_acp::load_external_agents();
+        if !agents.iter().any(|existing| existing.id == preset.id) {
+            agents.push(preset.clone());
+            crate::ai_assistant_acp::save_external_agents(&agents);
+        }
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.agent_form_error = None;
+            panel.acp_session = None;
+            panel.selected_agent = Some(preset.id.clone());
+            crate::ai_assistant_acp::save_selected_agent(Some(&preset.id));
+        }
+        cx.notify();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn add_external_agent_from_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(panel) = self.ai_assistant.as_ref() else { return };
+        let name = panel.agent_name_input.read(cx).value().trim().to_string();
+        let command = panel.agent_command_input.read(cx).value().trim().to_string();
+        let args_raw = panel.agent_args_input.read(cx).value().trim().to_string();
+        if command.is_empty() {
+            if let Some(panel) = self.ai_assistant.as_mut() {
+                panel.agent_form_error = Some("コマンドを入力してください。".into());
+                cx.notify();
+            }
+            return;
+        }
+        let display_name = if name.is_empty() { command.clone() } else { name };
+        let args = crate::ai_assistant_acp::parse_args_line(&args_raw);
+        let mut agents = crate::ai_assistant_acp::load_external_agents();
+        let base_id: String = display_name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+        let base_id = if base_id.is_empty() { "custom-agent".to_string() } else { base_id };
+        let mut id = base_id.clone();
+        let mut suffix = 2usize;
+        while agents.iter().any(|a| a.id == id) || id == "builtin" || id == "env-acp" {
+            id = format!("{base_id}-{suffix}");
+            suffix += 1;
+        }
+        let agent = crate::ai_assistant_acp::ExternalAgentConfig {
+            id: id.clone(),
+            name: display_name,
+            command,
+            args,
+            env: Default::default(),
+        };
+        agents.push(agent);
+        crate::ai_assistant_acp::save_external_agents(&agents);
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.agent_form_error = None;
+            panel.agent_name_input.update(cx, |input, cx| input.set_value("", window, cx));
+            panel.agent_command_input.update(cx, |input, cx| input.set_value("", window, cx));
+            panel.agent_args_input.update(cx, |input, cx| input.set_value("", window, cx));
+            panel.acp_session = None;
+            panel.selected_agent = Some(id.clone());
+            crate::ai_assistant_acp::save_selected_agent(Some(&id));
+        }
+        cx.notify();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn remove_external_agent(&mut self, agent_id: &str, cx: &mut Context<Self>) {
+        let mut agents = crate::ai_assistant_acp::load_external_agents();
+        agents.retain(|agent| agent.id != agent_id);
+        crate::ai_assistant_acp::save_external_agents(&agents);
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            if panel.selected_agent.as_deref() == Some(agent_id) {
+                panel.selected_agent = None;
+                panel.acp_session = None;
+                crate::ai_assistant_acp::save_selected_agent(None);
+            }
+            cx.notify();
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn acp_resume_record(
+        &self,
+        agent: Option<&crate::ai_assistant_acp::ExternalAgentConfig>,
+    ) -> Option<crate::ai_assistant_acp::ResumeRecord> {
         if self.is_dirty() {
             return None;
         }
@@ -2098,7 +2431,11 @@ impl SlideEditor {
         if !self.watch.known.as_ref().is_some_and(|known| known.same_stat(&stamp)) {
             return None;
         }
-        crate::ai_assistant_acp::ResumeRecord::for_document(&path, self.is_read_only())
+        crate::ai_assistant_acp::ResumeRecord::for_document_with_agent(
+            &path,
+            self.is_read_only(),
+            agent,
+        )
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2157,7 +2494,11 @@ impl SlideEditor {
             append_assistant_skill_context(&skill, &mut prompt);
             skill.metadata.name
         });
-        let resume = (!formula_only).then(|| self.acp_resume_record()).flatten();
+        let selected_agent_id = self.ai_assistant.as_ref().and_then(|panel| panel.selected_agent.clone());
+        let agent_config = crate::ai_assistant_acp::find_external_agent(selected_agent_id.as_deref());
+        let resume = (!formula_only)
+            .then(|| self.acp_resume_record(agent_config.as_ref()))
+            .flatten();
         let panel = self.ai_assistant.as_mut().ok_or("Assistant panel is closed")?;
         panel.check_prompt_available()?;
         let analysis_sources = panel.analysis_sources.as_ref()
@@ -2181,19 +2522,23 @@ impl SlideEditor {
         let scope = AcpScope {
             file_id: turn.file_id, path: turn.path.clone(), kind, read_only,
             workspace_context, analysis_sources: analysis_sources.clone(),
+            agent_id: selected_agent_id,
         };
         let isolated_conversation = if let Some(messages) = formula_messages {
             // The dedicated command sees only the selected formula, even after
             // a conversation that had full document access.
             prompt = messages.into_iter().filter_map(|message| message.content).collect::<Vec<_>>().join("\n\n");
             tools.clear();
-            Some(crate::ai_assistant_acp::Conversation::start(None)?)
+            Some(crate::ai_assistant_acp::Conversation::start(None, agent_config.clone())?)
         } else {
             None
         };
         if !formula_only && panel.acp_session.as_ref().is_none_or(|(previous, _)| *previous != scope) {
             panel.acp_session = None;
-            panel.acp_session = Some((scope.clone(), crate::ai_assistant_acp::Conversation::start(resume.clone())?));
+            panel.acp_session = Some((
+                scope.clone(),
+                crate::ai_assistant_acp::Conversation::start(resume.clone(), agent_config)?,
+            ));
         }
         if !formula_only
             && let Some((_, conversation)) = panel.acp_session.as_mut()
@@ -2308,9 +2653,9 @@ impl SlideEditor {
                     if new_documents.len() >= 4 {
                         return Err("The ACP turn has reached its four-document limit.".into());
                     }
-                    let (title, opened) = Self::prepare_assistant_markdown(&call.function.arguments)?;
-                    let result = json!({"prepared":true,"title":title});
-                    new_documents.push((title, opened));
+                    let (title, opened, target) = Self::prepare_assistant_markdown(&call.function.arguments)?;
+                    let result = json!({"prepared":true,"title":title,"target":target});
+                    new_documents.push((title, opened, target));
                     edits += 1;
                     return Ok(result);
                 }
@@ -2368,7 +2713,14 @@ impl SlideEditor {
             }
             let result = outcome.await.unwrap_or_else(|_| Err("The ACP worker stopped unexpectedly.".into()));
             let _ = editor.update(cx, |editor, cx| {
-                let current_resume = (!formula_only).then(|| editor.acp_resume_record()).flatten();
+                let current_resume = (!formula_only)
+                    .then(|| {
+                        let agent = crate::ai_assistant_acp::find_external_agent(
+                            scope.agent_id.as_deref(),
+                        );
+                        editor.acp_resume_record(agent.as_ref())
+                    })
+                    .flatten();
                 let analysis_sources = editor.ai_assistant.as_ref().and_then(|panel| panel.analysis_sources.as_ref())
                     .filter(|(file_id, _)| scope.kind == ibis_formats::Kind::Workbook && *file_id == editor.file_id)
                     .map(|(_, paths)| paths);
@@ -2427,8 +2779,8 @@ impl SlideEditor {
                 if let Some((active, selection)) = navigation {
                     editor.apply_assistant_navigation(active, selection, cx);
                 }
-                for (title, opened) in prepared_documents {
-                    Self::open_prepared_assistant_markdown(title, opened, cx);
+                for (title, opened, target) in prepared_documents {
+                    Self::open_prepared_assistant_markdown(title, opened, target, cx);
                 }
                 editor.emit_assistant_event(event);
                 cx.notify();
@@ -2475,6 +2827,21 @@ impl SlideEditor {
         let prompt = format!("{title} · {sheet}!{cell}\n{formula}");
         let messages = formula_explanation_messages(sheet, cell, formula);
         self.open_ai_assistant_panel(window, cx);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.ai_assistant.as_ref().is_some_and(|panel| panel.selected_agent.is_some()) {
+            if let Err(error) = self.submit_acp_prompt(
+                prompt,
+                ibis_mcp::assistant_endpoint::next_run_id(),
+                None,
+                Some(messages),
+                cx,
+            ) && let Some(panel) = self.ai_assistant.as_mut()
+            {
+                panel.messages.push(UiMessage::new(UiMessageKind::Error, error));
+                cx.notify();
+            }
+            return;
+        }
         self.submit_desktop_assistant(prompt, Some(messages), None, None, cx);
     }
 
@@ -2505,6 +2872,21 @@ impl SlideEditor {
         let skill = self.ai_assistant.as_mut().and_then(|panel| panel.selected_skill.take());
         #[cfg(not(any(target_family = "wasm", target_os = "linux", target_os = "macos", target_os = "windows")))]
         let skill = None;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.ai_assistant.as_ref().is_some_and(|panel| panel.selected_agent.is_some()) {
+            if let Err(error) = self.submit_acp_prompt(
+                prompt,
+                ibis_mcp::assistant_endpoint::next_run_id(),
+                skill,
+                None,
+                cx,
+            ) && let Some(panel) = self.ai_assistant.as_mut()
+            {
+                panel.messages.push(UiMessage::new(UiMessageKind::Error, error));
+                cx.notify();
+            }
+            return;
+        }
         #[cfg(not(target_family = "wasm"))]
         self.submit_desktop_assistant(prompt, None, skill, None, cx);
     }
@@ -2617,7 +2999,7 @@ impl SlideEditor {
                         "You are an AI document assistant inside ibisOffice. \
                          Use the provided tools to inspect paragraphs and edit or format document text. Edits are proposed for user review. For Markdown source or a selected Mermaid image, use read_editable_source then replace_source_text. \
                          For Japanese legislative research, use search_egov_law with the user's reference date and public legal terms. Present direct amendments, potential ripple amendments, and references separately with reasons. Cite the returned source URLs and revision IDs. If the search gives only a coarse position, fetch the exact revision using fetch_egov_law with set_as_baseline=false before identifying an article. Do not infer unverified article numbers or imply coverage of all affected laws. Keep research read-only unless the user asks for a draft or edit. \
-                         For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, verify_lawtext_aratame, and lint_lawtext to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame and checking reference/conjunction issues with lint_lawtext, use the documents fields as the five initial drafts, leave unsupplied policy and commencement details open for review, and use open_markdown_document when the user wants to open any generated document in a new ibisOffice window. \
+                         For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, verify_lawtext_aratame, and lint_lawtext to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame and checking reference/conjunction issues with lint_lawtext, use the documents fields as the five initial drafts, leave unsupplied policy and commencement details open for review, and use open_markdown_document when the user wants to open any generated document in ibisOffice (opening in a new tab by default, or target='window' only when the user explicitly requests a new window). \
                          Respond concisely in the user's language."
                     }
                 };
@@ -3227,18 +3609,31 @@ impl SlideEditor {
     #[cfg(target_family = "wasm")]
     fn apply_browser_catalog(&mut self, catalog: Result<crate::ai_client::BrowserCatalog, String>, cx: &mut Context<Self>) {
         let Some(panel) = self.ai_assistant.as_mut() else { return };
+        let provider = BrowserProvider::load();
         match catalog {
             Ok(catalog) => {
-                set_browser_csrf(&catalog.csrf);
-                panel.browser_status.clear();
+                if provider == BrowserProvider::GitHubCopilot {
+                    set_browser_csrf(&catalog.csrf);
+                }
+                if let Some(err_code) = catalog.error.as_deref().filter(|s| !s.is_empty()) {
+                    let combined = match catalog.detail.as_deref().filter(|d| !d.is_empty()) {
+                        Some(d) => format!("{err_code}: {d}"),
+                        None => err_code.to_string(),
+                    };
+                    let msg = explain_ai_error(&combined);
+                    panel.browser_status = if msg.is_empty() { combined } else { msg };
+                } else {
+                    panel.browser_status.clear();
+                }
                 panel.browser_models = catalog.models;
-                let current = AiConfig::load().model;
-                let known = panel.browser_models.iter().any(|model| model.key == current);
+                let current = AiConfig::load_saved().model;
+                let known = !current.is_empty()
+                    && panel.browser_models.iter().any(|model| model.key == current);
                 if !known {
-                    let fallback = panel
-                        .browser_models
-                        .iter()
-                        .find(|model| model.key == "deepseek-flash")
+                    let fallback = catalog
+                        .default_model
+                        .as_deref()
+                        .and_then(|id| panel.browser_models.iter().find(|model| model.key == id))
                         .or_else(|| panel.browser_models.first());
                     if let Some(model) = fallback {
                         crate::settings::set(crate::ai_client::SETTING_MODEL, &model.key);
@@ -3246,12 +3641,52 @@ impl SlideEditor {
                 }
             }
             Err(err) => {
-                set_browser_csrf("");
+                if provider == BrowserProvider::GitHubCopilot {
+                    set_browser_csrf("");
+                }
                 let message = explain_ai_error(&err);
                 panel.browser_status = if message.is_empty() { err } else { message };
             }
         }
         cx.notify();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn select_browser_provider(
+        &mut self,
+        provider: BrowserProvider,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        provider.save();
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.browser_models.clear();
+            panel.browser_status.clear();
+            let default_base = provider.default_base_url().to_string();
+            if !default_base.is_empty() {
+                panel.base_url_input.update(cx, |input, cx| {
+                    input.set_value(default_base.clone(), window, cx);
+                });
+                crate::settings::set(crate::ai_client::SETTING_BASE_URL, &default_base);
+            }
+        }
+        self.load_ai_browser_catalog(cx);
+        cx.notify();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn save_browser_ai_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.ai_assistant.as_ref() else {
+            return;
+        };
+        let cfg = AiConfig {
+            base_url: p.base_url_input.read(cx).value().trim().to_string(),
+            model: p.model_input.read(cx).value().trim().to_string(),
+            api_key: p.api_key_input.read(cx).value().trim().to_string(),
+        };
+        cfg.save();
+        crate::ai_client::save_copilot_token(&p.copilot_token_input.read(cx).value());
+        self.load_ai_browser_catalog(cx);
     }
 
     #[cfg(target_family = "wasm")]
@@ -3299,7 +3734,9 @@ impl SlideEditor {
         if panel.streaming {
             return;
         }
-        if browser_csrf().is_empty() {
+        let provider = BrowserProvider::load();
+        let has_copilot_pat = !crate::ai_client::load_saved_copilot_token().is_empty();
+        if provider == BrowserProvider::GitHubCopilot && browser_csrf().is_empty() && !has_copilot_pat {
             let message = if panel.browser_status.is_empty() {
                 "ログイン状態を確認しています。少し待ってからもう一度試してください。".to_string()
             } else {
@@ -3308,7 +3745,13 @@ impl SlideEditor {
             self.push_ai_error(message, cx);
             return;
         }
-        let model_known = panel.browser_models.iter().any(|model| model.key == AiConfig::load().model);
+        let active_model = AiConfig::load_saved().model;
+        let model_known = if provider == BrowserProvider::GitHubCopilot {
+            !active_model.is_empty()
+                && panel.browser_models.iter().any(|model| model.key == active_model)
+        } else {
+            !active_model.is_empty()
+        };
         if !model_known {
             self.push_ai_error(explain_ai_error("invalid_model"), cx);
             return;
@@ -3826,9 +4269,9 @@ impl SlideEditor {
         }
         if kind == AiDocKind::Docx && name == "open_markdown_document" {
             return match Self::prepare_assistant_markdown(args) {
-                Ok((title, opened)) => {
-                    Self::open_prepared_assistant_markdown(title.clone(), opened, cx);
-                    (json!({"opened":true,"title":title}).to_string(), Vec::new(), format!("✓ open_markdown_document ({title})"))
+                Ok((title, opened, target)) => {
+                    Self::open_prepared_assistant_markdown(title.clone(), opened, target, cx);
+                    (json!({"opened":true,"title":title,"target":target}).to_string(), Vec::new(), format!("✓ open_markdown_document ({title})"))
                 }
                 Err(error) => (json!({"error":error}).to_string(), Vec::new(), format!("✗ open_markdown_document: {error}")),
             };
@@ -5253,21 +5696,30 @@ impl SlideEditor {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn prepare_assistant_markdown(args: &str) -> Result<(String, ibis_formats::Opened), String> {
+    fn prepare_assistant_markdown(args: &str) -> Result<(String, ibis_formats::Opened, crate::ai_tools::OpenDocumentTarget), String> {
         let args: OpenMarkdownDocumentArgs = serde_json::from_str(args)
             .map_err(|error| format!("invalid arguments: {error}"))?;
         let opened = ibis_formats::markdown::open_markdown(args.markdown.into_bytes())
             .map_err(|error| error.to_string())?;
-        Ok((args.title, opened))
+        Ok((args.title, opened, args.target))
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn open_prepared_assistant_markdown(title: String, opened: ibis_formats::Opened, cx: &mut Context<Self>) {
-        // Opening a window updates the window group, including the source editor.
+    fn open_prepared_assistant_markdown(
+        title: String,
+        opened: ibis_formats::Opened,
+        target: crate::ai_tools::OpenDocumentTarget,
+        cx: &mut Context<Self>,
+    ) {
+        // Opening a tab or window updates the window group, including the source editor.
         cx.defer(move |cx| {
-            crate::app::open_window_with(cx, move |editor, window, cx| {
+            let setup = move |editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>| {
                 editor.show_new(opened, title.into(), window, cx);
-            });
+            };
+            match target {
+                crate::ai_tools::OpenDocumentTarget::Tab => crate::app::open_tab_or_window_with(cx, setup),
+                crate::ai_tools::OpenDocumentTarget::Window => crate::app::open_window_with(cx, setup),
+            }
         });
     }
 
@@ -5288,46 +5740,70 @@ impl SlideEditor {
             .count();
         let scroll_handle = panel.scroll_handle.clone();
         let prompt_input = panel.prompt_input.clone();
-        #[cfg(not(target_family = "wasm"))]
         let base_url_input = panel.base_url_input.clone();
-        #[cfg(not(target_family = "wasm"))]
         let model_input = panel.model_input.clone();
-        #[cfg(not(target_family = "wasm"))]
         let api_key_input = panel.api_key_input.clone();
+        let copilot_token_input = panel.copilot_token_input.clone();
         #[cfg(target_family = "wasm")]
         let browser_models = panel.browser_models.clone();
         #[cfg(target_family = "wasm")]
         let browser_status = panel.browser_status.clone();
         #[cfg(target_family = "wasm")]
         let browser_pending = panel.browser_pending.clone();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let active_external_agent = panel
+            .selected_agent
+            .as_deref()
+            .and_then(|id| crate::ai_assistant_acp::find_external_agent(Some(id)));
         #[cfg(not(target_family = "wasm"))]
-        let connection = v_flex().w_full().gap_1().text_xs().whitespace_normal();
-        #[cfg(not(target_family = "wasm"))]
-        let connection = match panel
-            .connection
-            .clone()
-            .map_or_else(|| ConnectionChoice::Auto.load(), Ok)
-        {
-            Ok(active) => {
-                let (provider, model) = active.caption();
-                connection
+        let connection = {
+            let base_box = || v_flex().w_full().gap_1().text_xs().whitespace_normal();
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let external = active_external_agent.as_ref().map(|agent| {
+                base_box()
                     .child(
                         div()
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!("接続先：{provider}")),
+                            .child(format!("接続先：{}（外部エージェント）", agent.name)),
                     )
-                    .children(active.endpoint().map(|endpoint| {
-                        div()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(endpoint.to_string())
-                    }))
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("モデル：{model}")),
+                            .child(format!("コマンド：{}", agent.command_line_display())),
                     )
+            });
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let external: Option<gpui_kit::Div> = None;
+            if let Some(external_view) = external {
+                external_view
+            } else {
+                match panel
+                    .connection
+                    .clone()
+                    .map_or_else(|| ConnectionChoice::Auto.load(), Ok)
+                {
+                    Ok(active) => {
+                        let (provider, model) = active.caption();
+                        base_box()
+                            .child(
+                                div()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!("接続先：{provider}")),
+                            )
+                            .children(active.endpoint().map(|endpoint| {
+                                div()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(endpoint.to_string())
+                            }))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("モデル：{model}")),
+                            )
+                    }
+                    Err(error) => base_box().child(format!("接続設定：{error}")),
+                }
             }
-            Err(error) => connection.child(format!("接続設定：{error}")),
         };
         #[cfg(target_family = "wasm")]
         let model_caption = {
@@ -5458,6 +5934,10 @@ impl SlideEditor {
             let choice = panel.connection_choice;
             let disabled = streaming || panel.connecting || panel.assistant_review.is_some();
             let saved = AiConfig::load_saved();
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let settings_tab = panel.settings_tab;
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let settings_tab = ();
             let options: Vec<_> = ConnectionChoice::ALL
                 .into_iter()
                 .map(|option| {
@@ -5474,13 +5954,204 @@ impl SlideEditor {
                         }))
                 })
                 .collect();
-            v_flex()
+            let box_ui = v_flex()
                 .gap_2()
                 .p_2()
                 .rounded_md()
                 .border_1()
                 .border_color(cx.theme().border)
-                .bg(cx.theme().secondary.opacity(0.4))
+                .bg(cx.theme().secondary.opacity(0.4));
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let box_ui = box_ui.child(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        if settings_tab == AssistantSettingsTab::Builtin {
+                            Button::new("ai-settings-tab-builtin").outline().xsmall()
+                        } else {
+                            Button::new("ai-settings-tab-builtin").ghost().xsmall()
+                        }
+                        .label("内蔵モデル")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(panel) = this.ai_assistant.as_mut() {
+                                panel.settings_tab = AssistantSettingsTab::Builtin;
+                                cx.notify();
+                            }
+                        })),
+                    )
+                    .child(
+                        if settings_tab == AssistantSettingsTab::ExternalAgents {
+                            Button::new("ai-settings-tab-external").outline().xsmall()
+                        } else {
+                            Button::new("ai-settings-tab-external").ghost().xsmall()
+                        }
+                        .label("外部エージェント")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(panel) = this.ai_assistant.as_mut() {
+                                panel.settings_tab = AssistantSettingsTab::ExternalAgents;
+                                cx.notify();
+                            }
+                        })),
+                    ),
+            );
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if settings_tab == AssistantSettingsTab::ExternalAgents {
+                let registered = crate::ai_assistant_acp::available_external_agents();
+                let selected_id = panel.selected_agent.clone();
+                let presets: Vec<_> = crate::ai_assistant_acp::external_agent_presets()
+                    .into_iter()
+                    .filter(|preset| !registered.iter().any(|r| r.id == preset.id))
+                    .collect();
+                let agent_name_input = panel.agent_name_input.clone();
+                let agent_command_input = panel.agent_command_input.clone();
+                let agent_args_input = panel.agent_args_input.clone();
+                let agent_form_error = panel.agent_form_error.clone();
+                return box_ui
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("外部の AI エージェント CLI（ACP 対応）を登録すると、送信先のピッカーから切り替えて利用できます。"),
+                    )
+                    .when(!registered.is_empty(), |col| {
+                        let list = registered.into_iter().fold(v_flex().gap_1(), |list, agent| {
+                            let is_selected = selected_id.as_deref() == Some(agent.id.as_str());
+                            let is_env = agent.id == "env-acp";
+                            let select_id = agent.id.clone();
+                            let remove_id = agent.id.clone();
+                            list.child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_1()
+                                    .p_1()
+                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .truncate()
+                                                    .child(agent.name.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .truncate()
+                                                    .child(agent.command_line_display()),
+                                            ),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .child(
+                                                if is_selected {
+                                                    Button::new(SharedString::from(format!("ai-ext-use-{}", agent.id)))
+                                                        .primary()
+                                                        .xsmall()
+                                                        .label("選択中")
+                                                } else {
+                                                    Button::new(SharedString::from(format!("ai-ext-use-{}", agent.id)))
+                                                        .outline()
+                                                        .xsmall()
+                                                        .label("使う")
+                                                }
+                                                .disabled(disabled)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.select_assistant_agent(Some(select_id.clone()), cx);
+                                                })),
+                                            )
+                                            .when(!is_env, |row| {
+                                                row.child(
+                                                    Button::new(SharedString::from(format!("ai-ext-del-{}", agent.id)))
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .label("削除")
+                                                        .disabled(disabled)
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            this.remove_external_agent(&remove_id, cx);
+                                                        })),
+                                                )
+                                            }),
+                                    ),
+                            )
+                        });
+                        col.child(list)
+                    })
+                    .when(!presets.is_empty(), |col| {
+                        let preset_row = presets.into_iter().fold(
+                            h_flex().flex_wrap().gap_1(),
+                            |row, preset| {
+                                let detected = crate::ai_assistant_acp::command_exists(&preset.command);
+                                let label = if detected {
+                                    format!("+ {} (検出)", preset.name)
+                                } else {
+                                    format!("+ {}", preset.name)
+                                };
+                                let preset_id = preset.id.clone();
+                                row.child(
+                                    Button::new(SharedString::from(format!("ai-ext-preset-{preset_id}")))
+                                        .outline()
+                                        .xsmall()
+                                        .label(label)
+                                        .disabled(disabled)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.add_external_agent_preset(preset.clone(), cx);
+                                        })),
+                                )
+                            },
+                        );
+                        col.child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("プリセットから追加"),
+                                )
+                                .child(preset_row),
+                        )
+                    })
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .pt_1()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("カスタムエージェントを追加"),
+                            )
+                            .child(Input::new(&agent_name_input).small())
+                            .child(Input::new(&agent_command_input).small())
+                            .child(Input::new(&agent_args_input).small())
+                            .children(agent_form_error.map(|err| {
+                                div().text_xs().text_color(cx.theme().danger).child(err)
+                            }))
+                            .child(
+                                Button::new("ai-ext-add")
+                                    .outline()
+                                    .small()
+                                    .disabled(disabled)
+                                    .label("追加して使う")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.add_external_agent_from_form(window, cx);
+                                    })),
+                            ),
+                    );
+            }
+            let _ = settings_tab;
+            box_ui
                 .child(
                     crate::chrome::Dropdown::new(
                         "ai-assistant-connection",
@@ -5510,6 +6181,121 @@ impl SlideEditor {
                         .as_ref()
                         .map(|error| div().text_xs().child(error.clone())),
                 )
+                .when(choice == ConnectionChoice::GitHubCopilot, |settings| {
+                    let source_label = crate::ai_client::copilot_token_source_label();
+                    let device_flow = panel.copilot_device_flow.clone();
+                    let device_polling = panel.copilot_device_polling;
+                    let mut sec = settings
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("GitHub Copilot 認証"),
+                        )
+                        .children(source_label.map(|label| {
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("現在の認証: {label}"))
+                        }));
+                    if let Some(flow) = device_flow {
+                        let verify_url = flow.verification_uri.clone();
+                        sec = sec
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("認証コード（コピー済み）: {}", flow.user_code)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("ブラウザで GitHub にコードを入力して承認すると自動で接続します。"),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("ai-copilot-open-device-url")
+                                            .primary()
+                                            .xsmall()
+                                            .label("認証ページを開く")
+                                            .on_click(cx.listener(move |_, _, _, cx| {
+                                                cx.open_url(&verify_url);
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("ai-copilot-cancel-device")
+                                            .ghost()
+                                            .xsmall()
+                                            .label("キャンセル")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.cancel_copilot_device_sign_in(cx);
+                                            })),
+                                    ),
+                            );
+                    } else {
+                        sec = sec.child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("ai-copilot-device-signin")
+                                        .primary()
+                                        .small()
+                                        .disabled(disabled || device_polling)
+                                        .label(if device_polling {
+                                            "コード取得中…"
+                                        } else {
+                                            "GitHub Copilot にサインイン"
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.start_copilot_device_sign_in(cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("ai-copilot-signout")
+                                        .ghost()
+                                        .small()
+                                        .disabled(disabled)
+                                        .label("サインアウト")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.sign_out_copilot_session(cx);
+                                        })),
+                                ),
+                        );
+                    }
+                    sec.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("または、Account permissions で Copilot Requests (Read-only) を付与した Fine-grained PAT (github_pat_...) を入力:"),
+                    )
+                    .child(Input::new(&copilot_token_input).small())
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("ai-assistant-save-copilot-token")
+                                    .outline()
+                                    .small()
+                                    .disabled(disabled)
+                                    .label("PAT を保存して接続")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.save_ai_assistant_settings(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("ai-assistant-create-pat")
+                                    .ghost()
+                                    .small()
+                                    .label("GitHub で PAT を作成")
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.open_url(sorane_github::GITHUB_FINE_GRAINED_PAT_NEW_URL);
+                                    })),
+                            ),
+                    )
+                })
                 .when(
                     matches!(choice, ConnectionChoice::Auto | ConnectionChoice::OpenAi),
                     |settings| {
@@ -5538,7 +6324,19 @@ impl SlideEditor {
         });
         #[cfg(target_family = "wasm")]
         let settings_box = show_settings.then(|| {
-            v_flex()
+            use gpui_kit::component::Disableable as _;
+            let provider = BrowserProvider::load();
+            let options: Vec<_> = BrowserProvider::ALL
+                .into_iter()
+                .map(|option| {
+                    crate::chrome::DropdownItem::new(option.label())
+                        .checked(provider == option)
+                        .on_select(std::rc::Rc::new(move |editor, window, cx| {
+                            editor.select_browser_provider(option, window, cx);
+                        }))
+                })
+                .collect();
+            let mut box_ui = v_flex()
                 .gap_2()
                 .p_2()
                 .rounded_md()
@@ -5548,8 +6346,75 @@ impl SlideEditor {
                 .child(
                     div()
                         .text_xs()
-                        .child("ブラウザでは、ログイン中の Docs から選んだモデルを使います。APIキーはこの画面には置きません。返答は提案です。文書は変わりません。"),
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("接続先 API"),
                 )
+                .child(
+                    crate::chrome::Dropdown::new(
+                        "ai-browser-provider",
+                        provider.label(),
+                        options,
+                        &cx.weak_entity(),
+                    )
+                    .searchable(false)
+                    .fill_width()
+                    .disabled(streaming),
+                );
+            if provider == BrowserProvider::GitHubCopilot {
+                box_ui = box_ui
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("GitHub App ログインで拒否される場合は、Account permissions で Copilot Requests (Read-only) を付与した Fine-grained PAT (github_pat_...) を入力してください。"),
+                    )
+                    .child(Input::new(&copilot_token_input).small())
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("ai-browser-save-copilot")
+                                    .primary()
+                                    .small()
+                                    .disabled(streaming)
+                                    .label("保存してモデル一覧を取得")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.save_browser_ai_settings(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("ai-browser-create-pat")
+                                    .outline()
+                                    .small()
+                                    .label("GitHub で PAT を作成")
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.open_url(sorane_github::GITHUB_FINE_GRAINED_PAT_NEW_URL);
+                                    })),
+                            ),
+                    );
+            } else {
+                box_ui = box_ui
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("エンドポイント URL と API キーを設定してモデル一覧を取得できます（ブラウザから直接接続します）。"),
+                    )
+                    .child(Input::new(&base_url_input).small())
+                    .child(Input::new(&model_input).small())
+                    .child(Input::new(&api_key_input).small())
+                    .child(
+                        Button::new("ai-browser-save-settings")
+                            .primary()
+                            .small()
+                            .disabled(streaming)
+                            .label("保存してモデル一覧を取得")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.save_browser_ai_settings(cx);
+                            })),
+                    );
+            }
+            box_ui
         });
         #[cfg(target_family = "wasm")]
         let browser_box = {
@@ -6103,14 +6968,58 @@ impl SlideEditor {
                     })
                     .when(!streaming && !awaiting_review, |row| {
                         #[cfg(any(target_os = "linux", target_os = "macos"))]
-                        let row = row.children(((self.presentation().workbook.is_some() || self.presentation().flow.is_some() || !self.presentation().slides.is_empty())).then(|| {
-                            Button::new("ai-assistant-acp").outline().small()
-                                .label(crate::i18n::text("ai.send-acp"))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.send_acp_prompt(window, cx);
-                                }))
-                        }));
+                        let row = {
+                            let external_agents = crate::ai_assistant_acp::available_external_agents();
+                            let supports_external = self.presentation().workbook.is_some()
+                                || self.presentation().flow.is_some()
+                                || !self.presentation().slides.is_empty();
+                            if supports_external && !external_agents.is_empty() {
+                                let selected_id = panel.selected_agent.clone();
+                                let current_label: SharedString = selected_id
+                                    .as_deref()
+                                    .and_then(|id| external_agents.iter().find(|a| a.id == id))
+                                    .map(|a| a.name.clone().into())
+                                    .unwrap_or_else(|| "内蔵アシスタント".into());
+                                let mut items = vec![
+                                    crate::chrome::DropdownItem::new("内蔵アシスタント")
+                                        .checked(selected_id.is_none())
+                                        .on_select(std::rc::Rc::new(|editor, _, cx| {
+                                            editor.select_assistant_agent(None, cx);
+                                        })),
+                                ];
+                                for agent in external_agents {
+                                    let id = agent.id.clone();
+                                    let checked = selected_id.as_deref() == Some(id.as_str());
+                                    items.push(
+                                        crate::chrome::DropdownItem::new(agent.name)
+                                            .checked(checked)
+                                            .on_select(std::rc::Rc::new(move |editor, _, cx| {
+                                                editor.select_assistant_agent(Some(id.clone()), cx);
+                                            })),
+                                    );
+                                }
+                                items.push(
+                                    crate::chrome::DropdownItem::new("外部エージェントを管理…")
+                                        .on_select(std::rc::Rc::new(|editor, _, cx| {
+                                            editor.open_external_agent_settings(cx);
+                                        })),
+                                );
+                                row.child(
+                                    div().flex_1().min_w_0().child(
+                                        crate::chrome::Dropdown::new(
+                                            "ai-agent-picker",
+                                            current_label,
+                                            items,
+                                            &cx.weak_entity(),
+                                        )
+                                        .searchable(false)
+                                        .fill_width(),
+                                    ),
+                                )
+                            } else {
+                                row
+                            }
+                        };
                         row.child(
                             Button::new("ai-assistant-send")
                                 .primary()

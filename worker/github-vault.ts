@@ -3,6 +3,8 @@
 // Stores the GitHub user access token and selected Vault in an AES-GCM
 // encrypted HttpOnly cookie so tokens are never exposed to browser JS.
 
+import { HELP_FILES, normalizeHelpLocale, type HelpFile, type HelpLocale } from './help-content.js';
+
 export interface GitHubVaultEnv {
   GITHUB_APP_CLIENT_ID?: string;
   GITHUB_APP_CLIENT_SECRET?: string;
@@ -28,7 +30,7 @@ const SESSION_COOKIE = 'sorane_gh_session';
 const STATE_COOKIE = 'sorane_gh_state';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
 const GITHUB_API = 'https://api.github.com';
-const SUPPORTED_EXT_RE = /\.(?:md|markdown|docx|xlsx|pptx|csv|tsv|jtd|vsdx|xdw|json)$/i;
+const SUPPORTED_EXT_RE = /\.(?:md|markdown|docx|xlsx|pptx|csv|tsv|jtd|vsdx|xdw|json|jsonl|lawtext|xml)$/i;
 const SAFE_SEGMENT_RE = /^[A-Za-z0-9._-]{1,100}$/;
 const SAFE_BRANCH_RE = /^[A-Za-z0-9._/-]{1,120}$/;
 
@@ -177,13 +179,304 @@ async function githubFetch(path: string, accessToken: string, init?: RequestInit
   return fetch(`${GITHUB_API}${path}`, { ...init, headers });
 }
 
-const GITHUB_MODELS_CHAT_URL = 'https://models.github.ai/inference/chat/completions';
-const AI_MODELS = [
-  { key: 'openai/gpt-4.1-mini', label: 'GitHub Models: GPT-4.1 mini (標準)', maxInputChars: 24000 },
-  { key: 'openai/gpt-4.1', label: 'GitHub Models: GPT-4.1', maxInputChars: 24000 },
-  { key: 'openai/gpt-4o-mini', label: 'GitHub Models: GPT-4o mini', maxInputChars: 24000 },
-  { key: 'openai/gpt-4o', label: 'GitHub Models: GPT-4o', maxInputChars: 24000 },
-] as const;
+const GITHUB_COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
+const GITHUB_COPILOT_API_BASE = 'https://api.githubcopilot.com';
+const COPILOT_EDITOR_VERSION = 'vscode/1.99.0';
+const COPILOT_EDITOR_PLUGIN_VERSION = 'copilot-chat/0.26.0';
+const COPILOT_INTEGRATION_ID = 'vscode-chat';
+
+export interface AiModelEntry {
+  key: string;
+  label: string;
+  maxInputChars: number;
+  vendor?: string;
+  fast?: boolean;
+  supportsToolCalls?: boolean;
+}
+
+interface CopilotTokenResult {
+  token: string;
+  apiBase: string;
+  expiresAt: number;
+}
+
+interface CopilotModelRaw {
+  id?: string;
+  name?: string;
+  vendor?: string;
+  model_picker_enabled?: boolean;
+  policy?: { state?: string };
+  capabilities?: {
+    type?: string;
+    limits?: {
+      max_prompt_tokens?: number;
+      max_context_window_tokens?: number;
+    };
+    supports?: {
+      streaming?: boolean;
+      tool_calls?: boolean;
+    };
+  };
+}
+
+function copilotHeaders(token: string, extra?: Record<string, string>): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/json',
+    'User-Agent': 'soraneDocs-Web',
+    'Editor-Version': COPILOT_EDITOR_VERSION,
+    'Editor-Plugin-Version': COPILOT_EDITOR_PLUGIN_VERSION,
+    'Copilot-Integration-Id': COPILOT_INTEGRATION_ID,
+    ...extra,
+  };
+}
+
+function isFastModelId(id: string): boolean {
+  const lower = id.toLowerCase();
+  return (
+    lower.includes('mini') ||
+    lower.includes('flash') ||
+    lower.includes('haiku') ||
+    lower.includes('nano') ||
+    lower.includes('lite') ||
+    lower.includes('small')
+  );
+}
+
+export function normalizeCopilotModels(payload: unknown): {
+  models: AiModelEntry[];
+  defaultModel: string | null;
+  completionModel: string | null;
+} {
+  const rawList: CopilotModelRaw[] = Array.isArray(payload)
+    ? payload
+    : payload && typeof payload === 'object' && Array.isArray((payload as { data?: unknown }).data)
+      ? ((payload as { data: CopilotModelRaw[] }).data)
+      : [];
+
+  const seen = new Set<string>();
+  const allChat: Array<AiModelEntry & { pickerEnabled: boolean; streaming: boolean }> = [];
+
+  for (const item of rawList) {
+    const id = typeof item?.id === 'string' ? item.id.trim() : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+
+    const policyState = item.policy?.state?.toLowerCase();
+    if (policyState === 'disabled' || policyState === 'unconfigured' || policyState === 'blocked') {
+      continue;
+    }
+    const kind = item.capabilities?.type?.toLowerCase();
+    if (kind && kind !== 'chat') continue;
+
+    const streaming = item.capabilities?.supports?.streaming !== false;
+    const supportsToolCalls = Boolean(item.capabilities?.supports?.tool_calls);
+    const tokens =
+      item.capabilities?.limits?.max_prompt_tokens ??
+      item.capabilities?.limits?.max_context_window_tokens ??
+      16000;
+    const maxInputChars = Math.max(8000, Math.min(120000, Math.round(tokens * 2.5)));
+    const rawName = typeof item.name === 'string' ? item.name.trim() : '';
+    const label = rawName && rawName.toLowerCase() !== id.toLowerCase()
+      ? `GitHub Copilot: ${rawName} (${id})`
+      : `GitHub Copilot: ${id}`;
+    const vendor = typeof item.vendor === 'string' && item.vendor.trim() ? item.vendor.trim() : undefined;
+
+    allChat.push({
+      key: id,
+      label,
+      maxInputChars,
+      ...(vendor ? { vendor } : {}),
+      fast: isFastModelId(id),
+      supportsToolCalls,
+      pickerEnabled: item.model_picker_enabled !== false,
+      streaming,
+    });
+  }
+
+  const pickerFiltered = allChat.filter(m => m.pickerEnabled);
+  const chosen = pickerFiltered.length > 0 ? pickerFiltered : allChat;
+  const models: AiModelEntry[] = chosen.map(({ pickerEnabled: _p, streaming: _s, ...entry }) => entry);
+
+  const streamingChosen = chosen.filter(m => m.streaming);
+  const pool = streamingChosen.length > 0 ? streamingChosen : chosen;
+  const defaultEntry =
+    pool.find(m => m.supportsToolCalls && !m.fast) ??
+    pool.find(m => !m.fast) ??
+    pool[0] ??
+    null;
+  const completionEntry =
+    pool.find(m => m.fast) ??
+    pool[0] ??
+    null;
+
+  return {
+    models,
+    defaultModel: defaultEntry?.key ?? null,
+    completionModel: completionEntry?.key ?? null,
+  };
+}
+
+async function exchangeCopilotToken(
+  githubAccessToken: string,
+): Promise<{ ok: true; data: CopilotTokenResult } | { ok: false; status: number; code: string; detail?: string }> {
+  let res: Response;
+  try {
+    res = await fetch(GITHUB_COPILOT_TOKEN_URL, {
+      method: 'GET',
+      headers: {
+        ...copilotHeaders(githubAccessToken),
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      code: 'ai_failed',
+      detail: err instanceof Error ? err.message : 'copilot_token_fetch_failed',
+    };
+  }
+
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { message?: string };
+    const code =
+      res.status === 401
+        ? 'login_required'
+        : res.status === 403 || res.status === 404
+          ? 'copilot_unavailable'
+          : res.status === 429
+            ? 'rate_limited'
+            : 'ai_failed';
+    return { ok: false, status: res.status, code, detail: errBody.message };
+  }
+
+  const parsed = (await res.json().catch(() => null)) as {
+    token?: string;
+    expires_at?: number;
+    endpoints?: { api?: string };
+  } | null;
+  const token = typeof parsed?.token === 'string' ? parsed.token.trim() : '';
+  if (!token) {
+    return { ok: false, status: 502, code: 'copilot_unavailable', detail: 'missing copilot session token' };
+  }
+  const rawApiBase = typeof parsed?.endpoints?.api === 'string' ? parsed.endpoints.api.trim().replace(/\/+$/, '') : '';
+  const apiBase = rawApiBase.startsWith('https://') ? rawApiBase : GITHUB_COPILOT_API_BASE;
+  return {
+    ok: true,
+    data: {
+      token,
+      apiBase,
+      expiresAt: typeof parsed?.expires_at === 'number' ? parsed.expires_at : 0,
+    },
+  };
+}
+
+async function fetchCopilotModelCatalog(
+  copilot: CopilotTokenResult,
+): Promise<
+  | { ok: true; models: AiModelEntry[]; defaultModel: string | null; completionModel: string | null }
+  | { ok: false; status: number; code: string; detail?: string }
+> {
+  let res: Response;
+  try {
+    res = await fetch(`${copilot.apiBase}/models`, {
+      method: 'GET',
+      headers: copilotHeaders(copilot.token),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      code: 'ai_failed',
+      detail: err instanceof Error ? err.message : 'copilot_models_fetch_failed',
+    };
+  }
+
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: { message?: string }; message?: string };
+    const code =
+      res.status === 401
+        ? 'login_required'
+        : res.status === 403 || res.status === 404
+          ? 'copilot_unavailable'
+          : res.status === 429
+            ? 'rate_limited'
+            : 'ai_failed';
+    return {
+      ok: false,
+      status: res.status,
+      code,
+      detail: errBody.error?.message || errBody.message,
+    };
+  }
+
+  const data = await res.json().catch(() => null);
+  const catalog = normalizeCopilotModels(data);
+  if (catalog.models.length === 0) {
+    return { ok: false, status: 502, code: 'copilot_unavailable', detail: 'no_chat_models_available' };
+  }
+  return { ok: true, ...catalog };
+}
+
+async function resolveCopilotAccess(
+  rawToken: string,
+): Promise<
+  | {
+      ok: true;
+      copilot: CopilotTokenResult;
+      models: AiModelEntry[];
+      defaultModel: string | null;
+      completionModel: string | null;
+    }
+  | { ok: false; status: number; code: string; detail?: string }
+> {
+  const exchanged = await exchangeCopilotToken(rawToken);
+  if (exchanged.ok) {
+    const catalog = await fetchCopilotModelCatalog(exchanged.data);
+    if (catalog.ok) {
+      return {
+        ok: true,
+        copilot: exchanged.data,
+        models: catalog.models,
+        defaultModel: catalog.defaultModel,
+        completionModel: catalog.completionModel,
+      };
+    }
+    const detail = `models: HTTP ${catalog.status}${catalog.detail ? ` (${catalog.detail})` : ''}`;
+    return { ok: false, status: catalog.status, code: catalog.code, detail };
+  }
+
+  // Fallback: some Copilot tokens (e.g. direct PATs or enterprise tenants) may authenticate directly.
+  if (exchanged.status === 403 || exchanged.status === 404) {
+    const directCopilot: CopilotTokenResult = {
+      token: rawToken,
+      apiBase: GITHUB_COPILOT_API_BASE,
+      expiresAt: 0,
+    };
+    const directCatalog = await fetchCopilotModelCatalog(directCopilot);
+    if (directCatalog.ok) {
+      return {
+        ok: true,
+        copilot: directCopilot,
+        models: directCatalog.models,
+        defaultModel: directCatalog.defaultModel,
+        completionModel: directCatalog.completionModel,
+      };
+    }
+    const exDetail = `token_exchange: HTTP ${exchanged.status}${exchanged.detail ? ` (${exchanged.detail})` : ''}`;
+    const dirDetail = `direct: HTTP ${directCatalog.status}${directCatalog.detail ? ` (${directCatalog.detail})` : ''}`;
+    return {
+      ok: false,
+      status: exchanged.status,
+      code: 'copilot_unavailable',
+      detail: `${exDetail}; ${dirDetail}`,
+    };
+  }
+
+  const detail = `token_exchange: HTTP ${exchanged.status}${exchanged.detail ? ` (${exchanged.detail})` : ''}`;
+  return { ok: false, status: exchanged.status, code: exchanged.code, detail };
+}
 
 async function deriveCsrfToken(session: GitHubSessionPayload, secret: string): Promise<string> {
   const data = new TextEncoder().encode(`sorane-ai-csrf:${secret}:${session.login}:${session.iat}`);
@@ -328,11 +621,150 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     return new Response(null, { status: 302, headers });
   }
 
-  // All remaining /api/github/* endpoints require a valid session cookie.
+  // Parse session cookie if present. /api/ai/* may also authenticate with an explicit
+  // Copilot PAT (X-Sorane-Copilot-Token) from the same origin without requiring a GitHub App login.
   const cookies = parseCookies(request.headers.get('Cookie'));
   const session = cookies[SESSION_COOKIE]
     ? await unsealSession(cookies[SESSION_COOKIE], env.GITHUB_SESSION_SECRET!)
     : null;
+  const suppliedCopilotToken = request.headers.get('X-Sorane-Copilot-Token')?.trim() || '';
+
+  if (pathname === '/api/ai/models' && request.method === 'GET') {
+    const origin = request.headers.get('Origin');
+    if (origin && origin !== url.origin) {
+      return json({ error: 'invalid_origin' }, 403);
+    }
+    if (!session && !suppliedCopilotToken) {
+      return json({ error: 'Authentication required.' }, 401);
+    }
+    const csrf = session ? await deriveCsrfToken(session, env.GITHUB_SESSION_SECRET!) : '';
+    const token = suppliedCopilotToken || session!.accessToken;
+    const resolved = await resolveCopilotAccess(token);
+    if (!resolved.ok) {
+      return json({
+        csrf,
+        provider: 'github-copilot',
+        models: [],
+        defaultModel: null,
+        completionModel: null,
+        error: resolved.code,
+        ...(resolved.detail ? { detail: resolved.detail } : {}),
+      });
+    }
+    return json({
+      csrf,
+      provider: 'github-copilot',
+      models: resolved.models,
+      defaultModel: resolved.defaultModel,
+      completionModel: resolved.completionModel,
+    });
+  }
+
+  if (pathname === '/api/ai/chat' && request.method === 'POST') {
+    const origin = request.headers.get('Origin');
+    if (origin && origin !== url.origin) {
+      return json({ error: 'invalid_origin' }, 403);
+    }
+    if (!session && !suppliedCopilotToken) {
+      return json({ error: 'Authentication required.' }, 401);
+    }
+    if (session) {
+      const expectedCsrf = await deriveCsrfToken(session, env.GITHUB_SESSION_SECRET!);
+      const suppliedCsrf = request.headers.get('X-Sorane-CSRF')?.trim() || '';
+      if (!suppliedCsrf || suppliedCsrf !== expectedCsrf) {
+        return json({ error: 'invalid_csrf' }, 403);
+      }
+    }
+
+    const body = (await request.json().catch(() => null)) as {
+      model?: unknown;
+      messages?: unknown;
+      purpose?: unknown;
+    } | null;
+    if (!body || !Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > 24) {
+      return json({ error: 'invalid_message' }, 400);
+    }
+
+    const token = suppliedCopilotToken || session!.accessToken;
+    const resolved = await resolveCopilotAccess(token);
+    if (!resolved.ok) {
+      return json(
+        { error: resolved.code, ...(resolved.detail ? { detail: resolved.detail } : {}) },
+        resolved.status === 401 ? 401 : 502,
+      );
+    }
+
+    const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
+    const preferFast = body.purpose === 'completion';
+    const fallbackKey = preferFast
+      ? (resolved.completionModel || resolved.defaultModel)
+      : (resolved.defaultModel || resolved.completionModel);
+    const allowedModel =
+      (requestedModel ? resolved.models.find(m => m.key === requestedModel) : undefined) ??
+      (fallbackKey ? resolved.models.find(m => m.key === fallbackKey) : undefined) ??
+      resolved.models[0];
+    if (!allowedModel) {
+      return json({ error: 'copilot_unavailable' }, 502);
+    }
+
+    const totalChars = body.messages.reduce<number>((sum, item) => {
+      if (item && typeof item === 'object' && 'content' in item && typeof item.content === 'string') {
+        return sum + item.content.length;
+      }
+      return sum;
+    }, 0);
+    if (totalChars > allowedModel.maxInputChars) {
+      return json({ error: 'too_long' }, 413);
+    }
+
+    let upstream: Response;
+    try {
+      upstream = await fetch(`${resolved.copilot.apiBase}/chat/completions`, {
+        method: 'POST',
+        headers: copilotHeaders(resolved.copilot.token, {
+          Accept: 'text/event-stream',
+          'Content-Type': 'application/json',
+          'Openai-Intent': 'conversation-panel',
+        }),
+        body: JSON.stringify({
+          model: allowedModel.key,
+          messages: body.messages,
+          stream: true,
+        }),
+      });
+    } catch (err) {
+      return json(
+        { error: 'ai_failed', detail: err instanceof Error ? err.message : 'copilot_chat_fetch_failed' },
+        502,
+      );
+    }
+
+    if (!upstream.ok) {
+      const errBody = (await upstream.json().catch(() => ({}))) as { error?: { message?: string }; message?: string };
+      const detail = `chat: HTTP ${upstream.status}${errBody.error?.message || errBody.message ? ` (${errBody.error?.message || errBody.message})` : ''}`;
+      const code = upstream.status === 401
+        ? 'login_required'
+        : upstream.status === 403 || upstream.status === 404
+          ? 'copilot_unavailable'
+          : upstream.status === 429
+            ? 'rate_limited'
+            : upstream.status === 413
+              ? 'too_long'
+              : 'ai_failed';
+      return json({ error: code, detail }, upstream.status === 401 ? 401 : 502);
+    }
+
+    return new Response(upstream.body, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Sorane-Model': allowedModel.key,
+      },
+    });
+  }
+
+  // All remaining /api/github/* endpoints require a valid session cookie.
   if (!session) {
     return json({ error: 'Authentication required.' }, 401);
   }
@@ -448,12 +880,244 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     return json({ repos, installUrl, installed, canCreateRepo, repoSelection, installSettingsUrl });
   }
 
+  function buildInitialIndexMarkdown(repo: string, locale: HelpLocale): string {
+    if (locale === 'en') {
+      return [
+        '---',
+        'type: index',
+        `title: ${repo} — soraneDocs Guide`,
+        'description: Personal knowledge and documents managed with soraneDocs.',
+        'profile: sorane-okf/0.1',
+        '---',
+        '',
+        `# ${repo}`,
+        '',
+        'Welcome to your private document repository created with soraneDocs.',
+        'This repository is your home for storing, editing, and committing notes, documents, spreadsheets, and slides directly from your browser or desktop.',
+        '',
+        '## Help & Syntax Reference',
+        '',
+        'All Markdown syntax guides and ibisOffice / soraneDocs instructions are included in the `help/` folder:',
+        '',
+        '- [[help/index|Help Index]]',
+        '- [[help/getting-started|Getting Started]]',
+        '- [[help/shortcuts|Keyboard Shortcuts]]',
+        '- [[help/markdown-basics|Markdown Basics & Extensions]]',
+        '- [[help/marp-slides|Marp Slide Syntax]]',
+        '- [[help/workbook-markdown|Workbook Markdown Syntax]]',
+        '- [[help/mermaid-diagrams|Mermaid Diagrams Guide]]',
+        '- [[help/okf-and-vault|OKF & Vault Workflow]]',
+        '- [[help/office-and-lawtext|Office Documents, Lawtext & Structured Data]]',
+        '',
+        '## 1. Quick Start',
+        '',
+        '1. **Open a document**: Click any file from the repository list on the start view.',
+        '2. **Edit and save**: When you save a repository file, it is committed directly to this repository after confirmation.',
+        '3. **Switch repository or subfolder**: Use the `GitHub: ...` button at the top of the start view.',
+        '',
+        '## 2. Supported Formats',
+        '',
+        '| Category | Extensions | Typical Use |',
+        '| --- | --- | --- |',
+        '| Markdown & Notes | `.md`, `.markdown` | Notes, meeting minutes, specs, OKF knowledge |',
+        '| Office Documents | `.docx`, `.jtd`, `.xdw` | Proposals, contracts, Ichitaro / DocuWorks |',
+        '| Spreadsheets & Data | `.xlsx`, `.csv`, `.tsv`, `.json` | Budgets, ledgers, structured data |',
+        '| Slides & Diagrams | `.pptx`, `.vsdx` | Presentations, architecture diagrams |',
+        '',
+        '## 3. Suggested Folder Layout',
+        '',
+        '```text',
+        `${repo}/`,
+        '├── index.md      # Repository guide & table of contents',
+        '├── help/         # Usage guides & Markdown syntax reference',
+        '├── notes/        # Daily notes & meeting minutes (Markdown)',
+        '├── docs/         # Proposals, specs & handouts (DOCX / XLSX / PPTX)',
+        '└── archive/      # Reference materials',
+        '```',
+        '',
+      ].join('\n');
+    }
+
+    return [
+      '---',
+      'type: index',
+      `title: ${repo} — soraneDocs ガイド`,
+      'description: Personal knowledge and documents managed with soraneDocs.',
+      'profile: sorane-okf/0.1',
+      '---',
+      '',
+      `# ${repo}`,
+      '',
+      'soraneDocs で作成したプライベートドキュメントリポジトリへようこそ。',
+      'このリポジトリは、あなたの文書・メモ・表計算・スライドを安全に保管し、ブラウザやデスクトップから直接編集・保存するための拠点です。',
+      '',
+      '## ヘルプ・記法ガイド',
+      '',
+      'すべての Markdown 記法や ibisOffice / soraneDocs の操作方法は `help/` フォルダにまとまっています。',
+      '',
+      '- [[help/index|ヘルプ目次]]',
+      '- [[help/getting-started|基本操作ガイド]]',
+      '- [[help/shortcuts|キーボードショートカット一覧]]',
+      '- [[help/markdown-basics|Markdown 基本・拡張記法]]',
+      '- [[help/marp-slides|Marp スライド記法]]',
+      '- [[help/workbook-markdown|Workbook Markdown 記法]]',
+      '- [[help/mermaid-diagrams|Mermaid 図表ガイド]]',
+      '- [[help/okf-and-vault|OKF と Vault 活用]]',
+      '- [[help/office-and-lawtext|Office 文書・Lawtext・構造化データ]]',
+      '',
+      '## 1. 基本的な使い方',
+      '',
+      '1. **文書を開く**: スタート画面のリポジトリ一覧からファイルをクリックして開きます。',
+      '2. **編集して保存する**: リポジトリから開いたファイルを保存・ダウンロードすると、確認ダイアログのあとにこのリポジトリへ直接コミットされます。',
+      '3. **リポジトリやフォルダを切り替える**: スタート画面上部の `GitHub: ...` ボタンから、別のリポジトリやサブフォルダ（例: `docs`）を指定できます。',
+      '',
+      '## 2. 対応しているファイル形式',
+      '',
+      '| カテゴリ | 対応拡張子 | 主な用途 |',
+      '| --- | --- | --- |',
+      '| マークダウン・文書 | `.md`, `.markdown` | メモ、議事録、設計書、OKF ナレッジ |',
+      '| オフィス文書 | `.docx`, `.jtd`, `.xdw` | 企画書、契約書、一太郎・DocuWorks 文書 |',
+      '| 表計算・データ | `.xlsx`, `.csv`, `.tsv`, `.json` | 集計表、台帳、データ一覧 |',
+      '| プレゼン・図面 | `.pptx`, `.vsdx` | 発表資料、構成図、フロー図 |',
+      '',
+      '## 3. おすすめのフォルダ構成',
+      '',
+      '```text',
+      `${repo}/`,
+      '├── index.md      # このガイド・全体の目次',
+      '├── help/         # 操作ガイド・Markdown 記法リファレンス',
+      '├── notes/        # 日々のメモ・議事録（Markdown）',
+      '├── docs/         # 企画書・仕様書・配布資料（DOCX / XLSX / PPTX）',
+      '└── archive/      # 保管用の参照資料',
+      '```',
+      '',
+      '## 4. OKF メモの書き方ヒント',
+      '',
+      'Markdown ファイルの先頭に YAML フロントマター（`---` で囲んだメタデータ）を記述すると、文書の種別やタグを構造化して管理できます。',
+      '',
+      '```markdown',
+      '---',
+      'type: note',
+      'title: 会議メモ',
+      'tags: [meeting, project]',
+      '---',
+      '',
+      '# 会議メモ',
+      '```',
+      '',
+      '## 5. トラブルシューティング',
+      '',
+      '- **新しいリポジトリが見えない／保存できない場合**: GitHub App（soraneDocs）のインストール設定で、リポジトリアクセスが **All repositories** になっているか、対象リポジトリが許可されているか確認してください。',
+      '- **ログインが切れた場合**: スタート画面上部の GitHub ボタンから再ログインすると、最新のトークンで再接続できます。',
+      '',
+    ].join('\n');
+  }
+
+  async function commitFilesToBranch(
+    owner: string,
+    repo: string,
+    branch: string,
+    accessToken: string,
+    files: HelpFile[],
+    message: string,
+  ): Promise<{ ok: true; commitSha: string } | { ok: false; status: number; error: string }> {
+    const refRes = await githubFetch(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branch)}`,
+      accessToken,
+    );
+    if (!refRes.ok) {
+      return { ok: false, status: refRes.status, error: 'ブランチの参照を取得できませんでした。' };
+    }
+    const refData = (await refRes.json()) as { object?: { sha?: string } };
+    const headCommitSha = refData.object?.sha;
+    if (!headCommitSha) {
+      return { ok: false, status: 502, error: 'ブランチの最新コミット SHA を取得できませんでした。' };
+    }
+
+    const commitRes = await githubFetch(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${headCommitSha}`,
+      accessToken,
+    );
+    if (!commitRes.ok) {
+      return { ok: false, status: commitRes.status, error: '最新コミット情報を取得できませんでした。' };
+    }
+    const commitData = (await commitRes.json()) as { tree?: { sha?: string } };
+    const baseTreeSha = commitData.tree?.sha;
+    if (!baseTreeSha) {
+      return { ok: false, status: 502, error: 'ベースツリー SHA を取得できませんでした。' };
+    }
+
+    const treeRes = await githubFetch(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,
+      accessToken,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          base_tree: baseTreeSha,
+          tree: files.map(f => ({
+            path: f.path,
+            mode: '100644',
+            type: 'blob',
+            content: f.content,
+          })),
+        }),
+      },
+    );
+    if (!treeRes.ok) {
+      return { ok: false, status: treeRes.status, error: 'Git ツリーの作成に失敗しました。' };
+    }
+    const treeData = (await treeRes.json()) as { sha?: string };
+    if (!treeData.sha) {
+      return { ok: false, status: 502, error: '作成した Git ツリーの SHA が空です。' };
+    }
+
+    const newCommitRes = await githubFetch(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,
+      accessToken,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          tree: treeData.sha,
+          parents: [headCommitSha],
+        }),
+      },
+    );
+    if (!newCommitRes.ok) {
+      return { ok: false, status: newCommitRes.status, error: 'コミットの作成に失敗しました。' };
+    }
+    const newCommitData = (await newCommitRes.json()) as { sha?: string };
+    if (!newCommitData.sha) {
+      return { ok: false, status: 502, error: '作成したコミットの SHA が空です。' };
+    }
+
+    const updateRefRes = await githubFetch(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(branch)}`,
+      accessToken,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sha: newCommitData.sha }),
+      },
+    );
+    if (!updateRefRes.ok) {
+      return { ok: false, status: updateRefRes.status, error: 'ブランチ参照の更新に失敗しました。' };
+    }
+
+    return { ok: true, commitSha: newCommitData.sha };
+  }
+
   if (pathname === '/api/github/repos/create' && request.method === 'POST') {
-    const body = (await request.json().catch(() => null)) as { name?: unknown; description?: unknown } | null;
+    const body = (await request.json().catch(() => null)) as { name?: unknown; description?: unknown; lang?: unknown } | null;
     const rawName = typeof body?.name === 'string' && body.name.trim() ? body.name.trim() : 'soraneDocs';
     if (!SAFE_SEGMENT_RE.test(rawName)) {
       return json({ error: 'リポジトリ名には英数字・ハイフン・アンダースコア・ドットのみ使用できます。' }, 400);
     }
+    const locale = normalizeHelpLocale(
+      typeof body?.lang === 'string' ? body.lang : request.headers.get('Accept-Language'),
+    );
     const description = typeof body?.description === 'string' && body.description.trim()
       ? body.description.trim().slice(0, 200)
       : 'Personal documents repository for soraneDocs';
@@ -584,64 +1248,7 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     const repoUrl = createData.html_url || `https://github.com/${owner}/${repo}`;
 
     // Initialize with an OKF-compliant, structured help index.md so the repository is useful immediately.
-    const initialIndex = [
-      '---',
-      'type: index',
-      `title: ${repo} — soraneDocs ガイド`,
-      'description: Personal knowledge and documents managed with soraneDocs.',
-      'profile: sorane-okf/0.1',
-      '---',
-      '',
-      `# ${repo}`,
-      '',
-      'soraneDocs で作成したプライベートドキュメントリポジトリへようこそ。',
-      'このリポジトリは、あなたの文書・メモ・表計算・スライドを安全に保管し、ブラウザやデスクトップから直接編集・保存するための拠点です。',
-      '',
-      '## 1. 基本的な使い方',
-      '',
-      '1. **文書を開く**: スタート画面のリポジトリ一覧からファイルをクリックして開きます。',
-      '2. **編集して保存する**: リポジトリから開いたファイルを保存・ダウンロードすると、確認ダイアログのあとにこのリポジトリへ直接コミットされます。',
-      '3. **リポジトリやフォルダを切り替える**: スタート画面上部の `GitHub: ...` ボタンから、別のリポジトリやサブフォルダ（例: `docs`）を指定できます。',
-      '',
-      '## 2. 対応しているファイル形式',
-      '',
-      '| カテゴリ | 対応拡張子 | 主な用途 |',
-      '| --- | --- | --- |',
-      '| マークダウン・文書 | `.md`, `.markdown` | メモ、議事録、設計書、OKF ナレッジ |',
-      '| オフィス文書 | `.docx`, `.jtd`, `.xdw` | 企画書、契約書、一太郎・DocuWorks 文書 |',
-      '| 表計算・データ | `.xlsx`, `.csv`, `.tsv`, `.json` | 集計表、台帳、データ一覧 |',
-      '| プレゼン・図面 | `.pptx`, `.vsdx` | 発表資料、構成図、フロー図 |',
-      '',
-      '## 3. おすすめのフォルダ構成',
-      '',
-      '```text',
-      `${repo}/`,
-      '├── index.md      # このガイド・全体の目次',
-      '├── notes/        # 日々のメモ・議事録（Markdown）',
-      '├── docs/         # 企画書・仕様書・配布資料（DOCX / XLSX / PPTX）',
-      '└── archive/      # 保管用の参照資料',
-      '```',
-      '',
-      '## 4. OKF メモの書き方ヒント',
-      '',
-      'Markdown ファイルの先頭に YAML フロントマター（`---` で囲んだメタデータ）を記述すると、文書の種別やタグを構造化して管理できます。',
-      '',
-      '```markdown',
-      '---',
-      'type: note',
-      'title: 会議メモ',
-      'tags: [meeting, project]',
-      '---',
-      '',
-      '# 会議メモ',
-      '```',
-      '',
-      '## 5. トラブルシューティング',
-      '',
-      '- **新しいリポジトリが見えない／保存できない場合**: GitHub App（soraneDocs）のインストール設定で、リポジトリアクセスが **All repositories** になっているか、対象リポジトリが許可されているか確認してください。',
-      '- **ログインが切れた場合**: スタート画面上部の GitHub ボタンから再ログインすると、最新のトークンで再接続できます。',
-      '',
-    ].join('\n');
+    const initialIndex = buildInitialIndexMarkdown(repo, locale);
     const initPayload = JSON.stringify({
       message: 'Initialize soraneDocs repository with OKF help index.md',
       content: toBase64(new TextEncoder().encode(initialIndex)),
@@ -697,13 +1304,52 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
       );
     }
 
+    // Best-effort commit of the localized help/ directory in a single commit.
+    const helpCommit = await commitFilesToBranch(
+      owner,
+      repo,
+      branch,
+      session.accessToken,
+      HELP_FILES[locale],
+      `Add soraneDocs help files (${locale})`,
+    );
+
     const nextVault: VaultSelection = { owner, repo, branch, rootPath: '' };
     const sealed = await sealSession({ ...session, vault: nextVault }, env.GITHUB_SESSION_SECRET!);
     return json(
-      { ok: true, vault: nextVault, repoUrl },
+      { ok: true, vault: nextVault, repoUrl, helpSynced: helpCommit.ok },
       201,
       { 'Set-Cookie': `${SESSION_COOKIE}=${sealed}; Max-Age=${SESSION_MAX_AGE}; ${cookieFlags(request)}` },
     );
+  }
+
+  if (pathname === '/api/github/sync-help' && request.method === 'POST') {
+    if (!session.vault) {
+      return json({ error: 'No Vault repository selected.' }, 400);
+    }
+    const body = (await request.json().catch(() => null)) as { lang?: unknown } | null;
+    const locale = normalizeHelpLocale(
+      typeof body?.lang === 'string' ? body.lang : request.headers.get('Accept-Language'),
+    );
+    const { owner, repo, branch, rootPath } = session.vault;
+    const prefix = rootPath ? `${rootPath.replace(/\/+$/, '')}/` : '';
+    const files: HelpFile[] = HELP_FILES[locale].map(f => ({
+      path: `${prefix}${f.path}`,
+      content: f.content,
+    }));
+
+    const result = await commitFilesToBranch(
+      owner,
+      repo,
+      branch,
+      session.accessToken,
+      files,
+      `Update soraneDocs help files (${locale})`,
+    );
+    if (!result.ok) {
+      return json({ error: result.error }, result.status);
+    }
+    return json({ ok: true, locale, count: files.length, commitSha: result.commitSha });
   }
 
   if (pathname === '/api/github/vault' && request.method === 'POST') {
@@ -878,81 +1524,6 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
       sha: putData.content?.sha ?? null,
       commitSha: putData.commit?.sha ?? null,
       commitUrl: putData.commit?.html_url ?? null,
-    });
-  }
-
-  if (pathname === '/api/ai/models' && request.method === 'GET') {
-    const csrf = await deriveCsrfToken(session, env.GITHUB_SESSION_SECRET!);
-    return json({ csrf, models: AI_MODELS });
-  }
-
-  if (pathname === '/api/ai/chat' && request.method === 'POST') {
-    const expectedCsrf = await deriveCsrfToken(session, env.GITHUB_SESSION_SECRET!);
-    const suppliedCsrf = request.headers.get('X-Sorane-CSRF')?.trim() || '';
-    if (!suppliedCsrf || suppliedCsrf !== expectedCsrf) {
-      return json({ error: 'invalid_csrf' }, 403);
-    }
-
-    const body = (await request.json().catch(() => null)) as {
-      model?: unknown;
-      messages?: unknown;
-    } | null;
-    if (!body || !Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > 24) {
-      return json({ error: 'invalid_message' }, 400);
-    }
-    const requestedModel = typeof body.model === 'string' && body.model.trim()
-      ? body.model.trim()
-      : AI_MODELS[0].key;
-    const allowedModel = AI_MODELS.find(m => m.key === requestedModel);
-    if (!allowedModel) {
-      return json({ error: 'invalid_model' }, 400);
-    }
-
-    const totalChars = body.messages.reduce<number>((sum, item) => {
-      if (item && typeof item === 'object' && 'content' in item && typeof item.content === 'string') {
-        return sum + item.content.length;
-      }
-      return sum;
-    }, 0);
-    if (totalChars > allowedModel.maxInputChars) {
-      return json({ error: 'too_long' }, 413);
-    }
-
-    const upstream = await fetch(GITHUB_MODELS_CHAT_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${session.accessToken}`,
-        Accept: 'text/event-stream',
-        'Content-Type': 'application/json',
-        'User-Agent': 'soraneDocs-Web',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-      body: JSON.stringify({
-        model: allowedModel.key,
-        messages: body.messages,
-        stream: true,
-      }),
-    });
-
-    if (!upstream.ok) {
-      const code = upstream.status === 401
-        ? 'login_required'
-        : upstream.status === 403
-          ? 'ai_not_configured'
-          : upstream.status === 429
-            ? 'rate_limited'
-            : upstream.status === 413
-              ? 'too_long'
-              : 'ai_failed';
-      return json({ error: code }, upstream.status === 401 ? 401 : 502);
-    }
-
-    return new Response(upstream.body, {
-      status: 200,
-      headers: {
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-store',
-      },
     });
   }
 

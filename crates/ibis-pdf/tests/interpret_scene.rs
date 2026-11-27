@@ -112,7 +112,7 @@ fn decodes_raster_image_xobject_to_rgba() {
     offsets.push((5, out.len()));
     let _ = writeln!(
         out,
-        "5 0 obj\n<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length {} >>\nstream",
+        "5 0 obj\n<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /Interpolate true /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length {} >>\nstream",
         img_bytes.len()
     );
     out.extend_from_slice(&img_bytes);

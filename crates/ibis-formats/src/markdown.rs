@@ -1363,8 +1363,10 @@ fn export_workbook_markdown_with_positions(
         let marker = if metadata.is_empty() {
             serde_json::json!(sheet_ref.name)
         } else {
-            metadata.insert("name".to_owned(), serde_json::json!(sheet_ref.name));
-            serde_json::Value::Object(metadata)
+            let mut ordered = serde_json::Map::new();
+            ordered.insert("name".to_owned(), serde_json::json!(sheet_ref.name));
+            ordered.extend(metadata);
+            serde_json::Value::Object(ordered)
         };
         push_workbook_metadata(&mut out, &marker);
         out.push_str("## ");
@@ -1438,8 +1440,8 @@ fn export_workbook_markdown_with_positions(
                         }));
                     } else if let Some(range) = sheet.fixed_arrays.get(&(r, c)) {
                         push_xlsx_json_marker(&mut out, XLSX_FORMULA_CELL_MARKER, &serde_json::json!({
-                            "formula": formula,
                             "fixedArray": ibis_doc_model::cell_name(range.last_column, range.last_row),
+                            "formula": formula,
                         }));
                     } else {
                         push_xlsx_string_marker(&mut out, XLSX_FORMULA_CELL_MARKER, &formula);
@@ -5761,8 +5763,10 @@ fn build_chart_block_from_spec(
                     x_values: Vec::new(),
                     bubble_sizes: Vec::new(),
                     format: "General".to_string(),
+                    has_format: false,
                     fill: Fill::None,
                     stroke: None,
+                    has_outline: false,
                     marker: None,
                     explosion: 0,
                     inner_shadow: None,
@@ -10175,7 +10179,7 @@ fn parse_markdown_shape_placement(text: &str) -> Result<MarkdownShapePlacement, 
             let Some([rgb, alpha]) = fill.as_array().map(Vec::as_slice) else { return Err(invalid()); };
             let rgb = rgb.as_u64().filter(|n| *n <= 0xffffff).ok_or_else(invalid)?;
             let alpha = alpha.as_u64().and_then(|n| u8::try_from(n).ok()).ok_or_else(invalid)?;
-            Fill::Solid(Color { rgb: Rgb(rgb as u32), alpha })
+            Fill::Solid(Color { rgb: Rgb(rgb as u32), alpha, theme: None })
         } else {
             Fill::None
         };
@@ -10900,6 +10904,7 @@ fn flow_paragraph_to_slide_paragraph(
         picture: None,
         size: 100_000,
         color: None,
+        color_theme: None,
         auto: None,
         symbol: None,
         font: None,

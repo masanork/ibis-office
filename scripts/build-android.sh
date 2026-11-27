@@ -76,7 +76,17 @@ echo "Building Android arm64 ($TARGET_PROFILE) versionName=$ANDROID_VERSION_NAME
 echo "1. Building libibis_office_app.so (arm64-v8a, $TARGET_PROFILE)..."
 export IBIS_THIRD_PARTY_NOTICES="$PWD/target/third-party-android.md"
 python3 scripts/gen-web-licenses.py android
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS:-} -C link-arg=-Wl,-z,max-page-size=16384"
+ANDROID_RUSTFLAGS="${CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS:-} -C link-arg=-Wl,-z,max-page-size=16384"
+if [[ "$TARGET_PROFILE" == "release" ]]; then
+  export CARGO_PROFILE_RELEASE_OPT_LEVEL="${CARGO_PROFILE_RELEASE_OPT_LEVEL:-z}"
+  export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-fat}"
+  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-1}"
+  export CARGO_PROFILE_RELEASE_INCREMENTAL="${CARGO_PROFILE_RELEASE_INCREMENTAL:-false}"
+  export CARGO_PROFILE_RELEASE_PANIC="${CARGO_PROFILE_RELEASE_PANIC:-abort}"
+  export CARGO_PROFILE_RELEASE_STRIP="${CARGO_PROFILE_RELEASE_STRIP:-symbols}"
+  ANDROID_RUSTFLAGS="$ANDROID_RUSTFLAGS -C link-arg=-Wl,--gc-sections -C link-arg=-Wl,--icf=all"
+fi
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="$ANDROID_RUSTFLAGS"
 cargo ndk -t arm64-v8a build --locked -p ibis-office-app --no-default-features --lib ${PROFILE_FLAG[@]+"${PROFILE_FLAG[@]}"}
 
 SO_PATH="target/aarch64-linux-android/$TARGET_PROFILE/libibis_office_app.so"

@@ -103,6 +103,40 @@ impl WorkspaceWindowFactory for SoraneWindowFactory {
             })
             .is_ok()
     }
+
+    fn open_tab_in_existing(&self, setup: WindowSetup, cx: &mut App) -> Result<(), WindowSetup> {
+        let target_window = cx
+            .active_window()
+            .into_iter()
+            .chain(cx.windows())
+            .find_map(|handle| {
+                let root = handle.downcast::<Root>()?;
+                let ws = root
+                    .update(cx, |root, _, _| root.view().clone().downcast::<SoraneWorkspace>().ok())
+                    .ok()
+                    .flatten()?;
+                Some((handle, ws))
+            });
+        let Some((handle, ws)) = target_window else {
+            return Err(setup);
+        };
+        let mut setup = Some(setup);
+        let ok = handle
+            .update(cx, |_, window, cx| {
+                if let Some(setup) = setup.take() {
+                    ws.update(cx, |ws, cx| {
+                        ws.open_setup_in_active_pane(setup, window, cx);
+                    });
+                }
+                window.activate_window();
+            })
+            .is_ok();
+        if ok {
+            Ok(())
+        } else {
+            Err(setup.expect("setup should remain if window update failed"))
+        }
+    }
 }
 
 /// Register `SoraneWorkspace` as the desktop window host and factory, plus its keyboard shortcuts.

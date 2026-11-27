@@ -11,6 +11,7 @@
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::{Sizable as _, v_flex};
 use gpui_kit::*;
+use ibis_doc_model::sheet_command::Axis;
 use ibis_doc_model::{CellRange, Command, ProtectedRange, ProtectionAllowed, SheetCommand, SheetProtection, WorkbookProtection};
 
 use crate::shell::chrome::SidebarPanel;
@@ -157,6 +158,17 @@ impl SlideEditor {
             cx.notify();
         }
         refused
+    }
+
+    /// Whether a protected sheet refuses the outline's buttons and keys, with no message (Excel on Windows, GitHub issue #291 W4): opening or
+    /// closing a group of rows needs the permission to format rows, of columns to format columns; grouping and ungrouping (`group` true) are
+    /// refused whatever is allowed.
+    pub(crate) fn outline_refused_by_protection(&self, axis: Axis, group: bool) -> bool {
+        let Some(p) = self.sheet_protection() else { return false };
+        group || !match axis {
+            Axis::Rows => p.allowed.format_rows,
+            Axis::Columns => p.allowed.format_columns,
+        }
     }
 
     /// Whether the selected cell's formula is hidden (数式を表示しない on a

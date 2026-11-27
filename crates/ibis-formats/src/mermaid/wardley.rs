@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/226)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! `wardley-beta`: Wardley maps. Components and anchors at `[visibility, evolution]`,
 //! dependency and flow links, evolution moves, pipelines, sourcing methods, inertia,

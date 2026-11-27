@@ -762,6 +762,12 @@ impl Folder {
         self.markdown_index.form_mappings()
     }
 
+    pub fn vault_presentation_requests(
+        &self,
+    ) -> &[ibis_formats::form_assist::PresentationRequestNote] {
+        self.markdown_index.presentation_requests()
+    }
+
     pub fn matching_form_mappings_for_sheet(
         &self,
         presentation: &ibis_doc_model::Presentation,
@@ -1876,7 +1882,7 @@ example: "[ignored](/資料/共通要件.md)"
     #[test]
     fn vault_db_v2_indexes_and_caches_profiles_form_mappings_and_credentials() {
         let fixture = Fixture::new();
-        for dir in ["profiles", "forms", "credentials"] {
+        for dir in ["profiles", "forms", "credentials", "requests"] {
             std::fs::create_dir_all(fixture.0.join(dir)).unwrap();
         }
         let (_, company_md) = ibis_formats::form_assist::starter_profile_markdown("organization");
@@ -1885,6 +1891,9 @@ example: "[ignored](/資料/共通要件.md)"
             "forms/invoice.form-map.md",
             "---\ntype: form-mapping\ntitle: テスト請求書\nx-sorane-form-mapping:\n  version: 1\n  form_id: invoice-test\n  format: xlsx\n  match:\n    sheet: 請求書\n  fields:\n    - id: org\n      label: 会社名\n      target: { cell: B3 }\n      sources:\n        - any: organization.name\n---\n",
         );
+        let (req_path, req_md) =
+            ibis_formats::form_assist::starter_presentation_request_markdown();
+        fixture.write(req_path, req_md);
         fixture.write(
             "credentials/training.sd-jwt",
             include_str!("../../../test/fixtures/structured-preview/training.sd-jwt"),
@@ -1895,6 +1904,11 @@ example: "[ignored](/資料/共通要件.md)"
         assert_eq!(first.vault_profiles()[0].scope, "organization");
         assert_eq!(first.vault_form_mappings().len(), 1);
         assert_eq!(first.vault_form_mappings()[0].form_id, "invoice-test");
+        assert_eq!(first.vault_presentation_requests().len(), 1);
+        assert_eq!(
+            first.vault_presentation_requests()[0].request_id,
+            "sample-verifier"
+        );
         assert_eq!(first.vault_credentials().len(), 1);
         assert_eq!(first.vault_credentials()[0].format, "sd-jwt");
         assert!(
@@ -1903,11 +1917,15 @@ example: "[ignored](/資料/共通要件.md)"
                 .contains_key("研修名")
         );
 
-        // Second scan hits SQLite v2 cache and preserves all indexed profiles, mappings, and credentials.
+        // Second scan hits SQLite v3 cache and preserves all indexed profiles, mappings, requests, and credentials.
         let second = Folder::scan(&fixture.0).unwrap();
-        assert!(second.markdown_index.cache_hits >= 2);
+        assert!(second.markdown_index.cache_hits >= 3);
         assert_eq!(second.vault_profiles(), first.vault_profiles());
         assert_eq!(second.vault_form_mappings(), first.vault_form_mappings());
+        assert_eq!(
+            second.vault_presentation_requests(),
+            first.vault_presentation_requests()
+        );
         assert_eq!(second.vault_credentials(), first.vault_credentials());
     }
 }

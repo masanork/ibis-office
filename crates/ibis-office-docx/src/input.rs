@@ -150,6 +150,10 @@ impl SlideEditor {
         }
         if !text.is_empty() {
             self.type_text(text, cx);
+        } else if self.ordered_selection().is_some_and(|(a, b)| a != b) {
+            // A range replaced by nothing is a deletion (iOS and Android send a backspace, or the word a suggestion replaces, as
+            // `beforeinput` with no key press, which the browser layer turns into this call, #267): the range is selected above, so take it out.
+            self.delete_char(false, cx);
         }
         cx.notify();
     }

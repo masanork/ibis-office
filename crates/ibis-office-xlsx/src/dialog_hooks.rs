@@ -68,8 +68,6 @@ impl SlideEditor {
             "goal_seek_panel" => { state.panels.goal_seek = None; }
             "function_panel" => { state.panels.function = None; }
             "sheet_word_count_panel" => { state.panels.word_count = None; }
-            "sheet_date_review_panel" => { state.panels.date_review = None; }
-            "sheet_variant_review_panel" => { state.panels.variant_review = None; }
             "data_table_panel" => { state.panels.data_table = None; }
             "scenario_manager_panel" => { state.panels.scenario_manager = None; }
             "sparkline_panel" => { state.panels.sparkline = None; }
@@ -88,7 +86,6 @@ impl SlideEditor {
             "timeline_insert_panel" => { state.panels.timeline_insert = None; }
             "watch_window_panel" => { state.panels.watch_window=None; }
             "control_properties_panel" => { state.panels.control_properties = None; }
-            "sd_jwt_panel" => { state.panels.sd_jwt = None; }
             "slicer_settings_panel" => { state.panels.slicer_settings = None; }
             "error_options_panel" => { state.panels.error_options = None; }
             "autocorrect_panel" => { state.panels.autocorrect = None; }
@@ -114,7 +111,7 @@ impl SlideEditor {
         }
     }
 
-    /// A rejected cell entry waited on the message: it is cancelled when the message is dismissed.
+    /// A rejected cell entry waited on the message: it is cancelled when the message is dismissed (the cell keeps its old value).
     pub(crate) fn xlsx_panel_message_dismissed(&mut self, cx: &mut Context<Self>) {
         let rejected = self.sheet_state_mut().and_then(|s| {
             s.validation_message_bounds = None;
@@ -124,6 +121,8 @@ impl SlideEditor {
             self.cancel_cell_edit(cx);
             self.status = None;
             self.set_cell(column, row);
+            // The entry was never committed: the cell keeps the value it had (Excel, "Stop" alert: Cancel returns to the old value; #284 N3 and N5,
+            // tasks/doc/requests/2026-11-24-284-ignore-blank-result.md).
         }
     }
 

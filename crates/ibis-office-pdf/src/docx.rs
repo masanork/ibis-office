@@ -65,6 +65,19 @@ pub fn export(bytes: &[u8]) -> Result<Vec<u8>> {
             );
         }
     }
+    #[cfg(all(feature = "ocr", not(target_family = "wasm")))]
+    if ibis_office_shell::ocr_setup::are_models_installed()
+        && let Some(dir) = ibis_office_base::app_data::ocr_models_dir()
+    {
+        for scene in &mut scenes {
+            if scene.text_index.chars.is_empty()
+                && let Ok(ocr_index) = crate::ocr::ocr_page_scene_from_dir(&dir, scene, false)
+                && !ocr_index.chars.is_empty()
+            {
+                scene.text_index = ocr_index;
+            }
+        }
+    }
     export_scenes(scenes, tagged)
 }
 

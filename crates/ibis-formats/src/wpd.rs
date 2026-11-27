@@ -32,11 +32,26 @@ pub fn is_wpd(data: &[u8]) -> bool {
 }
 
 pub fn open(data: &[u8]) -> Result<Opened, Error> {
-    crate::open(to_docx(data)?)
+    let (docx, omitted) = convert(data)?;
+    let mut opened = crate::open(docx)?;
+    if omitted != 0 {
+        opened.import_warning = Some(crate::ImportWarning::WordPerfectImagesOmitted(omitted));
+    }
+    Ok(opened)
 }
 
 pub fn to_docx(data: &[u8]) -> Result<Vec<u8>, Error> {
-    crate::hwpx::document_to_docx(|presentation| read(data, presentation))
+    convert(data).map(|(docx, _)| docx)
+}
+
+fn convert(data: &[u8]) -> Result<(Vec<u8>, usize), Error> {
+    let mut omitted = 0;
+    let docx = crate::hwpx::document_to_docx(|presentation| {
+        let (document, omitted_images) = read(data, presentation)?;
+        omitted = omitted_images;
+        Ok(document)
+    })?;
+    Ok((docx, omitted))
 }
 
 fn malformed() -> Error {
@@ -46,7 +61,7 @@ fn malformed() -> Error {
 fn read(
     data: &[u8],
     presentation: &mut ibis_doc_model::Presentation,
-) -> Result<FlowDocument, Error> {
+) -> Result<(FlowDocument, usize), Error> {
     if !is_wpd(data) {
         return Err(malformed());
     }
@@ -93,7 +108,7 @@ fn read(
     if importer.has_paragraph() || !matches!(importer.document.body.last(), Some(Block::Table(_))) {
         importer.finish_paragraph();
     }
-    Ok(importer.document)
+    Ok((importer.document, importer.pictures.omitted))
 }
 
 fn take_record(body: &[u8], code: u8) -> Result<&[u8], Error> {
@@ -376,6 +391,7 @@ mod tests {
     use super::*;
     fn read(data: &[u8]) -> Result<FlowDocument, Error> {
         super::read(data, &mut ibis_doc_model::Presentation::default())
+            .map(|(document, _)| document)
     }
     use ibis_doc_model::flow::FlowRunStyle;
 
@@ -549,6 +565,7 @@ mod tests {
 
         let data = include_bytes!("../../../test/fixtures/wordperfect/appearance.wpd");
         let opened = open(data).unwrap();
+        assert_eq!(opened.import_warning, None);
         let flow = opened.presentation.flow.unwrap();
         let [
             Block::Paragraph(_),
@@ -730,6 +747,215 @@ mod tests {
             (222, 90, [232, 136, 32, 255]), // Vector in front of the transformed bitmap.
         ] {
             assert_eq!(picture.get_pixel(x, y).0, expected, "pixel at ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn wpg2_anchored_linear_fill_keeps_drawing_coordinates_after_transform() {
+        let anchored =
+            include_bytes!("../../../test/fixtures/wordperfect/anchored-linear-wpg2.wpd");
+        let unanchored =
+            include_bytes!("../../../test/fixtures/wordperfect/unanchored-linear-wpg2.wpd");
+        let read_image = |data: &[u8]| {
+            let opened = open(data).unwrap();
+            assert_eq!(opened.import_warning, None);
+            image::load_from_memory(&opened.presentation.media.first().unwrap().data)
+                .unwrap()
+                .to_rgba8()
+        };
+        let pixels = read_image(anchored);
+        assert_eq!(pixels.dimensions(), (300, 225));
+        for (x, y, red) in [
+            (50, 100, 53),
+            (100, 100, 97),
+            (160, 100, 151),
+            (200, 100, 187),
+            (160, 135, 151),
+        ] {
+            let pixel = pixels.get_pixel(x, y).0;
+            assert_eq!(pixel[3], 255);
+            assert!(
+                pixel[0].abs_diff(red) <= 2,
+                "pixel at ({x}, {y}): {pixel:?}"
+            );
+        }
+        let local = read_image(unanchored);
+        assert_eq!(local.get_pixel(160, 100), local.get_pixel(200, 100));
+        assert!(local.get_pixel(160, 100).0[0].abs_diff(local.get_pixel(160, 135).0[0]) > 70);
+    }
+
+    #[test]
+    fn wpg2_shifted_circle_and_ellipse_preserve_gradient_geometry() {
+        let data = include_bytes!("../../../test/fixtures/wordperfect/gradient-geometry-wpg2.wpd");
+        let opened = open(data).unwrap();
+        assert_eq!(opened.import_warning, None);
+        let media = opened.presentation.media.first().unwrap();
+        let pixels = image::load_from_memory(&media.data).unwrap().to_rgba8();
+        assert_eq!(pixels.dimensions(), (300, 225));
+
+        // The circle's peak sits left and above the geometric center.
+        assert!(pixels.get_pixel(58, 98).0[0] > 225);
+        assert!(pixels.get_pixel(72, 112).0[0] < 165);
+        for (x, y) in [(86, 98), (58, 126), (31, 98), (58, 71)] {
+            let pixel = pixels.get_pixel(x, y).0;
+            assert!(pixel[0].abs_diff(131) <= 4 && pixel[2].abs_diff(125) <= 4);
+        }
+
+        // Equal fractions of the ellipse's two radii have the same color.
+        assert!(pixels.get_pixel(217, 112).0[0] > 225);
+        for (x, y) in [(249, 112), (217, 130), (186, 112), (217, 95)] {
+            let pixel = pixels.get_pixel(x, y).0;
+            assert!(pixel[0].abs_diff(131) <= 4 && pixel[2].abs_diff(125) <= 4);
+        }
+        assert_eq!(pixels.get_pixel(217, 150).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn wpg2_linear_stops_and_centered_radial_fill_survive_docx_conversion() {
+        let data = include_bytes!("../../../test/fixtures/wordperfect/gradient-stops-wpg2.wpd");
+        let opened = open(data).unwrap();
+        assert_eq!(opened.import_warning, None);
+        let media = opened.presentation.media.first().unwrap();
+        let pixels = image::load_from_memory(&media.data).unwrap().to_rgba8();
+        assert_eq!(pixels.dimensions(), (300, 225));
+
+        // The green stop is 37.5% across the rectangle, before its midpoint.
+        let green = pixels.get_pixel(63, 112).0;
+        assert!(green[0] < 30 && green[1] > 215 && green[2].abs_diff(100) <= 4);
+        assert!(pixels.get_pixel(30, 112).0[2] > 170);
+        assert!(pixels.get_pixel(78, 112).0[1] < 200);
+        assert!(pixels.get_pixel(130, 112).0[0] > 200);
+
+        // The circle has a red center and a blue rim.
+        let center = pixels.get_pixel(220, 112).0;
+        assert!(center[0] > 225 && center[2] < 51);
+        for (x, y) in [(249, 112), (220, 142), (190, 112), (220, 82)] {
+            let pixel = pixels.get_pixel(x, y).0;
+            assert!(pixel[0].abs_diff(131) <= 4 && pixel[2].abs_diff(125) <= 4);
+        }
+        assert!(pixels.get_pixel(275, 112).0[2] > 188);
+        assert_eq!(pixels.get_pixel(284, 112).0, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn wpg2_linear_gradients_survive_docx_conversion() {
+        let data = include_bytes!("../../../test/fixtures/wordperfect/linear-gradient-wpg2.wpd");
+        let opened = open(data).unwrap();
+        assert_eq!(opened.import_warning, None);
+        let media = opened.presentation.media.first().unwrap();
+        let pixels = image::load_from_memory(&media.data).unwrap().to_rgba8();
+        assert_eq!(pixels.dimensions(), (300, 225));
+        for (x, y, rgb) in [
+            (70, 58, [131, 80, 125]),
+            (215, 58, [123, 81, 131]),
+            (78, 166, [131, 80, 125]),
+            (215, 165, [55, 150, 80]),
+        ] {
+            let pixel = pixels.get_pixel(x, y).0;
+            assert_eq!(pixel[3], 255);
+            for (actual, expected) in pixel[..3].iter().zip(rgb) {
+                assert!(
+                    actual.abs_diff(expected) <= 4,
+                    "pixel at ({x}, {y}): {pixel:?}"
+                );
+            }
+        }
+        assert!(pixels.get_pixel(70, 20).0[0] > 205);
+        assert!(pixels.get_pixel(70, 97).0[0] < 45);
+        assert!(pixels.get_pixel(165, 58).0[0] < 45);
+        assert!(pixels.get_pixel(275, 58).0[0] > 215);
+        assert!(pixels.get_pixel(130, 125).0[0] > 205);
+        assert!(pixels.get_pixel(20, 205).0[0] < 55);
+    }
+
+    #[test]
+    fn wpg2_pen_patterns_survive_docx_conversion() {
+        let dashed = include_bytes!("../../../test/fixtures/wordperfect/dashed-grid-wpg2.wpd");
+        let dash_dot = include_bytes!("../../../test/fixtures/wordperfect/dash-dot-grid-wpg2.wpd");
+        for (data, samples) in [
+            (
+                dashed.as_slice(),
+                [
+                    (45, 55, true),
+                    (90, 55, false),
+                    (90, 130, true),
+                    (110, 55, true),
+                ],
+            ),
+            (
+                dash_dot.as_slice(),
+                [
+                    (85, 55, true),
+                    (100, 55, false),
+                    (125, 55, true),
+                    (76, 130, false),
+                ],
+            ),
+        ] {
+            let opened = open(data).unwrap();
+            assert_eq!(opened.import_warning, None);
+            let media = opened.presentation.media.first().unwrap();
+            let pixels = image::load_from_memory(&media.data).unwrap().to_rgba8();
+            for (x, y, ink) in samples {
+                let expected = if ink {
+                    [15, 110, 80, 255]
+                } else {
+                    [0, 0, 0, 0]
+                };
+                assert_eq!(pixels.get_pixel(x, y).0, expected, "pixel at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn reports_omitted_graphics_and_keeps_the_other_image_and_text() {
+        let data =
+            include_bytes!("../../../test/fixtures/wordperfect/partially-unsupported-wpg2.wpd");
+        let opened = open(data).unwrap();
+        assert_eq!(
+            opened.import_warning,
+            Some(crate::ImportWarning::WordPerfectImagesOmitted(1)),
+        );
+        let bytes = to_docx(data).unwrap();
+        let saved = crate::open(bytes).unwrap();
+        assert_eq!(saved.import_warning, None);
+        for document in [opened, saved] {
+            let flow = document.presentation.flow.as_ref().unwrap();
+            let [
+                Block::Paragraph(inline),
+                Block::Paragraph(floating),
+                Block::Paragraph(last),
+            ] = flow.body.as_slice()
+            else {
+                panic!("expected all three paragraphs");
+            };
+            assert!(
+                inline
+                    .runs
+                    .iter()
+                    .any(|run| matches!(run.kind, FlowRunKind::Picture { .. }))
+            );
+            assert!(
+                floating
+                    .runs
+                    .iter()
+                    .all(|run| !matches!(run.kind, FlowRunKind::Shape(_)))
+            );
+            for (paragraph, expected) in [
+                (inline, "Inline:"),
+                (floating, "Floating anchor"),
+                (last, "Last"),
+            ] {
+                let text: String = paragraph
+                    .runs
+                    .iter()
+                    .filter_map(|run| match &run.kind {
+                        FlowRunKind::Text(text) => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(text.contains(expected), "{text:?}");
+            }
         }
     }
 

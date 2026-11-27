@@ -1,0 +1,9 @@
+{
+  "name": "Sorane Spot Relay PoC",
+  "short_name": "SpotForm",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f7f8fa",
+  "theme_color": "#0f4c81"
+}

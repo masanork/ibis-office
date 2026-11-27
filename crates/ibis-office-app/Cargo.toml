@@ -38,6 +38,7 @@ ibis-formats.workspace = true
 ibis-lawtext.workspace = true
 ibis-ooxml = { workspace = true, optional = true }
 ibis-odf.workspace = true
+ibis-jtd.workspace = true
 ibis-emf.workspace = true
 gpui-kit.workspace = true
 lyon_tessellation = "1.0"
@@ -112,7 +113,7 @@ core-graphics = "0.24"
 # ibisOffice's fork of the Windows platform (GPUI has none for Windows).
 [target.'cfg(windows)'.dependencies]
 # MIT/Apache-2.0; use the native MediaPlayer and copy decoded frames through Direct3D.
-windows = { version = "0.61.3", features = ["Foundation", "Graphics_DirectX_Direct3D11", "Media_Core", "Media_Playback", "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Com", "Win32_System_WinRT", "Win32_System_WinRT_Direct3D11", "Win32_UI_Shell"] }
+windows = { version = "0.61.3", features = ["Foundation", "Graphics_DirectX_Direct3D11", "Media_Core", "Media_Playback", "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Com", "Win32_System_WinRT", "Win32_System_WinRT_Direct3D11", "Win32_UI_Shell", "Win32_System_Threading", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Security"] }
 
 gpui-pre-windows = { version = "=0.3.6", features = ["test-support"], optional = true }
 
@@ -124,11 +125,23 @@ scenarios = ["export", "dep:ibis-ooxml", "ibis-office-docx/scenarios", "ibis-off
 # `--export png|pdf|pdf-image|ui` on the command line (macOS, Windows and Linux;
 # build.rs sets `cfg(headless_export)` for it).
 export = ["dep:gpui-pre-platform", "dep:gpui-pre-windows", "dep:gpui-pre-wgpu", "dep:image", "dep:miniz_oxide", "dep:zune-jpeg", "dep:zune-core", "dep:krilla", "dep:skrifa", "dep:subsetter", "dep:usvg", "dep:gpui-pre-macos", "ibis-office-docx/export", "ibis-office-xlsx/export", "ibis-office-pptx/export", "ibis-office-shell/export", "ibis-office-render/export"]
+# Optional Pure-Rust NDLOCR-Lite engine for scanned PDF/OFD/XPS/XDW pages.
+ocr = ["ibis-office-pdf/ocr"]
+ocr-gpu = ["ocr", "ibis-office-pdf/ocr-gpu"]
+# Optional Pure-Rust Whisper-tiny speech-to-text engine.
+asr = ["ibis-office-shell/asr", "ibis-office-pptx/asr"]
+# Convenience bundles for Pure-Rust AI features (opt-in so default/WASM builds stay lean).
+ai = ["ocr", "asr"]
+ai-gpu = ["ocr-gpu", "asr"]
 
 # For the `export` feature on Linux: the headless renderer of ibisOffice's
 # fork of GPUI's wgpu renderer (GPUI has none for Linux).
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui-pre-wgpu = { version = "=0.3.6", features = ["test-support"], optional = true }
+
+# The wgpu renderer runs on the Mac only in a test (`tests/offscreen_readback.rs`: the readback of an offscreen pass, which the Metal renderer has not).
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui-pre-wgpu = { version = "=0.3.6", features = ["test-support"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 gpui-android = { path = "../gpui-android" }

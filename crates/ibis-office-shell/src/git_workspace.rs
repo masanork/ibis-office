@@ -643,7 +643,7 @@ impl SlideEditor {
                 match result {
                     Ok(RevisionPreview::LawComparison(opened)) => {
                         let name = comparison_name.unwrap_or_else(|| format!("{name}.docx"));
-                        crate::app::open_window_with(cx, move |editor, window, cx| {
+                        crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                             editor.load(opened.presentation, name.into(), window, cx);
                             editor.set_loaded_source(std::sync::Arc::new(opened.source));
                         });
@@ -724,7 +724,7 @@ impl SlideEditor {
             }
         };
         if self.has_document && !self.standard_read_only {
-            crate::app::open_window_with(cx, show);
+            crate::app::open_tab_or_window_with(cx, show);
         } else {
             show(self, window, cx);
         }

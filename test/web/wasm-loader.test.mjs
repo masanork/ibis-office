@@ -140,3 +140,60 @@ test('the delivered module omits the Wasm name section and keeps other custom se
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('compressed split chunks are preferred when single asset exceeds 25 MiB and fall back to raw chunks', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ibis-wasm-br-split-'));
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  try {
+    const chunkA = new Uint8Array(1024);
+    const chunkB = new Uint8Array(512);
+    chunkA.fill(0x41);
+    chunkB.fill(0x42);
+    const combined = new Uint8Array(chunkA.length + chunkB.length);
+    combined.set(chunkA, 0);
+    combined.set(chunkB, chunkA.length);
+    const { brotliCompressSync } = await import('node:zlib');
+    const brA = brotliCompressSync(chunkA);
+    const brB = brotliCompressSync(chunkB);
+    const sha = (buf) => createHash('sha256').update(buf).digest('hex');
+    await writeFile(join(dir, `ibis_office_app_bg.${sha(chunkA)}.chunk`), chunkA);
+    await writeFile(join(dir, `ibis_office_app_bg.${sha(chunkB)}.chunk`), chunkB);
+    const manifest = {
+      size: combined.length,
+      sha256: sha(combined),
+      chunks: [
+        { file: `ibis_office_app_bg.${sha(chunkA)}.chunk`, size: chunkA.length, sha256: sha(chunkA), br: { sha256: sha(brA), size: brA.length } },
+        { file: `ibis_office_app_bg.${sha(chunkB)}.chunk`, size: chunkB.length, sha256: sha(chunkB), br: { sha256: sha(brB), size: brB.length } },
+      ],
+    };
+    let brCalls = 0, rawCalls = 0, failBr = false;
+    console.warn = () => {};
+    globalThis.fetch = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith('.json')) return Response.json(manifest);
+      if (pathname.includes('/pkg/br/')) {
+        brCalls++;
+        if (failBr) return new Response('', { status: 406 });
+        const hash = pathname.split('/').pop().replace('.wasm', '');
+        return new Response(hash === sha(brA) ? chunkA : chunkB);
+      }
+      rawCalls++;
+      return new Response(await readFile(join(dir, pathname.split('/').pop())));
+    };
+    const url = new URL('https://example.test/pkg/ibis_office_app_bg.manifest.json');
+    const loaded = await loadWasm(url, () => {});
+    assert.deepEqual(new Uint8Array(await loaded.arrayBuffer()), combined);
+    assert.equal(brCalls, 2);
+    assert.equal(rawCalls, 0);
+
+    failBr = true;
+    const fallback = await loadWasm(url, () => {});
+    assert.deepEqual(new Uint8Array(await fallback.arrayBuffer()), combined);
+    assert.equal(rawCalls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -9,6 +9,9 @@ use ibis_doc_model::sd_jwt_import::{
 use serde_json::Value;
 
 pub mod ai_datasets;
+pub mod columnar_sql;
+pub mod notebook_schema;
+pub mod ontology;
 pub mod personas_evals;
 pub mod visual;
 pub mod xml_view;
@@ -41,9 +44,12 @@ pub struct CredentialDetails {
 }
 
 pub fn supports_extension(extension: &str) -> bool {
-    ["json", "jsonl", "ndjson", "yaml", "yml", "xml", "sd-jwt", "mdoc"]
-        .iter()
-        .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+    [
+        "json", "jsonld", "jsonl", "ndjson", "yaml", "yml", "toml", "ipynb", "xml", "rdf", "owl",
+        "ttl", "nt", "nq", "trig", "parquet", "arrow", "ipc", "feather", "sql", "sd-jwt", "mdoc",
+    ]
+    .iter()
+    .any(|candidate| extension.eq_ignore_ascii_case(candidate))
 }
 
 pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
@@ -61,11 +67,37 @@ pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
         "json" => {
             let data: Value = serde_json::from_slice(bytes).map_err(|_| "Invalid JSON")?;
             json_fields(&data, "", "/", 0, &mut fields)?;
-            ai_override = ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields);
+            ai_override = notebook_schema::try_build_schema_or_openapi_blocks(
+                &data,
+                raw_len,
+                &fields,
+            )
+            .or_else(|| ontology::try_build_jsonld_blocks(&data, raw_len, &fields))
+            .or_else(|| ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields));
             if ai_override.is_none() {
                 visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
             }
             "JSON"
+        }
+        "jsonld" => {
+            let (ld_fields, summary, ld_blocks) = ontology::read_jsonld(bytes, raw_len)?;
+            return Ok(Preview {
+                format: "JSON-LD",
+                fields: ld_fields,
+                credential: None,
+                summary,
+                blocks: ld_blocks,
+            });
+        }
+        "ipynb" => {
+            let (nb_fields, summary, nb_blocks) = notebook_schema::read_ipynb(bytes, raw_len)?;
+            return Ok(Preview {
+                format: "Jupyter Notebook",
+                fields: nb_fields,
+                credential: None,
+                summary,
+                blocks: nb_blocks,
+            });
         }
         "jsonl" | "ndjson" => {
             let src = text()?;
@@ -82,11 +114,23 @@ pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
             let src = text()?;
             let data: Value = serde_saphyr::from_str(src).map_err(|_| "Invalid YAML")?;
             json_fields(&data, "", "/", 0, &mut fields)?;
-            ai_override = ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields);
+            ai_override = notebook_schema::try_build_schema_or_openapi_blocks(
+                &data,
+                raw_len,
+                &fields,
+            )
+            .or_else(|| ai_datasets::try_build_ai_blocks_from_value(&data, raw_len, &fields));
             if ai_override.is_none() {
                 visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
             }
             "YAML"
+        }
+        "toml" => {
+            let src = text()?;
+            let data = notebook_schema::parse_toml_to_value(src)?;
+            json_fields(&data, "", "/", 0, &mut fields)?;
+            visual::build_json_blocks(&data, "", "", 0, &mut blocks)?;
+            "TOML"
         }
         "xml" => {
             let doc = parse_xml(bytes)?;
@@ -96,8 +140,74 @@ pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
                 xml_name(root.tag_name().namespace(), root.tag_name().name())
             );
             xml_fields(root, &root_path, 0, &mut fields)?;
-            visual::build_xml_blocks(root, &root_path, 0, &mut blocks)?;
+            ai_override = ontology::try_build_rdf_xml_blocks(&doc, raw_len, &fields);
+            if ai_override.is_none() {
+                visual::build_xml_blocks(root, &root_path, 0, &mut blocks)?;
+            }
             "XML"
+        }
+        "rdf" | "owl" => {
+            let (r_fields, summary, r_blocks) = ontology::read_rdf_xml(bytes, raw_len)?;
+            return Ok(Preview {
+                format: if extension.eq_ignore_ascii_case("owl") {
+                    "OWL"
+                } else {
+                    "RDF/XML"
+                },
+                fields: r_fields,
+                credential: None,
+                summary,
+                blocks: r_blocks,
+            });
+        }
+        "ttl" | "nt" | "nq" | "trig" => {
+            let src = text()?;
+            let (t_fields, summary, t_blocks) =
+                ontology::read_turtle_family(extension, src, raw_len)?;
+            let fmt = match extension.to_ascii_lowercase().as_str() {
+                "nt" => "N-Triples",
+                "nq" => "N-Quads",
+                "trig" => "TriG",
+                _ => "Turtle",
+            };
+            return Ok(Preview {
+                format: fmt,
+                fields: t_fields,
+                credential: None,
+                summary,
+                blocks: t_blocks,
+            });
+        }
+        "parquet" => {
+            let (p_fields, summary, p_blocks) = columnar_sql::read_parquet(bytes, raw_len)?;
+            return Ok(Preview {
+                format: "Parquet",
+                fields: p_fields,
+                credential: None,
+                summary,
+                blocks: p_blocks,
+            });
+        }
+        "arrow" | "ipc" | "feather" => {
+            let (a_fields, summary, a_blocks) = columnar_sql::read_arrow_ipc(bytes, raw_len)?;
+            return Ok(Preview {
+                format: "Arrow IPC",
+                fields: a_fields,
+                credential: None,
+                summary,
+                blocks: a_blocks,
+            });
+        }
+        "sql" => {
+            let src = text()?;
+            let (s_fields, summary, s_blocks) = columnar_sql::read_sql(src, raw_len)?;
+            return Ok(Preview {
+                format: "SQL",
+                fields: s_fields,
+                credential: None,
+                summary,
+                blocks: s_blocks,
+            });
         }
         "sd-jwt" => return credential("SD-JWT", raw_len, parse_sd_jwt(text()?, None)),
         "mdoc" => {

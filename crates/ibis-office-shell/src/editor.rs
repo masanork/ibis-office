@@ -317,6 +317,19 @@ impl ProductionImageView {
 }
 
 impl SlideEditor {
+    /// The colour just picked from a palette: with its theme reference when it was a square of the theme's rows (so a fill or an outline
+    /// follows the theme), else `rgb` as it is. The reference is taken: it serves one pick.
+    pub fn picked_color(&mut self, rgb: ibis_doc_model::Rgb) -> ibis_doc_model::Color {
+        let mut color = ibis_doc_model::Color::opaque(rgb);
+        color.theme = self.picked_theme(rgb);
+        color
+    }
+
+    /// The theme reference of the colour just picked (taken), when it is `rgb`'s.
+    pub fn picked_theme(&mut self, rgb: ibis_doc_model::Rgb) -> Option<ibis_doc_model::ThemeRef> {
+        self.theme_pick.take().filter(|t| t.resolved_rgb == rgb)
+    }
+
     /// ルーラーの測定単位を取得する (DOCX-VIEW-013).
     pub fn ruler_unit(&self) -> RulerUnit {
         self.ruler_unit
@@ -339,6 +352,8 @@ impl SlideEditor {
 #[cfg(target_family = "wasm")]
 #[derive(Default)]
 pub(crate) struct WebEditorState {
+    /// XML Spreadsheet imports must save to a new XLSX, away from their source handle.
+    pub(crate) xmlss_import: bool,
     pub(crate) open_generation: u64,
     /// Exact input for comparison while this law has no edits.
     pub(crate) law_source: Option<std::sync::Arc<Vec<u8>>>,
@@ -366,13 +381,14 @@ pub struct JtdState {
 }
 
 pub struct SlideEditor {
+    /// The theme reference of the theme square of a colour palette just picked, for the format that takes the colour to keep (see
+    /// `picked_color`). Cleared when another square is picked.
+    pub theme_pick: Option<ibis_doc_model::ThemeRef>,
     /// Focus of the workspace; key presses reach the editor through it.
     pub focus_handle: FocusHandle,
     /// Focus of the slide list.
     pub list_focus: FocusHandle,
     pub list_scroll: ScrollHandle,
-    /// Horizontal menu access on narrow windows.
-    pub(crate) menu_bar_scroll: ScrollHandle,
     /// Trackpad scrolling not yet turned into a page, in pixels.
     wheel: f32,
     /// The menu of the menu bar that is open (shell/menu_bar.rs).
@@ -439,6 +455,7 @@ pub struct SlideEditor {
     pub(crate) assistant_socket: Option<ibis_mcp::assistant_endpoint::SocketLifetime>,
     pub ai_assistant: Option<crate::ai_assistant::AiAssistantState>,
     pub inline_completion: crate::markdown_split::InlineCompletionState,
+    pub compact_viewport: bool,
     _zoom_subscription: Subscription,
     /// The status bar's list of zooms is open.
     pub zoom_menu_open: bool,
@@ -485,6 +502,9 @@ pub struct SlideEditor {
     pub sidebar_scroll: ScrollHandle,
     /// Decoded pictures and fonts for the open presentation.
     pub resources: Resources,
+    /// The pictures of charts and SmartArt being drawn for the Web page export (`html_raster.rs`).
+    #[cfg(target_family = "wasm")]
+    pub(crate) html_rasters: crate::html_raster::HtmlRasters,
     /// Redraws the editor as pictures decode (`watch_pictures`).
     pub(crate) picture_watch: Option<Task<()>>,
     /// Name of the open file; `None` for a new presentation.
@@ -503,6 +523,8 @@ pub struct SlideEditor {
     pub replace_fonts: Option<crate::replace_fonts::ReplaceFontsState>,
     /// ファイル名を変更 (the dialog of the menu at the file name in the title row: `shell/rename_file.rs`).
     pub rename_file: Option<crate::rename_file::RenameFileState>,
+    /// 校閲 > 医療画像（DICOM）の匿名化と挿入… (the dialog that blacks out parts of the image: `shell/dicom_dialog.rs`).
+    pub dicom_dialog: Option<crate::dicom_dialog::DicomDialogState>,
     /// The host that embeds the editor and keeps the file (`shell/host_editor.rs`): the file the document is tied to, read-only by the host.
     pub host: crate::host_editor::EditorHost,
     /// パスワード (the dialog that asks for or sets a password: `shell/password_window.rs`).
@@ -594,6 +616,34 @@ pub struct SlideEditor {
     pub embedded_chrome: Option<crate::window_editors::EmbeddedChromePolicy>,
     /// Where the toolbar's bar was drawn last (for the scenarios: its left edge is clear of the Mac window's buttons).
     pub toolbar_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    /// The width the slide show's pill was drawn with (0 until drawn), for deciding when it turns round (`narrow_layout::slideshow_is_round`).
+    pub slideshow_pill_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// The width of the screen's body (the window less the right pane) as this frame lays it out, for the slide list's fit (`narrow_layout::slide_list_fits`).
+    pub body_width: f32,
+    /// A finger has touched this window (K0061): with the system's own touch screens (iOS, Android) it is always so. A narrow window
+    /// of a touch device scrolls the menu bar and the toolbar sideways instead of folding them (`shell/narrow_layout.rs`).
+    pub touch_seen: bool,
+    /// The sideways scroll of the menu bar and of the toolbar in a narrow window of a touch device (K0061).
+    pub menu_bar_scroll: ScrollHandle,
+    pub toolbar_scroll: ScrollHandle,
+    /// How far the body is stretched past an end of its scroll now, as `ScrollBounce` shows it (x, y; pixels): written as the window is laid out,
+    /// read by the scenarios and the status (K0065).
+    pub overscroll_x: std::rc::Rc<std::cell::Cell<f32>>,
+    pub overscroll_y: std::rc::Rc<std::cell::Cell<f32>>,
+    /// What the touch drags are doing now: a finger given to the page as the mouse (K0065, `touch_scroll.rs`).
+    pub touch_scroll: crate::touch_scroll::TouchScroll,
+    /// The soft keyboard now (K0064, `keyboard_toolbar.rs`): the window is shortened by its height and the toolbar is put over it. A
+    /// device's is read from the platform as the window is laid out; the scenarios put one.
+    pub soft_keyboard: crate::keyboard_toolbar::SoftKeyboard,
+    /// K0091: the ⌄ of the keyboard's toolbar closed the soft keyboard: the window takes no text input (`accepts_text_now`) until the user taps a place on the page
+    /// (`on_touch_session`) or another file is loaded. The caret, the selection and what is being edited are kept.
+    pub keyboard_closed: bool,
+    /// What the soft keyboard's scrolling last saw (`keyboard_scroll.rs`): the keyboard's height and where what is typed into is on the content, and how many more frames to look.
+    pub(crate) kb_scroll: crate::keyboard_scroll::KeyboardScroll,
+    /// The places the splitters (the lines a finger can take hold of, K0084) were drawn at: kept again with each render (`splitter_mark`).
+    pub(crate) splitter_lines: std::rc::Rc<std::cell::RefCell<Vec<Bounds<Pixels>>>>,
+    /// The sideways scroll of the keyboard toolbar's buttons (K0064).
+    pub keyboard_toolbar_scroll: ScrollHandle,
     /// Where the open file came from, for saving it (`shell/save.rs`);
     /// `None` for a new document or one that cannot be saved.
     pub source: Option<std::sync::Arc<ibis_formats::Source>>,
@@ -722,6 +772,11 @@ impl SlideEditor {
         let dialog_keystrokes = cx.intercept_keystrokes(move |event, window, app| {
             if window.window_handle() == owner {
                 editor.update(app, |this, cx| {
+                    // A key pressed with Alt held makes a combination, whoever takes the key (the app's own shortcuts, Ctrl+Alt+letter, take it before the bar's
+                    // handler sees it): letting go of Alt is then not "Alt alone", which puts the focus on the bar (K0070, F1 of the Windows check).
+                    if event.keystroke.modifiers.alt {
+                        this.bar_keys.alt_combo = true;
+                    }
                     // Every message box by the keyboard (K0012, shell/message_box.rs): Tab and Shift+Tab move the ring over its
                     // buttons, Enter and Space press the ringed one, Esc presses the cancel.
                     if matches!(this.interaction_layer(), crate::dialog::InteractionLayer::External | crate::dialog::InteractionLayer::Save | crate::dialog::InteractionLayer::FileChanged
@@ -842,10 +897,10 @@ impl SlideEditor {
         });
         let entity_id = cx.entity_id();
         Self {
+            theme_pick: None,
             focus_handle: cx.focus_handle(),
             list_focus: cx.focus_handle(),
             list_scroll: ScrollHandle::new(),
-            menu_bar_scroll: ScrollHandle::new(),
             wheel: 0.0,
             open_menu: None,
             menu_dismissed_at: None,
@@ -887,6 +942,7 @@ impl SlideEditor {
             assistant_socket: None,
             ai_assistant: None,
             inline_completion: Default::default(),
+            compact_viewport: false,
             _zoom_subscription: zoom_subscription,
             zoom_menu_open: false,
             zoom_input,
@@ -912,6 +968,8 @@ impl SlideEditor {
             toolbar_search_popup_items: None,
             sidebar_scroll: ScrollHandle::new(),
             resources,
+            #[cfg(target_family = "wasm")]
+            html_rasters: Default::default(),
             picture_watch: None,
             file_name: None,
             status: None,
@@ -920,6 +978,7 @@ impl SlideEditor {
             grid_only: false,
             replace_fonts: None,
             rename_file: None,
+            dicom_dialog: None,
             host: Default::default(),
             #[cfg(not(target_family = "wasm"))]
             password_dialog: None,
@@ -973,6 +1032,19 @@ impl SlideEditor {
             chrome_compact: false,
             embedded_chrome: None,
             toolbar_bounds: Default::default(),
+            slideshow_pill_width: Default::default(),
+            body_width: 0.0,
+            touch_seen: false,
+            menu_bar_scroll: ScrollHandle::new(),
+            toolbar_scroll: ScrollHandle::new(),
+            touch_scroll: Default::default(),
+            overscroll_x: Default::default(),
+            overscroll_y: Default::default(),
+            soft_keyboard: crate::keyboard_toolbar::SoftKeyboard::HIDDEN,
+            keyboard_closed: false,
+            kb_scroll: Default::default(),
+            splitter_lines: Default::default(),
+            keyboard_toolbar_scroll: ScrollHandle::new(),
             source: None,
             current_csv_format: None,
             current_csv_original: None,
@@ -1110,12 +1182,18 @@ impl SlideEditor {
         { false }
     }
 
+    /// Android Material Design 3 Compact Window Size Class (`width < 600dp`).
+    /// Tablets, Chromebooks (Googlebook), and desktop windows (`>= 600dp`) return `false`.
+    pub fn is_compact_viewport(window: &Window) -> bool {
+        window.viewport_size().width < px(600.)
+    }
+
     pub(crate) fn narrow_phone_editor(window: &Window) -> bool {
         #[cfg(not(target_family = "wasm"))]
         let enabled = cfg!(target_os = "android");
         #[cfg(target_family = "wasm")]
         let enabled = crate::embed::phone_editor();
-        enabled && window.viewport_size().width < px(600.)
+        enabled && Self::is_compact_viewport(window)
     }
 
     #[cfg(any(target_os = "android", target_family = "wasm"))]
@@ -1381,7 +1459,7 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         { self.bom_source = None; }
         #[cfg(target_family = "wasm")]
-        { self.web.law_source = None; }
+        { self.web.law_source = None; self.web.xmlss_import = false; }
         #[cfg(any(target_os = "android", target_family = "wasm"))]
         {
             self.phone_editing = false;
@@ -1571,9 +1649,9 @@ impl SlideEditor {
             self.host_after_unsaved_check(crate::host_editor::HostAfter::Open, window, cx);
             return;
         }
-        // The browser's page has one editor, so the file replaces the document: not before the question about a document that was changed, or a new one that was typed in
+        // The browser's page and Android's NativeActivity have one editor, so the file replaces the document: not before the question about a document that was changed, or a new one that was typed in
         // (K0054; on the desktop `open_path_or_raise` opens it in a window of its own).
-        #[cfg(target_family = "wasm")]
+        #[cfg(any(target_family = "wasm", target_os = "android"))]
         if self.has_document && !self.replaceable_by_open() && (self.is_dirty() || self.file_path().is_none()) {
             self.commit_pending_edit(window, cx);
             self.host.after_confirm = Some(crate::host_editor::HostAfter::OpenLocal);
@@ -1822,6 +1900,7 @@ impl SlideEditor {
                     };
                     this.load(opened.presentation, doc_name, window, cx);
                     this.web.law_source = law_source;
+                    this.web.xmlss_import = opened_import == Some(crate::read_file::EditableImport::XmlSpreadsheet);
                     this.set_production_image_view(production_image, exposure);
                     this.image_provenance = image_provenance;
                     this.set_opened_source(std::sync::Arc::new(opened.source), production_image);
@@ -1833,12 +1912,36 @@ impl SlideEditor {
                     if is_ppsx {
                         with_format!(this, show_start(this, window, cx));
                     }
+                    this.show_import_warning(opened.import_warning, window, cx);
                 }
                 Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
             })
             .ok();
         })
         .detach();
+    }
+
+    fn show_import_warning(
+        &mut self,
+        warning: Option<ibis_formats::ImportWarning>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ibis_formats::ImportWarning::WordPerfectImagesOmitted(count)) = warning {
+            let title = crate::i18n::text("file.wpd-images-omitted.title");
+            let message = crate::i18n::format("file.wpd-images-omitted.message", &[("count", &count)]);
+            #[cfg(target_os = "macos")]
+            {
+                use gpui::{PromptButton, PromptLevel};
+                let buttons = [PromptButton::ok(crate::i18n::text("shell.action.ok"))];
+                let _ = window.prompt(PromptLevel::Warning, &title, Some(&message), &buttons, cx);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = window;
+                self.show_alert(title, message.into(), cx);
+            }
+        }
     }
 
     /// Show a file read from bytes (the browser's local file, a host's file): as the window's document, under `name`.
@@ -1853,6 +1956,7 @@ impl SlideEditor {
         if is_ppsx {
             with_format!(self, show_start(self, window, cx));
         }
+        self.show_import_warning(opened.import_warning, window, cx);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -2074,6 +2178,7 @@ impl SlideEditor {
                         this.sidebar_open = false;
                         this.set_status(crate::i18n::text("file.standard-read-only").to_string(), cx);
                     }
+
                     // (A presentation opens with its notes pane as the file's normal view left it.)
                     with_format!(this, file_opened(this));
                     if let Some(rx) = loaded.csv_stream {
@@ -2206,10 +2311,14 @@ impl SlideEditor {
                     if path.extension().and_then(|e| e.to_str()).is_some_and(ibis_formats::is_slideshow) {
                         with_format!(this, show_start(this, window, cx));
                     }
-                    match signature_presence {
-                        Ok(true) => this.show_alert(crate::i18n::text("file.signature-warning.title"), crate::i18n::text("file.signature-warning.message"), cx),
-                        Err(_) => this.show_alert(crate::i18n::text("file.signature-warning.title"), crate::i18n::text("file.signature-warning.unknown"), cx),
-                        Ok(false) => {},
+                    if loaded.import_warning.is_some() {
+                        this.show_import_warning(loaded.import_warning, window, cx);
+                    } else {
+                        match signature_presence {
+                            Ok(true) => this.show_alert(crate::i18n::text("file.signature-warning.title"), crate::i18n::text("file.signature-warning.message"), cx),
+                            Err(_) => this.show_alert(crate::i18n::text("file.signature-warning.title"), crate::i18n::text("file.signature-warning.unknown"), cx),
+                            Ok(false) => {},
+                        }
                     }
                     // A file with a password to modify: asked for, or read as it is.
                     if this.is_modify_locked() {
@@ -2337,6 +2446,33 @@ impl SlideEditor {
         self.force_close_file(window, cx);
         #[cfg(not(target_family = "wasm"))]
         window.remove_window();
+    }
+
+    /// The title row's ＜ and the format's icon (K0067): back to the start window.
+    ///
+    /// * Where the one window shows the start view and the file in turn (iOS, Android, the browser): the file is closed as ファイル > 閉じる
+    ///   does, but the window stays and shows the start view (the recent files list). With edits not saved it asks first (保存 / 保存しない /
+    ///   キャンセル) and goes on with the answer. The file is not kept open behind the start view: it is opened again from the list.
+    /// * On a computer, where the start window is a window of its own: it is brought to the front (made if there is none) and the file stays
+    ///   open and unchanged in its window.
+    pub fn back_to_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.back_to_start_on(crate::mobile_os::is_mobile_os() || cfg!(target_family = "wasm"), window, cx);
+    }
+
+    /// `back_to_start` for a device whose one window shows the start view and the file in turn (`single_window`) or not (the scenarios say).
+    pub fn back_to_start_on(&mut self, single_window: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_document || self.dialog_is_modal() {
+            return;
+        }
+        if single_window {
+            if self.is_dirty() {
+                self.ask_to_save(false, cx);
+            } else {
+                self.force_close_file(window, cx);
+            }
+        } else {
+            crate::app::open_editor(None, None, cx);
+        }
     }
 
     /// Show 「変更を保存しますか?」; `close_window`: the window goes once it is answered (its close button, quitting),
@@ -2511,14 +2647,32 @@ impl SlideEditor {
     /// The colour of the caret in the text being edited in a shape (see `caret::color_over`): over the shape's own fill, else over the slide's background, else
     /// over white.
     pub fn text_caret_color(&self) -> Hsla {
-        Self::caret_color_in(self.slide(), self.text_editing().map(|e| e.shape), &self.resources)
+        // The text highlighted at the caret (`a:highlight`) is drawn over the fill.
+        let highlight = self.text_editing().and_then(|e| {
+            let shape = self.slide().shape(e.shape)?;
+            let body = match (&shape.kind, e.cell) {
+                (ibis_doc_model::ShapeKind::Table(t), Some((row, column))) => &t.rows.get(row)?.cells.get(column)?.text,
+                _ => shape.text_body()?,
+            };
+            body.highlight_at(e.caret)
+        });
+        if let Some(color) = highlight {
+            return crate::caret::color_over(Some(color), ibis_doc_model::Rgb::WHITE);
+        }
+        Self::caret_color_in_cell(self.slide(), self.text_editing().map(|e| e.shape), self.text_editing().and_then(|e| e.cell), &self.resources)
     }
 
     /// `text_caret_color` for the text of `shape` on `slide`: over the shape's own fill (a picture's: its average colour), else over the background the
     /// slide is drawn on (`slide_backdrop_rgb`).
     pub fn caret_color_in(slide: &Slide, shape: Option<ShapeId>, res: &Resources) -> Hsla {
+        Self::caret_color_in_cell(slide, shape, None, res)
+    }
+
+    /// `caret_color_in` for the text of cell `cell` (row, column) when `shape` is a table: over the cell's own fill.
+    pub fn caret_color_in_cell(slide: &Slide, shape: Option<ShapeId>, cell: Option<(usize, usize)>, res: &Resources) -> Hsla {
         let own = shape.and_then(|id| slide.shape(id)).and_then(|s| match &s.kind {
             ibis_doc_model::ShapeKind::Auto(a) => Self::fill_rgb(&a.fill, res),
+            ibis_doc_model::ShapeKind::Table(t) => cell.and_then(|(row, column)| t.rows.get(row)?.cells.get(column)).and_then(|c| Self::fill_rgb(&c.fill, res)),
             _ => None,
         });
         crate::caret::color_over(own.or_else(|| Self::slide_backdrop_rgb(slide, res)), ibis_doc_model::Rgb::WHITE)
@@ -4276,7 +4430,7 @@ impl SlideEditor {
                 let id = self.document.ids().new_shape_id();
                 let index = self.slide().shapes.len();
                 self.execute(
-                    vec![Command::InsertShape { slide, shapes: vec![(index, Shape::text_box(id, frame, ""))] }],
+                    vec![Command::InsertShape { slide, shapes: vec![(index, self.presentation().object_defaults.apply_to_text_box(Shape::text_box(id, frame, "")))] }],
                     cx,
                 );
                 self.tool = Tool::Select;
@@ -4450,6 +4604,7 @@ impl SlideEditor {
 
 impl Render for SlideEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.splitter_lines.borrow_mut().clear();
         crate::cmyk::set_display_gamut(self.has_document && self.cmyk_on() && self.soft_proof);
         self.sync_zoom_slider(window, cx);
         if self.zoom_menu_open && !self.has_document {
@@ -4465,9 +4620,15 @@ impl Render for SlideEditor {
             with_format!(self, range_pick_suspend_drag(self, window));
         }
         crate::access_key::begin_frame(window);
+        // The pictures the Web page export is drawing (textures only: nothing shows).
+        #[cfg(target_family = "wasm")]
+        let raster_overlay = self.html_raster_overlay(window, cx);
+        #[cfg(not(target_family = "wasm"))]
+        let raster_overlay = Vec::<AnyElement>::new();
         let theme = cx.theme();
         let root = v_flex()
             .id("slide-editor").relative()
+            .children(raster_overlay)
             .children(with_format!(self, root_event_surface(self, cx)))
             .child(gpui_kit::component::popup_guard::begin())
             .child(gpui_kit::component::popup_guard::catcher())
@@ -4492,12 +4653,7 @@ impl Render for SlideEditor {
             .map(|d| self.guard_panel_actions(d, cx))
             .on_modifiers_changed(cx.listener(|this, e: &ModifiersChangedEvent, _, cx| with_format!(this, modifiers_changed(this, e, cx))))
             // Alt held: the access letters of the bar's menus are underlined (Windows and Linux).
-            .on_modifiers_changed(cx.listener(|this, e: &ModifiersChangedEvent, _, cx| {
-                if crate::access_key::supported() && this.bar_keys.alt_held != e.modifiers.alt {
-                    this.bar_keys.alt_held = e.modifiers.alt;
-                    cx.notify();
-                }
-            }))
+            .on_modifiers_changed(cx.listener(|this, e: &ModifiersChangedEvent, window, cx| this.bar_alt_changed(e.modifiers.alt, window, cx)))
             // Documents dropped from the Finder on the window are opened (pictures dropped on a slide are put on it).
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 #[cfg(not(target_family = "wasm"))]
@@ -4604,6 +4760,14 @@ impl Render for SlideEditor {
                 {
                     this.open_toolbar_menu_search(window, cx);
                     cx.stop_propagation();
+                } else if !this.show_running()
+                    && ks.modifiers.secondary()
+                    && !ks.modifiers.alt
+                    && !ks.modifiers.shift
+                    && (ks.key == "/" || ks.key_char.as_deref() == Some("/"))
+                {
+                    this.open_builtin_help("help/shortcuts.md", window, cx);
+                    cx.stop_propagation();
                 }
             }))
             // Drags are tracked on the whole window so they continue past the slide.
@@ -4612,6 +4776,11 @@ impl Render for SlideEditor {
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_pointer_up))
             .size_full()
+            // The window's safe area (Android's window is the whole screen: the content stays off the system bars, the cutout and the gesture grip).
+            .pl(px(crate::safe_area::current()[0]))
+            .pt(px(crate::safe_area::current()[1]))
+            .pr(px(crate::safe_area::current()[2]))
+            .pb(px(crate::safe_area::current()[3]))
             .bg(theme.background)
             .text_color(theme.foreground)
             .on_action(cx.listener(|this, _: &crate::actions::NextSheet, window, cx| this.step_sheet(true, window, cx)))
@@ -4623,6 +4792,7 @@ impl Render for SlideEditor {
             .when(!with_format!(self, show_in_main(self)), |d| self.render_window(d, window, cx))
             // The touch gestures of the whole window (`shell/gesture.rs`): here, once, for every format.
             .child(crate::gesture::touch_session_listener(cx))
+            .child(crate::touch_scroll::touch_scroll_listener(cx))
             .when_some(crate::host::watermark().filter(|_| self.has_document), |d, mark| d.child(crate::host_editor::watermark_overlay(&mark, window)))
             .map(|d| self.render_dialog_stack(d, window, cx))
             .map(|d| {
@@ -4678,6 +4848,7 @@ impl SlideEditor {
         // and the toolbar (the first two hidden by the toolbar's ^), the
         // document with the sidebar on its right, and the status bar.
         let narrow_phone = Self::narrow_phone_editor(window);
+        self.compact_viewport = Self::is_compact_viewport(window);
         let embedded = self.embedded_chrome;
         if !self.has_document {
             // A host that has no start window (`ui.startWindow` off: ibisWorks) gets a blank window until its document comes (no flash of the start view; K0037).
@@ -4689,30 +4860,38 @@ impl SlideEditor {
             }
             // The settings dialog (modal) over the start view: its panel is built, and drawn, by the sidebar's code as in a document.
             // The セットアップ dialog (K0001) is shown the same way: the first window at launch is often this one.
-            if self.settings.is_some() || self.font_setup_is_open() {
+            #[cfg(not(target_family = "wasm"))]
+            let ocr_setup_open = self.ocr_setup_is_open() || self.asr_setup_is_open();
+            #[cfg(target_family = "wasm")]
+            let ocr_setup_open = false;
+            if self.settings.is_some() || self.font_setup_is_open() || ocr_setup_open {
                 let _ = self.render_sidebar(window, cx);
             }
             // Windows and Linux: the start window's menus below the title row (macOS has them in the system's menu bar).
+            // Compact (< 600px) mobile viewports hide the desktop menu bar per Android guidelines.
             let show_start_title = embedded.is_none_or(|p| p.show_title_row);
-            let show_start_menu = embedded.is_none_or(|p| p.show_menu_bar) && crate::start_menu::shows_bar();
+            let at_bottom = crate::narrow_layout::bars_at_bottom(self, window);
+            let show_start_menu = !narrow_phone && embedded.is_none_or(|p| p.show_menu_bar) && crate::start_menu::shows_bar();
             let d = d
                 .when(show_start_title, |d| d.child(self.render_title_row(window, cx)))
-                .when(show_start_menu, |d| d.child(self.render_menu_bar(window, cx)));
+                .when(show_start_menu && !at_bottom, |d| d.child(self.render_menu_bar(window, cx)));
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            if embedded.is_none_or(|p| p.show_left_pane)
+            if !narrow_phone && embedded.is_none_or(|p| p.show_left_pane)
                 && let Some(pane) = self.render_folder_pane(cx).or_else(|| self.render_git_workspace(cx))
             {
                 return d.child(div().flex().flex_1().min_h_0().child(pane).child(
                     div().flex_1().min_w_0().min_h_0().child(self.render_start_view(narrow_phone, cx)),
                 ));
             }
-            return d.child(self.render_start_view(narrow_phone, cx));
+            return d
+                .child(self.render_start_view(narrow_phone, cx))
+                .when(show_start_menu && at_bottom, |d| d.child(self.render_menu_bar(window, cx)));
         }
         #[cfg(target_family = "wasm")]
         if let Some(view) = self.web.structured_view.clone() {
             return d
                 .child(self.render_title_row(window, cx))
-                .when(self.show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
+                .when(!narrow_phone && self.show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
                 .child(div().flex_1().min_h_0().w_full().child(view));
         }
         #[cfg(any(target_os = "android", target_family = "wasm"))]
@@ -4720,12 +4899,21 @@ impl SlideEditor {
         let mobile_viewer = self.phone_view_only();
         #[cfg(target_family = "wasm")]
         let mobile_viewer = mobile_viewer || (crate::embed::phone_viewer() && self.is_read_only() && !self.show_menu_bar && window.viewport_size().width < px(600.));
-        let compact = self.chrome_compact;
+        // A window under 720 px (K0061): the fingers' home is the bottom, so the menu bar and the toolbar are below the document and the
+        // status bar, and they are not hidden by the toolbar's ^ (which is not shown there).
+        let at_bottom = crate::narrow_layout::bars_at_bottom(self, window);
+        let compact = self.chrome_compact && !at_bottom;
+        // A soft keyboard is up (K0064, `keyboard_toolbar.rs`): its toolbar is at the window's bottom, over the keyboard. The bars that
+        // are at the bottom of a narrow window are under it (not shown: two toolbars are not shown at once).
+        self.sync_soft_keyboard();
+        let keyboard_bar = self.keyboard_toolbar_shown();
+        let keyboard_height = if keyboard_bar { self.soft_keyboard.height } else { 0.0 };
+        let bottom_bars = !keyboard_bar;
         let focus = with_format!(self, chrome_hidden(self));
-        let show_menu_bar = self.show_menu_bar && embedded.is_none_or(|p| p.show_menu_bar);
-        let show_toolbar = self.show_toolbar && embedded.is_none_or(|p| p.show_toolbar);
+        let show_menu_bar = !narrow_phone && self.show_menu_bar && embedded.is_none_or(|p| p.show_menu_bar);
+        let show_toolbar = !narrow_phone && self.show_toolbar && embedded.is_none_or(|p| p.show_toolbar);
         let show_title_row = embedded.is_none_or(|p| p.show_title_row)
-            && (!self.is_read_only() || show_menu_bar || {
+            && (mobile_viewer || narrow_phone || !self.is_read_only() || show_menu_bar || {
                 #[cfg(target_arch = "wasm32")]
                 {
                     crate::embed::show_close() || crate::embed::show_download()
@@ -4736,9 +4924,9 @@ impl SlideEditor {
                 }
             });
         let show_right_sidebar = embedded.is_none_or(|p| p.show_right_sidebar);
-        let show_left_pane = embedded.is_none_or(|p| p.show_left_pane);
-        let show_status_bar = embedded.is_none_or(|p| p.show_status_bar);
-        let sidebar = if focus || self.grid_only || self.phone_view_only() || !show_right_sidebar {
+        let show_left_pane = !narrow_phone && embedded.is_none_or(|p| p.show_left_pane);
+        let show_status_bar = !narrow_phone && embedded.is_none_or(|p| p.show_status_bar);
+        let sidebar = if focus || self.grid_only || (self.phone_view_only() && self.ai_assistant.is_none()) || !show_right_sidebar {
             self.right_pane = Default::default();
             None
         } else {
@@ -4757,46 +4945,93 @@ impl SlideEditor {
             let _ = show_left_pane;
             None
         };
+        self.body_width = f32::from(window.viewport_size().width) - paddings_total_of(window) - crate::safe_area::current()[0] - crate::safe_area::current()[2] - if sidebar.is_some() { self.sidebar_width.max(crate::chrome::SIDEBAR_WIDTH) } else { 0.0 };
         let body = with_format!(self, render_body(self, window, cx));
+        // K0089: a row of the body that goes under the toolbar in a narrow touch window (the worksheet's formula bar); it is drawn after the body, which leaves it out.
+        let bottom_row = if at_bottom && !focus { with_format!(self, render_bottom_row(self, window, cx)) } else { None };
         if self.grid_only {
             return d.child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)));
         }
+        let main_area = if narrow_phone && sidebar.is_some() {
+            div()
+                .flex()
+                .flex_row()
+                .flex_1()
+                .min_h_0()
+                .child(div().flex_1().min_w_0().min_h_0().children(sidebar))
+        } else {
+            div()
+                .flex()
+                .flex_row()
+                .flex_1()
+                .min_h_0()
+                .children(left_pane)
+                // Text input goes to the format (shell/input.rs).
+                .child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)))
+                .children(sidebar)
+        };
         d.when((mobile_viewer || narrow_phone) && !focus && show_title_row, |d| d.child(self.render_mobile_viewer_bar(narrow_phone, cx)))
             .when(!narrow_phone && !compact && !focus && show_title_row, |d| d.child(self.render_title_row(window, cx)))
-            .when(!mobile_viewer && !compact && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
-            .when(!mobile_viewer && !focus && show_toolbar, |d| d.child(self.render_toolbar(window, cx)))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_1()
-                    .min_h_0()
-                    .children(left_pane)
-                    // Text input goes to the format (shell/input.rs).
-                    .child(div().relative().flex().flex_col().flex_1().min_w_0().min_h_0().child(body).child(crate::input::input_region(cx)))
-                    .children(sidebar),
-            )
-            .when(!focus && show_status_bar, |d| d.child(self.render_status_bar(window, cx)))
+            .when(!mobile_viewer && !at_bottom && !compact && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
+            .when(!mobile_viewer && !at_bottom && !focus && show_toolbar, |d| d.child(self.render_toolbar(window, cx)))
+            .child(main_area)
+            .when(!focus && show_status_bar && (bottom_bars || !at_bottom), |d| d.child(self.render_status_bar(at_bottom, cx)))
+            .when(!mobile_viewer && at_bottom && bottom_bars && !focus && show_menu_bar, |d| d.child(self.render_menu_bar(window, cx)))
+            .when(!mobile_viewer && at_bottom && bottom_bars && !focus && show_toolbar, |d| d.child(self.render_toolbar(window, cx)))
+            .children(bottom_row)
+            .when(keyboard_bar, |d| d.child(self.render_keyboard_toolbar(window, cx)).child(div().w_full().h(px(keyboard_height)).flex_none()))
     }
 
-    /// Compact document controls for phone-sized windows.
+    /// Compact document controls for phone-sized windows (Android Material Design 3 Top App Bar).
     fn render_mobile_viewer_bar(&self, narrow_phone: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let name = self.file_name.clone().unwrap_or_else(|| "Docs".into());
-        h_flex().h(px(48.)).flex_shrink_0().px_3().gap_3().items_center()
+        let can_edit = narrow_phone && !self.file_is_read_only() && self.host.read_only.is_none();
+        let ai_open = self.ai_assistant.is_some();
+        h_flex().h(px(48.)).flex_shrink_0().px_2().gap_1().items_center()
             .bg(theme.title_bar).border_b_1().border_color(theme.title_bar_border)
-            .child(div().flex_1().min_w_0().truncate().text_sm().child(name))
+            .child(div().flex_1().min_w_0().px_1().truncate().text_sm().font_weight(FontWeight::MEDIUM).child(name))
+            .when(can_edit, |bar| {
+                bar.child(
+                    div().id("mobile-save-file").flex().items_center().justify_center()
+                        .min_w(px(48.)).h(px(40.)).px_2().rounded_md().cursor_pointer()
+                        .text_sm().text_color(theme.foreground)
+                        .child(crate::i18n::text("file.save"))
+                        .on_click(cx.listener(|this, _, window, cx| this.save(&crate::actions::Save, window, cx))),
+                )
+            })
+            .when(narrow_phone, |bar| {
+                bar.child(
+                    div().id("mobile-ai-toggle").flex().items_center().justify_center()
+                        .min_w(px(44.)).h(px(40.)).px_2().rounded_md().cursor_pointer()
+                        .when(ai_open, |d| d.bg(theme.accent).text_color(theme.accent_foreground).font_weight(FontWeight::SEMIBOLD))
+                        .when(!ai_open, |d| d.text_color(theme.foreground))
+                        .text_sm()
+                        .child("AI")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.ai_assistant.is_some() {
+                                this.ai_assistant = None;
+                                this.sidebar_open = false;
+                                cx.notify();
+                            } else {
+                                this.open_ai_assistant_panel(window, cx);
+                            }
+                        })),
+                )
+            })
             .child(div().id("mobile-open-file").flex().items_center().justify_center()
-                .min_w(px(72.)).h(px(40.)).px_3().rounded_md().cursor_pointer()
+                .min_w(px(52.)).h(px(40.)).px_2().rounded_md().cursor_pointer()
                 .text_sm().text_color(theme.foreground)
                 .child(crate::i18n::text("start.open"))
                 .on_click(cx.listener(|this, _, window, cx| this.open_file(&Open, window, cx))))
-            .when(narrow_phone && !self.file_is_read_only() && self.host.read_only.is_none(), |bar| {
+            .when(can_edit, |bar| {
                 #[cfg(any(target_os = "android", target_family = "wasm"))]
                 let bar = bar.child(
                     div().id("mobile-switch-mode").flex().items_center().justify_center()
-                        .min_w(px(72.)).h(px(44.)).px_3().rounded_md().cursor_pointer()
-                        .text_sm().text_color(theme.foreground)
+                        .min_w(px(56.)).h(px(40.)).px_2().rounded_md().cursor_pointer()
+                        .when(self.phone_editing, |d| d.bg(theme.accent).text_color(theme.accent_foreground).font_weight(FontWeight::SEMIBOLD))
+                        .when(!self.phone_editing, |d| d.text_color(theme.foreground))
+                        .text_sm()
                         .child(crate::i18n::text(if self.phone_editing { "docx.interaction.viewing" } else { "menu.edit" }))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.phone_editing = !this.phone_editing;
@@ -4857,6 +5092,12 @@ impl SlideEditor {
     /// How the searchable list `id` was asked to be shown (the default for a list opened by its own button).
     pub(crate) fn searchable_list_spec(&self, id: &str) -> crate::chrome::dropdown::ListSpec {
         self.toolbar_search_spec.filter(|(spec_id, _)| *spec_id == id).map(|(_, spec)| spec).unwrap_or_default()
+    }
+
+    /// The scroll handle of the menu search's list (the one `open_toolbar_menu_search` opens), if it has been made. For the scenarios of
+    /// `tasks/doc/test-design/K0078.md`.
+    pub fn menu_search_scroll(&self) -> Option<ScrollHandle> {
+        self.toolbar_search_scrolls.get("menu-search").cloned()
     }
 
     /// Get or create a `ScrollHandle` for a searchable dropdown menu (#125, #127).
@@ -4920,7 +5161,7 @@ impl SlideEditor {
     fn toolbar_dropdown_keystroke(&mut self,id:&'static str,key:&Keystroke,window:&mut Window,cx:&mut Context<Self>)->bool {
         let items=self.toolbar_search_popup_items.as_ref().filter(|(popup,_)|*popup==id).map(|(_,items)|items.clone()).unwrap_or_else(||self.searchable_menu_items_for(id));
         let spec=self.searchable_list_spec(id);
-        let search=items.len()>20||spec.always_search;
+        let search=crate::settings_dialog::list_has_search(id,items.len())||spec.always_search;
         match key.key.as_str() {
             "enter"=>{self.activate_top_toolbar_search_match(id,window,cx);true}
             "escape"=>self.dismiss_toolbar_dropdown(window,cx),
@@ -5044,7 +5285,7 @@ impl SlideEditor {
         let base = self
             .file_name
             .clone()
-            .unwrap_or_else(|| crate::file_actions::new_file_name(self.format.kind()));
+            .unwrap_or_else(|| crate::file_actions::next_new_file_name(self.format.kind()));
         match self.window_number {
             Some(n) => SharedString::from(format!("{base}:{n}")),
             None => base,
@@ -5106,7 +5347,8 @@ impl SlideEditor {
                     .into(),
             );
         }
-        if !docs.iter().any(|d| d.id == self.entity_id) {
+        // The start window (no file open) is not a document: it is not listed (#265: "プレゼンテーション1.pptx" was always there).
+        if self.has_document && !docs.iter().any(|d| d.id == self.entity_id) {
             // Not in the table yet (before its first frame): this window alone.
             entries.insert(
                 0,
@@ -5190,6 +5432,7 @@ impl SlideEditor {
         // panels, dialogs, menus, caches and settings that a touch on the page does not change, or that the document
         // history already carries (`document`).
         let SlideEditor {
+                theme_pick: _,
                 focus_handle: _,
                 list_focus: _,
                 list_scroll: _,
@@ -5262,6 +5505,7 @@ impl SlideEditor {
                 grid_only: _,
                 replace_fonts: _,
                 rename_file: _,
+                dicom_dialog: _,
                 host: _,
                 #[cfg(not(target_family = "wasm"))]
                 password_dialog: _,
@@ -5313,6 +5557,19 @@ impl SlideEditor {
                 chrome_compact: _,
                 embedded_chrome: _,
                 toolbar_bounds: _,
+                slideshow_pill_width: _,
+                body_width: _,
+                touch_seen: _,
+                menu_bar_scroll: _,
+                toolbar_scroll: _,
+                touch_scroll: _,
+                overscroll_x: _,
+                overscroll_y: _,
+                soft_keyboard: _,
+                keyboard_closed: _,
+                kb_scroll: _,
+                splitter_lines: _,
+                keyboard_toolbar_scroll: _,
                 source: _,
                 #[cfg(not(target_family = "wasm"))]
                 path: _,
@@ -5356,6 +5613,8 @@ impl SlideEditor {
                 show_menu_bar: _,
                 show_toolbar: _,
                 is_csv_streaming: _,
+                #[cfg(target_family = "wasm")]
+                html_rasters: _,
                 ..
         } = editor;
         let crate::shape_state::ShapeEditState {
@@ -5374,6 +5633,7 @@ impl SlideEditor {
                 gridlines: _,
                 snap_to_grid: _,
                 snap_to_shape: _,
+                hide_smart_guides: _,
                 align_to_slide: _,
                 chart_panel: _,
                 chart_data: _,
@@ -5486,4 +5746,10 @@ impl SlideEditor {
             .map(|s| s.to_string())
             .unwrap_or_else(|| crate::i18n::text("Book1").to_string())
     }
+}
+
+/// The window's side paddings (Linux's shadow drawn inside the viewport).
+fn paddings_total_of(window: &Window) -> f32 {
+    let paddings = gpui_kit::component::window_paddings(window);
+    f32::from(paddings.left + paddings.right)
 }

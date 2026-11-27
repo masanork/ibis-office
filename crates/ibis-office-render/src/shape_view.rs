@@ -238,9 +238,12 @@ pub struct Resources {
     japanese: std::cell::RefCell<HashMap<String, Option<bool>>>,
     /// What Word draws an underline and a strike from, in the installed font of a typeface (and of its bold) (`font_metrics::DecorationMetrics`).
     decoration: std::cell::RefCell<HashMap<(String, bool), Option<crate::font_metrics::DecorationMetrics>>>,
-    /// The web build's shaped widths of single characters (`text_width`), by font, size and character.
-    #[cfg(target_family = "wasm")]
+    /// Cached single-character advances (`char_width` / `text_width`), by font, size and character.
     char_widths: std::cell::RefCell<HashMap<(FontId, u32, char), f32>>,
+    /// Cached `Font -> FontId` resolutions so per-character layout does not re-lock `TextSystem`.
+    font_ids: std::cell::RefCell<HashMap<Font, FontId>>,
+    /// `fonts_generation()` snapshot for `char_widths` and `font_ids`.
+    metrics_fonts_gen: std::cell::Cell<u64>,
     /// Draw as printed: sheets without their grid lines.
     pub print: bool,
     /// The slide show is drawn: an animated GIF plays (elsewhere it shows its first frame).
@@ -280,6 +283,7 @@ pub struct Resources {
     /// The scale a printed sheet is drawn at on its paper (for where Excel
     /// starts its dashed borders), set by the export before each sheet.
     pub print_scale: std::cell::Cell<f64>,
+    pub grid_limit: std::cell::Cell<Option<(u32, u32)>>,
     /// Where each printed page of the sheet starts (row tops and column lefts in EMU of the sheet),
     /// set by the export with the scale: a fill does not reach back over the page's edge.
     pub print_breaks: std::cell::RefCell<Arc<(Vec<i64>, Vec<i64>)>>,
@@ -467,7 +471,6 @@ impl Resources {
             default_tab: paragraph.default_tab.unwrap_or(914_400).max(1) as f32 * scale,
             hanging_punct: !paragraph.no_hanging_punct,
             latin_line_break: paragraph.latin_line_break,
-            keep_hangul_words: paragraph.word_wrap == Some(true),
             room: Some(room),
             px_per_point,
             text_top: None,
@@ -475,6 +478,7 @@ impl Resources {
             positions: None,
             last,
             word_lines: body.word_lines,
+            font_lines: body.font_lines,
             upright: body.vertical,
             mirror: false,
             at_x: None,
@@ -656,8 +660,9 @@ impl Resources {
             row_metrics: Default::default(),
             japanese: Default::default(),
             decoration: Default::default(),
-            #[cfg(target_family = "wasm")]
             char_widths: Default::default(),
+            font_ids: Default::default(),
+            metrics_fonts_gen: std::cell::Cell::new(fonts_generation()),
             print: false,
             animate_pictures: std::cell::Cell::new(false),
             live_gifs: Default::default(),
@@ -675,6 +680,7 @@ impl Resources {
             markup_view: Default::default(),
             ime_marked: None,
             print_scale: std::cell::Cell::new(1.0),
+            grid_limit: std::cell::Cell::new(None),
             print_breaks: Default::default(),
             exact: false,
             theme_fonts: presentation.theme_fonts.as_ref().map(|t| t.minor.clone()),
@@ -989,8 +995,71 @@ impl Resources {
 
     /// The width of `text` in `font` at `size` pixels, from the characters'
     /// advances (text is laid out without kerning).
-    pub fn text_width(&self, text: &str, font: &Font, size: f32) -> f32 {
+    fn sync_metrics_caches(&self) {
+        let fonts_gen = fonts_generation();
+        if self.metrics_fonts_gen.get() != fonts_gen {
+            self.metrics_fonts_gen.set(fonts_gen);
+            self.char_widths.borrow_mut().clear();
+            self.font_ids.borrow_mut().clear();
+        }
+    }
+
+    pub fn resolve_font_cached(&self, font: &Font) -> FontId {
+        self.sync_metrics_caches();
+        if let Some(&id) = self.font_ids.borrow().get(font) {
+            return id;
+        }
         let id = self.text_system.resolve_font(font);
+        let mut cache = self.font_ids.borrow_mut();
+        if cache.len() >= 1024 {
+            cache.clear();
+        }
+        cache.insert(font.clone(), id);
+        id
+    }
+
+    pub fn char_width_for_id(&self, id: FontId, c: char, size: f32) -> f32 {
+        let key = (id, size.to_bits(), c);
+        if let Some(&w) = self.char_widths.borrow().get(&key) {
+            return w;
+        }
+        // The web build draws half-width Latin text with the browser's installed typeface of the document's font (the
+        // text system replaces the glyphs and their advances when the line is shaped, `forks/gpui-pre-web`), whereas the
+        // advance of the glyph the text system finds for the character is the bundled font's. A line measured so is spaced
+        // as the bundled font, not as the browser's glyphs it is drawn with: a monospaced typeface came out with its narrow
+        // letters closed up and its wide ones apart (#126). The shaped width of the one character has the replaced advance.
+        #[cfg(target_family = "wasm")]
+        let w = if (c as u32) < 0x2e80 && !c.is_control() {
+            f32::from(self.text_system.layout_width(id, px(size), c))
+        } else {
+            match self.text_system.advance(id, px(size), c) {
+                Ok(advance) => f32::from(advance.width),
+                Err(_) if c as u32 >= 0x2e80 => size,
+                Err(_) => size * 0.5,
+            }
+        };
+        #[cfg(not(target_family = "wasm"))]
+        let w = match self.text_system.advance(id, px(size), c) {
+            Ok(advance) => f32::from(advance.width),
+            Err(_) if c as u32 >= 0x2e80 => size,
+            Err(_) => size * 0.5,
+        };
+        let mut cache = self.char_widths.borrow_mut();
+        if cache.len() >= 65_536 {
+            cache.clear();
+        }
+        cache.insert(key, w);
+        w
+    }
+
+    /// Cached advance of a single character `c` at `size` pt without allocating a `String`.
+    pub fn char_width(&self, c: char, font: &Font, size: f32) -> f32 {
+        let id = self.resolve_font_cached(font);
+        self.char_width_for_id(id, c, size)
+    }
+
+    pub fn text_width(&self, text: &str, font: &Font, size: f32) -> f32 {
+        let id = self.resolve_font_cached(font);
         // A selector, a joiner and the character it joins take no room of their own: they are one glyph with the character before.
         let mut prev = None;
         text.chars()
@@ -1000,26 +1069,7 @@ impl Resources {
                 if joined {
                     return 0.0;
                 }
-                // The web build draws half-width Latin text with the browser's installed typeface of the document's font (the
-                // text system replaces the glyphs and their advances when the line is shaped, `forks/gpui-pre-web`), whereas the
-                // advance of the glyph the text system finds for the character is the bundled font's. A line measured so is spaced
-                // as the bundled font, not as the browser's glyphs it is drawn with: a monospaced typeface came out with its narrow
-                // letters closed up and its wide ones apart (#126). The shaped width of the one character has the replaced advance.
-                #[cfg(target_family = "wasm")]
-                if (c as u32) < 0x2e80 && !c.is_control() {
-                    let key = (id, size.to_bits(), c);
-                    if let Some(&w) = self.char_widths.borrow().get(&key) {
-                        return w;
-                    }
-                    let w = f32::from(self.text_system.layout_width(id, px(size), c));
-                    self.char_widths.borrow_mut().insert(key, w);
-                    return w;
-                }
-                match self.text_system.advance(id, px(size), c) {
-                    Ok(advance) => f32::from(advance.width),
-                    Err(_) if c as u32 >= 0x2e80 => size,
-                    Err(_) => size * 0.5,
-                }
+                self.char_width_for_id(id, c, size)
             })
             .sum()
     }
@@ -1249,6 +1299,10 @@ struct Fonts {
     traits: std::collections::BTreeMap<String, ibis_doc_model::TypefaceTraits>,
     /// A Word document's font table (typeface to `w:family`), where one is read: see `family`.
     docx_font_table: Option<std::collections::BTreeMap<String, ibis_doc_model::FontTableEntry>>,
+    /// Cached `Fonts::available(name)` results so repeated lookups do not linearly scan all system fonts.
+    available_cache: std::cell::RefCell<HashMap<String, Option<(SharedString, FontWeight)>>>,
+    /// `fonts_generation()` snapshot for `available_cache`.
+    available_fonts_gen: std::cell::Cell<u64>,
 }
 
 /// Weight words at the end of a typeface name, such as "Poppins SemiBold"
@@ -2412,6 +2466,12 @@ pub fn system_font_names() -> Option<&'static HashSet<String>> {
 
 /// The font names once fonts were added while the app runs (セットアップ's download): the system's with them. Made anew (and kept for
 /// the run) at each such addition, which is rare.
+pub fn ensure_system_font_names(cx: &gpui_kit::App) {
+    if SYSTEM_FONTS.get().is_none() {
+        let _ = Fonts::new(cx);
+    }
+}
+
 static LATE_FONTS: std::sync::RwLock<Option<&'static HashSet<String>>> = std::sync::RwLock::new(None);
 /// How many times fonts were added while the app runs: the font list (font_list.rs) is made again when it changes.
 static FONTS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2466,6 +2526,7 @@ impl Fonts {
     /// typeface already installed is used as installed; a font whose
     /// licence forbids embedded use is not used.
     fn add_embedded(&mut self, fonts: &[ibis_doc_model::EmbeddedFont], preload: &crate::preload::Preload, cx: &App) {
+        self.available_cache.borrow_mut().clear();
         let mut registered = REGISTERED_FONTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut new_fonts = Vec::new();
         for font in fonts {
@@ -2508,6 +2569,7 @@ impl Fonts {
                 None => log::warn!("embedded font {} could not be used", font.typeface),
             }
         }
+        self.available_cache.borrow_mut().clear();
         if !new_fonts.is_empty()
             && let Err(err) = cx.text_system().add_fonts(new_fonts)
         {
@@ -2583,6 +2645,8 @@ impl Fonts {
             calibri_for_missing: false,
             docx_font_table: None,
             traits: Default::default(),
+            available_cache: Default::default(),
+            available_fonts_gen: std::cell::Cell::new(fonts_generation()),
         }
     }
 
@@ -2677,12 +2741,26 @@ impl Fonts {
     /// Segoe UI at 350).
     fn available(&self, name: &str) -> Option<(SharedString, FontWeight)> {
         let name = self.resolve(name);
-        resolve_font_with_index(name, &self.installed, Some(&self.embedded_index), true)
+        let fonts_gen = fonts_generation();
+        if self.available_fonts_gen.get() != fonts_gen {
+            self.available_fonts_gen.set(fonts_gen);
+            self.available_cache.borrow_mut().clear();
+        }
+        if let Some(hit) = self.available_cache.borrow().get(name) {
+            return hit.clone();
+        }
+        let resolved = resolve_font_with_index(name, &self.installed, Some(&self.embedded_index), true)
             // A font downloaded since the document was opened (`add_fonts_now`).
             .or_else(|| (*LATE_FONTS.read().unwrap_or_else(|e| e.into_inner())).and_then(|late| resolve_font_with_index(name, late, None, true)))
             .map(|(family, weight, _)| (family, weight))
             // A typeface the browser version has the blocks of (GitHub issue #157): its base block, once it came.
-            .or_else(|| crate::subset_fonts::base_family_for_typeface(name).map(|family| (SharedString::from(family), FontWeight::NORMAL)))
+            .or_else(|| crate::subset_fonts::base_family_for_typeface(name).map(|family| (SharedString::from(family), FontWeight::NORMAL)));
+        let mut cache = self.available_cache.borrow_mut();
+        if cache.len() >= 1024 {
+            cache.clear();
+        }
+        cache.insert(name.to_string(), resolved.clone());
+        resolved
     }
 
     fn kind(&self) -> DocKind {
@@ -3008,6 +3086,34 @@ pub(crate) fn background_with_mode(fill: &Fill, mode: ColorMode) -> Option<Backg
         Fill::Path { stops, .. } => Some(hsla_mode(stops.last()?.color, mode).into()),
         Fill::None | Fill::Image(_) | Fill::TileImage { .. } | Fill::Blip(_) | Fill::TileLinear { .. } => None,
     }
+}
+
+/// The preset names of the dot patterns PowerPoint's pure black and white print gives the 3rd to 19th automatic series of a chart (`printDots3` to `printDots19`, then the series repeat with period 19):
+/// 1 unit (1/96 inch) squares of the paper's grid, black or white by the series' number (`tasks/doc/requests/2026-11-21-225-chart-stripes-result.md`).
+pub const PRINT_DOTS_PRESET_PREFIX: &str = "printDots";
+
+/// The series number (3 to 19) of a `printDots` preset.
+pub fn print_dots_of(preset: &str) -> Option<u8> {
+    preset.strip_prefix(PRINT_DOTS_PRESET_PREFIX)?.parse().ok().filter(|n| (3..=19).contains(n))
+}
+
+/// A gradient angle no gradient has: the background of the dots of series `n` is a gradient of this angle plus `n` (GPUI's background has no
+/// field for a pattern of our own), which the PDF writer takes for the tiling pattern of the dots (`print_dots_series`).
+const PRINT_DOTS_ANGLE: f32 = 7200.0;
+
+/// The background of the dots of automatic series `n` (see `PRINT_DOTS_ANGLE`); its stops are the dots' black and white.
+pub fn print_dots_background(n: u8) -> Background {
+    linear_gradient(
+        PRINT_DOTS_ANGLE + f32::from(n),
+        linear_color_stop(hsla(DocColor::opaque(Rgb(0))), 0.0),
+        linear_color_stop(hsla(DocColor::opaque(Rgb(0xffffff))), 1.0),
+    )
+}
+
+/// The series number of a background made by `print_dots_background`, from the angle of its gradient.
+pub fn print_dots_series(angle: f32) -> Option<u8> {
+    let n = angle - PRINT_DOTS_ANGLE;
+    ((3.0..=19.0).contains(&n) && n.fract() == 0.0).then_some(n as u8)
 }
 
 /// A fill as a GPUI background, for fills that are not pictures.
@@ -4592,7 +4698,7 @@ fn paint_bevel_stroke(window: &mut Window, pts: &[Point<Pixels>], bevel: &ibis_d
     for (poly, [r, g, b]) in crate::bevel::stroke_pieces(&flat, width, ratio, bevel.preset, rgb) {
         let corners: Vec<Point<Pixels>> = poly.iter().map(|&(x, y)| point(px(x), px(y))).collect();
         if let Some(path) = compound_path(&[(corners, true)], None) {
-            window.paint_path(path, hsla(ibis_doc_model::Color { rgb: ibis_doc_model::Rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)), alpha: 255 }));
+            window.paint_path(path, hsla(ibis_doc_model::Color { rgb: ibis_doc_model::Rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)), alpha: 255, theme: None }));
         }
     }
 }
@@ -4605,7 +4711,7 @@ fn paint_bevel(window: &mut Window, pts: &[Point<Pixels>], bevel: &ibis_doc_mode
     for (poly, [r, g, b]) in crate::bevel::pieces(&flat, width, ratio, bevel.preset, base, solid) {
         let corners: Vec<Point<Pixels>> = poly.iter().map(|&(x, y)| point(px(x), px(y))).collect();
         if let Some(path) = compound_path(&[(corners, true)], None) {
-            window.paint_path(path, hsla(ibis_doc_model::Color { rgb: ibis_doc_model::Rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)), alpha: 255 }));
+            window.paint_path(path, hsla(ibis_doc_model::Color { rgb: ibis_doc_model::Rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)), alpha: 255, theme: None }));
         }
     }
 }
@@ -6449,10 +6555,10 @@ fn picture_element(container: Div, shape: &Shape, picture: &Picture, frame: EmuR
     let lum_overlay = picture.luminance.filter(|_| styled.is_none()).and_then(|(bright, _)| {
         if bright > 0 {
             let alpha = ((bright as f32 / 100_000.0).clamp(0.0, 0.85) * 255.0) as u8;
-            Some(div().absolute().size_full().bg(hsla(DocColor { rgb: ibis_doc_model::Rgb(0xffffff), alpha })))
+            Some(div().absolute().size_full().bg(hsla(DocColor { rgb: ibis_doc_model::Rgb(0xffffff), alpha, theme: None })))
         } else if bright < 0 {
             let alpha = (((-bright) as f32 / 100_000.0).clamp(0.0, 0.85) * 255.0) as u8;
-            Some(div().absolute().size_full().bg(hsla(DocColor { rgb: ibis_doc_model::Rgb(0x000000), alpha })))
+            Some(div().absolute().size_full().bg(hsla(DocColor { rgb: ibis_doc_model::Rgb(0x000000), alpha, theme: None })))
         } else {
             None
         }
@@ -7068,8 +7174,7 @@ pub(crate) fn text_body_element(
                 default_tab: paragraph.default_tab.unwrap_or(914_400).max(1) as f32 * scale,
                 hanging_punct: !paragraph.no_hanging_punct,
                 latin_line_break: paragraph.latin_line_break,
-                keep_hangul_words: paragraph.word_wrap == Some(true),
-                room: width.map(|w| {
+                    room: width.map(|w| {
                     let total_w = (w as f32 - (body.insets.left + body.insets.right) as f32).max(0.0);
                     let col_w = if body.columns > 1 {
                         let cols = body.columns.clamp(1, 16) as f32;
@@ -7092,6 +7197,7 @@ pub(crate) fn text_body_element(
                 positions: slots.as_ref().map(|s| s[index].clone()),
                 last: index + 1 == body.paragraphs.len(),
                 word_lines: body.word_lines,
+                font_lines: body.font_lines,
                 upright: body.vertical,
                 mirror: body.vertical && body.vertical_kind == ibis_doc_model::VerticalKind::Mongolian,
                 at_x: origin_x.filter(|_| turn.is_none() && !body.vertical && paragraph.align.unwrap_or(body.style.align) == TextAlign::Left).map(|x0| {
@@ -7457,7 +7563,7 @@ mod font_resolution_tests {
     #[test]
     fn a_missing_latin_typeface_is_calibri_in_a_presentation_only() {
         let installed: HashSet<String> = ["Calibri", "Arial", "Carlito"].iter().map(|s| s.to_string()).collect();
-        let mut fonts = Fonts { installed, embedded_index: OpenTypeIndex::default(), east_asian_fallback: None, substitutions: HashMap::new(), calibri_for_missing: true, docx_font_table: None, traits: Default::default() };
+        let mut fonts = Fonts { installed, embedded_index: OpenTypeIndex::default(), east_asian_fallback: None, substitutions: HashMap::new(), calibri_for_missing: true, docx_font_table: None, traits: Default::default(), available_cache: Default::default(), available_fonts_gen: std::cell::Cell::new(fonts_generation()) };
         assert_eq!(fonts.family("Zzqx Missing Sans").0.as_ref(), "Calibri");
         assert_eq!(fonts.family("Helvetica").0.as_ref(), "Arial");
         fonts.calibri_for_missing = false;
@@ -7470,7 +7576,7 @@ mod font_resolution_tests {
         let installed: HashSet<String> = ["Cambria", "Calibri", "Georgia", "Arial"].iter().map(|s| s.to_string()).collect();
         let entry = |alt: &[&str], family: &str| ibis_doc_model::FontTableEntry { alt_names: alt.iter().map(|s| s.to_string()).collect(), family: family.into(), ..Default::default() };
         let table = [("Zzqx Serif".to_string(), entry(&["Zzqx Other", "Georgia"], "swiss")), ("Zzqx Plain".to_string(), entry(&[], "swiss"))].into_iter().collect();
-        let fonts = Fonts { installed, embedded_index: OpenTypeIndex::default(), east_asian_fallback: None, substitutions: HashMap::new(), calibri_for_missing: false, docx_font_table: Some(table), traits: Default::default() };
+        let fonts = Fonts { installed, embedded_index: OpenTypeIndex::default(), east_asian_fallback: None, substitutions: HashMap::new(), calibri_for_missing: false, docx_font_table: Some(table), traits: Default::default(), available_cache: Default::default(), available_fonts_gen: std::cell::Cell::new(fonts_generation()) };
         assert_eq!(fonts.family("Zzqx Serif").0.as_ref(), "Georgia");
         assert_eq!(fonts.family("Zzqx Plain").0.as_ref(), "Calibri");
     }
@@ -7482,6 +7588,8 @@ mod font_resolution_tests {
         Fonts {
             installed, embedded_index: OpenTypeIndex::default(), east_asian_fallback: Some("Yu Gothic".into()), substitutions: HashMap::new(), calibri_for_missing,
             docx_font_table: kind_document.then(Default::default), traits: Default::default(),
+            available_cache: Default::default(),
+            available_fonts_gen: std::cell::Cell::new(fonts_generation()),
         }
     }
 
@@ -7804,6 +7912,8 @@ mod font_resolution_tests {
             calibri_for_missing: table.is_none() && traits.values().any(|t| t.charset == Some(-128)),
             docx_font_table: table,
             traits,
+            available_cache: Default::default(),
+            available_fonts_gen: std::cell::Cell::new(fonts_generation()),
         }
     }
 
@@ -7990,6 +8100,8 @@ mod font_resolution_tests {
             calibri_for_missing: false,
             docx_font_table: None,
             traits: Default::default(),
+            available_cache: Default::default(),
+            available_fonts_gen: std::cell::Cell::new(fonts_generation()),
         };
 
         assert_eq!(

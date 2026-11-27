@@ -128,6 +128,8 @@ declare global {
     /** Called from Rust for the PDF's fallback font: the one font kept under `file` in IndexedDB, or `null`. */
     ibisOfficeFontLoadOne: (file: string) => Promise<Uint8Array | null>;
     /** Called from Rust when the close or the download button is pressed. */
+    ibisOfficeDownloadDocx: (name: string, bytes: Uint8Array) => void;
+    ibisOfficeDownloadHtml: (name: string, bytes: Uint8Array) => void;
     ibisOfficeEmbedAction: (kind: string, name: string, bytes?: Uint8Array) => void;
     /** Called from Rust for exports (HTML and the like): the browser saves `bytes` as the file `name`. */
     ibisOfficeSaveFile: (name: string, mime: string, bytes: Uint8Array) => void;
@@ -922,12 +924,12 @@ const WEB_STARTER_TEMPLATES: Record<string, { name: string; content: string }> =
     name: 'Untitled.sheet.md',
     content: [
       '---',
-      'ibis-workbook: true',
+      'workbook: true',
       '---',
       '',
-      '<!-- ibis-sheet: Sheet1 -->',
+      '<!-- xlsx-sheet "Sheet1" -->',
       '',
-      '# Sheet1',
+      '## Sheet1',
       '',
       '| 項目 | 値 | メモ |',
       '| --- | ---: | --- |',
@@ -995,6 +997,17 @@ window.ibisOfficeFontsInstalled = fontsInstalled;
 window.ibisOfficeFontDownload = fontDownload;
 window.ibisOfficeFontsLoad = fontsLoad;
 window.ibisOfficeFontLoadOne = fontLoadOne;
+function downloadJtdConversion(name: string, bytes: Uint8Array, type: string): void {
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+window.ibisOfficeDownloadDocx = (name, bytes) => downloadJtdConversion(name, bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+window.ibisOfficeDownloadHtml = (name, bytes) => downloadJtdConversion(name, bytes, 'text/html;charset=utf-8');
+
 window.ibisOfficeEmbedAction = embedAction;
 window.ibisOfficeSaveFile = saveFile;
 window.ibisOfficeSaveLocal = async (name, mime, bytes, saveAs) => {

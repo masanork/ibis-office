@@ -51,10 +51,16 @@ Each area below summarizes what this fork has built and contributed — noting i
 - **Ichitaro (`.jtd`, `.jtt`, `.jttc`)** *(Fork)*: Read-only preview restoring logical records, vertical text, ruby, borders, images, thumbnails, and TOC, with DOCX/HTML export ([docs/jtd-preview.md](docs/jtd-preview.md)).
 - **Microsoft Visio (`.vsdx`)** *(Proposed: [#292](https://github.com/ibisjp/ibis-office/issues/292))*: Viewing, creation, editing, stencil palette, flowchart shapes, snap highlights, and Web/Wasm support.
 - **Unified Office Format (UOF / `.uot`)** *(Fork)*: Native UOT document and embedded image import.
-- **WordPerfect (`.wpd`) & WPG 2** *(Fork)*: WordPerfect text/table import with WPG 2 vector, bitmap, curve, arc, and compound-path image composition.
+- **WordPerfect (`.wpd`) & WPG 2** *(Fork)*: WordPerfect text/table import with WPG 2 vector, bitmap, curve, arc, dashed stroke, linear, circular, and elliptical gradients, and compound-path image composition.
 - **DocuWorks (`.xdw`, `.xbd`) & Hancom (`.hwp`, `.hwpx`)** *(Proposed: [#254](https://github.com/ibisjp/ibis-office/issues/254), [#288](https://github.com/ibisjp/ibis-office/issues/288))*: Fixed-layout DocuWorks viewing and editable DOCX import for HWP 5.0 / HWPX.
 - **EPUB 3 & Production Images** *(Fork)*: Native EPUB 3 import, plus HEIC, DPX, Cineon, OpenEXR, and JPEG 2000 preview ([docs/production-image-preview-ja.md](docs/production-image-preview-ja.md)).
 - **OOXML & ODF Compatibility** *(Adopted: [#190](https://github.com/ibisjp/ibis-office/issues/190), [#221](https://github.com/ibisjp/ibis-office/issues/221))*: Office 2007 Standard encryption decryption, DOCX `w14:paraId` preservation, and extended ODF nested/hidden-row/column import.
+
+### WordPerfect compatibility
+
+Open WordPerfect 6.x files (`.wpd` and `.wp6`) and save a separate editable DOCX. Tested conversions retain text, paragraphs, page breaks and basic character formatting, as well as table grids, merged cells, borders and cell shading. Embedded graphics retain their inline or floating placement. Tested WPG 2 drawings include bitmaps, basic vectors, group rotation and scaling, Bézier curves, arcs, compound paths with holes, dashed strokes and linear, circular and elliptical fills.
+
+WPG drawings are saved as PNG images in DOCX. Unsupported records can omit an entire embedded image, and the import warning reports the number omitted. Encrypted WordPerfect files and other WordPerfect versions are outside this importer's scope. The anchored linear fill uses the drawing-coordinate interpretation tested with synthetic WPDs. Its appearance in WordPerfect or Corel Presentations remains unverified. LibreOffice also differs on some compound paths and gradients. Validation covers the supplied cases, including macOS DOCX Save As and reopening.
 
 ### 4. BI, Data Analytics & External Data Ingestion
 - **Cross-Format SQL & Query Pipeline** *(Proposed: [#263](https://github.com/ibisjp/ibis-office/issues/263))*: In-memory/streaming SQLite (Turso) query engine joining CSV, Parquet (column projection, multi-file append, Zstandard), Arrow IPC, JSON Lines, Avro, and SQLite tables; exports to named Excel tables with refreshable bindings, schema-change detection, quality-check gates, and encoding-aware CSV in-place saving.

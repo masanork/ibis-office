@@ -92,6 +92,7 @@ pub(super) fn decode(encoded: &str) -> Option<FloatingAnchor> {
     Some(FloatingAnchor {
         offset_x,
         offset_y,
+        frame_size: None,
         align_h: optional_setting(align_h, &["left", "center", "right", "inside", "outside"])?,
         align_v: optional_setting(align_v, &["top", "center", "bottom", "inside", "outside"])?,
         relative_h: setting(

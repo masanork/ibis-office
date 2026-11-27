@@ -30,19 +30,17 @@ test('sorane-start.js configures the featured samples and all bundled files exis
   });
   const startView = win.ibisOfficeOptions?.startView;
   assert.ok(startView, 'startView config should be installed');
-  assert.equal(startView.items.length, 12);
+  assert.equal(startView.items.length, 10);
   assert.equal(startView.selectAction?.action, 'github-vault');
   for (const name of [
-    'sorane-knowledge-note.md',
-    'marp-deck-sample.md',
-    'workbook-sheet-sample.md',
-    'sample-ordinance.lawtext',
-    'mermaid-showcase.md',
+    'markdown-to-docx-proposal.md',
+    'markdown-to-pptx-deck.md',
+    'mynumber-law.lawtext',
+    'mynumber-law-2023-comparison.jtd',
     'ai-eval-results-sample.jsonl',
     'ibis-office-wasm.sbom.cdx.json',
-    'roster-matching-sample.xlsx',
+    'mermaid-showcase.md',
     'standard-linkage.csv',
-    'mynumber-law-2023-comparison.jtd',
     'urban-comfort-analysis.xlsx',
     'anim_stress_test.pptx',
   ]) {

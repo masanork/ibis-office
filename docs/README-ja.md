@@ -51,10 +51,16 @@ ibisOffice 本来のベンチマーク、基本機能一覧、商用ライセン
 - **一太郎（`.jtd`・`.jtt`・`.jttc`）** *（Fork）*：論理レコード・縦書き・ルビ・罫線・画像・サムネイル・目次を復元する読み取り専用プレビューと DOCX/HTML 出力（[jtd-preview.md](jtd-preview.md)）。
 - **Microsoft Visio（`.vsdx`）** *（提案中: [#292](https://github.com/ibisjp/ibis-office/issues/292)）*：閲覧・新規作成・編集、ステンシルパレット、フローチャート図形、スナップハイライト、Web/Wasm 版対応。
 - **Unified Office Format（UOF / `.uot`）** *（Fork）*：UOT 文書および埋め込み画像のネイティブ読み込み。
-- **WordPerfect（`.wpd`）& WPG 2** *（Fork）*：WordPerfect 文書（テキスト・表）および WPG 2 ベクタ・ビットマップ・曲線・複合パス画像の読み込み。
+- **WordPerfect（`.wpd`）& WPG 2** *（Fork）*：WordPerfect 文書（テキスト・表）および WPG 2 ベクタ・ビットマップ・曲線・破線・線形・円形・楕円形グラデーション・複合パス画像の読み込み。
 - **DocuWorks（`.xdw`・`.xbd`）& Hancom（`.hwp`・`.hwpx`）** *（提案中: [#254](https://github.com/ibisjp/ibis-office/issues/254), [#288](https://github.com/ibisjp/ibis-office/issues/288)）*：DocuWorks 閲覧および HWP 5.0 / HWPX の編集可能な DOCX としての読み込み。
 - **EPUB 3・制作素材画像** *（Fork）*：EPUB 3 ネイティブ読み込み、HEIC・DPX・Cineon・OpenEXR・JPEG 2000 プレビュー（[production-image-preview-ja.md](production-image-preview-ja.md)）。
 - **OOXML / ODF 互換強化** *（採用済み: [#190](https://github.com/ibisjp/ibis-office/issues/190), [#221](https://github.com/ibisjp/ibis-office/issues/221)）*：Office 2007 Standard 暗号化復号、DOCX 段落 ID（`w14:paraId`）の編集・保存時保持、ODF の入れ子領域・繰り返し列・非表示行列読み込み拡張。
+
+### WordPerfectの互換性
+
+WordPerfect 6系（`.wpd`・`.wp6`）を開き、編集可能なDOCXへ別名保存できます。本文・段落・改ページ・基本書式、表の行列構造・結合セル・罫線・背景色を確認済みです。埋め込み図は行内・浮動配置を保持します。WPG 2ではビットマップと基本図形の混在、グループの回転・拡大縮小、ベジェ曲線・円弧、穴のある複合パス、破線、線形・円形・楕円形のグラデーションを検証しました。
+
+WPG図はDOCX内でPNG画像になります。未対応レコードがあると埋め込み図全体が欠落する場合があり、開くときに欠落件数を通知します。暗号化文書や6系以外の読み込みは対象外です。アンカー付き線形塗りは合成WPDで図全体の座標に固定する挙動を確認しました。WordPerfect／Corel Presentationsの元表示との照合は未実施で、一部の複合パスやグラデーションはLibreOfficeの描画とも異なります。検証範囲は対象サンプルとmacOS版でのDOCX別名保存・再オープンです。
 
 ### 4. BI・データ分析・外部データ連携
 - **クロスフォーマット SQL & クエリパイプライン** *（提案中: [#263](https://github.com/ibisjp/ibis-office/issues/263)）*：CSV・Parquet（列選択・複数ファイル追記・Zstandard）・Arrow IPC・JSON Lines・Avro・SQLite テーブルをインメモリ／ストリーミング SQLite（Turso）で結合クエリし、Excel テーブルへの書き出し、バインド先を指定した一括更新、スキーマ変更検知、品質チェックゲート、文字コードを考慮した CSV 上書き保存を実現。

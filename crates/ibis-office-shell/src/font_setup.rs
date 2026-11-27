@@ -427,7 +427,7 @@ pub fn fetch_text_from(url: &str) -> Result<String, String> {
 
 /// Receive `url` into the file `part` with curl; `progress` is the bytes in the file so far (polled), and `cancel` set stops curl.
 #[cfg(not(target_family = "wasm"))]
-fn fetch_to_file(url: &str, part: &std::path::Path, max_seconds: u32, progress: Option<&std::sync::atomic::AtomicU64>, cancel: &std::sync::atomic::AtomicBool) -> Result<(), DownloadError> {
+pub(crate) fn fetch_to_file(url: &str, part: &std::path::Path, max_seconds: u32, progress: Option<&std::sync::atomic::AtomicU64>, cancel: &std::sync::atomic::AtomicBool) -> Result<(), DownloadError> {
     use std::sync::atomic::Ordering;
     if !safe_url(url) {
         return Err(DownloadError::Failed(format!("{url}: only https addresses are read")));

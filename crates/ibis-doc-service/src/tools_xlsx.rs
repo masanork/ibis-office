@@ -33,18 +33,37 @@ pub(crate) fn workbook_document<'a>(service: &'a mut Service, id: &str) -> Resul
 
 pub(crate) fn tools() -> Vec<Tool> {
     vec![
-        GET_CELLS,
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         crate::tools_sqlite::LIST_QUERY_REPORTS,
         crate::tools_pivot::LIST_PIVOTS,
-        Tool { name: "xlsx_list_sheets", description: "The sheets of the workbook: name, used range and whether it is shown.", access: Access::Read, returns_content: false, schema: || object(&[document_id()], &["document_id"]), run: list_sheets },
-        Tool { name: "xlsx_get_used_range", description: "The range of a sheet that holds anything.", access: Access::Read, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: get_used_range },
+        Tool { name: "xlsx_list_sheets", description: "The sheets of the workbook in order, hidden ones too: name, state (visible, hidden, very_hidden), used range, whether the sheet is protected, and whether the workbook structure is locked.", access: Access::Read, returns_content: false, schema: &|| object(&[document_id()], &["document_id"]), run: list_sheets },
+        Tool { name: "xlsx_get_used_range", description: "The range of a sheet that holds anything, and its hidden rows and columns.", access: Access::Read, returns_content: false, schema: &|| object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: get_used_range },
+        Tool {
+            name: "xlsx_get_cells",
+            description: "The cells of a range, row by row: value (calculated), formula, or text (as shown). Formula mode returns the calculated value when sheet protection hides the formula. Paged by rows.",
+            access: Access::Read,
+            returns_content: true,
+            schema: &|| {
+                object(
+                    &[
+                        document_id(),
+                        ("sheet", string("The sheet's name.")),
+                        ("range", string("A1 range, e.g. B2:D10.")),
+                        ("kind", json!({ "enum": ["value", "formula", "text", "format"], "description": "value (default), formula, text (as shown) or format (the cell's format: font, colours, borders, alignment...)." })),
+                        ("offset", integer("The first row of the page (0-based, from the range's first row).")),
+                        ("limit", integer("The most rows.")),
+                    ],
+                    &["document_id", "sheet", "range"],
+                )
+            },
+            run: get_cells,
+        },
         Tool {
             name: "xlsx_list_sheet_rules",
             description: "List data validation and conditional formatting rules on a worksheet, optionally intersecting an A1 range.",
             access: Access::Read,
             returns_content: true,
-            schema: || object(&[
+            schema: &|| object(&[
                 document_id(), ("sheet", string("The worksheet to inspect.")),
                 ("range", string("Optional A1 range to intersect with the rules.")),
                 ("kind", json!({"enum": ["validation", "conditional_formatting"]})),
@@ -58,7 +77,7 @@ pub(crate) fn tools() -> Vec<Tool> {
             description: "Trace direct, statically resolvable formula precedents or dependents of one cell across visible worksheets in this workbook.",
             access: Access::Read,
             returns_content: true,
-            schema: || object(&[
+            schema: &|| object(&[
                 document_id(), ("sheet", string("The worksheet containing the target cell.")),
                 ("cell", string("One A1 cell address.")),
                 ("direction", json!({"enum": ["precedents", "dependents"]})),
@@ -72,7 +91,7 @@ pub(crate) fn tools() -> Vec<Tool> {
             description: "Find structural review candidates such as merged cells, hidden rows or columns, formulas, and platform-dependent or private-use characters.",
             access: Access::Read,
             returns_content: true,
-            schema: || object(&[
+            schema: &|| object(&[
                 document_id(),
                 ("sheet", string("Optional worksheet name. Omit to scan all visible worksheets.")),
                 ("offset", integer("First finding to return (0-based).")),
@@ -85,7 +104,7 @@ pub(crate) fn tools() -> Vec<Tool> {
             description: "Find cells by their displayed text and optionally their visible formulas.",
             access: Access::Read,
             returns_content: true,
-            schema: || object(&[document_id(), ("query", string("The text to find.")), ("sheet", string("Only this sheet.")), ("match_case", boolean("Match upper and lower case (default false).")), ("search_formulas", boolean("Also search visible formulas (default false).")), ("limit", integer("The most cells."))], &["document_id", "query"]),
+            schema: &|| object(&[document_id(), ("query", string("The text to find.")), ("sheet", string("Only this sheet.")), ("match_case", boolean("Match upper and lower case (default false).")), ("search_formulas", boolean("Also search visible formulas (default false).")), ("limit", integer("The most cells."))], &["document_id", "query"]),
             run: find_text,
         },
     ]
@@ -149,18 +168,64 @@ pub(crate) fn value_json(value: &CellValue) -> Value {
 
 fn list_sheets(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let open = service.tool_document(args.str_arg("document_id")?)?;
-    let sheets: Vec<Value> = sheets_of(open)?.iter().map(|(_, name, sheet)| json!({ "name": name, "used_range": used_range(sheet).map(|r| range_text(&r)), "cells": sheet.cells.len() })).collect();
-    Ok(json!({ "sheets": sheets }))
+    let visible = sheets_of(open)?;
+    let presentation = open.document.presentation();
+    let mut sheets: Vec<Value> = Vec::new();
+    match presentation.workbook.as_ref() {
+        // Every sheet of the workbook in its order, the hidden ones too.
+        Some(workbook) if !workbook.sheets.is_empty() => {
+            for ws in &workbook.sheets {
+                let shown = ws.slide.and_then(|id| visible.iter().find(|(i, _, _)| presentation.slides[*i].id == id)).map(|(_, _, s)| *s);
+                let sheet: Option<&Sheet> = shown.or_else(|| ws.hidden.as_deref());
+                let state = match ws.state {
+                    ibis_doc_model::sheet::SheetState::Visible => "visible",
+                    ibis_doc_model::sheet::SheetState::Hidden => "hidden",
+                    ibis_doc_model::sheet::SheetState::VeryHidden => "very_hidden",
+                };
+                sheets.push(json!({
+                    "name": ws.name,
+                    "state": state,
+                    "worksheet": !ws.other,
+                    "used_range": sheet.and_then(used_range).map(|r| range_text(&r)),
+                    "cells": sheet.map_or(0, |s| s.cells.len()),
+                    "protected": sheet.is_some_and(|s| s.protection.is_some()),
+                    "allowed": sheet.and_then(|s| s.protection.as_ref()).map(|p| crate::tools_xlsx_set::allowed_json(&p.allowed)),
+                }));
+            }
+        }
+        _ => {
+            for (_, name, sheet) in &visible {
+                sheets.push(json!({ "name": name, "state": "visible", "worksheet": true, "used_range": used_range(sheet).map(|r| range_text(&r)), "cells": sheet.cells.len(), "protected": sheet.protection.is_some() }));
+            }
+        }
+    }
+    let structure_locked = presentation.workbook.as_ref().and_then(|w| w.protection.as_ref()).is_some_and(|p| p.lock_structure);
+    Ok(json!({ "sheets": sheets, "workbook_protected": structure_locked }))
+}
+
+/// Runs of consecutive numbers as `"3:5"`, a single one as `"9"`.
+fn spans(numbers: &[u32], name: impl Fn(u32) -> String) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < numbers.len() {
+        let mut j = i;
+        while j + 1 < numbers.len() && numbers[j + 1] == numbers[j] + 1 {
+            j += 1;
+        }
+        out.push(if i == j { name(numbers[i]) } else { format!("{}:{}", name(numbers[i]), name(numbers[j])) });
+        i = j + 1;
+    }
+    out
 }
 
 fn get_used_range(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
-    let id = args.str_arg("document_id")?;
-    let active = service.workbook_tool_context().active_sheet;
-    let open = workbook_document(service, id)?;
-    let workbook = open.document.presentation();
-    let sheets = workbook_sheets(workbook);
-    let (_, name, sheet) = workbook_sheet(workbook, &sheets, args, active)?;
-    Ok(json!({ "sheet": name, "used_range": used_range(sheet).map(|r| range_text(&r)) }))
+    let name = args.str_arg("sheet")?;
+    let open = service.tool_document(args.str_arg("document_id")?)?;
+    let sheets = sheets_of(open)?;
+    let (_, name, sheet) = find_sheet(&sheets, name)?;
+    let hidden_rows: Vec<u32> = (0..sheet.rows.len() as u32).filter(|r| sheet.rows[*r as usize] == 0 || sheet.hidden_rows.contains_key(r)).collect();
+    let hidden_columns: Vec<u32> = (0..sheet.columns.len() as u32).filter(|c| sheet.columns[*c as usize] == 0 || sheet.hidden_columns.contains_key(c)).collect();
+    Ok(json!({ "sheet": name, "used_range": used_range(sheet).map(|r| range_text(&r)), "hidden_rows": spans(&hidden_rows, |n| (n + 1).to_string()), "hidden_columns": spans(&hidden_columns, column_name) }))
 }
 
 fn get_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -208,18 +273,7 @@ fn get_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
             "formula" => sheet.visible_formula(cell)
                 .map_or_else(|| value_json(&cell.value), |f| Value::String(format!("={f}"))),
             "text" => Value::String(cell.text.clone()),
-            "format" => {
-                let style = sheet.styles.get(cell.style as usize).cloned().unwrap_or_default();
-                json!({
-                    "bold": style.bold,
-                    "italic": style.italic,
-                    "underline": style.underline != ibis_doc_model::CellUnderline::None,
-                    "size": f64::from(style.font_size) / 100.0,
-                    "font": style.font,
-                    "color": format!("#{:06X}", style.color.0 & 0xFF_FFFF),
-                    "fill": style.fill.map(|f| format!("#{:06X}", f.0 & 0xFF_FFFF)),
-                })
-            }
+            "format" => crate::tools_xlsx_read::format_json(&sheet.styles.get(cell.style as usize).cloned().unwrap_or_default()),
             _ => value_json(&cell.value),
         };
     }
@@ -459,7 +513,7 @@ fn find_text(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
 // ---- edits ----
 
 use ibis_doc_model::sheet::{CellAlign, CellVerticalAlign, ThemeColor, Validation};
-use ibis_doc_model::sheet_command::{CellEdit, CellInput, SheetCommand, StyleChange};
+use ibis_doc_model::sheet_command::{Axis, CellEdit, CellInput, SheetCommand, SortBy, StyleChange};
 use ibis_doc_model::{Command, SlideId};
 
 use crate::edit::{ColorArg, FontArg, edited, execute, only_known, parse_bool, parse_color, parse_font, parse_size};
@@ -477,7 +531,7 @@ pub(crate) fn edit_tools() -> Vec<Tool> {
             description: "Set an input validation rule for an A1 range, replacing existing validation only in that range.",
             access: Access::Edit,
             returns_content: false,
-            schema: || object(&[
+            schema: &|| object(&[
                 document_id(), ("sheet", string("The worksheet to edit.")),
                 ("range", string("The A1 range to validate.")),
                 ("type", json!({"enum": ["list", "whole", "decimal", "custom"]})),
@@ -492,7 +546,7 @@ pub(crate) fn edit_tools() -> Vec<Tool> {
             description: "Remove input validation from an A1 range, preserving cells and rules outside that range.",
             access: Access::Edit,
             returns_content: false,
-            schema: || object(&[
+            schema: &|| object(&[
                 document_id(), ("sheet", string("The worksheet to edit.")),
                 ("range", string("The A1 range to remove validation from.")),
             ], &["document_id", "sheet", "range"]),
@@ -503,13 +557,66 @@ pub(crate) fn edit_tools() -> Vec<Tool> {
             description: "Add a sheet (at the end, or at index, 0-based).",
             access: Access::Edit,
             returns_content: false,
-            schema: || object(&[document_id(), ("name", string("The new sheet's name.")), ("index", integer("Where it goes (0-based)."))], &["document_id", "name"]),
+            schema: &|| object(&[document_id(), ("name", string("The new sheet's name.")), ("index", integer("Where it goes (0-based)."))], &["document_id", "name"]),
             run: add_sheet,
         },
-        Tool { name: "xlsx_delete_sheet", description: "Delete a sheet (not the last one).", access: Access::Edit, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: delete_sheet },
-        Tool { name: "xlsx_rename_sheet", description: "Rename a sheet.", access: Access::Edit, returns_content: false, schema: || object(&[document_id(), ("sheet", string("The sheet's name.")), ("name", string("The new name."))], &["document_id", "sheet", "name"]), run: rename_sheet },
-        Tool { name: "xlsx_calculate_workbook", description: "Calculate every formula of the workbook now.", access: Access::Edit, returns_content: false, schema: || object(&[document_id()], &["document_id"]), run: calculate_workbook },
+        Tool { name: "xlsx_delete_sheet", description: "Delete a sheet (not the last one).", access: Access::Edit, returns_content: false, schema: &|| object(&[document_id(), ("sheet", string("The sheet's name."))], &["document_id", "sheet"]), run: delete_sheet },
+        Tool { name: "xlsx_rename_sheet", description: "Rename a sheet.", access: Access::Edit, returns_content: false, schema: &|| object(&[document_id(), ("sheet", string("The sheet's name.")), ("name", string("The new name."))], &["document_id", "sheet", "name"]), run: rename_sheet },
+        Tool { name: "xlsx_move_sheet", description: "Move a sheet to index (0-based).", access: Access::Edit, returns_content: false, schema: &|| object(&[document_id(), ("sheet", string("The sheet's name.")), ("index", integer("The new place (0-based)."))], &["document_id", "sheet", "index"]), run: move_sheet },
+        Tool { name: "xlsx_insert_rows", description: "Insert rows before row `at` (from 1); what is below moves down and the formulas follow.", access: Access::Edit, returns_content: false, schema: &|| structure_schema(true), run: insert_rows },
+        Tool { name: "xlsx_insert_columns", description: "Insert columns before column `at` (a letter such as C, or a number from 1); what is on the right moves right and the formulas follow.", access: Access::Edit, returns_content: false, schema: &|| structure_schema(false), run: insert_columns },
+        Tool { name: "xlsx_delete_rows", description: "Delete rows from row `at` (from 1); what is below moves up and the formulas follow.", access: Access::Edit, returns_content: false, schema: &|| structure_schema(true), run: delete_rows },
+        Tool { name: "xlsx_delete_columns", description: "Delete columns from column `at` (a letter such as C, or a number from 1); what is on the right moves left and the formulas follow.", access: Access::Edit, returns_content: false, schema: &|| structure_schema(false), run: delete_columns },
+        Tool {
+            name: "xlsx_set_size",
+            description: "Set the width of columns or the height of rows, in points (0 hides them).",
+            access: Access::Edit,
+            returns_content: false,
+            schema: &|| {
+                object(
+                    &[
+                        document_id(),
+                        ("sheet", string("The sheet's name.")),
+                        ("axis", json!({ "enum": ["column", "row"] })),
+                        ("at", json!({ "description": "The first column (a letter such as C, or a number from 1) or row (from 1).", "type": ["string", "integer"] })),
+                        ("count", json!({ "type": "integer", "minimum": 1, "description": "How many (default 1)." })),
+                        ("size", json!({ "type": "number", "minimum": 0, "maximum": 1790, "description": "Points; 0 hides." })),
+                    ],
+                    &["document_id", "sheet", "axis", "at", "size"],
+                )
+            },
+            run: set_size,
+        },
+        Tool { name: "xlsx_merge_cells", description: "Merge the cells of a range into one (the other cells' values are emptied); center puts the text in the middle.", access: Access::Edit, returns_content: false, schema: &|| object(&[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range of at least two cells.")), ("center", boolean("Centre the text (default false)."))], &["document_id", "sheet", "range"]), run: merge_cells },
+        Tool { name: "xlsx_unmerge_cells", description: "Split the merged cells of a range.", access: Access::Edit, returns_content: false, schema: &|| object(&[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range."))], &["document_id", "sheet", "range"]), run: unmerge_cells },
+        Tool {
+            name: "xlsx_sort_range",
+            description: "Sort the rows of a range by keys (column and order, the first is the main key). The formulas that point at the moved rows follow.",
+            access: Access::Edit,
+            returns_content: false,
+            schema: &|| {
+                object(
+                    &[
+                        document_id(),
+                        ("sheet", string("The sheet's name.")),
+                        ("range", string("A1 range of the rows to sort.")),
+                        ("keys", json!({ "type": "array", "minItems": 1, "items": { "type": "object", "properties": { "column": { "description": "A column inside the range: a letter such as C, or a number from 1.", "type": ["string", "integer"] }, "order": { "enum": ["ascending", "descending"] } }, "required": ["column"] } })),
+                        ("has_header", boolean("The range's first row is a heading and stays (default false).")),
+                        ("match_case", boolean("Upper and lower case differ (default false).")),
+                    ],
+                    &["document_id", "sheet", "range", "keys"],
+                )
+            },
+            run: sort_range,
+        },
+        Tool { name: "xlsx_calculate_workbook", description: "Calculate every formula of the workbook now.", access: Access::Edit, returns_content: false, schema: &|| object(&[document_id()], &["document_id"]), run: calculate_workbook },
     ]
+}
+
+pub(crate) fn sheet_id(open: &ToolDocument, name: &str) -> Result<(SlideId, String), ToolError> {
+    let sheets = sheets_of(open)?;
+    let (index, name, _) = find_sheet(&sheets, name)?;
+    Ok((open.document.presentation().slides[*index].id, name.clone()))
 }
 
 pub(crate) fn sheet_edit(service: &mut Service, id: &str, commands: Vec<SheetCommand>, extra: Value) -> Result<Value, ToolError> {
@@ -580,23 +687,34 @@ fn edit_validation(service: &mut Service, args: &Value, rule: Option<Validation>
     sheet_edit(service, id, vec![command], result)
 }
 
+pub(crate) fn input_of(value: &Value) -> Result<CellInput, ToolError> {
+    Ok(match value {
+        Value::Null => CellInput::Clear,
+        Value::Bool(b) => CellInput::Value(CellValue::Bool(*b)),
+        Value::Number(n) => CellInput::Value(CellValue::Number(n.as_f64().ok_or_else(|| ToolError::invalid("a number is out of range"))?)),
+        Value::String(s) => match ibis_calc::input::parse_program_text(s) {
+            ibis_calc::input::Typed::Formula(formula) => CellInput::Formula(formula),
+            ibis_calc::input::Typed::Value(value, _) => CellInput::Value(value),
+        },
+        _ => return Err(ToolError::invalid("a cell is a number, a string, true/false or null")),
+    })
+}
+
 fn set_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
     let id = args.str_arg("document_id")?;
-    let context = service.workbook_tool_context();
-    let open = workbook_document(service, id)?;
-    let workbook = open.document.presentation();
     let range_arg = args.str_arg("range")?;
     let range = parse_range(range_arg)?;
     let rows = (range.last_row - range.first_row + 1) as usize;
     let columns = (range.last_column - range.first_column + 1) as usize;
+    // The limit is checked from the range, before any cell is made (a range of a million rows with one value would otherwise be
+    // expanded first).
     let count = rows.saturating_mul(columns);
     if count > 100_000 {
         return Err(ToolError::new("out_of_range", "more than 100000 cells in one call"));
     }
     let values = args.get("values").ok_or_else(|| ToolError::invalid("values is required"))?;
-    let sheets = workbook_sheets(workbook);
-    let (index, _, _) = workbook_sheet(workbook, &sheets, args, context.active_sheet)?;
-    let sheet = workbook.slides[*index].id;
+    let open = service.tool_document(id)?;
+    let (sheet, _) = sheet_id(open, args.str_arg("sheet")?)?;
     let mut edits = Vec::with_capacity(count);
     match values {
         Value::Array(grid) => {
@@ -609,13 +727,12 @@ fn set_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
                     return Err(ToolError::new("out_of_range", format!("row {} must have {columns} cells", r + 1)));
                 }
                 for (c, value) in row.iter().enumerate() {
-                    let input = parse_cell_input(value).map_err(ToolError::invalid)?;
-                    edits.push(CellEdit { row: range.first_row + r as u32, column: range.first_column + c as u32, input });
+                    edits.push(CellEdit { row: range.first_row + r as u32, column: range.first_column + c as u32, input: input_of(value)? });
                 }
             }
         }
         single => {
-            let input = parse_cell_input(single).map_err(ToolError::invalid)?;
+            let input = input_of(single)?;
             for row in range.first_row..=range.last_row {
                 for column in range.first_column..=range.last_column {
                     edits.push(CellEdit { row, column, input: input.clone() });
@@ -623,8 +740,7 @@ fn set_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
             }
         }
     }
-    execute(open, vec![Command::Sheet(SheetCommand::SetCells { sheet, edits })])?;
-    Ok(edited(id, open, json!({ "cells": count }), Vec::new()))
+    sheet_edit(service, id, vec![SheetCommand::SetCells { sheet, edits }], json!({ "cells": count }))
 }
 
 fn clear_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -671,8 +787,8 @@ fn clear_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> 
     Ok(edited(id, open, json!({}), Vec::new()))
 }
 
-fn theme_of(name: &str) -> Result<u8, ToolError> {
-    // SpreadsheetML's order: 0 lt1, 1 dk1, 2 lt2, 3 dk2, 4-9 accent1-6.
+pub(crate) fn theme_of(name: &str) -> Result<u8, ToolError> {
+    // SpreadsheetML's order: 0 lt1, 1 dk1, 2 lt2, 3 dk2, 4-9 accent1-6, 10 hlink, 11 folHlink.
     Ok(match name {
         "background1" => 0,
         "text1" => 1,
@@ -684,16 +800,19 @@ fn theme_of(name: &str) -> Result<u8, ToolError> {
         "accent4" => 7,
         "accent5" => 8,
         "accent6" => 9,
-        _ => return Err(ToolError::new("unsupported_operation", "the hyperlink theme colours are not supported yet")),
+        "hyperlink" => 10,
+        "followed_hyperlink" => 11,
+        _ => return Err(ToolError::invalid(format!("{name} is not a theme colour"))),
     })
 }
 
 /// The workbook's Normal style: what a cell goes back to when a format is taken away (`null`, design 6.6).
-fn normal_style(workbook: &Presentation) -> ibis_doc_model::CellStyle {
-    workbook.workbook.as_ref().and_then(|w| w.default_style.clone()).unwrap_or_default()
+pub(crate) fn normal_style(open: &ToolDocument) -> ibis_doc_model::CellStyle {
+    open.document.presentation().workbook.as_ref().and_then(|w| w.default_style.clone()).unwrap_or_default()
 }
 
-fn color_change(workbook: &Presentation, arg: ColorArg, fill: bool) -> Result<StyleChange, ToolError> {
+pub(crate) fn color_change(open: &ToolDocument, arg: ColorArg, fill: bool) -> Result<StyleChange, ToolError> {
+    let workbook = open.document.presentation();
     Ok(match arg {
         ColorArg::Rgb(rgb) => {
             if fill {
@@ -704,10 +823,11 @@ fn color_change(workbook: &Presentation, arg: ColorArg, fill: bool) -> Result<St
         }
         ColorArg::Inherit => {
             // No fill; the text in the Normal style's colour.
-            if fill {
-                StyleChange::Fill(None)
-            } else {
-                StyleChange::Color(normal_style(workbook).color)
+            let normal = normal_style(open);
+            match (fill, normal.color_theme) {
+                (true, _) => StyleChange::Fill(None),
+                (false, Some(theme)) => StyleChange::ColorTheme(normal.color, theme),
+                (false, None) => StyleChange::Color(normal.color),
             }
         }
         ColorArg::Theme { name, brightness } => {
@@ -724,27 +844,59 @@ fn color_change(workbook: &Presentation, arg: ColorArg, fill: bool) -> Result<St
 }
 
 fn set_format(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    only_known(args, &["document_id", "sheet", "range", "bold", "italic", "underline", "size", "color", "font", "fill", "number_format", "horizontal_alignment", "vertical_alignment", "wrap_text", "strike", "indent", "text_rotation", "shrink_to_fit", "locked", "hidden", "style", "border"])?;
     let id = args.str_arg("document_id")?;
     let context = service.workbook_tool_context();
     let open = workbook_document(service, id)?;
     let workbook = open.document.presentation();
-    only_known(args, &["document_id", "sheet", "range", "bold", "italic", "underline", "size", "color", "font", "fill", "number_format", "horizontal_alignment", "vertical_alignment", "wrap_text", "border"])?;
     let range = parse_range(args.str_arg("range")?)?;
     let sheets = workbook_sheets(workbook);
     let (index, _, _) = workbook_sheet(workbook, &sheets, args, context.active_sheet)?;
     let sheet = workbook.slides[*index].id;
-    let normal = normal_style(workbook);
+    let normal = normal_style(open);
     let theme_fonts = workbook.workbook.as_ref().and_then(|w| w.theme_fonts.clone());
     let mut changes = Vec::new();
     let mut warnings = Vec::new();
+    // A named cell style first; what is given beside it wins.
+    if let Some(v) = args.get("style") {
+        let name = v.as_str().ok_or_else(|| ToolError::invalid("style is the name of a cell style"))?;
+        let found = open.document.presentation().workbook.as_ref().and_then(|w| w.custom_cell_styles.iter().find(|s| s.name.eq_ignore_ascii_case(name)).cloned());
+        let style = found.ok_or_else(|| ToolError::invalid(format!("no cell style named {name} (xlsx_list_cell_styles)")))?;
+        changes.extend(style.to_style_changes());
+    }
     // `null` takes a format back to the Normal style's.
-    for (key, make, base) in [("bold", StyleChange::Bold as fn(bool) -> StyleChange, normal.bold), ("italic", StyleChange::Italic, normal.italic), ("underline", StyleChange::Underline, normal.underline != ibis_doc_model::CellUnderline::None), ("wrap_text", StyleChange::WrapText, normal.wrap)] {
+    for (key, make, base) in [("bold", StyleChange::Bold as fn(bool) -> StyleChange, normal.bold), ("italic", StyleChange::Italic, normal.italic), ("underline", StyleChange::Underline, normal.underline != ibis_doc_model::CellUnderline::None), ("wrap_text", StyleChange::WrapText, normal.wrap), ("strike", StyleChange::Strikethrough, normal.strike), ("shrink_to_fit", StyleChange::ShrinkToFit, normal.shrink)] {
         if let Some(v) = args.get(key) {
             changes.push(match v {
                 Value::Null => make(base),
+                Value::String(s) if key == "underline" && matches!(s.as_str(), "none" | "single" | "double") => StyleChange::UnderlineKind(ibis_doc_model::CellUnderline::from_ooxml(s)),
                 v => make(parse_bool(key, v)?),
             });
         }
+    }
+    if let Some(v) = args.get("locked") {
+        changes.push(StyleChange::Locked(match v { Value::Null => !normal.unlocked, v => parse_bool("locked", v)? }));
+    }
+    if let Some(v) = args.get("hidden") {
+        changes.push(StyleChange::FormulaHidden(match v { Value::Null => normal.formula_hidden, v => parse_bool("hidden", v)? }));
+    }
+    if let Some(v) = args.get("indent") {
+        changes.push(StyleChange::IndentLevel(match v {
+            Value::Null => normal.indent,
+            v => v.as_u64().filter(|n| *n <= 15).ok_or_else(|| ToolError::invalid("indent is a level from 0 to 15"))? as u32,
+        }));
+    }
+    if let Some(v) = args.get("text_rotation") {
+        changes.push(StyleChange::Rotation(match v {
+            Value::Null => normal.rotation,
+            Value::String(s) if s == "vertical" => 255,
+            // Excel's degrees (up positive); the model's 0-180 has 90 up and 180 down.
+            v => match v.as_i64().filter(|n| (-90..=90).contains(n)) {
+                Some(n) if n >= 0 => n as u8,
+                Some(n) => (90 - n) as u8,
+                None => return Err(ToolError::invalid("text_rotation is -90 to 90 degrees or \"vertical\"")),
+            },
+        }));
     }
     if let Some(v) = args.get("size") {
         changes.push(match v {
@@ -753,10 +905,10 @@ fn set_format(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
         });
     }
     if let Some(v) = args.get("color") {
-        changes.push(color_change(workbook, parse_color("color", v)?, false)?);
+        changes.push(color_change(open, parse_color("color", v)?, false)?);
     }
     if let Some(v) = args.get("fill") {
-        changes.push(color_change(workbook, parse_color("fill", v)?, true)?);
+        changes.push(color_change(open, parse_color("fill", v)?, true)?);
     }
     if let Some(v) = args.get("font") {
         match parse_font("font", v)? {
@@ -882,33 +1034,12 @@ fn calculate_workbook(service: &mut Service, args: &Value) -> Result<Value, Tool
     sheet_edit(service, id, vec![SheetCommand::CalculateNow], json!({}))
 }
 
-const GET_CELLS: Tool = Tool {
-    name: "xlsx_get_cells",
-    description: "The cells of a range, row by row: value (calculated), formula, or text (as shown). Formula mode returns the calculated value when sheet protection hides the formula. Paged by rows.",
-    access: Access::Read,
-    returns_content: true,
-    schema: || {
-        object(
-            &[
-                document_id(),
-                ("sheet", string("The sheet's name.")),
-                ("range", string("A1 range, e.g. B2:D10.")),
-                ("kind", json!({ "enum": ["value", "formula", "text"], "description": "value (default), formula or text (as shown)." })),
-                ("offset", integer("The first row of the page (0-based, from the range's first row).")),
-                ("limit", integer("The most rows.")),
-            ],
-            &["document_id", "sheet", "range"],
-        )
-    },
-    run: get_cells,
-};
-
 const SET_CELLS: Tool = Tool {
     name: "xlsx_set_cells",
     description: "Put values in a range: rows of numbers, strings, true/false or null (clears the cell). A string starting with = followed by formula text is a formula. A single value fills the whole range; otherwise the rows must be as large as the range. What depends on them is calculated again.",
     access: Access::Edit,
     returns_content: false,
-    schema: || {
+    schema: &|| {
         object(
             &[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range; its first cell is where the values start.")), ("values", json!({ "description": "A value, or rows of values.", "oneOf": [{ "type": "array", "items": { "type": "array" } }, { "type": ["string", "number", "boolean", "null"] }] }))],
             &["document_id", "sheet", "range", "values"],
@@ -922,7 +1053,7 @@ const CLEAR_CELLS: Tool = Tool {
     description: "Clear what is in a range: contents, formats, or all.",
     access: Access::Edit,
     returns_content: false,
-    schema: || object(&[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range.")), ("what", json!({ "enum": ["contents", "formats", "all"] }))], &["document_id", "sheet", "range", "what"]),
+    schema: &|| object(&[document_id(), ("sheet", string("The sheet's name.")), ("range", string("A1 range.")), ("what", json!({ "enum": ["contents", "formats", "all"] }))], &["document_id", "sheet", "range", "what"]),
     run: clear_cells,
 };
 
@@ -935,7 +1066,7 @@ const SET_FORMAT: Tool = Tool {
     description: "Set the format of a range: bold, italic, underline, size (pt), color, font, fill, number_format (Excel's format code), horizontal_alignment, vertical_alignment, wrap_text, border. What is not given is not changed.",
     access: Access::Edit,
     returns_content: false,
-    schema: || {
+    schema: &|| {
         object(
             &[
                 document_id(),
@@ -959,3 +1090,140 @@ const SET_FORMAT: Tool = Tool {
     },
     run: set_format,
 };
+
+fn structure_schema(rows: bool) -> Value {
+    let at = if rows { json!({ "type": "integer", "minimum": 1, "description": "The row number (from 1)." }) } else { json!({ "description": "A column letter such as C, or a number from 1.", "type": ["string", "integer"] }) };
+    object(&[document_id(), ("sheet", string("The sheet's name.")), ("at", at), ("count", json!({ "type": "integer", "minimum": 1, "description": "How many (default 1)." }))], &["document_id", "sheet", "at"])
+}
+
+/// A column named by a letter (`C`) or a number from 1; 0-based.
+pub(crate) fn column_arg(name: &str, value: &Value) -> Result<u32, ToolError> {
+    let bad = || ToolError::invalid(format!("{name} is a column letter such as C, or a number from 1 to 16384"));
+    let n = match value {
+        Value::String(s) if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphabetic()) && s.len() <= 3 => s.to_ascii_uppercase().bytes().fold(0u64, |n, b| n * 26 + u64::from(b - b'A') + 1),
+        Value::Number(n) => n.as_u64().ok_or_else(bad)?,
+        _ => return Err(bad()),
+    };
+    if !(1..=16384).contains(&n) {
+        return Err(bad());
+    }
+    Ok(n as u32 - 1)
+}
+
+/// `at` and `count` of the row or column tools, 0-based: `(first, count)`.
+pub(crate) fn span_args(args: &Value, rows: bool) -> Result<(u32, u32), ToolError> {
+    let at = args.get("at").ok_or_else(|| ToolError::invalid("at is required"))?;
+    let first = if rows {
+        let n = at.as_u64().filter(|n| (1..=1_048_576).contains(n)).ok_or_else(|| ToolError::invalid("at is a row number from 1"))?;
+        n as u32 - 1
+    } else {
+        column_arg("at", at)?
+    };
+    let count = args.opt_usize("count")?.unwrap_or(1);
+    let limit = if rows { 1_048_576 } else { 16384 };
+    if count == 0 || first as usize + count > limit {
+        return Err(ToolError::new("out_of_range", format!("count {count} from {} goes past the sheet", first + 1)));
+    }
+    Ok((first, count as u32))
+}
+
+fn structure(service: &mut Service, args: &Value, rows: bool, insert: bool) -> Result<Value, ToolError> {
+    let id = args.str_arg("document_id")?;
+    let (at, count) = span_args(args, rows)?;
+    let open = service.tool_document(id)?;
+    let (sheet, _) = sheet_id(open, args.str_arg("sheet")?)?;
+    let axis = if rows { Axis::Rows } else { Axis::Columns };
+    let command = if insert { SheetCommand::Insert { sheet, axis, at, count } } else { SheetCommand::Delete { sheet, axis, at, count } };
+    sheet_edit(service, id, vec![command], json!({ if insert { "inserted" } else { "deleted" }: count }))
+}
+
+fn insert_rows(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    structure(service, args, true, true)
+}
+
+fn insert_columns(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    structure(service, args, false, true)
+}
+
+fn delete_rows(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    structure(service, args, true, false)
+}
+
+fn delete_columns(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    structure(service, args, false, false)
+}
+
+fn move_sheet(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let id = args.str_arg("document_id")?;
+    let to = args.usize_arg("index")?;
+    let open = service.tool_document(id)?;
+    let (sheet, name) = sheet_id(open, args.str_arg("sheet")?)?;
+    let count = sheets_of(open)?.len();
+    if to >= count {
+        return Err(ToolError::new("out_of_range", format!("index {to}; the workbook has {count} sheets")));
+    }
+    sheet_edit(service, id, vec![SheetCommand::MoveSheet { sheet, to }], json!({ "sheet": name, "index": to }))
+}
+
+fn set_size(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    only_known(args, &["document_id", "sheet", "axis", "at", "count", "size"])?;
+    let id = args.str_arg("document_id")?;
+    let rows = match args.str_arg("axis")? {
+        "row" => true,
+        "column" => false,
+        _ => return Err(ToolError::invalid("axis is column or row")),
+    };
+    let (first, count) = span_args(args, rows)?;
+    let points = args.get("size").and_then(Value::as_f64).filter(|p| (0.0..=1790.0).contains(p)).ok_or_else(|| ToolError::invalid("size is a number of points, 0 (hidden) to 1790"))?;
+    if rows && points > 409.5 {
+        return Err(ToolError::invalid("a row is 409.5 points high at most"));
+    }
+    let open = service.tool_document(id)?;
+    let (sheet, _) = sheet_id(open, args.str_arg("sheet")?)?;
+    let axis = if rows { Axis::Rows } else { Axis::Columns };
+    sheet_edit(service, id, vec![SheetCommand::SetSize { sheet, axis, first, last: first + count - 1, size: (points * 12700.0).round() as i64 }], json!({}))
+}
+
+fn merge_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let id = args.str_arg("document_id")?;
+    let range = parse_range(args.str_arg("range")?)?;
+    if range.first_row == range.last_row && range.first_column == range.last_column {
+        return Err(ToolError::invalid("range is a single cell: merge needs at least two"));
+    }
+    let center = args.opt_bool("center")?.unwrap_or(false);
+    let open = service.tool_document(id)?;
+    let (sheet, _) = sheet_id(open, args.str_arg("sheet")?)?;
+    sheet_edit(service, id, vec![SheetCommand::Merge { sheet, range, center }], json!({}))
+}
+
+fn unmerge_cells(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let id = args.str_arg("document_id")?;
+    let range = parse_range(args.str_arg("range")?)?;
+    let open = service.tool_document(id)?;
+    let (sheet, _) = sheet_id(open, args.str_arg("sheet")?)?;
+    sheet_edit(service, id, vec![SheetCommand::Unmerge { sheet, range }], json!({}))
+}
+
+fn sort_range(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    let id = args.str_arg("document_id")?;
+    let range = parse_range(args.str_arg("range")?)?;
+    let list = args.get("keys").and_then(Value::as_array).filter(|l| !l.is_empty() && l.len() <= 64).ok_or_else(|| ToolError::invalid("keys is a list of { column, order? }"))?;
+    let mut keys = Vec::new();
+    for item in list {
+        let column = column_arg("keys[].column", item.get("column").unwrap_or(&Value::Null))?;
+        if column < range.first_column || column > range.last_column {
+            return Err(ToolError::new("out_of_range", format!("keys[].column {} is outside the range", column_name(column))));
+        }
+        let ascending = match item.get("order").and_then(Value::as_str) {
+            None | Some("ascending") => true,
+            Some("descending") => false,
+            _ => return Err(ToolError::invalid("keys[].order is ascending or descending")),
+        };
+        keys.push((column, SortBy::Value(ascending)));
+    }
+    let header = args.opt_bool("has_header")?.unwrap_or(false);
+    let match_case = args.opt_bool("match_case")?.unwrap_or(false);
+    let open = service.tool_document(id)?;
+    let (sheet, _) = sheet_id(open, args.str_arg("sheet")?)?;
+    sheet_edit(service, id, vec![SheetCommand::SortByKeys { sheet, range, keys, header, match_case }], json!({}))
+}

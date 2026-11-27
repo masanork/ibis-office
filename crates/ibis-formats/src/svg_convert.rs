@@ -311,7 +311,7 @@ fn parse_fill(s: &str, opacity: f64) -> Option<Fill> {
     }
     let rgb = parse_color_rgb(s)?;
     let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-    Some(Fill::Solid(Color { rgb, alpha }))
+    Some(Fill::Solid(Color { rgb, alpha, theme: None }))
 }
 
 fn parse_stroke(s: &str, opacity: f64, width: i64) -> Option<Stroke> {
@@ -321,7 +321,7 @@ fn parse_stroke(s: &str, opacity: f64, width: i64) -> Option<Stroke> {
     }
     let rgb = parse_color_rgb(s)?;
     let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-    Some(Stroke::solid(Color { rgb, alpha }, width))
+    Some(Stroke::solid(Color { rgb, alpha, theme: None }, width))
 }
 
 fn parse_color_rgb(s: &str) -> Option<Rgb> {

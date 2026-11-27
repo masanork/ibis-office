@@ -1,0 +1,665 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 3f7ef3f..4038bf0 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -35,7 +35,9 @@ zed-version = "0.1.0"
+ zed-rev = "bcf6582ce3500df93a8a39366640173e6786cea6"
+ 
+ [features]
+-default = ["multithreaded"]
++# The Docs browser entry point runs on one thread under the host CSP.
++# Keep the worker backend opt-in so wasm_thread does not link eval by default.
++default = []
+ multithreaded = [
+     "dep:wasm_thread",
+     "scheduler/wasm-threads",
+diff --git a/src/canvas_fallback.rs b/src/canvas_fallback.rs
+index 44cf71c..7d26e1b 100644
+--- a/src/canvas_fallback.rs
++++ b/src/canvas_fallback.rs
+@@ -203,6 +203,8 @@ fn is_japanese_symbol(c: char) -> bool {
+         | '\u{2605}' | '\u{2606}' | '\u{2640}' | '\u{2642}' // ★ ☆ ♀ ♂
+         | '\u{266a}'..='\u{266f}' // ♪ ♫ ♬ ♭ ♮ ♯ (JIS X 0208 has ♪ ♭ ♯)
+         | '\u{3200}'..='\u{33ff}' // enclosed CJK, CJK compatibility (㈱ ㎡)
++        | '\u{fe10}'..='\u{fe19}' // vertical punctuation presentation forms
++        | '\u{fe30}'..='\u{fe44}' | '\u{fe47}'..='\u{fe48}' // vertical brackets and leaders
+     )
+ }
+ 
+@@ -332,7 +334,7 @@ mod tests {
+ 
+     #[test]
+     fn japanese_symbols_fall_back() {
+-        for c in ["５", "※", "％", "＋", "①", "□", "●", "→", "―", "…", "㈱", "ｱ", "￥", "　"] {
++        for c in ["５", "※", "％", "＋", "①", "□", "●", "→", "―", "…", "㈱", "ｱ", "￥", "　", "︑", "︒", "︵", "︶", "﹁", "﹂", "︙"] {
+             assert!(is_cjk(c), "{c}");
+         }
+         assert!(!is_cjk("A"));
+diff --git a/src/canvas_text.rs b/src/canvas_text.rs
+index 186a53b..9dbf466 100644
+--- a/src/canvas_text.rs
++++ b/src/canvas_text.rs
+@@ -21,14 +21,18 @@ pub(crate) struct CanvasTextMetrics {
+     pub(crate) descent: f32,
+ }
+ 
++const MIN_RASTER_CACHE_DIMENSION: u32 = 256;
++
+ struct TextCanvas {
+     canvas: OffscreenCanvas,
+     context: OffscreenCanvasRenderingContext2d,
++    configured: bool,
++    last_font: String,
+ }
+ 
+ impl TextCanvas {
+     fn new() -> Result<Self> {
+-        let canvas = OffscreenCanvas::new(1, 1)
++        let canvas = OffscreenCanvas::new(MIN_RASTER_CACHE_DIMENSION, MIN_RASTER_CACHE_DIMENSION)
+             .map_err(|error| anyhow!("creating text OffscreenCanvas: {error:?}"))?;
+         let options = js_sys::Object::new();
+         // Every rasterized glyph is read back for upload into GPUI's atlas.
+@@ -45,30 +49,75 @@ impl TextCanvas {
+             .context("OffscreenCanvas 2D text rendering is unavailable")?
+             .dyn_into::<OffscreenCanvasRenderingContext2d>()
+             .map_err(|error| anyhow!("unexpected OffscreenCanvas 2D context: {error:?}"))?;
+-        Ok(Self { canvas, context })
++        Ok(Self {
++            canvas,
++            context,
++            configured: false,
++            last_font: String::new(),
++        })
++    }
++
++    fn ensure_size(&mut self, width: u32, height: u32) {
++        let current_w = self.canvas.width();
++        let current_h = self.canvas.height();
++        if width <= current_w && height <= current_h {
++            return;
++        }
++        let target_w = width.max(current_w).max(MIN_RASTER_CACHE_DIMENSION);
++        let target_h = height.max(current_h).max(MIN_RASTER_CACHE_DIMENSION);
++        // If growing would exceed the pixel cap (e.g. a very wide banner followed by a tall glyph),
++        // shrink to the exact requested dimensions instead.
++        let (next_w, next_h) = if usize::try_from(target_w)
++            .ok()
++            .and_then(|w| usize::try_from(target_h).ok().and_then(|h| w.checked_mul(h)))
++            .is_some_and(|pixels| pixels <= MAX_RASTER_PIXELS)
++        {
++            (target_w, target_h)
++        } else {
++            (width, height)
++        };
++        if next_h < current_h {
++            self.canvas.set_height(next_h);
++        }
++        if self.canvas.width() != next_w {
++            self.canvas.set_width(next_w);
++        }
++        if self.canvas.height() != next_h {
++            self.canvas.set_height(next_h);
++        }
++        // Resizing a 2D canvas resets its state.
++        self.configured = false;
++        self.last_font.clear();
+     }
+ 
+-    fn configure(&self, css_font: &str) -> Result<()> {
++    fn configure(&mut self, css_font: &str) -> Result<()> {
+         ensure!(!css_font.trim().is_empty(), "Canvas text font is empty");
+-        // An invalid CSS font assignment is ignored by Canvas. Reset first so
+-        // it cannot accidentally inherit the preceding request's font.
+-        self.context.set_font("10px sans-serif");
+-        self.context.set_font(css_font);
+-        self.context.set_text_align("left");
+-        self.context.set_text_baseline("alphabetic");
+-        // Modified by ibis inc.: the glyph's coverage is the alpha of black text. Skia picks its contrast and gamma table by the brightness
+-        // of the text's colour and thickens light text (the alpha of the same glyph summed 25 to 34 % higher in white than in black on
+-        // Windows' Chrome: Times New Roman 307,528 against 229,459, Consolas 339,187 against 272,489, Georgia 362,363 against 279,552),
+-        // so white made black text look bold. The colour is multiplied in by the shader.
+-        self.context.set_fill_style_str("black");
+-        // web-sys does not expose direction on the offscreen 2D context.
+-        let assigned = js_sys::Reflect::set(
+-            self.context.as_ref(),
+-            &JsValue::from_str("direction"),
+-            &JsValue::from_str("ltr"),
+-        )
+-        .map_err(|error| anyhow!("setting Canvas text direction: {error:?}"))?;
+-        ensure!(assigned, "Canvas text direction could not be set");
++        if !self.configured {
++            self.context.set_text_align("left");
++            self.context.set_text_baseline("alphabetic");
++            // Modified by ibis inc.: the glyph's coverage is the alpha of black text. Skia picks its contrast and gamma table by the brightness
++            // of the text's colour and thickens light text (the alpha of the same glyph summed 25 to 34 % higher in white than in black on
++            // Windows' Chrome: Times New Roman 307,528 against 229,459, Consolas 339,187 against 272,489, Georgia 362,363 against 279,552),
++            // so white made black text look bold. The colour is multiplied in by the shader.
++            self.context.set_fill_style_str("black");
++            // web-sys does not expose direction on the offscreen 2D context.
++            let assigned = js_sys::Reflect::set(
++                self.context.as_ref(),
++                &JsValue::from_str("direction"),
++                &JsValue::from_str("ltr"),
++            )
++            .map_err(|error| anyhow!("setting Canvas text direction: {error:?}"))?;
++            ensure!(assigned, "Canvas text direction could not be set");
++            self.configured = true;
++        }
++        if self.last_font != css_font {
++            // An invalid CSS font assignment is ignored by Canvas. Reset first so
++            // it cannot accidentally inherit the preceding request's font.
++            self.context.set_font("10px sans-serif");
++            self.context.set_font(css_font);
++            self.last_font.clear();
++            self.last_font.push_str(css_font);
++        }
+         Ok(())
+     }
+ }
+@@ -180,16 +229,7 @@ pub(crate) fn rasterize(
+         .context("Canvas text raster byte count overflow")?;
+ 
+     with_canvas(|canvas| {
+-        // Shrink before growing so intermediate canvas sizes obey the pixel cap.
+-        if height < canvas.canvas.height() {
+-            canvas.canvas.set_height(height);
+-        }
+-        if canvas.canvas.width() != width {
+-            canvas.canvas.set_width(width);
+-        }
+-        if canvas.canvas.height() != height {
+-            canvas.canvas.set_height(height);
+-        }
++        canvas.ensure_size(width, height);
+         canvas.configure(css_font)?;
+         canvas
+             .context
+diff --git a/src/events.rs b/src/events.rs
+index fee551a..9852cac 100644
+--- a/src/events.rs
++++ b/src/events.rs
+@@ -1,4 +1,3 @@
+-// Modified by ibis inc. (#209): two-finger touch is turned into PinchEvent (gpui's shared PinchTracker).
+ // Also modified by ibis inc.: the hidden IME element is placed at the text being composed, and at the caret on the keydown before the composition starts.
+ // Modified by ibis inc. for ibisOffice: ignore IME-processed keydown events
+ // (keyCode == 229, is_composing) before dispatching to the application,
+@@ -121,6 +120,10 @@ impl TouchIds {
+     fn end(&mut self, pointer_id: i32) -> Option<TouchId> {
+         self.active.remove(&pointer_id)
+     }
++
++    fn len(&self) -> usize {
++        self.active.len()
++    }
+ }
+ 
+ impl Default for ClickState {
+@@ -227,15 +230,6 @@ impl WebWindowInner {
+         EventListenerHandle::add_non_passive(self.canvas.as_ref(), event_name, handler)
+     }
+ 
+-    fn dispatch_pinch(&self, position: Point<Pixels>, delta: f32, phase: TouchPhase) {
+-        self.dispatch_input(PlatformInput::Pinch(PinchEvent {
+-            position,
+-            delta,
+-            modifiers: Modifiers::default(),
+-            phase,
+-        }));
+-    }
+-
+     fn dispatch_input(&self, input: PlatformInput) -> Option<DispatchEventResult> {
+         self.with_callback(|callbacks| &mut callbacks.input, |callback| callback(input))
+     }
+@@ -269,6 +263,7 @@ impl WebWindowInner {
+             this.canvas.set_pointer_capture(event.pointer_id()).ok();
+ 
+             if pointer_type == "touch" {
++                this.pending_touch_keyboard_focus.set(false);
+                 // Android can reopen a manually dismissed keyboard on the
+                 // next touch even without another focus() call. Disarm the
+                 // still-focused mirror before the browser handles that
+@@ -276,34 +271,23 @@ impl WebWindowInner {
+                 if this.keyboard_likely_dismissed() {
+                     this.ime_mirror.set_virtual_keyboard_enabled(false);
+                 }
+-                match this.pinch.borrow_mut().down(i64::from(event.pointer_id()), position) {
+-                    PinchDown::Single => {}
+-                    PinchDown::Ignored => return,
+-                    PinchDown::Begin { cancelled, center } => {
+-                        // The second finger interrupts the single-touch
+-                        // gesture of the first, then the pinch starts.
+-                        this.touch_tap_candidate.set(None);
+-                        let first = this.touch_ids.borrow_mut().end(cancelled.0 as i32);
+-                        if let Some(first_id) = first {
+-                            this.dispatch_input(PlatformInput::Touch(TouchEvent {
+-                                id: first_id,
+-                                phase: TouchPhase::Cancelled,
+-                                position: cancelled.1,
+-                                predicted_position: None,
+-                                force: None,
+-                            }));
+-                        }
+-                        this.state.borrow_mut().mouse_position = center;
+-                        this.dispatch_pinch(center, 0.0, TouchPhase::Started);
++                let (touch_id, active_count) = {
++                    let mut ids = this.touch_ids.borrow_mut();
++                    let Some(touch_id) = ids.start(event.pointer_id()) else {
++                        log::error!("exhausted touch identifiers");
+                         return;
+-                    }
+-                }
+-                let Some(touch_id) = this.touch_ids.borrow_mut().start(event.pointer_id()) else {
+-                    log::error!("exhausted touch identifiers");
+-                    return;
++                    };
++                    (touch_id, ids.len())
+                 };
++                // The core receives every contact. Keep only the browser's
++                // keyboard-activation guard here: multi-touch must never
++                // re-arm a tap until all contacts have ended.
++                if active_count > 1 {
++                    this.touch_multi_sequence.set(true);
++                    this.touch_tap_candidate.set(None);
++                }
+                 this.state.borrow_mut().mouse_position = position;
+-                if this.touch_tap_candidate.get().is_none() {
++                if !this.touch_multi_sequence.get() && this.touch_tap_candidate.get().is_none() {
+                     this.touch_tap_candidate
+                         .set(Some((event.pointer_id(), position)));
+                 }
+@@ -366,20 +350,13 @@ impl WebWindowInner {
+             let position = pointer_position_in_element(&event);
+ 
+             if event.pointer_type() == "touch" {
+-                let pinch_up = this.pinch.borrow_mut().up(i64::from(event.pointer_id()), position);
+-                match pinch_up {
+-                    PinchUp::Single => {}
+-                    PinchUp::Ignored => return,
+-                    PinchUp::End { center } => {
+-                        this.dispatch_pinch(center, 0.0, TouchPhase::Ended);
+-                        return;
+-                    }
+-                }
+-                let Some(touch_id) = this.touch_ids.borrow_mut().end(event.pointer_id()) else {
+-                    return;
++                let (touch_id, remaining) = {
++                    let mut ids = this.touch_ids.borrow_mut();
++                    let Some(touch_id) = ids.end(event.pointer_id()) else { return };
++                    (touch_id, ids.len())
+                 };
+                 this.state.borrow_mut().mouse_position = position;
+-                let completes_tap = match this.touch_tap_candidate.get() {
++                let completes_tap = !this.touch_multi_sequence.get() && match this.touch_tap_candidate.get() {
+                     Some((pointer_id, _)) if pointer_id == event.pointer_id() => {
+                         this.touch_tap_candidate.set(None);
+                         true
+@@ -396,6 +373,9 @@ impl WebWindowInner {
+                     predicted_position: None,
+                     force: None,
+                 }));
++                if remaining == 0 {
++                    this.touch_multi_sequence.set(false);
++                }
+ 
+                 // ibis (#267): the tap has just moved the caret (or started an edit), but the input handler that says a text input is
+                 // active is registered when the next frame is painted, which is after this event returns, outside the gesture: iOS
+@@ -420,7 +400,11 @@ impl WebWindowInner {
+                     && dispatch_result.is_some_and(|result| !result.default_prevented)
+                     && this.pointer_targets_text_input(position)
+                 {
+-                    this.show_virtual_keyboard();
++                    if this.keyboard_focus_on_touch_end {
++                        this.pending_touch_keyboard_focus.set(true);
++                    } else {
++                        this.show_virtual_keyboard();
++                    }
+                 }
+                 this.schedule_ime_mirror_sync();
+                 return;
+@@ -502,20 +486,11 @@ impl WebWindowInner {
+         self.listen("pointercancel", move |event: JsValue| {
+             let event: web_sys::PointerEvent = event.unchecked_into();
+             if event.pointer_type() == "touch" {
+-                let pinch_up = this
+-                    .pinch
+-                    .borrow_mut()
+-                    .up(i64::from(event.pointer_id()), pointer_position_in_element(&event));
+-                match pinch_up {
+-                    PinchUp::Single => {}
+-                    PinchUp::Ignored => return,
+-                    PinchUp::End { center } => {
+-                        this.dispatch_pinch(center, 0.0, TouchPhase::Ended);
+-                        return;
+-                    }
+-                }
+-                let Some(touch_id) = this.touch_ids.borrow_mut().end(event.pointer_id()) else {
+-                    return;
++                this.pending_touch_keyboard_focus.set(false);
++                let (touch_id, remaining) = {
++                    let mut ids = this.touch_ids.borrow_mut();
++                    let Some(touch_id) = ids.end(event.pointer_id()) else { return };
++                    (touch_id, ids.len())
+                 };
+                 if let Some((pointer_id, _)) = this.touch_tap_candidate.get()
+                     && pointer_id == event.pointer_id()
+@@ -529,6 +504,9 @@ impl WebWindowInner {
+                     predicted_position: None,
+                     force: None,
+                 }));
++                if remaining == 0 {
++                    this.touch_multi_sequence.set(false);
++                }
+             } else {
+                 this.pressed_button.set(None);
+             }
+@@ -538,9 +516,15 @@ impl WebWindowInner {
+     /// Cancels touch default handling separately because iOS does not consistently
+     /// transfer pointer-event cancellation to the corresponding touch event.
+     fn register_touch_end(self: &Rc<Self>) -> EventListenerHandle {
++        let this = Rc::clone(self);
+         self.listen_non_passive("touchend", move |event: JsValue| {
+             let event: web_sys::Event = event.unchecked_into();
+             event.prevent_default();
++            // iOS WebKit can accept DOM focus during pointerup without
++            // opening the keyboard. Use touchend for taps accepted by GPUI.
++            if this.pending_touch_keyboard_focus.replace(false) {
++                this.show_virtual_keyboard();
++            }
+         })
+     }
+ 
+@@ -550,10 +534,10 @@ impl WebWindowInner {
+         let Some(Some(bounds)) = self.with_input_handler(|handler| handler.ime_candidate_bounds()) else {
+             return;
+         };
+-        let canvas = self.canvas.get_bounding_client_rect();
++        let (canvas_left, canvas_top) = self.viewport.borrow().canvas_origin;
+         self.ime_mirror.place(
+-            canvas.left() as f32 + f32::from(bounds.origin.x),
+-            canvas.top() as f32 + f32::from(bounds.origin.y),
++            canvas_left + f32::from(bounds.origin.x),
++            canvas_top + f32::from(bounds.origin.y),
+             f32::from(bounds.size.height),
+         );
+     }
+@@ -577,17 +561,13 @@ impl WebWindowInner {
+ 
+     /// Aligns the software keyboard with the text input targeted by a touch tap.
+     ///
+-    /// Mobile browsers show the keyboard only when an editable element is
+-    /// focused from within a user gesture, so this runs while the tap's
+-    /// `pointerup` is still on the stack (by which point GPUI has usually
+-    /// painted a frame since the `MouseDown`, so the input handler reflects
+-    /// the tap's focus change). This also handles an editable tap after manual
+-    /// dismissal, when editability stayed true and no focus transition fires.
++    /// Keep the focus call in the browser's touch gesture so it can open the
++    /// keyboard, including when reopening it after manual dismissal.
+     ///
+     /// We don't use `navigator.virtualKeyboard` here because it's
+     /// Chromium-only.
+     pub(crate) fn show_virtual_keyboard(self: &Rc<Self>) {
+-        if !self.touch_input {
++        if !self.touch_input || self.touch_multi_sequence.get() {
+             return;
+         }
+         let was_enabled = self.ime_mirror.virtual_keyboard_enabled();
+@@ -676,16 +656,6 @@ impl WebWindowInner {
+             let position = pointer_position_in_element(&event);
+ 
+             if event.pointer_type() == "touch" {
+-                let pinch_move = this.pinch.borrow_mut().moved(i64::from(event.pointer_id()), position);
+-                match pinch_move {
+-                    PinchMove::Single => {}
+-                    PinchMove::Ignored => return,
+-                    PinchMove::Update { center, delta } => {
+-                        this.state.borrow_mut().mouse_position = center;
+-                        this.dispatch_pinch(center, delta, TouchPhase::Moved);
+-                        return;
+-                    }
+-                }
+                 let Some(touch_id) = this.touch_ids.borrow().active(event.pointer_id()) else {
+                     return;
+                 };
+diff --git a/src/gpui_web.rs b/src/gpui_web.rs
+index c915084..b1135ea 100644
+--- a/src/gpui_web.rs
++++ b/src/gpui_web.rs
+@@ -31,6 +31,7 @@ mod platform;
+ mod run_replacements;
+ #[cfg(target_family = "wasm")]
+ mod text_system;
++#[cfg(any(target_family = "wasm", test))]
+ #[cfg(target_family = "wasm")]
+ mod viewport;
+ #[cfg(target_family = "wasm")]
+diff --git a/src/run_replacements.rs b/src/run_replacements.rs
+index 0e47fcb..e14150c 100644
+--- a/src/run_replacements.rs
++++ b/src/run_replacements.rs
+@@ -35,6 +35,7 @@ pub(crate) fn collect_candidates(
+     let mut font_run = font_runs.next();
+     let mut run_end = font_run.map_or(0, |run| run.len);
+     let mut candidates = Vec::new();
++    let mut cached_latin: Option<(FontId, bool)> = None;
+     for (start, grapheme) in text.grapheme_indices(true) {
+         while start >= run_end {
+             font_run = font_runs.next();
+@@ -51,15 +52,25 @@ pub(crate) fn collect_candidates(
+             continue;
+         }
+         let Some(fallback) = classify_canvas_fallback(grapheme) else {
+-            if is_latin_grapheme(grapheme) && browser_latin(run.font_id) {
+-                candidates.push(Candidate {
+-                    source: start..end,
+-                    font_id: run.font_id,
+-                    is_emoji: false,
+-                    color: false,
+-                    latin: true,
+-                    glyphs: None,
+-                });
++            if is_latin_grapheme(grapheme) {
++                let draws_latin = match cached_latin {
++                    Some((id, allowed)) if id == run.font_id => allowed,
++                    _ => {
++                        let allowed = browser_latin(run.font_id);
++                        cached_latin = Some((run.font_id, allowed));
++                        allowed
++                    }
++                };
++                if draws_latin {
++                    candidates.push(Candidate {
++                        source: start..end,
++                        font_id: run.font_id,
++                        is_emoji: false,
++                        color: false,
++                        latin: true,
++                        glyphs: None,
++                    });
++                }
+             }
+             continue;
+         };
+@@ -120,20 +131,48 @@ pub(crate) fn demote_implicit_cjk(
+     layout: &mut LineLayout,
+     in_requested: impl Fn(FontId, FontId) -> bool,
+ ) {
++    if font_runs.is_empty() {
++        return;
++    }
++    let mut pair_cache: SmallVec<[((FontId, FontId), bool); 8]> = SmallVec::new();
+     for shaped in &mut layout.runs {
+         let face = shaped.font_id;
++        let mut run_idx = 0usize;
++        let mut run_start = 0usize;
++        let mut run_end = font_runs[0].len;
+         for glyph in &mut shaped.glyphs {
+             if glyph.id.0 == 0 || glyph.is_emoji {
+                 continue;
+             }
+-            let mut offset = 0;
+-            let Some(requested) = font_runs.iter().find_map(|run| {
+-                offset += run.len;
+-                (glyph.index < offset).then_some(run.font_id)
+-            }) else {
++            if glyph.index < run_start {
++                run_idx = 0;
++                run_start = 0;
++                run_end = font_runs[0].len;
++            }
++            while glyph.index >= run_end {
++                run_idx += 1;
++                let Some(next_run) = font_runs.get(run_idx) else {
++                    break;
++                };
++                run_start = run_end;
++                run_end += next_run.len;
++            }
++            let Some(requested) = font_runs.get(run_idx).map(|r| r.font_id) else {
++                continue;
++            };
++            if requested == face {
+                 continue;
++            }
++            let allowed = if let Some((_, cached)) =
++                pair_cache.iter().find(|((r, f), _)| *r == requested && *f == face)
++            {
++                *cached
++            } else {
++                let value = in_requested(requested, face);
++                pair_cache.push(((requested, face), value));
++                value
+             };
+-            if requested == face || in_requested(requested, face) {
++            if allowed {
+                 continue;
+             }
+             let Some(grapheme) = text
+diff --git a/src/text_system.rs b/src/text_system.rs
+index 7d1ad14..256c24e 100644
+--- a/src/text_system.rs
++++ b/src/text_system.rs
+@@ -31,7 +31,7 @@ use std::{
+ 
+ // Cosmic's font IDs index its loaded-font vector. Keep browser IDs in a disjoint namespace.
+ const CANVAS_FONT_BIT: usize = 1 << (usize::BITS - 1);
+-const MAX_MEASUREMENTS: usize = 4096;
++const MAX_MEASUREMENTS: usize = 32_768;
+ 
+ pub(crate) struct WebTextSystem {
+     native: CosmicTextSystem,
+diff --git a/src/viewport.rs b/src/viewport.rs
+index 1e6582a..748dad5 100644
+--- a/src/viewport.rs
++++ b/src/viewport.rs
+@@ -11,6 +11,8 @@ pub(crate) struct WebViewport {
+     safe_area_probes: [web_sys::HtmlElement; 4],
+     pub(crate) visible_bounds: Bounds<Pixels>,
+     pub(crate) insets: WindowInsets,
++    pub(crate) canvas_origin: (f32, f32),
++    dirty: bool,
+ }
+ 
+ impl WebViewport {
+@@ -21,6 +23,8 @@ impl WebViewport {
+             safe_area_probes: [top?, right?, bottom?, left?],
+             visible_bounds: Bounds::default(),
+             insets: WindowInsets::default(),
++            canvas_origin: (0.0, 0.0),
++            dirty: true,
+         };
+         let body = document
+             .body()
+@@ -32,6 +36,10 @@ impl WebViewport {
+         Ok(viewport)
+     }
+ 
++    pub(crate) fn mark_dirty(&mut self) {
++        self.dirty = true;
++    }
++
+     pub(crate) fn observe_safe_area(&self, observer: &web_sys::ResizeObserver) {
+         // Separate boxes detect redistribution between edges even when the
+         // total inset, and therefore a single combined probe's size, is unchanged.
+@@ -45,7 +53,12 @@ impl WebViewport {
+         window: &web_sys::Window,
+         canvas: &web_sys::HtmlCanvasElement,
+     ) -> anyhow::Result<bool> {
++        if !self.dirty {
++            return Ok(false);
++        }
++        self.dirty = false;
+         let canvas_bounds = canvas.get_bounding_client_rect();
++        self.canvas_origin = (canvas_bounds.left() as f32, canvas_bounds.top() as f32);
+         let document = window
+             .document()
+             .ok_or_else(|| anyhow::anyhow!("Missing document"))?;
+diff --git a/src/window.rs b/src/window.rs
+index c64afe7..64c1ad1 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -1,4 +1,3 @@
+-// Modified by ibis inc. (#209): holds the PinchTracker for two-finger touch.
+ // Modified by ibis inc. for ibisOffice: `update_ime_position` moves the hidden IME element, which is also put at the caret after every frame.
+ // Also modified by ibis inc. (#267): an iPad (iPadOS Safari, which answers as a Mac) is touch input.
+ 
+@@ -63,11 +62,13 @@ pub(crate) struct WebWindowInner {
+     pub(crate) has_device_pixel_support: bool,
+     pub(crate) is_mac: bool,
+     pub(crate) touch_input: bool,
++    pub(crate) keyboard_focus_on_touch_end: bool,
++    pub(crate) pending_touch_keyboard_focus: Cell<bool>,
+     pub(crate) state: RefCell<WebWindowMutableState>,
+     pub(crate) callbacks: RefCell<WebWindowCallbacks>,
+     pub(crate) click_state: RefCell<ClickState>,
+     pub(crate) touch_ids: RefCell<TouchIds>,
+-    pub(crate) pinch: RefCell<gpui::PinchTracker>,
++    pub(crate) touch_multi_sequence: Cell<bool>,
+     pub(crate) pressed_button: Cell<Option<MouseButton>>,
+     pub(crate) last_physical_size: Cell<(u32, u32)>,
+     pub(crate) notify_scale: Cell<bool>,
+@@ -216,6 +217,14 @@ impl WebWindow {
+         };
+ 
+         let is_mac = is_mac_platform(&browser_window);
++        // iPadOS can advertise a desktop Mac user agent.
++        let navigator = browser_window.navigator();
++        let keyboard_focus_on_touch_end = navigator.user_agent().is_ok_and(|ua| {
++            ua.contains("iPhone")
++                || ua.contains("iPad")
++                || ua.contains("iPod")
++                || (is_mac && navigator.max_touch_points() > 0)
++        });
+ 
+         let inner = Rc::new(WebWindowInner {
+             browser_window,
+@@ -225,11 +234,13 @@ impl WebWindow {
+             has_device_pixel_support,
+             is_mac,
+             touch_input,
++            keyboard_focus_on_touch_end,
++            pending_touch_keyboard_focus: Cell::new(false),
+             state: RefCell::new(mutable_state),
+             callbacks: RefCell::new(WebWindowCallbacks::default()),
+             click_state: RefCell::new(ClickState::default()),
+             touch_ids: RefCell::new(TouchIds::default()),
+-            pinch: RefCell::new(gpui::PinchTracker::default()),
++            touch_multi_sequence: Cell::new(false),
+             pressed_button: Cell::new(None),
+             last_physical_size: Cell::new((0, 0)),
+             notify_scale: Cell::new(false),
+@@ -388,6 +399,7 @@ impl WebWindow {
+                 height: px(logical_height),
+             };
+ 
++            inner.viewport.borrow_mut().mark_dirty();
+             inner.with_callback(
+                 |callbacks| &mut callbacks.resize,
+                 |callback| callback(new_size, dpr_f32),
+@@ -426,6 +438,7 @@ impl WebWindowInner {
+     }
+ 
+     pub(crate) fn notify_viewport_changed(&self) {
++        self.viewport.borrow_mut().mark_dirty();
+         self.with_callback(
+             |callbacks| &mut callbacks.visual_viewport_changed,
+             |callback| callback(),

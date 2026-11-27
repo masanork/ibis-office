@@ -1976,6 +1976,7 @@ fn picture_anchor(node: Node<'_, '_>) -> Option<FloatingAnchor> {
     Some(FloatingAnchor {
         offset_x,
         offset_y,
+        frame_size: None,
         align_h: align(
             offset_x,
             "horzAlign",

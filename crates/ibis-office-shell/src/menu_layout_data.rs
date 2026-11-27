@@ -111,6 +111,7 @@ pub(super) const DOC: &[MenuSpec] = &[
             LayoutItem::Cmd("docx.insert.icon"),
             LayoutItem::Planned { key: "menu.planned.doc.insert.4" },
             LayoutItem::Planned { key: "menu.planned.doc.insert.5" },
+            LayoutItem::Cmd("insert.medical-image"),
         ] },
         // The gallery of pictures (K0006): the old submenu's own items (the lines and every shape, three to a row), under the menu's words.
         LayoutItem::Sub { id: Some("insert.shape"), label_key: "menu.group.shapes", items: &[] },
@@ -337,6 +338,7 @@ pub(super) const DOC: &[MenuSpec] = &[
         LayoutItem::Cmd("review.accessibility-check"),
         LayoutItem::CmdAs { id: "docx.inspect-document", label_key: "menu.as.doc.docx.inspect-document" },
         LayoutItem::Cmd("docx.student-record.review"),
+        LayoutItem::Cmd("review.pii-check"),
         LayoutItem::Sep,
         LayoutItem::Sub { id: Some("file.language"), label_key: "file.language", items: &[
             LayoutItem::CmdOrPlanned { id: "docx.language.set-default", key: "menu.planned.doc.review.3" },
@@ -954,6 +956,10 @@ pub(super) const SHEET: &[MenuSpec] = &[
             LayoutItem::Cmd("xlsx.expand"),
             LayoutItem::Cmd("xlsx.collapse"),
         ] },
+        LayoutItem::Sub { id: None, label_key: "menu.group.outline-settings", items: &[
+            LayoutItem::Cmd("xlsx.outline-summary-below"),
+            LayoutItem::Cmd("xlsx.outline-summary-right"),
+        ] },
         LayoutItem::Sep,
         LayoutItem::Cmd("xlsx.data-analysis"),
     ] },
@@ -975,6 +981,7 @@ pub(super) const SHEET: &[MenuSpec] = &[
         LayoutItem::Cmd("xlsx.date-review.title"),
         LayoutItem::Cmd("xlsx.variant-review.title"),
         LayoutItem::Cmd("xlsx.machine-readability-check"),
+        LayoutItem::Cmd("review.pii-check"),
         LayoutItem::Cmd("review.compatibility-check"),
         LayoutItem::Sep,
         LayoutItem::CmdOrPlanned { id: "xlsx.new-note", key: "menu.planned.sheet.review.3" },
@@ -1369,6 +1376,7 @@ pub(super) const SLIDE: &[MenuSpec] = &[
             LayoutItem::Cmd("pptx.3d-model"),
             LayoutItem::Cmd("pptx.insert.screenshot"),
             LayoutItem::Cmd("pptx.photo-album"),
+            LayoutItem::Cmd("insert.medical-image"),
         ] },
         // The shared gallery of pictures (K0031, as the document's K0006): the lines and every shape, four to a row, then the action buttons
         // (the old item, under the menu's words). The lines with double arrows and the freehand line stay in their own submenu.
@@ -1504,6 +1512,7 @@ pub(super) const SLIDE: &[MenuSpec] = &[
         LayoutItem::Sep,
         LayoutItem::Cmd("review.accessibility-check"),
         LayoutItem::Cmd("pptx.inspect-document"),
+        LayoutItem::Cmd("review.pii-check"),
         LayoutItem::Cmd("review.compatibility-check"),
         LayoutItem::Sep,
         LayoutItem::Sub { id: Some("file.language"), label_key: "file.language", items: &[

@@ -1,0 +1,554 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+import {
+  generateRecipientKeyPair,
+  openSpotEnvelope,
+  sealSpotEnvelope,
+  type SpotRecipientJwk,
+} from './cose-envelope.js';
+import { formatSpotCsv, formatSpotTsv, type SpotDecryptedRecord } from './export.js';
+import { renderQrSvg } from './qr.js';
+import {
+  buildShareableFormUrl,
+  decodeManifestParam,
+  generateReadToken,
+  type SpotFormManifest,
+  type SpotReceiverBundle,
+} from './tenant-setup.js';
+
+interface FormField {
+  id: string;
+  label: string;
+  type: 'text' | 'number' | 'textarea' | 'date';
+  required?: boolean;
+  placeholder?: string;
+  claim_path?: string;
+}
+
+export interface SpotVerificationMeta {
+  method: string;
+  trust_status: 'verified' | 'unverified';
+}
+
+interface FormManifest {
+  schema: string;
+  tenant_id: string;
+  form_id: string;
+  version: string;
+  title: string;
+  description?: string;
+  relay_url: string;
+  inbox_url?: string;
+  recipient_key?: SpotRecipientJwk;
+  fields: FormField[];
+}
+
+interface QueuedEnvelope {
+  envelope_id: string;
+  tenant_id: string;
+  form_id: string;
+  envelope: string;
+  created_at: number;
+  status: 'queued' | 'sent';
+}
+
+const DB_NAME = 'sorane-spot-poc';
+const STORE_QUEUE = 'envelopes';
+const KEY_STORAGE = 'sorane.spot.poc.demo-keys.v1';
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE_QUEUE)) {
+        db.createObjectStore(STORE_QUEUE, { keyPath: 'envelope_id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function putQueueItem(item: QueuedEnvelope): Promise<void> {
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_QUEUE, 'readwrite');
+    tx.objectStore(STORE_QUEUE).put(item);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function listQueueItems(): Promise<QueuedEnvelope[]> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_QUEUE, 'readonly');
+    const req = tx.objectStore(STORE_QUEUE).getAll();
+    req.onsuccess = () => resolve((req.result as QueuedEnvelope[]).sort((a, b) => b.created_at - a.created_at));
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function ensureDemoKeys(kid: string): Promise<{ publicJwk: SpotRecipientJwk; privateJwk: SpotRecipientJwk }> {
+  const saved = localStorage.getItem(KEY_STORAGE);
+  if (saved) {
+    try {
+      return JSON.parse(saved) as { publicJwk: SpotRecipientJwk; privateJwk: SpotRecipientJwk };
+    } catch {
+      // regenerate below
+    }
+  }
+  const pair = await generateRecipientKeyPair(kid);
+  localStorage.setItem(KEY_STORAGE, JSON.stringify(pair));
+  return pair;
+}
+
+async function loadManifest(): Promise<SpotFormManifest> {
+  const params = new URLSearchParams(location.search);
+  const inlineManifest = params.get('m');
+  if (inlineManifest) {
+    return decodeManifestParam(inlineManifest);
+  }
+  const manifestUrl = params.get('manifest') || './sample-manifest.json';
+  const res = await fetch(manifestUrl);
+  if (!res.ok) throw new Error(`Failed to load manifest: ${res.status}`);
+  return (await res.json()) as SpotFormManifest;
+}
+
+async function main(): Promise<void> {
+  if ('serviceWorker' in navigator) {
+    void navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {});
+  }
+
+  const netBadge = document.getElementById('net-status')!;
+  const updateOnline = () => {
+    netBadge.textContent = navigator.onLine ? 'オンライン' : 'オフライン';
+  };
+  updateOnline();
+  window.addEventListener('online', () => {
+    updateOnline();
+    void flushQueue();
+  });
+  window.addEventListener('offline', updateOnline);
+
+  const manifest = await loadManifest();
+  let demoKeys = await ensureDemoKeys(`${manifest.tenant_id}-2026-01`);
+  const recipientPub = manifest.recipient_key ?? demoKeys.publicJwk;
+
+  document.getElementById('form-title')!.textContent = manifest.title;
+  document.getElementById('form-meta')!.textContent =
+    `tenant: ${manifest.tenant_id} / form: ${manifest.form_id} v${manifest.version}`;
+  const relayInput = document.getElementById('relay-override') as HTMLInputElement;
+  relayInput.value = manifest.relay_url;
+
+  const fieldsEl = document.getElementById('form-fields')!;
+  for (const field of manifest.fields) {
+    const label = document.createElement('label');
+    label.htmlFor = `field-${field.id}`;
+    label.textContent = field.required ? `${field.label} *` : field.label;
+    fieldsEl.appendChild(label);
+
+    const input = field.type === 'textarea' ? document.createElement('textarea') : document.createElement('input');
+    input.id = `field-${field.id}`;
+    input.name = field.id;
+    if (input instanceof HTMLInputElement) {
+      input.type = field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : 'text';
+    }
+    if (field.required) input.required = true;
+    if (field.placeholder) input.placeholder = field.placeholder;
+    if (field.claim_path) input.dataset.claimPath = field.claim_path;
+    fieldsEl.appendChild(input);
+  }
+
+  const renderQueue = async () => {
+    const items = await listQueueItems();
+    const listEl = document.getElementById('queue-list')!;
+    if (items.length === 0) {
+      listEl.textContent = 'キューは空です。';
+      return;
+    }
+    listEl.innerHTML = '';
+    for (const item of items) {
+      const wrap = document.createElement('div');
+      wrap.style.marginBottom = '12px';
+      wrap.innerHTML = `<div><strong>${item.status === 'sent' ? '送信済み' : '未送信（待機中）'}</strong> — <code>${item.envelope_id.slice(0, 12)}...</code> (${item.envelope.length} chars)</div>`;
+      const qrBox = document.createElement('div');
+      qrBox.style.maxWidth = '220px';
+      qrBox.style.margin = '8px 0';
+      try {
+        qrBox.innerHTML = renderQrSvg(item.envelope);
+      } catch {
+        qrBox.textContent = 'QR 上限超過（テキストまたは HTTP 提出を利用）';
+      }
+      wrap.appendChild(qrBox);
+      const pre = document.createElement('pre');
+      pre.textContent = item.envelope;
+      wrap.appendChild(pre);
+      listEl.appendChild(wrap);
+    }
+  };
+
+  const flushQueue = async () => {
+    const items = (await listQueueItems()).filter((i) => i.status === 'queued');
+    if (items.length === 0) return;
+    try {
+      const res = await fetch(relayInput.value, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          tenant_id: manifest.tenant_id,
+          items: items.map(({ envelope_id, form_id, envelope }) => ({ envelope_id, form_id, envelope })),
+        }),
+      });
+      if (!res.ok) return;
+      for (const item of items) {
+        await putQueueItem({ ...item, status: 'sent' });
+      }
+      await renderQueue();
+    } catch {
+      // Offline or unreachable; keep queued in IndexedDB.
+    }
+  };
+
+  document.getElementById('btn-gen-keys')!.addEventListener('click', async () => {
+    demoKeys = await generateRecipientKeyPair(`${manifest.tenant_id}-2026-01`);
+    localStorage.setItem(KEY_STORAGE, JSON.stringify(demoKeys));
+    await renderQueue();
+  });
+
+  document.getElementById('spot-form')!.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const answers: Record<string, string> = {};
+    for (const field of manifest.fields) {
+      const el = document.getElementById(`field-${field.id}`) as HTMLInputElement | HTMLTextAreaElement;
+      answers[field.id] = el.value;
+    }
+    const verification: SpotVerificationMeta = {
+      method: 'self_asserted',
+      trust_status: 'unverified',
+    };
+    const sealed = await sealSpotEnvelope(
+      manifest.recipient_key ?? demoKeys.publicJwk,
+      { tenantId: manifest.tenant_id, formId: manifest.form_id, version: manifest.version },
+      { answers, verification, submitted_at: new Date().toISOString() },
+    );
+    await putQueueItem({
+      envelope_id: sealed.envelopeId,
+      tenant_id: manifest.tenant_id,
+      form_id: manifest.form_id,
+      envelope: sealed.envelope,
+      created_at: Date.now(),
+      status: 'queued',
+    });
+    await renderQueue();
+    await flushQueue();
+  });
+
+  document.getElementById('btn-next-companion')!.addEventListener('click', () => {
+    const carryIds = new Set(['address', 'shelter', 'input_helper', 'group_id']);
+    const groupEl = document.getElementById('field-group_id') as HTMLInputElement | null;
+    if (groupEl && !groupEl.value.trim()) {
+      const bytes = crypto.getRandomValues(new Uint8Array(4));
+      groupEl.value = `grp-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+    }
+    for (const field of manifest.fields) {
+      if (carryIds.has(field.id)) continue;
+      const el = document.getElementById(`field-${field.id}`) as HTMLInputElement | HTMLTextAreaElement | null;
+      if (el) el.value = '';
+    }
+    const first = document.getElementById('field-name') as HTMLInputElement | null;
+    first?.focus();
+  });
+
+  document.getElementById('btn-flush')!.addEventListener('click', () => {
+    void flushQueue();
+  });
+
+  const decryptedById = new Map<string, { payload: unknown; source: string }>();
+  const renderDecrypted = () => {
+    const target = document.getElementById('inbox-list')!;
+    if (decryptedById.size === 0) {
+      target.textContent = 'まだデータがありません。';
+      return;
+    }
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>ID</th><th>経路</th><th>復号ペイロード</th></tr></thead>';
+    const tbody = document.createElement('tbody');
+    for (const [id, entry] of decryptedById.entries()) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><code>${id.slice(0, 12)}...</code></td><td>${entry.source}</td><td><pre>${JSON.stringify(entry.payload, null, 2)}</pre></td>`;
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    target.innerHTML = '';
+    target.appendChild(table);
+  };
+
+  const inboxTokenInput = document.getElementById('inbox-token') as HTMLInputElement;
+  const savedReadToken = localStorage.getItem(`sorane.spot.read-token.${manifest.tenant_id}`);
+  if (savedReadToken) inboxTokenInput.value = savedReadToken;
+
+  document.getElementById('receiver-bundle-file')!.addEventListener('change', async (event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    try {
+      const bundle = JSON.parse(await file.text()) as SpotReceiverBundle;
+      if (!bundle.private_jwk) return;
+      demoKeys = { publicJwk: demoKeys.publicJwk, privateJwk: bundle.private_jwk };
+      localStorage.setItem(KEY_STORAGE, JSON.stringify(demoKeys));
+      if (bundle.read_token) {
+        inboxTokenInput.value = bundle.read_token;
+        localStorage.setItem(`sorane.spot.read-token.${bundle.tenant_id || manifest.tenant_id}`, bundle.read_token);
+      }
+    } catch {
+      // Ignore invalid JSON file.
+    }
+  });
+
+  document.getElementById('btn-fetch-inbox')!.addEventListener('click', async () => {
+    const url = `${manifest.inbox_url ?? '/api/relay/v1/inbox'}?tenant_id=${encodeURIComponent(manifest.tenant_id)}`;
+    const token = inboxTokenInput.value.trim();
+    const headers: Record<string, string> = {};
+    if (token) headers.authorization = `Bearer ${token}`;
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      document.getElementById('inbox-list')!.textContent =
+        res.status === 401 ? '閲覧トークンが必要です（または一致しません）。' : `取得に失敗しました (${res.status})`;
+      return;
+    }
+    const data = (await res.json()) as { items: Array<{ envelope: string }> };
+    for (const row of data.items) {
+      try {
+        const opened = await openSpotEnvelope(row.envelope, demoKeys.privateJwk, {
+          tenantId: manifest.tenant_id,
+          formId: manifest.form_id,
+          version: manifest.version,
+        });
+        decryptedById.set(opened.envelopeId, { payload: opened.payload, source: 'relay' });
+      } catch {
+        // Ignore items encrypted for another key.
+      }
+    }
+    renderDecrypted();
+  });
+
+  document.getElementById('btn-decrypt-paste')!.addEventListener('click', async () => {
+    const input = (document.getElementById('paste-envelope') as HTMLTextAreaElement).value.trim();
+    if (!input) return;
+    const opened = await openSpotEnvelope(input, demoKeys.privateJwk, {
+      tenantId: manifest.tenant_id,
+      formId: manifest.form_id,
+      version: manifest.version,
+    });
+    decryptedById.set(opened.envelopeId, { payload: opened.payload, source: 'offline-paste' });
+    renderDecrypted();
+  });
+
+  let scanStream: MediaStream | null = null;
+  let scanActive = false;
+  const scannerBox = document.getElementById('qr-scanner')!;
+  const scanVideo = document.getElementById('qr-video') as HTMLVideoElement;
+  const scanStatus = document.getElementById('qr-scan-status')!;
+
+  const stopScan = () => {
+    scanActive = false;
+    if (scanStream) {
+      for (const track of scanStream.getTracks()) track.stop();
+      scanStream = null;
+    }
+    scanVideo.srcObject = null;
+    scannerBox.classList.add('hidden');
+  };
+
+  document.getElementById('btn-stop-scan')!.addEventListener('click', stopScan);
+
+  document.getElementById('btn-scan-qr')!.addEventListener('click', async () => {
+    const Detector = (window as unknown as {
+      BarcodeDetector?: new (opts: { formats: string[] }) => {
+        detect(source: HTMLVideoElement): Promise<Array<{ rawValue?: string }>>;
+      };
+    }).BarcodeDetector;
+    if (!Detector || !navigator.mediaDevices?.getUserMedia) {
+      scanStatus.textContent = 'このブラウザはカメラ QR 読取に未対応です（下の文字列貼付をご利用ください）。';
+      scannerBox.classList.remove('hidden');
+      return;
+    }
+    try {
+      scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      scanVideo.srcObject = scanStream;
+      await scanVideo.play();
+      scannerBox.classList.remove('hidden');
+      scanStatus.textContent = 'QR コードをかざしてください...';
+      scanActive = true;
+      const detector = new Detector({ formats: ['qr_code'] });
+      const tick = async () => {
+        if (!scanActive) return;
+        try {
+          const codes = await detector.detect(scanVideo);
+          for (const code of codes) {
+            const raw = code.rawValue?.trim() ?? '';
+            if (!raw.startsWith('spot1:')) continue;
+            const opened = await openSpotEnvelope(raw, demoKeys.privateJwk, {
+              tenantId: manifest.tenant_id,
+              formId: manifest.form_id,
+              version: manifest.version,
+            });
+            decryptedById.set(opened.envelopeId, { payload: opened.payload, source: 'qr-camera' });
+            renderDecrypted();
+            scanStatus.textContent = `読取成功: ${opened.envelopeId.slice(0, 12)}...`;
+          }
+        } catch {
+          // Continue scanning next frame.
+        }
+        if (scanActive) requestAnimationFrame(() => { void tick(); });
+      };
+      requestAnimationFrame(() => { void tick(); });
+    } catch {
+      scanStatus.textContent = 'カメラを起動できませんでした。';
+      scannerBox.classList.remove('hidden');
+    }
+  });
+
+  const currentRecords = (): SpotDecryptedRecord[] =>
+    Array.from(decryptedById.entries()).map(([envelope_id, entry]) => ({
+      envelope_id,
+      source: entry.source,
+      payload:
+        entry.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload)
+          ? (entry.payload as Record<string, unknown>)
+          : { value: entry.payload },
+    }));
+
+  document.getElementById('btn-copy-tsv')!.addEventListener('click', async () => {
+    const records = currentRecords();
+    if (records.length === 0) return;
+    const tsv = formatSpotTsv(records);
+    await navigator.clipboard.writeText(tsv);
+  });
+
+  document.getElementById('btn-download-csv')!.addEventListener('click', () => {
+    const records = currentRecords();
+    if (records.length === 0) return;
+    const csv = formatSpotCsv(records);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${manifest.tenant_id}-${manifest.form_id}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  const setupFieldsEl = document.getElementById('setup-fields') as HTMLTextAreaElement;
+  setupFieldsEl.value = JSON.stringify(manifest.fields, null, 2);
+
+  let issuedManifest: SpotFormManifest | null = null;
+  let issuedBundle: SpotReceiverBundle | null = null;
+
+  document.getElementById('btn-issue-tenant')!.addEventListener('click', async () => {
+    const statusEl = document.getElementById('setup-status')!;
+    const tenantId = (document.getElementById('setup-tenant') as HTMLInputElement).value.trim();
+    const formId = (document.getElementById('setup-form') as HTMLInputElement).value.trim();
+    const title = (document.getElementById('setup-title') as HTMLInputElement).value.trim() || '避難所受付票';
+    try {
+      const fields = JSON.parse(setupFieldsEl.value) as SpotFormManifest['fields'];
+      const kid = `${tenantId}-${formId}-${new Date().toISOString().slice(0, 10)}`;
+      const pair = await generateRecipientKeyPair(kid);
+      const { readToken, readTokenHash } = await generateReadToken();
+
+      const regRes = await fetch('/api/relay/v1/tenants', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenantId, read_token_hash: readTokenHash }),
+      });
+      if (regRes.status === 409) {
+        statusEl.textContent = `テナント "${tenantId}" はすでに登録済みです。別の tenant_id を指定してください。`;
+        return;
+      }
+      if (!regRes.ok) {
+        statusEl.textContent = `リレー登録エラー (${regRes.status})`;
+        return;
+      }
+
+      issuedManifest = {
+        schema: 'sorane.spot.form.v1',
+        tenant_id: tenantId,
+        form_id: formId,
+        version: '1.1.0',
+        title,
+        relay_url: `${location.origin}/api/relay/v1/submit`,
+        inbox_url: `${location.origin}/api/relay/v1/inbox`,
+        recipient_key: pair.publicJwk,
+        fields,
+      };
+      issuedBundle = {
+        schema: 'sorane.spot.receiver.v1',
+        tenant_id: tenantId,
+        form_id: formId,
+        version: '1.1.0',
+        read_token: readToken,
+        private_jwk: pair.privateJwk,
+      };
+      localStorage.setItem(`sorane.spot.read-token.${tenantId}`, readToken);
+
+      const shareUrl = buildShareableFormUrl(location.origin, location.pathname, issuedManifest);
+      (document.getElementById('setup-share-url') as HTMLInputElement).value = shareUrl;
+      const qrEl = document.getElementById('setup-share-qr')!;
+      try {
+        qrEl.innerHTML = renderQrSvg(shareUrl);
+      } catch {
+        qrEl.textContent = 'URL が長いため QR 化できませんでした（URL コピーまたはマニフェスト JSON をご利用ください）。';
+      }
+      document.getElementById('setup-output')!.classList.remove('hidden');
+      statusEl.textContent = `登録完了: "${tenantId}"（Inbox は閲覧トークンで保護されました）。下の受付鍵・トークン JSON を保存してください。`;
+    } catch (error) {
+      statusEl.textContent = `生成エラー: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  });
+
+  document.getElementById('btn-copy-share-url')!.addEventListener('click', async () => {
+    const val = (document.getElementById('setup-share-url') as HTMLInputElement).value;
+    if (val) await navigator.clipboard.writeText(val);
+  });
+
+  const downloadJson = (filename: string, obj: unknown) => {
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  document.getElementById('btn-download-manifest')!.addEventListener('click', () => {
+    if (issuedManifest) downloadJson(`${issuedManifest.tenant_id}-${issuedManifest.form_id}.manifest.json`, issuedManifest);
+  });
+
+  document.getElementById('btn-download-receiver')!.addEventListener('click', () => {
+    if (issuedBundle) downloadJson(`${issuedBundle.tenant_id}-${issuedBundle.form_id}.receiver.json`, issuedBundle);
+  });
+
+  const tabSubmit = document.getElementById('tab-submit')!;
+  const tabReceive = document.getElementById('tab-receive')!;
+  const tabSetup = document.getElementById('tab-setup')!;
+  const panelSubmit = document.getElementById('panel-submit')!;
+  const panelReceive = document.getElementById('panel-receive')!;
+  const panelSetup = document.getElementById('panel-setup')!;
+  const activateTab = (which: 'submit' | 'receive' | 'setup') => {
+    tabSubmit.classList.toggle('active', which === 'submit');
+    tabReceive.classList.toggle('active', which === 'receive');
+    tabSetup.classList.toggle('active', which === 'setup');
+    panelSubmit.classList.toggle('hidden', which !== 'submit');
+    panelReceive.classList.toggle('hidden', which !== 'receive');
+    panelSetup.classList.toggle('hidden', which !== 'setup');
+  };
+  tabSubmit.addEventListener('click', () => activateTab('submit'));
+  tabReceive.addEventListener('click', () => activateTab('receive'));
+  tabSetup.addEventListener('click', () => activateTab('setup'));
+
+  void recipientPub;
+  await renderQueue();
+}
+
+void main();

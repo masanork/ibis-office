@@ -37,7 +37,12 @@ pub mod headless;
 #[cfg(target_family = "wasm")]
 pub mod web;
 pub mod web_pdf;
+#[cfg(target_family = "wasm")]
+pub mod html_raster;
 pub mod app;
+pub mod fixed_layout;
+#[cfg(not(target_family = "wasm"))]
+pub mod crash_report;
 pub mod read_file;
 #[cfg(not(target_family = "wasm"))]
 mod structured_preview;
@@ -75,6 +80,7 @@ pub mod host_editor;
 pub mod host_file_dialog;
 mod visio;
 pub mod file_actions;
+pub mod vc_transport;
 mod image_provenance;
 mod signature_ui;
 pub mod file_watch;
@@ -149,8 +155,16 @@ pub mod infobar;
 pub mod format;
 pub mod font_list;
 pub mod font_setup;
+#[cfg(not(target_family = "wasm"))]
+pub mod ocr_setup;
+#[cfg(not(target_family = "wasm"))]
+pub mod asr_setup;
 pub mod resource_list;
 pub mod font_setup_dialog;
+#[cfg(not(target_family = "wasm"))]
+pub mod ocr_setup_dialog;
+#[cfg(not(target_family = "wasm"))]
+pub mod asr_setup_dialog;
 pub mod fonts_late;
 pub mod replace_fonts;
 pub mod rename_file;
@@ -189,8 +203,14 @@ mod menu_layout_data;
 pub mod menu_search_history;
 pub mod menu_tiles;
 pub(crate) mod menu_scrollbar;
+pub mod keyboard_toolbar;
+pub mod keyboard_scroll;
+pub mod mobile_os;
+pub mod safe_area;
+pub mod narrow_layout;
+pub mod touch_scroll;
 pub(crate) mod input;
-pub mod plain_path;
+pub use ibis_office_base::plain_path;
 pub mod recent_files;
 pub(crate) mod status_bar;
 #[cfg(not(target_family = "wasm"))]
@@ -200,13 +220,16 @@ pub mod symbols;
 pub mod user_name;
 pub mod save;
 pub mod signature;
+pub mod signature_trust;
+pub mod pii_check;
+pub mod dicom_dialog;
 pub mod save_location;
-#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+#[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
 pub mod scenario;
-#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+#[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
 #[path = "tests/scenario_examples.rs"]
 pub mod scenario_examples;
-#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+#[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
 #[path = "tests/scenario_menus.rs"]
 pub mod scenario_menus;
 pub mod sidebars;

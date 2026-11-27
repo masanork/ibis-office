@@ -1325,6 +1325,7 @@ fn picture_anchor(bytes: &[u8]) -> Result<Option<FloatingAnchor>, Error> {
     Ok(Some(FloatingAnchor {
         offset_x,
         offset_y,
+        frame_size: None,
         align_h,
         align_v,
         relative_h: relative_h.into(),

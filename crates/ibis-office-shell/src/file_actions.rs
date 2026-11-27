@@ -57,14 +57,15 @@ impl SlideEditor {
             return;
         }
         let name: SharedString = next_new_file_name(kind);
-        // The Web version has one editor per page: the new file is another tab (K0016).
+        // The standalone Web version has one editor per page: the new file is another tab (K0016),
+        // unless a multi-tab workspace shell (SoraneWorkspace) is registered.
         #[cfg(target_family = "wasm")]
-        if self.has_document {
+        if self.has_document && !crate::window_editors::has_window_factory(cx) {
             crate::web::open_in_new_tab(crate::web::new_query(kind));
             return;
         }
         if self.has_document {
-            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
         } else {
             self.show_new(opened, name, window, cx);
         }
@@ -93,7 +94,7 @@ impl SlideEditor {
         };
         #[cfg(not(target_family = "wasm"))]
         if self.has_document {
-            crate::app::open_window_with(cx, show);
+            crate::app::open_tab_or_window_with(cx, show);
             return;
         }
         show(self, window, cx);
@@ -195,7 +196,59 @@ impl SlideEditor {
         let name: SharedString = crate::i18n::text("_shell.document-1-md");
         #[cfg(not(target_family = "wasm"))]
         if self.has_document {
-            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            return;
+        }
+        self.show_new(opened, name, window, cx);
+    }
+
+    /// Open a built-in localized help page or sample file (`help/index.md`, `help/samples/mynumber-act-ch1.xml`, etc.).
+    pub fn open_builtin_help(&mut self, help_path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_edit(window, cx);
+        let locale = match crate::i18n::language() {
+            crate::i18n::Language::Japanese => sorane_github::HelpLocale::Ja,
+            crate::i18n::Language::English => sorane_github::HelpLocale::En,
+        };
+        let Some(content) = sorane_github::help_file(locale, help_path) else {
+            self.status = Some(format!("Built-in help page not found: {help_path}").into());
+            return cx.notify();
+        };
+        let file_name = std::path::Path::new(help_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("help.md");
+        let bytes = content.as_bytes();
+        let opened = match crate::read_file::open_document_bytes(file_name, None, bytes) {
+            Ok(Some(crate::read_file::CommonOpen::Standard { opened, .. })) => Ok(opened),
+            #[cfg(not(target_family = "wasm"))]
+            Ok(Some(crate::read_file::CommonOpen::StructuredPreview(opened))) => Ok(opened),
+            Ok(None) => {
+                if std::path::Path::new(file_name)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("csv"))
+                {
+                    let text = std::str::from_utf8(bytes).unwrap_or("");
+                    ibis_formats::csv::workbook_from_literal_fields(text, "Sheet1", None)
+                        .and_then(ibis_formats::open)
+                        .map_err(|e| e.to_string())
+                } else {
+                    ibis_formats::markdown::open_markdown(bytes.to_vec()).map_err(|e| e.to_string())
+                }
+            }
+            Err(err) => Err(err),
+        };
+        let opened = match opened {
+            Ok(opened) => opened,
+            Err(err) => {
+                self.status = Some(crate::i18n::format("file.new-failed", &[("error", &err)]).into());
+                return cx.notify();
+            }
+        };
+        let name: SharedString = file_name.to_string().into();
+        #[cfg(not(target_family = "wasm"))]
+        if self.has_document {
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
             return;
         }
         self.show_new(opened, name, window, cx);
@@ -223,7 +276,7 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         {
             let _ = window;
-            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
         }
         #[cfg(target_family = "wasm")]
         self.show_new(opened, name, window, cx);
@@ -271,7 +324,7 @@ impl SlideEditor {
                     .join().map_err(|_| "CBOM comparison worker failed".to_string())?
             }).await;
             this.update_in(cx, |this, _, cx| match result {
-                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                Ok(opened) => crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                     editor.show_new(opened, next_new_file_name(ibis_formats::Kind::Workbook), window, cx)
                 }),
                 Err(error) => this.set_status(crate::i18n::format("xlsx.cbom-compare-failed", &[("error", &error)]), cx),
@@ -289,7 +342,7 @@ impl SlideEditor {
                 ibis_formats::sbom_review::open_action_queue(&review)
             }).await;
             this.update_in(cx, |this, _, cx| match result {
-                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                Ok(opened) => crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                     editor.show_new(opened, next_new_file_name(ibis_formats::Kind::Workbook), window, cx)
                 }),
                 Err(error) => this.set_status(crate::i18n::format("xlsx.sbom-actions-failed", &[("error", &error)]), cx),
@@ -329,7 +382,7 @@ impl SlideEditor {
                 ibis_formats::open(bytes).map_err(|err| err.to_string())
             }).await;
             this.update_in(cx, |this, _, cx| match result {
-                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                Ok(opened) => crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                     editor.show_new(opened, next_new_file_name(ibis_formats::Kind::Workbook), window, cx)
                 }),
                 Err(error) => this.set_status(crate::i18n::format("xlsx.sbom-refresh-failed", &[("error", &error)]), cx),
@@ -368,7 +421,7 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub fn open_template(&mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if self.has_document {
-            crate::app::open_window_with(cx, move |editor, window, cx| editor.new_from_template_path(path, window, cx));
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| editor.new_from_template_path(path, window, cx));
         } else {
             self.new_from_template_path(path, window, cx);
         }
@@ -817,6 +870,38 @@ impl SlideEditor {
             }
             let _ = std::fs::remove_dir_all(&dir);
             Ok(dest)
+        }))
+    }
+
+    /// ファイル > 書き出し > Web ページ: the document as one HTML page at `target`, its charts and SmartArt as pictures (#208). The work is `--export html` of a copy of the document
+    /// (the one place that draws them: `ibis_office_app::html_export`), a job to run off the window's thread.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn write_html_with_pictures(&self, target: std::path::PathBuf, sheet: Option<usize>) -> Result<Box<dyn FnOnce() -> Result<std::path::PathBuf, String> + Send + 'static>, String> {
+        let crate::format::PdfJob { bytes, .. } = with_format!(self, pdf_job(self, false))?;
+        let (stem, ext) = self.name_parts();
+        let own_args = with_format!(self, export_args(self));
+        Ok(Box::new(move || {
+            let dir = std::env::temp_dir().join(format!("ibisoffice-html-job-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let out = dir.join("out");
+            std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+            let file = dir.join(format!("{stem}.{ext}"));
+            std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+            let mut cmd = std::process::Command::new(export_program()?);
+            cmd.args(["--export", "html", "--out-dir"]).arg(&out).args(&own_args);
+            if let Some(sheet) = sheet {
+                // A workbook's page is one sheet (the 1-based `--range` of it).
+                cmd.args(["--range", &sheet.to_string()]);
+            }
+            cmd.arg(&file);
+            let status = cmd.status().map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err(crate::i18n::format("file.pdf-exit", &[("status", &status)]));
+            }
+            let made = std::fs::read(out.join(format!("{stem}.html"))).map_err(|e| e.to_string())?;
+            crate::save::write_replacing(&target, &made).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &target.display()), ("error", &e)]))?;
+            let _ = std::fs::remove_dir_all(&dir);
+            Ok(target)
         }))
     }
 

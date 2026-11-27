@@ -29,7 +29,7 @@ const TOOLS: &[Tool] = &[
         description: "List ordinary tables in a standalone SQLite database.",
         access: Access::Read,
         returns_content: true,
-        schema: || object(&[source_path()], &[PATH]),
+        schema: &|| object(&[source_path()], &[PATH]),
         run: list_tables,
     },
     Tool {
@@ -37,7 +37,7 @@ const TOOLS: &[Tool] = &[
         description: "Inspect the column names, declared types, nullability flags and primary key of a SQLite table.",
         access: Access::Read,
         returns_content: true,
-        schema: || object(&[source_path(), table_name()], &[PATH, "table"]),
+        schema: &|| object(&[source_path(), table_name()], &[PATH, "table"]),
         run: describe_table,
     },
     Tool {
@@ -45,7 +45,7 @@ const TOOLS: &[Tool] = &[
         description: "Inspect SQL column names and storage types before writing a query. Use the same datasets array as sqlite_query. Returns schema without rows.",
         access: Access::Read,
         returns_content: true,
-        schema: || object(&[datasets_property()], &["datasets"]),
+        schema: &|| object(&[datasets_property()], &["datasets"]),
         run: describe_datasets,
     },
     Tool {
@@ -53,7 +53,7 @@ const TOOLS: &[Tool] = &[
         description: "Run one read-only SQLite SELECT (including WITH) and preview its result. Increase limit for a larger preview.",
         access: Access::Read,
         returns_content: true,
-        schema: || {
+        schema: &|| {
             let mut props = query_properties();
             props.push((
                 "limit",
@@ -68,7 +68,7 @@ const TOOLS: &[Tool] = &[
         description: "Run one read-only SQLite SELECT and write its complete result to a new Excel table at a blank destination. Refuses results above the export limit.",
         access: Access::Edit,
         returns_content: true,
-        schema: || {
+        schema: &|| {
             let mut props = query_properties();
             props.extend([
                 document_id(),
@@ -95,7 +95,7 @@ const TOOLS: &[Tool] = &[
         description: "Re-run the saved query after binding its source files in order, replace the table, and refresh its linked pivots and charts in one edit. Returns input schema changes as warnings.",
         access: Access::Edit,
         returns_content: false,
-        schema: || {
+        schema: &|| {
             object(
                 &[
                     document_id(),
@@ -116,7 +116,7 @@ const TOOLS: &[Tool] = &[
         description: "Preview or atomically refresh workbook query reports from shared file bindings. Preview reports row counts and input schema changes and checks for overlap without editing.",
         access: Access::Edit,
         returns_content: true,
-        schema: || {
+        schema: &|| {
             object(
                 &[
                     document_id(),
@@ -164,7 +164,7 @@ const TOOLS: &[Tool] = &[
         description: "Count SQLite table rows with optional filters and grouping by one column. NULL forms its own group. Grouped results are sorted by descending count.",
         access: Access::Read,
         returns_content: true,
-        schema: || {
+        schema: &|| {
             object(
                 &[
                     source_path(),
@@ -1010,7 +1010,7 @@ pub(crate) const LIST_QUERY_REPORTS: Tool = Tool {
     description: "List saved query tables and the source slots needed to refresh them.",
     access: Access::Read,
     returns_content: true,
-    schema: || {
+    schema: &|| {
         object(
             &[
                 document_id(),
@@ -1938,7 +1938,7 @@ pub(crate) const SET_QUERY_REPORT_CHECKS: Tool = Tool {
     description: "Save read-only count checks on a query report. Checks run with its source bindings on every refresh. Optional diagnostics return example rows in previews. An empty list removes its checks.",
     access: Access::Edit,
     returns_content: false,
-    schema: || {
+    schema: &|| {
         object(
             &[
                 document_id(),
@@ -2066,7 +2066,7 @@ pub(crate) const SET_QUERY_REPORT_COMPARISON: Tool = Tool {
     description: "Save or remove comparison metadata on a saved report. Configure an additive metric and unit, a named rate with numerator and denominator columns, or an average with sum and count columns. Keys must be unique text.",
     access: Access::Edit,
     returns_content: false,
-    schema: || object(&[
+    schema: &|| object(&[
         document_id(),
         ("table", string("Name of an existing query report.")),
         ("comparison", json!({"oneOf":[{"type":"null"},object(&[

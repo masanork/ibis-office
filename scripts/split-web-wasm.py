@@ -58,6 +58,23 @@ def strip_name_section(data: bytes) -> bytes:
     return bytes(out)
 
 
+def compress_brotli(src: Path, dest_dir: Path) -> tuple[str, int]:
+    """Brotli-compress `src` into `dest_dir/wasm-br.<sha256>.bin` and return (sha256, size)."""
+    temp = tempfile.NamedTemporaryFile(prefix='wasm-brotli-', suffix='.tmp', dir=dest_dir, delete=False)
+    temp_path = Path(temp.name)
+    temp.close()
+    temp_path.unlink()
+    try:
+        subprocess.run(['node', str(Path(__file__).with_name('compress-web-wasm.mjs')), str(src), str(temp_path)], check=True)
+        compressed = temp_path.read_bytes()
+        encoded_hash = hashlib.sha256(compressed).hexdigest()
+        encoded_name = f'wasm-br.{encoded_hash}.bin'
+        temp_path.replace(dest_dir / encoded_name)
+        return encoded_hash, len(compressed)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def split_wasm(path: Path, compress: bool = True) -> None:
     original = path.read_bytes()
     stripped = strip_name_section(original)
@@ -77,33 +94,33 @@ def split_wasm(path: Path, compress: bool = True) -> None:
     if not chunks:
         raise ValueError('Wasm file is empty')
     # Keep a content-addressed single Brotli asset when it fits the static
-    # host's 25 MiB limit. The chunks remain available for other hosts and
-    # clients that cannot use this representation.
+    # host's 25 MiB limit. Otherwise Brotli-compress each chunk individually so
+    # both compression and splitting stay active within the 25 MiB per-file cap.
     manifest = {'size': total, 'sha256': digest.hexdigest(), 'chunks': chunks}
+    keep_br: set[str] = set()
     if compress:
-        temp = tempfile.NamedTemporaryFile(prefix='wasm-brotli-', suffix='.tmp', dir=path.parent, delete=False)
-        temp_path = Path(temp.name)
-        temp.close()
-        temp_path.unlink()
-        try:
-            subprocess.run(['node', str(Path(__file__).with_name('compress-web-wasm.mjs')), str(path), str(temp_path)], check=True)
-            compressed = temp_path.read_bytes()
-            if len(compressed) <= 25 * 1024 * 1024:
-                encoded_hash = hashlib.sha256(compressed).hexdigest()
-                encoded_name = f'wasm-br.{encoded_hash}.bin'
-                temp_path.replace(path.parent / encoded_name)
-                manifest['single'] = {'sha256': encoded_hash, 'size': len(compressed)}
-            else:
-                print(f'Brotli asset is {len(compressed):,} bytes; retaining split-only delivery')
-        finally:
-            temp_path.unlink(missing_ok=True)
+        encoded_hash, encoded_size = compress_brotli(path, path.parent)
+        if encoded_size <= 25 * 1024 * 1024:
+            keep_br.add(f'wasm-br.{encoded_hash}.bin')
+            manifest['single'] = {'sha256': encoded_hash, 'size': encoded_size}
+        else:
+            (path.parent / f'wasm-br.{encoded_hash}.bin').unlink(missing_ok=True)
+            print(f'Brotli single is {encoded_size:,} bytes (>25 MiB); compressing {len(chunks)} chunks individually')
+            for chunk in chunks:
+                chunk_path = path.parent / chunk['file']
+                br_hash, br_size = compress_brotli(chunk_path, path.parent)
+                if br_size <= 25 * 1024 * 1024:
+                    keep_br.add(f'wasm-br.{br_hash}.bin')
+                    chunk['br'] = {'sha256': br_hash, 'size': br_size}
+                else:
+                    (path.parent / f'wasm-br.{br_hash}.bin').unlink(missing_ok=True)
     (path.parent / 'ibis_office_app_bg.manifest.json').write_text(
         json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     # The output directory belongs to this build; remove stale chunks and the
     # large original so static asset upload cannot exceed the per-file limit.
     keep = {chunk['file'] for chunk in chunks}
     for old in path.parent.glob('wasm-br.*.bin'):
-        if old.name != (f"wasm-br.{manifest['single']['sha256']}.bin" if 'single' in manifest else ''):
+        if old.name not in keep_br:
             old.unlink()
     for old in path.parent.glob('ibis_office_app_bg.*.chunk'):
         if old.name not in keep:
@@ -111,7 +128,13 @@ def split_wasm(path: Path, compress: bool = True) -> None:
     path.unlink()
     path.with_suffix(path.suffix + '.size').unlink(missing_ok=True)
     single = manifest.get('single')
-    detail = f'; Brotli single is {single["size"]:,} bytes' if single else '; split delivery only'
+    if single:
+        detail = f'; Brotli single is {single["size"]:,} bytes'
+    elif any('br' in c for c in chunks):
+        br_total = sum(c['br']['size'] for c in chunks if 'br' in c)
+        detail = f'; Brotli split total is {br_total:,} bytes'
+    else:
+        detail = '; split delivery only'
     print(f'Split {total:,} bytes into {len(chunks)} chunks{detail}')
 
 

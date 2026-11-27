@@ -54,6 +54,10 @@ pub fn native_quit_allowed(cx: &mut App) -> bool {
 /// answered); the others close. The app ends with its last window (`quit_if_last_window_closed`), or at once when
 /// nothing is left to ask (GitHub issue #27).
 pub fn quit_asking_to_save(cx: &mut App) {
+    // iOS and Android: the app is not ended from inside (iOS froze; K0076). The key does nothing there either.
+    if crate::mobile_os::is_mobile_os() {
+        return;
+    }
     // ⌘Q comes while the window with the keys is being updated, when its editor cannot be read (the window would be
     // passed over and the app end without asking): ask once the event is done.
     cx.defer(quit_asking_to_save_now);
@@ -217,6 +221,16 @@ pub fn open_window_with(cx: &mut App, setup: impl FnOnce(&mut SlideEditor, &mut 
     open_window_sized(1280., true, cx, setup);
 }
 
+/// Open a new tab in an existing workspace window if available, otherwise fall back
+/// to opening a new editor window.
+pub fn open_tab_or_window_with(cx: &mut App, setup: impl FnOnce(&mut SlideEditor, &mut Window, &mut Context<SlideEditor>) + 'static) {
+    let setup = match crate::window_editors::try_open_tab_via_factory(Box::new(setup), cx) {
+        Ok(()) => return,
+        Err(setup) => setup,
+    };
+    open_window_sized(1280., true, cx, setup);
+}
+
 /// The key of the size and place of the last window that showed a file in the app's settings: `x,y,width,height` in logical pixels.
 pub(crate) const WINDOW_BOUNDS_KEY: &str = "app.window-bounds";
 /// The smallest a remembered window is made.
@@ -343,7 +357,7 @@ pub fn open_path_in_app(path: std::path::PathBuf, cx: &mut App) {
     for window in cx.windows() {
         let editor = crate::window_editors::active_in_window(window, cx);
         if let Some(editor) = editor
-            && editor.read(cx).replaceable_by_open()
+            && (cfg!(target_os = "android") || editor.read(cx).replaceable_by_open())
         {
             window
                 .update(cx, |_, window, cx| editor.update(cx, |e, cx| e.open_path(path.clone(), None, window, cx)))

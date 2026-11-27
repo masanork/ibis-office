@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/226)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Railroad (syntax) diagrams: `railroad-ebnf-beta`, `railroad-abnf-beta`, `railroad-peg-beta`
 //! grammars and the `railroad-beta` function form (`sequence(…)`, `choice(…)`, …). Every rule

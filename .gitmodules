@@ -3,19 +3,19 @@
 	url = https://github.com/ibisjp/gpui-component.git
 [submodule "forks/gpui-base"]
 	path = forks/gpui-base
-	url = https://github.com/masanork/gpui-base.git
+	url = https://github.com/sorane-dev/gpui-base.git
 [submodule "forks/gpui-pre"]
 	path = forks/gpui-pre
-	url = https://github.com/masanork/gpui-pre.git
+	url = https://github.com/sorane-dev/gpui-pre.git
 [submodule "forks/gpui-pre-apple"]
 	path = forks/gpui-pre-apple
 	url = https://github.com/ibisjp/gpui-pre-apple.git
 [submodule "forks/gpui-pre-macos"]
 	path = forks/gpui-pre-macos
-	url = https://github.com/masanork/gpui-pre-macos.git
+	url = https://github.com/sorane-dev/gpui-pre-macos.git
 [submodule "forks/gpui-pre-web"]
 	path = forks/gpui-pre-web
-	url = https://github.com/masanork/gpui-pre-web.git
+	url = https://github.com/sorane-dev/gpui-pre-web.git
 [submodule "forks/gpui-pre-windows"]
 	path = forks/gpui-pre-windows
 	url = https://github.com/ibisjp/gpui-pre-windows.git
@@ -24,7 +24,7 @@
 	url = https://github.com/ibisjp/gpui-pre-linux.git
 [submodule "forks/gpui-pre-wgpu"]
 	path = forks/gpui-pre-wgpu
-	url = https://github.com/masanork/gpui-pre-wgpu.git
+	url = https://github.com/sorane-dev/gpui-pre-wgpu.git
 [submodule "forks/gpui-kit"]
 	path = forks/gpui-kit
-	url = https://github.com/masanork/gpui-kit.git
+	url = https://github.com/sorane-dev/gpui-kit.git

@@ -27,16 +27,16 @@ dicom-object = { version = "0.10.1", default-features = false, features = ["defl
 pure_jpegls = "2.1"
 jxl-oxide = { version = "0.12", default-features = false }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["arbitrary_precision"] }
+serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
 percent-encoding = "2"
 sha2 = "0.10"
 lewton = "0.10"
 serde-saphyr = { version = "1.3", default-features = false, features = ["deserialize"] }
 unicode-segmentation = "1.13.3"
 pulldown-cmark = { version = "0.13", default-features = false }
+ibis-pdf.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-ibis-pdf.workspace = true
 krilla = { version = "=0.8.2", default-features = false, features = ["simple-text"] }
 rustybuzz = "0.20.1"
 tempfile = "3"

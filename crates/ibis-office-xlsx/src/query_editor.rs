@@ -316,7 +316,7 @@ impl SlideEditor {
                         Source::ArrowIpc { .. } => query::read_arrow_ipc(&path),
                         Source::Avro { .. } => query::read_avro(&path),
                         Source::Delimited { encoding, delimiter, start_row, headers, .. } =>
-                            crate::import_text::read_delimited_query(&path, &encoding, delimiter, start_row, headers),
+                            crate::import_delimited::read_delimited_query(&path, &encoding, delimiter, start_row, headers),
                         _ => Err("Unsupported file source".into()),
                     }
                 }
@@ -919,77 +919,11 @@ impl SlideEditor {
 
     fn load_refreshed_query(&mut self, query: Query, table: QTable, cx: &mut Context<Self>) {
         let rows = table.rows.len();
-        let targets = match self.query_dependent_pivots(&query, &table) {
-            Ok(targets) => targets,
-            Err(error) => return self.queries_message(crate::shell::i18n::format("query.refresh-failed", &[("name", &query.name), ("error", &error)]), cx),
-        };
-        let load = Command::Sheet(SheetCommand::LoadQuery { sheet: self.current_slide, query: query.clone(), table });
-        let mut commands = vec![load];
-        if !targets.is_empty() {
-            let mut work = self.presentation().clone();
-            if let Err(error) = work.apply(commands[0].clone()) {
-                return self.queries_message(error.to_string(), cx);
-            }
-            match self.rebuild_pivot_commands(&mut work, targets, true, cx) {
-                Ok(pivots) => commands.extend(pivots),
-                Err(error) => return self.queries_message(crate::shell::i18n::format("query.refresh-failed", &[("name", &query.name), ("error", &error)]), cx),
-            }
-        }
-        if let Err(e) = self.document.execute(commands) {
+        let slide = self.current_slide;
+        if let Err(e) = self.document.execute(vec![Command::Sheet(SheetCommand::LoadQuery { sheet: slide, query: query.clone(), table })]) {
             return self.queries_message(e.to_string(), cx);
         }
         self.queries_message(crate::shell::i18n::format("query.refreshed", &[("name", &query.name), ("rows", &rows)]), cx);
-    }
-
-    fn query_dependent_pivots(&self, query: &Query, table: &QTable) -> Result<Vec<(ibis_doc_model::SlideId, usize, Option<ibis_doc_model::CellRange>)>, SharedString> {
-        use ibis_doc_model::{CellRange, sheet_calc::sheet_of_slide};
-        let book = self.presentation();
-        let Some(output) = query.output.as_ref().and_then(|name| {
-            let workbook = book.workbook.as_ref()?;
-            workbook.sheets[workbook.sheet_index(name)?].slide
-        }) else { return Ok(Vec::new()) };
-        let Some(old_sheet) = book.slide(output).and_then(sheet_of_slide) else { return Ok(Vec::new()) };
-        let mut targets = Vec::new();
-        for slide in &book.slides {
-            let Some(sheet) = sheet_of_slide(slide) else { continue };
-            for (index, pivot) in sheet.pivots.iter().enumerate() {
-                let Some((source, range)) = ibis_formats::pivot_source_location(book, pivot) else { continue };
-                if source.unwrap_or(slide.id) == output {
-                    if slide.id == output && crate::pivot::pivot_area(pivot).iter().any(|area| {
-                        area.first_row as usize <= table.rows.len()
-                            && (area.first_column as usize) < table.columns.len()
-                    }) {
-                        return Err(crate::shell::i18n::text("_xlsx.the-pivottable-would-overlap-other-cells-or-anot"));
-                    }
-                    if range.first_row == 0 && (range.first_column..=range.last_column).any(|column| {
-                        let old = old_sheet.cell(0, column).map(|cell| cell.text.as_str()).unwrap_or_default();
-                        let new = table.columns.get(column as usize).map(|col| col.name.as_str()).unwrap_or_default();
-                        old != new
-                    }) {
-                        return Err(crate::shell::i18n::text("query.pivot-columns-changed"));
-                    }
-                    targets.push((slide.id, index, range, pivot.source.name.is_none()));
-                }
-            }
-        }
-        if targets.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // A plain range covering the entire previous output follows changes in row count.
-        // Explicit subranges, table references and defined names keep their own bounds.
-        let old_extent = old_sheet.cells.iter().fold(CellRange::default(), |mut extent, cell| {
-            extent.last_row = extent.last_row.max(cell.row);
-            extent.last_column = extent.last_column.max(cell.column);
-            extent
-        });
-        let new_last_row = table.rows.len() as u32;
-        let resize = table.columns.len() == old_extent.last_column as usize + 1 && new_last_row != old_extent.last_row;
-        Ok(targets.into_iter().map(|(slide, index, range, direct)| {
-            let new_range = (direct && resize && range == old_extent)
-                .then_some(CellRange { last_row: new_last_row, ..range });
-            (slide, index, new_range)
-        }).collect())
     }
 
     pub fn queries_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
@@ -1016,12 +950,6 @@ impl SlideEditor {
                 })
         };
         let mut body = v_flex().gap_2().px(px(18.)).py(px(8.)).p_0();
-        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-        if self.presentation().workbook.as_ref().is_some_and(|book| !book.query_reports.is_empty()) {
-            body = body.child(crate::shell::chrome::action_button("queries-report-refresh")
-                .small().label(crate::shell::i18n::text("query.report-refresh-title"))
-                .on_click(cx.listener(|this, _, _, cx| this.open_query_report_panel(cx))));
-        }
         if queries.is_empty() {
             body = body.child(crate::shell::i18n::text("query.none"));
         }
@@ -1059,7 +987,7 @@ impl SlideEditor {
                     this.wb_mut().panels.queries = None;
                     cx.notify();
                 }))));
-        Some(SidebarPanel::with_footer(crate::shell::i18n::text("query.queries-title"), body.into_any_element(), panel_terminal_actions).modal_named("queries_panel"))
+        Some(SidebarPanel::with_footer(crate::shell::i18n::text("query.queries-title"), body.into_any_element(), panel_terminal_actions))
     }
 
     // ------------------------------------------------------------------- the editor's window
@@ -1312,20 +1240,22 @@ impl SlideEditor {
                         Kind::Choice(options) => {
                             let current = form.picks.get(f.id).copied().unwrap_or(0).min(options.len() - 1);
                             let id = f.id;
-                            let count = options.len();
-                            side = side.child(mark(
-                                format!("field-{id}"),
-                                crate::shell::chrome::action_button(SharedString::from(format!("query-field-{id}")))
-                                    .small()
-                                    .label(text(options[current]))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Some(form) = this.query_editor_mut().and_then(|e| e.form.as_mut()) {
-                                            let n = form.picks.get(id).copied().unwrap_or(0);
-                                            form.picks.insert(id, (n + 1) % count);
+                            // The shared dropdown (button and list in one): a pick is stored in the form.
+                            let items: Vec<crate::shell::chrome::DropdownItem> = options
+                                .iter()
+                                .enumerate()
+                                .map(|(n, label)| {
+                                    crate::shell::chrome::DropdownItem::new(text(label)).checked(n == current).on_select(std::rc::Rc::new(move |e: &mut SlideEditor, _, cx| {
+                                        if let Some(form) = e.query_editor_mut().and_then(|e| e.form.as_mut()) {
+                                            form.picks.insert(id, n);
                                         }
                                         cx.notify();
                                     }))
-                                    .into_any_element(),
+                                })
+                                .collect();
+                            side = side.child(mark(
+                                format!("field-{id}"),
+                                crate::shell::chrome::Dropdown::new(field_dropdown_id(id), text(options[current]), items, &cx.weak_entity()).fill_width().into_any_element(),
                             ));
                         }
                         Kind::Flag => {
@@ -1395,6 +1325,14 @@ impl SlideEditor {
         self.query_recompute();
         cx.notify();
     }
+}
+
+/// The id of the dropdown of a form's choice field (`query-field-<id>`; the dropdown takes a `'static` id, so each is made once).
+fn field_dropdown_id(id: &'static str) -> &'static str {
+    use std::sync::{Mutex, OnceLock};
+    static IDS: OnceLock<Mutex<HashMap<&'static str, &'static str>>> = OnceLock::new();
+    let mut ids = IDS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    ids.entry(id).or_insert_with(|| Box::leak(format!("query-field-{id}").into_boxed_str()))
 }
 
 fn type_mark(ty: query::QType) -> &'static str {

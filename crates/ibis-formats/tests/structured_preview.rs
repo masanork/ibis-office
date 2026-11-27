@@ -167,6 +167,11 @@ fn detects_and_validates_ai_sft_and_rlhf_datasets_across_json_and_jsonl() {
     )));
     assert!(sft.blocks.iter().any(|b| matches!(
         b,
+        PreviewBlock::Table { title: Some(t), rows, .. }
+            if t.starts_with("Record Index") && rows.len() == 3
+    )));
+    assert!(sft.blocks.iter().any(|b| matches!(
+        b,
         PreviewBlock::ChatTurn { role, content, .. } if role == "assistant" && content == "Hello!"
     )));
 
@@ -284,3 +289,168 @@ fn detects_character_cards_personas_prompt_specs_evals_and_trajectories() {
         PreviewBlock::ChatTurn { role, content, .. } if role == "tool" && content == "read_file"
     )));
 }
+
+#[test]
+fn reads_jupyter_notebook_toml_json_schema_and_openapi() {
+    use structured_preview::{CalloutTone, PreviewBlock};
+
+    let ipynb = r##"{
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python"}},
+        "cells": [
+            {"cell_type": "markdown", "source": ["# Analysis\n", "Summary"]},
+            {"cell_type": "code", "execution_count": 1, "source": ["print(1+1)"], "outputs": [
+                {"output_type": "stream", "name": "stdout", "text": ["2\n"]}
+            ]},
+            {"cell_type": "code", "execution_count": 2, "source": ["1/0"], "outputs": [
+                {"output_type": "error", "ename": "ZeroDivisionError", "evalue": "division by zero"}
+            ]}
+        ]
+    }"##;
+    let nb = structured_preview::read("ipynb", ipynb.as_bytes()).unwrap();
+    assert_eq!(nb.format, "Jupyter Notebook");
+    assert!(nb.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Callout { tone: CalloutTone::Danger, title, .. } if title == "ZeroDivisionError"
+    )));
+
+    let toml_src = b"[project]\nname = \"eval-pipeline\"\nversion = \"0.2.0\"\n\n[[models]]\nid = \"gpt-4o\"\ntemp = 0.2\n\n[[models]]\nid = \"claude\"\ntemp = 0.0\n";
+    let toml_prev = structured_preview::read("toml", toml_src).unwrap();
+    assert_eq!(toml_prev.format, "TOML");
+    assert_eq!(toml_prev.summary.table_count, 1);
+
+    let schema = br#"{
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "UserProfile",
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+            "id": {"type": "string", "format": "uuid", "description": "User ID"},
+            "age": {"type": "integer", "default": 20}
+        }
+    }"#;
+    let sch = structured_preview::read("json", schema).unwrap();
+    assert_eq!(sch.summary.detected_schema.as_deref(), Some("JSON Schema"));
+    assert!(sch.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Properties") && rows.len() == 2
+    )));
+
+    let openapi = b"openapi: '3.1.0'\ninfo:\n  title: Items API\n  version: '1.0'\npaths:\n  /items:\n    get:\n      summary: List items\n      responses:\n        '200':\n          description: OK\n";
+    let oa = structured_preview::read("yaml", openapi).unwrap();
+    assert_eq!(oa.summary.detected_schema.as_deref(), Some("OpenAPI (Items API)"));
+}
+
+#[test]
+fn reads_ontology_jsonld_rdf_owl_and_turtle() {
+    use structured_preview::PreviewBlock;
+
+    let jsonld = br#"{
+        "@context": {
+            "schema": "https://schema.org/",
+            "rdfs": "http://www.w3.org/2000/01/rdf-schema#"
+        },
+        "@graph": [
+            {"@id": "ex:Person", "@type": "rdfs:Class", "rdfs:label": "Person"},
+            {"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}
+        ]
+    }"#;
+    let ld = structured_preview::read("jsonld", jsonld).unwrap();
+    assert_eq!(ld.format, "JSON-LD");
+    assert_eq!(ld.summary.detected_schema.as_deref(), Some("JSON-LD"));
+    assert!(ld.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Graph Entities") && rows.len() == 2
+    )));
+
+    let owl = br#"<?xml version="1.0"?>
+    <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+             xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+             xmlns:owl="http://www.w3.org/2002/07/owl#">
+      <owl:Ontology rdf:about="http://example.org/onto">
+        <rdfs:label>Example Ontology</rdfs:label>
+      </owl:Ontology>
+      <owl:Class rdf:about="http://example.org/onto#Animal">
+        <rdfs:label>Animal</rdfs:label>
+      </owl:Class>
+      <owl:Class rdf:about="http://example.org/onto#Dog">
+        <rdfs:subClassOf rdf:resource="http://example.org/onto#Animal"/>
+        <rdfs:label>Dog</rdfs:label>
+      </owl:Class>
+      <owl:ObjectProperty rdf:about="http://example.org/onto#owns">
+        <rdfs:domain rdf:resource="http://example.org/onto#Animal"/>
+        <rdfs:label>owns</rdfs:label>
+      </owl:ObjectProperty>
+    </rdf:RDF>"#;
+    let owl_prev = structured_preview::read("owl", owl).unwrap();
+    assert_eq!(owl_prev.format, "OWL");
+    assert_eq!(owl_prev.summary.detected_schema.as_deref(), Some("OWL / RDF-XML"));
+    assert!(owl_prev.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Classes & Hierarchy") && rows.len() == 2
+    )));
+
+    let ttl = br#"
+        @prefix ex: <http://example.org/> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+        ex:Agent a owl:Class ;
+            rdfs:label "Agent" .
+
+        ex:Alice a ex:Agent ;
+            rdfs:label "Alice"@en ;
+            ex:age 30 .
+    "#;
+    let ttl_prev = structured_preview::read("ttl", ttl).unwrap();
+    assert_eq!(ttl_prev.format, "Turtle");
+    assert_eq!(ttl_prev.summary.detected_schema.as_deref(), Some("Turtle"));
+    assert!(ttl_prev.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Classes & Hierarchy") && rows.len() == 1
+    )));
+    assert!(ttl_prev.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Section { title, .. } if title == "ex:Alice"
+    )));
+
+    let nt = br#"<http://example.org/s> <http://example.org/p> "hello" ."#;
+    let nt_prev = structured_preview::read("nt", nt).unwrap();
+    assert_eq!(nt_prev.format, "N-Triples");
+    assert!(!nt_prev.fields.is_empty());
+}
+
+#[test]
+fn reads_sql_ddl_and_queries_and_supports_columnar_extensions() {
+    use structured_preview::PreviewBlock;
+
+    for ext in ["parquet", "arrow", "ipc", "feather", "sql"] {
+        assert!(structured_preview::supports_extension(ext));
+    }
+
+    let sql = br#"
+        -- Sample analytics schema
+        CREATE TABLE events (
+            id BIGINT PRIMARY KEY,
+            user_id VARCHAR(64) NOT NULL,
+            score DOUBLE DEFAULT 0.0
+        );
+
+        INSERT INTO events (id, user_id, score) VALUES (1, 'u1', 0.95);
+        SELECT user_id, AVG(score) FROM events GROUP BY user_id;
+    "#;
+    let prev = structured_preview::read("sql", sql).unwrap();
+    assert_eq!(prev.format, "SQL");
+    assert_eq!(prev.summary.detected_schema.as_deref(), Some("SQL"));
+    assert!(prev.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Table: events") && rows.len() == 3
+    )));
+    assert!(prev.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Statements") && rows.len() == 3
+    )));
+}
+
+

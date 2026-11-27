@@ -73,9 +73,11 @@ if (!params.has('host')) {
       const label = `${session.vault.owner}/${session.vault.repo}`;
       const relPaths = repoItems.map((f) => f.subtitle);
       window.ibisOfficeSetWebVaultTree?.(label, relPaths);
+      const isFormAssistDir = (p) => /^(profiles|forms|requests|credentials)\//i.test(p);
       const textItems = repoItems
-        .filter((f) => /\.(md|markdown|lawtext|txt)$/i.test(f.name))
-        .slice(0, 30);
+        .filter((f) => /\.(md|markdown|lawtext|txt|sd-jwt|mdoc)$/i.test(f.name))
+        .sort((a, b) => Number(isFormAssistDir(b.subtitle)) - Number(isFormAssistDir(a.subtitle)))
+        .slice(0, 60);
       void (async () => {
         for (const item of textItems) {
           try {
@@ -173,7 +175,7 @@ if (!params.has('host')) {
     createBox.style.cssText = 'background:#f5f8ff;border:1px solid #d5e2fa;border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:8px';
     createBox.innerHTML = `
       <div style="font-size:13px;font-weight:700;color:#17233d">新しい Private リポジトリを作成（おすすめ）</div>
-      <div style="font-size:12px;color:#475569">メモや文書を安全に保存するため、非公開（Private）リポジトリを OKF 形式の <code>index.md</code> 付きで作成します。</div>
+      <div style="font-size:12px;color:#475569">メモや文書を安全に保存するため、非公開（Private）リポジトリを OKF 形式の <code>index.md</code> と <code>help/</code> ガイド付きで作成します。</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <input name="name" value="soraneDocs" required placeholder="リポジトリ名" style="flex:1;min-width:180px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;font:inherit" />
         <button type="submit" style="padding:8px 14px;border:0;border-radius:8px;background:#1e50b5;color:#fff;font-weight:700;cursor:pointer;white-space:nowrap">Private 作成して接続</button>
@@ -236,6 +238,39 @@ if (!params.has('host')) {
         overlay.remove();
       };
       leftActions.append(toggleBtn);
+
+      const syncHelpBtn = document.createElement('button');
+      syncHelpBtn.type = 'button';
+      syncHelpBtn.textContent = '最新ヘルプを転記・更新';
+      syncHelpBtn.style.cssText = 'border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit;font-weight:600';
+      syncHelpBtn.onclick = async () => {
+        const confirmed = window.confirm(
+          `接続中のリポジトリ (${session.vault.owner}/${session.vault.repo}) の help/ フォルダへ最新ヘルプを転記・更新します。\nhelp/ 内の既存ファイルは上書きされますが、他のフォルダやメモは変更されません。続行しますか？`,
+        );
+        if (!confirmed) return;
+        syncHelpBtn.disabled = true;
+        showStatus('最新ヘルプをリポジトリに転記しています…');
+        try {
+          const res = await fetch('/api/github/sync-help', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lang: navigator.language || 'ja' }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            showStatus(data.error || `ヘルプの転記に失敗しました (HTTP ${res.status})`, true);
+            return;
+          }
+          await refreshRepoTree();
+          showStatus(`最新ヘルプ（${data.count || 0} ファイル / ${data.locale || 'ja'}）を help/ に転記・更新しました。`);
+        } catch {
+          showStatus('ヘルプの転記中にネットワークエラーが発生しました。', true);
+        } finally {
+          syncHelpBtn.disabled = false;
+        }
+      };
+      leftActions.append(syncHelpBtn);
     }
 
     const logoutBtn = document.createElement('button');
@@ -296,7 +331,7 @@ if (!params.has('host')) {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: repoName }),
+        body: JSON.stringify({ name: repoName, lang: navigator.language || 'ja' }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -592,6 +627,60 @@ if (!params.has('host')) {
 
   let activeAiAbortController = null;
 
+  function normalizeBaseUrl(raw, fallback) {
+    const trimmed = (raw || '').trim().replace(/\/+$/, '');
+    return trimmed || fallback;
+  }
+
+  function isLikelyNonChatModel(id) {
+    const lower = id.toLowerCase();
+    return (
+      lower.includes('embedding') ||
+      lower.includes('whisper') ||
+      lower.includes('tts') ||
+      lower.includes('dall-e') ||
+      lower.includes('moderation') ||
+      lower.includes('transcribe') ||
+      lower.includes('realtime') ||
+      lower.includes('image') ||
+      lower.includes('audio')
+    );
+  }
+
+  function isFastModel(id) {
+    const lower = id.toLowerCase();
+    return (
+      lower.includes('mini') ||
+      lower.includes('flash') ||
+      lower.includes('haiku') ||
+      lower.includes('nano') ||
+      lower.includes('lite') ||
+      lower.includes('small')
+    );
+  }
+
+  async function readSseLines(body, onLine) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).replace(/\r$/, '');
+        buffer = buffer.slice(nl + 1);
+        if (line.length > 0 && typeof onLine === 'function') {
+          onLine(line);
+        }
+      }
+    }
+    if (buffer.trim().length > 0 && typeof onLine === 'function') {
+      onLine(buffer.replace(/\r$/, ''));
+    }
+  }
+
   window.ibisOfficeAiAbort = () => {
     if (activeAiAbortController) {
       activeAiAbortController.abort();
@@ -599,58 +688,245 @@ if (!params.has('host')) {
     }
   };
 
-  window.ibisOfficeAiModels = async () => {
-    const res = await fetch('/api/ai/models', { credentials: 'same-origin' });
+  window.ibisOfficeAiModels = async (copilotToken) => {
+    const headers = {};
+    const token = typeof copilotToken === 'string' ? copilotToken.trim() : '';
+    if (token) {
+      headers['X-Sorane-Copilot-Token'] = token;
+    }
+    let res;
+    try {
+      res = await fetch('/api/ai/models', { credentials: 'same-origin', headers });
+    } catch {
+      throw new Error('network_error');
+    }
     if (res.status === 401) {
       throw new Error('login_required');
     }
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || 'ai_failed');
+      const code = data.error || 'ai_failed';
+      throw new Error(data.detail ? `${code}: ${data.detail}` : code);
     }
     return await res.text();
   };
 
-  window.ibisOfficeAiStream = async (body, csrf, onLine) => {
+  window.ibisOfficeAiStream = async (body, csrf, onLine, copilotToken) => {
     window.ibisOfficeAiAbort();
     const controller = new AbortController();
     activeAiAbortController = controller;
     try {
-      const res = await fetch('/api/ai/chat', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Sorane-CSRF': csrf || '',
-        },
-        body,
-        signal: controller.signal,
-      });
+      const headers = {
+        'Content-Type': 'application/json',
+        'X-Sorane-CSRF': csrf || '',
+      };
+      const token = typeof copilotToken === 'string' ? copilotToken.trim() : '';
+      if (token) {
+        headers['X-Sorane-Copilot-Token'] = token;
+      }
+      let res;
+      try {
+        res = await fetch('/api/ai/chat', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers,
+          body,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (err && err.name === 'AbortError') throw err;
+        throw new Error('network_error');
+      }
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || (res.status === 401 ? 'login_required' : 'ai_failed'));
+        const code = data.error || (res.status === 401 ? 'login_required' : 'ai_failed');
+        throw new Error(data.detail ? `${code}: ${data.detail}` : code);
       }
       if (!res.body) {
         throw new Error('ai_failed');
       }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let nl;
-        while ((nl = buffer.indexOf('\n')) !== -1) {
-          const line = buffer.slice(0, nl).replace(/\r$/, '');
-          buffer = buffer.slice(nl + 1);
-          if (line.length > 0 && typeof onLine === 'function') {
-            onLine(line);
+      await readSseLines(res.body, onLine);
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        throw new Error('aborted');
+      }
+      throw err;
+    } finally {
+      if (activeAiAbortController === controller) {
+        activeAiAbortController = null;
+      }
+    }
+  };
+
+  window.ibisOfficeAiDirectModels = async (provider, baseUrl, apiKey) => {
+    const kind = (provider || 'openai').trim().toLowerCase();
+    const key = (apiKey || '').trim();
+    const defaultBase =
+      kind === 'anthropic'
+        ? 'https://api.anthropic.com/v1'
+        : kind === 'gemini'
+          ? 'https://generativelanguage.googleapis.com/v1beta/openai'
+          : 'https://api.openai.com/v1';
+    const base = normalizeBaseUrl(baseUrl, defaultBase).replace(/\/chat\/completions$/, '').replace(/\/messages$/, '');
+    const url = `${base}/models`;
+    const headers = { Accept: 'application/json' };
+    if (kind === 'anthropic') {
+      if (key) headers['x-api-key'] = key;
+      headers['anthropic-version'] = '2023-06-01';
+      headers['anthropic-dangerous-direct-browser-access'] = 'true';
+    } else if (key) {
+      headers.Authorization = `Bearer ${key}`;
+    }
+
+    let res;
+    try {
+      res = await fetch(url, { method: 'GET', headers });
+    } catch {
+      throw new Error('network_error');
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const msg = data?.error?.message || data?.message || `HTTP ${res.status}`;
+      throw new Error(res.status === 401 ? 'invalid_api_key' : msg);
+    }
+    const payload = await res.json().catch(() => ({}));
+    const rawList = Array.isArray(payload?.data)
+      ? payload.data
+      : Array.isArray(payload?.models)
+        ? payload.models
+        : Array.isArray(payload)
+          ? payload
+          : [];
+    const seen = new Set();
+    const models = [];
+    for (const item of rawList) {
+      const rawId = typeof item?.id === 'string' ? item.id : typeof item?.name === 'string' ? item.name : '';
+      const id = rawId.trim().replace(/^models\//, '');
+      if (!id || seen.has(id) || isLikelyNonChatModel(id)) continue;
+      seen.add(id);
+      const display = typeof item?.display_name === 'string' && item.display_name.trim()
+        ? `${item.display_name.trim()} (${id})`
+        : id;
+      models.push({
+        key: id,
+        label: display,
+        maxInputChars: 32000,
+        fast: isFastModel(id),
+      });
+    }
+    const defaultModel = models.find((m) => !m.fast)?.key || models[0]?.key || null;
+    const completionModel = models.find((m) => m.fast)?.key || models[0]?.key || null;
+    return JSON.stringify({
+      csrf: '',
+      provider: kind,
+      models,
+      defaultModel,
+      completionModel,
+    });
+  };
+
+  window.ibisOfficeAiDirectStream = async (provider, baseUrl, apiKey, bodyJson, onLine) => {
+    window.ibisOfficeAiAbort();
+    const controller = new AbortController();
+    activeAiAbortController = controller;
+    try {
+      const kind = (provider || 'openai').trim().toLowerCase();
+      const key = (apiKey || '').trim();
+      const parsed = JSON.parse(bodyJson);
+      const defaultBase =
+        kind === 'anthropic'
+          ? 'https://api.anthropic.com/v1'
+          : kind === 'gemini'
+            ? 'https://generativelanguage.googleapis.com/v1beta/openai'
+            : 'https://api.openai.com/v1';
+      const base = normalizeBaseUrl(baseUrl, defaultBase);
+
+      let url;
+      let headers;
+      let payload;
+      if (kind === 'anthropic') {
+        url = base.endsWith('/messages') ? base : `${base}/messages`;
+        headers = {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+          ...(key ? { 'x-api-key': key } : {}),
+        };
+        const systemParts = [];
+        const turns = [];
+        for (const msg of parsed.messages || []) {
+          if (msg.role === 'system' && msg.content) {
+            systemParts.push(msg.content);
+          } else if ((msg.role === 'user' || msg.role === 'assistant') && msg.content) {
+            turns.push({ role: msg.role, content: msg.content });
           }
         }
+        payload = JSON.stringify({
+          model: parsed.model,
+          max_tokens: 4096,
+          stream: true,
+          ...(systemParts.length ? { system: systemParts.join('\n\n') } : {}),
+          messages: turns,
+        });
+      } else {
+        url = base.endsWith('/chat/completions') ? base : `${base}/chat/completions`;
+        headers = {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          ...(key ? { Authorization: `Bearer ${key}` } : {}),
+        };
+        payload = JSON.stringify({
+          model: parsed.model,
+          messages: parsed.messages,
+          stream: true,
+        });
       }
-      if (buffer.trim().length > 0 && typeof onLine === 'function') {
-        onLine(buffer.replace(/\r$/, ''));
+
+      let res;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: payload,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (err && err.name === 'AbortError') throw err;
+        throw new Error('network_error');
+      }
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        const detail = errData?.error?.message || errData?.message || '';
+        if (res.status === 401) throw new Error('invalid_api_key');
+        if (res.status === 429) throw new Error('rate_limited');
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+      if (!res.body) {
+        throw new Error('ai_failed');
+      }
+      if (kind === 'anthropic') {
+        await readSseLines(res.body, (line) => {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) return;
+          const data = trimmed.slice(5).trim();
+          if (!data) return;
+          let ev;
+          try {
+            ev = JSON.parse(data);
+          } catch {
+            return;
+          }
+          if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && typeof ev.delta.text === 'string') {
+            onLine(`data: ${JSON.stringify({ choices: [{ delta: { content: ev.delta.text } }] })}`);
+          } else if (ev.type === 'message_stop') {
+            onLine('data: [DONE]');
+          } else if (ev.type === 'error') {
+            onLine(`data: ${JSON.stringify({ error: { message: ev.error?.message || 'Anthropic API error' } })}`);
+          }
+        });
+      } else {
+        await readSseLines(res.body, onLine);
       }
     } catch (err) {
       if (err && err.name === 'AbortError') {

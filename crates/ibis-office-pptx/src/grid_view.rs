@@ -103,6 +103,7 @@ impl SlideEditor {
         let row_pitch = sample_h + 48.0;
         let vis_top = scroll_top - row_pitch * 2.0;
         let vis_bottom = scroll_top + view_h + row_pitch * 2.0;
+        DRAWN_CARDS.with(|d| d.borrow_mut().clear());
         let theme_bg = cx.theme().background;
         let theme_muted = cx.theme().muted;
         let theme_border = cx.theme().border;
@@ -325,6 +326,7 @@ impl SlideEditor {
         let card_h = size.height as f32 * scale;
 
         let shapes: Vec<_> = if in_view || is_current {
+            DRAWN_CARDS.with(|d| d.borrow_mut().push(index));
             let ready = self.resources.preload.slide_ready(slide);
             self.resources.set_wrap(slide);
             slide
@@ -414,4 +416,9 @@ impl SlideEditor {
             }))
             .into_any_element()
     }
+}
+
+thread_local! {
+    /// The cards (by index) whose shapes the last drawing of the grid built: the ones in view (and the current one). For the scenarios (#300).
+    pub(crate) static DRAWN_CARDS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
 }

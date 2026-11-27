@@ -1101,6 +1101,13 @@ mod tests {
             ("LAMBDA(a,[b],a+b)(10,20)",CellValue::Number(30.)),
             ("LAMBDA(a,[b],ISOMITTED(b))(10)",CellValue::Bool(true)),
             ("ISREF(IF(1,A1,A1))",CellValue::Bool(true)),
+            // IF passes a blank / omitted value on (Excel; GitHub #278): the cell shows 0.
+            ("ISBLANK(IF(TRUE,Z99))",CellValue::Bool(true)),
+            ("ISBLANK(IF(TRUE,+Z99,))",CellValue::Bool(true)),
+            ("ISNUMBER(IF(TRUE,+Z99,))",CellValue::Bool(false)),
+            ("IF(TRUE,Z99)",CellValue::Number(0.)),
+            ("LAMBDA([a],ISOMITTED(IF(TRUE,a)))()",CellValue::Bool(true)),
+            ("LAMBDA([a],IF(TRUE,a))()",CellValue::Number(0.)),
             ("SUM(LET(a,IF(1,A1,A1),a:A2))",CellValue::Number(10.)),
         ];
         for (i,(formula,_)) in cases.iter().enumerate() {book.formulas.insert((0,i as u32,3),formula.to_string());}

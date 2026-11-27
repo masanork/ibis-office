@@ -25,7 +25,7 @@ pub(crate) fn tool() -> Tool {
         description: "Preview explicit field-to-named-cell mappings from structured data. Returns existing and proposed values without editing the workbook.",
         access: Access::Read,
         returns_content: true,
-        schema: || schema(false),
+        schema: &|| schema(false),
         run: preview,
     }
 }
@@ -36,7 +36,7 @@ pub(crate) fn apply_tool() -> Tool {
         description: "Apply explicitly selected ready fields from an unchanged prefill preview as one undo step in the open workbook. Does not save.",
         access: Access::Edit,
         returns_content: false,
-        schema: || schema(true),
+        schema: &|| schema(true),
         run: apply,
     }
 }

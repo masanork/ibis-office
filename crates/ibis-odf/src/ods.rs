@@ -22,10 +22,10 @@ mod shapes;
 use roxmltree::{Document, Node};
 
 use ibis_formats::Error;
-use ibis_formats::odf::{MIMETYPE_LIMIT, XML_PART_LIMIT};
-use crate::odf::{TABLE, TEXT};
 
 const OFFICE: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
+const TABLE: &str = "urn:oasis:names:tc:opendocument:xmlns:table:1.0";
+const TEXT: &str = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
 const STYLE: &str = "urn:oasis:names:tc:opendocument:xmlns:style:1.0";
 const FO: &str = "urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0";
 const NUMBER: &str = "urn:oasis:names:tc:opendocument:xmlns:datastyle:1.0";
@@ -46,8 +46,7 @@ pub fn is_ods(data: &[u8]) -> bool {
         return false;
     }
     let Ok(archive) = ibis_formats::zip::Archive::new(data) else { return false };
-    archive.read_bounded("mimetype", MIMETYPE_LIMIT)
-        .ok().flatten().is_some_and(|m| m.starts_with(MIMETYPE.as_bytes()) || m.starts_with(b"application/vnd.oasis.opendocument.spreadsheet-template"))
+    archive.read("mimetype").ok().flatten().is_some_and(|m| m.starts_with(MIMETYPE.as_bytes()) || m.starts_with(b"application/vnd.oasis.opendocument.spreadsheet-template"))
 }
 
 fn attr<'a>(n: Node<'a, '_>, ns: &str, local: &str) -> Option<&'a str> {
@@ -317,6 +316,7 @@ fn number_code(style: Node, all: &HashMap<String, String>) -> Option<String> {
     let kind = style.tag_name().name();
     let mut code = String::new();
     let mut seen_minutes_context = false;
+    let mut gengou = false;
     for part in style.children().filter(|c| c.is_element()) {
         let name = part.tag_name().name();
         let style_attr = |n: &str| attr(part, NUMBER, n);
@@ -325,13 +325,41 @@ fn number_code(style: Node, all: &HashMap<String, String>) -> Option<String> {
                 let decimals = style_attr("decimal-places").and_then(|d| d.parse::<usize>().ok()).unwrap_or(0);
                 let min_int = style_attr("min-integer-digits").and_then(|d| d.parse::<usize>().ok()).unwrap_or(1);
                 let grouping = style_attr("grouping") == Some("true");
-                // Excel reads `number:min-integer-digits="0"` as `#` digits only, so a zero shows as nothing (measured with toxlsx: grouping
-                // with 0 gives `#,###`, which Excel's PDF prints blank for 0, and 1 gives `#,##0`).
-                let int = match (grouping, min_int) {
-                    (true, 0) => "#,###".to_string(),
-                    (false, 0) => "#".to_string(),
-                    (true, n) => "#,##".to_string() + &"0".repeat(n),
-                    (false, n) => "0".repeat(n),
+                // A number with no `number:decimal-places` shows as many decimals as the value has: Excel reads it as General (113: N0 with
+                // 54.2 shown as 54.2; toxlsx gives numFmtId 0 for the cell style of such a number).
+                if kind == "number-style" && style_attr("decimal-places").is_none() && !grouping && min_int <= 1 && style_attr("display-factor").is_none() {
+                    code.push_str("General");
+                    continue;
+                }
+                // `number:embedded-text` (`number:position` P) is text inside the integer digits, P digits from the right (Excel's `# ### ##0` is
+                // two of them, at 3 and 6): its code has one digit placeholder per position up to the highest one plus the digit left of it,
+                // `0` for the first `min-integer-digits` from the right and `#` for the rest, the text quoted between them (the toxlsx of 092).
+                let embedded: Vec<(usize, String)> = part
+                    .children()
+                    .filter(|c| c.is_element() && c.tag_name().name() == "embedded-text")
+                    .filter_map(|c| Some((attr(c, NUMBER, "position")?.parse::<usize>().ok()?, node_text(c))))
+                    .collect();
+                let int = if embedded.iter().any(|(p, _)| *p > 0) && !grouping {
+                    let top = embedded.iter().map(|(p, _)| *p).max().unwrap_or(0);
+                    let mut s = String::new();
+                    for i in (0..=top).rev() {
+                        s.push(if i < min_int { '0' } else { '#' });
+                        if i > 0 {
+                            for (_, t) in embedded.iter().filter(|(p, _)| *p == i) {
+                                s.push_str(&format!("\"{}\"", t.replace('"', "\"\"")));
+                            }
+                        }
+                    }
+                    s
+                } else {
+                    // Excel reads `number:min-integer-digits="0"` as `#` digits only, so a zero shows as nothing (measured with toxlsx: grouping
+                    // with 0 gives `#,###`, which Excel's PDF prints blank for 0, and 1 gives `#,##0`).
+                    match (grouping, min_int) {
+                        (true, 0) => "#,###".to_string(),
+                        (false, 0) => "#".to_string(),
+                        (true, n) => "#,##".to_string() + &"0".repeat(n),
+                        (false, n) => "0".repeat(n),
+                    }
                 };
                 code.push_str(&int);
                 if decimals > 0 {
@@ -341,6 +369,11 @@ fn number_code(style: Node, all: &HashMap<String, String>) -> Option<String> {
                 // The display factor 1000 or more drops thousands: a comma.
                 if style_attr("display-factor").is_some_and(|f| f == "1000") {
                     code.push(',');
+                }
+                // Embedded text at position 0 follows the number (Excel's `(#,##0)`: `(` is text before, `)` is embedded at 0; the toxlsx of 010
+                // is `#,##0 ;[Red](#,##0)`).
+                for (_, t) in embedded.iter().filter(|(p, _)| *p == 0) {
+                    code.push_str(&quoted(t));
                 }
             }
             "scientific-number" => {
@@ -357,6 +390,14 @@ fn number_code(style: Node, all: &HashMap<String, String>) -> Option<String> {
                 code.push_str(&format!("# {}/{}", "?".repeat(digits), "?".repeat(digits)));
             }
             "text" => code.push_str(&quoted(&node_text(part))),
+            // `number:fill-character` is Excel's repeat character, `* ` in a format code (`*` and the character; the toxlsx of 002 is
+            // `" "* #,##0" "` for the accounting format, ODF's `<number:text> </number:text><number:fill-character> </number:fill-character>`).
+            "fill-character" => {
+                if let Some(c) = node_text(part).chars().next() {
+                    code.push('*');
+                    code.push(c);
+                }
+            }
             "text-content" => code.push('@'),
             "currency-symbol" => {
                 let symbol = node_text(part);
@@ -373,6 +414,13 @@ fn number_code(style: Node, all: &HashMap<String, String>) -> Option<String> {
                     (false, true) => "mm",
                     _ => "m",
                 });
+            }
+            // The year of the Japanese calendar (`number:calendar="gengou"`) is the era's year, Excel's `e` (`ee` long); the code of a date with
+            // one starts with the locale of that calendar, 30411 with a month in it and 30000 without (the toxlsx of 026, 099, 127: `[$-30411]ggge年m月d日`,
+            // `[$-30000]ggge年`, `[$-30000]e`).
+            "year" if style_attr("calendar") == Some("gengou") => {
+                gengou = true;
+                code.push_str(if style_attr("style") == Some("long") { "ee" } else { "e" });
             }
             "year" => code.push_str(if style_attr("style") == Some("long") { "yyyy" } else { "yy" }),
             "era" => code.push_str(if style_attr("style") == Some("long") { "ggg" } else { "g" }),
@@ -395,6 +443,10 @@ fn number_code(style: Node, all: &HashMap<String, String>) -> Option<String> {
             _ => {}
         }
     }
+    if gengou && kind == "date-style" {
+        let month = style.children().any(|c| c.is_element() && c.tag_name().name() == "month");
+        code = format!("[$-{}]{code}", if month { "30411" } else { "30000" });
+    }
     if kind == "percentage-style" && !code.contains('%') {
         code.push('%');
     }
@@ -402,12 +454,36 @@ fn number_code(style: Node, all: &HashMap<String, String>) -> Option<String> {
     if kind == "time-style" && attr(style, NUMBER, "truncate-on-overflow") == Some("false") {
         code = code.replacen("hh", "[hh]", 1).replacen('h', "[h]", 1).replace("[[hh]]", "[hh]").replace("[[h]]", "[h]");
     }
+    // The section's text colour (`style:text-properties fo:color`) is Excel's colour in brackets in front of the section (the toxlsx of 010: a red
+    // `(#,##0)` is `[Red](#,##0)`); only the eight colours Excel names.
+    if !code.is_empty()
+        && let Some(color) = children(style, STYLE, "text-properties").find_map(|t| attr(t, FO, "color"))
+    {
+        let name = match color.trim_start_matches('#').to_uppercase().as_str() {
+            "FF0000" => Some("Red"),
+            "0000FF" => Some("Blue"),
+            "00FF00" => Some("Green"),
+            "00FFFF" => Some("Cyan"),
+            "FF00FF" => Some("Magenta"),
+            "FFFF00" => Some("Yellow"),
+            "FFFFFF" => Some("White"),
+            "000000" => Some("Black"),
+            _ => None,
+        };
+        if let Some(name) = name {
+            code = format!("[{name}]{code}");
+        }
+    }
     // Positive, negative and zero: Excel writes `#,##0;-#,##0;` (an empty zero section) as the style itself holding the zero section (here nothing: an empty
     // number:text-style) with `style:map` value()>0 and value()<0 naming the positive and the negative sections' styles.
     let target = |cond: &str| -> Option<&String> {
         children(style, STYLE, "map").find(|m| attr(*m, STYLE, "condition").is_some_and(|c| c.replace(' ', "") == cond)).and_then(|m| attr(m, STYLE, "apply-style-name")).and_then(|n| all.get(n))
     };
     if let (Some(positive), Some(negative)) = (target("value()>0"), target("value()<0")) {
+        // A third map on value()=0 names the zero section's style, and the style's own parts are then the text section.
+        if let Some(zero) = target("value()=0") {
+            return Some(if code.is_empty() { format!("{positive};{negative};{zero}") } else { format!("{positive};{negative};{zero};{code}") });
+        }
         return Some(format!("{positive};{negative};{code}"));
     }
     if code.is_empty() {
@@ -631,6 +707,7 @@ fn cell_text(cell: Node) -> (String, Option<String>) {
                         }
                         collect(c, out, link);
                     }
+                    // The text of a note is not the cell's text (the note is read on its own).
                     (Some(OFFICE), "annotation") => {}
                     _ => collect(c, out, link),
                 }
@@ -640,8 +717,8 @@ fn cell_text(cell: Node) -> (String, Option<String>) {
     let mut out = String::new();
     let mut link = None;
     let mut first = true;
-    let paragraphs = crate::odf::through(cell, crate::odf::text_container)
-        .filter(|node| node.has_tag_name((TEXT, "p")) || node.has_tag_name((TEXT, "h")));
+    // The paragraphs of the cell, also those in a list, a visible section or a legacy numbered paragraph, in order.
+    let paragraphs = crate::odf::through(cell, crate::odf::text_container).filter(|node| node.has_tag_name((TEXT, "p")) || node.has_tag_name((TEXT, "h")));
     for p in paragraphs {
         if !first {
             out.push('\n');
@@ -917,10 +994,10 @@ fn column_letters(mut n: u32) -> String {
 /// A spreadsheet document as the bytes of an `.xlsx` made from it.
 pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
     let archive = ibis_formats::zip::Archive::new(data)?;
-    let content = archive.read_bounded("content.xml", XML_PART_LIMIT)?.ok_or_else(|| bad("content.xml がありません"))?;
+    let content = archive.read("content.xml")?.ok_or_else(|| bad("content.xml がありません"))?;
     let content = String::from_utf8(content).map_err(|_| bad("content.xml が UTF-8 ではありません"))?;
     let doc = Document::parse_with_options(&content, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).map_err(|e| bad(&format!("content.xml を読めません：{e}")))?;
-    let styles_doc_text = archive.read_bounded("styles.xml", XML_PART_LIMIT)?.and_then(|b| String::from_utf8(b).ok());
+    let styles_doc_text = archive.read("styles.xml")?.and_then(|b| String::from_utf8(b).ok());
     let styles_doc = styles_doc_text.as_deref().and_then(|t| Document::parse_with_options(t, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).ok());
     let root = doc.root_element();
     let body = children(root, OFFICE, "body").next().ok_or_else(|| bad("本文がありません"))?;
@@ -1086,24 +1163,28 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
         let mut cols = String::new();
         let mut col = 0u32;
         let mut col_default_style: Vec<(u32, u32, String)> = Vec::new();
+        // The last column of the sheet whose style has fo:break-before="page" (see where it is written).
         let mut last_column_break: Option<u32> = None;
-        for c in crate::odf::table_columns(table) {
-            let repeat = attr(c, TABLE, "number-columns-repeated").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).min(16384);
-            let width = attr(c, TABLE, "style-name").and_then(|s| column_widths.get(s)).copied();
-            let hidden = crate::odf::column_hidden(c);
-            if col > 0 && attr(c, TABLE, "style-name").is_some_and(|s| column_break_styles.contains(s)) {
-                last_column_break = Some(col + repeat - 1);
+        {
+            // The columns through nested groups and header columns, in order.
+            for c in crate::odf::table_columns(table) {
+                let repeat = attr(c, TABLE, "number-columns-repeated").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).min(16384);
+                let width = attr(c, TABLE, "style-name").and_then(|s| column_widths.get(s)).copied();
+                let hidden = crate::odf::column_hidden(c);
+                if col > 0 && attr(c, TABLE, "style-name").is_some_and(|s| column_break_styles.contains(s)) {
+                    last_column_break = Some(col + repeat - 1);
+                }
+                if let Some(s) = attr(c, TABLE, "default-cell-style-name") {
+                    col_default_style.push((col, col + repeat - 1, s.to_string()));
+                }
+                if width.is_some() || hidden {
+                    // The width in characters of the digit width the reader uses.
+                    let digit = ibis_formats::EXCEL_METRICS.digit_pt(Some(default_font.0.as_str()), default_font.1);
+                    let chars = width.map_or(48.0, |w| w) / digit;
+                    cols.push_str(&format!("<col min=\"{}\" max=\"{}\" width=\"{}\" customWidth=\"1\"{}/>", col + 1, col + repeat, ibis_calc::number_to_xml((chars * 256.0).ceil() / 256.0), if hidden { " hidden=\"1\"" } else { "" }));
+                }
+                col += repeat;
             }
-            if let Some(s) = attr(c, TABLE, "default-cell-style-name") {
-                col_default_style.push((col, col + repeat - 1, s.to_string()));
-            }
-            if width.is_some() || hidden {
-                // The width in characters of the digit width the reader uses.
-                let digit = ibis_formats::EXCEL_METRICS.digit_pt(Some(default_font.0.as_str()), default_font.1);
-                let chars = width.map_or(48.0, |w| w) / digit;
-                cols.push_str(&format!("<col min=\"{}\" max=\"{}\" width=\"{}\" customWidth=\"1\"{}/>", col + 1, col + repeat, ibis_calc::number_to_xml((chars * 256.0).ceil() / 256.0), if hidden { " hidden=\"1\"" } else { "" }));
-            }
-            col += repeat;
         }
         let mut rows_xml = String::new();
         let mut merges: Vec<String> = Vec::new();
@@ -1121,8 +1202,13 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
         let mut max_row = 0u32;
         let mut max_col = 0u32;
         let mut pending_rows = String::new();
+        // The rows through nested groups and header rows, in order.
+        let row_nodes: Vec<Node> = crate::odf::table_rows(table).collect();
         // Rows covered by a merge from above (their cells are covered ones, skipped).
-        for r in crate::odf::table_rows(table) {
+        // The sheet's standard row height: Excel writes it as the style of the last row, which repeats to the end of the sheet (measured on
+        // 127 ods with toxlsx: `sheetFormatPr/@defaultRowHeight` equals that row's `style:row-height` in every one).
+        let default_row_height = row_nodes.last().and_then(|r| attr(*r, TABLE, "style-name")).and_then(|s| row_heights.get(s)).copied().filter(|h| *h > 0.0);
+        for r in row_nodes {
             let row_repeat = attr(r, TABLE, "number-rows-repeated").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
             let height = attr(r, TABLE, "style-name").and_then(|s| row_heights.get(s)).copied();
             let row_hidden = crate::odf::row_hidden(r);
@@ -1136,6 +1222,9 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
                 }
                 let repeat = attr(cell, TABLE, "number-columns-repeated").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
                 if covered {
+                    // A shape or a picture can be anchored to a covered cell too (Excel draws a text box anchored there, positioned from that cell).
+                    drawn.extend(shapes::cell_shapes(cell, row, c, &drawing_styles));
+                    pictures.extend(cell_pictures(cell, row, c));
                     // Excel gives every cell a merge covers the format of the merge's first cell, whatever style the covered cell
                     // has (an ODS whose covered cells have no style, or have another one, is saved with the first cell's format
                     // on all of them: `-SaveAs toxlsx`), so the borders on the far edges of the merge are kept.
@@ -1188,14 +1277,17 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
                     continue;
                 }
                 // A run of empty unstyled cells, or a very long run of empty styled ones, is skipped.
-                if !has_content && (style_name.is_none() || repeat > 64) {
+                // An empty merged cell stays a merge: Excel's `toxlsx` keeps the `mergeCell` of an empty spanned cell with a plain style (9 of 214
+                // merges of one ODS had no value and no border or fill), and the cell takes its xf, which the covered cells copy.
+                let spanned = ["number-columns-spanned", "number-rows-spanned"].iter().any(|a| attr(cell, TABLE, a).and_then(|v| v.parse::<u32>().ok()).is_some_and(|n| n > 1));
+                if !has_content && !spanned && (style_name.is_none() || repeat > 64) {
                     c += repeat;
                     continue;
                 }
                 let format = style_name.as_deref().map(&resolve).unwrap_or_else(|| default_format.clone());
                 // An empty cell whose style draws nothing (no fill, no border; a validation or a font only) is not part of what is
                 // shown or printed: a validation over a whole column would otherwise make the sheet a million rows long.
-                if !has_content && format.fill.is_none() && format.borders.iter().all(Option::is_none) {
+                if !has_content && !spanned && format.fill.is_none() && format.borders.iter().all(Option::is_none) {
                     c += repeat;
                     continue;
                 }
@@ -1312,7 +1404,7 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
         xml.push_str(&sheet_pr);
         used_rows.push(max_row.max(1));
         xml.push_str(&format!("<dimension ref=\"A1:{}{}\"/>", column_letters(max_col.max(1) - 1), max_row.max(1)));
-        xml.push_str("<sheetViews><sheetView workbookViewId=\"0\"/></sheetViews><sheetFormatPr defaultRowHeight=\"15\" ibisEmptyRowsAsSaved=\"1\"/>");
+        xml.push_str(&format!("<sheetViews><sheetView workbookViewId=\"0\"/></sheetViews><sheetFormatPr defaultRowHeight=\"{}\" ibisEmptyRowsAsSaved=\"1\"/>", ibis_calc::number_to_xml(default_row_height.unwrap_or(15.0))));
         if !cols.is_empty() {
             xml.push_str(&format!("<cols>{cols}</cols>"));
         }
@@ -1359,7 +1451,7 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
             let name = if pic.name.is_empty() { format!("Picture {}", n + 1) } else { pic.name.clone() };
             let body = if pic.chart {
                 // A chart: its part, read from the object's folder.
-                let Some(content) = archive.read_bounded(&format!("{}/content.xml", pic.href.trim_end_matches('/')), XML_PART_LIMIT).ok().flatten().and_then(|b| String::from_utf8(b).ok()) else { continue };
+                let Some(content) = archive.read(&format!("{}/content.xml", pic.href.trim_end_matches('/'))).ok().flatten().and_then(|b| String::from_utf8(b).ok()) else { continue };
                 let Some(chart) = chart::read_chart(&content, &chart_tables) else { continue };
                 let xml = ibis_formats::xls_chart::chart_xml(&chart, &chart::OdsCells { tables: chart_tables.clone() }, &|n| if ibis_formats::english_names() { format!("Series{n}") } else { format!("系列{n}") }); // i18n-ok（文書に保存する名前）
                 let xml = crate::odp_chart_style::three_d_chart(xml, &content);

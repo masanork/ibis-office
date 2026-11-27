@@ -333,7 +333,7 @@ impl SlideEditor {
                     .spawn(async move { ibis_lawtext::open_comparison_document(&old, &new) })
                     .await;
                 let _ = this.update(cx, |editor, cx| match opened {
-                    Ok(document) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                    Ok(document) => crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                         editor.load(document.presentation, name.into(), window, cx);
                         editor.source = Some(std::sync::Arc::new(document.source));
                     }),

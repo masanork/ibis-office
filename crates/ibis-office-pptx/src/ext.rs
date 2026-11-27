@@ -35,6 +35,8 @@ pub use super::editing::Editing as _;
 pub(crate) use super::editing::EditingCrate as _;
 pub(crate) use super::editing::Editing2Crate as _;
 pub(crate) use super::event_hooks::EventHooksCrate as _;
+pub use super::grid_guides_panel::GridGuidesPanelExt as _;
+pub(crate) use super::grid_guides_panel::GridGuidesPanelExtCrate as _;
 pub(crate) use super::grid_view::GridViewCrate as _;
 pub(crate) use super::guides::GuidesCrate as _;
 pub(crate) use super::ibis_text::IbisTextCrate as _;

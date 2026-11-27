@@ -160,6 +160,55 @@ impl SlideEditor {
         Some(id)
     }
 
+    /// Transcribes the selected audio clip on the current slide with Whisper-tiny
+    /// and appends the recognized text to the slide's speaker notes.
+    #[cfg(all(not(target_family = "wasm"), feature = "asr"))]
+    pub fn transcribe_selected_audio_to_notes(
+        &mut self,
+        language: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
+        let selected_id = self
+            .selection
+            .ok_or_else(|| "No shape selected".to_string())?;
+        let slide = self.slide();
+        let shape = slide
+            .shapes
+            .iter()
+            .find(|s| s.id == selected_id)
+            .ok_or_else(|| "Selected shape not found on current slide".to_string())?;
+        let clip_media = match &shape.kind {
+            ShapeKind::Picture(pic) => pic
+                .clip
+                .as_ref()
+                .map(|c| c.media)
+                .ok_or_else(|| "Selected picture has no embedded audio clip".to_string())?,
+            _ => return Err("Selected shape is not an audio clip".to_string()),
+        };
+        let media = self
+            .presentation()
+            .media(clip_media)
+            .ok_or_else(|| "Embedded audio media not found".to_string())?;
+        if !media.format.is_audio() {
+            return Err("Selected media clip is not an audio format".to_string());
+        }
+        let ext = media.format.av_type().map(|(e, _)| e);
+        let bytes = media.data.clone();
+        let transcript = crate::shell::asr_setup::transcribe_audio_bytes(&bytes, ext, language)?;
+        let text_out = transcript.text.trim().to_string();
+        if !text_out.is_empty() {
+            let slide_id = self.current_slide;
+            let existing = self.slide().notes.trim_end().to_string();
+            let updated = if existing.is_empty() {
+                text_out.clone()
+            } else {
+                format!("{existing}\n\n{text_out}")
+            };
+            self.run(vec![Command::SetNotes { slide: slide_id, notes: updated }], cx);
+        }
+        Ok(text_out)
+    }
+
     /// Renders the Audio Record sidebar panel.
     pub fn audio_record_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.pptx()?.audio_record.as_ref()?;

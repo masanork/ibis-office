@@ -3521,6 +3521,7 @@ fn chart_series_marker_and_stroke_save_and_reopen() {
         symbol: MarkerSymbol::Diamond,
         size: 7,
         fill: Fill::Solid(Color::opaque(Rgb(0xFF0000))),
+        edge: None,
     });
     modified.groups[0].series[0].stroke = Some(Stroke::solid(Color::opaque(Rgb(0x00FF00)), 38_100));
 
@@ -3548,6 +3549,7 @@ fn chart_series_marker_and_stroke_save_and_reopen() {
         symbol: MarkerSymbol::None,
         size: 5,
         fill: Fill::None,
+        edge: None,
     });
     edited.groups[0].series[0].stroke = Some(Stroke::solid(Color::opaque(Rgb(0x0000FF)), 12_700));
 
@@ -10171,7 +10173,7 @@ fn test_sheet_shape_fill_line_shadow_roundtrip() {
     let mut changed = auto.clone();
     changed.fill = Fill::Solid(Color::opaque(Rgb(0xFF0000)));
     changed.stroke = Some(Stroke::solid(Color::opaque(Rgb(0x00B050)), 25_400).with_dash(LineDash::Dash));
-    changed.shadow = Some(Shadow::simple(Color { rgb: Rgb(0), alpha: 102 }, 50_800, 38_100, 2_700_000));
+    changed.shadow = Some(Shadow::simple(Color { rgb: Rgb(0), alpha: 102, theme: None }, 50_800, 38_100, 2_700_000));
     d.execute(vec![Command::SetShapeKind { slide: s0, shape: id, kind: Box::new(ShapeKind::Auto(changed.clone())) }]).unwrap();
     let saved = opened.source.save(d.presentation(), ibis_formats::SaveOptions::default()).unwrap();
 
@@ -10286,16 +10288,16 @@ fn field_match_recalculates_after_xlsx_roundtrip() {
     let opened = ibis_formats::open(source).unwrap();
     let mut document = Document::new(opened.presentation.clone());
     let s = slide(document.presentation(), sheet_name);
-    let formula = r#"IBIS.FIELDMATCH(A1,B1,"address")"#;
-    let name_formula = r#"IBIS.FIELDMATCH(A2,B2,"name")"#;
-    let phone_formula = r#"IBIS.FIELDMATCH(A3,B3,"phone")"#;
-    let postal_formula = r#"IBIS.FIELDMATCH(A4,B4,"postal")"#;
-    let email_formula = r#"IBIS.FIELDMATCH(A5,B5,"email")"#;
-    let corporate_formula = r#"IBIS.FIELDMATCH(A6,B6,"corporate-number")"#;
-    let mynumber_formula = r#"IBIS.FIELDMATCH(A7,B7,"mynumber")"#;
-    let license_formula = r#"IBIS.FIELDMATCH(A8,B8,"drivers-license")"#;
-    let passport_formula = r#"IBIS.FIELDMATCH(A9,B9,"passport-jp")"#;
-    let kana_formula = r#"IBIS.FIELDMATCH(A10,B10,"kana")"#;
+    let formula = r#"SORANE.FIELDMATCH(A1,B1,"address")"#;
+    let name_formula = r#"SORANE.FIELDMATCH(A2,B2,"name")"#;
+    let phone_formula = r#"SORANE.FIELDMATCH(A3,B3,"phone")"#;
+    let postal_formula = r#"SORANE.FIELDMATCH(A4,B4,"postal")"#;
+    let email_formula = r#"SORANE.FIELDMATCH(A5,B5,"email")"#;
+    let corporate_formula = r#"SORANE.FIELDMATCH(A6,B6,"corporate-number")"#;
+    let mynumber_formula = r#"SORANE.FIELDMATCH(A7,B7,"mynumber")"#;
+    let license_formula = r#"SORANE.FIELDMATCH(A8,B8,"drivers-license")"#;
+    let passport_formula = r#"SORANE.FIELDMATCH(A9,B9,"passport-jp")"#;
+    let kana_formula = r#"SORANE.FIELDMATCH(A10,B10,"kana")"#;
     set(&mut document, s, vec![
         (0, 2, CellInput::Formula(formula.into())),
         (1, 2, CellInput::Formula(name_formula.into())),
@@ -10382,7 +10384,7 @@ fn name_and_kana_field_match_uses_both_reading_cells_after_reopen() {
     let opened = ibis_formats::open(bytes).unwrap();
     let mut document = Document::new(opened.presentation.clone());
     let s = slide(document.presentation(), sheet_name);
-    let formula = r#"IBIS.FIELDMATCH(A1,B1,"name-with-kana",C1,D1)"#;
+    let formula = r#"SORANE.FIELDMATCH(A1,B1,"name-with-kana",C1,D1)"#;
     set(&mut document, s, vec![(0, 4, CellInput::Formula(formula.into()))]);
     assert_eq!(value(document.presentation(), sheet_name, 0, 4), CellValue::Number(2.0));
 
@@ -10406,7 +10408,7 @@ fn record_match_recalculates_when_a_field_changes_after_reopen() {
     let opened = ibis_formats::open(bytes).unwrap();
     let mut document = Document::new(opened.presentation.clone());
     let s = slide(document.presentation(), sheet_name);
-    let formula = r#"IBIS.RECORDMATCH(IBIS.FIELDMATCH(A1,B1,"date"),IBIS.FIELDMATCH(C1,D1,"postal"))"#;
+    let formula = r#"SORANE.RECORDMATCH(SORANE.FIELDMATCH(A1,B1,"date"),SORANE.FIELDMATCH(C1,D1,"postal"))"#;
     set(&mut document, s, vec![
         (0, 0, CellInput::Value(CellValue::Text("1985-04".into()))),
         (0, 1, CellInput::Value(CellValue::Text("1985-04-15".into()))),
@@ -10418,7 +10420,7 @@ fn record_match_recalculates_when_a_field_changes_after_reopen() {
     let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
     let package = ibis_ooxml::Package::open(saved.clone()).unwrap();
     let xml = String::from_utf8(package.read("xl/worksheets/sheet1.xml").unwrap()).unwrap();
-    assert!(xml.contains("_xlfn.IBIS.RECORDMATCH(_xlfn.IBIS.FIELDMATCH("));
+    assert!(xml.contains("_xlfn.SORANE.RECORDMATCH(_xlfn.SORANE.FIELDMATCH("));
     let reopened = ibis_formats::read(&saved).unwrap();
     assert_eq!(cell(&reopened, sheet_name, 0, 4).formula.as_deref(), Some(formula));
     assert_eq!(value(&reopened, sheet_name, 0, 4), CellValue::Number(1.0));
@@ -10436,7 +10438,7 @@ fn record_match_range_spills_and_recalculates_after_reopen() {
     let opened = ibis_formats::open(bytes).unwrap();
     let mut document = Document::new(opened.presentation.clone());
     let s = slide(document.presentation(), sheet_name);
-    let formula = "IBIS.RECORDMATCH(A1:C3)";
+    let formula = "SORANE.RECORDMATCH(A1:C3)";
     set(&mut document, s, vec![(0, 3, CellInput::Formula(formula.into()))]);
 
     let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
@@ -10483,10 +10485,10 @@ fn record_match_guide_filters_rows_across_two_sheets() {
         (0, 7, CellInput::Value(CellValue::Text("住所".into()))),
     ]);
     let formulas = [
-        (5, r#"IBIS.FIELDMATCH(基準!$B$2,B2:B5,"name-with-kana",基準!$C$2,C2:C5)"#),
-        (6, r#"IBIS.FIELDMATCH(基準!$D$2,D2:D5,"date")"#),
-        (7, r#"IBIS.FIELDMATCH(基準!$E$2,E2:E5,"address")"#),
-        (8, "IBIS.RECORDMATCH(F2:H5)"),
+        (5, r#"SORANE.FIELDMATCH(基準!$B$2,B2:B5,"name-with-kana",基準!$C$2,C2:C5)"#),
+        (6, r#"SORANE.FIELDMATCH(基準!$D$2,D2:D5,"date")"#),
+        (7, r#"SORANE.FIELDMATCH(基準!$E$2,E2:E5,"address")"#),
+        (8, "SORANE.RECORDMATCH(F2:H5)"),
         (9, r#"BYROW(F2:H5,LAMBDA(grades,TEXTJOIN("、",TRUE,IFNA(IF(grades=1,$F$1:$H$1&"（要確認）",""),$F$1:$H$1&"（比較不可）"))))"#),
         (10, r#"FILTER(HSTACK(A2:E5,J2#),IFNA(I2#=1,FALSE),"候補なし")"#),
     ];

@@ -17,15 +17,15 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use ibis_formats::Kind;
 use ibis_office_shell::editor::SlideEditor;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use ibis_office_shell::folder_context::{ContentSearchHit, Folder};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use ibis_office_shell::git_workspace::{GitSnapshot, inspect_git_snapshot};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use ibis_office_shell::open_guard::same_file as same_workspace_file;
 use ibis_office_shell::window_editors::{WindowSetup, WorkspaceEditorHost};
 
-#[cfg(target_family = "wasm")]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 mod web_platform {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -87,6 +87,10 @@ mod web_platform {
         outgoing_by_file: std::collections::BTreeMap<String, Vec<String>>,
         backlinks_by_file: std::collections::BTreeMap<String, Vec<BacklinkHit>>,
         all_tags_cache: Vec<(String, usize)>,
+        profiles: Vec<ibis_formats::form_assist::VaultProfile>,
+        credentials: Vec<ibis_formats::form_assist::VaultCredentialSummary>,
+        form_mappings: Vec<ibis_formats::form_assist::FormMapping>,
+        presentation_requests: Vec<ibis_formats::form_assist::PresentationRequestNote>,
     }
 
     fn extract_tags(content: &str) -> Vec<String> {
@@ -215,6 +219,10 @@ mod web_platform {
                 outgoing_by_file: std::collections::BTreeMap::new(),
                 backlinks_by_file: std::collections::BTreeMap::new(),
                 all_tags_cache: Vec::new(),
+                profiles: Vec::new(),
+                credentials: Vec::new(),
+                form_mappings: Vec::new(),
+                presentation_requests: Vec::new(),
             })
         }
 
@@ -235,6 +243,10 @@ mod web_platform {
                 outgoing_by_file: std::collections::BTreeMap::new(),
                 backlinks_by_file: std::collections::BTreeMap::new(),
                 all_tags_cache: Vec::new(),
+                profiles: Vec::new(),
+                credentials: Vec::new(),
+                form_mappings: Vec::new(),
+                presentation_requests: Vec::new(),
             };
             folder.rebuild_index();
             folder
@@ -268,8 +280,47 @@ mod web_platform {
             self.tags_by_file.clear();
             self.outgoing_by_file.clear();
             self.backlinks_by_file.clear();
+            self.profiles.clear();
+            self.credentials.clear();
+            self.form_mappings.clear();
+            self.presentation_requests.clear();
 
             for (rel, content) in &self.contents {
+                let ext = Path::new(rel)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .unwrap_or_default();
+
+                if matches!(ext.as_str(), "sd-jwt" | "mdoc") {
+                    if let Some(summary) = ibis_formats::form_assist::parse_credential_bytes(
+                        rel,
+                        &ext,
+                        content.as_bytes(),
+                    ) {
+                        self.credentials.push(summary);
+                    }
+                    continue;
+                }
+
+                if matches!(ext.as_str(), "md" | "markdown") {
+                    if let Some(profile) =
+                        ibis_formats::form_assist::parse_profile_markdown(rel, content)
+                    {
+                        self.profiles.push(profile);
+                    }
+                    if let Some(mapping) =
+                        ibis_formats::form_assist::parse_form_mapping_markdown(rel, content)
+                    {
+                        self.form_mappings.push(mapping);
+                    }
+                    if let Some(req) =
+                        ibis_formats::form_assist::parse_presentation_request_markdown(rel, content)
+                    {
+                        self.presentation_requests.push(req);
+                    }
+                }
+
                 let tags = extract_tags(content);
                 for t in &tags {
                     *tag_counts.entry(t.clone()).or_default() += 1;
@@ -378,24 +429,44 @@ mod web_platform {
         }
 
         pub fn vault_profiles(&self) -> &[ibis_formats::form_assist::VaultProfile] {
-            &[]
+            &self.profiles
         }
 
         pub fn vault_credentials(&self) -> &[ibis_formats::form_assist::VaultCredentialSummary] {
-            &[]
+            &self.credentials
         }
 
         pub fn vault_form_mappings(&self) -> &[ibis_formats::form_assist::FormMapping] {
-            &[]
+            &self.form_mappings
+        }
+
+        pub fn vault_presentation_requests(
+            &self,
+        ) -> &[ibis_formats::form_assist::PresentationRequestNote] {
+            &self.presentation_requests
         }
 
         pub fn matching_form_mappings_for_sheet(
             &self,
-            _presentation: &ibis_doc_model::Presentation,
-            _slide: ibis_doc_model::SlideId,
-            _file_sha256: Option<&str>,
+            presentation: &ibis_doc_model::Presentation,
+            slide: ibis_doc_model::SlideId,
+            file_sha256: Option<&str>,
         ) -> Vec<ibis_formats::form_assist::FormMapping> {
-            Vec::new()
+            let mut scored: Vec<(u32, ibis_formats::form_assist::FormMapping)> = self
+                .form_mappings
+                .iter()
+                .filter_map(|m| {
+                    ibis_formats::form_assist::score_form_mapping_match(
+                        m,
+                        presentation,
+                        slide,
+                        file_sha256,
+                    )
+                    .map(|score| (score, m.clone()))
+                })
+                .collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.path.cmp(&b.1.path)));
+            scored.into_iter().map(|(_, m)| m).collect()
         }
     }
 
@@ -407,6 +478,7 @@ mod web_platform {
             _window: &mut Window,
             _cx: &mut Context<SlideEditor>,
         );
+        #[cfg(target_family = "wasm")]
         fn open_path(
             &mut self,
             _path: PathBuf,
@@ -420,6 +492,7 @@ mod web_platform {
             _window: &mut Window,
             _cx: &mut Context<SlideEditor>,
         );
+        #[cfg(target_family = "wasm")]
         fn shows_path(&self, _path: &Path) -> bool;
     }
 
@@ -436,6 +509,7 @@ mod web_platform {
         ) {
         }
 
+        #[cfg(target_family = "wasm")]
         fn open_path(
             &mut self,
             _path: PathBuf,
@@ -453,13 +527,14 @@ mod web_platform {
         ) {
         }
 
+        #[cfg(target_family = "wasm")]
         fn shows_path(&self, _path: &Path) -> bool {
             false
         }
     }
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 use web_platform::{ContentSearchHit, Folder, GitSnapshot, SlideEditorWebExt as _, inspect_git_snapshot, same_workspace_file};
 
 use sorane_github::{
@@ -605,7 +680,7 @@ impl SoraneWorkspace {
             cached_search_query: String::new(),
             cached_search_hits: Vec::new(),
             vault_status: None,
-            form_assist: crate::form_assist::FormAssistState::default(),
+            form_assist: crate::form_assist::FormAssistState::new(window, cx),
             quick_switcher: None,
             github_session: saved_github_session,
             github_catalog: None,
@@ -616,8 +691,15 @@ impl SoraneWorkspace {
             last_window_title: String::new(),
         };
 
-        // Restore the last workspace session automatically only when launched without an explicit file.
-        if launched_empty && let Some(session) = load_last_session() {
+        // Restore the last workspace session automatically only on the very first launch window
+        // (and never when the user explicitly opens a new Start window while another window exists
+        // or after initial launch has already completed).
+        if should_restore_session_on_launch(
+            launched_empty,
+            cx.windows().len(),
+            &INITIAL_SESSION_RESTORE_DONE,
+        ) && let Some(session) = load_last_session()
+        {
             ws.restore_session(session, window, cx);
         }
 
@@ -1461,6 +1543,45 @@ impl SoraneWorkspace {
         cx.notify();
     }
 
+    pub fn open_setup_in_active_pane(
+        &mut self,
+        setup: WindowSetup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pane_id = self.active_pane;
+        let tab_id = self.alloc_tab_id();
+        let seq = self.next_seq();
+        let vault = self.vault.clone();
+        let editor = cx.new(|cx| {
+            let mut e = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
+            setup(&mut e, window, cx);
+            e.attach_vault_folder(vault, window, cx);
+            e.embedded_chrome = Some(Self::policy_for_editor(&e, None, None));
+            e
+        });
+        let (path, title, resolved_kind) = Self::editor_metadata(&editor, cx);
+        let tab = TabEntry {
+            id: tab_id,
+            path,
+            title,
+            kind: resolved_kind,
+            pinned: false,
+            last_used_seq: seq,
+            toolbar_override: None,
+            right_sidebar_override: None,
+            state: TabState::Resident(editor),
+        };
+        if let Some(pane) = self.pane_mut(pane_id) {
+            pane.tabs.push(tab);
+            pane.active_tab = pane.tabs.len() - 1;
+        }
+        self.active_pane = pane_id;
+        self.enforce_tab_budget(cx);
+        self.focus_active_editor(window, cx);
+        cx.notify();
+    }
+
     #[cfg(target_family = "wasm")]
     pub fn set_web_vault_tree(
         &mut self,
@@ -2140,14 +2261,16 @@ impl SoraneWorkspace {
         ));
         cx.notify();
 
+        let help_locale = current_help_locale();
         cx.spawn_in(window, async move |this, cx| {
             let res = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = github::create_private_vault_repo(
+                    let repo = github::create_private_vault_repo_with_locale(
                         &session.access_token,
                         &session.login,
                         sorane_github::DEFAULT_VAULT_REPO_NAME,
+                        help_locale,
                     )?;
                     let target = github::default_clone_target(&repo.repo);
                     let cloned =
@@ -2519,6 +2642,48 @@ impl SoraneWorkspace {
                         })),
                 ),
         )
+    }
+
+    pub(crate) fn sync_help_to_active_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let Some(root) = self.vault.as_ref().map(|v| v.root().to_path_buf()) else {
+                self.vault_status = Some("Vault が開かれていません。".into());
+                cx.notify();
+                return;
+            };
+            let locale = current_help_locale();
+            let files = sorane_github::help_files(locale);
+            for help in &files {
+                let target = root.join(help.path);
+                if let Some(parent) = target.parent()
+                    && let Err(err) = std::fs::create_dir_all(parent)
+                {
+                    self.vault_status = Some(format!("help フォルダを作成できませんでした: {err}").into());
+                    cx.notify();
+                    return;
+                }
+                if let Err(err) = std::fs::write(&target, help.content) {
+                    self.vault_status = Some(format!("{} の書き込みに失敗しました: {err}", help.path).into());
+                    cx.notify();
+                    return;
+                }
+            }
+            self.vault_status = Some(
+                format!("最新ヘルプ（{} ファイル）を help/ に転記しました。", files.len()).into(),
+            );
+            self.refresh_vault_folder(window, cx);
+            let help_index = root.join("help/index.md");
+            if help_index.is_file() {
+                self.open_path_in_active_pane(help_index, window, cx);
+            }
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = window;
+            self.vault_status = Some("Web 版は GitHub リポジトリ設定画面から「最新ヘルプを転記・更新」を実行してください。".into());
+            cx.notify();
+        }
     }
 
     pub(crate) fn refresh_vault_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3559,6 +3724,15 @@ impl SoraneWorkspace {
                                                 .label("+ 法令")
                                                 .on_click(cx.listener(|this, _, window, cx| {
                                                     this.new_lawtext_draft(window, cx);
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("ws-vault-sync-help")
+                                                .ghost()
+                                                .xsmall()
+                                                .label("ヘルプ更新")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.sync_help_to_active_vault(window, cx);
                                                 })),
                                         ),
                                 )
@@ -4727,5 +4901,47 @@ impl Render for SoraneWorkspace {
             )
             .child(self.render_status_bar(cx))
             .children(self.render_quick_switcher(cx))
+    }
+}
+
+fn current_help_locale() -> sorane_github::HelpLocale {
+    match ibis_office_shell::i18n::language() {
+        ibis_office_shell::i18n::Language::Japanese => sorane_github::HelpLocale::Ja,
+        ibis_office_shell::i18n::Language::English => sorane_github::HelpLocale::En,
+    }
+}
+
+static INITIAL_SESSION_RESTORE_DONE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn should_restore_session_on_launch(
+    launched_empty: bool,
+    window_count: usize,
+    flag: &std::sync::atomic::AtomicBool,
+) -> bool {
+    let already_done = flag.swap(true, std::sync::atomic::Ordering::AcqRel);
+    !already_done && launched_empty && window_count <= 1
+}
+
+#[cfg(test)]
+mod launch_restore_tests {
+    use super::should_restore_session_on_launch;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn restores_only_on_first_empty_launch_window_not_on_subsequent_start_window() {
+        let flag = AtomicBool::new(false);
+        assert!(should_restore_session_on_launch(true, 1, &flag));
+        // Second window (e.g. File -> Start Screen) must stay on Start Screen.
+        assert!(!should_restore_session_on_launch(true, 2, &flag));
+        // Even if the first window was closed and a new Start window is opened.
+        assert!(!should_restore_session_on_launch(true, 1, &flag));
+    }
+
+    #[test]
+    fn does_not_restore_later_when_first_window_opened_explicit_file() {
+        let flag = AtomicBool::new(false);
+        assert!(!should_restore_session_on_launch(false, 1, &flag));
+        assert!(!should_restore_session_on_launch(true, 2, &flag));
     }
 }

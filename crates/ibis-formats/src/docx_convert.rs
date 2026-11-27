@@ -1360,6 +1360,86 @@ fn safe_html_link(url: &str) -> Option<&str> {
 
 /// Export a `FlowDocument` as a standalone HTML5 document (`.html`).
 pub fn export_html(doc: &FlowDocument) -> String {
+    export_html_with(doc, &|_, _| None)
+}
+
+/// What makes the picture of a shape: the shape and, for a SmartArt graphic, the shapes of its drawing (they lie over its frame, at the document's coordinates).
+pub type Raster<'a> = &'a dyn Fn(&ibis_doc_model::Shape, &[ibis_doc_model::Shape]) -> Option<Vec<u8>>;
+
+/// Each shape run of the body's paragraphs and its tables' cells, in order.
+fn each_shape(doc: &FlowDocument, f: &mut dyn FnMut(&ibis_doc_model::Shape)) {
+    fn of(p: &FlowParagraph, f: &mut dyn FnMut(&ibis_doc_model::Shape)) {
+        for run in &p.runs {
+            if let FlowRunKind::Shape(shape) = &run.kind {
+                f(shape);
+            }
+        }
+    }
+    for block in &doc.body {
+        match block {
+            Block::Paragraph(p) => of(p, f),
+            Block::Table(t) => {
+                for row in &t.rows {
+                    for cell in &row.cells {
+                        for b in &cell.blocks {
+                            if let Block::Paragraph(p) = b {
+                                of(p, f);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The shapes of the document the page draws as pictures the caller makes (the charts, SmartArt and the other objects): in the body's paragraphs and its tables' cells, in order.
+pub fn shapes_needing_pictures(doc: &FlowDocument) -> Vec<ibis_doc_model::Shape> {
+    let mut out = Vec::new();
+    each_shape(doc, &mut |shape| {
+        if matches!(shape.kind, ibis_doc_model::ShapeKind::Chart(_) | ibis_doc_model::ShapeKind::Placeholder(_)) {
+            out.push(shape.clone());
+        }
+    });
+    out
+}
+
+/// The shapes of the SmartArt graphic whose frame is `frame` (the group of `doc.shape_groups` that has it first): its drawing's shapes, in order.
+fn diagram_members(doc: &FlowDocument, frame: &ibis_doc_model::Shape) -> Vec<ibis_doc_model::Shape> {
+    let Some(group) = doc.shape_groups.iter().find(|g| matches!(g.children.first(), Some(ibis_doc_model::GroupMember::Shape(id)) if *id == frame.id)) else { return Vec::new() };
+    let ids: Vec<ibis_doc_model::ShapeId> = group.children.iter().skip(1).filter_map(|m| if let ibis_doc_model::GroupMember::Shape(id) = m { Some(*id) } else { None }).collect();
+    let mut found = Vec::new();
+    each_shape(doc, &mut |shape| {
+        if ids.contains(&shape.id) {
+            found.push(shape.clone());
+        }
+    });
+    found
+}
+
+fn shape_alt(shape: &ibis_doc_model::Shape, members: &[ibis_doc_model::Shape]) -> String {
+    shape.picture_label(members).unwrap_or_else(|| match &shape.kind {
+        ibis_doc_model::ShapeKind::Chart(_) => "Chart".to_string(),
+        ibis_doc_model::ShapeKind::Placeholder(ibis_doc_model::Placeholder::Diagram) => "SmartArt".to_string(),
+        _ => "Object".to_string(),
+    })
+}
+
+fn base64_text(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// [`export_html`] with the pictures `raster` makes of the charts and SmartArt: each an `<img>` with its PNG as a data URI, where its run was.
+pub fn export_html_with(doc: &FlowDocument, raster: Raster<'_>) -> String {
     let title = doc
         .properties
         .title
@@ -1395,6 +1475,17 @@ pub fn export_html(doc: &FlowDocument) -> String {
             match &run.kind {
                 FlowRunKind::LineBreak => {
                     out.push_str("<br>");
+                    continue;
+                }
+                FlowRunKind::Shape(shape) if matches!(shape.kind, ibis_doc_model::ShapeKind::Chart(_) | ibis_doc_model::ShapeKind::Placeholder(_)) => {
+                    let members = if matches!(shape.kind, ibis_doc_model::ShapeKind::Placeholder(ibis_doc_model::Placeholder::Diagram)) { diagram_members(doc, shape) } else { Vec::new() };
+                    if let Some(png) = raster(shape, &members) {
+                        out.push_str("<img alt=\"");
+                        out.push_str(&xml_escape(&shape_alt(shape, &members)));
+                        out.push_str("\" src=\"data:image/png;base64,");
+                        out.push_str(&base64_text(&png));
+                        out.push_str("\">");
+                    }
                     continue;
                 }
                 FlowRunKind::Tab | FlowRunKind::PositionalTab { .. } => {

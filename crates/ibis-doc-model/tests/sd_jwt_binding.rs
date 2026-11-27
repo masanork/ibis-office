@@ -589,3 +589,158 @@ fn japanese_business_presets_roundtrip() {
     }
 }
 
+#[test]
+fn present_existing_sd_jwt_and_direct_post_body_roundtrip() {
+    use ibis_doc_model::{
+        Es256KeyPair, Oid4vpRequest, SdJwtOptions, issue_sheet_sd_jwt,
+        list_sd_jwt_disclosure_paths, parse_sd_jwt, present_existing_sd_jwt,
+    };
+
+    let (pres, slide_id, _) = sample_presentation();
+    let issuer_key = Es256KeyPair::demo_issuer_key();
+    let holder_key = Es256KeyPair::demo_holder_key();
+    assert_eq!(holder_key.thumbprint_short().len(), 12);
+    assert_eq!(
+        Es256KeyPair::from_jwk_json(&holder_key.to_private_jwk_json()),
+        Some(holder_key.clone())
+    );
+
+    let mut opts = SdJwtOptions::default();
+    opts.holder_public_jwk = Some(holder_key.to_public_jwk());
+    let (_bindings, issued) = issue_sheet_sd_jwt(&pres, slide_id, &opts, &issuer_key).unwrap();
+
+    // Verify all disclosures are listed from the raw issued `.sd-jwt`
+    let paths = list_sd_jwt_disclosure_paths(&issued.sd_jwt_all).unwrap();
+    let path_names: Vec<&str> = paths.iter().map(|(p, _)| p.as_str()).collect();
+    assert!(path_names.contains(&"given_name"));
+    assert!(path_names.contains(&"address.region"));
+
+    // Parse an OID4VP DCQL request with state & response_mode=direct_post
+    let uri = "openid4vp://?client_id=https%3A%2F%2Fverifier.example.org&response_mode=direct_post&response_uri=https%3A%2F%2Fverifier.example.org%2Fpost&nonce=nonce-abc-123&state=st-42&dcql_query=%7B%22credentials%22%3A%5B%7B%22id%22%3A%22cred_pid%22%2C%22claims%22%3A%5B%7B%22path%22%3A%5B%22address%22%2C%22region%22%5D%7D%5D%7D%5D%7D";
+    let req = Oid4vpRequest::parse(uri).expect("parse DCQL request");
+    assert_eq!(req.response_mode.as_deref(), Some("direct_post"));
+    assert_eq!(req.state.as_deref(), Some("st-42"));
+    assert_eq!(req.dcql_credential_id.as_deref(), Some("cred_pid"));
+    assert_eq!(req.requested_claims, vec!["address.region".to_string()]);
+
+    // Re-present the existing issued `.sd-jwt` disclosing ONLY `address.region`
+    let presented = present_existing_sd_jwt(
+        &issued.sd_jwt_all,
+        Some(&req.requested_claims),
+        &req.client_id,
+        &req.nonce,
+        1_750_000_000,
+        &holder_key,
+    )
+    .expect("re-present existing SD-JWT");
+
+    assert_eq!(presented.holder_cnf_matches, Some(true));
+    assert_eq!(presented.disclosed_paths, vec!["address.region".to_string()]);
+    assert!(presented.omitted_paths.iter().any(|p| p == "given_name"));
+
+    // Re-parse the resulting `vp_token` and ensure Issuer signature + KB sd_hash + selective digests all verify
+    let parsed = parse_sd_jwt(&presented.kb.vp_token, Some(&issuer_key.to_public_jwk_json()))
+        .expect("parse re-presented vp_token");
+    assert_eq!(parsed.signature_valid, Some(true));
+    assert_eq!(parsed.kb_sd_hash_valid, Some(true));
+    assert!(parsed.claims.iter().any(|c| c.path == "address.region"));
+    assert!(!parsed.claims.iter().any(|c| c.path == "given_name"));
+
+    // Build OpenID4VP 1.0 `direct_post` body
+    let body = req.build_direct_post_body(&presented.kb.vp_token);
+    assert!(body.starts_with("vp_token="));
+    assert!(body.contains("&state=st-42"));
+}
+
+#[test]
+fn external_signer_kb_jwt_matches_issue_kb_jwt() {
+    use ibis_doc_model::{
+        Es256KeyPair, SdJwtOptions, assemble_kb_jwt_from_raw_sig, build_kb_jwt_signing_input,
+        issue_kb_jwt, issue_sheet_sd_jwt, parse_sd_jwt,
+    };
+
+    let (pres, slide_id, _) = sample_presentation();
+    let issuer = Es256KeyPair::demo_issuer_key();
+    let holder = Es256KeyPair::demo_holder_key();
+
+    let mut opts = SdJwtOptions::default();
+    opts.holder_public_jwk = Some(holder.to_public_jwk());
+    let (_bindings, issued) = issue_sheet_sd_jwt(&pres, slide_id, &opts, &issuer).unwrap();
+
+    let aud = "https://verifier.example/cb";
+    let nonce = "nonce-webcrypto-test";
+    let iat = 1_735_000_123;
+
+    // Direct issue_kb_jwt
+    let direct = issue_kb_jwt(&issued.sd_jwt_all, aud, nonce, iat, &holder);
+
+    // Split external-signer flow (simulating WebCrypto SubtleCrypto.sign)
+    let (normalized, sd_hash, signing_input) =
+        build_kb_jwt_signing_input(&issued.sd_jwt_all, aud, nonce, iat);
+    let raw_sig = holder.sign_es256(signing_input.as_bytes());
+    let assembled =
+        assemble_kb_jwt_from_raw_sig(&normalized, sd_hash, &signing_input, &raw_sig);
+
+    assert_eq!(assembled.kb_jwt, direct.kb_jwt);
+    assert_eq!(assembled.vp_token, direct.vp_token);
+    assert_eq!(assembled.sd_hash, direct.sd_hash);
+
+    let parsed = parse_sd_jwt(&assembled.vp_token, Some(&issuer.to_public_jwk_json()))
+        .expect("assembled kb+jwt should parse and verify");
+    assert_eq!(parsed.signature_valid, Some(true));
+    assert_eq!(parsed.kb_sd_hash_valid, Some(true));
+}
+
+#[test]
+fn external_signer_re_presents_existing_sd_jwt() {
+    use ibis_doc_model::{
+        Es256KeyPair, SdJwtOptions, assemble_kb_jwt_from_raw_sig, build_kb_jwt_signing_input,
+        issue_sheet_sd_jwt, parse_sd_jwt, prepare_existing_sd_jwt_for_external_signer,
+        present_existing_sd_jwt,
+    };
+
+    let (pres, slide_id, _) = sample_presentation();
+    let issuer = Es256KeyPair::demo_issuer_key();
+    let holder = Es256KeyPair::demo_holder_key();
+
+    let mut opts = SdJwtOptions::default();
+    opts.holder_public_jwk = Some(holder.to_public_jwk());
+    let (_bindings, issued) = issue_sheet_sd_jwt(&pres, slide_id, &opts, &issuer).unwrap();
+
+    let selected = vec!["address.region".to_string()];
+    let aud = "https://verifier.example.jp/cb";
+    let nonce = "n-ext-re-present";
+    let iat = 1_750_000_000;
+
+    let direct = present_existing_sd_jwt(
+        &issued.sd_jwt_all,
+        Some(&selected),
+        aud,
+        nonce,
+        iat,
+        &holder,
+    )
+    .unwrap();
+
+    let prep = prepare_existing_sd_jwt_for_external_signer(
+        &issued.sd_jwt_all,
+        Some(&selected),
+        Some(&holder.to_public_jwk()),
+    )
+    .unwrap();
+    assert_eq!(prep.holder_cnf_matches, Some(true));
+    assert_eq!(prep.disclosed_paths, direct.disclosed_paths);
+    assert_eq!(prep.sd_jwt_without_kb, direct.sd_jwt_without_kb);
+
+    let (normalized, sd_hash, signing_input) =
+        build_kb_jwt_signing_input(&prep.sd_jwt_without_kb, aud, nonce, iat);
+    let sig = holder.sign_es256(signing_input.as_bytes());
+    let assembled = assemble_kb_jwt_from_raw_sig(&normalized, sd_hash, &signing_input, &sig);
+
+    assert_eq!(assembled.vp_token, direct.kb.vp_token);
+    let parsed = parse_sd_jwt(&assembled.vp_token, Some(&issuer.to_public_jwk_json())).unwrap();
+    assert_eq!(parsed.signature_valid, Some(true));
+    assert_eq!(parsed.kb_sd_hash_valid, Some(true));
+    assert!(parsed.claims.iter().any(|c| c.path == "address.region"));
+    assert!(!parsed.claims.iter().any(|c| c.path == "given_name"));
+}

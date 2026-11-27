@@ -1166,6 +1166,8 @@ impl SlideEditor {
             || self.is_viewing_mode()
             || self.is_protection_read_only();
 
+        let weak_editor = cx.weak_entity();
+        let immediate_once = self.inline_completion.immediate_once.clone();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language(dialect.language_id())
@@ -1176,10 +1178,11 @@ impl SlideEditor {
                 .default_value(initial.clone());
             state.set_highlighter_factory(multi_source_highlighter_factory(), cx);
             state.set_readonly(readonly, cx);
+            Self::attach_inline_completion_provider(&mut state, weak_editor, immediate_once);
             state
         });
 
-        let subscription = cx.subscribe(&editor, |this, ed, event: &InputEvent, cx| {
+        let subscription = cx.subscribe_in(&editor, window, |this, ed, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::Change) {
                 let suppressed = this
                     .doc_state()
@@ -1209,7 +1212,7 @@ impl SlideEditor {
                 if should_schedule {
                     this.schedule_source_to_visual_sync(cx);
                 }
-                this.schedule_inline_completion(ed.clone(), cx);
+                this.schedule_text_content_auto_switch(ed.clone(), window, cx);
                 cx.notify();
             }
         });
@@ -2198,11 +2201,13 @@ impl SlideEditor {
                                 "docx.markdown-source.mode-source",
                                 MarkdownViewMode::Source,
                             ))
-                            .child(mode_btn(
-                                "markdown-mode-split",
-                                "docx.markdown-source.mode-split",
-                                MarkdownViewMode::Split,
-                            ))
+                            .when(!self.compact_viewport, |bar| {
+                                bar.child(mode_btn(
+                                    "markdown-mode-split",
+                                    "docx.markdown-source.mode-split",
+                                    MarkdownViewMode::Split,
+                                ))
+                            })
                             .child(mode_btn(
                                 "markdown-mode-visual",
                                 "docx.markdown-source.mode-visual",

@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/80#issuecomment-6868471583)
+// Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Exercise the actual native open path with a synthetic JTD, without writing its source.
 use super::Scenario;
 use crate::docx::scenarios::DocSteps;
@@ -36,7 +38,7 @@ fn synthetic_thumbnail() -> Vec<u8> {
 }
 
 fn image_switch() {
-    use ibis_ooxml::cfb::{self, Item};
+    use ibis_formats::ibis_ooxml::cfb::{self, Item};
     let original = include_bytes!("../../../../../test/fixtures/jtd/synthetic.jtd");
     let text = cfb::stream_path(original, "DocumentText").unwrap();
     let wmf = &include_bytes!("../../../../ibis-emf/tests/fixtures/shapes.wmf")[22..];
@@ -62,7 +64,7 @@ fn image_switch() {
         if s.with(|e, _| e.is_jtd_read_only()) { break; }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.gallery));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery));
     assert!(s.with(|e, _| e.write_pdf(path.clone())).is_err());
     assert!(s.with(|e, _| e.write_png(path.clone(), None)).is_err());
     assert!(s.with(|e, _| e.write_gif(path.clone(), None)).is_err());
@@ -70,9 +72,9 @@ fn image_switch() {
     let body_before = s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone());
     s.with(|e, _| {
         let menu = crate::shell::chrome_defaults::view_menu(e);
-        assert!(crate::shell::scenario::find_item(&menu, "jtd.show-images").is_some());
-        assert!(crate::shell::scenario::find_item(&menu, "jtd.show-thumbnail").is_some());
-        assert!(crate::shell::scenario::find_item(&menu, "jtd.show-body").is_none());
+        assert!(crate::shell::scenario::find_item(&menu, "view.show-jtd-images").is_some());
+        assert!(crate::shell::scenario::find_item(&menu, "view.show-jtd-thumbnail").is_some());
+        assert!(crate::shell::scenario::find_item(&menu, "view.show-jtd-body").is_none());
     });
     // A later open request invalidates the pending image-list result even if
     // that later file fails and the existing body remains visible.
@@ -83,71 +85,71 @@ fn image_switch() {
         e.open_path(invalid.clone(), None, w, cx);
     });
     s.wait(1000);
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.gallery));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery));
     assert_eq!(s.with(|e, _| e.path.clone()), Some(path.clone()));
     s.update(|e, w, cx| {
         e.show_jtd_thumbnail(w, cx);
         e.open_path(invalid.clone(), None, w, cx);
     });
     s.wait(1000);
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.thumbnail && !e.jtd.gallery));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_thumbnail && !e.jtd_gallery));
     assert_eq!(s.with(|e, _| e.path.clone()), Some(path.clone()));
     let old_stamp = s.with(|e, _| e.watch.known.clone());
     // Thumbnail from the body remains read-only, cannot be exported, and returns to the same body.
     s.update(|e, w, cx| e.show_jtd_thumbnail(w, cx));
-    for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd.thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+    for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd_thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
     s.with(|e, _| {
-        assert!(e.jtd.thumbnail && e.jtd.gallery && e.is_read_only());
+        assert!(e.jtd_thumbnail && e.jtd_gallery && e.is_read_only());
         assert_eq!(e.presentation().media.len(), 1);
         assert_eq!(e.path.as_deref(), Some(path.as_path()));
         assert_eq!(e.watch.known, old_stamp);
         assert!(e.current_bytes().is_err());
         assert!(e.export_jtd_docx_to(&path.with_extension("docx")).is_err());
         let menu = crate::shell::chrome_defaults::view_menu(e);
-        assert!(crate::shell::scenario::find_item(&menu, "jtd.thumbnail-back").is_some());
-        assert!(crate::shell::scenario::find_item(&menu, "jtd.show-images").is_none());
+        assert!(crate::shell::scenario::find_item(&menu, "view.hide-jtd-thumbnail").is_some());
+        assert!(crate::shell::scenario::find_item(&menu, "view.show-jtd-images").is_none());
     });
     s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
-    assert!(s.with(|e, _| e.jtd.thumbnail && e.is_jtd_read_only()));
+    assert!(s.with(|e, _| e.jtd_thumbnail && e.is_jtd_read_only()));
     s.wait(1000);
     s.screenshot("jtd-thumbnail");
     s.update(|e, w, cx| e.return_from_jtd_thumbnail(w, cx));
-    assert!(s.with(|e, _| !e.jtd.thumbnail && !e.jtd.gallery));
+    assert!(s.with(|e, _| !e.jtd_thumbnail && !e.jtd_gallery));
     assert_eq!(s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone()), body_before);
     s.update(|e, w, cx| e.show_jtd_images(w, cx));
     for _ in 0..200 {
         s.wait(50);
-        if s.with(|e, _| e.jtd.gallery) { break; }
+        if s.with(|e, _| e.jtd_gallery) { break; }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     s.with(|e, _| {
-        assert!(e.jtd.gallery && e.jtd.gallery_body.is_some() && e.is_read_only());
+        assert!(e.jtd_gallery && e.jtd_gallery_body.is_some() && e.is_read_only());
         assert_eq!(e.presentation().media.len(), 2);
         let texts: Vec<String> = e.presentation().flow.as_ref().unwrap().body.iter().filter_map(|block| {
             if let ibis_doc_model::Block::Paragraph(paragraph) = block { Some(paragraph.text()) } else { None }
         }).collect();
-        let first = crate::shell::i18n::format("jtd.gallery-item", &[("index", &2)]);
-        let second = crate::shell::i18n::format("jtd.gallery-item", &[("index", &7)]);
+        let first = crate::shell::i18n::format("view.jtd-gallery-item", &[("index", &2)]);
+        let second = crate::shell::i18n::format("view.jtd-gallery-item", &[("index", &7)]);
         assert!(texts.iter().position(|text| text == &first).unwrap() < texts.iter().position(|text| text == &second).unwrap());
-        assert!(texts.contains(&crate::shell::i18n::format("jtd.gallery-count", &[("displayed", &2), ("candidates", &3)])));
+        assert!(texts.contains(&crate::shell::i18n::format("view.jtd-gallery-count", &[("displayed", &2), ("candidates", &3)])));
         assert_eq!(e.path.as_deref(), Some(path.as_path()));
         assert_eq!(e.watch.known, old_stamp);
         assert!(e.current_bytes().is_err());
         assert!(e.export_jtd_docx_to(&path.with_extension("docx")).is_err());
         let menu = crate::shell::chrome_defaults::view_menu(e);
-        assert!(crate::shell::scenario::find_item(&menu, "jtd.show-body").is_some());
+        assert!(crate::shell::scenario::find_item(&menu, "view.show-jtd-body").is_some());
     });
     s.wait(1000);
     s.screenshot("jtd-mixed-unplaced");
     let gallery_before = s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone());
     s.update(|e, w, cx| e.show_jtd_thumbnail(w, cx));
-    for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd.thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
-    assert!(s.with(|e, _| e.jtd.thumbnail && e.jtd.gallery));
+    for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd_thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+    assert!(s.with(|e, _| e.jtd_thumbnail && e.jtd_gallery));
     s.update(|e, w, cx| e.return_from_jtd_thumbnail(w, cx));
-    assert!(s.with(|e, _| !e.jtd.thumbnail && e.jtd.gallery && e.jtd.gallery_body.is_some()));
+    assert!(s.with(|e, _| !e.jtd_thumbnail && e.jtd_gallery && e.jtd_gallery_body.is_some()));
     assert_eq!(s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone()), gallery_before);
     s.update(|e, w, cx| e.show_jtd_body(w, cx));
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.gallery && e.jtd.gallery_body.is_none()));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery && e.jtd_gallery_body.is_none()));
     assert!(s.paragraph(0).1.contains("日本語 test"));
     assert_eq!(s.with(|e, _| e.presentation().flow.as_ref().unwrap().body.clone()), body_before);
     assert_eq!(s.with(|e, _| e.path.clone()), Some(path.clone()));
@@ -178,8 +180,8 @@ fn html_export() {
         assert!(s.with(|e, _| e.is_jtd_read_only()));
         s.with(|e, _| {
             let mut menus = e.menus();
-            let item = menus.find_mut("jtd.export-html").expect("HTML export menu");
-            assert_eq!(item.label.as_str(), crate::shell::i18n::text("jtd.export-html").as_ref());
+            let item = menus.find_mut("file.export.html").expect("HTML export menu");
+            assert_eq!(item.label.as_str(), crate::shell::i18n::text("file.export.html").as_ref());
             assert!(item.handler.is_some());
             assert!(e.export_jtd_html_to(&path).is_err());
             for ext in ["jtd", "JTT", "jttc", "JTDC", "docx", "txt"] {
@@ -209,7 +211,7 @@ fn html_export() {
 }
 
 fn unplaced_images() {
-    use ibis_ooxml::cfb::{self, Item};
+    use ibis_formats::ibis_ooxml::cfb::{self, Item};
     assert_eq!(crate::jtd_preview::inspection_size(u32::MAX, 1), ibis_doc_model::EmuSize::new(5 * 914_400, 1));
     // A one-unit, whitespace-only TextV.01 in an SsmgV.01 store.
     let mut text = b"TextV.01".to_vec();
@@ -245,15 +247,15 @@ fn unplaced_images() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     s.with(|e, _| {
-        assert!(e.is_jtd_read_only() && e.jtd.gallery);
-        assert!(e.status.as_deref().unwrap().contains(&*crate::shell::i18n::text("jtd.gallery-notice")));
+        assert!(e.is_jtd_read_only() && e.jtd_gallery);
+        assert!(e.status.as_deref().unwrap().contains(&*crate::shell::i18n::text("view.jtd-gallery-notice")));
         assert!(e.current_bytes().is_err());
         assert!(e.export_jtd_docx_to(&path.with_extension("docx")).is_err());
         let menu = crate::shell::chrome_defaults::view_menu(e);
-        assert!(crate::shell::scenario::find_item(&menu, "jtd.show-body").is_none());
+        assert!(crate::shell::scenario::find_item(&menu, "view.show-jtd-body").is_none());
     });
     s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
-    assert!(s.with(|e, _| e.is_jtd_read_only() && e.jtd.gallery));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && e.jtd_gallery));
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     s.screenshot("jtd-unplaced-images");
     // Optional, locally owned sample; never part of a distributable fixture.
@@ -267,19 +269,19 @@ fn unplaced_images() {
         s.update(|e, w, cx| e.open_path(sample.clone(), None, w, cx));
         for _ in 0..100 {
             s.wait(50);
-            if s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd.gallery) { break; }
+            if s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd_gallery) { break; }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd.gallery));
+        assert!(s.with(|e, _| e.path.as_deref() == Some(sample.as_path()) && e.jtd_gallery));
         s.wait(1000);
         s.screenshot("jtd-local-unplaced-images");
         s.update(|e, w, cx| e.show_jtd_thumbnail(w, cx));
-        for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd.thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
-        assert!(s.with(|e, _| e.jtd.thumbnail && e.is_read_only() && e.path.as_deref() == Some(sample.as_path())));
+        for _ in 0..200 { s.wait(50); if s.with(|e, _| e.jtd_thumbnail) { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+        assert!(s.with(|e, _| e.jtd_thumbnail && e.is_read_only() && e.path.as_deref() == Some(sample.as_path())));
         s.wait(1000);
         s.screenshot("jtd-local-saved-thumbnail");
         s.update(|e, w, cx| e.return_from_jtd_thumbnail(w, cx));
-        assert!(s.with(|e, _| e.jtd.gallery && !e.jtd.thumbnail && e.path.as_deref() == Some(sample.as_path())));
+        assert!(s.with(|e, _| e.jtd_gallery && !e.jtd_thumbnail && e.path.as_deref() == Some(sample.as_path())));
         assert_eq!(std::fs::read(&sample).unwrap(), sample_original);
     }
 }
@@ -345,7 +347,7 @@ fn template() {
 }
 
 fn omissions() {
-    use ibis_ooxml::cfb::{self, Item};
+    use ibis_formats::ibis_ooxml::cfb::{self, Item};
     let original = include_bytes!("../../../../../test/fixtures/jtd/synthetic.jtd");
     let text = cfb::stream_path(original, "DocumentText").unwrap();
     let bytes = cfb::write(&[
@@ -367,15 +369,15 @@ fn omissions() {
     }
     s.with(|e, _| {
         let status = e.status.as_deref().unwrap();
-        assert!(status.contains(&crate::shell::i18n::format("jtd.omitted-sheets", &[("count", &1)])));
-        assert!(status.contains(&crate::shell::i18n::format("jtd.omitted-objects", &[("count", &1)])));
+        assert!(status.contains(&crate::shell::i18n::format("view.jtd-omitted-sheets", &[("count", &1)])));
+        assert!(status.contains(&crate::shell::i18n::format("view.jtd-omitted-objects", &[("count", &1)])));
     });
     s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
     s.with(|e, _| {
         assert!(!e.is_jtd_read_only());
         let status = e.status.as_deref().unwrap();
-        assert!(status.contains(&crate::shell::i18n::format("jtd.omitted-sheets", &[("count", &1)])));
-        assert!(status.contains(&crate::shell::i18n::format("jtd.omitted-objects", &[("count", &1)])));
+        assert!(status.contains(&crate::shell::i18n::format("view.jtd-omitted-sheets", &[("count", &1)])));
+        assert!(status.contains(&crate::shell::i18n::format("view.jtd-omitted-objects", &[("count", &1)])));
     });
 }
 
@@ -397,18 +399,18 @@ fn open_read_only() {
     s.update(|e, w, cx| e.show_jtd_thumbnail(w, cx));
     for _ in 0..100 {
         s.wait(50);
-        if s.with(|e, _| e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.thumbnail-unavailable"))) { break; }
+        if s.with(|e, _| e.status.as_deref() == Some(&*crate::shell::i18n::text("view.jtd-thumbnail-unavailable"))) { break; }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.gallery && !e.jtd.thumbnail && e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.thumbnail-unavailable"))));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery && !e.jtd_thumbnail && e.status.as_deref() == Some(&*crate::shell::i18n::text("view.jtd-thumbnail-unavailable"))));
     // A document without supported images remains on its body preview.
     s.update(|e, w, cx| e.show_jtd_images(w, cx));
     for _ in 0..100 {
         s.wait(50);
-        if s.with(|e, _| e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.no-embedded-images"))) { break; }
+        if s.with(|e, _| e.status.as_deref() == Some(&*crate::shell::i18n::text("view.jtd-no-embedded-images"))) { break; }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd.gallery && e.status.as_deref() == Some(&*crate::shell::i18n::text("jtd.no-embedded-images"))));
+    assert!(s.with(|e, _| e.is_jtd_read_only() && !e.jtd_gallery && e.status.as_deref() == Some(&*crate::shell::i18n::text("view.jtd-no-embedded-images"))));
     let (paragraph, _) = s.paragraph(0);
     s.click_text(ibis_doc_model::FlowPos::new(paragraph, 0));
     s.type_text("forbidden");
@@ -427,6 +429,10 @@ fn open_read_only() {
         let _ = std::fs::remove_file(&alias);
         std::os::unix::fs::symlink(&path, &alias).unwrap();
         assert!(s.with(|e, _| e.export_jtd_docx_to(&alias)).is_err());
+        let hardlink = path.with_file_name("hardlink.docx");
+        let _ = std::fs::remove_file(&hardlink);
+        std::fs::hard_link(&path, &hardlink).unwrap();
+        assert!(s.with(|e, _| e.export_jtd_docx_to(&hardlink)).is_err());
     }
     s.with(|e, _| e.export_jtd_docx_to(&output)).unwrap();
     let imported = ibis_formats::read(&std::fs::read(output).unwrap()).unwrap();
@@ -436,16 +442,9 @@ fn open_read_only() {
     // Editing begins from a DOCX model, with no path to the original file.
     s.update(|e, w, cx| { e.read_only = true; e.edit_jtd_as_docx(w, cx); });
     assert!(s.with(|e, _| e.is_jtd_read_only()));
-    use crate::shell::infobar::InfoBarKind;
-    use crate::shell::scenario::button_probe;
-    assert_ne!(s.with(|e, _| e.infobar_kind()), Some(InfoBarKind::JtdViewing));
-    let _probe = button_probe::Probe::new();
-    s.update(|e, _, cx| { e.read_only = false; cx.notify(); });
-    s.settle();
-    assert_eq!(s.with(|e, _| e.infobar_kind()), Some(InfoBarKind::JtdViewing));
-    button_probe::click(&mut s, "infobar-btn-jtd-edit");
+    s.update(|e, _, _| e.read_only = false);
+    s.update(|e, w, cx| e.edit_jtd_as_docx(w, cx));
     assert!(s.with(|e, _| !e.is_read_only() && !e.is_jtd_read_only()));
-    assert_ne!(s.with(|e, _| e.infobar_kind()), Some(InfoBarKind::JtdViewing));
     let (paragraph, _) = s.paragraph(0);
     s.click_text(ibis_doc_model::FlowPos::new(paragraph, 0));
     s.type_text("edited");

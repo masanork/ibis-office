@@ -37,14 +37,48 @@
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/msword" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="application/vnd.ms-powerpoint" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation" />
+                <data android:mimeType="application/x-ichitaro" />
+                <data android:mimeType="application/vnd.justsystems.ichitaro" />
+                <data android:mimeType="application/vnd.justsystems.jtd" />
+                <data android:mimeType="application/x-jtd" />
                 <data android:mimeType="application/vnd.fujixerox.docuworks" />
+                <data android:mimeType="application/pdf" />
                 <data android:mimeType="text/markdown" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/csv" />
+                <data android:mimeType="text/comma-separated-values" />
+                <data android:mimeType="application/json" />
                 <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.jtd" />
+                <data android:pathPattern=".*\\.JTD" />
+                <data android:pathPattern=".*\\.jtdc" />
+                <data android:pathPattern=".*\\.JTDC" />
+                <data android:pathPattern=".*\\.xdw" />
+                <data android:pathPattern=".*\\.xbd" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/vnd.fujixerox.docuworks" />
+                <data android:mimeType="application/x-ichitaro" />
+                <data android:mimeType="application/vnd.justsystems.ichitaro" />
+                <data android:mimeType="application/vnd.justsystems.jtd" />
+                <data android:mimeType="application/octet-stream" />
             </intent-filter>
         </activity>
     </application>

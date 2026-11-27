@@ -6834,6 +6834,19 @@ impl SlideEditor {
         )
     }
 
+    /// Leave the header or footer for the body, returning where it was before.
+    pub(crate) fn leave_header_footer_editing(&mut self, cx: &mut Context<Self>) {
+        if !self.is_header_footer_editing() {
+            return;
+        }
+        let back = self.doc_state_mut().and_then(|s| s.hf_return.take());
+        let back = back.filter(|p| self.flow().is_some_and(|d| matches!(flow_command::locate(d, p.para), Some((Container::Body, _)))));
+        if let Some(pos) = back.or_else(|| self.document_edge(false)) {
+            self.set_caret(pos, false, cx);
+            self.scroll_to_caret(cx);
+        }
+    }
+
     /// ヘッダー/フッター編集時に文書内のテキストを表示するかどうか (Word Header & Footer Tools > オプション > 文書内のテキストを表示).
     pub(crate) fn is_show_document_text(&self) -> bool {
         self.doc_prefs().show_document_text
@@ -8022,6 +8035,18 @@ impl SlideEditor {
         cx.notify();
     }
 
+    /// 任意指定のハイフンの表示をトグル切替 (DOCX-OPTIONS-008).
+    pub(crate) fn toggle_show_optional_hyphens(&mut self, cx: &mut Context<Self>) {
+        { let prefs = self.doc_prefs_mut(); prefs.formatting_marks_options.show_optional_hyphens = !prefs.formatting_marks_options.show_optional_hyphens; }
+        cx.notify();
+    }
+
+    /// アンカー（オブジェクトの位置）の表示をトグル切替 (DOCX-OPTIONS-008).
+    pub(crate) fn toggle_show_object_anchors(&mut self, cx: &mut Context<Self>) {
+        { let prefs = self.doc_prefs_mut(); prefs.formatting_marks_options.show_object_anchors = !prefs.formatting_marks_options.show_object_anchors; }
+        cx.notify();
+    }
+
     /// 隠し文字の常時表示をトグル切替 (DOCX-OPTIONS-008).
     pub(crate) fn toggle_show_hidden_text(&mut self, cx: &mut Context<Self>) {
         { let prefs = self.doc_prefs_mut(); prefs.formatting_marks_options.show_hidden_text = !prefs.formatting_marks_options.show_hidden_text; }
@@ -8084,6 +8109,21 @@ impl SlideEditor {
     /// 文書の編集制限（保護モード）を取得。
     pub(crate) fn document_protection(&self) -> DocumentProtection {
         self.flow().map_or(DocumentProtection::None, |d| d.protection)
+    }
+
+    /// A panel's main button on a document that refuses edits (`run_flow` rejects them): a message box says so. True when it did.
+    pub(crate) fn alert_edit_blocked(&mut self, title_id: &str, cx: &mut Context<Self>) -> bool {
+        let blocked = self.is_mark_as_final()
+            || (self.is_read_only_recommended() && !self.is_read_only_dismissed())
+            || self.is_read_mode()
+            || self.is_viewing_mode()
+            || self.is_protection_read_only()
+            || self.is_protection_comments()
+            || self.is_protection_forms();
+        if blocked {
+            self.show_alert(crate::shell::i18n::text(title_id).trim_end_matches('…').to_string().into(), crate::shell::i18n::text("docx.edit-blocked.protected"), cx);
+        }
+        blocked
     }
 
     /// 文書が読み取り専用で保護されているか。

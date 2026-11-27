@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::input::{
-    Editor, EditorState, FoldRange, HighlightStyleResolver, InputEdit, InputHighlighter,
-    InputHighlighterFactory, Rope,
+    CompletionProvider, Editor, EditorState, Escape, FoldRange, HighlightStyleResolver,
+    IndentInline, InputEdit, InputHighlighter, InputHighlighterFactory, Rope,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -35,6 +35,84 @@ pub const VISUAL_TO_SOURCE_DEBOUNCE_MS: u64 = 200;
 pub const DEFAULT_SPLIT_RATIO: f32 = 0.45;
 pub const MIN_SPLIT_RATIO: f32 = 0.20;
 pub const MAX_SPLIT_RATIO: f32 = 0.80;
+
+/// Automatically detected document kind for plain-text sources (`text` / `.md` / `.lawtext`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextContentKind {
+    Markdown,
+    Marp,
+    Workbook,
+    Lawtext,
+}
+
+impl TextContentKind {
+    pub fn badge_label(self) -> &'static str {
+        match self {
+            Self::Markdown => "MD",
+            Self::Marp => "Marp",
+            Self::Workbook => "Sheet",
+            Self::Lawtext => "Law",
+        }
+    }
+}
+
+/// Detect whether plain-text content is Marp presentation, Workbook Markdown, Lawtext, or standard Markdown.
+pub fn detect_text_content_kind(data: &[u8]) -> TextContentKind {
+    if ibis_formats::markdown::is_presentation_markdown(data) {
+        TextContentKind::Marp
+    } else if ibis_formats::markdown::is_workbook_markdown(data) {
+        TextContentKind::Workbook
+    } else if ibis_lawtext::is_lawtext(data) {
+        TextContentKind::Lawtext
+    } else {
+        TextContentKind::Markdown
+    }
+}
+
+pub const TEMPLATE_MARP: &str = "\
+---
+marp: true
+theme: default
+paginate: true
+---
+
+# タイトル
+
+サブタイトル
+
+---
+
+## スライド 2
+
+- 箇条書き 1
+- 箇条書き 2
+";
+
+pub const TEMPLATE_WORKBOOK: &str = "\
+---
+workbook: true
+---
+
+<!-- xlsx-sheet \"Sheet1\" -->
+
+## Sheet1
+
+| 項目 | 値 | メモ |
+| --- | ---: | --- |
+| A | 100 | |
+| B | 200 | |
+| 合計 | =SUM(B2:B3) | |
+";
+
+pub const TEMPLATE_LAWTEXT: &str = "\
+新規法令案（令和六年架空規則第一号）
+
+  （目的）
+第一条　この規則は、必要な事項を定めることを目的とする。
+
+  附則
+この規則は、公布の日から施行する。
+";
 
 /// View mode for bidirectional Markdown editing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -148,19 +226,22 @@ pub struct MarkdownSplitHost {
     pub _subscription: Subscription,
 }
 
-/// State for AI-powered Markdown inline completion (ghost-style suggestion bar).
+/// State for AI-powered Markdown inline completion (ghost text in EditorState).
 #[derive(Clone, Debug, Default)]
 pub struct InlineCompletionState {
     /// Whether automatic inline completion on typing is enabled.
     pub enabled: bool,
     /// Whether a completion request is currently in flight.
     pub loading: bool,
-    /// Pending inline suggestion text ready to insert at the cursor.
-    pub suggestion: Option<String>,
+    /// Whether an inline suggestion is currently displayed in the editor.
+    pub has_suggestion: bool,
+    /// One-shot flag to skip debounce when triggered explicitly (e.g. Alt+] or toggle ON).
+    pub immediate_once: Rc<Cell<bool>>,
     /// Last non-fatal error message from completion.
     pub error: Option<String>,
-    /// Monotonic generation counter to discard stale debounced responses.
+    /// Monotonic generation counter to track in-flight completion requests.
     pub generation: u64,
+    pub auto_switch_generation: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1965,6 +2046,7 @@ impl SlideEditor {
         let on_select_visual = callbacks.on_select_mode.clone();
         let on_toggle_sync = callbacks.on_toggle_sync_scroll.clone();
 
+        let compact_mobile = self.compact_viewport;
         let mode_btn = |suffix: &'static str,
                         label_key: &'static str,
                         target: MarkdownViewMode,
@@ -1972,11 +2054,11 @@ impl SlideEditor {
             let active = mode == target;
             div()
                 .id(SharedString::from(format!("{id_prefix}-{suffix}")))
-                .px(px(9.))
-                .py(px(3.))
+                .px(px(if compact_mobile { 12. } else { 9. }))
+                .py(px(if compact_mobile { 6. } else { 3. }))
                 .rounded(px(4.))
                 .cursor_pointer()
-                .text_size(px(11.5))
+                .text_size(px(if compact_mobile { 12. } else { 11.5 }))
                 .when(active, |d| {
                     d.bg(theme.background)
                         .border_1()
@@ -2007,7 +2089,7 @@ impl SlideEditor {
             .items_center()
             .justify_between()
             .px(px(12.))
-            .py(px(4.))
+            .py(px(if compact_mobile { 6. } else { 4. }))
             .bg(theme.title_bar)
             .border_b_1()
             .border_color(theme.border)
@@ -2029,14 +2111,16 @@ impl SlideEditor {
                             .text_color(theme.foreground)
                             .child(format_badge),
                     )
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.foreground)
-                            .truncate()
-                            .child(title),
-                    )
+                    .when(!compact_mobile, |row| {
+                        row.child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.foreground)
+                                .truncate()
+                                .child(title),
+                        )
+                    })
                     .when_some(status_label, |row, label| {
                         row.child(
                             div()
@@ -2045,7 +2129,7 @@ impl SlideEditor {
                                 .child(label),
                         )
                     })
-                    .when_some(section_badge, |row, badge| {
+                    .when_some(section_badge.filter(|_| !compact_mobile), |row, badge| {
                         row.child(
                             div()
                                 .px(px(6.))
@@ -2064,7 +2148,7 @@ impl SlideEditor {
                     .flex_row()
                     .items_center()
                     .gap(px(6.))
-                    .when(mode == MarkdownViewMode::Split, |row| {
+                    .when(!compact_mobile && mode == MarkdownViewMode::Split, |row| {
                         row.child(
                             div()
                                 .id(SharedString::from(format!("{id_prefix}-sync-scroll")))
@@ -2109,12 +2193,14 @@ impl SlideEditor {
                                 MarkdownViewMode::Source,
                                 on_select_source,
                             ))
-                            .child(mode_btn(
-                                "mode-split",
-                                "docx.markdown-source.mode-split",
-                                MarkdownViewMode::Split,
-                                on_select_split,
-                            ))
+                            .when(!compact_mobile, |bar| {
+                                bar.child(mode_btn(
+                                    "mode-split",
+                                    "docx.markdown-source.mode-split",
+                                    MarkdownViewMode::Split,
+                                    on_select_split,
+                                ))
+                            })
                             .child(mode_btn(
                                 "mode-visual",
                                 "docx.markdown-source.mode-visual",
@@ -2183,108 +2269,72 @@ impl SlideEditor {
             .into_any_element()
     }
 
+    fn trigger_inline_completion_via_public_api(
+        immediate_once: &Rc<Cell<bool>>,
+        editor: &Entity<EditorState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        immediate_once.set(true);
+        editor.update(cx, |state, cx| {
+            if let Some(sel) = EntityInputHandler::selected_text_range(state, false, window, cx) {
+                let end = sel.range.end;
+                EntityInputHandler::replace_text_in_range(state, Some(end..end), "", window, cx);
+            } else {
+                EntityInputHandler::replace_text_in_range(state, None, "", window, cx);
+            }
+        });
+    }
+
     pub fn toggle_inline_completion(
         &mut self,
         editor: Option<Entity<EditorState>>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.inline_completion.enabled = !self.inline_completion.enabled;
         self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
         self.inline_completion.loading = false;
-        self.inline_completion.suggestion = None;
         self.inline_completion.error = None;
-        if self.inline_completion.enabled
-            && let Some(ed) = editor
-        {
-            self.schedule_inline_completion(ed, cx);
-            return;
+        if let Some(ed) = editor {
+            if self.inline_completion.enabled {
+                Self::trigger_inline_completion_via_public_api(
+                    &self.inline_completion.immediate_once,
+                    &ed,
+                    window,
+                    cx,
+                );
+            } else if self.inline_completion.has_suggestion {
+                self.inline_completion.has_suggestion = false;
+                ed.update(cx, |state, cx| {
+                    state.focus(window, cx);
+                });
+                window.dispatch_action(Box::new(Escape), cx);
+            }
+        } else {
+            self.inline_completion.has_suggestion = false;
         }
         cx.notify();
     }
 
-    pub fn clear_inline_completion(&mut self, cx: &mut Context<Self>) {
-        self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
-        self.inline_completion.loading = false;
-        self.inline_completion.suggestion = None;
-        self.inline_completion.error = None;
-        cx.notify();
-    }
-
-    pub fn schedule_inline_completion(
+    pub fn clear_inline_completion(
         &mut self,
-        editor: Entity<EditorState>,
+        editor: Option<Entity<EditorState>>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.inline_completion.enabled {
-            return;
-        }
+        let had_suggestion = self.inline_completion.has_suggestion;
         self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
-        let completion_gen = self.inline_completion.generation;
-        self.inline_completion.suggestion = None;
-        self.inline_completion.error = None;
         self.inline_completion.loading = false;
+        self.inline_completion.has_suggestion = false;
+        self.inline_completion.error = None;
+        if had_suggestion && let Some(ed) = editor {
+            ed.update(cx, |state, cx| {
+                state.focus(window, cx);
+            });
+            window.dispatch_action(Box::new(Escape), cx);
+        }
         cx.notify();
-
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(700))
-                .await;
-
-            let input = this.update(cx, |this, cx| {
-                if !this.inline_completion.enabled
-                    || this.inline_completion.generation != completion_gen
-                {
-                    return None;
-                }
-                let (text, pos) = {
-                    let ed = editor.read(cx);
-                    (ed.value().to_string(), ed.cursor_position())
-                };
-                if text.trim().is_empty() {
-                    this.inline_completion.loading = false;
-                    cx.notify();
-                    return None;
-                }
-                this.inline_completion.loading = true;
-                cx.notify();
-                Some(crate::ai_client::slice_prefix_suffix(
-                    &text,
-                    pos.line as usize,
-                    pos.character as usize,
-                ))
-            });
-
-            let Ok(Some((prefix, suffix))) = input else {
-                return;
-            };
-
-            let result = crate::ai_client::complete_inline_suggestion(&prefix, &suffix).await;
-
-            let _ = this.update(cx, |this, cx| {
-                if !this.inline_completion.enabled
-                    || this.inline_completion.generation != completion_gen
-                {
-                    return;
-                }
-                this.inline_completion.loading = false;
-                match result {
-                    Ok(suggestion) if !suggestion.trim().is_empty() => {
-                        this.inline_completion.suggestion = Some(suggestion);
-                        this.inline_completion.error = None;
-                    }
-                    Ok(_) => {
-                        this.inline_completion.suggestion = None;
-                        this.inline_completion.error = None;
-                    }
-                    Err(err) => {
-                        this.inline_completion.suggestion = None;
-                        this.inline_completion.error = Some(err);
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
     pub fn accept_inline_completion(
@@ -2293,16 +2343,15 @@ impl SlideEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(suggestion) = self.inline_completion.suggestion.take() {
-            self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
-            self.inline_completion.loading = false;
-            self.inline_completion.error = None;
-            editor.update(cx, |state, cx| {
-                state.insert(suggestion, window, cx);
-                state.focus(window, cx);
-            });
-            cx.notify();
-        }
+        self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
+        self.inline_completion.loading = false;
+        self.inline_completion.has_suggestion = false;
+        self.inline_completion.error = None;
+        editor.update(cx, |state, cx| {
+            state.focus(window, cx);
+        });
+        window.dispatch_action(Box::new(IndentInline), cx);
+        cx.notify();
     }
 
     pub fn handle_inline_completion_key(
@@ -2317,31 +2366,41 @@ impl SlideEditor {
             return false;
         }
         let ks = &event.keystroke;
-        if self.inline_completion.suggestion.is_some() {
-            if ks.key.as_str() == "tab"
-                && !ks.modifiers.shift
-                && !ks.modifiers.control
-                && !ks.modifiers.alt
-                && !ks.modifiers.platform
-            {
-                self.accept_inline_completion(editor, window, cx);
-                return true;
-            }
-            if ks.key.as_str() == "escape" && !ks.modifiers.modified() {
-                self.clear_inline_completion(cx);
-                return true;
-            }
-        }
         if ks.key.as_str() == "]"
             && ks.modifiers.alt
             && !ks.modifiers.control
             && !ks.modifiers.platform
         {
             self.inline_completion.enabled = true;
-            self.schedule_inline_completion(editor, cx);
+            Self::trigger_inline_completion_via_public_api(
+                &self.inline_completion.immediate_once,
+                &editor,
+                window,
+                cx,
+            );
+            cx.notify();
             return true;
         }
+        if self.inline_completion.has_suggestion
+            && !ks.modifiers.control
+            && !ks.modifiers.platform
+            && !ks.modifiers.alt
+        {
+            self.inline_completion.has_suggestion = false;
+            cx.notify();
+        }
         false
+    }
+
+    pub fn attach_inline_completion_provider(
+        state: &mut EditorState,
+        slide_editor: WeakEntity<Self>,
+        immediate_once: Rc<Cell<bool>>,
+    ) {
+        state.lsp_mut().completion_provider = Some(Rc::new(CopilotInlineCompletionProvider {
+            slide_editor,
+            immediate_once,
+        }));
     }
 
     pub fn render_inline_completion_bar(
@@ -2357,7 +2416,7 @@ impl SlideEditor {
         let theme = cx.theme().clone();
         let enabled = self.inline_completion.enabled;
         let loading = self.inline_completion.loading;
-        let suggestion = self.inline_completion.suggestion.clone();
+        let has_suggestion = self.inline_completion.has_suggestion;
         let error = self.inline_completion.error.clone();
 
         let toggle_label = if enabled {
@@ -2386,8 +2445,8 @@ impl SlideEditor {
                     .when(!enabled, |btn| btn.ghost())
                     .on_click(cx.listener({
                         let editor = editor.clone();
-                        move |this, _ev, _window, cx| {
-                            this.toggle_inline_completion(Some(editor.clone()), cx);
+                        move |this, _ev, window, cx| {
+                            this.toggle_inline_completion(Some(editor.clone()), window, cx);
                         }
                     })),
             );
@@ -2415,30 +2474,26 @@ impl SlideEditor {
                         .label("閉じる")
                         .compact()
                         .ghost()
-                        .on_click(cx.listener(|this, _ev, _window, cx| {
-                            this.clear_inline_completion(cx);
+                        .on_click(cx.listener({
+                            let editor = editor.clone();
+                            move |this, _ev, window, cx| {
+                                this.clear_inline_completion(Some(editor.clone()), window, cx);
+                            }
                         })),
                 );
-        } else if let Some(text) = suggestion {
-            let preview = text.replace('\n', " ");
+        } else if has_suggestion {
             bar = bar
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .px(px(8.))
-                        .py(px(2.))
-                        .rounded(px(4.))
-                        .bg(theme.background)
-                        .border_1()
-                        .border_color(theme.border)
-                        .text_color(theme.foreground)
-                        .child(preview),
+                        .text_color(theme.muted_foreground)
+                        .child("インライン補完を表示中 (Tab: 確定 / Esc: 却下)"),
                 )
                 .child(
                     Button::new(SharedString::from(format!("{id_prefix}-inline-accept")))
-                        .label("挿入 (Tab)")
+                        .label("確定 (Tab)")
                         .compact()
                         .primary()
                         .disabled(readonly)
@@ -2454,15 +2509,18 @@ impl SlideEditor {
                         .label("却下 (Esc)")
                         .compact()
                         .ghost()
-                        .on_click(cx.listener(|this, _ev, _window, cx| {
-                            this.clear_inline_completion(cx);
+                        .on_click(cx.listener({
+                            let editor = editor.clone();
+                            move |this, _ev, window, cx| {
+                                this.clear_inline_completion(Some(editor.clone()), window, cx);
+                            }
                         })),
                 );
         } else {
             let hint = if enabled {
-                "入力停止で提案 / Alt+]: 今すぐ補完"
+                "入力停止でインライン補完 / Alt+]: 今すぐ補完"
             } else {
-                "GitHub Models / AI で先読み補完 (Alt+]: 今すぐ補完)"
+                "GitHub Copilot / AI でインライン補完 (Alt+]: 今すぐ補完)"
             };
             bar = bar.child(
                 div()
@@ -2474,9 +2532,280 @@ impl SlideEditor {
             );
         }
 
+        let current_kind = self.current_text_content_kind();
+        bar = bar.child(
+            div()
+                .px(px(6.))
+                .py(px(1.))
+                .rounded(px(4.))
+                .bg(theme.background)
+                .border_1()
+                .border_color(theme.border)
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.muted_foreground)
+                .child(format!("自動判定: {}", current_kind.badge_label())),
+        );
+
+        if !readonly {
+            let templates: [(&'static str, &'static str, &'static str); 3] = [
+                ("marp", "Marp", TEMPLATE_MARP),
+                ("sheet", "Sheet", TEMPLATE_WORKBOOK),
+                ("law", "Law", TEMPLATE_LAWTEXT),
+            ];
+            for (slug, label, body) in templates {
+                let ed = editor.clone();
+                bar = bar.child(
+                    Button::new(SharedString::from(format!("{id_prefix}-tpl-{slug}")))
+                        .label(label)
+                        .compact()
+                        .ghost()
+                        .on_click(cx.listener(move |this, _ev, window, cx| {
+                            ed.update(cx, |state, cx| {
+                                state.set_value(body.to_string(), window, cx);
+                            });
+                            let _ = this.reopen_text_source_as_detected(
+                                body.to_string(),
+                                window,
+                                cx,
+                            );
+                        })),
+                );
+            }
+        }
+
         bar.into_any_element()
     }
 
+    pub fn current_text_content_kind(&self) -> TextContentKind {
+        match self.kind() {
+            ibis_formats::Kind::Presentation => TextContentKind::Marp,
+            ibis_formats::Kind::Workbook => TextContentKind::Workbook,
+            ibis_formats::Kind::Document if self.is_law_document() => TextContentKind::Lawtext,
+            _ => TextContentKind::Markdown,
+        }
+    }
+
+    /// Schedule a debounced check to auto-switch between Markdown / Marp / Workbook / Lawtext
+    /// when the user edits or pastes content whose format differs from the active editor kind.
+    pub fn schedule_text_content_auto_switch(
+        &mut self,
+        editor: Entity<EditorState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.inline_completion.auto_switch_generation =
+            self.inline_completion.auto_switch_generation.wrapping_add(1);
+        let expected_gen = self.inline_completion.auto_switch_generation;
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(450))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.inline_completion.auto_switch_generation != expected_gen {
+                    return;
+                }
+                let text = editor.read(cx).value().to_string();
+                let _ = this.reopen_text_source_as_detected(text, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// If `text` is detected as a different [`TextContentKind`] than the current editor,
+    /// re-open it in-place in that format while preserving the text source and split view.
+    pub fn reopen_text_source_as_detected(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if text.trim().is_empty() {
+            return false;
+        }
+        let detected = detect_text_content_kind(text.as_bytes());
+        if detected == self.current_text_content_kind() {
+            return false;
+        }
+        let base_dir = self.current_path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf);
+        let opened_result: Result<(ibis_formats::Opened, bool), String> = match detected {
+            TextContentKind::Marp => {
+                crate::read_file::open_markdown_bytes(text.as_bytes().to_vec(), base_dir.as_deref(), true)
+                    .map(|o| (o, false))
+            }
+            TextContentKind::Workbook => {
+                ibis_formats::markdown::open_markdown_workbook(text.as_bytes().to_vec())
+                    .map(|o| (o, false))
+                    .map_err(|e| e.to_string())
+            }
+            TextContentKind::Lawtext => match ibis_lawtext::parse_lawtext(&text) {
+                Ok(law) => {
+                    let law_md = ibis_lawtext::to_markdown(&law);
+                    crate::read_file::open_markdown_bytes(law_md.into_bytes(), base_dir.as_deref(), false)
+                        .map(|o| (o, true))
+                }
+                Err(_) => return false,
+            },
+            TextContentKind::Markdown => {
+                crate::read_file::open_markdown_bytes(text.as_bytes().to_vec(), base_dir.as_deref(), false)
+                    .map(|o| (o, false))
+            }
+        };
+        let Ok((opened, is_law)) = opened_result else {
+            return false;
+        };
+        let next_name: SharedString = match self.file_name.as_deref() {
+            Some(current) => {
+                let lower = current.to_ascii_lowercase();
+                let is_untitled = lower.starts_with("untitled")
+                    || current.starts_with("文書 ")
+                    || current.starts_with("無題");
+                if is_untitled {
+                    if is_law {
+                        "Untitled.lawtext".into()
+                    } else {
+                        "Untitled.md".into()
+                    }
+                } else {
+                    current.to_string().into()
+                }
+            }
+            None => {
+                if is_law {
+                    "Untitled.lawtext".into()
+                } else {
+                    "Untitled.md".into()
+                }
+            }
+        };
+        self.load(opened.presentation, next_name, window, cx);
+        self.source = Some(std::sync::Arc::new(opened.source));
+        #[cfg(target_family = "wasm")]
+        {
+            self.web.law_source = if is_law {
+                Some(std::sync::Arc::new(text.into_bytes()))
+            } else {
+                None
+            };
+        }
+        crate::format::with_format!(self, new_file_shown(self, cx));
+        if !self.should_auto_open_markdown_split() {
+            window.dispatch_action(Box::new(crate::actions::ToggleMarkdownSource), cx);
+        }
+        cx.notify();
+        true
+    }
+}
+
+struct CopilotInlineCompletionProvider {
+    slide_editor: WeakEntity<SlideEditor>,
+    immediate_once: Rc<Cell<bool>>,
+}
+
+impl CompletionProvider for CopilotInlineCompletionProvider {
+    fn completions(
+        &self,
+        _text: &Rope,
+        _offset: usize,
+        _trigger: lsp_types::CompletionContext,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Task<anyhow::Result<lsp_types::CompletionResponse>> {
+        Task::ready(Ok(lsp_types::CompletionResponse::Array(vec![])))
+    }
+
+    fn is_completion_trigger(&self, _offset: usize, _new_text: &str, _cx: &mut App) -> bool {
+        false
+    }
+
+    fn inline_completion_debounce(&self) -> std::time::Duration {
+        if self.immediate_once.replace(false) {
+            std::time::Duration::ZERO
+        } else {
+            std::time::Duration::from_millis(700)
+        }
+    }
+
+    fn inline_completion(
+        &self,
+        rope: &Rope,
+        offset: usize,
+        trigger: lsp_types::InlineCompletionContext,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Task<anyhow::Result<lsp_types::InlineCompletionResponse>> {
+        let invoked = trigger.trigger_kind == lsp_types::InlineCompletionTriggerKind::Invoked;
+        let text = rope.to_string();
+        if text.trim().is_empty() {
+            return Task::ready(Ok(lsp_types::InlineCompletionResponse::Array(vec![])));
+        }
+
+        let Some(editor_entity) = self.slide_editor.upgrade() else {
+            return Task::ready(Ok(lsp_types::InlineCompletionResponse::Array(vec![])));
+        };
+
+        let completion_gen = editor_entity.update(cx, |this, cx| {
+            if invoked {
+                this.inline_completion.enabled = true;
+            } else if !this.inline_completion.enabled {
+                return None;
+            }
+            this.inline_completion.generation = this.inline_completion.generation.wrapping_add(1);
+            this.inline_completion.loading = true;
+            this.inline_completion.has_suggestion = false;
+            this.inline_completion.error = None;
+            cx.notify();
+            Some(this.inline_completion.generation)
+        });
+
+        let Some(completion_gen) = completion_gen else {
+            return Task::ready(Ok(lsp_types::InlineCompletionResponse::Array(vec![])));
+        };
+
+        let (prefix, suffix) = crate::ai_client::slice_prefix_suffix_by_offset(&text, offset);
+        let weak_editor = self.slide_editor.clone();
+
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let result = crate::ai_client::complete_inline_suggestion(&prefix, &suffix).await;
+            let has_text = matches!(&result, Ok(s) if !s.trim().is_empty());
+            let _ = weak_editor.update(cx, |this, cx| {
+                if this.inline_completion.generation != completion_gen {
+                    return;
+                }
+                this.inline_completion.loading = false;
+                this.inline_completion.has_suggestion = has_text;
+                if let Err(err) = &result {
+                    let explained = crate::ai_client::explain_ai_error(err);
+                    this.inline_completion.error = if explained.is_empty() {
+                        None
+                    } else {
+                        Some(explained)
+                    };
+                } else {
+                    this.inline_completion.error = None;
+                }
+                cx.notify();
+            });
+
+            match result {
+                Ok(suggestion) if !suggestion.trim().is_empty() => {
+                    Ok(lsp_types::InlineCompletionResponse::Array(vec![
+                        lsp_types::InlineCompletionItem {
+                            insert_text: suggestion,
+                            filter_text: None,
+                            range: None,
+                            command: None,
+                            insert_text_format: None,
+                        },
+                    ]))
+                }
+                _ => Ok(lsp_types::InlineCompletionResponse::Array(vec![])),
+            }
+        })
+    }
+}
+
+impl SlideEditor {
     /// Render the shared Split container: left Markdown source pane + draggable divider + right Visual pane.
     pub fn render_shared_markdown_split_container(
         &self,
@@ -2609,6 +2938,26 @@ impl SlideEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn detect_text_content_kind_classifies_all_four_formats() {
+        assert_eq!(
+            detect_text_content_kind(b"# Plain Note\n\nHello world\n"),
+            TextContentKind::Markdown
+        );
+        assert_eq!(
+            detect_text_content_kind(TEMPLATE_MARP.as_bytes()),
+            TextContentKind::Marp
+        );
+        assert_eq!(
+            detect_text_content_kind(TEMPLATE_WORKBOOK.as_bytes()),
+            TextContentKind::Workbook
+        );
+        assert_eq!(
+            detect_text_content_kind(TEMPLATE_LAWTEXT.as_bytes()),
+            TextContentKind::Lawtext
+        );
+    }
 
     #[::core::prelude::v1::test]
     fn marp_slide_spans_handles_frontmatter_fences_and_slide_breaks() {

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Prefer a verified single Brotli asset; retain the split path as a fallback.
-interface Chunk { file: string; size: number; sha256: string }
-interface Single { size: number; sha256: string }
-interface Manifest { size: number; sha256: string; chunks: Chunk[]; single?: Single }
+interface BrAsset { size: number; sha256: string }
+interface Chunk { file: string; size: number; sha256: string; br?: BrAsset }
+interface Manifest { size: number; sha256: string; chunks: Chunk[]; single?: BrAsset }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>);
@@ -80,11 +80,29 @@ export async function loadWasm(manifestUrl: URL, progress: (loaded: number, tota
   }
   let loaded = 0;
   const chunks = await Promise.all(manifest.chunks.map(async chunk => {
-    const result = await fetch(new URL(chunk.file, manifestUrl));
-    if (!result.ok) throw new Error(`${chunk.file}: HTTP ${result.status}`);
-    const bytes = new Uint8Array(await result.arrayBuffer());
-    if (bytes.byteLength !== chunk.size || await sha256(bytes) !== chunk.sha256) {
-      throw new Error(`Invalid Wasm chunk: ${chunk.file}`);
+    let bytes: Uint8Array | null = null;
+    if (chunk.br && Number.isSafeInteger(chunk.br.size) && chunk.br.size > 0 &&
+        chunk.br.size <= 25 * 1024 * 1024 && /^[a-f0-9]{64}$/.test(chunk.br.sha256)) {
+      try {
+        const result = await fetch(new URL(`br/${chunk.br.sha256}.wasm`, manifestUrl));
+        if (!result.ok) throw new Error(`Brotli chunk: HTTP ${result.status}`);
+        const decoded = new Uint8Array(await result.arrayBuffer());
+        if (decoded.byteLength !== chunk.size || await sha256(decoded) !== chunk.sha256) {
+          throw new Error(`Invalid Brotli chunk: ${chunk.file}`);
+        }
+        bytes = decoded;
+      } catch (error) {
+        console.warn(`Compressed chunk unavailable for ${chunk.file}; falling back to raw chunk`, error);
+      }
+    }
+    if (!bytes) {
+      const result = await fetch(new URL(chunk.file, manifestUrl));
+      if (!result.ok) throw new Error(`${chunk.file}: HTTP ${result.status}`);
+      const raw = new Uint8Array(await result.arrayBuffer());
+      if (raw.byteLength !== chunk.size || await sha256(raw) !== chunk.sha256) {
+        throw new Error(`Invalid Wasm chunk: ${chunk.file}`);
+      }
+      bytes = raw;
     }
     loaded += bytes.byteLength;
     progress(loaded, manifest.size);

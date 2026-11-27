@@ -2,10 +2,12 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
+use std::collections::HashMap;
+
 use image::RgbaImage;
 use tiny_skia::{
-    ColorU8, FillRule, IntSize, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke,
-    Transform,
+    Color, ColorU8, FillRule, GradientStop, IntSize, LinearGradient, Paint, Path, PathBuilder,
+    Pixmap, PixmapPaint, Point, RadialGradient, Rect, SpreadMode, Stroke, StrokeDash, Transform,
 };
 
 use super::{
@@ -18,6 +20,7 @@ pub(super) struct Drawing {
     blend: Option<Pixmap>,
     first_bitmap: Option<(RgbaImage, Bounds)>,
     style: Style,
+    pen_patterns: HashMap<u16, Vec<f32>>,
     compound: Option<Compound>,
 }
 
@@ -29,17 +32,167 @@ struct Compound {
 }
 
 struct Style {
-    fill: [u8; 4],
+    fill: Fill,
+    gradient: Option<GradientGeometry>,
     pen: [u8; 4],
     pen_width: f32,
+    pen_pattern: u16,
+}
+
+#[derive(Clone, Copy)]
+struct GradientGeometry {
+    angle: f32,
+    reference: [u16; 2],
+    anchor: Option<Rect>,
+}
+
+enum Fill {
+    Solid(Color),
+    Linear {
+        angle: f32,
+        anchor: Option<Rect>,
+        stops: Vec<GradientStop>,
+    },
+    Radial {
+        reference: [u16; 2],
+        elliptical: bool,
+        stops: Vec<GradientStop>,
+    },
+}
+
+impl Fill {
+    fn read(record: &[u8], geometry: Option<GradientGeometry>) -> Option<Self> {
+        let kind = *record.first()?;
+        if kind == 0 {
+            return Some(Self::Solid(brush_color(record.get(1..)?)?));
+        }
+        let geometry = geometry?;
+        let count = usize::from(word(record, 1)?);
+        if count < 2 {
+            return None;
+        }
+        let colors_end = 3 + 4 * count;
+        let colors = record.get(3..colors_end)?;
+        let positions = record.get(colors_end..colors_end + 2 * (count - 1))?;
+        match (kind, geometry.reference) {
+            (1, [u16::MAX, u16::MAX]) => {
+                // The stored order runs from the ending color back to the start.
+                // For this full-span form the last stored position is the endpoint.
+                let mut stops = Vec::with_capacity(count);
+                let mut offset = 0;
+                for (index, color) in colors.chunks_exact(4).enumerate() {
+                    stops.push(GradientStop::new(
+                        1.0 - f32::from(offset) / f32::from(u16::MAX),
+                        brush_color(color)?,
+                    ));
+                    if index + 1 < count {
+                        let next = if count == 2 {
+                            u16::MAX
+                        } else {
+                            word(positions, index * 2)?
+                        };
+                        if next <= offset || (next == u16::MAX) != (index + 2 == count) {
+                            return None;
+                        }
+                        offset = next;
+                    }
+                }
+                stops.reverse();
+                Some(Self::Linear {
+                    angle: geometry.angle,
+                    anchor: geometry.anchor,
+                    stops,
+                })
+            }
+            (3 | 5, reference) if count == 2 && geometry.anchor.is_none() => Some(Self::Radial {
+                reference,
+                elliptical: kind == 5,
+                stops: vec![
+                    GradientStop::new(0.0, brush_color(colors)?),
+                    GradientStop::new(1.0, brush_color(colors.get(4..)?)?),
+                ],
+            }),
+            _ => None,
+        }
+    }
+
+    fn paint(&self, path: &Path, object: Transform) -> Option<Paint<'static>> {
+        let mut paint = Paint::default();
+        let bounds = path.bounds();
+        match self {
+            Self::Solid(color) => paint.set_color(*color),
+            Self::Linear {
+                angle,
+                anchor,
+                stops,
+            } => {
+                let (bounds, shader_transform) = match anchor {
+                    // Anchor extents are in drawing coordinates; undo the
+                    // object transform for the shader alone.
+                    Some(extent) => (*extent, object.invert()?),
+                    None => (bounds, Transform::identity()),
+                };
+                let cx = (bounds.left() + bounds.right()) * 0.5;
+                let cy = (bounds.top() + bounds.bottom()) * 0.5;
+                let (dx, dy) = angle.sin_cos();
+                let extent = (dx.abs() * bounds.width() + dy.abs() * bounds.height()) * 0.5;
+                paint.shader = LinearGradient::new(
+                    Point::from_xy(cx - dx * extent, cy - dy * extent),
+                    Point::from_xy(cx + dx * extent, cy + dy * extent),
+                    stops.clone(),
+                    SpreadMode::Pad,
+                    shader_transform,
+                )?;
+            }
+            Self::Radial {
+                reference,
+                elliptical,
+                stops,
+            } => {
+                let width = bounds.width();
+                let height = bounds.height();
+                if width <= 0.0 || height <= 0.0 {
+                    return None;
+                }
+                if !elliptical && (width - height).abs() > width.max(height) * 1e-5 {
+                    return None;
+                }
+                // The reference is a fraction of the shape bounds in WPG's
+                // bottom-left coordinate system.
+                let [x, y] = reference.map(|value| f32::from(value) / 65536.0);
+                let x = bounds.left() + x * width;
+                let y = bounds.top() + y * height;
+                let radius_x = width * 0.5;
+                let radius_y = if *elliptical { height * 0.5 } else { radius_x };
+                let local = Transform::from_row(radius_x, 0.0, 0.0, radius_y, x, y);
+                let origin = Point::from_xy(0.0, 0.0);
+                paint.shader = RadialGradient::new(
+                    origin,
+                    origin,
+                    1.0,
+                    stops.clone(),
+                    SpreadMode::Pad,
+                    local,
+                )?;
+            }
+        }
+        Some(paint)
+    }
+}
+
+fn brush_color(bytes: &[u8]) -> Option<Color> {
+    let [r, g, b, transparency] = *bytes.first_chunk::<4>()?;
+    Some(Color::from_rgba8(r, g, b, 255 - transparency))
 }
 
 impl Default for Style {
     fn default() -> Self {
         Self {
-            fill: [0, 0, 0, 255],
+            fill: Fill::Solid(Color::BLACK),
+            gradient: None,
             pen: [0, 0, 0, 255],
             pen_width: 0.0,
+            pen_pattern: 0,
         }
     }
 }
@@ -138,8 +291,44 @@ impl Drawing {
             0x2c => {
                 self.style.pen_width = u32::from_le_bytes(record.get(..4)?.try_into().ok()?) as f32
             }
-            0x31 if record.first() == Some(&0) => self.style.fill = color(record.get(1..)?)?,
-            0x29 if word(record, 0)? == 0 => {}
+            0x2f => {
+                let degrees = f32::from(word(record, 2)?) + f32::from(word(record, 0)?) / 65536.0;
+                let reference = [word(record, 4)?, word(record, 6)?];
+                let anchor = match *record.get(8)? {
+                    0 => Some(None),
+                    0x80 if canvas.coordinate_bytes == 2 => {
+                        let coord = |offset| Some(f32::from(word(record, offset)? as i16));
+                        Rect::from_ltrb(coord(9)?, coord(11)?, coord(13)?, coord(15)?)
+                            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+                            .map(Some)
+                    }
+                    _ => None,
+                };
+                self.style.gradient = anchor.map(|anchor| GradientGeometry {
+                    angle: degrees.to_radians(),
+                    reference,
+                    anchor,
+                });
+            }
+            0x31 => self.style.fill = Fill::read(record, self.style.gradient)?,
+            0x08 => {
+                let id = word(record, 0)?;
+                let pairs = usize::from(word(record, 2)?);
+                let bytes = canvas.coordinate_bytes;
+                let values = record.get(4..4 + pairs * 2 * bytes)?;
+                let lengths = values
+                    .chunks_exact(bytes)
+                    .map(|value| {
+                        if let Ok(double) = <[u8; 4]>::try_from(value) {
+                            u32::from_le_bytes(double) as f32 / 65536.0
+                        } else {
+                            f32::from(word(value, 0).unwrap())
+                        }
+                    })
+                    .collect();
+                self.pen_patterns.insert(id, lengths);
+            }
+            0x29 => self.style.pen_pattern = word(record, 0)?,
             0x15 | 0x17..=0x19 => {
                 let (flags, local, mut shape) = canvas.object(record)?;
                 let map = parent.pre_concat(local);
@@ -204,9 +393,7 @@ impl Drawing {
             return None;
         }
         if flags & 0x2000 != 0 {
-            let mut paint = Paint::default();
-            let [r, g, b, a] = self.style.fill;
-            paint.set_color_rgba8(r, g, b, a);
+            let paint = self.style.fill.paint(path, transform)?;
             let rule = if flags & 0x1000 != 0 {
                 FillRule::Winding
             } else {
@@ -222,7 +409,18 @@ impl Drawing {
                 width: self.style.pen_width,
                 ..Stroke::default()
             };
-            surface.stroke_path(path, &paint, &stroke, map, None);
+            if self.style.pen_pattern == 0 {
+                surface.stroke_path(path, &paint, &stroke, map, None);
+            } else {
+                // Match the WPG 2 pen-pattern scale used by libwpg. Pattern lengths
+                // are relative to the pen width and follow the object's transform.
+                let scale = self.style.pen_width * (72.0 * 3.6 / 218.0);
+                let intervals = self.pen_patterns.get(&self.style.pen_pattern)?;
+                let dash =
+                    StrokeDash::new(intervals.iter().map(|length| length * scale).collect(), 0.0)?;
+                let dashed = path.dash(&dash, 1.0)?;
+                surface.stroke_path(&dashed, &paint, &stroke, map, None);
+            }
         }
         Some(())
     }

@@ -272,7 +272,7 @@ impl SlideEditor {
                     editor.set_folder_pane(Arc::new(folder), window, cx);
                 }
                 Ok(OpenedFolder::Repository(workspace)) => {
-                    crate::app::open_window_with(cx, move |editor, _, cx| {
+                    crate::app::open_tab_or_window_with(cx, move |editor, _, cx| {
                         editor.git_workspace = Some(*workspace);
                         cx.notify();
                     })
@@ -296,7 +296,7 @@ impl SlideEditor {
                 .spawn(async move { GitWorkspace::for_selected_folder(&root) })
                 .await;
             let _ = this.update(cx, |editor, cx| match workspace {
-                Some(workspace) => crate::app::open_window_with(cx, move |editor, _, cx| {
+                Some(workspace) => crate::app::open_tab_or_window_with(cx, move |editor, _, cx| {
                     editor.git_workspace = Some(workspace);
                     cx.notify();
                 }),
@@ -399,16 +399,36 @@ impl SlideEditor {
         );
     }
 
-    /// Follow a Markdown link against the folder that owns the open source file.
+    /// Follow a Markdown link against the folder that owns the open source file,
+    /// or fall back to built-in help pages for `help/...` links.
     pub fn follow_folder_link(
         &mut self,
         url: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(pane) = &self.folder_pane else { return false };
-        let Some(file) = self.file_path() else { return false };
-        let Some(target) = pane.folder.link_from_file(&file, url) else { return false };
+        let builtin_target = resolve_builtin_help_link(url);
+        let Some(pane) = &self.folder_pane else {
+            if let Some(target) = builtin_target {
+                self.open_builtin_help(&target, window, cx);
+                return true;
+            }
+            return false;
+        };
+        let Some(file) = self.file_path() else {
+            if let Some(target) = builtin_target {
+                self.open_builtin_help(&target, window, cx);
+                return true;
+            }
+            return false;
+        };
+        let Some(target) = pane.folder.link_from_file(&file, url) else {
+            if let Some(target) = builtin_target {
+                self.open_builtin_help(&target, window, cx);
+                return true;
+            }
+            return false;
+        };
         match target {
             Ok(reference) => self.open_folder_reference(&reference, window, cx),
             Err(error) => {
@@ -561,7 +581,7 @@ impl SlideEditor {
             open(self, window, cx);
         } else {
             let target_rel = reference.path.clone();
-            crate::app::open_window_with(cx, move |editor, window, cx| {
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                 editor.set_folder_pane(folder, window, cx);
                 if let Some(pane) = editor.folder_pane.as_mut() {
                     pane.record_visit(None, &target_rel);
@@ -596,7 +616,7 @@ impl SlideEditor {
                 })
                 .await;
             let _ = this.update(cx, |editor, cx| match result {
-                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                Ok(opened) => crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                     editor.load(opened.presentation, name.into(), window, cx);
                     editor.standard_read_only = true;
                     editor.document.set_read_only(true);
@@ -1012,4 +1032,26 @@ fn folder_row(
         .on_click(
             cx.listener(move |editor, _, window, cx| editor.open_folder_file(&path, window, cx)),
         )
+}
+
+fn resolve_builtin_help_link(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    let inner = trimmed
+        .strip_prefix("[[")
+        .and_then(|s| s.strip_suffix("]]"))
+        .unwrap_or(trimmed);
+    let target = inner.split('|').next().unwrap_or(inner).trim();
+    let without_fragment = target.split('#').next().unwrap_or(target).trim();
+    let normalized = without_fragment.trim_start_matches("./");
+    if !normalized.starts_with("help/") {
+        return None;
+    }
+    if sorane_github::help_file(sorane_github::HelpLocale::Ja, normalized).is_some() {
+        return Some(normalized.to_string());
+    }
+    let with_md = format!("{normalized}.md");
+    if sorane_github::help_file(sorane_github::HelpLocale::Ja, &with_md).is_some() {
+        return Some(with_md);
+    }
+    None
 }

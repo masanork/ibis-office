@@ -30,6 +30,8 @@ fi
 # from a string, no eval (scripts/check-web-sources.py; a line with a reason carries `host-lint-allow: <reason>`).
 python3 scripts/check-web-sources.py --self-test
 python3 scripts/check-web-sources.py
+python3 scripts/check-gpui-hazards.py --self-test
+python3 scripts/check-gpui-hazards.py
 
 PROFILE=debug
 FLAGS=()
@@ -87,7 +89,7 @@ if [[ ! -x node_modules/.bin/tsc ]]; then
   exit 1
 fi
 # The version of this build, for the loader to check a loader-manifest.json against (the parts of the wasm are of one build: scripts/web-loader-setup.mjs).
-printf "export const APP_VERSION = '%s';\n" "$(awk -F'\t' '$1 == "wasm" { sub(/\r$/, "", $2); print $2 }' version.txt)" > www/build-info.ts
+printf "export const APP_VERSION = '%s';\n" "$(awk -F'\t' '$1 == "wasm" { sub(/\r$/, "", $2); print $2 }' crates/build-version.txt)" > www/build-info.ts
 node_modules/.bin/tsc -p www
 # tsc keeps the copyright header of ibisoffice-host.ts in the .js but drops it from the .d.ts: the same header (the first three lines of the
 # source) goes on the .d.ts, as it ships in the Web archive.

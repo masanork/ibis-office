@@ -73,8 +73,8 @@ pub(crate) fn menus(editor: &SlideEditor) -> Menus {
             MenuId::Help => {
                 let mut entries: Vec<MenuEntry> = vec![
                     item("help.search", "search").shortcut("⌥/").on(|this, window, cx| this.open_toolbar_menu_search(window, cx)).into(),
-                    item("help.help", "help").into(),
-                    item("help.shortcuts", "keyboard").shortcut("⌘/").into(),
+                    item("help.help", "help").on(|this, window, cx| this.open_builtin_help("help/index.md", window, cx)).into(),
+                    item("help.shortcuts", "keyboard").shortcut("⌘/").on(|this, window, cx| this.open_builtin_help("help/shortcuts.md", window, cx)).into(),
                     SEP,
                 ];
                 // Linux's AppImage: ask again about the list of apps (without its entry the dock shows no icon).
@@ -85,6 +85,10 @@ pub(crate) fn menus(editor: &SlideEditor) -> Menus {
                 // Not with `?fd=0` (the playground: no guidance to the downloads).
                 if crate::embed::font_prompt() {
                     entries.push(item("help.setup", "download").on(|this, window, cx| this.open_font_setup(window, cx)).into());
+                    #[cfg(not(target_family = "wasm"))]
+                    entries.push(item("help.ocr-setup", "download").on(|this, window, cx| this.open_ocr_setup(window, cx)).into());
+                    #[cfg(not(target_family = "wasm"))]
+                    entries.push(item("help.asr-setup", "download").on(|this, window, cx| this.open_asr_setup(window, cx)).into());
                 }
                 // ソースコード (AGPL)… (K0036): the project's page on GitHub, so that the users of a fork's build also learn of ibis-office.
                 entries.push(item("help.source-code", "link").on(|_, _, cx| crate::external::open_url(&crate::host::source_url(), cx)).into());

@@ -642,6 +642,8 @@ pub(crate) fn write_chart(package: &mut Package, part: &str, old: &Chart, new: &
                 x_values: t.x_values.clone(),
                 bubble_sizes: t.bubble_sizes.clone(),
                 bubble_3d: t.bubble_3d,
+                has_format: t.has_format,
+                has_outline: t.has_outline,
                 ..s.clone()
             };
             if retyped {
@@ -835,7 +837,15 @@ pub(crate) fn write_chart(package: &mut Package, part: &str, old: &Chart, new: &
     // The legend: shown or not, and on which side. One that only moves
     // keeps its own formatting; one where there was none is written new
     // (the app takes the file's reading of it). Other changes are refused.
-    let only_moved = |a: &ibis_doc_model::Legend, b: &ibis_doc_model::Legend| b.layout.is_none() && (ibis_doc_model::Legend { source_position: b.source_position, side: b.side, layout: None, ..a.clone() }) == *b;
+    let only_moved = |a: &ibis_doc_model::Legend, b: &ibis_doc_model::Legend| {
+        let mut expected = ibis_doc_model::Legend { source_position: b.source_position, side: b.side, layout: None, ..a.clone() };
+        if let (Some(ac), Some(bc)) = (expected.text.color, b.text.color)
+            && ac.rgb == bc.rgb && ac.alpha == bc.alpha && bc.theme.is_none()
+        {
+            expected.text.color = Some(bc);
+        }
+        b.layout.is_none() && expected == *b
+    };
     // A side the file would not read back from the position is refused.
     if let Some(b) = &new.legend
         && old.legend.as_ref() != Some(b)

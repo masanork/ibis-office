@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/235)
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/80#issuecomment-6868471583)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! PDFs encrypted with the Standard security handler and the empty user password (synthetic fixtures made with
 //! pymupdf: one page "Encrypted text 0190001", the title "Synthetic title").

@@ -175,6 +175,8 @@ impl SlideEditor {
         let revision = self.document.revision();
         let active_sheet_idx = self.xlsx_active_visible_sheet_index();
 
+        let weak_editor = cx.weak_entity();
+        let immediate_once = self.inline_completion.immediate_once.clone();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language("markdown")
@@ -185,10 +187,11 @@ impl SlideEditor {
                 .default_value(initial.clone());
             state.set_highlighter_factory(markdown_highlighter_factory(), cx);
             state.set_readonly(readonly, cx);
+            Self::attach_inline_completion_provider(&mut state, weak_editor, immediate_once);
             state
         });
 
-        let subscription = cx.subscribe(&editor, |this, ed, event: &InputEvent, cx| {
+        let subscription = cx.subscribe_in(&editor, window, |this, ed, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::Change) {
                 let suppressed = this
                     .sheet_state()
@@ -212,7 +215,7 @@ impl SlideEditor {
                     ms.sync_generation = ms.sync_generation.wrapping_add(1);
                     should_schedule = ms.mode == MarkdownViewMode::Split;
                 }
-                this.schedule_inline_completion(ed.clone(), cx);
+                this.schedule_text_content_auto_switch(ed.clone(), window, cx);
                 if should_schedule {
                     this.xlsx_schedule_source_to_visual_sync(cx);
                 }
@@ -792,7 +795,7 @@ impl SlideEditor {
             (MarkdownViewMode::Source, Some(ms)) => {
                 self.render_shared_markdown_source_pane("xlsx-markdown", ms, self.is_read_only(), cx)
             }
-            (MarkdownViewMode::Split, Some(ms)) => {
+            (MarkdownViewMode::Split, Some(ms)) if !self.compact_viewport => {
                 let source_pane = self.render_shared_markdown_source_pane(
                     "xlsx-markdown",
                     ms,

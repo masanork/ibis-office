@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc.
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/226)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! C4 diagrams (`C4Context`, `C4Container`, `C4Component`, `C4Dynamic`, `C4Deployment`):
 //! people, systems, containers and components laid out in rows inside nested boundaries,

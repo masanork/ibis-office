@@ -238,6 +238,7 @@ impl SlideEditor {
                 return;
             }
         };
+        let save_as = save_as || self.web.xmlss_import;
         cx.spawn_in(window, async move |this, cx| {
             let result = crate::web::save_local(&name, &mime, &bytes, save_as).await;
             this.update_in(cx, |this, window, cx| {
@@ -266,7 +267,7 @@ impl SlideEditor {
             self.status = Some(crate::i18n::text("_shell.saving-new-documents-is-not-yet-supported").into());
             return cx.notify();
         }
-        #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux")))]
+        #[cfg(all(feature = "scenarios", any(target_os = "macos", target_os = "linux", windows)))]
         if crate::scenario::button_probe::save_as_caught() {
             return;
         }
@@ -403,7 +404,7 @@ impl SlideEditor {
     /// The formats the save dialog offers for the kind of the open file (the pop-up of the dialog; a name typed with another
     /// extension is kept). Each is one `save_to` writes by its extension.
     #[cfg(not(target_family = "wasm"))]
-    fn save_formats(&self) -> Vec<SaveFormat> {
+    pub(crate) fn save_formats(&self) -> Vec<SaveFormat> {
         use crate::i18n::text;
         let format = |label: &str, extensions: &[&str]| SaveFormat { label: text(label), extensions: extensions.iter().map(|e| e.to_string()).collect() };
         if self.visio_draft {
@@ -418,7 +419,12 @@ impl SlideEditor {
                 vec![format("file.save-format.docx", &["docx", "docm", "dotx", "dotm"])]
             };
         }
-        self.format_info().save_formats.iter().map(|(label, extension)| SaveFormat { label: text(label), extensions: vec![extension.to_string()] }).collect()
+        let mut formats: Vec<SaveFormat> = self.format_info().save_formats.iter().map(|(label, extension)| SaveFormat { label: text(label), extensions: vec![extension.to_string()] }).collect();
+        if self.has_law_source() {
+            formats.push(SaveFormat { label: text("file.save-format.lawtext"), extensions: vec!["lawtext".to_string()] });
+            formats.push(SaveFormat { label: text("file.save-format.lawxml"), extensions: vec!["xml".to_string()] });
+        }
+        formats
     }
 
     /// Save to `path`, and make it the file's path.

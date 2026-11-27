@@ -24,6 +24,15 @@ test('mime types and openable extensions cover Office and Markdown', () => {
   assert.ok(FILE_HANDLER_GROUPS.some((g) => g.description === 'Markdown'));
 });
 
+test('DocuWorks files are selectable in both Web file pickers', () => {
+  const docuWorks = FILE_HANDLER_GROUPS.find((group) => group.description === 'DocuWorks');
+  for (const extension of ['xdw', 'xbd']) {
+    assert.ok(OPEN_EXTENSIONS.includes(extension));
+    assert.ok(acceptAttribute().split(',').includes(`.${extension}`));
+    assert.ok(Object.values(docuWorks.accept).flat().includes(`.${extension}`));
+  }
+});
+
 test('File System Access is detected only when both pickers exist', () => {
   assert.equal(hasFileSystemAccess({}), false);
   assert.equal(hasFileSystemAccess({ showOpenFilePicker: () => {}, showSaveFilePicker: () => {} }), true);
