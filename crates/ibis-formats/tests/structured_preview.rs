@@ -421,3 +421,36 @@ fn reads_ontology_jsonld_rdf_owl_and_turtle() {
     assert!(!nt_prev.fields.is_empty());
 }
 
+#[test]
+fn reads_sql_ddl_and_queries_and_supports_columnar_extensions() {
+    use structured_preview::PreviewBlock;
+
+    for ext in ["parquet", "arrow", "ipc", "feather", "sql"] {
+        assert!(structured_preview::supports_extension(ext));
+    }
+
+    let sql = br#"
+        -- Sample analytics schema
+        CREATE TABLE events (
+            id BIGINT PRIMARY KEY,
+            user_id VARCHAR(64) NOT NULL,
+            score DOUBLE DEFAULT 0.0
+        );
+
+        INSERT INTO events (id, user_id, score) VALUES (1, 'u1', 0.95);
+        SELECT user_id, AVG(score) FROM events GROUP BY user_id;
+    "#;
+    let prev = structured_preview::read("sql", sql).unwrap();
+    assert_eq!(prev.format, "SQL");
+    assert_eq!(prev.summary.detected_schema.as_deref(), Some("SQL"));
+    assert!(prev.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Table: events") && rows.len() == 3
+    )));
+    assert!(prev.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Statements") && rows.len() == 3
+    )));
+}
+
+

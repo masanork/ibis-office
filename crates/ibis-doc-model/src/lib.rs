@@ -18,6 +18,7 @@ pub mod transition_plan;
 pub mod slide_comment;
 pub mod chart;
 pub mod chart_refresh;
+pub mod columnar_preview;
 pub mod command;
 pub mod compare;
 pub mod connector;
