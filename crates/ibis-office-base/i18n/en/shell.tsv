@@ -1296,6 +1296,19 @@ shell.font-setup.progress	Downloading {name} ({index}/{count}, {received} / {tot
 shell.font-setup.failed	{name} could not be installed ({count} failed). {error}
 shell.font-setup.cancelled	Cancelled.
 shell.font-setup.done	Installed. The fonts are in the font lists now.
+shell.ocr-setup.title	OCR Model Setup
+shell.ocr-setup.heading	NDLOCR-Lite v2 Models (Optional download, approx. {size})
+shell.ocr-setup.license	License: {license} (Models are downloaded on demand from NDL, not bundled.)
+shell.ocr-setup.installed	Installed
+shell.ocr-setup.not-installed	Not installed
+shell.ocr-setup.install	Install
+shell.ocr-setup.remove	Remove Models
+shell.ocr-setup.cancel	Cancel
+shell.ocr-setup.progress	Downloading {name} ({index}/{count}, {received} / {total})
+shell.ocr-setup.failed	Download failed: {error}
+shell.ocr-setup.cancelled	Cancelled.
+shell.ocr-setup.done	OCR models installed.
+shell.ocr-setup.removed	OCR models removed.
 file.csv-encoding.title	Choose the CSV encoding
 file.csv-encoding.detail	The encoding cannot be determined uniquely. Choose the encoding used to open and overwrite this file. Shift_JIS is treated as Windows CP932.
 file.csv-encoding.changed	The file changed while you were choosing. Open it again.

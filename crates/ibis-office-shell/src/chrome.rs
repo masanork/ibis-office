@@ -2174,6 +2174,13 @@ impl SlideEditor {
                 Some(panel.modal_named("cmyk_profile_dialog"))
             } else if let Some(panel) = self.font_setup_dialog(cx) {
                 Some(panel.modal_named("font_setup_dialog"))
+            } else if let Some(panel) = {
+                #[cfg(not(target_family = "wasm"))]
+                { self.ocr_setup_dialog(cx) }
+                #[cfg(target_family = "wasm")]
+                { None }
+            } {
+                Some(panel.modal_named("ocr_setup_dialog"))
             } else if let Some(panel) = self.replace_fonts_panel(cx) {
                 Some(panel.modal_named("replace_fonts_panel"))
             } else if let Some(panel) = self.host_file_dialog_panel(window, cx) {

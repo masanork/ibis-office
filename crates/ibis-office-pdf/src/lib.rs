@@ -326,6 +326,31 @@ impl PdfViewerState {
         Ok(scene)
     }
 
+    /// Run NDLOCR-Lite on `page_index` when it has no extractable text (or `force` is `true`)
+    /// and update the cached [`PageScene`] text index so selection, search, and copy work.
+    #[cfg(feature = "ocr")]
+    pub fn apply_ocr_to_page(
+        &mut self,
+        page_index: usize,
+        engine: &mut ibis_ocr::engine::NdlOcrEngine,
+        force: bool,
+    ) -> Result<bool> {
+        let scene = self.page_scene(page_index)?;
+        if !force && !scene.text_index.chars.is_empty() {
+            return Ok(false);
+        }
+        let text_index = crate::ocr::ocr_page_scene(engine, &scene, force)
+            .map_err(|e| ibis_pdf::Error::new(e.to_string()))?;
+        if text_index.chars.is_empty() {
+            return Ok(false);
+        }
+        let mut updated = (*scene).clone();
+        updated.text_index = text_index;
+        self.scene_cache.insert(page_index, Arc::new(updated));
+        self.text_found = Some(true);
+        Ok(true)
+    }
+
     fn scene_or_error(
         &self,
         scene: Result<PageScene>,

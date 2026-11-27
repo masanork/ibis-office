@@ -154,6 +154,8 @@ pub mod font_setup;
 pub mod ocr_setup;
 pub mod resource_list;
 pub mod font_setup_dialog;
+#[cfg(not(target_family = "wasm"))]
+pub mod ocr_setup_dialog;
 pub mod fonts_late;
 pub mod replace_fonts;
 pub mod rename_file;

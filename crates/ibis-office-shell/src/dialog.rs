@@ -327,6 +327,8 @@ impl SlideEditor {
             "host_file_dialog" => { self.host_fd_discard(); return; }
             "zoom_dialog" => { self.zoom_dialog_open = false; return; }
             "font_setup_dialog" => { self.font_setup_discard(); return; }
+            #[cfg(not(target_family = "wasm"))]
+            "ocr_setup_dialog" => { self.ocr_setup_discard(); return; }
             "toolbar_customize_dialog" => { if let Some(s) = self.settings.as_mut() { s.customize = None; } return; }
             "settings_dialog" => { self.settings = None; self.toolbar_search_open = None; return; }
             _ => {}
