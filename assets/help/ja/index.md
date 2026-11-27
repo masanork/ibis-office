@@ -29,5 +29,8 @@ profile: sorane-okf/0.1
 - [[help/okf-and-vault|OKF と Vault 活用]] — YAML フロントマター、`#tag`、`[[wikilink]]`、Backlinks、Local Graph、検索
 - [[help/office-and-lawtext|Office 文書・Lawtext・構造化データ]] — DOCX / XLSX / PPTX / 一太郎 (JTD) / Lawtext / JSONL / SBOM の扱い
 
+### 4. 実データサンプル・ウォークスルー
+- [[help/samples/index|サンプル・レンダリング・ウォークスルー]] — 番号利用法（e-Gov XML / Lawtext）・Marp・Workbook・SBOM・JSONL・CSV 等の実例を並べて確認
+
 > [!TIP] Split 編集で記法をそのまま試す
 > エディタ上部の **[Source | Split | Visual]** 切替から **Split** を選ぶと、左側に Markdown ソース、右側にリアルタイムのプレビュー／リッチ編集画面を並べて表示できます。

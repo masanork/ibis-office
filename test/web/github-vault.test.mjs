@@ -846,12 +846,14 @@ test('POST /api/github/sync-help commits localized help files under rootPath', a
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.equal(body.locale, 'en');
-    assert.equal(body.count, 9);
+    assert.equal(body.count, 20);
     assert.equal(body.commitSha, 'commit_2');
     assert.ok(capturedTree);
     assert.equal(capturedTree.base_tree, 'tree_1');
-    assert.equal(capturedTree.tree.length, 9);
+    assert.equal(capturedTree.tree.length, 20);
     assert.ok(capturedTree.tree.some((item) => item.path === 'docs/help/index.md' && item.content.includes('Help Index')));
+    assert.ok(capturedTree.tree.some((item) => item.path === 'docs/help/samples/index.md'));
+    assert.ok(capturedTree.tree.some((item) => item.path === 'docs/help/samples/mynumber-act-ch1.xml'));
     assert.ok(capturedTree.tree.some((item) => item.path === 'docs/help/shortcuts.md'));
   } finally {
     globalThis.fetch = origFetch;

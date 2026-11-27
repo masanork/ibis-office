@@ -70,6 +70,49 @@ pub struct HelpFile {
     pub content: &'static str,
 }
 
+const COMMON_HELP_SAMPLES: &[HelpFile] = &[
+    HelpFile {
+        path: "help/samples/mynumber-act-ch1.xml",
+        content: include_str!("../../../assets/help/samples/mynumber-act-ch1.xml"),
+    },
+    HelpFile {
+        path: "help/samples/mynumber-act-ch1.lawtext",
+        content: include_str!("../../../assets/help/samples/mynumber-act-ch1.lawtext"),
+    },
+    HelpFile {
+        path: "help/samples/knowledge-note.md",
+        content: include_str!("../../../assets/help/samples/knowledge-note.md"),
+    },
+    HelpFile {
+        path: "help/samples/marp-deck.md",
+        content: include_str!("../../../assets/help/samples/marp-deck.md"),
+    },
+    HelpFile {
+        path: "help/samples/workbook-sheet.md",
+        content: include_str!("../../../assets/help/samples/workbook-sheet.md"),
+    },
+    HelpFile {
+        path: "help/samples/mermaid-diagrams.md",
+        content: include_str!("../../../assets/help/samples/mermaid-diagrams.md"),
+    },
+    HelpFile {
+        path: "help/samples/payment-demo.cdx.json",
+        content: include_str!("../../../assets/help/samples/payment-demo.cdx.json"),
+    },
+    HelpFile {
+        path: "help/samples/ai-eval-results.jsonl",
+        content: include_str!("../../../assets/help/samples/ai-eval-results.jsonl"),
+    },
+    HelpFile {
+        path: "help/samples/stations.xml",
+        content: include_str!("../../../assets/help/samples/stations.xml"),
+    },
+    HelpFile {
+        path: "help/samples/field-match-candidates.csv",
+        content: include_str!("../../../assets/help/samples/field-match-candidates.csv"),
+    },
+];
+
 const JA_HELP_FILES: &[HelpFile] = &[
     HelpFile {
         path: "help/index.md",
@@ -106,6 +149,10 @@ const JA_HELP_FILES: &[HelpFile] = &[
     HelpFile {
         path: "help/office-and-lawtext.md",
         content: include_str!("../../../assets/help/ja/office-and-lawtext.md"),
+    },
+    HelpFile {
+        path: "help/samples/index.md",
+        content: include_str!("../../../assets/help/ja/samples/index.md"),
     },
 ];
 
@@ -146,18 +193,31 @@ const EN_HELP_FILES: &[HelpFile] = &[
         path: "help/office-and-lawtext.md",
         content: include_str!("../../../assets/help/en/office-and-lawtext.md"),
     },
+    HelpFile {
+        path: "help/samples/index.md",
+        content: include_str!("../../../assets/help/en/samples/index.md"),
+    },
 ];
 
-pub fn help_files(locale: HelpLocale) -> &'static [HelpFile] {
-    match locale {
+pub fn help_files(locale: HelpLocale) -> Vec<HelpFile> {
+    let localized = match locale {
         HelpLocale::Ja => JA_HELP_FILES,
         HelpLocale::En => EN_HELP_FILES,
-    }
+    };
+    let mut out = Vec::with_capacity(localized.len() + COMMON_HELP_SAMPLES.len());
+    out.extend_from_slice(localized);
+    out.extend_from_slice(COMMON_HELP_SAMPLES);
+    out
 }
 
 pub fn help_file(locale: HelpLocale, path: &str) -> Option<&'static str> {
-    help_files(locale)
+    let localized = match locale {
+        HelpLocale::Ja => JA_HELP_FILES,
+        HelpLocale::En => EN_HELP_FILES,
+    };
+    localized
         .iter()
+        .chain(COMMON_HELP_SAMPLES.iter())
         .find(|f| f.path == path)
         .map(|f| f.content)
 }
@@ -865,7 +925,7 @@ mod tests {
     fn builtin_help_files_exist_for_ja_and_en() {
         for locale in [HelpLocale::Ja, HelpLocale::En] {
             let files = help_files(locale);
-            assert_eq!(files.len(), 9);
+            assert_eq!(files.len(), 20);
             assert!(help_file(locale, "help/index.md").is_some());
             assert!(help_file(locale, "help/shortcuts.md").is_some());
             assert!(help_file(locale, "help/markdown-basics.md").is_some());
@@ -875,8 +935,15 @@ mod tests {
             assert!(help_file(locale, "help/okf-and-vault.md").is_some());
             assert!(help_file(locale, "help/office-and-lawtext.md").is_some());
             assert!(help_file(locale, "help/getting-started.md").is_some());
+            assert!(help_file(locale, "help/samples/index.md").is_some());
+            assert!(help_file(locale, "help/samples/mynumber-act-ch1.xml").is_some());
+            assert!(help_file(locale, "help/samples/mynumber-act-ch1.lawtext").is_some());
+            assert!(help_file(locale, "help/samples/payment-demo.cdx.json").is_some());
+            assert!(help_file(locale, "help/samples/ai-eval-results.jsonl").is_some());
+            assert!(help_file(locale, "help/samples/stations.xml").is_some());
+            assert!(help_file(locale, "help/samples/field-match-candidates.csv").is_some());
             let initial = build_initial_vault_files("soraneDocs", locale);
-            assert_eq!(initial.len(), 10);
+            assert_eq!(initial.len(), 21);
             assert_eq!(initial[0].0, "index.md");
         }
     }

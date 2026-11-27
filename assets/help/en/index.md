@@ -29,5 +29,8 @@ You can always open the latest help from the **Help** menu, and you can also kee
 - [[help/okf-and-vault|OKF & Vault Workflow]] — YAML frontmatter, `#tag`, `[[wikilink]]`, Backlinks, Local Graph, and search
 - [[help/office-and-lawtext|Office Documents, Lawtext & Structured Data]] — Working with DOCX / XLSX / PPTX / Ichitaro (JTD) / Lawtext / JSONL / SBOM
 
+### 4. Real-Data Samples & Walkthrough
+- [[help/samples/index|Samples & Rendering Walkthrough]] — Hands-on tour of Japan's My Number Act (e-Gov XML / Lawtext), Marp, Workbook, CBOM, JSONL, StationXML, and CSV
+
 > [!TIP] Try syntax live in Split view
 > Switch the editor header to **[Source | Split | Visual]** → **Split** to edit Markdown source on the left while seeing live rendered output on the right.

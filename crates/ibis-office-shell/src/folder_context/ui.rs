@@ -399,16 +399,36 @@ impl SlideEditor {
         );
     }
 
-    /// Follow a Markdown link against the folder that owns the open source file.
+    /// Follow a Markdown link against the folder that owns the open source file,
+    /// or fall back to built-in help pages for `help/...` links.
     pub fn follow_folder_link(
         &mut self,
         url: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(pane) = &self.folder_pane else { return false };
-        let Some(file) = self.file_path() else { return false };
-        let Some(target) = pane.folder.link_from_file(&file, url) else { return false };
+        let builtin_target = resolve_builtin_help_link(url);
+        let Some(pane) = &self.folder_pane else {
+            if let Some(target) = builtin_target {
+                self.open_builtin_help(&target, window, cx);
+                return true;
+            }
+            return false;
+        };
+        let Some(file) = self.file_path() else {
+            if let Some(target) = builtin_target {
+                self.open_builtin_help(&target, window, cx);
+                return true;
+            }
+            return false;
+        };
+        let Some(target) = pane.folder.link_from_file(&file, url) else {
+            if let Some(target) = builtin_target {
+                self.open_builtin_help(&target, window, cx);
+                return true;
+            }
+            return false;
+        };
         match target {
             Ok(reference) => self.open_folder_reference(&reference, window, cx),
             Err(error) => {
@@ -1012,4 +1032,26 @@ fn folder_row(
         .on_click(
             cx.listener(move |editor, _, window, cx| editor.open_folder_file(&path, window, cx)),
         )
+}
+
+fn resolve_builtin_help_link(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    let inner = trimmed
+        .strip_prefix("[[")
+        .and_then(|s| s.strip_suffix("]]"))
+        .unwrap_or(trimmed);
+    let target = inner.split('|').next().unwrap_or(inner).trim();
+    let without_fragment = target.split('#').next().unwrap_or(target).trim();
+    let normalized = without_fragment.trim_start_matches("./");
+    if !normalized.starts_with("help/") {
+        return None;
+    }
+    if sorane_github::help_file(sorane_github::HelpLocale::Ja, normalized).is_some() {
+        return Some(normalized.to_string());
+    }
+    let with_md = format!("{normalized}.md");
+    if sorane_github::help_file(sorane_github::HelpLocale::Ja, &with_md).is_some() {
+        return Some(with_md);
+    }
+    None
 }

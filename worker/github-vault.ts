@@ -30,7 +30,7 @@ const SESSION_COOKIE = 'sorane_gh_session';
 const STATE_COOKIE = 'sorane_gh_state';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
 const GITHUB_API = 'https://api.github.com';
-const SUPPORTED_EXT_RE = /\.(?:md|markdown|docx|xlsx|pptx|csv|tsv|jtd|vsdx|xdw|json)$/i;
+const SUPPORTED_EXT_RE = /\.(?:md|markdown|docx|xlsx|pptx|csv|tsv|jtd|vsdx|xdw|json|jsonl|lawtext|xml)$/i;
 const SAFE_SEGMENT_RE = /^[A-Za-z0-9._-]{1,100}$/;
 const SAFE_BRANCH_RE = /^[A-Za-z0-9._/-]{1,120}$/;
 

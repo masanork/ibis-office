@@ -21,16 +21,37 @@ const filesOrder = [
   'mermaid-diagrams.md',
   'okf-and-vault.md',
   'office-and-lawtext.md',
+  'samples/index.md',
 ];
+
+const commonSampleFiles = [
+  'mynumber-act-ch1.xml',
+  'mynumber-act-ch1.lawtext',
+  'knowledge-note.md',
+  'marp-deck.md',
+  'workbook-sheet.md',
+  'mermaid-diagrams.md',
+  'payment-demo.cdx.json',
+  'ai-eval-results.jsonl',
+  'stations.xml',
+  'field-match-candidates.csv',
+];
+
+const commonSamplesDir = path.join(assetsHelpDir, 'samples');
+const commonEntries = commonSampleFiles.map((name) => ({
+  path: `help/samples/${name}`,
+  content: fs.readFileSync(path.join(commonSamplesDir, name), 'utf8'),
+}));
 
 const data = {};
 for (const locale of locales) {
   const dir = path.join(assetsHelpDir, locale);
-  data[locale] = filesOrder.map((name) => {
+  const localized = filesOrder.map((name) => {
     const fullPath = path.join(dir, name);
     const content = fs.readFileSync(fullPath, 'utf8');
     return { path: `help/${name}`, content };
   });
+  data[locale] = [...localized, ...commonEntries];
 }
 
 const ts = `// SPDX-License-Identifier: AGPL-3.0-only

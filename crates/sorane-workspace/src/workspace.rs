@@ -2608,7 +2608,7 @@ impl SoraneWorkspace {
             };
             let locale = current_help_locale();
             let files = sorane_github::help_files(locale);
-            for help in files {
+            for help in &files {
                 let target = root.join(help.path);
                 if let Some(parent) = target.parent()
                     && let Err(err) = std::fs::create_dir_all(parent)
