@@ -2682,7 +2682,11 @@ impl SlideEditor {
         self.source = Some(std::sync::Arc::new(opened.source));
         #[cfg(target_family = "wasm")]
         {
-            self.web.law_source = if is_law { Some(text) } else { None };
+            self.web.law_source = if is_law {
+                Some(std::sync::Arc::new(text.into_bytes()))
+            } else {
+                None
+            };
         }
         crate::format::with_format!(self, new_file_shown(self, cx));
         if !self.should_auto_open_markdown_split() {
