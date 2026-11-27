@@ -341,3 +341,83 @@ fn reads_jupyter_notebook_toml_json_schema_and_openapi() {
     let oa = structured_preview::read("yaml", openapi).unwrap();
     assert_eq!(oa.summary.detected_schema.as_deref(), Some("OpenAPI (Items API)"));
 }
+
+#[test]
+fn reads_ontology_jsonld_rdf_owl_and_turtle() {
+    use structured_preview::PreviewBlock;
+
+    let jsonld = br#"{
+        "@context": {
+            "schema": "https://schema.org/",
+            "rdfs": "http://www.w3.org/2000/01/rdf-schema#"
+        },
+        "@graph": [
+            {"@id": "ex:Person", "@type": "rdfs:Class", "rdfs:label": "Person"},
+            {"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}
+        ]
+    }"#;
+    let ld = structured_preview::read("jsonld", jsonld).unwrap();
+    assert_eq!(ld.format, "JSON-LD");
+    assert_eq!(ld.summary.detected_schema.as_deref(), Some("JSON-LD"));
+    assert!(ld.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Graph Entities") && rows.len() == 2
+    )));
+
+    let owl = br#"<?xml version="1.0"?>
+    <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+             xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+             xmlns:owl="http://www.w3.org/2002/07/owl#">
+      <owl:Ontology rdf:about="http://example.org/onto">
+        <rdfs:label>Example Ontology</rdfs:label>
+      </owl:Ontology>
+      <owl:Class rdf:about="http://example.org/onto#Animal">
+        <rdfs:label>Animal</rdfs:label>
+      </owl:Class>
+      <owl:Class rdf:about="http://example.org/onto#Dog">
+        <rdfs:subClassOf rdf:resource="http://example.org/onto#Animal"/>
+        <rdfs:label>Dog</rdfs:label>
+      </owl:Class>
+      <owl:ObjectProperty rdf:about="http://example.org/onto#owns">
+        <rdfs:domain rdf:resource="http://example.org/onto#Animal"/>
+        <rdfs:label>owns</rdfs:label>
+      </owl:ObjectProperty>
+    </rdf:RDF>"#;
+    let owl_prev = structured_preview::read("owl", owl).unwrap();
+    assert_eq!(owl_prev.format, "OWL");
+    assert_eq!(owl_prev.summary.detected_schema.as_deref(), Some("OWL / RDF-XML"));
+    assert!(owl_prev.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Classes & Hierarchy") && rows.len() == 2
+    )));
+
+    let ttl = br#"
+        @prefix ex: <http://example.org/> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+        ex:Agent a owl:Class ;
+            rdfs:label "Agent" .
+
+        ex:Alice a ex:Agent ;
+            rdfs:label "Alice"@en ;
+            ex:age 30 .
+    "#;
+    let ttl_prev = structured_preview::read("ttl", ttl).unwrap();
+    assert_eq!(ttl_prev.format, "Turtle");
+    assert_eq!(ttl_prev.summary.detected_schema.as_deref(), Some("Turtle"));
+    assert!(ttl_prev.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Table { title: Some(t), rows, .. } if t.starts_with("Classes & Hierarchy") && rows.len() == 1
+    )));
+    assert!(ttl_prev.blocks.iter().any(|b| matches!(
+        b,
+        PreviewBlock::Section { title, .. } if title == "ex:Alice"
+    )));
+
+    let nt = br#"<http://example.org/s> <http://example.org/p> "hello" ."#;
+    let nt_prev = structured_preview::read("nt", nt).unwrap();
+    assert_eq!(nt_prev.format, "N-Triples");
+    assert!(!nt_prev.fields.is_empty());
+}
+
