@@ -201,6 +201,37 @@ impl SlideEditor {
         self.show_new(opened, name, window, cx);
     }
 
+    /// Open a built-in localized help Markdown page (`help/index.md`, `help/shortcuts.md`, etc.).
+    pub fn open_builtin_help(&mut self, help_path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_edit(window, cx);
+        let locale = match crate::i18n::language() {
+            crate::i18n::Language::Japanese => sorane_github::HelpLocale::Ja,
+            crate::i18n::Language::English => sorane_github::HelpLocale::En,
+        };
+        let Some(content) = sorane_github::help_file(locale, help_path) else {
+            self.status = Some(format!("Built-in help page not found: {help_path}").into());
+            return cx.notify();
+        };
+        let opened = match ibis_formats::markdown::open_markdown(content.as_bytes().to_vec()) {
+            Ok(opened) => opened,
+            Err(err) => {
+                self.status = Some(crate::i18n::format("file.new-failed", &[("error", &err)]).into());
+                return cx.notify();
+            }
+        };
+        let file_name = std::path::Path::new(help_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("help.md");
+        let name: SharedString = file_name.to_string().into();
+        #[cfg(not(target_family = "wasm"))]
+        if self.has_document {
+            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            return;
+        }
+        self.show_new(opened, name, window, cx);
+    }
+
     /// A new, empty file of `kind` in this window, in place of the document (with a host; the unsaved changes were asked about). The
     /// document is not the host's: the host is told.
     pub(crate) fn new_file_in_window(&mut self, kind: ibis_formats::Kind, window: &mut Window, cx: &mut Context<Self>) {

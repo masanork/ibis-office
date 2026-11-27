@@ -175,7 +175,7 @@ if (!params.has('host')) {
     createBox.style.cssText = 'background:#f5f8ff;border:1px solid #d5e2fa;border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:8px';
     createBox.innerHTML = `
       <div style="font-size:13px;font-weight:700;color:#17233d">新しい Private リポジトリを作成（おすすめ）</div>
-      <div style="font-size:12px;color:#475569">メモや文書を安全に保存するため、非公開（Private）リポジトリを OKF 形式の <code>index.md</code> 付きで作成します。</div>
+      <div style="font-size:12px;color:#475569">メモや文書を安全に保存するため、非公開（Private）リポジトリを OKF 形式の <code>index.md</code> と <code>help/</code> ガイド付きで作成します。</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <input name="name" value="soraneDocs" required placeholder="リポジトリ名" style="flex:1;min-width:180px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;font:inherit" />
         <button type="submit" style="padding:8px 14px;border:0;border-radius:8px;background:#1e50b5;color:#fff;font-weight:700;cursor:pointer;white-space:nowrap">Private 作成して接続</button>
@@ -238,6 +238,39 @@ if (!params.has('host')) {
         overlay.remove();
       };
       leftActions.append(toggleBtn);
+
+      const syncHelpBtn = document.createElement('button');
+      syncHelpBtn.type = 'button';
+      syncHelpBtn.textContent = '最新ヘルプを転記・更新';
+      syncHelpBtn.style.cssText = 'border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit;font-weight:600';
+      syncHelpBtn.onclick = async () => {
+        const confirmed = window.confirm(
+          `接続中のリポジトリ (${session.vault.owner}/${session.vault.repo}) の help/ フォルダへ最新ヘルプを転記・更新します。\nhelp/ 内の既存ファイルは上書きされますが、他のフォルダやメモは変更されません。続行しますか？`,
+        );
+        if (!confirmed) return;
+        syncHelpBtn.disabled = true;
+        showStatus('最新ヘルプをリポジトリに転記しています…');
+        try {
+          const res = await fetch('/api/github/sync-help', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lang: navigator.language || 'ja' }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            showStatus(data.error || `ヘルプの転記に失敗しました (HTTP ${res.status})`, true);
+            return;
+          }
+          await refreshRepoTree();
+          showStatus(`最新ヘルプ（${data.count || 0} ファイル / ${data.locale || 'ja'}）を help/ に転記・更新しました。`);
+        } catch {
+          showStatus('ヘルプの転記中にネットワークエラーが発生しました。', true);
+        } finally {
+          syncHelpBtn.disabled = false;
+        }
+      };
+      leftActions.append(syncHelpBtn);
     }
 
     const logoutBtn = document.createElement('button');
@@ -298,7 +331,7 @@ if (!params.has('host')) {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: repoName }),
+        body: JSON.stringify({ name: repoName, lang: navigator.language || 'ja' }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {

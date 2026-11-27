@@ -386,6 +386,36 @@ test('POST /api/github/repos/create succeeds with structured OKF help index.md a
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (url.endsWith('/git/ref/heads/main')) {
+      return new Response(JSON.stringify({ object: { sha: 'commit_1' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/git/commits/commit_1')) {
+      return new Response(JSON.stringify({ tree: { sha: 'tree_1' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/git/trees')) {
+      return new Response(JSON.stringify({ sha: 'tree_2' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/git/commits')) {
+      return new Response(JSON.stringify({ sha: 'commit_2' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/git/refs/heads/main') && init?.method === 'PATCH') {
+      return new Response(JSON.stringify({ object: { sha: 'commit_2' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     throw new Error(`Unexpected fetch: ${url}`);
   };
   try {
@@ -400,9 +430,11 @@ test('POST /api/github/repos/create succeeds with structured OKF help index.md a
     assert.equal(res.status, 201);
     const body = await res.json();
     assert.equal(body.ok, true);
+    assert.equal(body.helpSynced, true);
     assert.deepEqual(body.vault, { owner: 'masanork', repo: 'soraneDocs', branch: 'main', rootPath: '' });
     assert.match(res.headers.get('Set-Cookie') || '', /sorane_gh_session=/);
     assert.match(capturedIndexMarkdown, /profile: sorane-okf\/0\.1/);
+    assert.match(capturedIndexMarkdown, /\[\[help\/index\|/);
     assert.match(capturedIndexMarkdown, /## 1\. 基本的な使い方/);
     assert.match(capturedIndexMarkdown, /## 2\. 対応しているファイル形式/);
     assert.match(capturedIndexMarkdown, /## 3\. おすすめのフォルダ構成/);
@@ -669,6 +701,92 @@ test('POST /api/github/vault auto-detects build.content_dir from sorane.yaml whe
     assert.equal(body.ok, true);
     assert.equal(body.vault.rootPath, 'docs/pages');
     assert.equal(body.detectedSoraneContentDir, 'docs/pages');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('POST /api/github/sync-help commits localized help files under rootPath', async () => {
+  const unauthVault = await sealSession(
+    { accessToken: 'ghu_tok', login: 'masanork', vault: null, iat: Date.now() },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  const noVaultRes = await dispatchGitHubVault(
+    new Request('https://docs.sorane.dev/api/github/sync-help', {
+      method: 'POST',
+      headers: { Cookie: `sorane_gh_session=${unauthVault}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lang: 'en' }),
+    }),
+    TEST_ENV,
+  );
+  assert.equal(noVaultRes.status, 400);
+
+  const sealed = await sealSession(
+    {
+      accessToken: 'ghu_tok',
+      login: 'masanork',
+      vault: { owner: 'masanork', repo: 'notes', branch: 'main', rootPath: 'docs' },
+      iat: Date.now(),
+    },
+    TEST_ENV.GITHUB_SESSION_SECRET,
+  );
+  let capturedTree = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/repos/masanork/notes/git/ref/heads/main')) {
+      return new Response(JSON.stringify({ object: { sha: 'commit_1' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/repos/masanork/notes/git/commits/commit_1')) {
+      return new Response(JSON.stringify({ tree: { sha: 'tree_1' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/repos/masanork/notes/git/trees')) {
+      capturedTree = JSON.parse(String(init?.body || '{}'));
+      return new Response(JSON.stringify({ sha: 'tree_2' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/repos/masanork/notes/git/commits')) {
+      return new Response(JSON.stringify({ sha: 'commit_2' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.endsWith('/repos/masanork/notes/git/refs/heads/main') && init?.method === 'PATCH') {
+      return new Response(JSON.stringify({ object: { sha: 'commit_2' } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  try {
+    const res = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/github/sync-help', {
+        method: 'POST',
+        headers: { Cookie: `sorane_gh_session=${sealed}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lang: 'en-US' }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.locale, 'en');
+    assert.equal(body.count, 9);
+    assert.equal(body.commitSha, 'commit_2');
+    assert.ok(capturedTree);
+    assert.equal(capturedTree.base_tree, 'tree_1');
+    assert.equal(capturedTree.tree.length, 9);
+    assert.ok(capturedTree.tree.some((item) => item.path === 'docs/help/index.md' && item.content.includes('Help Index')));
+    assert.ok(capturedTree.tree.some((item) => item.path === 'docs/help/shortcuts.md'));
   } finally {
     globalThis.fetch = origFetch;
   }
