@@ -41,17 +41,20 @@
 
 ## 3. データ・プロトコル仕様（PoC v1）
 
-### 3.1 Form Manifest（静的 JSON）
-テナント（自治体・避難所・組織）と帳票の種類が増えても、この JSON を追加・URL 指定するだけで汎用 PWA がフォームを描画する。
+### 3.1 Form Manifest（静的 JSON / 自己完結 URL）
+テナント（自治体・避難所・組織）と帳票の種類が増えても、この JSON を追加・URL 指定（`?manifest=<url>`、非圧縮 `?m=<base64url>`、または `deflate-raw` 圧縮 `?mz=<base64url>`）するだけで汎用 PWA がフォームを描画する。
+
+- 標準サンプルは **個人単位（1人＝1行）** モデルとし、`claim_path`（将来の Wallet / Vault Form Assist 自動入力向けマッピング）、`input_helper`（代理入力者）、`group_id`（同行者引き継ぎ）を予約する。
 
 ```json
 {
   "schema": "sorane.spot.form.v1",
   "tenant_id": "demo-city",
   "form_id": "evac-checkin",
-  "version": "1.0.0",
-  "title": "避難所受付票（PoC）",
+  "version": "1.1.0",
+  "title": "避難所受付票（個人単位・PoC）",
   "relay_url": "/api/relay/v1/submit",
+  "inbox_url": "/api/relay/v1/inbox",
   "recipient_key": {
     "kty": "EC",
     "crv": "P-256",
@@ -60,9 +63,13 @@
     "y": "..."
   },
   "fields": [
-    { "id": "name", "label": "氏名", "type": "text", "required": true },
-    { "id": "party_size", "label": "世帯人数", "type": "number", "required": true },
-    { "id": "needs", "label": "要配慮事項・必要な支援", "type": "textarea" }
+    { "id": "name", "label": "氏名", "type": "text", "required": true, "claim_path": "person.full_name" },
+    { "id": "birth_date", "label": "生年月日", "type": "text", "claim_path": "person.birth_date" },
+    { "id": "address", "label": "住所・居住地", "type": "text", "claim_path": "person.address" },
+    { "id": "shelter", "label": "避難場所・拠点", "type": "text" },
+    { "id": "needs", "label": "要配慮事項・必要な支援", "type": "textarea" },
+    { "id": "input_helper", "label": "入力補助者・連絡窓口（代理入力時）", "type": "text" },
+    { "id": "group_id", "label": "同行者グループID（任意）", "type": "text" }
   ]
 }
 ```
@@ -74,19 +81,20 @@
   - `unprotected`: `{ -1 (epk): <送信側エフェメラル P-256 COSE_Key>, 5 (iv): <12-byte GCM IV> }`
   - `ciphertext`: AES-256-GCM 暗号文（16-byte tag 含む）
   - **External AAD**: `CBOR([ "sorane.spot.v1", tenant_id, form_id, version ])` を AAD にバインドし、別テナント・別帳票への差し替えを検知する。
-  - **平文ペイロード**: `deflate-raw` 圧縮（または未圧縮フラグ付き）の JSON（回答本体 + `submitted_at`）。
+  - **平文ペイロード**: `deflate-raw` 圧縮（または未圧縮フラグ付き）の JSON（`answers` + `verification: { method, trust_status }` + `submitted_at`）。
 - **文字列表現**: `spot1:<base64url(COSE_Encrypt0_Tagged_CBOR)>`
-  - テキスト 1 件あたり通常 **300〜900 文字程度** に収まり、**標準の静止 QR コード 1 枚** で確実に読み取れる。
+  - テキスト 1 件あたり通常 **300〜900 文字程度** に収まり、**QR Version 1〜40（ECC L・最大 2,953 bytes）** の静止 QR コード 1 枚で表示・読み取り可能。
 - **冪等 ID**: `envelope_id = hex(SHA-256(cose_bytes))`
   - どの経路（直接 POST / QR / ローカル AP）から何回届いても同一 `envelope_id` になり、サーバーおよび受付端末で自動的に重複排除される。
 
-### 3.3 Cloudflare 汎用マルチテナントリレー API
-Worker 側は `tenant_id` と `envelope_id` のみを扱い、**帳票スキーマや復号鍵を一切保持しない**。
+### 3.3 Cloudflare 汎用マルチテナントリレー API（Durable Objects SQLite）
+Worker 側はテナント別 Durable Object（`SpotTenantRelay` / SQLite ストレージ）に `tenant_id` と `envelope_id` のみを保管し、**帳票スキーマや復号鍵を一切保持しない**。
 
 | エンドポイント | 用途 | リクエスト / レスポンス |
 | :--- | :--- | :--- |
+| `POST /api/relay/v1/tenants` | テナント閲覧保護登録 | `{ tenant_id, read_token_hash }` → `201`（重複は `409`） |
 | `POST /api/relay/v1/submit` | 単発・バッチ提出 | `{ tenant_id, items: [{ envelope_id, form_id, envelope }] }` → `200 { accepted, duplicates }` |
-| `GET /api/relay/v1/inbox` | 受付側の回収 | `?tenant_id=...&since=...`（Bearer トークン認証）→ `{ tenant_id, items: [...] }` |
+| `GET /api/relay/v1/inbox` | 受付側の回収 | `?tenant_id=...&since=...`（登録済みテナントは `Bearer <read_token>` 必須）→ `{ tenant_id, items: [...] }` |
 
 ---
 
