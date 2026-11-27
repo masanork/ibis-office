@@ -1363,8 +1363,10 @@ fn export_workbook_markdown_with_positions(
         let marker = if metadata.is_empty() {
             serde_json::json!(sheet_ref.name)
         } else {
-            metadata.insert("name".to_owned(), serde_json::json!(sheet_ref.name));
-            serde_json::Value::Object(metadata)
+            let mut ordered = serde_json::Map::new();
+            ordered.insert("name".to_owned(), serde_json::json!(sheet_ref.name));
+            ordered.extend(metadata);
+            serde_json::Value::Object(ordered)
         };
         push_workbook_metadata(&mut out, &marker);
         out.push_str("## ");
@@ -1438,8 +1440,8 @@ fn export_workbook_markdown_with_positions(
                         }));
                     } else if let Some(range) = sheet.fixed_arrays.get(&(r, c)) {
                         push_xlsx_json_marker(&mut out, XLSX_FORMULA_CELL_MARKER, &serde_json::json!({
-                            "formula": formula,
                             "fixedArray": ibis_doc_model::cell_name(range.last_column, range.last_row),
+                            "formula": formula,
                         }));
                     } else {
                         push_xlsx_string_marker(&mut out, XLSX_FORMULA_CELL_MARKER, &formula);

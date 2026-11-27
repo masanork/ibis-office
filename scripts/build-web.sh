@@ -82,7 +82,6 @@ if [[ "$PROFILE" == release ]]; then
 else
   python3 scripts/split-web-wasm.py www/pkg/ibis_office_app_bg.wasm --chunks-only
 fi
-stat -f %z www/pkg/ibis_office_app_bg.wasm > www/pkg/ibis_office_app_bg.wasm.size 2>/dev/null || stat -c %s www/pkg/ibis_office_app_bg.wasm > www/pkg/ibis_office_app_bg.wasm.size
 
 # main.ts imports the typings wasm-bindgen just wrote.
 if [[ ! -x node_modules/.bin/tsc ]]; then

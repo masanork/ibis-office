@@ -112,6 +112,12 @@ def verify_wasm(archive):
                 raise ValueError(f"WASM chunk does not match the manifest: {name}")
             digest.update(data)
             size += len(data)
+            if "br" in chunk:
+                br = chunk["br"]
+                br_name = f"wasm-br.{br['sha256']}.bin"
+                br_data = zipped.read(prefix + br_name)
+                if len(br_data) != br["size"] or hashlib.sha256(br_data).hexdigest() != br["sha256"]:
+                    raise ValueError(f"compressed WASM chunk does not match the manifest: {br_name}")
         if not size or size != manifest["size"] or digest.hexdigest() != manifest["sha256"]:
             raise ValueError("assembled WASM does not match the manifest")
         if "single" in manifest:

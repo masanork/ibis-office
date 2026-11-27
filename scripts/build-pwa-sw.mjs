@@ -75,6 +75,11 @@ if (wasmManifest.single?.sha256) {
   // The compressed singleton is enough; the four uncompressed chunks are ~70 MiB more.
   urls.add(`./pkg/wasm-br.${wasmManifest.single.sha256}.bin`);
   urls.add(`./pkg/br/${wasmManifest.single.sha256}.wasm`);
+} else if (wasmManifest.chunks?.length && wasmManifest.chunks.every((c) => c.br?.sha256)) {
+  for (const chunk of wasmManifest.chunks) {
+    urls.add(`./pkg/wasm-br.${chunk.br.sha256}.bin`);
+    urls.add(`./pkg/br/${chunk.br.sha256}.wasm`);
+  }
 } else {
   for (const chunk of wasmManifest.chunks ?? []) {
     urls.add('./pkg/' + chunk.file);
