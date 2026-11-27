@@ -70,12 +70,213 @@ fn send(writer: &mut impl Write, value: Value) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Setting keys for external agents (ACP).
+pub(crate) const SETTING_EXTERNAL_AGENTS: &str = "ai.external_agents";
+pub(crate) const SETTING_SELECTED_AGENT: &str = "ai.selected_agent";
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ExternalAgentConfig {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+impl ExternalAgentConfig {
+    pub(crate) fn command_line_display(&self) -> String {
+        if self.args.is_empty() {
+            self.command.clone()
+        } else {
+            format!("{} {}", self.command, self.args.join(" "))
+        }
+    }
+}
+
+pub(crate) fn external_agent_presets() -> Vec<ExternalAgentConfig> {
+    let mut opencode_env = std::collections::BTreeMap::new();
+    opencode_env.insert(
+        "OPENCODE_PERMISSION".to_string(),
+        r#"{"*":"deny","workbook_*":"allow"}"#.to_string(),
+    );
+    vec![
+        ExternalAgentConfig {
+            id: "opencode".into(),
+            name: "OpenCode".into(),
+            command: "opencode".into(),
+            args: vec!["acp".into()],
+            env: opencode_env,
+        },
+        ExternalAgentConfig {
+            id: "claude-code".into(),
+            name: "Claude Code".into(),
+            command: "claude-agent-acp".into(),
+            args: Vec::new(),
+            env: Default::default(),
+        },
+        ExternalAgentConfig {
+            id: "gemini".into(),
+            name: "Gemini CLI".into(),
+            command: "gemini".into(),
+            args: vec!["--experimental-acp".into()],
+            env: Default::default(),
+        },
+        ExternalAgentConfig {
+            id: "codex".into(),
+            name: "Codex".into(),
+            command: "codex-acp".into(),
+            args: Vec::new(),
+            env: Default::default(),
+        },
+    ]
+}
+
+pub(crate) fn load_external_agents() -> Vec<ExternalAgentConfig> {
+    let Some(raw) = crate::settings::get(SETTING_EXTERNAL_AGENTS) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<ExternalAgentConfig>>(&raw)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|agent| !agent.id.trim().is_empty() && !agent.command.trim().is_empty())
+        .collect()
+}
+
+pub(crate) fn save_external_agents(agents: &[ExternalAgentConfig]) {
+    if agents.is_empty() {
+        crate::settings::remove(SETTING_EXTERNAL_AGENTS);
+    } else if let Ok(json) = serde_json::to_string(agents) {
+        crate::settings::set(SETTING_EXTERNAL_AGENTS, &json);
+    }
+}
+
+pub(crate) fn load_selected_agent() -> Option<String> {
+    crate::settings::get(SETTING_SELECTED_AGENT)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "builtin")
+}
+
+pub(crate) fn save_selected_agent(agent_id: Option<&str>) {
+    match agent_id.map(str::trim).filter(|s| !s.is_empty() && *s != "builtin") {
+        Some(id) => crate::settings::set(SETTING_SELECTED_AGENT, id),
+        None => crate::settings::remove(SETTING_SELECTED_AGENT),
+    }
+}
+
+pub(crate) fn env_acp_agent() -> Option<ExternalAgentConfig> {
+    let executable = std::env::var_os("IBIS_ACP_COMMAND")?;
+    let command = executable.to_string_lossy().into_owned();
+    if command.trim().is_empty() {
+        return None;
+    }
+    let args = std::env::var("IBIS_ACP_ARGS")
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default();
+    Some(ExternalAgentConfig {
+        id: "env-acp".into(),
+        name: format!("環境変数 ({command})"),
+        command,
+        args,
+        env: Default::default(),
+    })
+}
+
+pub(crate) fn available_external_agents() -> Vec<ExternalAgentConfig> {
+    let mut agents = load_external_agents();
+    if let Some(env_agent) = env_acp_agent()
+        && !agents.iter().any(|a| a.id == env_agent.id)
+    {
+        agents.insert(0, env_agent);
+    }
+    agents
+}
+
+pub(crate) fn find_external_agent(agent_id: Option<&str>) -> Option<ExternalAgentConfig> {
+    let agents = available_external_agents();
+    if let Some(id) = agent_id {
+        if let Some(found) = agents.into_iter().find(|a| a.id == id) {
+            return Some(found);
+        }
+    }
+    env_acp_agent()
+}
+
+pub(crate) fn parse_args_line(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(q) => {
+                if ch == q {
+                    quote = None;
+                } else if ch == '\\' && q == '"' {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                } else {
+                    current.push(ch);
+                }
+            }
+            None => {
+                if ch == '"' || ch == '\'' {
+                    quote = Some(ch);
+                } else if ch.is_whitespace() {
+                    if !current.is_empty() {
+                        args.push(std::mem::take(&mut current));
+                    }
+                } else if ch == '\\' {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    }
+                } else {
+                    current.push(ch);
+                }
+            }
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
+pub(crate) fn command_exists(command: &str) -> bool {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let path = Path::new(trimmed);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path_var).any(|dir| {
+        let candidate = dir.join(trimmed);
+        candidate.is_file()
+    })
+}
+
 /// A handle to the agent's saved session, scoped to the file and configured adapter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ResumeRecord(PathBuf);
 
 impl ResumeRecord {
     pub(crate) fn for_document(path: &Path, read_only: bool) -> Option<Self> {
+        Self::for_document_with_agent(path, read_only, None)
+    }
+
+    pub(crate) fn for_document_with_agent(
+        path: &Path,
+        read_only: bool,
+        agent: Option<&ExternalAgentConfig>,
+    ) -> Option<Self> {
         use sha2::{Digest, Sha256};
         let path = path.canonicalize().ok()?;
         let metadata = path.metadata().ok()?;
@@ -100,11 +301,18 @@ impl ResumeRecord {
             add(&value.to_le_bytes());
         }
         add(&[read_only as u8]);
-        for name in ["IBIS_ACP_COMMAND", "IBIS_ACP_ARGS", "IBIS_OPENCODE"] {
-            add(std::env::var_os(name)
-                .as_deref()
-                .unwrap_or_default()
-                .as_bytes());
+        if let Some(agent) = agent {
+            add(agent.command.as_bytes());
+            for arg in &agent.args {
+                add(arg.as_bytes());
+            }
+        } else {
+            for name in ["IBIS_ACP_COMMAND", "IBIS_ACP_ARGS", "IBIS_OPENCODE"] {
+                add(std::env::var_os(name)
+                    .as_deref()
+                    .unwrap_or_default()
+                    .as_bytes());
+            }
         }
         let root = ibis_office_base::app_data::base()?
             .join("ibisOffice")
@@ -181,10 +389,14 @@ type Work = Box<dyn FnOnce(&mut Option<Session>) + Send>;
 pub(crate) struct Conversation {
     send: mpsc::Sender<Work>,
     resume: Option<ResumeRecord>,
+    agent: Option<ExternalAgentConfig>,
 }
 
 impl Conversation {
-    pub(crate) fn start(resume: Option<ResumeRecord>) -> Result<Self, String> {
+    pub(crate) fn start(
+        resume: Option<ResumeRecord>,
+        agent: Option<ExternalAgentConfig>,
+    ) -> Result<Self, String> {
         let (send, receive) = mpsc::channel::<Work>();
         // Draft operations can exceed the GPUI worker stack.
         std::thread::Builder::new()
@@ -213,7 +425,11 @@ impl Conversation {
                 }
             })
             .map_err(|error| format!("Could not start the ACP worker: {error}"))?;
-        Ok(Self { send, resume })
+        Ok(Self {
+            send,
+            resume,
+            agent,
+        })
     }
 
     pub(crate) fn restrict_resume(&mut self, current: Option<&ResumeRecord>) {
@@ -240,11 +456,12 @@ impl Conversation {
     ) -> Result<futures::channel::oneshot::Receiver<Result<T, String>>, String> {
         let (finished, outcome) = futures::channel::oneshot::channel();
         let resume = self.resume.clone();
+        let agent = self.agent.clone();
         self.send
             .send(Box::new(move |session| {
                 let result = (|| {
                     if session.is_none() {
-                        *session = Some(Session::start(tools.clone(), resume)?);
+                        *session = Some(Session::start(tools.clone(), resume, agent.as_ref())?);
                     }
                     let active = session.as_mut().expect("ACP session exists");
                     active.tools = tools;
@@ -290,7 +507,11 @@ fn request(id: u64, method: &str, params: Value) -> Value {
 }
 
 impl Session {
-    fn start(tools: Value, record: Option<ResumeRecord>) -> Result<Self, String> {
+    fn start(
+        tools: Value,
+        record: Option<ResumeRecord>,
+        agent: Option<&ExternalAgentConfig>,
+    ) -> Result<Self, String> {
         let mut random = [0_u8; 12];
         getrandom::fill(&mut random).map_err(|e| e.to_string())?;
         let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -309,7 +530,12 @@ impl Session {
             .unwrap_or_else(|| (dir.0.clone(), None));
         let listener = UnixListener::bind(&socket).map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let mut command = if let Some(executable) = std::env::var_os("IBIS_ACP_COMMAND") {
+        let mut command = if let Some(agent) = agent {
+            let mut command = Command::new(&agent.command);
+            command.args(&agent.args);
+            command.envs(&agent.env);
+            command
+        } else if let Some(executable) = std::env::var_os("IBIS_ACP_COMMAND") {
             let args = std::env::var("IBIS_ACP_ARGS").unwrap_or_else(|_| "[]".into());
             let args: Vec<String> = serde_json::from_str(&args)
                 .map_err(|error| format!("Invalid IBIS_ACP_ARGS: {error}"))?;
@@ -326,13 +552,16 @@ impl Session {
             );
             command
         };
+        let agent_label = agent
+            .map(|a| a.command.as_str())
+            .unwrap_or("ACP agent");
         let mut child = command
             .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("Could not start ACP agent: {e}"))?;
+            .map_err(|e| format!("Could not start {agent_label}: {e}"))?;
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
         let (tx, rx) = mpsc::sync_channel(32);
@@ -752,5 +981,45 @@ mod tests {
                     .all(|tool| tool["annotations"]["readOnlyHint"] == true)
             );
         }
+    }
+
+    #[test]
+    fn parse_args_line_handles_spaces_and_quotes() {
+        assert_eq!(super::parse_args_line("acp"), vec!["acp"]);
+        assert_eq!(
+            super::parse_args_line(r#"--flag "hello world" 'single quoted'"#),
+            vec!["--flag", "hello world", "single quoted"]
+        );
+        assert!(super::parse_args_line("   ").is_empty());
+    }
+
+    #[test]
+    fn resume_records_differ_across_external_agents() {
+        use super::{ExternalAgentConfig, ResumeRecord};
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = super::Directory(std::env::temp_dir().join(format!("ibis-acp-agent-test-{nonce}")));
+        std::fs::create_dir(&dir.0).unwrap();
+        let file = dir.0.join("document.xlsx");
+        std::fs::write(&file, b"content").unwrap();
+        let agent_a = ExternalAgentConfig {
+            id: "a".into(),
+            name: "Agent A".into(),
+            command: "opencode".into(),
+            args: vec!["acp".into()],
+            env: Default::default(),
+        };
+        let agent_b = ExternalAgentConfig {
+            id: "b".into(),
+            name: "Agent B".into(),
+            command: "claude-agent-acp".into(),
+            args: vec![],
+            env: Default::default(),
+        };
+        let rec_a = ResumeRecord::for_document_with_agent(&file, false, Some(&agent_a)).unwrap();
+        let rec_b = ResumeRecord::for_document_with_agent(&file, false, Some(&agent_b)).unwrap();
+        assert_ne!(rec_a, rec_b);
     }
 }
