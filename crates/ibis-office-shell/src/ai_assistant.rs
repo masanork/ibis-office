@@ -2495,9 +2495,9 @@ impl SlideEditor {
                     if new_documents.len() >= 4 {
                         return Err("The ACP turn has reached its four-document limit.".into());
                     }
-                    let (title, opened) = Self::prepare_assistant_markdown(&call.function.arguments)?;
-                    let result = json!({"prepared":true,"title":title});
-                    new_documents.push((title, opened));
+                    let (title, opened, target) = Self::prepare_assistant_markdown(&call.function.arguments)?;
+                    let result = json!({"prepared":true,"title":title,"target":target});
+                    new_documents.push((title, opened, target));
                     edits += 1;
                     return Ok(result);
                 }
@@ -2614,8 +2614,8 @@ impl SlideEditor {
                 if let Some((active, selection)) = navigation {
                     editor.apply_assistant_navigation(active, selection, cx);
                 }
-                for (title, opened) in prepared_documents {
-                    Self::open_prepared_assistant_markdown(title, opened, cx);
+                for (title, opened, target) in prepared_documents {
+                    Self::open_prepared_assistant_markdown(title, opened, target, cx);
                 }
                 editor.emit_assistant_event(event);
                 cx.notify();
@@ -2804,7 +2804,7 @@ impl SlideEditor {
                         "You are an AI document assistant inside ibisOffice. \
                          Use the provided tools to inspect paragraphs and edit or format document text. Edits are proposed for user review. For Markdown source or a selected Mermaid image, use read_editable_source then replace_source_text. \
                          For Japanese legislative research, use search_egov_law with the user's reference date and public legal terms. Present direct amendments, potential ripple amendments, and references separately with reasons. Cite the returned source URLs and revision IDs. If the search gives only a coarse position, fetch the exact revision using fetch_egov_law with set_as_baseline=false before identifying an article. Do not infer unverified article numbers or imply coverage of all affected laws. Keep research read-only unless the user asks for a draft or edit. \
-                         For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, verify_lawtext_aratame, and lint_lawtext to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame and checking reference/conjunction issues with lint_lawtext, use the documents fields as the five initial drafts, leave unsupplied policy and commencement details open for review, and use open_markdown_document when the user wants to open any generated document in a new ibisOffice window. \
+                         For Japanese legislative drafting (法制執務 / Lawtext / 5点セット) tasks, use export_active_lawtext, generate_lawtext_5set, verify_lawtext_aratame, and lint_lawtext to produce 新旧対照表, 改め文, 参照条文, and draft 要綱/理由, always verifying any polished 改め文 with verify_lawtext_aratame and checking reference/conjunction issues with lint_lawtext, use the documents fields as the five initial drafts, leave unsupplied policy and commencement details open for review, and use open_markdown_document when the user wants to open any generated document in ibisOffice (opening in a new tab by default, or target='window' only when the user explicitly requests a new window). \
                          Respond concisely in the user's language."
                     }
                 };
@@ -4074,9 +4074,9 @@ impl SlideEditor {
         }
         if kind == AiDocKind::Docx && name == "open_markdown_document" {
             return match Self::prepare_assistant_markdown(args) {
-                Ok((title, opened)) => {
-                    Self::open_prepared_assistant_markdown(title.clone(), opened, cx);
-                    (json!({"opened":true,"title":title}).to_string(), Vec::new(), format!("✓ open_markdown_document ({title})"))
+                Ok((title, opened, target)) => {
+                    Self::open_prepared_assistant_markdown(title.clone(), opened, target, cx);
+                    (json!({"opened":true,"title":title,"target":target}).to_string(), Vec::new(), format!("✓ open_markdown_document ({title})"))
                 }
                 Err(error) => (json!({"error":error}).to_string(), Vec::new(), format!("✗ open_markdown_document: {error}")),
             };
@@ -5501,21 +5501,30 @@ impl SlideEditor {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn prepare_assistant_markdown(args: &str) -> Result<(String, ibis_formats::Opened), String> {
+    fn prepare_assistant_markdown(args: &str) -> Result<(String, ibis_formats::Opened, crate::ai_tools::OpenDocumentTarget), String> {
         let args: OpenMarkdownDocumentArgs = serde_json::from_str(args)
             .map_err(|error| format!("invalid arguments: {error}"))?;
         let opened = ibis_formats::markdown::open_markdown(args.markdown.into_bytes())
             .map_err(|error| error.to_string())?;
-        Ok((args.title, opened))
+        Ok((args.title, opened, args.target))
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn open_prepared_assistant_markdown(title: String, opened: ibis_formats::Opened, cx: &mut Context<Self>) {
-        // Opening a window updates the window group, including the source editor.
+    fn open_prepared_assistant_markdown(
+        title: String,
+        opened: ibis_formats::Opened,
+        target: crate::ai_tools::OpenDocumentTarget,
+        cx: &mut Context<Self>,
+    ) {
+        // Opening a tab or window updates the window group, including the source editor.
         cx.defer(move |cx| {
-            crate::app::open_window_with(cx, move |editor, window, cx| {
+            let setup = move |editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>| {
                 editor.show_new(opened, title.into(), window, cx);
-            });
+            };
+            match target {
+                crate::ai_tools::OpenDocumentTarget::Tab => crate::app::open_tab_or_window_with(cx, setup),
+                crate::ai_tools::OpenDocumentTarget::Window => crate::app::open_window_with(cx, setup),
+            }
         });
     }
 

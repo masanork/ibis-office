@@ -217,6 +217,16 @@ pub fn open_window_with(cx: &mut App, setup: impl FnOnce(&mut SlideEditor, &mut 
     open_window_sized(1280., true, cx, setup);
 }
 
+/// Open a new tab in an existing workspace window if available, otherwise fall back
+/// to opening a new editor window.
+pub fn open_tab_or_window_with(cx: &mut App, setup: impl FnOnce(&mut SlideEditor, &mut Window, &mut Context<SlideEditor>) + 'static) {
+    let setup = match crate::window_editors::try_open_tab_via_factory(Box::new(setup), cx) {
+        Ok(()) => return,
+        Err(setup) => setup,
+    };
+    open_window_sized(1280., true, cx, setup);
+}
+
 /// The key of the size and place of the last window that showed a file in the app's settings: `x,y,width,height` in logical pixels.
 pub(crate) const WINDOW_BOUNDS_KEY: &str = "app.window-bounds";
 /// The smallest a remembered window is made.

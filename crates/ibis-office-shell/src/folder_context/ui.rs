@@ -272,7 +272,7 @@ impl SlideEditor {
                     editor.set_folder_pane(Arc::new(folder), window, cx);
                 }
                 Ok(OpenedFolder::Repository(workspace)) => {
-                    crate::app::open_window_with(cx, move |editor, _, cx| {
+                    crate::app::open_tab_or_window_with(cx, move |editor, _, cx| {
                         editor.git_workspace = Some(*workspace);
                         cx.notify();
                     })
@@ -296,7 +296,7 @@ impl SlideEditor {
                 .spawn(async move { GitWorkspace::for_selected_folder(&root) })
                 .await;
             let _ = this.update(cx, |editor, cx| match workspace {
-                Some(workspace) => crate::app::open_window_with(cx, move |editor, _, cx| {
+                Some(workspace) => crate::app::open_tab_or_window_with(cx, move |editor, _, cx| {
                     editor.git_workspace = Some(workspace);
                     cx.notify();
                 }),
@@ -581,7 +581,7 @@ impl SlideEditor {
             open(self, window, cx);
         } else {
             let target_rel = reference.path.clone();
-            crate::app::open_window_with(cx, move |editor, window, cx| {
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                 editor.set_folder_pane(folder, window, cx);
                 if let Some(pane) = editor.folder_pane.as_mut() {
                     pane.record_visit(None, &target_rel);
@@ -616,7 +616,7 @@ impl SlideEditor {
                 })
                 .await;
             let _ = this.update(cx, |editor, cx| match result {
-                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                Ok(opened) => crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                     editor.load(opened.presentation, name.into(), window, cx);
                     editor.standard_read_only = true;
                     editor.document.set_read_only(true);

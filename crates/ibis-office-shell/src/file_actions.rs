@@ -57,14 +57,15 @@ impl SlideEditor {
             return;
         }
         let name: SharedString = next_new_file_name(kind);
-        // The Web version has one editor per page: the new file is another tab (K0016).
+        // The standalone Web version has one editor per page: the new file is another tab (K0016),
+        // unless a multi-tab workspace shell (SoraneWorkspace) is registered.
         #[cfg(target_family = "wasm")]
-        if self.has_document {
+        if self.has_document && !crate::window_editors::has_window_factory(cx) {
             crate::web::open_in_new_tab(crate::web::new_query(kind));
             return;
         }
         if self.has_document {
-            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
         } else {
             self.show_new(opened, name, window, cx);
         }
@@ -93,7 +94,7 @@ impl SlideEditor {
         };
         #[cfg(not(target_family = "wasm"))]
         if self.has_document {
-            crate::app::open_window_with(cx, show);
+            crate::app::open_tab_or_window_with(cx, show);
             return;
         }
         show(self, window, cx);
@@ -195,7 +196,7 @@ impl SlideEditor {
         let name: SharedString = crate::i18n::text("_shell.document-1-md");
         #[cfg(not(target_family = "wasm"))]
         if self.has_document {
-            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
             return;
         }
         self.show_new(opened, name, window, cx);
@@ -247,7 +248,7 @@ impl SlideEditor {
         let name: SharedString = file_name.to_string().into();
         #[cfg(not(target_family = "wasm"))]
         if self.has_document {
-            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
             return;
         }
         self.show_new(opened, name, window, cx);
@@ -275,7 +276,7 @@ impl SlideEditor {
         #[cfg(not(target_family = "wasm"))]
         {
             let _ = window;
-            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
         }
         #[cfg(target_family = "wasm")]
         self.show_new(opened, name, window, cx);
@@ -323,7 +324,7 @@ impl SlideEditor {
                     .join().map_err(|_| "CBOM comparison worker failed".to_string())?
             }).await;
             this.update_in(cx, |this, _, cx| match result {
-                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                Ok(opened) => crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                     editor.show_new(opened, next_new_file_name(ibis_formats::Kind::Workbook), window, cx)
                 }),
                 Err(error) => this.set_status(crate::i18n::format("xlsx.cbom-compare-failed", &[("error", &error)]), cx),
@@ -341,7 +342,7 @@ impl SlideEditor {
                 ibis_formats::sbom_review::open_action_queue(&review)
             }).await;
             this.update_in(cx, |this, _, cx| match result {
-                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                Ok(opened) => crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                     editor.show_new(opened, next_new_file_name(ibis_formats::Kind::Workbook), window, cx)
                 }),
                 Err(error) => this.set_status(crate::i18n::format("xlsx.sbom-actions-failed", &[("error", &error)]), cx),
@@ -381,7 +382,7 @@ impl SlideEditor {
                 ibis_formats::open(bytes).map_err(|err| err.to_string())
             }).await;
             this.update_in(cx, |this, _, cx| match result {
-                Ok(opened) => crate::app::open_window_with(cx, move |editor, window, cx| {
+                Ok(opened) => crate::app::open_tab_or_window_with(cx, move |editor, window, cx| {
                     editor.show_new(opened, next_new_file_name(ibis_formats::Kind::Workbook), window, cx)
                 }),
                 Err(error) => this.set_status(crate::i18n::format("xlsx.sbom-refresh-failed", &[("error", &error)]), cx),
@@ -420,7 +421,7 @@ impl SlideEditor {
     #[cfg(not(target_family = "wasm"))]
     pub fn open_template(&mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if self.has_document {
-            crate::app::open_window_with(cx, move |editor, window, cx| editor.new_from_template_path(path, window, cx));
+            crate::app::open_tab_or_window_with(cx, move |editor, window, cx| editor.new_from_template_path(path, window, cx));
         } else {
             self.new_from_template_path(path, window, cx);
         }

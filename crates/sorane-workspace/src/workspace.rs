@@ -1543,6 +1543,45 @@ impl SoraneWorkspace {
         cx.notify();
     }
 
+    pub fn open_setup_in_active_pane(
+        &mut self,
+        setup: WindowSetup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pane_id = self.active_pane;
+        let tab_id = self.alloc_tab_id();
+        let seq = self.next_seq();
+        let vault = self.vault.clone();
+        let editor = cx.new(|cx| {
+            let mut e = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
+            setup(&mut e, window, cx);
+            e.attach_vault_folder(vault, window, cx);
+            e.embedded_chrome = Some(Self::policy_for_editor(&e, None, None));
+            e
+        });
+        let (path, title, resolved_kind) = Self::editor_metadata(&editor, cx);
+        let tab = TabEntry {
+            id: tab_id,
+            path,
+            title,
+            kind: resolved_kind,
+            pinned: false,
+            last_used_seq: seq,
+            toolbar_override: None,
+            right_sidebar_override: None,
+            state: TabState::Resident(editor),
+        };
+        if let Some(pane) = self.pane_mut(pane_id) {
+            pane.tabs.push(tab);
+            pane.active_tab = pane.tabs.len() - 1;
+        }
+        self.active_pane = pane_id;
+        self.enforce_tab_budget(cx);
+        self.focus_active_editor(window, cx);
+        cx.notify();
+    }
+
     #[cfg(target_family = "wasm")]
     pub fn set_web_vault_tree(
         &mut self,

@@ -240,6 +240,10 @@ pub trait WorkspaceWindowFactory: 'static {
     /// Try to open `path` inside an existing workspace window (e.g. as a new tab).
     /// Returns `true` if handled.
     fn open_path_in_existing(&self, path: &Path, cx: &mut App) -> bool;
+
+    /// Open a new tab inside an existing workspace window, initialized via `setup`.
+    /// Returns `Ok(())` if handled, or `Err(setup)` if no existing workspace window is available.
+    fn open_tab_in_existing(&self, setup: WindowSetup, cx: &mut App) -> Result<(), WindowSetup>;
 }
 
 struct RegisteredWindowFactory {
@@ -253,6 +257,11 @@ pub fn register_window_factory<F: WorkspaceWindowFactory>(factory: F, cx: &mut A
     cx.set_global(RegisteredWindowFactory {
         factory: std::rc::Rc::new(factory),
     });
+}
+
+/// Whether an outer [`WorkspaceWindowFactory`] is currently registered.
+pub(crate) fn has_window_factory(cx: &App) -> bool {
+    cx.try_global::<RegisteredWindowFactory>().is_some()
 }
 
 /// Dispatch window creation to the registered [`WorkspaceWindowFactory`], if any.
@@ -282,6 +291,21 @@ pub(crate) fn try_open_path_via_factory(path: &Path, cx: &mut App) -> bool {
         return false;
     };
     factory.open_path_in_existing(path, cx)
+}
+
+/// Dispatch opening a new tab inside an existing workspace window via the registered factory.
+/// Returns `Ok(())` if handled, or `Err(setup)` if no factory is installed or no window exists.
+pub(crate) fn try_open_tab_via_factory(
+    setup: WindowSetup,
+    cx: &mut App,
+) -> Result<(), WindowSetup> {
+    let Some(factory) = cx
+        .try_global::<RegisteredWindowFactory>()
+        .map(|g| g.factory.clone())
+    else {
+        return Err(setup);
+    };
+    factory.open_tab_in_existing(setup, cx)
 }
 
 #[cfg(test)]

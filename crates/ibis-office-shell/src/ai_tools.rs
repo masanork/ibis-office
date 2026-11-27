@@ -736,12 +736,18 @@ pub fn docx_tool_definitions() -> Vec<ToolDefinition> {
             kind: "function",
             function: ToolFunctionDef {
                 name: "open_markdown_document",
-                description: "Open a generated Markdown document (such as 新旧対照表, 改め文, 参照条文, 法律案要綱, or 理由) in a new ibisOffice DOCX window.",
+                description: "Open a generated Markdown document (such as 新旧対照表, 改め文, 参照条文, 法律案要綱, or 理由) in ibisOffice as a DOCX document. Opens in a new tab by default; only use target='window' when the user explicitly requests a new window.",
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "title": { "type": "string", "description": "Document window/file title (e.g. '新旧対照表.md')." },
-                        "markdown": { "type": "string", "description": "Full Markdown content to open as a DOCX document." }
+                        "title": { "type": "string", "description": "Document tab/window file title (e.g. '新旧対照表.md')." },
+                        "markdown": { "type": "string", "description": "Full Markdown content to open as a DOCX document." },
+                        "target": {
+                            "type": "string",
+                            "enum": ["tab", "window"],
+                            "default": "tab",
+                            "description": "Where to open the document: 'tab' (default, opens a new tab in the current workspace window) or 'window' (opens a new window only when explicitly requested by the user)."
+                        }
                     },
                     "required": ["title", "markdown"],
                     "additionalProperties": false
@@ -780,10 +786,20 @@ pub struct FetchEgovLawArgs {
     pub set_as_baseline: Option<bool>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenDocumentTarget {
+    #[default]
+    Tab,
+    Window,
+}
+
 #[derive(Deserialize)]
 pub struct OpenMarkdownDocumentArgs {
     pub title: String,
     pub markdown: String,
+    #[serde(default)]
+    pub target: OpenDocumentTarget,
 }
 
 #[derive(Deserialize)]
@@ -1255,6 +1271,13 @@ A --> C
             serde_json::from_str(r#"{"title":"新旧対照表.md","markdown":"| 改正後 | 現行 |"}"#)
                 .unwrap();
         assert_eq!(open_args.title, "新旧対照表.md");
+        assert_eq!(open_args.target, OpenDocumentTarget::Tab);
+
+        let open_window_args: OpenMarkdownDocumentArgs = serde_json::from_str(
+            r#"{"title":"新旧対照表.md","markdown":"| 改正後 | 現行 |","target":"window"}"#,
+        )
+        .unwrap();
+        assert_eq!(open_window_args.target, OpenDocumentTarget::Window);
 
         let old_lt = "テスト法（令和七年法律第一号）\n第一条 この法律は、処分に関する手続を定める。";
         let new_lt = "テスト法（令和七年法律第一号）\n第一条 この法律は、処分及び行政指導に関する手続を定める。";
