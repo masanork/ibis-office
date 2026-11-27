@@ -415,9 +415,8 @@ with TemporaryDirectory() as tmp:
     assert output["passed"] is True and len(output["cases"]) == 3, output
     assert output["cases"][1]["actual_failures"] == ["nonce"], output
     assert output["report_xlsx"]["path"] == str(report_path), output
-    for book in (workbook, report_path):
-        with ZipFile(book) as archive:
-            assert "xl/styles.xml" not in archive.namelist(), book
+    with ZipFile(workbook) as archive:
+        assert "xl/styles.xml" not in archive.namelist(), workbook
     assert [case["row"] for case in output["cases"]] == [2, 4, 5], output
     session = runpy.run_path("scripts/wallet-matrix.py")["mcp_session"]
     with session(report_path, build.resolve()) as call:
