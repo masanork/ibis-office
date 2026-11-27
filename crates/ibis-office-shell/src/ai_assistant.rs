@@ -197,6 +197,12 @@ pub struct AiAssistantState {
     connecting: bool,
     #[cfg(not(target_family = "wasm"))]
     connection_error: Option<String>,
+    #[cfg(not(target_family = "wasm"))]
+    copilot_device_flow: Option<sorane_github::DeviceCodeResponse>,
+    #[cfg(not(target_family = "wasm"))]
+    copilot_device_polling: bool,
+    #[cfg(not(target_family = "wasm"))]
+    copilot_device_generation: u64,
     pub show_tool_logs: bool,
     pub messages: Vec<UiMessage>,
     pub history: Vec<ChatMessage>,
@@ -1245,6 +1251,12 @@ impl SlideEditor {
                 #[cfg(not(target_family = "wasm"))]
                 connection_error: None,
                 #[cfg(not(target_family = "wasm"))]
+                copilot_device_flow: None,
+                #[cfg(not(target_family = "wasm"))]
+                copilot_device_polling: false,
+                #[cfg(not(target_family = "wasm"))]
+                copilot_device_generation: 0,
+                #[cfg(not(target_family = "wasm"))]
                 show_tool_logs: self.assistant_output.is_some(),
                 #[cfg(target_family = "wasm")]
                 show_tool_logs: false,
@@ -1970,6 +1982,172 @@ impl SlideEditor {
         cfg.save();
         crate::ai_client::save_copilot_token(&p.copilot_token_input.read(cx).value());
         self.connect_ai_assistant(cx);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn start_copilot_device_sign_in(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = self.ai_assistant.as_mut() else {
+            return;
+        };
+        panel.copilot_device_generation = panel.copilot_device_generation.wrapping_add(1);
+        let flow_gen = panel.copilot_device_generation;
+        panel.copilot_device_polling = true;
+        panel.copilot_device_flow = None;
+        panel.connection_error = None;
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let start_res = cx
+                .background_executor()
+                .spawn(async move { crate::ai_client::start_copilot_device_flow() })
+                .await;
+            let code = match start_res {
+                Ok(code) => code,
+                Err(err) => {
+                    let _ = this.update(cx, |editor, cx| {
+                        if let Some(panel) = editor.ai_assistant.as_mut()
+                            && panel.copilot_device_generation == flow_gen
+                        {
+                            panel.copilot_device_polling = false;
+                            panel.connection_error = Some(err);
+                            cx.notify();
+                        }
+                    });
+                    return;
+                }
+            };
+
+            let _ = this.update(cx, |editor, cx| {
+                if let Some(panel) = editor.ai_assistant.as_mut()
+                    && panel.copilot_device_generation == flow_gen
+                {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.user_code.clone()));
+                    cx.open_url(&code.verification_uri);
+                    panel.copilot_device_flow = Some(code.clone());
+                    cx.notify();
+                }
+            });
+
+            let mut interval_secs = code.interval.max(5);
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(code.expires_in.min(900));
+            let device_code = code.device_code.clone();
+
+            while std::time::Instant::now() < deadline {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(interval_secs))
+                    .await;
+
+                let still_active = this
+                    .read_with(cx, |editor, _| {
+                        editor.ai_assistant.as_ref().is_some_and(|p| {
+                            p.copilot_device_polling && p.copilot_device_generation == flow_gen
+                        })
+                    })
+                    .unwrap_or(false);
+                if !still_active {
+                    return;
+                }
+
+                let dc = device_code.clone();
+                let poll = cx
+                    .background_executor()
+                    .spawn(async move { crate::ai_client::poll_copilot_device_token(&dc) })
+                    .await;
+
+                match poll {
+                    Ok(sorane_github::DeviceTokenPoll::Pending) => continue,
+                    Ok(sorane_github::DeviceTokenPoll::SlowDown) => {
+                        interval_secs = (interval_secs + 5).min(30);
+                        continue;
+                    }
+                    Ok(sorane_github::DeviceTokenPoll::Authorized { access_token }) => {
+                        let save_res = crate::ai_client::save_sorane_copilot_session_token(&access_token);
+                        let _ = this.update(cx, |editor, cx| {
+                            if let Some(panel) = editor.ai_assistant.as_mut()
+                                && panel.copilot_device_generation == flow_gen
+                            {
+                                panel.copilot_device_polling = false;
+                                panel.copilot_device_flow = None;
+                                match save_res {
+                                    Ok(()) => {
+                                        panel.connection_choice = ConnectionChoice::GitHubCopilot;
+                                        panel.connection_error = None;
+                                        editor.connect_ai_assistant(cx);
+                                    }
+                                    Err(err) => {
+                                        panel.connection_error = Some(err);
+                                    }
+                                }
+                                cx.notify();
+                            }
+                        });
+                        return;
+                    }
+                    Ok(sorane_github::DeviceTokenPoll::Expired) => {
+                        let _ = this.update(cx, |editor, cx| {
+                            if let Some(panel) = editor.ai_assistant.as_mut()
+                                && panel.copilot_device_generation == flow_gen
+                            {
+                                panel.copilot_device_polling = false;
+                                panel.copilot_device_flow = None;
+                                panel.connection_error =
+                                    Some("認証コードの有効期限が切れました。もう一度お試しください。".into());
+                                cx.notify();
+                            }
+                        });
+                        return;
+                    }
+                    Ok(sorane_github::DeviceTokenPoll::AccessDenied) => {
+                        let _ = this.update(cx, |editor, cx| {
+                            if let Some(panel) = editor.ai_assistant.as_mut()
+                                && panel.copilot_device_generation == flow_gen
+                            {
+                                panel.copilot_device_polling = false;
+                                panel.copilot_device_flow = None;
+                                panel.connection_error = Some("認証がキャンセルされました。".into());
+                                cx.notify();
+                            }
+                        });
+                        return;
+                    }
+                    Ok(sorane_github::DeviceTokenPoll::Error(msg)) | Err(msg) => {
+                        let _ = this.update(cx, |editor, cx| {
+                            if let Some(panel) = editor.ai_assistant.as_mut()
+                                && panel.copilot_device_generation == flow_gen
+                            {
+                                panel.copilot_device_polling = false;
+                                panel.copilot_device_flow = None;
+                                panel.connection_error = Some(msg);
+                                cx.notify();
+                            }
+                        });
+                        return;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn cancel_copilot_device_sign_in(&mut self, cx: &mut Context<Self>) {
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.copilot_device_generation = panel.copilot_device_generation.wrapping_add(1);
+            panel.copilot_device_polling = false;
+            panel.copilot_device_flow = None;
+        }
+        cx.notify();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn sign_out_copilot_session(&mut self, cx: &mut Context<Self>) {
+        crate::ai_client::clear_sorane_copilot_session_token();
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.connection = None;
+            panel.connection_error = None;
+        }
+        cx.notify();
     }
 
     fn stop_ai_assistant(&mut self, cx: &mut Context<Self>) {
@@ -5579,30 +5757,119 @@ impl SlideEditor {
                         .map(|error| div().text_xs().child(error.clone())),
                 )
                 .when(choice == ConnectionChoice::GitHubCopilot, |settings| {
-                    settings
+                    let source_label = crate::ai_client::copilot_token_source_label();
+                    let device_flow = panel.copilot_device_flow.clone();
+                    let device_polling = panel.copilot_device_polling;
+                    let mut sec = settings
                         .child(
                             div()
                                 .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child("GitHub Copilot トークン（任意 / Fine-grained PAT）"),
+                                .child("GitHub Copilot 認証"),
                         )
-                        .child(
+                        .children(source_label.map(|label| {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("GitHub App トークンが拒否される場合は、Account permissions で Copilot Requests (Read-only) を付与した github_pat_... を入力してください。"),
-                        )
-                        .child(Input::new(&copilot_token_input).small())
-                        .child(
-                            Button::new("ai-assistant-save-copilot-token")
-                                .outline()
-                                .small()
-                                .disabled(disabled)
-                                .label("保存して接続")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.save_ai_assistant_settings(cx);
-                                })),
-                        )
+                                .child(format!("現在の認証: {label}"))
+                        }));
+                    if let Some(flow) = device_flow {
+                        let verify_url = flow.verification_uri.clone();
+                        sec = sec
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("認証コード（コピー済み）: {}", flow.user_code)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("ブラウザで GitHub にコードを入力して承認すると自動で接続します。"),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("ai-copilot-open-device-url")
+                                            .primary()
+                                            .xsmall()
+                                            .label("認証ページを開く")
+                                            .on_click(cx.listener(move |_, _, _, cx| {
+                                                cx.open_url(&verify_url);
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("ai-copilot-cancel-device")
+                                            .ghost()
+                                            .xsmall()
+                                            .label("キャンセル")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.cancel_copilot_device_sign_in(cx);
+                                            })),
+                                    ),
+                            );
+                    } else {
+                        sec = sec.child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("ai-copilot-device-signin")
+                                        .primary()
+                                        .small()
+                                        .disabled(disabled || device_polling)
+                                        .label(if device_polling {
+                                            "コード取得中…"
+                                        } else {
+                                            "GitHub Copilot にサインイン"
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.start_copilot_device_sign_in(cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("ai-copilot-signout")
+                                        .ghost()
+                                        .small()
+                                        .disabled(disabled)
+                                        .label("サインアウト")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.sign_out_copilot_session(cx);
+                                        })),
+                                ),
+                        );
+                    }
+                    sec.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("または、Account permissions で Copilot Requests (Read-only) を付与した Fine-grained PAT (github_pat_...) を入力:"),
+                    )
+                    .child(Input::new(&copilot_token_input).small())
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("ai-assistant-save-copilot-token")
+                                    .outline()
+                                    .small()
+                                    .disabled(disabled)
+                                    .label("PAT を保存して接続")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.save_ai_assistant_settings(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("ai-assistant-create-pat")
+                                    .ghost()
+                                    .small()
+                                    .label("GitHub で PAT を作成")
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.open_url(sorane_github::GITHUB_FINE_GRAINED_PAT_NEW_URL);
+                                    })),
+                            ),
+                    )
                 })
                 .when(
                     matches!(choice, ConnectionChoice::Auto | ConnectionChoice::OpenAi),
@@ -5678,14 +5945,27 @@ impl SlideEditor {
                     )
                     .child(Input::new(&copilot_token_input).small())
                     .child(
-                        Button::new("ai-browser-save-copilot")
-                            .primary()
-                            .small()
-                            .disabled(streaming)
-                            .label("保存してモデル一覧を取得")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.save_browser_ai_settings(cx);
-                            })),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("ai-browser-save-copilot")
+                                    .primary()
+                                    .small()
+                                    .disabled(streaming)
+                                    .label("保存してモデル一覧を取得")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.save_browser_ai_settings(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("ai-browser-create-pat")
+                                    .outline()
+                                    .small()
+                                    .label("GitHub で PAT を作成")
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.open_url(sorane_github::GITHUB_FINE_GRAINED_PAT_NEW_URL);
+                                    })),
+                            ),
                     );
             } else {
                 box_ui = box_ui

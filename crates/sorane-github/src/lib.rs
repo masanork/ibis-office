@@ -20,6 +20,9 @@ pub const GITHUB_COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_inter
 pub const GITHUB_COPILOT_API_BASE_URL: &str = "https://api.githubcopilot.com";
 pub const GITHUB_COPILOT_MODELS_URL: &str = "https://api.githubcopilot.com/models";
 pub const GITHUB_COPILOT_CHAT_URL: &str = "https://api.githubcopilot.com/chat/completions";
+pub const GITHUB_COPILOT_OAUTH_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
+pub const GITHUB_FINE_GRAINED_PAT_NEW_URL: &str =
+    "https://github.com/settings/personal-access-tokens/new";
 pub const COPILOT_EDITOR_VERSION: &str = "vscode/1.99.0";
 pub const COPILOT_EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.26.0";
 pub const COPILOT_INTEGRATION_ID: &str = "vscode-chat";
@@ -893,6 +896,28 @@ pub fn select_copilot_model<'a>(
         .or_else(|| models.first())
 }
 
+/// Extract an `oauth_token` from GitHub Copilot's local `apps.json` or `hosts.json`
+/// (created by VS Code, Zed, Neovim, Copilot CLI, etc.).
+pub fn parse_copilot_apps_json(json_str: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let obj = parsed.as_object()?;
+    let extract = |val: &serde_json::Value| -> Option<String> {
+        val.get("oauth_token")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    for (key, val) in obj {
+        if (key == "github.com" || key.starts_with("github.com:"))
+            && let Some(token) = extract(val)
+        {
+            return Some(token);
+        }
+    }
+    obj.values().find_map(extract)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1026,5 +1051,26 @@ mod tests {
         assert_eq!(select_copilot_model(&models, None, true).unwrap().id, "gpt-5-mini");
         assert_eq!(select_copilot_model(&models, Some("gpt-5-mini"), false).unwrap().id, "gpt-5-mini");
         assert_eq!(select_copilot_model(&models, Some("nonexistent"), true).unwrap().id, "gpt-5-mini");
+    }
+
+    #[test]
+    fn copilot_apps_json_extracts_github_com_oauth_token() {
+        let apps = r#"{
+            "github.com:Iv1.b507a08c87ecfe98": {
+                "user": "masanork",
+                "oauth_token": "ghu_local_copilot_token",
+                "githubAppId": "Iv1.b507a08c87ecfe98"
+            }
+        }"#;
+        assert_eq!(
+            parse_copilot_apps_json(apps).as_deref(),
+            Some("ghu_local_copilot_token")
+        );
+        let hosts = r#"{"github.com":{"oauth_token":"gho_hosts_tok"}}"#;
+        assert_eq!(
+            parse_copilot_apps_json(hosts).as_deref(),
+            Some("gho_hosts_tok")
+        );
+        assert_eq!(parse_copilot_apps_json("{}"), None);
     }
 }

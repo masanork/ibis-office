@@ -567,18 +567,238 @@ impl ConnectionChoice {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn load_github_copilot_token() -> Option<String> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CopilotTokenSource {
+    Env,
+    SavedPat,
+    SoraneCopilotSession,
+    LocalCopilotConfig,
+    GitHubAppSession,
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn sorane_copilot_session_path() -> Option<std::path::PathBuf> {
+    Some(
+        crate::app_data::base()?
+            .join("ibisOffice")
+            .join("sorane-copilot-session.json"),
+    )
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn load_sorane_copilot_session_token() -> Option<String> {
+    let path = sorane_copilot_session_path()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("oauth_token")
+        .or_else(|| parsed.get("access_token"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn save_sorane_copilot_session_token(token: &str) -> Result<(), String> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return Err("空のトークンは保存できません。".into());
+    }
+    let path = sorane_copilot_session_path()
+        .ok_or_else(|| "アプリデータディレクトリを取得できませんでした。".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("ディレクトリ作成に失敗しました: {e}"))?;
+    }
+    let payload = serde_json::json!({
+        "oauth_token": trimmed,
+        "client_id": copilot_oauth_client_id(),
+    })
+    .to_string();
+    std::fs::write(&path, payload)
+        .map_err(|e| format!("Copilot セッションの保存に失敗しました: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn clear_sorane_copilot_session_token() {
+    if let Some(path) = sorane_copilot_session_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn load_local_copilot_oauth_token() -> Option<String> {
+    let mut dirs = Vec::new();
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
+        && !xdg.trim().is_empty()
+    {
+        dirs.push(std::path::PathBuf::from(xdg).join("github-copilot"));
+    }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.trim().is_empty()
+    {
+        dirs.push(std::path::PathBuf::from(home).join(".config").join("github-copilot"));
+    }
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA")
+        && !local_app_data.trim().is_empty()
+    {
+        dirs.push(std::path::PathBuf::from(local_app_data).join("github-copilot"));
+    }
+    for dir in dirs {
+        for filename in ["apps.json", "hosts.json"] {
+            let path = dir.join(filename);
+            if let Ok(raw) = std::fs::read_to_string(&path)
+                && let Some(token) = sorane_github::parse_copilot_apps_json(&raw)
+            {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn resolve_github_copilot_token() -> Option<(String, CopilotTokenSource)> {
     if let Ok(env_tok) = std::env::var("GITHUB_COPILOT_TOKEN") {
         let trimmed = env_tok.trim();
         if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
+            return Some((trimmed.to_string(), CopilotTokenSource::Env));
         }
     }
     let saved = load_saved_copilot_token();
     if !saved.is_empty() {
-        return Some(saved);
+        return Some((saved, CopilotTokenSource::SavedPat));
     }
-    load_github_session_token()
+    if let Some(tok) = load_sorane_copilot_session_token() {
+        return Some((tok, CopilotTokenSource::SoraneCopilotSession));
+    }
+    if let Some(tok) = load_local_copilot_oauth_token() {
+        return Some((tok, CopilotTokenSource::LocalCopilotConfig));
+    }
+    load_github_session_token().map(|tok| (tok, CopilotTokenSource::GitHubAppSession))
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn load_github_copilot_token() -> Option<String> {
+    resolve_github_copilot_token().map(|(tok, _)| tok)
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn copilot_token_source_label() -> Option<&'static str> {
+    resolve_github_copilot_token().map(|(_, src)| match src {
+        CopilotTokenSource::Env => "環境変数 GITHUB_COPILOT_TOKEN を使用中",
+        CopilotTokenSource::SavedPat => "設定欄の Fine-grained PAT を使用中",
+        CopilotTokenSource::SoraneCopilotSession => "soraneDocs Copilot サインイン済み",
+        CopilotTokenSource::LocalCopilotConfig => "ローカルの GitHub Copilot 認証（Zed / VS Code 等）を自動検出",
+        CopilotTokenSource::GitHubAppSession => "GitHub App ログインのトークンを参照中",
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn copilot_oauth_client_id() -> String {
+    std::env::var("GITHUB_COPILOT_CLIENT_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| sorane_github::GITHUB_COPILOT_OAUTH_CLIENT_ID.to_string())
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn curl_post_json(url: &str, body_json: &str) -> Result<(u16, String), String> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let quote = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
+    let curl_config = format!("data = \"{}\"\n", quote(body_json));
+    const STATUS_MARKER: &str = "\n__IBIS_HTTP_STATUS__:";
+    let mut cmd = Command::new("curl");
+    cmd.arg("--disable")
+        .arg("-sS")
+        .args(["--proto", "=https"])
+        .args(["--connect-timeout", "15"])
+        .args(["--max-time", "20"])
+        .args(["-X", "POST"])
+        .args(["-H", "Accept: application/json"])
+        .args(["-H", "Content-Type: application/json"])
+        .args(["-H", "User-Agent: soraneDocs-Desktop"])
+        .args(["--config", "-"])
+        .args(["-w", &format!("{STATUS_MARKER}%{{http_code}}")])
+        .args(["--globoff", "--url", url])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to launch curl: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(curl_config.as_bytes())
+            .map_err(|e| format!("failed to write curl config: {e}"))?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("curl wait failed: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("curl exited with {}", output.status)
+        } else {
+            stderr
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let Some((body, status_str)) = stdout.rsplit_once(STATUS_MARKER) else {
+        return Err("HTTP ステータスコードを読み取れませんでした。".into());
+    };
+    let status = status_str
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| "HTTP ステータスコードが不正です。".to_string())?;
+    Ok((status, body.to_string()))
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn start_copilot_device_flow() -> Result<sorane_github::DeviceCodeResponse, String> {
+    let payload = serde_json::json!({
+        "client_id": copilot_oauth_client_id(),
+        "scope": "read:user",
+    })
+    .to_string();
+    let (status, body) = curl_post_json(sorane_github::GITHUB_DEVICE_CODE_URL, &payload)?;
+    if status >= 400 {
+        return Err(format!(
+            "デバイスコードの取得に失敗しました (HTTP {status}: {})",
+            extract_json_error_message(&body)
+        ));
+    }
+    sorane_github::parse_device_code_response(&body)
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn poll_copilot_device_token(
+    device_code: &str,
+) -> Result<sorane_github::DeviceTokenPoll, String> {
+    let payload = serde_json::json!({
+        "client_id": copilot_oauth_client_id(),
+        "device_code": device_code,
+        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+    })
+    .to_string();
+    let (status, body) = curl_post_json(sorane_github::GITHUB_OAUTH_TOKEN_URL, &payload)?;
+    if status >= 400 {
+        return Err(format!(
+            "トークン取得に失敗しました (HTTP {status}: {})",
+            extract_json_error_message(&body)
+        ));
+    }
+    sorane_github::parse_device_token_response(&body)
 }
 
 #[cfg(not(target_family = "wasm"))]
