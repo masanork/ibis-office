@@ -1307,6 +1307,19 @@ shell.ocr-setup.failed	ダウンロードに失敗しました: {error}
 shell.ocr-setup.cancelled	取り消しました。
 shell.ocr-setup.done	OCR モデルをインストールしました。
 shell.ocr-setup.removed	OCR モデルを削除しました。
+shell.asr-setup.title	音声認識モデルのセットアップ
+shell.asr-setup.heading	Whisper-tiny 多言語音声認識モデル（任意ダウンロード・約 {size}）
+shell.asr-setup.license	ライセンス: {license}（モデルはアプリ本体に同梱されず、Hugging Face からダウンロードされます）
+shell.asr-setup.installed	インストール済み
+shell.asr-setup.not-installed	未インストール
+shell.asr-setup.install	インストール
+shell.asr-setup.remove	モデルを削除
+shell.asr-setup.cancel	取り消し
+shell.asr-setup.progress	{name} をダウンロードしています（{index}/{count}、{received} / {total}）
+shell.asr-setup.failed	ダウンロードに失敗しました: {error}
+shell.asr-setup.cancelled	取り消しました。
+shell.asr-setup.done	音声認識モデルをインストールしました。
+shell.asr-setup.removed	音声認識モデルを削除しました。
 file.csv-encoding.title	CSV の文字コードを選択
 file.csv-encoding.detail	このファイルの文字コードを一意に判定できません。読み込みと上書き保存に使う文字コードを選んでください。Shift_JIS は Windows の CP932 として扱います。
 file.csv-encoding.changed	選択中にファイルが変更されました。もう一度開いてください。

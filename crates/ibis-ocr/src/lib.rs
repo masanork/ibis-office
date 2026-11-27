@@ -13,6 +13,11 @@ pub mod reading_order;
 
 #[cfg(feature = "tract")]
 pub mod deim;
+#[cfg(feature = "gpu-wgpu")]
+pub mod deim_burn;
+#[cfg(feature = "gpu-wgpu")]
+#[allow(dead_code, unused_variables, clippy::all)]
+mod deim_burn_model;
 #[cfg(feature = "tract")]
 pub mod engine;
 #[cfg(feature = "tract")]

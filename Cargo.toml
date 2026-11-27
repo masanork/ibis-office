@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ibis-calc", "crates/ibis-office-base", "crates/ibis-office-macros", "crates/ibis-office-render", "crates/ibis-office-shell", "crates/ibis-office-docx", "crates/ibis-office-pptx", "crates/ibis-office-xlsx", "crates/ibis-office-pdf", "crates/ibis-ocr", "crates/ibis-doc-model", "crates/ibis-ooxml", "crates/ibis-ofd", "crates/ibis-xps", "crates/ibis-xdw", "crates/ibis-xdw-read", "crates/ibis-vsdx", "crates/ibis-pdf", "crates/j2k-rs", "crates/ibis-emf", "crates/ibis-eot", "crates/ibis-heic-web", "crates/ibis-imgdiff", "crates/ibis-formats", "crates/ibis-lawtext", "crates/ibis-law-viewer", "crates/ibis-office-updater", "crates/ibis-appimage", "crates/ibis-office-app", "crates/sorane-github", "crates/sorane-workspace", "crates/gpui-android", "crates/gpui-ios", "tools/ibis-bench", "tools/ibis-image-provenance-check", "crates/ibis-m-lang", "crates/ibis-odf", "crates/ibis-doc-service", "crates/ibis-mcp", "tools/ibis-font-subsetter"]
+members = ["crates/ibis-calc", "crates/ibis-office-base", "crates/ibis-office-macros", "crates/ibis-office-render", "crates/ibis-office-shell", "crates/ibis-office-docx", "crates/ibis-office-pptx", "crates/ibis-office-xlsx", "crates/ibis-office-pdf", "crates/ibis-ocr", "crates/ibis-asr", "crates/ibis-doc-model", "crates/ibis-ooxml", "crates/ibis-ofd", "crates/ibis-xps", "crates/ibis-xdw", "crates/ibis-xdw-read", "crates/ibis-vsdx", "crates/ibis-pdf", "crates/j2k-rs", "crates/ibis-emf", "crates/ibis-eot", "crates/ibis-heic-web", "crates/ibis-imgdiff", "crates/ibis-formats", "crates/ibis-lawtext", "crates/ibis-law-viewer", "crates/ibis-office-updater", "crates/ibis-appimage", "crates/ibis-office-app", "crates/sorane-github", "crates/sorane-workspace", "crates/gpui-android", "crates/gpui-ios", "tools/ibis-bench", "tools/ibis-image-provenance-check", "crates/ibis-m-lang", "crates/ibis-odf", "crates/ibis-doc-service", "crates/ibis-mcp", "tools/ibis-font-subsetter"]
 # The GPUI forks under forks/ are separate packages patched in below, not members.
 exclude = ["forks"]
 
@@ -10,6 +10,7 @@ version = "0.8.0"
 publish = false
 
 [workspace.dependencies]
+ibis-asr = { path = "crates/ibis-asr" }
 ibis-calc = { path = "crates/ibis-calc" }
 ibis-m-lang = { path = "crates/ibis-m-lang" }
 ibis-ocr = { path = "crates/ibis-ocr", default-features = false }

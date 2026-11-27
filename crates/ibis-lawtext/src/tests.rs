@@ -303,3 +303,18 @@ use super::syntax::parse_suppl_header;
         assert!(shinkyu.contains("社員++及び嘱託社員++の服務規律"));
         assert!(shinkyu.contains("特別休暇++及び育児休暇++を定める"));
     }
+
+    #[test]
+    fn parses_real_mynumber_act_sample_xml_and_lawtext() {
+        let xml = include_str!("../../../assets/help/samples/mynumber-act-ch1.xml");
+        let doc = parse_law_xml(xml).expect("parse mynumber-act-ch1.xml");
+        assert!(doc.law_title.contains("番号の利用等に関する法律"));
+        let lawtext = to_lawtext(&doc);
+        let out_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/help/samples/mynumber-act-ch1.lawtext");
+        if !out_path.exists() {
+            std::fs::write(&out_path, &lawtext).unwrap();
+        }
+        let reparsed = parse_lawtext(&lawtext).expect("parse generated lawtext");
+        assert_eq!(reparsed.law_num, doc.law_num);
+    }

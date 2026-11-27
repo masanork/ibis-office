@@ -588,6 +588,9 @@ mod wasm {
             form_body: &str,
             allow_relay: bool,
         ) -> Result<js_sys::Promise, JsValue>;
+
+        #[wasm_bindgen(catch, js_name = ibisOfficeOpenCrossDeviceVcModal)]
+        fn open_cross_device_vc_modal_js() -> Result<js_sys::Promise, JsValue>;
     }
 
     fn js_error(err: JsValue) -> String {
@@ -601,10 +604,40 @@ mod wasm {
     }
 
     #[derive(serde::Deserialize)]
+    struct WebCryptoPublicJwk {
+        kty: String,
+        crv: String,
+        x: String,
+        y: String,
+    }
+
+    impl WebCryptoPublicJwk {
+        fn to_claim_value(&self) -> ibis_doc_model::ClaimValue {
+            let mut map = std::collections::BTreeMap::new();
+            map.insert(
+                "crv".to_string(),
+                ibis_doc_model::ClaimValue::String(self.crv.clone()),
+            );
+            map.insert(
+                "kty".to_string(),
+                ibis_doc_model::ClaimValue::String(self.kty.clone()),
+            );
+            map.insert(
+                "x".to_string(),
+                ibis_doc_model::ClaimValue::String(self.x.clone()),
+            );
+            map.insert(
+                "y".to_string(),
+                ibis_doc_model::ClaimValue::String(self.y.clone()),
+            );
+            ibis_doc_model::ClaimValue::Object(map)
+        }
+    }
+
+    #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct WebCryptoHolderInfo {
-        public_jwk: serde_json::Value,
-        #[allow(dead_code)]
+        public_jwk: WebCryptoPublicJwk,
         thumbprint: String,
     }
 
@@ -660,9 +693,9 @@ mod wasm {
     }
 
     /// Loads (or creates) the browser WebCrypto non-extractable ES256 holder key
-    /// persisted in IndexedDB (`sorane-vc-keys`) and returns its public JWK.
-    #[allow(dead_code)]
-    pub async fn load_webcrypto_holder_public_jwk() -> Result<serde_json::Value, String> {
+    /// persisted in IndexedDB (`sorane-vc-keys`) and returns `(public_jwk, thumbprint)`.
+    pub async fn load_webcrypto_holder_info() -> Result<(ibis_doc_model::ClaimValue, String), String>
+    {
         let promise = webcrypto_holder_info_js().map_err(js_error)?;
         let value = wasm_bindgen_futures::JsFuture::from(promise)
             .await
@@ -672,7 +705,15 @@ mod wasm {
             .ok_or_else(|| "WebCrypto holder info was not a string".to_string())?;
         let parsed: WebCryptoHolderInfo = serde_json::from_str(&text)
             .map_err(|e| format!("Failed to parse WebCrypto holder info: {e}"))?;
-        Ok(parsed.public_jwk)
+        Ok((parsed.public_jwk.to_claim_value(), parsed.thumbprint))
+    }
+
+    /// Loads (or creates) the browser WebCrypto non-extractable ES256 holder key
+    /// persisted in IndexedDB (`sorane-vc-keys`) and returns its public JWK.
+    #[allow(dead_code)]
+    pub async fn load_webcrypto_holder_public_jwk() -> Result<ibis_doc_model::ClaimValue, String> {
+        let (jwk, _) = load_webcrypto_holder_info().await?;
+        Ok(jwk)
     }
 
     /// Signs a `kb+jwt` signing input using the browser's non-extractable ES256
@@ -746,6 +787,15 @@ mod wasm {
             body: parsed.body,
             redirect_uri: parsed.redirect_uri,
         })
+    }
+
+    /// Opens the browser cross-device QR / Digital Credentials VC import modal.
+    pub async fn open_cross_device_vc_modal_async() -> Result<(), String> {
+        let promise = open_cross_device_vc_modal_js().map_err(js_error)?;
+        wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(js_error)?;
+        Ok(())
     }
 
     pub fn send_oid4vp_direct_post(

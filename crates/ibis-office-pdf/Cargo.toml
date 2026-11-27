@@ -26,3 +26,4 @@ ibis-ocr = { workspace = true, optional = true, features = ["tract"] }
 [features]
 default = []
 ocr = ["dep:ibis-ocr"]
+ocr-gpu = ["ocr", "ibis-ocr/gpu-wgpu"]

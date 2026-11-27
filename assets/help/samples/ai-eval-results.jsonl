@@ -1,0 +1,5 @@
+{"id":"eval-001","category":"lawtext-lint","input":"第一条 この法律は、電子手続の推進を目的とする。","expected":"全角スペース・見出し・附則整合 OK","actual":"Lint 0 errors (0 warnings)","pass":true,"score":1.0,"latency_ms":42}
+{"id":"eval-002","category":"marp-roundtrip","input":"---\nmarp: true\n---\n# Title\n\n- A","expected":"frontmatter とスライド区切りを保持して往復変換","actual":"marp: true / theme / paginate を保持","pass":true,"score":0.98,"latency_ms":65}
+{"id":"eval-003","category":"workbook-formula","input":"| 項目 | Q1 | 合計 |\n| A | 120 | =SUM(B2:B2) |","expected":"Markdown テーブルの数式を再計算し frontmatter を維持","actual":"合計=120・ibis-workbook: true を保持","pass":true,"score":1.0,"latency_ms":38}
+{"id":"eval-004","category":"egov-xml-patch","input":"第二条 第一項の文言のみ修正","expected":"未編集条文の XML 属性・コメントを破壊しない外科的パッチ","actual":"apply_law_source_edits で対象文のみ更新","pass":true,"score":0.96,"latency_ms":51}
+{"id":"eval-005","category":"jtd-vertical-table","input":"縦書き条文と新旧対照罫線表を含む一太郎文書","expected":"縦書き方向・ルビ・罫線結合を保持して描画","actual":"一部外字フォールバック警告あり","pass":false,"score":0.74,"latency_ms":112}

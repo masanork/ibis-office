@@ -201,6 +201,58 @@ impl SlideEditor {
         self.show_new(opened, name, window, cx);
     }
 
+    /// Open a built-in localized help page or sample file (`help/index.md`, `help/samples/mynumber-act-ch1.xml`, etc.).
+    pub fn open_builtin_help(&mut self, help_path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_edit(window, cx);
+        let locale = match crate::i18n::language() {
+            crate::i18n::Language::Japanese => sorane_github::HelpLocale::Ja,
+            crate::i18n::Language::English => sorane_github::HelpLocale::En,
+        };
+        let Some(content) = sorane_github::help_file(locale, help_path) else {
+            self.status = Some(format!("Built-in help page not found: {help_path}").into());
+            return cx.notify();
+        };
+        let file_name = std::path::Path::new(help_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("help.md");
+        let bytes = content.as_bytes();
+        let opened = match crate::read_file::open_document_bytes(file_name, None, bytes) {
+            Ok(Some(crate::read_file::CommonOpen::Standard { opened, .. })) => Ok(opened),
+            #[cfg(not(target_family = "wasm"))]
+            Ok(Some(crate::read_file::CommonOpen::StructuredPreview(opened))) => Ok(opened),
+            Ok(None) => {
+                if std::path::Path::new(file_name)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("csv"))
+                {
+                    let text = std::str::from_utf8(bytes).unwrap_or("");
+                    ibis_formats::csv::workbook_from_literal_fields(text, "Sheet1", None)
+                        .and_then(ibis_formats::open)
+                        .map_err(|e| e.to_string())
+                } else {
+                    ibis_formats::markdown::open_markdown(bytes.to_vec()).map_err(|e| e.to_string())
+                }
+            }
+            Err(err) => Err(err),
+        };
+        let opened = match opened {
+            Ok(opened) => opened,
+            Err(err) => {
+                self.status = Some(crate::i18n::format("file.new-failed", &[("error", &err)]).into());
+                return cx.notify();
+            }
+        };
+        let name: SharedString = file_name.to_string().into();
+        #[cfg(not(target_family = "wasm"))]
+        if self.has_document {
+            crate::app::open_window_with(cx, move |editor, window, cx| editor.show_new(opened, name, window, cx));
+            return;
+        }
+        self.show_new(opened, name, window, cx);
+    }
+
     /// A new, empty file of `kind` in this window, in place of the document (with a host; the unsaved changes were asked about). The
     /// document is not the host's: the host is told.
     pub(crate) fn new_file_in_window(&mut self, kind: ibis_formats::Kind, window: &mut Window, cx: &mut Context<Self>) {

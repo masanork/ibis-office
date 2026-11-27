@@ -568,3 +568,4 @@ menu.group.wrap-text	文字列の折り返し
 help.register-desktop	アプリの一覧に登録
 help.setup	セットアップ
 help.ocr-setup	OCR モデルのセットアップ
+help.asr-setup	音声認識モデルのセットアップ

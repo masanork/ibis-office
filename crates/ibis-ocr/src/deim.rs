@@ -117,27 +117,12 @@ impl DeimDetector {
         if orig_w == 0 || orig_h == 0 {
             return Ok(Vec::new());
         }
-        let max_wh = orig_w.max(orig_h);
-
-        let mut padded = RgbImage::new(max_wh, max_wh);
-        image::imageops::overlay(&mut padded, img, 0, 0);
-        let resized = image::imageops::resize(
-            &padded,
-            self.input_width as u32,
-            self.input_height as u32,
-            FilterType::Triangle,
-        );
-
-        let mean = [0.485f32, 0.456, 0.406];
-        let inv_std = [1.0 / 0.229f32, 1.0 / 0.224, 1.0 / 0.225];
-        let mut input = tract_ndarray::Array4::<f32>::zeros((1, 3, self.input_height, self.input_width));
-        for (x, y, px) in resized.enumerate_pixels() {
-            let xu = x as usize;
-            let yu = y as usize;
-            input[[0, 0, yu, xu]] = (px[0] as f32 / 255.0 - mean[0]) * inv_std[0];
-            input[[0, 1, yu, xu]] = (px[1] as f32 / 255.0 - mean[1]) * inv_std[1];
-            input[[0, 2, yu, xu]] = (px[2] as f32 / 255.0 - mean[2]) * inv_std[2];
-        }
+        let (chw, max_wh) = preprocess_deim_chw(img, self.input_width, self.input_height);
+        let input = tract_ndarray::Array4::from_shape_vec(
+            (1, 3, self.input_height, self.input_width),
+            chw,
+        )
+        .map_err(|e| Error::new(format!("DEIM input tensor shape failed: {e}")))?;
 
         let size_tensor =
             tract_ndarray::arr2(&[[self.input_height as i64, self.input_width as i64]]).into_tensor();
@@ -201,48 +186,107 @@ impl DeimDetector {
             None => None,
         };
 
-        let scale_x = max_wh as f32 / self.input_width as f32;
-        let scale_y = max_wh as f32 / self.input_height as f32;
-
-        let mut detections = Vec::new();
-        for (i, &score) in scores.iter().enumerate() {
-            if score <= self.conf_threshold {
-                continue;
-            }
-            let raw_label = class_ids.get(i).copied().unwrap_or(0);
-            if raw_label <= 0 {
-                continue;
-            }
-            let class_index = (raw_label - 1) as usize;
-            let Some(&class_name) = NDL_CLASSES.get(class_index) else {
-                continue;
-            };
-            let base = i * 4;
-            if base + 3 >= bboxes.len() {
-                break;
-            }
-            let x1 = (bboxes[base] * scale_x).clamp(0.0, orig_w as f32) as u32;
-            let y1 = (bboxes[base + 1] * scale_y).clamp(0.0, orig_h as f32) as u32;
-            let x2 = (bboxes[base + 2] * scale_x).clamp(0.0, orig_w as f32) as u32;
-            let y2 = (bboxes[base + 3] * scale_y).clamp(0.0, orig_h as f32) as u32;
-            if x2 <= x1 || y2 <= y1 {
-                continue;
-            }
-            let pred_char_count = char_counts
-                .and_then(|c| c.get(i).copied())
-                .unwrap_or(100.0);
-
-            detections.push(Detection {
-                class_index,
-                class_name,
-                confidence: score,
-                box_xyxy: [x1, y1, x2, y2],
-                pred_char_count,
-            });
-        }
-
-        Ok(suppress_overlapping_regions(detections, self.overlap_threshold))
+        Ok(postprocess_deim(
+            orig_w,
+            orig_h,
+            max_wh,
+            self.input_width,
+            self.input_height,
+            self.conf_threshold,
+            self.overlap_threshold,
+            class_ids,
+            bboxes,
+            scores,
+            char_counts,
+        ))
     }
+}
+
+pub(crate) fn preprocess_deim_chw(
+    img: &RgbImage,
+    input_width: usize,
+    input_height: usize,
+) -> (Vec<f32>, u32) {
+    let (orig_w, orig_h) = img.dimensions();
+    let max_wh = orig_w.max(orig_h);
+
+    let mut padded = RgbImage::new(max_wh, max_wh);
+    image::imageops::overlay(&mut padded, img, 0, 0);
+    let resized = image::imageops::resize(
+        &padded,
+        input_width as u32,
+        input_height as u32,
+        FilterType::Triangle,
+    );
+
+    let mean = [0.485f32, 0.456, 0.406];
+    let inv_std = [1.0 / 0.229f32, 1.0 / 0.224, 1.0 / 0.225];
+    let plane = input_width * input_height;
+    let mut chw = vec![0.0f32; 3 * plane];
+    for (x, y, px) in resized.enumerate_pixels() {
+        let idx = y as usize * input_width + x as usize;
+        chw[idx] = (px[0] as f32 / 255.0 - mean[0]) * inv_std[0];
+        chw[plane + idx] = (px[1] as f32 / 255.0 - mean[1]) * inv_std[1];
+        chw[2 * plane + idx] = (px[2] as f32 / 255.0 - mean[2]) * inv_std[2];
+    }
+    (chw, max_wh)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn postprocess_deim(
+    orig_w: u32,
+    orig_h: u32,
+    max_wh: u32,
+    input_width: usize,
+    input_height: usize,
+    conf_threshold: f32,
+    overlap_threshold: f32,
+    class_ids: &[i64],
+    bboxes: &[f32],
+    scores: &[f32],
+    char_counts: Option<&[f32]>,
+) -> Vec<Detection> {
+    let scale_x = max_wh as f32 / input_width as f32;
+    let scale_y = max_wh as f32 / input_height as f32;
+
+    let mut detections = Vec::new();
+    for (i, &score) in scores.iter().enumerate() {
+        if score <= conf_threshold {
+            continue;
+        }
+        let raw_label = class_ids.get(i).copied().unwrap_or(0);
+        if raw_label <= 0 {
+            continue;
+        }
+        let class_index = (raw_label - 1) as usize;
+        let Some(&class_name) = NDL_CLASSES.get(class_index) else {
+            continue;
+        };
+        let base = i * 4;
+        if base + 3 >= bboxes.len() {
+            break;
+        }
+        let x1 = (bboxes[base] * scale_x).clamp(0.0, orig_w as f32) as u32;
+        let y1 = (bboxes[base + 1] * scale_y).clamp(0.0, orig_h as f32) as u32;
+        let x2 = (bboxes[base + 2] * scale_x).clamp(0.0, orig_w as f32) as u32;
+        let y2 = (bboxes[base + 3] * scale_y).clamp(0.0, orig_h as f32) as u32;
+        if x2 <= x1 || y2 <= y1 {
+            continue;
+        }
+        let pred_char_count = char_counts
+            .and_then(|c| c.get(i).copied())
+            .unwrap_or(100.0);
+
+        detections.push(Detection {
+            class_index,
+            class_name,
+            confidence: score,
+            box_xyxy: [x1, y1, x2, y2],
+            pred_char_count,
+        });
+    }
+
+    suppress_overlapping_regions(detections, overlap_threshold)
 }
 
 /// Prefer larger same-label boxes when `intersection / smaller_area >= overlap_threshold`.

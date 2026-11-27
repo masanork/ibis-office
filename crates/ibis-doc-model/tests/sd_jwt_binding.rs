@@ -690,3 +690,57 @@ fn external_signer_kb_jwt_matches_issue_kb_jwt() {
     assert_eq!(parsed.signature_valid, Some(true));
     assert_eq!(parsed.kb_sd_hash_valid, Some(true));
 }
+
+#[test]
+fn external_signer_re_presents_existing_sd_jwt() {
+    use ibis_doc_model::{
+        Es256KeyPair, SdJwtOptions, assemble_kb_jwt_from_raw_sig, build_kb_jwt_signing_input,
+        issue_sheet_sd_jwt, parse_sd_jwt, prepare_existing_sd_jwt_for_external_signer,
+        present_existing_sd_jwt,
+    };
+
+    let (pres, slide_id, _) = sample_presentation();
+    let issuer = Es256KeyPair::demo_issuer_key();
+    let holder = Es256KeyPair::demo_holder_key();
+
+    let mut opts = SdJwtOptions::default();
+    opts.holder_public_jwk = Some(holder.to_public_jwk());
+    let (_bindings, issued) = issue_sheet_sd_jwt(&pres, slide_id, &opts, &issuer).unwrap();
+
+    let selected = vec!["address.region".to_string()];
+    let aud = "https://verifier.example.jp/cb";
+    let nonce = "n-ext-re-present";
+    let iat = 1_750_000_000;
+
+    let direct = present_existing_sd_jwt(
+        &issued.sd_jwt_all,
+        Some(&selected),
+        aud,
+        nonce,
+        iat,
+        &holder,
+    )
+    .unwrap();
+
+    let prep = prepare_existing_sd_jwt_for_external_signer(
+        &issued.sd_jwt_all,
+        Some(&selected),
+        Some(&holder.to_public_jwk()),
+    )
+    .unwrap();
+    assert_eq!(prep.holder_cnf_matches, Some(true));
+    assert_eq!(prep.disclosed_paths, direct.disclosed_paths);
+    assert_eq!(prep.sd_jwt_without_kb, direct.sd_jwt_without_kb);
+
+    let (normalized, sd_hash, signing_input) =
+        build_kb_jwt_signing_input(&prep.sd_jwt_without_kb, aud, nonce, iat);
+    let sig = holder.sign_es256(signing_input.as_bytes());
+    let assembled = assemble_kb_jwt_from_raw_sig(&normalized, sd_hash, &signing_input, &sig);
+
+    assert_eq!(assembled.vp_token, direct.kb.vp_token);
+    let parsed = parse_sd_jwt(&assembled.vp_token, Some(&issuer.to_public_jwk_json())).unwrap();
+    assert_eq!(parsed.signature_valid, Some(true));
+    assert_eq!(parsed.kb_sd_hash_valid, Some(true));
+    assert!(parsed.claims.iter().any(|c| c.path == "address.region"));
+    assert!(!parsed.claims.iter().any(|c| c.path == "given_name"));
+}

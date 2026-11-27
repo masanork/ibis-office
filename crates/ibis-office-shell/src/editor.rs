@@ -4644,6 +4644,14 @@ impl Render for SlideEditor {
                 {
                     this.open_toolbar_menu_search(window, cx);
                     cx.stop_propagation();
+                } else if !this.show_running()
+                    && ks.modifiers.secondary()
+                    && !ks.modifiers.alt
+                    && !ks.modifiers.shift
+                    && (ks.key == "/" || ks.key_char.as_deref() == Some("/"))
+                {
+                    this.open_builtin_help("help/shortcuts.md", window, cx);
+                    cx.stop_propagation();
                 }
             }))
             // Drags are tracked on the whole window so they continue past the slide.
@@ -4731,7 +4739,7 @@ impl SlideEditor {
             // The settings dialog (modal) over the start view: its panel is built, and drawn, by the sidebar's code as in a document.
             // The セットアップ dialog (K0001) is shown the same way: the first window at launch is often this one.
             #[cfg(not(target_family = "wasm"))]
-            let ocr_setup_open = self.ocr_setup_is_open();
+            let ocr_setup_open = self.ocr_setup_is_open() || self.asr_setup_is_open();
             #[cfg(target_family = "wasm")]
             let ocr_setup_open = false;
             if self.settings.is_some() || self.font_setup_is_open() || ocr_setup_open {
@@ -4771,7 +4779,7 @@ impl SlideEditor {
         let show_menu_bar = !narrow_phone && self.show_menu_bar && embedded.is_none_or(|p| p.show_menu_bar);
         let show_toolbar = !narrow_phone && self.show_toolbar && embedded.is_none_or(|p| p.show_toolbar);
         let show_title_row = embedded.is_none_or(|p| p.show_title_row)
-            && (!self.is_read_only() || show_menu_bar || {
+            && (mobile_viewer || narrow_phone || !self.is_read_only() || show_menu_bar || {
                 #[cfg(target_arch = "wasm32")]
                 {
                     crate::embed::show_close() || crate::embed::show_download()
@@ -4847,7 +4855,7 @@ impl SlideEditor {
                     div().id("mobile-save-file").flex().items_center().justify_center()
                         .min_w(px(48.)).h(px(40.)).px_2().rounded_md().cursor_pointer()
                         .text_sm().text_color(theme.foreground)
-                        .child(crate::i18n::text("menu.file.save"))
+                        .child(crate::i18n::text("file.save"))
                         .on_click(cx.listener(|this, _, window, cx| this.save(&crate::actions::Save, window, cx))),
                 )
             })

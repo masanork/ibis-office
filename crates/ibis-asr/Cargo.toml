@@ -1,0 +1,19 @@
+[package]
+name = "ibis-asr"
+description = "Pure Rust speech-to-text (Whisper ONNX over tract-onnx) with symphonia audio decoding and Log-Mel spectrogram."
+license = "AGPL-3.0-only"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+rustfft = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+symphonia = { version = "0.6", default-features = false, features = ["wav", "pcm", "mp3", "aac", "isomp4", "ogg", "vorbis", "flac"], optional = true }
+tract-onnx = { version = "0.23.10", optional = true }
+
+[features]
+default = ["engine"]
+engine = ["dep:tract-onnx", "dep:symphonia"]

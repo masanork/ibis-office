@@ -247,15 +247,13 @@ try {
   assert(forward.score > 0.5 && forward.foreground > 1000, `phone swipe up must move document pixels upward: ${JSON.stringify(forward)}`);
   assert(reverse.score > 0.5 && reverse.foreground > 1000, `phone swipe down must move document pixels downward: ${JSON.stringify(reverse)}`);
   assert(stationary.score < 0.5, `stationary document pixels must not count as a scroll: ${JSON.stringify(stationary)}`);
-  // The Top App Bar AI toggle opens the AI assistant sidebar on a phone.
-  const aiPanel = () => phone.screenshot({ clip: { x: 20, y: 60, width: 350, height: 400 } });
-  const beforeAi = await aiPanel();
+  // The Top App Bar Edit toggle switches the phone to editing mode.
+  const topBarEdit = () => phone.screenshot({ clip: { x: 325, y: 4, width: 60, height: 40 } });
+  const beforeEdit = await topBarEdit();
   if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-before.png` });
-  await tap(phoneTouch, 8, 244, 24);
+  await tap(phoneTouch, 8, 353, 24);
   await phone.waitForTimeout(800);
-  assert(!beforeAi.equals(await aiPanel()), 'phone AI toggle must open the AI assistant panel');
-  await tap(phoneTouch, 9, 244, 24);
-  await phone.waitForTimeout(500);
+  assert(!beforeEdit.equals(await topBarEdit()), 'phone Edit toggle must activate editing mode');
   if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-after.png` });
   assert.deepEqual(failures, [], 'phone interactions must not panic');
   await phone.context().close();
@@ -283,20 +281,21 @@ try {
 
   await tap(viewerTouch, 101, 350, 24); // Edit
   await viewer.waitForTimeout(500);
-  await tap(viewerTouch, 102, 120, 200);
+  await tap(viewerTouch, 102, 120, 112);
   await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'text');
   await viewer.keyboard.insertText('Mode switch test');
   await viewer.waitForFunction(() => document.querySelector('textarea')?.value.includes('Mode switch test'));
 
   await tap(viewerTouch, 103, 350, 24); // Viewing
   await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'none');
-  await tap(viewerTouch, 104, 120, 150);
+  await tap(viewerTouch, 104, 120, 112);
   assert.equal(await viewerMirror.getAttribute('inputmode'), 'none', 'returning to viewing must suppress the keyboard');
 
   await tap(viewerTouch, 105, 350, 24); // Edit again
   await viewer.waitForTimeout(500);
-  await tap(viewerTouch, 106, 120, 200);
+  await tap(viewerTouch, 106, 120, 112);
   await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'text');
+  await viewer.waitForFunction(() => document.querySelector('textarea')?.value.includes('Mode switch test'), null, { timeout: 5000 });
   assert((await viewerMirror.inputValue()).includes('Mode switch test'), 'edits must survive a round trip through viewing mode');
   assert.deepEqual(failures, [], 'switching phone modes must not panic');
   await viewer.context().close();

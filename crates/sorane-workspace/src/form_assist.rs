@@ -167,6 +167,97 @@ struct PreparedSubmission {
     cnf_mismatch_warning: bool,
 }
 
+#[cfg(target_family = "wasm")]
+enum WasmSubmissionInputs {
+    ExistingSdJwt {
+        raw_sd_jwt: String,
+        selected_paths: Option<Vec<String>>,
+        source_paths: Vec<String>,
+    },
+    ActiveSheet {
+        bindings: ibis_doc_model::SheetClaimBindings,
+        source_paths: Vec<String>,
+    },
+}
+
+#[cfg(target_family = "wasm")]
+async fn build_wasm_prepared_submission(
+    inputs: WasmSubmissionInputs,
+    req: &Oid4vpRequest,
+    now: i64,
+) -> Result<PreparedSubmission, String> {
+    use ibis_doc_model::{
+        assemble_kb_jwt_from_raw_sig, build_kb_jwt_signing_input,
+        prepare_existing_sd_jwt_for_external_signer,
+    };
+    use ibis_office_shell::vc_transport::{
+        KeyStorageBackend, load_webcrypto_holder_info, sign_with_webcrypto_holder,
+    };
+
+    let (holder_jwk, holder_thumbprint) = load_webcrypto_holder_info().await?;
+
+    match inputs {
+        WasmSubmissionInputs::ExistingSdJwt {
+            raw_sd_jwt,
+            selected_paths,
+            source_paths,
+        } => {
+            let prep = prepare_existing_sd_jwt_for_external_signer(
+                &raw_sd_jwt,
+                selected_paths.as_deref(),
+                Some(&holder_jwk),
+            )?;
+            let (normalized, sd_hash, signing_input) =
+                build_kb_jwt_signing_input(&prep.sd_jwt_without_kb, &req.client_id, &req.nonce, now);
+            let sig = sign_with_webcrypto_holder(&signing_input).await?;
+            let kb = assemble_kb_jwt_from_raw_sig(&normalized, sd_hash, &signing_input, &sig);
+            Ok(PreparedSubmission {
+                vp_token: kb.vp_token,
+                disclosed_fields: prep.disclosed_paths,
+                source_paths,
+                key_storage: KeyStorageBackend::WebCryptoIndexedDb.code().to_string(),
+                holder_thumbprint,
+                cnf_mismatch_warning: prep.holder_cnf_matches == Some(false),
+            })
+        }
+        WasmSubmissionInputs::ActiveSheet {
+            bindings,
+            source_paths,
+        } => {
+            let issuer = LoadedKey::sandbox_issuer();
+            let mut opts = SdJwtOptions::default();
+            opts.default_iat = Some(now);
+            opts.holder_public_jwk = Some(holder_jwk);
+            let sd_out = issue_sd_jwt(&bindings, &opts, &issuer.key);
+            let (normalized, sd_hash, signing_input) = build_kb_jwt_signing_input(
+                &sd_out.sd_jwt_presentation,
+                &req.client_id,
+                &req.nonce,
+                now,
+            );
+            let sig = sign_with_webcrypto_holder(&signing_input).await?;
+            let kb = assemble_kb_jwt_from_raw_sig(&normalized, sd_hash, &signing_input, &sig);
+            let disclosed_fields: Vec<String> = bindings
+                .claims
+                .iter()
+                .filter(|c| !c.selective || c.disclose)
+                .map(|c| c.path_str.clone())
+                .collect();
+            Ok(PreparedSubmission {
+                vp_token: kb.vp_token,
+                disclosed_fields,
+                source_paths,
+                key_storage: format!(
+                    "holder:{}+issuer:sandbox_demo",
+                    KeyStorageBackend::WebCryptoIndexedDb.code()
+                ),
+                holder_thumbprint,
+                cnf_mismatch_warning: false,
+            })
+        }
+    }
+}
+
 fn current_unix_timestamp() -> i64 {
     #[cfg(not(target_family = "wasm"))]
     {
@@ -546,6 +637,63 @@ impl SoraneWorkspace {
         Ok(target)
     }
 
+    #[cfg(target_family = "wasm")]
+    fn prepare_wasm_submission_inputs(
+        &self,
+        cx: &App,
+    ) -> Result<WasmSubmissionInputs, String> {
+        if let Some(cred_rel) = &self.form_assist.selected_credential_path {
+            let vault = self
+                .vault
+                .as_ref()
+                .ok_or_else(|| "Vault が開かれていません。".to_string())?;
+            let raw = vault
+                .content_for(cred_rel)
+                .ok_or_else(|| format!("Web Vault に {cred_rel} の本文がまだ読み込まれていません。"))?
+                .to_string();
+            let selected: Vec<String> = self
+                .form_assist
+                .credential_disclosures
+                .iter()
+                .filter_map(|(k, &v)| v.then(|| k.clone()))
+                .collect();
+            let use_selected = !self.form_assist.credential_disclosure_items.is_empty();
+            return Ok(WasmSubmissionInputs::ExistingSdJwt {
+                raw_sd_jwt: raw,
+                selected_paths: use_selected.then_some(selected),
+                source_paths: vec![cred_rel.clone()],
+            });
+        }
+
+        let editor = self
+            .active_editor(cx)
+            .ok_or_else(|| "アクティブなスプレッドシートがありません。".to_string())?;
+        let ed = editor.read(cx);
+        if Kind::of(ed.presentation()) != Kind::Workbook {
+            return Err(
+                "スプレッドシートを開くか、Vault 内の .sd-jwt 証明書を選択してください。"
+                    .to_string(),
+            );
+        }
+        let bindings = extract_sheet_claims(ed.presentation(), ed.current_slide).ok_or_else(|| {
+            "このシートに claim.* / sd.* バインディングがありません。データ > 提出・証明 (SD-JWT) で設定するか、Vault の .sd-jwt を選択してください。"
+                .to_string()
+        })?;
+        let mut source_paths = Vec::new();
+        if let (Some(vault), Some(sheet_path)) = (&self.vault, ed.file_path())
+            && let Some(rel) = vault.relative_path_for(&sheet_path)
+        {
+            source_paths.push(rel);
+        }
+        if let Some(prof) = &self.form_assist.selected_profile_path {
+            source_paths.push(prof.clone());
+        }
+        Ok(WasmSubmissionInputs::ActiveSheet {
+            bindings,
+            source_paths,
+        })
+    }
+
     pub(crate) fn submit_oid4vp_direct_post(
         &mut self,
         window: &mut Window,
@@ -574,121 +722,205 @@ impl SoraneWorkspace {
             cx.notify();
             return;
         }
-        let prepared = match self.prepare_submission_payload(&req, cx) {
-            Ok(p) => p,
-            Err(err) => {
-                self.form_assist.status_message = Some((err, true));
-                cx.notify();
-                return;
-            }
-        };
 
-        let form_body = req.build_direct_post_body(&prepared.vp_token);
-        let payload_sha256 = sha256_hex(form_body.as_bytes());
-        let recipient = req.client_id.clone();
-        let request_path = req_note.as_ref().map(|n| n.path.clone());
-        let form_id = req_note.as_ref().map(|n| n.request_id.clone());
-        let form_mapping_path = self.form_assist.selected_mapping_path.clone();
-        let slug_hint = form_id.clone().unwrap_or_else(|| "oid4vp".to_string());
-        let response_uri_for_send = response_uri.clone();
-
-        self.form_assist.submit_busy = true;
-        self.form_assist.status_message = Some((format!("送信中: {response_uri} …"), false));
-        cx.notify();
-
-        cx.spawn_in(window, async move |this, cx| {
-            let res = cx
-                .background_executor()
-                .spawn(async move { send_oid4vp_direct_post(&response_uri_for_send, &form_body) })
-                .await;
-            let _ = this.update_in(cx, |ws, window, cx| {
-                ws.form_assist.submit_busy = false;
-                match res {
-                    Ok(outcome) => {
-                        let ok_status = (200..300).contains(&outcome.status);
-                        let mut notes_parts = Vec::new();
-                        if prepared.cnf_mismatch_warning {
-                            notes_parts.push(
-                                "注意: VC の cnf.jwk が現在の Holder 鍵と一致していません。"
-                                    .to_string(),
-                            );
-                        }
-                        if let Some(redir) = &outcome.redirect_uri {
-                            notes_parts.push(format!("redirect_uri: {redir}"));
-                        }
-                        if !ok_status && !outcome.body.trim().is_empty() {
-                            notes_parts.push(format!("response: {}", outcome.body.trim()));
-                        }
-
-                        #[cfg(not(target_family = "wasm"))]
-                        let receipt_note = if ok_status && ws.vault.is_some() {
-                            let receipt = SubmissionReceipt {
-                                submitted_at: current_utc_timestamp_iso(),
-                                recipient: recipient.clone(),
-                                response_uri: Some(outcome.response_uri.clone()),
-                                mode: "oid4vp_direct_post".to_string(),
-                                http_status: Some(outcome.status),
-                                form_id: form_id.clone(),
-                                form_mapping_path: form_mapping_path.clone(),
-                                request_path: request_path.clone(),
-                                source_paths: prepared.source_paths.clone(),
-                                artifact_path: None,
-                                disclosed_fields: prepared.disclosed_fields.clone(),
-                                payload_sha256: payload_sha256.clone(),
-                                key_storage: prepared.key_storage.clone(),
-                                holder_key_thumbprint: Some(prepared.holder_thumbprint.clone()),
-                                notes: (!notes_parts.is_empty()).then(|| notes_parts.join("\n")),
-                            };
-                            match ws.write_submission_receipt_to_vault(
-                                &receipt,
-                                &slug_hint,
-                                window,
-                                cx,
-                            ) {
-                                Ok(path) => format!(
-                                    " · 記録保存: {}",
-                                    path.file_name().unwrap_or_default().to_string_lossy()
-                                ),
-                                Err(err) => format!(" · 記録保存失敗: {err}"),
-                            }
-                        } else {
-                            String::new()
-                        };
-                        #[cfg(target_family = "wasm")]
-                        let receipt_note = String::new();
-
-                        if ok_status {
-                            let warn = if prepared.cnf_mismatch_warning {
-                                "（⚠ Holder 鍵不一致）"
-                            } else {
-                                ""
-                            };
-                            ws.form_assist.status_message = Some((
-                                format!(
-                                    "OID4VP 送信完了 (HTTP {}){warn}{receipt_note}",
-                                    outcome.status
-                                ),
-                                false,
-                            ));
-                        } else {
-                            ws.form_assist.status_message = Some((
-                                format!(
-                                    "提出先エラー (HTTP {}): {}",
-                                    outcome.status,
-                                    outcome.body.trim()
-                                ),
-                                true,
-                            ));
-                        }
-                    }
-                    Err(err) => {
-                        ws.form_assist.status_message = Some((err, true));
-                    }
+        #[cfg(target_family = "wasm")]
+        {
+            let inputs = match self.prepare_wasm_submission_inputs(cx) {
+                Ok(i) => i,
+                Err(err) => {
+                    self.form_assist.status_message = Some((err, true));
+                    cx.notify();
+                    return;
                 }
-                cx.notify();
-            });
-        })
-        .detach();
+            };
+            let now = current_unix_timestamp();
+            let response_uri_for_send = response_uri.clone();
+            self.form_assist.submit_busy = true;
+            self.form_assist.status_message =
+                Some((format!("WebCrypto 署名・送信中: {response_uri} …"), false));
+            cx.notify();
+
+            cx.spawn_in(window, async move |this, cx| {
+                let res = async {
+                    let prepared = build_wasm_prepared_submission(inputs, &req, now).await?;
+                    let form_body = req.build_direct_post_body(&prepared.vp_token);
+                    let outcome =
+                        ibis_office_shell::vc_transport::send_oid4vp_direct_post_async(
+                            &response_uri_for_send,
+                            &form_body,
+                            true,
+                        )
+                        .await?;
+                    Ok::<_, String>((prepared, outcome))
+                }
+                .await;
+
+                let _ = this.update_in(cx, |ws, _window, cx| {
+                    ws.form_assist.submit_busy = false;
+                    match res {
+                        Ok((prepared, outcome)) => {
+                            ws.form_assist.holder_key_label = format!(
+                                "{} [{}]",
+                                ibis_office_shell::vc_transport::KeyStorageBackend::WebCryptoIndexedDb
+                                    .label_ja(),
+                                prepared.holder_thumbprint
+                            );
+                            ws.form_assist.holder_key_is_sandbox = false;
+                            let ok_status = (200..300).contains(&outcome.status);
+                            if ok_status {
+                                let warn = if prepared.cnf_mismatch_warning {
+                                    "（⚠ Holder 鍵不一致）"
+                                } else {
+                                    ""
+                                };
+                                ws.form_assist.status_message = Some((
+                                    format!(
+                                        "OID4VP 送信完了 (HTTP {}){warn}",
+                                        outcome.status
+                                    ),
+                                    false,
+                                ));
+                            } else {
+                                ws.form_assist.status_message = Some((
+                                    format!(
+                                        "提出先エラー (HTTP {}): {}",
+                                        outcome.status,
+                                        outcome.body.trim()
+                                    ),
+                                    true,
+                                ));
+                            }
+                        }
+                        Err(err) => {
+                            ws.form_assist.status_message = Some((err, true));
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            let _ = req_note;
+            return;
+        }
+
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let prepared = match self.prepare_submission_payload(&req, cx) {
+                Ok(p) => p,
+                Err(err) => {
+                    self.form_assist.status_message = Some((err, true));
+                    cx.notify();
+                    return;
+                }
+            };
+
+            let form_body = req.build_direct_post_body(&prepared.vp_token);
+            let payload_sha256 = sha256_hex(form_body.as_bytes());
+            let recipient = req.client_id.clone();
+            let request_path = req_note.as_ref().map(|n| n.path.clone());
+            let form_id = req_note.as_ref().map(|n| n.request_id.clone());
+            let form_mapping_path = self.form_assist.selected_mapping_path.clone();
+            let slug_hint = form_id.clone().unwrap_or_else(|| "oid4vp".to_string());
+            let response_uri_for_send = response_uri.clone();
+
+            self.form_assist.submit_busy = true;
+            self.form_assist.status_message = Some((format!("送信中: {response_uri} …"), false));
+            cx.notify();
+
+            cx.spawn_in(window, async move |this, cx| {
+                let res = cx
+                    .background_executor()
+                    .spawn(async move {
+                        send_oid4vp_direct_post(&response_uri_for_send, &form_body)
+                    })
+                    .await;
+                let _ = this.update_in(cx, |ws, window, cx| {
+                    ws.form_assist.submit_busy = false;
+                    match res {
+                        Ok(outcome) => {
+                            let ok_status = (200..300).contains(&outcome.status);
+                            let mut notes_parts = Vec::new();
+                            if prepared.cnf_mismatch_warning {
+                                notes_parts.push(
+                                    "注意: VC の cnf.jwk が現在の Holder 鍵と一致していません。"
+                                        .to_string(),
+                                );
+                            }
+                            if let Some(redir) = &outcome.redirect_uri {
+                                notes_parts.push(format!("redirect_uri: {redir}"));
+                            }
+                            if !ok_status && !outcome.body.trim().is_empty() {
+                                notes_parts.push(format!("response: {}", outcome.body.trim()));
+                            }
+
+                            let receipt_note = if ok_status && ws.vault.is_some() {
+                                let receipt = SubmissionReceipt {
+                                    submitted_at: current_utc_timestamp_iso(),
+                                    recipient: recipient.clone(),
+                                    response_uri: Some(outcome.response_uri.clone()),
+                                    mode: "oid4vp_direct_post".to_string(),
+                                    http_status: Some(outcome.status),
+                                    form_id: form_id.clone(),
+                                    form_mapping_path: form_mapping_path.clone(),
+                                    request_path: request_path.clone(),
+                                    source_paths: prepared.source_paths.clone(),
+                                    artifact_path: None,
+                                    disclosed_fields: prepared.disclosed_fields.clone(),
+                                    payload_sha256: payload_sha256.clone(),
+                                    key_storage: prepared.key_storage.clone(),
+                                    holder_key_thumbprint: Some(prepared.holder_thumbprint.clone()),
+                                    notes: (!notes_parts.is_empty())
+                                        .then(|| notes_parts.join("\n")),
+                                };
+                                match ws.write_submission_receipt_to_vault(
+                                    &receipt,
+                                    &slug_hint,
+                                    window,
+                                    cx,
+                                ) {
+                                    Ok(path) => format!(
+                                        " · 記録保存: {}",
+                                        path.file_name().unwrap_or_default().to_string_lossy()
+                                    ),
+                                    Err(err) => format!(" · 記録保存失敗: {err}"),
+                                }
+                            } else {
+                                String::new()
+                            };
+
+                            if ok_status {
+                                let warn = if prepared.cnf_mismatch_warning {
+                                    "（⚠ Holder 鍵不一致）"
+                                } else {
+                                    ""
+                                };
+                                ws.form_assist.status_message = Some((
+                                    format!(
+                                        "OID4VP 送信完了 (HTTP {}){warn}{receipt_note}",
+                                        outcome.status
+                                    ),
+                                    false,
+                                ));
+                            } else {
+                                ws.form_assist.status_message = Some((
+                                    format!(
+                                        "提出先エラー (HTTP {}): {}",
+                                        outcome.status,
+                                        outcome.body.trim()
+                                    ),
+                                    true,
+                                ));
+                            }
+                        }
+                        Err(err) => {
+                            ws.form_assist.status_message = Some((err, true));
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 
     pub(crate) fn copy_vp_token_and_record(
@@ -706,63 +938,104 @@ impl SoraneWorkspace {
             dcql_credential_id: None,
             requested_claims: Vec::new(),
         });
-        let prepared = match self.prepare_submission_payload(&req, cx) {
-            Ok(p) => p,
-            Err(err) => {
-                self.form_assist.status_message = Some((err, true));
-                cx.notify();
-                return;
-            }
-        };
-        let payload_sha256 = sha256_hex(prepared.vp_token.as_bytes());
-        cx.write_to_clipboard(ClipboardItem::new_string(prepared.vp_token));
+
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = req_note;
+            let inputs = match self.prepare_wasm_submission_inputs(cx) {
+                Ok(i) => i,
+                Err(err) => {
+                    self.form_assist.status_message = Some((err, true));
+                    cx.notify();
+                    return;
+                }
+            };
+            let now = current_unix_timestamp();
+            self.form_assist.status_message = Some(("WebCrypto で vp_token を生成中…".into(), false));
+            cx.notify();
+            cx.spawn_in(window, async move |this, cx| {
+                let res = build_wasm_prepared_submission(inputs, &req, now).await;
+                let _ = this.update_in(cx, |ws, _window, cx| {
+                    match res {
+                        Ok(prepared) => {
+                            ws.form_assist.holder_key_label = format!(
+                                "{} [{}]",
+                                ibis_office_shell::vc_transport::KeyStorageBackend::WebCryptoIndexedDb
+                                    .label_ja(),
+                                prepared.holder_thumbprint
+                            );
+                            ws.form_assist.holder_key_is_sandbox = false;
+                            cx.write_to_clipboard(ClipboardItem::new_string(prepared.vp_token));
+                            ws.form_assist.status_message = Some((
+                                "vp_token をクリップボードにコピーしました (WebCrypto 署名)".into(),
+                                false,
+                            ));
+                        }
+                        Err(err) => {
+                            ws.form_assist.status_message = Some((err, true));
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
 
         #[cfg(not(target_family = "wasm"))]
-        let receipt_note = if self.vault.is_some() {
-            let receipt = SubmissionReceipt {
-                submitted_at: current_utc_timestamp_iso(),
-                recipient: req.client_id.clone(),
-                response_uri: req.response_uri.clone(),
-                mode: "vp_token_copy".to_string(),
-                http_status: None,
-                form_id: req_note.as_ref().map(|n| n.request_id.clone()),
-                form_mapping_path: self.form_assist.selected_mapping_path.clone(),
-                request_path: req_note.as_ref().map(|n| n.path.clone()),
-                source_paths: prepared.source_paths,
-                artifact_path: None,
-                disclosed_fields: prepared.disclosed_fields,
-                payload_sha256,
-                key_storage: prepared.key_storage,
-                holder_key_thumbprint: Some(prepared.holder_thumbprint),
-                notes: prepared
-                    .cnf_mismatch_warning
-                    .then(|| "注意: VC の cnf.jwk が現在の Holder 鍵と一致していません。".into()),
+        {
+            let prepared = match self.prepare_submission_payload(&req, cx) {
+                Ok(p) => p,
+                Err(err) => {
+                    self.form_assist.status_message = Some((err, true));
+                    cx.notify();
+                    return;
+                }
             };
-            let slug = req_note
-                .as_ref()
-                .map(|n| n.request_id.as_str())
-                .unwrap_or("vp-copy");
-            match self.write_submission_receipt_to_vault(&receipt, slug, window, cx) {
-                Ok(p) => format!(
-                    "（提出記録: {}）",
-                    p.file_name().unwrap_or_default().to_string_lossy()
-                ),
-                Err(_) => String::new(),
-            }
-        } else {
-            String::new()
-        };
-        #[cfg(target_family = "wasm")]
-        let receipt_note = {
-            let _ = (window, req_note, payload_sha256);
-            String::new()
-        };
+            let payload_sha256 = sha256_hex(prepared.vp_token.as_bytes());
+            cx.write_to_clipboard(ClipboardItem::new_string(prepared.vp_token));
 
-        self.form_assist.status_message = Some((
-            format!("vp_token をクリップボードにコピーしました{receipt_note}"),
-            false,
-        ));
-        cx.notify();
+            let receipt_note = if self.vault.is_some() {
+                let receipt = SubmissionReceipt {
+                    submitted_at: current_utc_timestamp_iso(),
+                    recipient: req.client_id.clone(),
+                    response_uri: req.response_uri.clone(),
+                    mode: "vp_token_copy".to_string(),
+                    http_status: None,
+                    form_id: req_note.as_ref().map(|n| n.request_id.clone()),
+                    form_mapping_path: self.form_assist.selected_mapping_path.clone(),
+                    request_path: req_note.as_ref().map(|n| n.path.clone()),
+                    source_paths: prepared.source_paths,
+                    artifact_path: None,
+                    disclosed_fields: prepared.disclosed_fields,
+                    payload_sha256,
+                    key_storage: prepared.key_storage,
+                    holder_key_thumbprint: Some(prepared.holder_thumbprint),
+                    notes: prepared
+                        .cnf_mismatch_warning
+                        .then(|| "注意: VC の cnf.jwk が現在の Holder 鍵と一致していません。".into()),
+                };
+                let slug = req_note
+                    .as_ref()
+                    .map(|n| n.request_id.as_str())
+                    .unwrap_or("vp-copy");
+                match self.write_submission_receipt_to_vault(&receipt, slug, window, cx) {
+                    Ok(p) => format!(
+                        "（提出記録: {}）",
+                        p.file_name().unwrap_or_default().to_string_lossy()
+                    ),
+                    Err(_) => String::new(),
+                }
+            } else {
+                String::new()
+            };
+
+            self.form_assist.status_message = Some((
+                format!("vp_token をクリップボードにコピーしました{receipt_note}"),
+                false,
+            ));
+            cx.notify();
+        }
     }
 
     pub(crate) fn save_sheet_vc_to_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2579,6 +2852,44 @@ impl SoraneWorkspace {
                     .text_color(theme.muted_foreground)
                     .child(format!("Issuer 鍵: {}", self.form_assist.issuer_key_label)),
             );
+        #[cfg(target_family = "wasm")]
+        if self.form_assist.holder_key_is_sandbox {
+            key_card = key_card.child(
+                Button::new("ws-vc-load-webcrypto-key")
+                    .xsmall()
+                    .label("WebCrypto 非抽出 Holder 鍵を読み込む (IndexedDB)")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.spawn_in(window, async move |this, cx| {
+                            let res =
+                                ibis_office_shell::vc_transport::load_webcrypto_holder_info().await;
+                            let _ = this.update_in(cx, |ws, _window, cx| {
+                                match res {
+                                    Ok((_, thumbprint)) => {
+                                        ws.form_assist.holder_key_label = format!(
+                                            "{} [{thumbprint}]",
+                                            ibis_office_shell::vc_transport::KeyStorageBackend::WebCryptoIndexedDb
+                                                .label_ja()
+                                        );
+                                        ws.form_assist.holder_key_is_sandbox = false;
+                                        ws.form_assist.status_message = Some((
+                                            format!(
+                                                "WebCrypto 非抽出鍵を読み込みました [{thumbprint}]"
+                                            ),
+                                            false,
+                                        ));
+                                    }
+                                    Err(err) => {
+                                        ws.form_assist.status_message = Some((err, true));
+                                    }
+                                }
+                                cx.notify();
+                            });
+                        })
+                        .detach();
+                    })),
+            );
+        }
+        #[cfg(not(target_family = "wasm"))]
         if self.form_assist.issuer_key_is_sandbox {
             key_card = key_card.child(
                 Button::new("ws-vc-gen-issuer-key")
@@ -2921,6 +3232,28 @@ impl SoraneWorkspace {
                     .label("VC (.sd-jwt) を Vault に保存")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.save_sheet_vc_to_vault(window, cx);
+                    })),
+            );
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            submit_actions = submit_actions.child(
+                Button::new("ws-submit-mobile-import")
+                    .xsmall()
+                    .label("📱 スマホ / Wallet から取込")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.spawn_in(window, async move |this, cx| {
+                            let res =
+                                ibis_office_shell::vc_transport::open_cross_device_vc_modal_async()
+                                    .await;
+                            if let Err(err) = res {
+                                let _ = this.update_in(cx, |ws, _window, cx| {
+                                    ws.form_assist.status_message = Some((err, true));
+                                    cx.notify();
+                                });
+                            }
+                        })
+                        .detach();
                     })),
             );
         }

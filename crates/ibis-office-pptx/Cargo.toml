@@ -28,3 +28,5 @@ default = ["export"]
 scenarios = ["export", "ibis-office-shell/scenarios", "ibis-office-base/scenarios", "ibis-office-render/scenarios"]
 # As ibis-office-app's: the code that draws or reads pictures without a window (turns the shell's export on).
 export = ["ibis-office-shell/export", "ibis-office-render/export"]
+# Pure-Rust Whisper speech-to-text transcription for embedded audio clips.
+asr = ["ibis-office-shell/asr"]
