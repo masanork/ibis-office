@@ -4847,7 +4847,7 @@ impl SlideEditor {
                     div().id("mobile-save-file").flex().items_center().justify_center()
                         .min_w(px(48.)).h(px(40.)).px_2().rounded_md().cursor_pointer()
                         .text_sm().text_color(theme.foreground)
-                        .child(crate::i18n::text("menu.file.save"))
+                        .child(crate::i18n::text("file.save"))
                         .on_click(cx.listener(|this, _, window, cx| this.save(&crate::actions::Save, window, cx))),
                 )
             })
