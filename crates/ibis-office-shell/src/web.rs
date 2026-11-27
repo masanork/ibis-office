@@ -168,8 +168,9 @@ extern "C" {
     #[wasm_bindgen(catch, js_name = ibisOfficeFontsInstalled)]
     fn fonts_installed_js() -> Result<js_sys::Promise, JsValue>;
     /// Defined by `www/main.ts`: downloads `url` and keeps it in IndexedDB in 1 MiB chunks under the font file's name; resolves to the size.
+    /// `size` (0: unknown) and `sha256` (hex; empty: none) are checked before the file is listed.
     #[wasm_bindgen(catch, js_name = ibisOfficeFontDownload)]
-    fn font_download_js(file: &str, url: &str, size: f64) -> Result<js_sys::Promise, JsValue>;
+    fn font_download_js(file: &str, url: &str, size: f64, sha256: &str) -> Result<js_sys::Promise, JsValue>;
     /// Defined by `www/main.ts`: every font kept, put back together; an array of `Uint8Array`.
     #[wasm_bindgen(catch, js_name = ibisOfficeFontsLoad)]
     fn fonts_load_js() -> Result<js_sys::Promise, JsValue>;
@@ -255,9 +256,10 @@ pub(crate) async fn fonts_installed() -> Result<Vec<String>, String> {
     Ok(list.iter().filter_map(|item| js_sys::Reflect::get(&item, &JsValue::from_str("file")).ok()?.as_string()).collect())
 }
 
-/// Download the font file at `url` into IndexedDB (in chunks), under `file`; `size` (0 when unknown) is checked.
-pub(crate) async fn font_download(file: &str, url: &str, size: u64) -> Result<(), String> {
-    wasm_bindgen_futures::JsFuture::from(font_download_js(file, url, size as f64).map_err(describe)?).await.map_err(describe)?;
+/// Download the font file at `url` into IndexedDB (in chunks), under `file`; `size` (0 when unknown) and `sha256` (when the list has it)
+/// are checked, as the desktop's download does.
+pub(crate) async fn font_download(file: &str, url: &str, size: u64, sha256: Option<&str>) -> Result<(), String> {
+    wasm_bindgen_futures::JsFuture::from(font_download_js(file, url, size as f64, sha256.unwrap_or("")).map_err(describe)?).await.map_err(describe)?;
     Ok(())
 }
 
@@ -285,7 +287,8 @@ async fn fonts_installed_by_size() -> Vec<String> {
 pub fn load_downloaded_fonts_in_background(cx: &mut gpui_kit::App) {
     let arrivals = crate::fonts_late::Arrivals::default();
     cx.spawn(async move |cx: &mut gpui_kit::AsyncApp| {
-        for file in fonts_installed_by_size().await {
+        // A variant dictionary kept with the fonts (`.zst`, `crate::dataset`) is not a font: `www/main.ts` gave it to the app at the start.
+        for file in fonts_installed_by_size().await.into_iter().filter(|f| !f.ends_with(".zst")) {
             let Some(bytes) = font_load_one(&file).await else { continue };
             cx.update(|cx| {
                 crate::fonts_late::fonts_arrived(cx, &arrivals, vec![bytes]);
@@ -419,7 +422,7 @@ pub fn load_subset_blocks(cx: &mut gpui_kit::App, requests: Vec<(String, Vec<Str
 }
 
 /// The font kept in IndexedDB under `file`.
-async fn font_load_one(file: &str) -> Option<Vec<u8>> {
+pub(crate) async fn font_load_one(file: &str) -> Option<Vec<u8>> {
     let value = wasm_bindgen_futures::JsFuture::from(font_load_one_js(file).ok()?).await.ok()?;
     if value.is_null() || value.is_undefined() {
         return None;
@@ -441,7 +444,7 @@ pub async fn pdf_fallback_font(families: &[String]) -> Option<(&'static str, Vec
             if !crate::host::options().font_download {
                 return Err("font downloads are off".to_string());
             }
-            font_download(&entry.file, &entry.url, entry.size).await
+            font_download(&entry.file, &entry.url, entry.size, entry.sha256.as_deref()).await
         },
     )
     .await?;
@@ -557,7 +560,7 @@ pub async fn fetch_transition_sound(id: &str) -> bool {
     let bytes = match font_load_one(&key).await {
         Some(bytes) => bytes,
         None => {
-            if font_download(&key, &entry.url, entry.size).await.is_err() {
+            if font_download(&key, &entry.url, entry.size, entry.sha256.as_deref()).await.is_err() {
                 return false;
             }
             let Some(bytes) = font_load_one(&key).await else { return false };

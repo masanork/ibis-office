@@ -18,6 +18,7 @@ import init, {
   open_local_file,
   set_web_vault_tree,
   hydrate_web_vault_file,
+  install_variant_dictionary,
 } from './pkg/ibis_office_app.js';
 import { installHostLoader, resolveOptionUrls, waitForEditor, type HostSession } from './host-loader.js';
 import { APP_VERSION } from './build-info.js';
@@ -105,7 +106,7 @@ declare global {
     /** Called from Rust for セットアップ (the fonts that can be downloaded; kept in IndexedDB in chunks). */
     ibisOfficeFontFetchText: (url: string) => Promise<string>;
     ibisOfficeFontsInstalled: () => Promise<{ file: string; size: number }[]>;
-    ibisOfficeFontDownload: (file: string, url: string, size: number) => Promise<number>;
+    ibisOfficeFontDownload: (file: string, url: string, size: number, sha256?: string) => Promise<number>;
     ibisOfficeFontsLoad: () => Promise<Uint8Array[]>;
     /**
      * Called from Rust for the blocks of the fonts (GitHub issue #157, stage 2): what `loader-manifest.json` lists (a JSON text of the fonts, their typefaces and each block's
@@ -448,7 +449,23 @@ async function fontsInstalled(): Promise<{ file: string; size: number }[]> {
   return keys.map((file, i) => ({ file, size: values[i].size })).filter((f) => !f.file.startsWith('resource/'));
 }
 
-async function fontDownload(file: string, url: string, size: number): Promise<number> {
+/** The SHA-256 of `parts` put together, hex. */
+async function sha256Hex(parts: Uint8Array[], total: number): Promise<string> {
+  const joined = new Uint8Array(total);
+  let at = 0;
+  for (const part of parts) {
+    joined.set(part, at);
+    at += part.length;
+  }
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', joined));
+  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Download `url` into the chunks of `file`. `size` (0: unknown) and `sha256` (hex; empty: none) are checked before the file is
+ * listed in 'fonts', as the desktop's download checks them (a file that does not match is not kept).
+ */
+async function fontDownload(file: string, url: string, size: number, sha256 = ''): Promise<number> {
   const response = await fetch(url);
   if (!response.ok || !response.body) {
     throw new Error(`${url}: ${response.status}`);
@@ -456,6 +473,8 @@ async function fontDownload(file: string, url: string, size: number): Promise<nu
   const db = await fontsDb();
   let chunks = 0;
   let total = 0;
+  // The chunks kept for the hash (only when the list gives one).
+  const stored: Uint8Array[] = [];
   try {
     const reader = response.body.getReader();
     let pending: Uint8Array[] = [];
@@ -473,6 +492,9 @@ async function fontDownload(file: string, url: string, size: number): Promise<nu
         const tx = db.transaction('chunks', 'readwrite');
         tx.objectStore('chunks').put(chunk, [file, chunks]);
         await idbDone(tx);
+        if (sha256) {
+          stored.push(chunk);
+        }
         chunks += 1;
         total += chunk.length;
         pending = rest.length > 0 ? [rest] : [];
@@ -491,6 +513,12 @@ async function fontDownload(file: string, url: string, size: number): Promise<nu
     await flush(true);
     if (size > 0 && total !== size) {
       throw new Error(`the size is ${total} bytes, the list says ${size}`);
+    }
+    if (sha256) {
+      const got = await sha256Hex(stored, total);
+      if (got !== sha256.toLowerCase()) {
+        throw new Error(`the SHA-256 is ${got}, the list says ${sha256}`);
+      }
     }
     const tx = db.transaction('fonts', 'readwrite');
     tx.objectStore('fonts').put({ size: total, chunks }, file);
@@ -527,7 +555,8 @@ async function fontsLoad(): Promise<Uint8Array[]> {
   const values = (await idbGet(store.getAll())) as { size: number; chunks: number }[];
   const fonts: Uint8Array[] = [];
   for (let i = 0; i < keys.length; i++) {
-    if (keys[i].startsWith('resource/')) {
+    // (A variant dictionary kept beside the fonts, `.zst`, is not a font: `loadVariantDictionary` gives it to the app.)
+    if (keys[i].startsWith('resource/') || keys[i].endsWith('.zst')) {
       continue;
     }
     const bytes = new Uint8Array(values[i].size);
@@ -541,6 +570,25 @@ async function fontsLoad(): Promise<Uint8Array[]> {
     fonts.push(bytes);
   }
   return fonts;
+}
+
+/**
+ * The larger variant dictionary セットアップ kept in IndexedDB (a `.zst` file beside the fonts; `shell/dataset.rs`), given to the app
+ * before `run` so the first document's formulas use it (the first one that reads as a dictionary; there is one entry in the list).
+ * Nothing happens where IndexedDB is not usable or none is kept: the bundled dictionary stays.
+ */
+async function loadVariantDictionary(): Promise<void> {
+  try {
+    const kept = (await fontsInstalled()).filter((f) => f.file.endsWith('.zst'));
+    for (const { file } of kept) {
+      const bytes = await fontLoadOne(file);
+      if (bytes && install_variant_dictionary(bytes, file)) {
+        return;
+      }
+    }
+  } catch (error) {
+    console.warn('The variant dictionary kept in this browser could not be read', error);
+  }
 }
 
 /**
@@ -1145,6 +1193,7 @@ if (!('gpu' in navigator)) {
         pendingVaultContents.push({ relPath, content });
       }
     };
+    await loadVariantDictionary();
     await run(base, file?.name, file?.bytes);
     installLocalFileDrop();
     status?.remove();

@@ -215,7 +215,7 @@ impl BookView<'_> {
 
 impl Book for BookView<'_> {
     fn name_variant_cluster(&self, character: char) -> Option<u32> {
-        crate::variant_clusters::embedded()?.cluster_index(character)
+        crate::variant_clusters::active()?.cluster_index(character)
     }
 
     fn sheet_count(&self) -> usize {

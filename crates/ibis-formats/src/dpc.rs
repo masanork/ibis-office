@@ -144,7 +144,7 @@ pub struct MedicalQualityAudit {
 /// plus code-column integrity checks.
 pub fn audit_medical_workbook(presentation: &Presentation) -> MedicalQualityAudit {
     let mut audit = MedicalQualityAudit::default();
-    let clusters = ibis_doc_model::variant_clusters::embedded();
+    let clusters = ibis_doc_model::variant_clusters::active();
 
     for (si, slide) in presentation.slides.iter().enumerate() {
         for sh in &slide.shapes {
@@ -180,7 +180,7 @@ pub fn audit_medical_workbook(presentation: &Presentation) -> MedicalQualityAudi
                         ));
                     }
                 }
-                if let Some(vc) = clusters {
+                if let Some(vc) = clusters.as_deref() {
                     let has_variant = t.chars().any(|c| vc.cluster(c).is_some());
                     if has_variant {
                         audit.variant_character_cells += 1;

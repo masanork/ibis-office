@@ -74,7 +74,7 @@ fn forget() {
     for file in FILES {
         font_setup::set_skipped(file, false);
         let id = file.trim_end_matches(".ttf");
-        let folder = FontEntry { id: id.into(), name_en: String::new(), name_ja: String::new(), file: file.into(), size: 0, url: String::new(), license: String::new(), license_url: String::new(), sha256: None };
+        let folder = FontEntry { id: id.into(), name_en: String::new(), name_ja: String::new(), file: file.into(), size: 0, url: String::new(), license: String::new(), license_url: String::new(), sha256: None, kind: Default::default() };
         if let Some(dir) = font_setup::font_folder(&folder) {
             let _ = std::fs::remove_dir_all(dir);
         }

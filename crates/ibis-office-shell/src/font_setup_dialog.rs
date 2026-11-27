@@ -317,12 +317,32 @@ impl SlideEditor {
                     }
                 }
             }
+            // A variant dictionary just downloaded is used from now on, in place of the bundled one (`crate::dataset`).
+            let mut dictionary: Option<(String, usize)> = None;
+            let dictionaries: Vec<FontEntry> = selected.iter().filter(|e| e.kind == font_setup::EntryKind::VariantDictionary && installed.contains(&e.file)).cloned().collect();
+            for entry in &dictionaries {
+                #[cfg(not(target_family = "wasm"))]
+                let result = crate::dataset::install_downloaded(entry);
+                #[cfg(target_family = "wasm")]
+                let result = match crate::web::font_load_one(&entry.file).await {
+                    Some(bytes) => crate::dataset::install_bytes(&bytes, Some(&entry.file)),
+                    None => Err("the file is not kept".to_string()),
+                };
+                match result {
+                    Ok(count) => dictionary = Some((entry.display_name().to_string(), count)),
+                    Err(message) => {
+                        log::warn!("font setup: {}: {message}", entry.file);
+                        installed.retain(|f| f != &entry.file);
+                        failures.push((entry.display_name().to_string(), message));
+                    }
+                }
+            }
             // The fonts just installed are given to the text system now: the font lists and the documents use them without a restart.
-            if !installed.is_empty() {
+            if selected.iter().any(|e| e.kind == font_setup::EntryKind::Font && installed.contains(&e.file)) {
                 #[cfg(not(target_family = "wasm"))]
                 let files: Vec<Vec<u8>> = selected
                     .iter()
-                    .filter(|e| installed.contains(&e.file))
+                    .filter(|e| e.kind == font_setup::EntryKind::Font && installed.contains(&e.file))
                     .filter_map(|e| font_setup::font_folder(e).and_then(|dir| std::fs::read(dir.join(&e.file)).ok()))
                     .collect();
                 #[cfg(target_family = "wasm")]
@@ -334,7 +354,15 @@ impl SlideEditor {
                 })
                 .ok();
             }
-            this.update(cx, |this, cx| this.font_setup_finished(&installed, &failures, cancelled, cx)).ok();
+            this.update(cx, |this, cx| {
+                this.font_setup_finished(&installed, &failures, cancelled, cx);
+                if let (Some((name, count)), Some(state)) = (&dictionary, this.font_setup_state()) {
+                    if failures.is_empty() && !cancelled {
+                        state.borrow_mut().message = Some(crate::i18n::format("shell.font-setup.dictionary-done", &[("name", name), ("count", count)]).into());
+                    }
+                }
+            })
+            .ok();
         })
         .detach();
     }
@@ -585,5 +613,5 @@ async fn download_entry(_this: &WeakEntity<SlideEditor>, _cx: &mut AsyncApp, ent
     if cancel.load(Ordering::SeqCst) {
         return Err(DownloadError::Cancelled);
     }
-    crate::web::font_download(&entry.file, &entry.url, entry.size).await.map_err(DownloadError::Failed)
+    crate::web::font_download(&entry.file, &entry.url, entry.size, entry.sha256.as_deref()).await.map_err(DownloadError::Failed)
 }

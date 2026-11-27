@@ -129,9 +129,9 @@ impl SlideEditor {
         let Some((_, sheet)) = self.current_sheet() else {
             return;
         };
-        let (available, matches, skipped, truncated) = match variant_clusters::embedded() {
+        let (available, matches, skipped, truncated) = match variant_clusters::active() {
             Some(dict) => {
-                let (m, s, t) = candidates(sheet, range, dict);
+                let (m, s, t) = candidates(sheet, range, &dict);
                 (true, m, s, t)
             }
             None => (false, Vec::new(), 0, false),

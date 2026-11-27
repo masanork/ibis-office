@@ -39,6 +39,7 @@ const SKIP_PREFIX: &str = "font-setup.skip.";
 /// | `license` | the licence's name, as shown (`SIL OFL 1.1`) |
 /// | `license_url` | the address of the licence's file (https) |
 /// | `sha256` | the file's SHA-256, hex (optional; checked when given) |
+/// | `kind` | `variant-dictionary` for a larger edition of the variant dictionary (a `.zst` file, `variant_clusters`); default: a font |
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FontEntry {
     pub id: String,
@@ -50,9 +51,27 @@ pub struct FontEntry {
     pub license: String,
     pub license_url: String,
     pub sha256: Option<String>,
+    pub kind: EntryKind,
+}
+
+/// What a line of the list downloads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EntryKind {
+    /// A font, given to the text system (`.ttf`, `.otf`, `.ttc`).
+    #[default]
+    Font,
+    /// A variant dictionary (`.zst`, the format of `ibis_doc_model::variant_clusters`), used in place of the bundled one by the
+    /// name comparison of `IBIS.FIELDMATCH` and the variant review. Its licence may differ from the app's (the GJS full edition is
+    /// CC BY-SA 2.1 JP): it is offered unchecked, and the user chooses it.
+    VariantDictionary,
 }
 
 impl FontEntry {
+    /// Whether the dialog offers it checked (when it was not skipped): the fonts are, a data set is not.
+    pub fn checked_by_default(&self) -> bool {
+        self.kind == EntryKind::Font
+    }
+
     /// The name in the language of the UI.
     pub fn display_name(&self) -> &str {
         if crate::i18n::language() == ibis_office_base::i18n::Language::Japanese { &self.name_ja } else { &self.name_en }
@@ -206,7 +225,18 @@ pub fn parse_list_at(text: &str, base: Option<&str>) -> Vec<FontEntry> {
             log::warn!("font-list.txt: a font without name_en, file or url: {line}");
             continue;
         };
-        let extension_ok = file.rsplit_once('.').is_some_and(|(_, e)| matches!(e.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc"));
+        let kind = match string("kind").as_deref() {
+            Some("variant-dictionary") => EntryKind::VariantDictionary,
+            None | Some("font") => EntryKind::Font,
+            Some(other) => {
+                log::warn!("font-list.txt: a kind this version does not know ({other}): {line}");
+                continue;
+            }
+        };
+        let extension_ok = file.rsplit_once('.').is_some_and(|(_, e)| match kind {
+            EntryKind::Font => matches!(e.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc"),
+            EntryKind::VariantDictionary => e.eq_ignore_ascii_case("zst"),
+        });
         let id = string("id").unwrap_or_else(|| file.rsplit_once('.').map_or(file.clone(), |(stem, _)| stem.to_ascii_lowercase()));
         let absolute = |u: String| match base {
             Some(base) => crate::resource_list::resolve_url(base, &u).unwrap_or(u),
@@ -236,6 +266,7 @@ pub fn parse_list_at(text: &str, base: Option<&str>) -> Vec<FontEntry> {
             license: string("license").unwrap_or_default(),
             license_url,
             sha256,
+            kind,
         });
     }
     out
@@ -260,10 +291,14 @@ pub fn set_skipped(file: &str, skipped: bool) {
 
 // ---- What is installed ----------------------------------------------------
 
-/// The folder of a font: `fonts/<id>` in the app's data.
+/// The folder of a font: `fonts/<id>` in the app's data (a data set: `datasets/<id>`).
 #[cfg(not(target_family = "wasm"))]
 pub fn font_folder(entry: &FontEntry) -> Option<std::path::PathBuf> {
-    Some(ibis_office_base::app_data::fonts_dir()?.join(&entry.id))
+    let root = match entry.kind {
+        EntryKind::Font => ibis_office_base::app_data::fonts_dir()?,
+        EntryKind::VariantDictionary => ibis_office_base::app_data::datasets_dir()?,
+    };
+    Some(root.join(&entry.id))
 }
 
 /// Whether the font's file is installed (here, with the size the list gives).
@@ -310,7 +345,7 @@ pub fn build_rows(entries: &[FontEntry], installed: impl Fn(&FontEntry) -> bool,
         .filter(|e| !installed(e))
         .map(|e| {
             let skipped = skipped(e);
-            Row { entry: e.clone(), checked: !skipped, skipped }
+            Row { entry: e.clone(), checked: !skipped && e.checked_by_default(), skipped }
         })
         .collect();
     // A stable sort: the list's order is kept inside each part.
@@ -318,9 +353,10 @@ pub fn build_rows(entries: &[FontEntry], installed: impl Fn(&FontEntry) -> bool,
     rows
 }
 
-/// Whether the startup check has something to ask: a font that is not installed and not skipped.
+/// Whether the startup check has something to ask: a font that is not installed and not skipped (a data set alone does not open
+/// the dialog at the start: it is offered with the fonts, and in ヘルプ > セットアップ).
 pub fn has_new(entries: &[FontEntry], installed: impl Fn(&FontEntry) -> bool, skipped: impl Fn(&FontEntry) -> bool) -> bool {
-    entries.iter().any(|e| !installed(e) && !skipped(e))
+    entries.iter().any(|e| e.kind == EntryKind::Font && !installed(e) && !skipped(e))
 }
 
 /// The header checkbox: all on, all off, or some of both (`None`).
@@ -663,10 +699,26 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::{all_checked, build_rows, has_new, is_installed_on_pc, list_url, obtain_font, parse_list, parse_list_at, pdf_fallback_for, size_text, toggle_all, FontEntry};
+    use super::{all_checked, build_rows, has_new, is_installed_on_pc, list_url, obtain_font, parse_list, parse_list_at, pdf_fallback_for, size_text, toggle_all, EntryKind, FontEntry};
 
     fn entry(file: &str) -> FontEntry {
         parse_list(&format!("{{\"name_en\":\"N\",\"file\":\"{file}\",\"url\":\"https://example.com/{file}\"}}")).remove(0)
+    }
+
+    #[test]
+    fn a_variant_dictionary_is_a_kind_of_its_own_offered_unchecked() {
+        let line = |kind: &str, file: &str| format!("{{\"name_en\":\"D\",\"file\":\"{file}\",\"url\":\"https://example.com/{file}\"{kind}}}");
+        let dict = parse_list(&line(",\"kind\":\"variant-dictionary\"", "v.zst"));
+        assert_eq!(dict.len(), 1);
+        assert_eq!(dict[0].kind, EntryKind::VariantDictionary);
+        assert!(parse_list(&line("", "v.zst")).is_empty(), "a .zst is not a font");
+        assert!(parse_list(&line(",\"kind\":\"variant-dictionary\"", "v.ttf")).is_empty(), "a dictionary is a .zst");
+        assert!(parse_list(&line(",\"kind\":\"sound\"", "v.zst")).is_empty(), "a kind this version does not know is skipped");
+        let font = entry("f.ttf");
+        let rows = build_rows(&[font.clone(), dict[0].clone()], |_| false, |_| false);
+        assert_eq!(rows.iter().map(|r| r.checked).collect::<Vec<_>>(), vec![true, false]);
+        assert!(!has_new(&dict, |_| false, |_| false), "a data set alone does not open the dialog at the start");
+        assert!(has_new(&[font], |_| false, |_| false));
     }
 
     #[test]
@@ -921,6 +973,29 @@ mod tests {
         }
 
         #[test]
+        fn a_variant_dictionary_goes_to_the_data_sets_not_to_the_fonts() {
+            let body = b"zst bytes".to_vec();
+            let server = Server::start(vec![("/t-dict/v.zst", Route::Body(body.clone())), ("/t-dict/NOTICE.md", Route::Body(b"notice".to_vec()))]);
+            let e = parse_list(&format!(
+                "{{\"id\":\"t-dict\",\"kind\":\"variant-dictionary\",\"name_en\":\"D\",\"file\":\"v.zst\",\"size\":{},\"url\":\"{}\",\"license_url\":\"{}\"}}",
+                body.len(),
+                server.url("/t-dict/v.zst"),
+                server.url("/t-dict/NOTICE.md"),
+            ))
+            .remove(0);
+            clean(&e);
+            let (progress, cancel) = (AtomicU64::new(0), AtomicBool::new(false));
+            download(&e, &progress, &cancel).expect("the download");
+            let folder = font_folder(&e).unwrap();
+            assert!(folder.starts_with(ibis_office_base::app_data::datasets_dir().unwrap()));
+            assert_eq!(std::fs::read(folder.join("v.zst")).unwrap(), body);
+            assert_eq!(std::fs::read(folder.join("NOTICE.md")).unwrap(), b"notice");
+            assert!(!ibis_office_base::app_data::downloaded_font_files().iter().any(|p| p.ends_with("t-dict/v.zst")), "not given to the text system");
+            assert!(crate::dataset::candidates().iter().any(|p| p.ends_with("t-dict/v.zst")));
+            clean(&e);
+        }
+
+        #[test]
         fn no_server_is_a_failure_not_a_panic() {
             let server = Server::start(vec![]);
             let e = entry(&server, "t-down", "a.ttf", 10, None);
@@ -959,8 +1034,12 @@ mod tests {
         #[test]
         fn the_list_in_the_repository_is_a_valid_list_and_starts_with_ipamj_mincho() {
             let list = parse_list(include_str!("../../../docs/font-list.txt"));
-            // IPAmj Mincho, then the Digital Agency's Add Character_GJMincho (the characters MJ lacks, #158).
-            assert_eq!(list.len(), 4);
+            // IPAmj Mincho, then the Digital Agency's Add Character_GJMincho (the characters MJ lacks, #158), the BIZ UD fonts, and
+            // the GJS variant dictionary's full edition (a data set, offered unchecked).
+            assert_eq!(list.len(), 5);
+            let d = list.iter().find(|e| e.kind == super::super::EntryKind::VariantDictionary).unwrap();
+            assert_eq!((d.file.as_str(), d.license.as_str(), d.license_file().as_str()), ("variant-clusters.zst", "CC BY-SA 2.1 JP", "NOTICE.md"));
+            assert!(d.sha256.is_some() && d.size > 0 && !d.checked_by_default());
             let b = list.iter().find(|e| e.id == PDF_FALLBACK_GOTHIC.0).unwrap();
             assert_eq!((b.file.as_str(), b.size, b.license.as_str()), (PDF_FALLBACK_GOTHIC.1, 4_667_380, "SIL OFL 1.1"));
             let b = list.iter().find(|e| e.id == PDF_FALLBACK_MINCHO.0).unwrap();

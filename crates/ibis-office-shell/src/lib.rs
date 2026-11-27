@@ -148,6 +148,7 @@ pub mod chrome_defaults;
 pub mod infobar;
 pub mod format;
 pub mod font_list;
+pub mod dataset;
 pub mod font_setup;
 pub mod resource_list;
 pub mod font_setup_dialog;

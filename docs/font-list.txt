@@ -13,6 +13,8 @@
 #   license      the licence's name, shown in the table
 #   license_url  the address of the licence file on Pages (https); it is saved beside the font
 #   sha256       the file's SHA-256 in hex (optional; checked when given)
+#   kind         "variant-dictionary" for a variant dictionary (a .zst file; it is kept in datasets/<id>/, not with the fonts, and
+#                used in place of the bundled one by IBIS.FIELDMATCH and the variant review); default: a font
 #
 # IPAmj Mincho (IPA Font License v1.0, Ver.006.01, from https://moji.or.jp/): the font file as distributed, not changed, with its LICENSE
 # and README beside it. Add "size" (the file's bytes) and "sha256" of the file put on Pages when it is published.
@@ -29,3 +31,9 @@
 # viewer's PC has none for a character (it fetches the one it needs by this list, id BIZUDGothic / BIZUDMincho); OFL lets the PDF embed a subset.
 {"id":"BIZUDGothic","name_en":"BIZ UDGothic","name_ja":"BIZ UDゴシック","file":"BIZUDGothic-Regular.ttf","size":4667380,"sha256":"7d2b48d84ef4e65c9f85bcf65fb1fb41c92b134be641fab6a7141d597c9a92b0","url":"https://ibisjp.github.io/ibis-office/fonts/BIZUDGothic/BIZUDGothic-Regular.ttf","license":"SIL OFL 1.1","license_url":"https://ibisjp.github.io/ibis-office/fonts/BIZUDGothic/LICENSE"}
 {"id":"BIZUDMincho","name_en":"BIZ UDMincho","name_ja":"BIZ UD明朝","file":"BIZUDMincho-Regular.ttf","size":6153932,"sha256":"468ee6d9b149ca144809e03841bf18740ecf014e055a00da6ecaf1aaf4165af2","url":"https://ibisjp.github.io/ibis-office/fonts/BIZUDMincho/BIZUDMincho-Regular.ttf","license":"SIL OFL 1.1","license_url":"https://ibisjp.github.io/ibis-office/fonts/BIZUDMincho/LICENSE"}
+#
+# GJS variant dictionary, full edition (異体字辞書 完全版): the bundled dictionary is the GJS basic edition (Unicode, MIT, BSD-3-Clause,
+# Apache-2.0 and public-domain sources). The full edition adds IPA's MJ縮退マップ and is CC BY-SA 2.1 JP, a work of its own: GJS
+# distributes it beside its NOTICE (attribution, the changes, the licence), and the user chooses it here (it is offered unchecked).
+# Published by GJS at https://gjs-9w9.pages.dev/datasets/variant-clusters/ (latest.json names the newest revision).
+{"id":"gjs-variant-clusters-full","kind":"variant-dictionary","name_en":"Variant dictionary (GJS full edition)","name_ja":"\u7570\u4f53\u5b57\u8f9e\u66f8\uff08GJS \u5b8c\u5168\u7248\uff09","file":"variant-clusters.zst","size":170981,"sha256":"f3f9dec99efa3ef973373e5493c1aef9480791dcf4d306505b1f34c73722d32c","url":"https://gjs-9w9.pages.dev/datasets/variant-clusters/dict20260718/full/variant-clusters.zst","license":"CC BY-SA 2.1 JP","license_url":"https://gjs-9w9.pages.dev/datasets/variant-clusters/dict20260718/full/NOTICE.md"}

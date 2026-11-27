@@ -55,6 +55,13 @@ pub fn fonts_dir() -> Option<PathBuf> {
     Some(base()?.join("ibisOffice").join("fonts"))
 }
 
+/// Where the data sets downloaded with セットアップ are kept (the larger edition of the variant dictionary): `ibisOffice/datasets`
+/// under [`base`], one folder a data set with its licence beside it. Not the fonts' folder: the text system is given every file there.
+#[cfg(not(target_family = "wasm"))]
+pub fn datasets_dir() -> Option<PathBuf> {
+    Some(base()?.join("ibisOffice").join("datasets"))
+}
+
 /// Where user-installed design systems are kept: `ibisOffice/DesignSystems` under [`base`], sibling to
 /// `ibisOffice/ChartTemplates`. One subdirectory per design system (`DesignSystems/<name>/tokens.yaml`, etc.).
 #[cfg(not(target_family = "wasm"))]

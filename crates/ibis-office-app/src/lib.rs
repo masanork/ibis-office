@@ -142,6 +142,9 @@ fn register_local_pup_font(_: &TextSystem) {}
 pub fn init(cx: &mut App) {
     register_hooks();
     shell::settings::migrate_on_startup();
+    // The larger variant dictionary downloaded with セットアップ (or placed in the data folder) is used from the first formula on.
+    #[cfg(not(target_family = "wasm"))]
+    shell::dataset::load_installed();
     #[cfg(not(target_family = "wasm"))]
     shell::read_file::register_query_workbook_loader();
     // The window knows the system's fonts; the words (ibis-office-base) ask it for their English names.
@@ -1413,6 +1416,19 @@ mod web {
         crate::shell::start_view::set_start_view_config(json).map_err(|err| JsValue::from_str(&err))?;
         with_app(|cx| crate::shell::host_editor::with_editor(cx, |_, _, cx| cx.notify()));
         Ok(())
+    }
+
+    /// The page gives the variant dictionary that セットアップ kept in IndexedDB (`.zst`, `shell::dataset`) before `run`, so the
+    /// formulas of the first document already use it. `false` (the bundled dictionary stays) when the bytes are not a dictionary.
+    #[wasm_bindgen]
+    pub fn install_variant_dictionary(bytes: &[u8], file: &str) -> bool {
+        match crate::shell::dataset::install_bytes(bytes, (!file.is_empty()).then_some(file)) {
+            Ok(_) => true,
+            Err(err) => {
+                log::warn!("variant dictionary {file}: {err}");
+                false
+            }
+        }
     }
 
     /// Whether the editor window exists, so the host's calls (`host_load` and the others) act on it. `run` returns before that: the app

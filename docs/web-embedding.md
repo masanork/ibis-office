@@ -94,7 +94,7 @@ Keep `license.md` and `assets/artborders/ECMA-NOTICE.txt` when you serve the fil
 | Compression | Send `.wasm` and `.js` compressed (gzip or Brotli). The wasm is tens of megabytes; compressed it is about a quarter of that. |
 | Caching | The file names do not carry a hash. Under a folder per version (above), cache them for a long time (`Cache-Control: public, max-age=31536000, immutable`) and give the next version another folder. Under a fixed folder, send `Cache-Control: no-cache` with an `ETag`, so a new version is picked up. |
 | `COOP` / `COEP` headers | Not needed. The editor runs on one thread and does not use `SharedArrayBuffer`. |
-| Content-Security-Policy | If you set one, `script-src 'self' 'wasm-unsafe-eval'` is enough (no `unsafe-eval`), and `frame-ancestors 'self'` for the page. The editor's `index.html` has one inline `style` element, so a `style-src` must allow it. Allow in `connect-src` the addresses of the next section if you use them. |
+| Content-Security-Policy | If you set one, `script-src 'self' 'wasm-unsafe-eval'` is enough (no `unsafe-eval`), and `frame-ancestors 'self'` for the page. The editor's `index.html` has one inline `style` element, so a `style-src` must allow it. Allow in `connect-src` the addresses of the next section if you use them (the variant dictionary's full edition comes from `https://gjs-9w9.pages.dev` unless the host's font list names another). |
 | `iframe` | Do not give the `iframe` a `sandbox` attribute. |
 
 ### What the editor fetches from outside

@@ -18,7 +18,7 @@ def main():
     if not dictionary or dictionary not in args.executable.read_bytes():
         raise SystemExit(f"Bundled gjs dictionary missing from {args.executable}")
 
-    credit = "| 異体字クラスターマップ | 異体字照合 | 調製・提供 楠 正憲 |"
+    credit = "| 異体字クラスターマップ（GJS 基本版） | 異体字照合（ヘルプ > セットアップで完全版を取得可） | Unicode-3.0 AND BSD-3-Clause AND Apache-2.0 AND MIT（調製・提供 楠 正憲） |"
     if credit not in args.licenses.read_text(encoding="utf-8").splitlines():
         raise SystemExit(f"Bundled gjs attribution missing from {args.licenses}")
 

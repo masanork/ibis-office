@@ -45,6 +45,14 @@ EXTRA_PACKAGES = {
 OWN = {"ibis-heic-web", "ibis-office-app", "ibis-office-shell", "ibis-office-pptx", "ibis-office-docx", "ibis-office-xlsx", "ibis-office-render", "ibis-office-base", "ibis-office-macros", "ibis-doc-model", "ibis-formats", "ibis-emf", "ibis-eot", "ibis-imgdiff", "ibis-appimage"}
 
 
+
+# The bundled variant dictionary's row of the table (scripts/check-bundled-variant-dictionary.py checks the same line).
+VARIANT_DICTIONARY_CREDIT = (
+    "異体字クラスターマップ（GJS 基本版）",
+    "異体字照合（ヘルプ > セットアップで完全版を取得可）",
+    "Unicode-3.0 AND BSD-3-Clause AND Apache-2.0 AND MIT（調製・提供 楠 正憲）",
+)
+
 def run(*args):
     return subprocess.run(args, cwd=ROOT, check=True, capture_output=True, text=True, encoding="utf-8").stdout
 
@@ -236,6 +244,12 @@ def write(build):
     harunobu = open(os.path.join(ROOT, "crates", "ibis-doc-model", "HARUNOBU-MIT.txt"), encoding="utf-8").read().strip()
     unicode_notice = open(os.path.join(ROOT, "crates", "ibis-doc-model", "UNICODE-LICENSE.txt"), encoding="utf-8").read().strip()
     gjs = open(os.path.join(ROOT, "crates", "ibis-doc-model", "GJS-MIT.txt"), encoding="utf-8").read().strip()
+    # The bundled variant dictionary: the GJS basic edition, with its NOTICE and the licences of its sources beside it.
+    variant_dir = os.path.join(ROOT, "crates", "ibis-doc-model", "resources", "gjs-variant-clusters")
+    variant_notice = open(os.path.join(variant_dir, "NOTICE.md"), encoding="utf-8").read().strip()
+    # Mozc's LICENSE: the first part is the BSD-3-Clause of the code and data used here (the NAIST part is for src/data/dictionary*).
+    variant_mozc = open(os.path.join(variant_dir, "LICENSE-Mozc.txt"), encoding="utf-8").read().split("\n---")[0].strip()
+    variant_nijl = open(os.path.join(variant_dir, "LICENSE-NIJL.txt"), encoding="utf-8").read().strip()
     plex = open(os.path.join(ROOT, "crates", "ibis-office-app", "fonts", "OFL.txt"), encoding="utf-8").read().strip()
     carlito = open(os.path.join(ROOT, "crates", "ibis-office-render", "fonts", "carlito", "OFL.txt"), encoding="utf-8").read().strip()
     assets = json.loads(run("cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", target))
@@ -260,7 +274,7 @@ def write(build):
     # embedded in the binary on both builds.
     bundled.append(("Material Symbols（Google）", "タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み）", "Apache-2.0"))
     bundled.append(("Unicode 15.0", "文字の表示可否データ", "Unicode-3.0"))
-    bundled.append(("異体字クラスターマップ", "異体字照合", "調製・提供 楠 正憲"))
+    bundled.append((VARIANT_DICTIONARY_CREDIT[0], VARIANT_DICTIONARY_CREDIT[1], VARIANT_DICTIONARY_CREDIT[2]))
     material_readme = open(os.path.join(ROOT, "crates", "ibis-office-shell", "icons", "material", "README.md"), encoding="utf-8").read()
     material_source = next((l[2:] for l in material_readme.splitlines() if l.startswith("- 出典")), "")
     where = {"web": " Web 版（`www/`）", "macos": " macOS 版（`ibisOffice.app`）", "linux": " Linux 版（AppImage）", "windows": " Windows 版", "android": " Android 版", "ios": " iOS 版"}[build]
@@ -301,6 +315,24 @@ def write(build):
           "### Unicode data",
           "",
           "```text", unicode_notice, "```",
+          "",
+          "### 異体字クラスターマップ（GJS 基本版）",
+          "",
+          "照合に使う異体字の対応表。より大きい完全版（CC BY-SA 2.1 JP）は同梱せず、ヘルプ > セットアップから利用者が選んで取得する。",
+          "",
+          *[("#" + l if l.startswith("#") else l) for l in variant_notice.splitlines()],
+          "",
+          "#### Mozc（src/data/single_kanji/variant_rule.txt）",
+          "",
+          "```text", variant_mozc, "```",
+          "",
+          "#### 国文学研究資料館 国書データベース異体字リスト",
+          "",
+          "```text", variant_nijl, "```",
+          "",
+          "#### OpenCC（data/dictionary/JPShinjitaiCharacters.txt）",
+          "",
+          "Open Chinese Convert (OpenCC), https://github.com/BYVoid/OpenCC 。Apache License 2.0（本文は下の「ライセンス本文」の Apache-2.0）。",
           "",
           "### gjs character classification",
           "",

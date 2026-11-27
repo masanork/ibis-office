@@ -2,29 +2,101 @@
 // Copyright (c) masanork
 //! Read-only cluster lookup over a bitmap and contiguous membership arrays.
 //! Cluster membership is not evidence of a direct relation or safe replacement.
-use std::{io::Read, sync::OnceLock};
+use std::{
+    io::Read,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, OnceLock, RwLock,
+    },
+};
 
 const BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/variant-clusters.zst"));
 const DIRECTORY: usize = 4352;
-static DICTIONARY: OnceLock<Option<VariantClusters>> = OnceLock::new();
+static EMBEDDED: OnceLock<Option<Arc<VariantClusters>>> = OnceLock::new();
+static ACTIVE: OnceLock<Slot> = OnceLock::new();
 
 /// Whether a dictionary was supplied at build time.
 pub fn is_embedded() -> bool {
     !BLOB.is_empty()
 }
 
+/// Decompress (zstd) and parse a dictionary file: the bundled one, or one downloaded or placed by the user.
+/// `None` when the bytes are not a dictionary.
+pub fn decode(zst: &[u8]) -> Option<VariantClusters> {
+    if zst.is_empty() {
+        return None;
+    }
+    let mut decoder = ruzstd::decoding::StreamingDecoder::new(zst).ok()?;
+    let mut raw = Vec::new();
+    decoder.read_to_end(&mut raw).ok()?;
+    VariantClusters::from_bytes(raw)
+}
+
+fn embedded_arc() -> Option<Arc<VariantClusters>> {
+    EMBEDDED.get_or_init(|| decode(BLOB).map(Arc::new)).clone()
+}
+
+/// The dictionary bundled at build time (whatever is installed later).
 pub fn embedded() -> Option<&'static VariantClusters> {
-    DICTIONARY
-        .get_or_init(|| {
-            if BLOB.is_empty() {
-                return None;
-            }
-            let mut decoder = ruzstd::decoding::StreamingDecoder::new(BLOB).ok()?;
-            let mut raw = Vec::new();
-            decoder.read_to_end(&mut raw).ok()?;
-            VariantClusters::from_bytes(raw)
-        })
-        .as_ref()
+    EMBEDDED.get_or_init(|| decode(BLOB).map(Arc::new)).as_deref()
+}
+
+/// The dictionary in use and how many times it was replaced.
+struct Slot {
+    dict: RwLock<Option<Arc<VariantClusters>>>,
+    generation: AtomicU64,
+}
+
+impl Slot {
+    fn new(dict: Option<Arc<VariantClusters>>) -> Self {
+        Slot { dict: RwLock::new(dict), generation: AtomicU64::new(0) }
+    }
+    fn get(&self) -> Option<Arc<VariantClusters>> {
+        self.dict.read().ok()?.clone()
+    }
+    fn set(&self, dict: Option<Arc<VariantClusters>>) -> u64 {
+        if let Ok(mut d) = self.dict.write() {
+            *d = dict;
+        }
+        self.generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+}
+
+fn slot() -> &'static Slot {
+    ACTIVE.get_or_init(|| Slot::new(embedded_arc()))
+}
+
+/// The dictionary in use: the last one [`install`]ed (a larger edition downloaded with セットアップ, or one placed in the data
+/// folder), else the bundled one. The name comparison of `IBIS.FIELDMATCH` and the variant review read it each time.
+pub fn active() -> Option<Arc<VariantClusters>> {
+    slot().get()
+}
+
+/// Whether a dictionary is in use (bundled or installed).
+pub fn available() -> bool {
+    active().is_some()
+}
+
+/// Use `dict` from now on, in place of the bundled one (or of one installed before). Returns the new [`generation`].
+/// Cluster indexes of the earlier dictionary are not comparable with the new one's: a workbook calculated before
+/// shows its old results until it is calculated again.
+pub fn install(dict: VariantClusters) -> u64 {
+    slot().set(Some(Arc::new(dict)))
+}
+
+/// [`decode`] then [`install`]; `None` (and nothing changed) when the bytes are not a dictionary.
+pub fn install_zst(zst: &[u8]) -> Option<u64> {
+    decode(zst).map(install)
+}
+
+/// Go back to the bundled dictionary.
+pub fn reset_to_embedded() -> u64 {
+    slot().set(embedded_arc())
+}
+
+/// How many times the dictionary in use was replaced since the start (0: the bundled one, never replaced).
+pub fn generation() -> u64 {
+    slot().generation.load(Ordering::SeqCst)
 }
 
 #[derive(Debug)]
@@ -213,7 +285,8 @@ mod tests {
             return;
         }
         let dict = embedded().expect("default gjs dictionary");
-        assert_eq!(dict.len(), 34_509);
+        // The GJS basic edition (dict20260718; no share-alike sources). The full edition is downloaded with セットアップ.
+        assert_eq!(dict.len(), 22_131);
         let high = dict.cluster_index('高').expect("高 in bundled gjs dictionary");
         assert_eq!(dict.cluster_index('髙'), Some(high));
         let book = crate::Presentation::empty(crate::geometry::EmuSize::WIDESCREEN);
@@ -228,6 +301,20 @@ mod tests {
                 (ibis_calc::CellValue::Number(rank), false),
             );
         }
+    }
+
+    #[test]
+    fn a_slot_replaces_and_restores_the_dictionary() {
+        // A slot of its own: the global one is read by the other tests of this crate at the same time.
+        let bundled = embedded_arc();
+        let s = Slot::new(bundled.clone());
+        let other = Arc::new(VariantClusters::from_bytes(fixture()).unwrap());
+        assert_eq!(s.set(Some(other)), 1);
+        assert_eq!(s.get().unwrap().cluster('B').unwrap().representative, 'A');
+        assert_eq!(s.set(bundled.clone()), 2);
+        assert_eq!(s.get().map(|d| d.len()), bundled.map(|d| d.len()));
+        assert!(decode(b"not zstd").is_none());
+        assert!(decode(&[]).is_none());
     }
 
     #[test]

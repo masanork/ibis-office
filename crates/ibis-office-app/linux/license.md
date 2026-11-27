@@ -15,7 +15,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | Lucide | アイコン（実行ファイルに埋め込み） | ISC |
 | Material Symbols（Google） | タイトル行・メニュー・ツールバー・サイドバーのアイコン（実行ファイルに埋め込み） | Apache-2.0 |
 | Unicode 15.0 | 文字の表示可否データ | Unicode-3.0 |
-| 異体字クラスターマップ | 異体字照合 | 調製・提供 楠 正憲 |
+| 異体字クラスターマップ（GJS 基本版） | 異体字照合（ヘルプ > セットアップで完全版を取得可） | Unicode-3.0 AND BSD-3-Clause AND Apache-2.0 AND MIT（調製・提供 楠 正憲） |
 
 ## Rust の部品（919 件）
 
@@ -1206,6 +1206,95 @@ authorization of the copyright holder.
 
 SPDX-License-Identifier: Unicode-3.0
 ```
+
+### 異体字クラスターマップ（GJS 基本版）
+
+照合に使う異体字の対応表。より大きい完全版（CC BY-SA 2.1 JP）は同梱せず、ヘルプ > セットアップから利用者が選んで取得する。
+
+## GJS 異体字クラスタ 基本版 (SA 条件なし) — dict20260718
+
+- 収録: 22,131 文字・8,462 クラスタ
+- ファイル: `clusters.csv` (member_codepoint, cluster_id, representative_codepoint)、`variant-clusters.zst` (ibis-variant-bitmap/1+zstd)
+- クラスタへの所属は「確認が必要な候補」を示すもので、同一人物や安全な置換を意味しない。
+- 現代日本語では別字として扱う組 (托/拓・愉/愈・伙/火・䄷/石) には辺を張らない。
+- 配布元: https://gjs-9w9.pages.dev/datasets/variant-clusters/
+- 作成手順・評価: GJS リポジトリの `docs/legal/variant-cluster-data-sources.md`
+
+### 出典と利用条件 (基本版)
+
+| 出典 | 内容 | 条件 |
+| --- | --- | --- |
+| Unicode Unihan Database 17.0 (kSemanticVariant 等, kJinmeiyoKanji, kJoyoKanji, kJis0, kJIS0213, kMojiJoho) | 異体字関係、代表字の選定 | Unicode License V3 (LICENSE-Unicode.txt) |
+| Mozc `src/data/single_kanji/variant_rule.txt` (「別字」区分は除外) | 旧字体・俗字・正字など | BSD-3-Clause, Copyright Google Inc. (LICENSE-Mozc.txt) |
+| OpenCC `data/dictionary/JPShinjitaiCharacters.txt` | 常用・人名用・表外漢字字体表の新旧字体 | Apache License 2.0 (LICENSE-OpenCC.txt) |
+| 国文学研究資料館 国書データベース異体字リスト (kokubunken/kokusho-itaiji-search) のうち他の資料と一致する組 | 異体字関係 | MIT, Copyright 2023 国文学研究資料館 (LICENSE-NIJL.txt) |
+| 常用漢字表 (平成22年内閣告示第2号) の括弧内康熙字典体、人名用漢字、誤字俗字・正字一覧表など | 新旧字体・俗字 | 告示・法令・通達 (著作権法第13条) |
+| デジタル庁「JIS X 0213への代替マップ 1.0版」のうちデジタル庁が独自に定義した区分1 | 行政事務標準文字 (GJ) と MJ 文字の代替 | 事務連絡 (通達に類するもの。著作権法第13条第2号) |
+
+基本版は上記の各条件に従って再配布できる (SA 条件はない)。再配布時はこの NOTICE.md と LICENSE-*.txt を同梱すること。
+
+#### Mozc（src/data/single_kanji/variant_rule.txt）
+
+```text
+Copyright 2010-2018, Google Inc.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above
+    copyright notice, this list of conditions and the following disclaimer
+    in the documentation and/or other materials provided with the
+    distribution.
+  * Neither the name of Google Inc. nor the names of its
+    contributors may be used to endorse or promote products derived from
+    this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+#### 国文学研究資料館 国書データベース異体字リスト
+
+```text
+MIT License
+
+Copyright (c) 2023 国文学研究資料館 (NIJL)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+#### OpenCC（data/dictionary/JPShinjitaiCharacters.txt）
+
+Open Chinese Convert (OpenCC), https://github.com/BYVoid/OpenCC 。Apache License 2.0（本文は下の「ライセンス本文」の Apache-2.0）。
 
 ### gjs character classification
 
