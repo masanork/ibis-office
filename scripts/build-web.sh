@@ -30,6 +30,8 @@ fi
 # from a string, no eval (scripts/check-web-sources.py; a line with a reason carries `host-lint-allow: <reason>`).
 python3 scripts/check-web-sources.py --self-test
 python3 scripts/check-web-sources.py
+python3 scripts/check-gpui-hazards.py --self-test
+python3 scripts/check-gpui-hazards.py
 
 PROFILE=debug
 FLAGS=()

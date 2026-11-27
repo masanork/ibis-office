@@ -1118,7 +1118,77 @@ fn url_path(url: &str) -> Option<std::path::PathBuf> {
 
 /// Native entry point; see [`Args`] for the command line.
 #[cfg(all(not(target_family = "wasm"), not(target_os = "android"), not(target_os = "ios")))]
+fn install_native_panic_log_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let thread_name = std::thread::current()
+            .name()
+            .unwrap_or("unnamed")
+            .to_string();
+        let location = info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<non-string panic payload>".to_string()
+        };
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let report = format!(
+            "=== ibisOffice / soraneDocs Panic Report ===\n\
+             timestamp_unix: {secs}\n\
+             version: {}\n\
+             os_arch: {}/{}\n\
+             thread: {thread_name}\n\
+             location: {location}\n\
+             message: {payload}\n\n\
+             backtrace:\n{backtrace}\n",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        );
+        if let Some(base) = crate::shell::app_data::base() {
+            let dir = base.join("ibisOffice").join("crash-logs");
+            if std::fs::create_dir_all(&dir).is_ok() {
+                let latest = dir.join("last-panic.log");
+                let stamped = dir.join(format!("panic-{secs}.log"));
+                let _ = std::fs::write(&latest, &report);
+                let _ = std::fs::write(&stamped, &report);
+                // Keep only the 20 most recent stamped crash logs.
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    let mut logs: Vec<std::path::PathBuf> = entries
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| {
+                            p.file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.starts_with("panic-") && n.ends_with(".log"))
+                        })
+                        .collect();
+                    logs.sort();
+                    if logs.len() > 20 {
+                        for stale in &logs[..logs.len() - 20] {
+                            let _ = std::fs::remove_file(stale);
+                        }
+                    }
+                }
+                eprintln!("[ibisOffice] panic report written to {}", latest.display());
+            }
+        }
+        previous(info);
+    }));
+}
+
+#[cfg(all(not(target_family = "wasm"), not(target_os = "android"), not(target_os = "ios")))]
 pub fn run_native() {
+    install_native_panic_log_hook();
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if std::env::args().nth(1).as_deref() == Some("--assistant-acp-workbook") {
         let Some(socket) = std::env::args_os().nth(2) else { std::process::exit(2) };

@@ -35,6 +35,8 @@ if [[ "${1:-}" == "--release" || -n $QUICK ]]; then PROFILE=release; FLAGS=(--re
 # that the everyday builds (target/debug, target/release) are not rebuilt by the flags.
 REMAP="--remap-path-prefix=$HOME/.cargo/registry/src=crates.io --remap-path-prefix=$HOME/.cargo/git/checkouts=git --remap-path-prefix=$HOME/.rustup=rustup --remap-path-prefix=$(pwd)=."
 export IBIS_THIRD_PARTY_NOTICES="$PWD/target/third-party-macos.md"
+python3 scripts/check-gpui-hazards.py --self-test
+python3 scripts/check-gpui-hazards.py
 python3 scripts/gen-web-licenses.py macos
 if [[ -n $QUICK ]]; then
   cargo build --release --locked -p ibis-office-app -p ibis-office-updater

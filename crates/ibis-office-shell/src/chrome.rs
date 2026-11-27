@@ -2330,7 +2330,7 @@ impl SlideEditor {
                 .children(tabs)
                 .children(header.map(panel::panel_header_host))
                 .child(panel::panel_contents(panel.body,pinned,footer,sidebar_scroll,self.sidebar_layout.clone(),editor.clone(),PANEL_FILL.with(|f| f.replace(false))))
-                .child(sidebar_width_handle(drag_editor, cx))
+                .child(sidebar_width_handle(self.sidebar_drag.is_some(), drag_editor, cx))
                 .when(pane_blocked, |d| d.child(div().absolute().inset_0().occlude()
                     .on_mouse_down(MouseButton::Left, |_,_,cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_,_,cx| cx.stop_propagation())
@@ -2346,8 +2346,11 @@ pub(crate) const SIDEBAR_MAX_WIDTH: f32 = 720.0;
 
 /// The right pane's left edge, which the pointer drags to change the pane's width (every panel's, in every format).
 /// The pane stays at least [`SIDEBAR_WIDTH`] and at most [`SIDEBAR_MAX_WIDTH`] (and a part of the window).
-fn sidebar_width_handle(editor: WeakEntity<SlideEditor>, cx: &mut Context<SlideEditor>) -> impl IntoElement {
-    let dragging = editor.read_with(cx, |this, _| this.sidebar_drag.is_some()).unwrap_or(false);
+fn sidebar_width_handle(
+    dragging: bool,
+    editor: WeakEntity<SlideEditor>,
+    cx: &mut Context<SlideEditor>,
+) -> impl IntoElement {
     let tracker = editor.clone();
     div()
         .id("sidebar-width-handle")
