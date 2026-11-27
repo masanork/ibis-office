@@ -420,6 +420,7 @@ pub fn marp_slide_spans(text: &str) -> Vec<SectionSpan> {
 }
 
 const XLSX_SHEET_MARKER_PREFIX: &str = "<!-- xlsx-sheet ";
+const IBIS_SHEET_MARKER_PREFIX: &str = "<!-- ibis-sheet:";
 
 fn parse_xlsx_sheet_marker_name(trimmed: &str) -> Option<String> {
     let rest = trimmed.strip_prefix(XLSX_SHEET_MARKER_PREFIX)?;
@@ -431,10 +432,26 @@ fn parse_xlsx_sheet_marker_name(trimmed: &str) -> Option<String> {
     val.get("name")?.as_str().map(ToString::to_string)
 }
 
+fn parse_ibis_sheet_marker_name(trimmed: &str) -> Option<String> {
+    let inner = trimmed.strip_prefix(IBIS_SHEET_MARKER_PREFIX)?.strip_suffix("-->")?.trim();
+    if inner.is_empty() {
+        return None;
+    }
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(inner) {
+        if let Some(s) = val.as_str() {
+            return Some(s.to_string());
+        }
+        if let Some(s) = val.get("name").and_then(serde_json::Value::as_str) {
+            return Some(s.to_string());
+        }
+    }
+    Some(inner.to_string())
+}
+
 /// Split a Workbook Markdown document into 0-based visible sheet [`SectionSpan`]s.
 ///
-/// - Recognizes `<!-- xlsx-sheet ... -->` markers outside fenced code blocks.
-/// - Falls back to a single sheet span when no `<!-- xlsx-sheet ... -->` markers are present.
+/// - Recognizes `<!-- xlsx-sheet ... -->` and `<!-- ibis-sheet: ... -->` markers outside fenced code blocks.
+/// - Falls back to a single sheet span when no sheet markers are present.
 pub fn workbook_sheet_spans(text: &str) -> Vec<SectionSpan> {
     let lines = split_line_slices(text);
     if lines.is_empty() {
@@ -461,6 +478,8 @@ pub fn workbook_sheet_spans(text: &str) -> Vec<SectionSpan> {
         let trimmed_end = trimmed.trim_end();
         if trimmed_end.starts_with(XLSX_SHEET_MARKER_PREFIX) {
             markers.push((line.idx, parse_xlsx_sheet_marker_name(trimmed_end)));
+        } else if trimmed_end.starts_with(IBIS_SHEET_MARKER_PREFIX) {
+            markers.push((line.idx, parse_ibis_sheet_marker_name(trimmed_end)));
         }
     }
 
@@ -3034,6 +3053,12 @@ not_a_slide: true
         let single = "---\ntype: workbook\n---\n\n## Budget\n\n| Item | Cost |\n| --- | --- |\n| A | 10 |\n";
         let single_spans = workbook_sheet_spans(single);
         assert_eq!(single_spans.len(), 1);
+
+        let ibis_multi = include_str!("../../../assets/help/samples/workbook-sheet.md");
+        let ibis_spans = workbook_sheet_spans(ibis_multi);
+        assert_eq!(ibis_spans.len(), 2);
+        assert_eq!(ibis_spans[0].title.as_deref(), Some("売上計画"));
+        assert_eq!(ibis_spans[1].title.as_deref(), Some("構成メモ"));
         assert_eq!(single_spans[0].title.as_deref(), Some("Budget"));
     }
 
