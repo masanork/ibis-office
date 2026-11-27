@@ -4771,7 +4771,7 @@ impl SlideEditor {
         let show_menu_bar = !narrow_phone && self.show_menu_bar && embedded.is_none_or(|p| p.show_menu_bar);
         let show_toolbar = !narrow_phone && self.show_toolbar && embedded.is_none_or(|p| p.show_toolbar);
         let show_title_row = embedded.is_none_or(|p| p.show_title_row)
-            && (!self.is_read_only() || show_menu_bar || {
+            && (mobile_viewer || narrow_phone || !self.is_read_only() || show_menu_bar || {
                 #[cfg(target_arch = "wasm32")]
                 {
                     crate::embed::show_close() || crate::embed::show_download()
