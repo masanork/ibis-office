@@ -62,8 +62,6 @@ WordPerfect 6系（`.wpd`・`.wp6`）を開き、編集可能なDOCXへ別名保
 
 WPG図はDOCX内でPNG画像になります。未対応レコードがあると埋め込み図全体が欠落する場合があり、開くときに欠落件数を通知します。暗号化文書や6系以外の読み込みは対象外です。アンカー付き線形塗りは合成WPDで図全体の座標に固定する挙動を確認しました。WordPerfect／Corel Presentationsの元表示との照合は未実施で、一部の複合パスやグラデーションはLibreOfficeの描画とも異なります。検証範囲は対象サンプルとmacOS版でのDOCX別名保存・再オープンです。
 
-Web版のスタート画面に「WordPerfect 6の表」「WordPerfect 6の埋め込み図」を用意しています。どちらも合成データです。[表のWPD](../www/samples/wordperfect-table.wpd) · [埋め込み図のWPD](../www/samples/wordperfect-graphics.wpd)
-
 ### 4. BI・データ分析・外部データ連携
 - **クロスフォーマット SQL & クエリパイプライン** *（提案中: [#263](https://github.com/ibisjp/ibis-office/issues/263)）*：CSV・Parquet（列選択・複数ファイル追記・Zstandard）・Arrow IPC・JSON Lines・Avro・SQLite テーブルをインメモリ／ストリーミング SQLite（Turso）で結合クエリし、Excel テーブルへの書き出し、バインド先を指定した一括更新、スキーマ変更検知、品質チェックゲート、文字コードを考慮した CSV 上書き保存を実現。
 - **データ分析・Power Query M 言語・モデリング** *（Fork / 提案中）*：依存ゼロの Power Query M 言語インタプリタ（`crates/ibis-m-lang`）、クエリエディタ／レポート管理、ピボットテーブルの集計フィールド・集計アイテム・ドリルダウン、コホート分析チャート、統計分析パネル、予測シート、ソルバー、クイック分析、プレフィル機能。
