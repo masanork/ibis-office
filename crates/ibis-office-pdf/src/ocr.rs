@@ -7,10 +7,40 @@
 //! (e.g. scanned PDFs, OFDs, XPS, or XDW pages) and populates [`PageTextIndex`]
 //! so selection, search, copy, and Markdown export work seamlessly.
 
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+
 use ibis_ocr::engine::NdlOcrEngine;
 use ibis_ocr::{OcrLine, OcrPage};
 use ibis_pdf::scene::{CharBox, DisplayCmd, PageScene, PageTextIndex, PdfRect};
 use image::{DynamicImage, RgbaImage};
+
+static SHARED_ENGINE: OnceLock<Mutex<Option<(std::path::PathBuf, NdlOcrEngine)>>> = OnceLock::new();
+
+/// Run OCR on `scene` using the cached [`NdlOcrEngine`] loaded from `model_dir`.
+pub fn ocr_page_scene_from_dir(
+    model_dir: &Path,
+    scene: &PageScene,
+    force: bool,
+) -> ibis_ocr::Result<PageTextIndex> {
+    if !force && !scene.text_index.chars.is_empty() {
+        return Ok(scene.text_index.clone());
+    }
+    let lock = SHARED_ENGINE.get_or_init(|| Mutex::new(None));
+    let mut guard = lock
+        .lock()
+        .map_err(|_| ibis_ocr::Error::new("OCR engine lock poisoned"))?;
+    let needs_reload = match guard.as_ref() {
+        Some((dir, _)) => dir != model_dir,
+        None => true,
+    };
+    if needs_reload {
+        let engine = NdlOcrEngine::from_dir(model_dir)?;
+        *guard = Some((model_dir.to_path_buf(), engine));
+    }
+    let (_, engine) = guard.as_mut().expect("engine initialized");
+    ocr_page_scene(engine, scene, force)
+}
 
 /// Recognize text from all raster images in `scene` and return a [`PageTextIndex`].
 ///

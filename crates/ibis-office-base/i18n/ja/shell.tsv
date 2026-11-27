@@ -1966,3 +1966,10 @@ vsdx.guide.step2	図形をダブルクリックしてラベルを入力できま
 vsdx.guide.step3	コネクタで図形同士を接続し、.vsdx で保存できます
 shape.parallelogram	平行四辺形
 fixed-layout.edit-docx	Word のコピーを編集（DOCX）
+fixed-layout.ocr	文字認識 (OCR)
+fixed-layout.ocr.running	ページ {page} を OCR 解析しています…
+fixed-layout.ocr.done	OCR 完了: {chars} 文字を認識しました
+fixed-layout.ocr.empty	このページでは文字が検出されませんでした
+fixed-layout.ocr.already	このページには既にテキストが含まれています
+fixed-layout.ocr.failed	OCR に失敗しました: {error}
+fixed-layout.ocr.unavailable	このビルドでは OCR 機能が有効になっていません

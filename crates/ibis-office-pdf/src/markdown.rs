@@ -59,7 +59,17 @@ fn write_page(scene: &PageScene, number: usize, options: ExportOptions, markdown
         markdown.push_str("\\newpage\n\n");
     }
     let _ = writeln!(markdown, "<!-- fixed-layout-page: {number} -->\n");
-    let text = page_text(&scene.text_index, options.layout);
+    #[allow(unused_mut)]
+    let mut text = page_text(&scene.text_index, options.layout);
+    #[cfg(all(feature = "ocr", not(target_family = "wasm")))]
+    if text.trim().is_empty()
+        && ibis_office_shell::ocr_setup::are_models_installed()
+        && let Some(dir) = ibis_office_base::app_data::ocr_models_dir()
+        && let Ok(ocr_index) = crate::ocr::ocr_page_scene_from_dir(&dir, scene, false)
+        && !ocr_index.chars.is_empty()
+    {
+        text = page_text(&ocr_index, options.layout);
+    }
     if text.trim().is_empty() {
         let _ = writeln!(markdown, "<!-- fixed-layout-diagnostic: Page {number}: no extractable text -->\n");
     } else if options.layout == TextLayout::Physical {

@@ -1968,3 +1968,10 @@ vsdx.guide.step2	Double-click any shape to edit its label
 vsdx.guide.step3	Connect shapes with connectors and save as .vsdx
 shape.parallelogram	Parallelogram
 fixed-layout.edit-docx	Edit a Word copy (DOCX)
+fixed-layout.ocr	Recognize Text (OCR)
+fixed-layout.ocr.running	Running OCR on page {page}…
+fixed-layout.ocr.done	OCR complete: {chars} characters recognized
+fixed-layout.ocr.empty	No text was detected on this page
+fixed-layout.ocr.already	This page already contains text
+fixed-layout.ocr.failed	OCR failed: {error}
+fixed-layout.ocr.unavailable	OCR is not enabled in this build

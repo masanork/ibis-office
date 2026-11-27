@@ -54,7 +54,7 @@ impl SlideEditor {
     }
 
     /// Help > OCR モデルのセットアップ
-    pub(crate) fn open_ocr_setup(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_ocr_setup(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.ocr_setup_state().is_some() {
             return;
         }

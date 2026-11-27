@@ -444,6 +444,20 @@ impl FormatEditor for PdfDocument {
                 item.disabled = !enabled;
             }
         }
+        #[cfg(not(target_family = "wasm"))]
+        if has_pages {
+            use ibis_office_shell::chrome::{MenuEntry, MenuId, MenuItem};
+            let tools = menus.items_mut(MenuId::Tools);
+            if !tools.iter().any(|e| matches!(e, MenuEntry::Item(i) if i.id == "fixed-layout.ocr")) {
+                tools.insert(
+                    0,
+                    MenuItem::tr("fixed-layout.ocr")
+                        .icon("text_fields")
+                        .on(|editor, window, cx| run_ocr_on_current_page(editor, window, cx))
+                        .into(),
+                );
+            }
+        }
     }
 
     fn menu_items(editor: &SlideEditor, part: ibis_office_shell::chrome::MenuPart) -> Vec<ibis_office_shell::chrome::MenuEntry> {
@@ -469,6 +483,14 @@ impl FormatEditor for PdfDocument {
                         Err(error) => editor.set_status(error, cx),
                     }
                 }).into());
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if viewer_of(editor).is_some_and(|viewer| !viewer.lock().expect("pdf viewer lock").pages.is_empty()) {
+            items.push(
+                ToolButton::new("fixed-layout-ocr", "text_fields", text("fixed-layout.ocr"))
+                    .click(|editor, window, cx| run_ocr_on_current_page(editor, window, cx))
+                    .into(),
+            );
         }
         items.extend(grey_buttons(ibis_office_docx::viewer_toolbar_left()));
         items
@@ -1294,4 +1316,117 @@ fn grey_buttons(items: Vec<ibis_office_shell::chrome::ToolItem>) -> Vec<ibis_off
             other => other,
         })
         .collect()
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn run_ocr_on_current_page(
+    editor: &mut SlideEditor,
+    window: &mut Window,
+    cx: &mut Context<SlideEditor>,
+) {
+    #[cfg(not(feature = "ocr"))]
+    {
+        let _ = window;
+        editor.set_status(ibis_office_shell::i18n::text("fixed-layout.ocr.unavailable").to_string(), cx);
+    }
+
+    #[cfg(feature = "ocr")]
+    {
+        if !ibis_office_shell::ocr_setup::are_models_installed() {
+            editor.open_ocr_setup(window, cx);
+            return;
+        }
+        let Some(model_dir) = ibis_office_base::app_data::ocr_models_dir() else {
+            return;
+        };
+        let Some(viewer_arc) = viewer_of(editor) else {
+            return;
+        };
+        let (page_index, scene) = {
+            let mut viewer = viewer_arc.lock().expect("pdf viewer lock");
+            let page_index = viewer.current_page;
+            match viewer.page_scene(page_index) {
+                Ok(scene) => (page_index, scene),
+                Err(err) => {
+                    editor.set_status(
+                        ibis_office_shell::i18n::format(
+                            "fixed-layout.ocr.failed",
+                            &[("error", &err.to_string())],
+                        ),
+                        cx,
+                    );
+                    return;
+                }
+            }
+        };
+
+        if !scene.text_index.chars.is_empty() {
+            editor.set_status(ibis_office_shell::i18n::text("fixed-layout.ocr.already").to_string(), cx);
+            return;
+        }
+
+        let page_num = page_index + 1;
+        editor.set_status(
+            ibis_office_shell::i18n::format("fixed-layout.ocr.running", &[("page", &page_num)]),
+            cx,
+        );
+
+        cx.spawn(async move |this, cx| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let res = crate::ocr::ocr_page_scene_from_dir(&model_dir, &scene, false);
+                let _ = tx.send(res);
+            });
+            let result = loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(80))
+                    .await;
+                match rx.try_recv() {
+                    Ok(res) => break res,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        break Err(ibis_ocr::Error::new("OCR worker thread terminated"));
+                    }
+                }
+            };
+
+            let _ = this.update(cx, |editor, cx| {
+                match result {
+                    Ok(text_index) if text_index.chars.is_empty() => {
+                        editor.set_status(ibis_office_shell::i18n::text("fixed-layout.ocr.empty").to_string(), cx);
+                    }
+                    Ok(text_index) => {
+                        let char_count = text_index.chars.len();
+                        if let Some(viewer_arc) = viewer_of(editor) {
+                            let mut viewer = viewer_arc.lock().expect("pdf viewer lock");
+                            if let Ok(cached) = viewer.page_scene(page_index) {
+                                let mut updated = (*cached).clone();
+                                updated.text_index = text_index;
+                                viewer.scene_cache.insert(page_index, Arc::new(updated));
+                                viewer.text_found = Some(true);
+                            }
+                        }
+                        editor.set_status(
+                            ibis_office_shell::i18n::format(
+                                "fixed-layout.ocr.done",
+                                &[("chars", &char_count)],
+                            ),
+                            cx,
+                        );
+                    }
+                    Err(err) => {
+                        editor.set_status(
+                            ibis_office_shell::i18n::format(
+                                "fixed-layout.ocr.failed",
+                                &[("error", &err.to_string())],
+                            ),
+                            cx,
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 }
