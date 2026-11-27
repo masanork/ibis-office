@@ -1334,30 +1334,39 @@ pub fn list_sd_jwt_disclosure_paths(raw_sd_jwt: &str) -> Result<Vec<(String, Cla
         .collect())
 }
 
-/// Re-presents an already-issued `.sd-jwt` by filtering its Disclosures to `selected_paths`
-/// (preserving original Base64url Disclosure bytes so the Issuer signature and `_sd` digests remain intact)
-/// and signing a fresh RFC 9901 §4.3 Key Binding JWT (`kb+jwt`) with `holder_key`.
-pub fn present_existing_sd_jwt(
+/// Result of preparing an existing `.sd-jwt` for key-binding signing by an external signer
+/// (e.g. browser WebCrypto `SubtleCrypto.sign` with a non-extractable key).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedExternalSdJwtPresentation {
+    pub sd_jwt_without_kb: String,
+    pub disclosed_paths: Vec<String>,
+    pub omitted_paths: Vec<String>,
+    pub holder_cnf_matches: Option<bool>,
+}
+
+/// Filters an already-issued `.sd-jwt` to `selected_paths` without signing `kb+jwt`,
+/// optionally checking whether `cnf.jwk` matches `holder_public_jwk`.
+pub fn prepare_existing_sd_jwt_for_external_signer(
     raw_sd_jwt: &str,
     selected_paths: Option<&[String]>,
-    aud: &str,
-    nonce: &str,
-    iat: i64,
-    holder_key: &Es256KeyPair,
-) -> Result<ExistingSdJwtPresentation, String> {
+    holder_public_jwk: Option<&ClaimValue>,
+) -> Result<PreparedExternalSdJwtPresentation, String> {
     let (issuer_jwt, payload_obj, raw_disclosures, resolved) =
         inspect_sd_jwt_disclosures(raw_sd_jwt)?;
 
-    let holder_cnf_matches = payload_obj
-        .get("cnf")
-        .and_then(ClaimValue::as_object)
-        .and_then(|cnf| cnf.get("jwk"))
-        .and_then(ClaimValue::as_object)
-        .and_then(|jwk| {
-            let x = base64url_decode(jwk.get("x")?.as_str()?)?;
-            let y = base64url_decode(jwk.get("y")?.as_str()?)?;
-            Some(x.as_slice() == holder_key.x && y.as_slice() == holder_key.y)
-        });
+    let holder_cnf_matches = holder_public_jwk.and_then(|expected| {
+        let expected_obj = expected.as_object()?;
+        let ex = expected_obj.get("x")?.as_str()?;
+        let ey = expected_obj.get("y")?.as_str()?;
+        let cnf_jwk = payload_obj
+            .get("cnf")
+            .and_then(ClaimValue::as_object)
+            .and_then(|cnf| cnf.get("jwk"))
+            .and_then(ClaimValue::as_object)?;
+        let cx = cnf_jwk.get("x")?.as_str()?;
+        let cy = cnf_jwk.get("y")?.as_str()?;
+        Some(cx == ex && cy == ey)
+    });
 
     let mut kept_encoded = std::collections::BTreeSet::<String>::new();
     let mut disclosed_paths = Vec::new();
@@ -1396,13 +1405,38 @@ pub fn present_existing_sd_jwt(
         }
     }
 
-    let kb = issue_kb_jwt(&sd_jwt_without_kb, aud, nonce, iat, holder_key);
-    Ok(ExistingSdJwtPresentation {
+    Ok(PreparedExternalSdJwtPresentation {
         sd_jwt_without_kb,
-        kb,
         disclosed_paths,
         omitted_paths,
         holder_cnf_matches,
+    })
+}
+
+/// Re-presents an already-issued `.sd-jwt` by filtering its Disclosures to `selected_paths`
+/// (preserving original Base64url Disclosure bytes so the Issuer signature and `_sd` digests remain intact)
+/// and signing a fresh RFC 9901 §4.3 Key Binding JWT (`kb+jwt`) with `holder_key`.
+pub fn present_existing_sd_jwt(
+    raw_sd_jwt: &str,
+    selected_paths: Option<&[String]>,
+    aud: &str,
+    nonce: &str,
+    iat: i64,
+    holder_key: &Es256KeyPair,
+) -> Result<ExistingSdJwtPresentation, String> {
+    let holder_jwk = holder_key.to_public_jwk();
+    let prep = prepare_existing_sd_jwt_for_external_signer(
+        raw_sd_jwt,
+        selected_paths,
+        Some(&holder_jwk),
+    )?;
+    let kb = issue_kb_jwt(&prep.sd_jwt_without_kb, aud, nonce, iat, holder_key);
+    Ok(ExistingSdJwtPresentation {
+        sd_jwt_without_kb: prep.sd_jwt_without_kb,
+        kb,
+        disclosed_paths: prep.disclosed_paths,
+        omitted_paths: prep.omitted_paths,
+        holder_cnf_matches: prep.holder_cnf_matches,
     })
 }
 

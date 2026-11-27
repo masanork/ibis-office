@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildCrossDeviceQrUri,
   clearKey,
   computeJwkThumbprintShort,
   createCrossDeviceVcSession,
@@ -133,4 +134,15 @@ test("submitOid4vpDirectPost falls back to /api/vc/direct-post relay when direct
 
 test("isDigitalCredentialsSupported returns false in Node without DigitalCredential", () => {
   assert.equal(isDigitalCredentialsSupported(), false);
+});
+
+test("buildCrossDeviceQrUri encodes vc_session, nonce, and epk public JWK", async () => {
+  const session = await createCrossDeviceVcSession();
+  const uri = buildCrossDeviceQrUri(session, "https://ibis.sorane.dev/");
+  const parsed = new URL(uri);
+  assert.equal(parsed.pathname, "/spot/");
+  assert.equal(parsed.searchParams.get("vc_session"), session.sessionId);
+  assert.equal(parsed.searchParams.get("nonce"), session.nonce);
+  const epk = JSON.parse(parsed.searchParams.get("epk"));
+  assert.deepEqual(epk, session.publicJwk);
 });

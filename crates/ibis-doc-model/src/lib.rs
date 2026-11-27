@@ -114,7 +114,9 @@ pub use sd_jwt::{
     Es256KeyPair, ExistingSdJwtPresentation, KeyBindingJwtOutput, Oid4vpRequest, SdJwtDisclosure,
     SdJwtOptions, SdJwtOutput, assemble_kb_jwt_from_raw_sig, base64url_decode, base64url_encode,
     build_kb_jwt_signing_input, hmac_sha256, issue_kb_jwt, issue_sd_jwt, issue_sheet_sd_jwt,
-    list_sd_jwt_disclosure_paths, percent_encode_form_component, present_existing_sd_jwt, sha256,
+    PreparedExternalSdJwtPresentation, list_sd_jwt_disclosure_paths,
+    percent_encode_form_component, prepare_existing_sd_jwt_for_external_signer,
+    present_existing_sd_jwt, sha256,
     verify_es256,
 };
 pub use sd_jwt_binding::{

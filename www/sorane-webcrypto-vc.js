@@ -471,6 +471,137 @@ export async function decryptCrossDevicePayload(recipientPrivateKey, envelope) {
   return new TextDecoder().decode(ptBuf);
 }
 
+/**
+ * Builds a Spot/OID4VP cross-device QR session URI containing the ephemeral
+ * ECDH P-256 public JWK (`epk`) and one-time `nonce`.
+ */
+export function buildCrossDeviceQrUri(session, origin = "https://ibis.sorane.dev") {
+  const base = origin.replace(/\/+$/g, "");
+  const epkParam = encodeURIComponent(JSON.stringify(session.publicJwk));
+  return `${base}/spot/?vc_session=${encodeURIComponent(session.sessionId)}&nonce=${encodeURIComponent(session.nonce)}&epk=${epkParam}`;
+}
+
+/**
+ * Opens a lightweight browser modal for importing a VC (`.sd-jwt` / `.mdoc`)
+ * from a smartphone Wallet/PWA (via ECDH+AES-GCM encrypted envelope or Digital Credentials API)
+ * and hydrating it into the in-memory Web Vault.
+ */
+export async function openCrossDeviceVcModal({ onImportCredential } = {}) {
+  if (typeof document === "undefined") {
+    throw new Error("DOM document is not available.");
+  }
+  const existing = document.getElementById("sorane-vc-import-modal");
+  if (existing) existing.remove();
+
+  const session = await createCrossDeviceVcSession();
+  const origin =
+    typeof window !== "undefined" && window.location ? window.location.origin : "https://ibis.sorane.dev";
+  const qrUri = buildCrossDeviceQrUri(session, origin);
+
+  const overlay = document.createElement("div");
+  overlay.id = "sorane-vc-import-modal";
+  overlay.style.cssText =
+    "position:fixed;inset:0;z-index:20000;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;font:13px/1.5 system-ui,sans-serif;";
+
+  const card = document.createElement("div");
+  card.style.cssText =
+    "background:#fff;color:#0f172a;border-radius:10px;padding:18px;width:min(460px,92vw);box-shadow:0 16px 40px rgba(15,23,42,.28);display:flex;flex-direction:column;gap:10px;";
+
+  card.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <strong style="font-size:14px;">📱 スマホ / Wallet から VC を取り込む</strong>
+      <button type="button" data-close style="border:0;background:transparent;font-size:16px;cursor:pointer;">✕</button>
+    </div>
+    <div style="font-size:12px;color:#475569;">
+      1) 対応ブラウザでは W3C Digital Credentials API、2) スマホ連携では下記セッション URI（一時 ECDH P-256 鍵付き）で暗号化封筒を受け取れます。
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button type="button" data-dcapi style="padding:6px 10px;border-radius:6px;border:1px solid #cbd5e1;background:#f8fafc;cursor:pointer;">
+        W3C Digital Credentials API で取得
+      </button>
+      <button type="button" data-copy-uri style="padding:6px 10px;border-radius:6px;border:1px solid #cbd5e1;background:#f8fafc;cursor:pointer;">
+        セッション URI をコピー
+      </button>
+    </div>
+    <input type="text" readonly value="${qrUri.replace(/"/g, "&quot;")}" style="width:100%;padding:6px;border:1px solid #cbd5e1;border-radius:6px;font:11px monospace;color:#334155;" />
+    <label style="font-size:12px;font-weight:600;">暗号化封筒 JSON（ECDH-ES+A256GCM）または .sd-jwt を貼り付け:</label>
+    <textarea data-payload rows="4" placeholder='{"v":1,"alg":"ECDH-ES+A256GCM",...} または eyJ...~.sd-jwt' style="width:100%;padding:6px;border:1px solid #cbd5e1;border-radius:6px;font:11px monospace;"></textarea>
+    <div data-status style="font-size:12px;color:#0f766e;min-height:18px;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;">
+      <button type="button" data-close style="padding:6px 12px;border-radius:6px;border:1px solid #cbd5e1;background:#fff;cursor:pointer;">閉じる</button>
+      <button type="button" data-import style="padding:6px 12px;border-radius:6px;border:0;background:#1a5fd6;color:#fff;cursor:pointer;">復号して Vault に取込</button>
+    </div>
+  `;
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  const statusEl = card.querySelector("[data-status]");
+  const payloadEl = card.querySelector("[data-payload]");
+  const closeAll = () => overlay.remove();
+  card.querySelectorAll("[data-close]").forEach((btn) => btn.addEventListener("click", closeAll));
+
+  const dcBtn = card.querySelector("[data-dcapi]");
+  if (!isDigitalCredentialsSupported()) {
+    dcBtn.disabled = true;
+    dcBtn.title = "このブラウザは W3C Digital Credentials API に未対応です";
+  } else {
+    dcBtn.addEventListener("click", async () => {
+      try {
+        statusEl.style.color = "#0f766e";
+        statusEl.textContent = "Wallet からの応答を待機中…";
+        const cred = await requestDigitalCredential({ nonce: session.nonce });
+        const raw = typeof cred.data === "string" ? cred.data : JSON.stringify(cred.data ?? cred);
+        payloadEl.value = raw;
+        statusEl.textContent = "Digital Credentials API から取得しました。";
+      } catch (err) {
+        statusEl.style.color = "#b91c1c";
+        statusEl.textContent = err instanceof Error ? err.message : String(err);
+      }
+    });
+  }
+
+  card.querySelector("[data-copy-uri]").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(qrUri);
+      statusEl.style.color = "#0f766e";
+      statusEl.textContent = "セッション URI をコピーしました。";
+    } catch {
+      statusEl.style.color = "#b91c1c";
+      statusEl.textContent = "クリップボードへのコピーに失敗しました。";
+    }
+  });
+
+  card.querySelector("[data-import]").addEventListener("click", async () => {
+    try {
+      const rawInput = payloadEl.value.trim();
+      if (!rawInput) {
+        throw new Error("封筒 JSON または .sd-jwt を入力してください。");
+      }
+      let credentialText = rawInput;
+      if (rawInput.startsWith("{")) {
+        const envelope = JSON.parse(rawInput);
+        credentialText = await decryptCrossDevicePayload(session.privateKey, envelope);
+      }
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const relPath = `credentials/mobile-${stamp}.sd-jwt`;
+      if (typeof onImportCredential === "function") {
+        await onImportCredential(relPath, credentialText);
+      } else if (typeof window !== "undefined" && typeof window.ibisOfficeHydrateWebVaultFile === "function") {
+        window.ibisOfficeHydrateWebVaultFile(relPath, credentialText);
+      }
+      statusEl.style.color = "#0f766e";
+      statusEl.textContent = `取り込み完了: ${relPath}`;
+      setTimeout(closeAll, 700);
+    } catch (err) {
+      statusEl.style.color = "#b91c1c";
+      statusEl.textContent = err instanceof Error ? err.message : String(err);
+    }
+  });
+
+  return { sessionId: session.sessionId, qrUri };
+}
+
 // Install browser global bridges for WASM (`ibis-office-shell::vc_transport::wasm`).
 if (typeof window !== "undefined") {
   window.soraneVcKeystore = {
@@ -490,6 +621,8 @@ if (typeof window !== "undefined") {
     createCrossDeviceVcSession,
     encryptCrossDevicePayload,
     decryptCrossDevicePayload,
+    buildCrossDeviceQrUri,
+    openCrossDeviceVcModal,
   };
 
   window.ibisOfficeWebCryptoHolderInfo = async () => {
@@ -511,5 +644,10 @@ if (typeof window !== "undefined") {
     const parsed = typeof requestJson === "string" ? JSON.parse(requestJson) : requestJson;
     const cred = await requestDigitalCredential(parsed, protocol);
     return JSON.stringify({ protocol: cred.protocol || protocol, data: cred.data ?? cred });
+  };
+
+  window.ibisOfficeOpenCrossDeviceVcModal = async () => {
+    const res = await openCrossDeviceVcModal();
+    return JSON.stringify(res);
   };
 }
