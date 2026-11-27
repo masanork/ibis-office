@@ -2178,7 +2178,7 @@ impl SlideEditor {
                 #[cfg(not(target_family = "wasm"))]
                 { self.ocr_setup_dialog(cx) }
                 #[cfg(target_family = "wasm")]
-                { None }
+                { None::<SidebarPanel> }
             } {
                 Some(panel.modal_named("ocr_setup_dialog"))
             } else if let Some(panel) = self.replace_fonts_panel(cx) {

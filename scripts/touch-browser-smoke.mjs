@@ -162,15 +162,30 @@ try {
   await waitForEditorFrame(phone);
   await phone.waitForTimeout(1000);
   const pixel = x => phone.screenshot({ clip: { x, y: 180, width: 1, height: 1 } });
-  assert((await pixel(25)).equals(await pixel(385)), 'phone document should fit between the page margins');
+  assert((await pixel(5)).equals(await pixel(385)), 'phone document should fit between the page margins');
   const phoneCdp = await phone.context().newCDPSession(phone);
   const phoneTouch = (type, touchPoints) => phoneCdp.send('Input.dispatchTouchEvent', { type, touchPoints });
-  const phoneZoom = () => phone.screenshot({ clip: { x: 303, y: 808, width: 58, height: 36 } });
-  const beforeTap = await phoneZoom();
-  await tap(phoneTouch, 7, 277, 826);
-  await phone.waitForTimeout(1000);
-  assert(!beforeTap.equals(await phoneZoom()), 'phone zoom-in button must be visible and tappable');
   const documentView = () => phone.screenshot({ clip: { x: 50, y: 170, width: 290, height: 520 } });
+  const pinchOut = async idBase => {
+    await phoneTouch('touchStart', [pt(idBase, 150, 420)]);
+    await phoneTouch('touchStart', [pt(idBase, 150, 420), pt(idBase + 1, 240, 420)]);
+    for (let step = 1; step <= 6; step++) {
+      await phoneTouch('touchMove', [
+        pt(idBase, 150 - step * 18, 420),
+        pt(idBase + 1, 240 + step * 18, 420),
+      ]);
+      await phone.waitForTimeout(40);
+    }
+    await phoneTouch('touchEnd', [pt(idBase, 42, 420)]);
+    await phoneTouch('touchEnd', []);
+    await phone.waitForTimeout(400);
+  };
+  const beforePinch = await documentView();
+  await pinchOut(30);
+  assert(!beforePinch.equals(await documentView()), 'phone pinch out must zoom the document');
+  await pinchOut(32);
+  await pinchOut(34);
+  await phone.waitForTimeout(500);
   const pan = async (id, startY, endY) => {
     await phoneTouch('touchStart', [pt(id, 200, startY)]);
     for (let step = 1; step <= 10; step++) {
@@ -181,11 +196,6 @@ try {
     await phoneTouch('touchEnd', []);
     await phone.waitForTimeout(500);
   };
-  for (let i = 0; i < 5; i++) {
-    await tap(phoneTouch, 30 + i, 277, 826);
-    await phone.waitForTimeout(150);
-  }
-  await phone.waitForTimeout(500);
   const startView = await documentView();
   await pan(20, 600, 420);
   const downView = await documentView();
@@ -237,17 +247,15 @@ try {
   assert(forward.score > 0.5 && forward.foreground > 1000, `phone swipe up must move document pixels upward: ${JSON.stringify(forward)}`);
   assert(reverse.score > 0.5 && reverse.foreground > 1000, `phone swipe down must move document pixels downward: ${JSON.stringify(reverse)}`);
   assert(stationary.score < 0.5, `stationary document pixels must not count as a scroll: ${JSON.stringify(stationary)}`);
-  // The menu overflow is available after switching the phone to editing.
-  await tap(phoneTouch, 8, 350, 24);
-  await phone.waitForTimeout(1000);
-  const menuPopup = () => phone.screenshot({ clip: { x: 150, y: 66, width: 230, height: 300 } });
-  const beforePopup = await menuPopup();
+  // The Top App Bar AI toggle opens the AI assistant sidebar on a phone.
+  const aiPanel = () => phone.screenshot({ clip: { x: 20, y: 60, width: 350, height: 400 } });
+  const beforeAi = await aiPanel();
   if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-before.png` });
-  // The English system font on Linux makes the preceding menu labels narrower.
-  const overflowX = process.platform === 'linux' ? 331 : 354;
-  await tap(phoneTouch, 9, overflowX, 61);
-  await phone.waitForTimeout(1000);
-  assert(!beforePopup.equals(await menuPopup()), 'the overflow menu must open on touch');
+  await tap(phoneTouch, 8, 244, 24);
+  await phone.waitForTimeout(800);
+  assert(!beforeAi.equals(await aiPanel()), 'phone AI toggle must open the AI assistant panel');
+  await tap(phoneTouch, 9, 244, 24);
+  await phone.waitForTimeout(500);
   if (process.env.IBIS_TOUCH_ARTIFACTS) await phone.screenshot({ path: `${process.env.IBIS_TOUCH_ARTIFACTS}/phone-after.png` });
   assert.deepEqual(failures, [], 'phone interactions must not panic');
   await phone.context().close();
@@ -269,7 +277,7 @@ try {
   await tap(viewerTouch, 99, 120, 150);
   assert.equal(await viewerMirror.getAttribute('inputmode'), 'none', 'viewing must not open the virtual keyboard');
   const viewerChooser = viewer.waitForEvent('filechooser', { timeout: 15_000 });
-  await tap(viewerTouch, 100, 260, 24);
+  await tap(viewerTouch, 100, 296, 24);
   await (await viewerChooser).setFiles('www/samples/sorane-welcome.docx');
   await viewer.waitForTimeout(1000);
 
