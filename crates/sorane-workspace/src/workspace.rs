@@ -2215,14 +2215,16 @@ impl SoraneWorkspace {
         ));
         cx.notify();
 
+        let help_locale = current_help_locale();
         cx.spawn_in(window, async move |this, cx| {
             let res = cx
                 .background_executor()
                 .spawn(async move {
-                    let repo = github::create_private_vault_repo(
+                    let repo = github::create_private_vault_repo_with_locale(
                         &session.access_token,
                         &session.login,
                         sorane_github::DEFAULT_VAULT_REPO_NAME,
+                        help_locale,
                     )?;
                     let target = github::default_clone_target(&repo.repo);
                     let cloned =
@@ -2594,6 +2596,48 @@ impl SoraneWorkspace {
                         })),
                 ),
         )
+    }
+
+    pub(crate) fn sync_help_to_active_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let Some(root) = self.vault.as_ref().map(|v| v.root().to_path_buf()) else {
+                self.vault_status = Some("Vault が開かれていません。".into());
+                cx.notify();
+                return;
+            };
+            let locale = current_help_locale();
+            let files = sorane_github::help_files(locale);
+            for help in files {
+                let target = root.join(help.path);
+                if let Some(parent) = target.parent()
+                    && let Err(err) = std::fs::create_dir_all(parent)
+                {
+                    self.vault_status = Some(format!("help フォルダを作成できませんでした: {err}").into());
+                    cx.notify();
+                    return;
+                }
+                if let Err(err) = std::fs::write(&target, help.content) {
+                    self.vault_status = Some(format!("{} の書き込みに失敗しました: {err}", help.path).into());
+                    cx.notify();
+                    return;
+                }
+            }
+            self.vault_status = Some(
+                format!("最新ヘルプ（{} ファイル）を help/ に転記しました。", files.len()).into(),
+            );
+            self.refresh_vault_folder(window, cx);
+            let help_index = root.join("help/index.md");
+            if help_index.is_file() {
+                self.open_path_in_active_pane(help_index, window, cx);
+            }
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = window;
+            self.vault_status = Some("Web 版は GitHub リポジトリ設定画面から「最新ヘルプを転記・更新」を実行してください。".into());
+            cx.notify();
+        }
     }
 
     pub(crate) fn refresh_vault_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3634,6 +3678,15 @@ impl SoraneWorkspace {
                                                 .label("+ 法令")
                                                 .on_click(cx.listener(|this, _, window, cx| {
                                                     this.new_lawtext_draft(window, cx);
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("ws-vault-sync-help")
+                                                .ghost()
+                                                .xsmall()
+                                                .label("ヘルプ更新")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.sync_help_to_active_vault(window, cx);
                                                 })),
                                         ),
                                 )
@@ -4802,5 +4855,12 @@ impl Render for SoraneWorkspace {
             )
             .child(self.render_status_bar(cx))
             .children(self.render_quick_switcher(cx))
+    }
+}
+
+fn current_help_locale() -> sorane_github::HelpLocale {
+    match ibis_office_shell::i18n::language() {
+        ibis_office_shell::i18n::Language::Japanese => sorane_github::HelpLocale::Ja,
+        ibis_office_shell::i18n::Language::English => sorane_github::HelpLocale::En,
     }
 }

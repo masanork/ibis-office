@@ -4644,6 +4644,14 @@ impl Render for SlideEditor {
                 {
                     this.open_toolbar_menu_search(window, cx);
                     cx.stop_propagation();
+                } else if !this.show_running()
+                    && ks.modifiers.secondary()
+                    && !ks.modifiers.alt
+                    && !ks.modifiers.shift
+                    && (ks.key == "/" || ks.key_char.as_deref() == Some("/"))
+                {
+                    this.open_builtin_help("help/shortcuts.md", window, cx);
+                    cx.stop_propagation();
                 }
             }))
             // Drags are tracked on the whole window so they continue past the slide.

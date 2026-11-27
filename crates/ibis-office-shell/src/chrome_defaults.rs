@@ -73,8 +73,8 @@ pub(crate) fn menus(editor: &SlideEditor) -> Menus {
             MenuId::Help => {
                 let mut entries: Vec<MenuEntry> = vec![
                     item("help.search", "search").shortcut("⌥/").on(|this, window, cx| this.open_toolbar_menu_search(window, cx)).into(),
-                    item("help.help", "help").into(),
-                    item("help.shortcuts", "keyboard").shortcut("⌘/").into(),
+                    item("help.help", "help").on(|this, window, cx| this.open_builtin_help("help/index.md", window, cx)).into(),
+                    item("help.shortcuts", "keyboard").shortcut("⌘/").on(|this, window, cx| this.open_builtin_help("help/shortcuts.md", window, cx)).into(),
                     SEP,
                 ];
                 // Linux's AppImage: ask again about the list of apps (without its entry the dock shows no icon).

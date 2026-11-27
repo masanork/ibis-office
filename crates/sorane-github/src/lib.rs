@@ -40,67 +40,279 @@ pub fn is_valid_repo_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HelpLocale {
+    Ja,
+    En,
+}
+
+impl HelpLocale {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ja => "ja",
+            Self::En => "en",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        if raw.trim().to_ascii_lowercase().starts_with("ja") {
+            Self::Ja
+        } else {
+            Self::En
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HelpFile {
+    pub path: &'static str,
+    pub content: &'static str,
+}
+
+const JA_HELP_FILES: &[HelpFile] = &[
+    HelpFile {
+        path: "help/index.md",
+        content: include_str!("../../../assets/help/ja/index.md"),
+    },
+    HelpFile {
+        path: "help/getting-started.md",
+        content: include_str!("../../../assets/help/ja/getting-started.md"),
+    },
+    HelpFile {
+        path: "help/shortcuts.md",
+        content: include_str!("../../../assets/help/ja/shortcuts.md"),
+    },
+    HelpFile {
+        path: "help/markdown-basics.md",
+        content: include_str!("../../../assets/help/ja/markdown-basics.md"),
+    },
+    HelpFile {
+        path: "help/marp-slides.md",
+        content: include_str!("../../../assets/help/ja/marp-slides.md"),
+    },
+    HelpFile {
+        path: "help/workbook-markdown.md",
+        content: include_str!("../../../assets/help/ja/workbook-markdown.md"),
+    },
+    HelpFile {
+        path: "help/mermaid-diagrams.md",
+        content: include_str!("../../../assets/help/ja/mermaid-diagrams.md"),
+    },
+    HelpFile {
+        path: "help/okf-and-vault.md",
+        content: include_str!("../../../assets/help/ja/okf-and-vault.md"),
+    },
+    HelpFile {
+        path: "help/office-and-lawtext.md",
+        content: include_str!("../../../assets/help/ja/office-and-lawtext.md"),
+    },
+];
+
+const EN_HELP_FILES: &[HelpFile] = &[
+    HelpFile {
+        path: "help/index.md",
+        content: include_str!("../../../assets/help/en/index.md"),
+    },
+    HelpFile {
+        path: "help/getting-started.md",
+        content: include_str!("../../../assets/help/en/getting-started.md"),
+    },
+    HelpFile {
+        path: "help/shortcuts.md",
+        content: include_str!("../../../assets/help/en/shortcuts.md"),
+    },
+    HelpFile {
+        path: "help/markdown-basics.md",
+        content: include_str!("../../../assets/help/en/markdown-basics.md"),
+    },
+    HelpFile {
+        path: "help/marp-slides.md",
+        content: include_str!("../../../assets/help/en/marp-slides.md"),
+    },
+    HelpFile {
+        path: "help/workbook-markdown.md",
+        content: include_str!("../../../assets/help/en/workbook-markdown.md"),
+    },
+    HelpFile {
+        path: "help/mermaid-diagrams.md",
+        content: include_str!("../../../assets/help/en/mermaid-diagrams.md"),
+    },
+    HelpFile {
+        path: "help/okf-and-vault.md",
+        content: include_str!("../../../assets/help/en/okf-and-vault.md"),
+    },
+    HelpFile {
+        path: "help/office-and-lawtext.md",
+        content: include_str!("../../../assets/help/en/office-and-lawtext.md"),
+    },
+];
+
+pub fn help_files(locale: HelpLocale) -> &'static [HelpFile] {
+    match locale {
+        HelpLocale::Ja => JA_HELP_FILES,
+        HelpLocale::En => EN_HELP_FILES,
+    }
+}
+
+pub fn help_file(locale: HelpLocale, path: &str) -> Option<&'static str> {
+    help_files(locale)
+        .iter()
+        .find(|f| f.path == path)
+        .map(|f| f.content)
+}
+
 /// Generate the initial OKF-compliant help `index.md` for a newly created Vault repository.
 pub fn build_initial_help_index_markdown(repo: &str) -> String {
-    [
-        "---",
-        "type: index",
-        &format!("title: {repo} — soraneDocs ガイド"),
-        "description: Personal knowledge and documents managed with soraneDocs.",
-        "profile: sorane-okf/0.1",
-        "---",
-        "",
-        &format!("# {repo}"),
-        "",
-        "soraneDocs で作成したプライベートドキュメントリポジトリへようこそ。",
-        "このリポジトリは、あなたの文書・メモ・表計算・スライドを安全に保管し、ブラウザやデスクトップから直接編集・保存するための拠点です。",
-        "",
-        "## 1. 基本的な使い方",
-        "",
-        "1. **文書を開く**: スタート画面のリポジトリ一覧からファイルをクリックして開きます。",
-        "2. **編集して保存する**: リポジトリから開いたファイルを保存・ダウンロードすると、確認ダイアログのあとにこのリポジトリへ直接コミットされます。",
-        "3. **リポジトリやフォルダを切り替える**: スタート画面上部の `GitHub: ...` ボタンから、別のリポジトリやサブフォルダ（例: `docs`）を指定できます。",
-        "",
-        "## 2. 対応しているファイル形式",
-        "",
-        "| カテゴリ | 対応拡張子 | 主な用途 |",
-        "| --- | --- | --- |",
-        "| マークダウン・文書 | `.md`, `.markdown` | メモ、議事録、設計書、OKF ナレッジ |",
-        "| オフィス文書 | `.docx`, `.jtd`, `.xdw` | 企画書、契約書、一太郎・DocuWorks 文書 |",
-        "| 表計算・データ | `.xlsx`, `.csv`, `.tsv`, `.json` | 集計表、台帳、データ一覧 |",
-        "| プレゼン・図面 | `.pptx`, `.vsdx` | 発表資料、構成図、フロー図 |",
-        "",
-        "## 3. おすすめのフォルダ構成",
-        "",
-        "```text",
-        &format!("{repo}/"),
-        "├── index.md      # このガイド・全体の目次",
-        "├── notes/        # 日々のメモ・議事録（Markdown）",
-        "├── docs/         # 企画書・仕様書・配布資料（DOCX / XLSX / PPTX）",
-        "└── archive/      # 保管用の参照資料",
-        "```",
-        "",
-        "## 4. OKF メモの書き方ヒント",
-        "",
-        "Markdown ファイルの先頭に YAML フロントマター（`---` で囲んだメタデータ）を記述すると、文書の種別やタグを構造化して管理できます。",
-        "",
-        "```markdown",
-        "---",
-        "type: note",
-        "title: 会議メモ",
-        "tags: [meeting, project]",
-        "---",
-        "",
-        "# 会議メモ",
-        "```",
-        "",
-        "## 5. トラブルシューティング",
-        "",
-        "- **新しいリポジトリが見えない／保存できない場合**: GitHub App（soraneDocs）のインストール設定で、リポジトリアクセスが **All repositories** になっているか、対象リポジトリが許可されているか確認してください。",
-        "- **ログインが切れた場合**: スタート画面上部の GitHub ボタンから再ログインすると、最新のトークンで再接続できます。",
-        "",
-    ]
-    .join("\n")
+    build_initial_help_index_markdown_for_locale(repo, HelpLocale::Ja)
+}
+
+/// Generate the initial OKF-compliant `index.md` for a newly created Vault repository in the given locale.
+pub fn build_initial_help_index_markdown_for_locale(repo: &str, locale: HelpLocale) -> String {
+    match locale {
+        HelpLocale::Ja => [
+            "---",
+            "type: index",
+            &format!("title: {repo} — soraneDocs ガイド"),
+            "description: Personal knowledge and documents managed with soraneDocs.",
+            "profile: sorane-okf/0.1",
+            "---",
+            "",
+            &format!("# {repo}"),
+            "",
+            "soraneDocs で作成したプライベートドキュメントリポジトリへようこそ。",
+            "このリポジトリは、あなたの文書・メモ・表計算・スライドを安全に保管し、ブラウザやデスクトップから直接編集・保存するための拠点です。",
+            "",
+            "## ヘルプ・記法ガイド",
+            "",
+            "すべての Markdown 記法や ibisOffice / soraneDocs の操作方法は `help/` フォルダにまとまっています。",
+            "",
+            "- [[help/index|ヘルプ目次]]",
+            "- [[help/getting-started|基本操作ガイド]]",
+            "- [[help/shortcuts|キーボードショートカット一覧]]",
+            "- [[help/markdown-basics|Markdown 基本・拡張記法]]",
+            "- [[help/marp-slides|Marp スライド記法]]",
+            "- [[help/workbook-markdown|Workbook Markdown 記法]]",
+            "- [[help/mermaid-diagrams|Mermaid 図表ガイド]]",
+            "- [[help/okf-and-vault|OKF と Vault 活用]]",
+            "- [[help/office-and-lawtext|Office 文書・Lawtext・構造化データ]]",
+            "",
+            "## 1. 基本的な使い方",
+            "",
+            "1. **文書を開く**: スタート画面のリポジトリ一覧からファイルをクリックして開きます。",
+            "2. **編集して保存する**: リポジトリから開いたファイルを保存・ダウンロードすると、確認ダイアログのあとにこのリポジトリへ直接コミットされます。",
+            "3. **リポジトリやフォルダを切り替える**: スタート画面上部の `GitHub: ...` ボタンから、別のリポジトリやサブフォルダ（例: `docs`）を指定できます。",
+            "",
+            "## 2. 対応しているファイル形式",
+            "",
+            "| カテゴリ | 対応拡張子 | 主な用途 |",
+            "| --- | --- | --- |",
+            "| マークダウン・文書 | `.md`, `.markdown` | メモ、議事録、設計書、OKF ナレッジ |",
+            "| オフィス文書 | `.docx`, `.jtd`, `.xdw` | 企画書、契約書、一太郎・DocuWorks 文書 |",
+            "| 表計算・データ | `.xlsx`, `.csv`, `.tsv`, `.json` | 集計表、台帳、データ一覧 |",
+            "| プレゼン・図面 | `.pptx`, `.vsdx` | 発表資料、構成図、フロー図 |",
+            "",
+            "## 3. おすすめのフォルダ構成",
+            "",
+            "```text",
+            &format!("{repo}/"),
+            "├── index.md      # このガイド・全体の目次",
+            "├── help/         # 操作ガイド・Markdown 記法リファレンス",
+            "├── notes/        # 日々のメモ・議事録（Markdown）",
+            "├── docs/         # 企画書・仕様書・配布資料（DOCX / XLSX / PPTX）",
+            "└── archive/      # 保管用の参照資料",
+            "```",
+            "",
+            "## 4. OKF メモの書き方ヒント",
+            "",
+            "Markdown ファイルの先頭に YAML フロントマター（`---` で囲んだメタデータ）を記述すると、文書の種別やタグを構造化して管理できます。",
+            "",
+            "```markdown",
+            "---",
+            "type: note",
+            "title: 会議メモ",
+            "tags: [meeting, project]",
+            "---",
+            "",
+            "# 会議メモ",
+            "```",
+            "",
+            "## 5. トラブルシューティング",
+            "",
+            "- **新しいリポジトリが見えない／保存できない場合**: GitHub App（soraneDocs）のインストール設定で、リポジトリアクセスが **All repositories** になっているか、対象リポジトリが許可されているか確認してください。",
+            "- **ログインが切れた場合**: スタート画面上部の GitHub ボタンから再ログインすると、最新のトークンで再接続できます。",
+            "",
+        ]
+        .join("\n"),
+        HelpLocale::En => [
+            "---",
+            "type: index",
+            &format!("title: {repo} — soraneDocs Guide"),
+            "description: Personal knowledge and documents managed with soraneDocs.",
+            "profile: sorane-okf/0.1",
+            "---",
+            "",
+            &format!("# {repo}"),
+            "",
+            "Welcome to your private document repository created with soraneDocs.",
+            "This repository is your home for storing, editing, and committing notes, documents, spreadsheets, and slides directly from your browser or desktop.",
+            "",
+            "## Help & Syntax Reference",
+            "",
+            "All Markdown syntax guides and ibisOffice / soraneDocs instructions are included in the `help/` folder:",
+            "",
+            "- [[help/index|Help Index]]",
+            "- [[help/getting-started|Getting Started]]",
+            "- [[help/shortcuts|Keyboard Shortcuts]]",
+            "- [[help/markdown-basics|Markdown Basics & Extensions]]",
+            "- [[help/marp-slides|Marp Slide Syntax]]",
+            "- [[help/workbook-markdown|Workbook Markdown Syntax]]",
+            "- [[help/mermaid-diagrams|Mermaid Diagrams Guide]]",
+            "- [[help/okf-and-vault|OKF & Vault Workflow]]",
+            "- [[help/office-and-lawtext|Office Documents, Lawtext & Structured Data]]",
+            "",
+            "## 1. Quick Start",
+            "",
+            "1. **Open a document**: Click any file from the repository list on the start view.",
+            "2. **Edit and save**: When you save a repository file, it is committed directly to this repository after confirmation.",
+            "3. **Switch repository or subfolder**: Use the `GitHub: ...` button at the top of the start view.",
+            "",
+            "## 2. Supported Formats",
+            "",
+            "| Category | Extensions | Typical Use |",
+            "| --- | --- | --- |",
+            "| Markdown & Notes | `.md`, `.markdown` | Notes, meeting minutes, specs, OKF knowledge |",
+            "| Office Documents | `.docx`, `.jtd`, `.xdw` | Proposals, contracts, Ichitaro / DocuWorks |",
+            "| Spreadsheets & Data | `.xlsx`, `.csv`, `.tsv`, `.json` | Budgets, ledgers, structured data |",
+            "| Slides & Diagrams | `.pptx`, `.vsdx` | Presentations, architecture diagrams |",
+            "",
+            "## 3. Suggested Folder Layout",
+            "",
+            "```text",
+            &format!("{repo}/"),
+            "├── index.md      # Repository guide & table of contents",
+            "├── help/         # Usage guides & Markdown syntax reference",
+            "├── notes/        # Daily notes & meeting minutes (Markdown)",
+            "├── docs/         # Proposals, specs & handouts (DOCX / XLSX / PPTX)",
+            "└── archive/      # Reference materials",
+            "```",
+            "",
+        ]
+        .join("\n"),
+    }
+}
+
+/// Build all initial files (`index.md` and `help/*.md`) for a newly created Vault.
+pub fn build_initial_vault_files(repo: &str, locale: HelpLocale) -> Vec<(String, String)> {
+    let mut files = Vec::with_capacity(1 + help_files(locale).len());
+    files.push((
+        "index.md".to_string(),
+        build_initial_help_index_markdown_for_locale(repo, locale),
+    ));
+    for help in help_files(locale) {
+        files.push((help.path.to_string(), help.content.to_string()));
+    }
+    files
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -372,14 +584,39 @@ pub fn build_create_repo_body(name: &str, description: &str) -> String {
 }
 
 pub fn build_init_index_put_body(repo: &str, branch: &str) -> String {
-    let markdown = build_initial_help_index_markdown(repo);
-    let encoded = base64::engine::general_purpose::STANDARD.encode(markdown.as_bytes());
-    serde_json::json!({
-        "message": "Initialize soraneDocs repository with OKF help index.md",
+    build_init_index_put_body_for_locale(repo, branch, HelpLocale::Ja)
+}
+
+pub fn build_init_index_put_body_for_locale(
+    repo: &str,
+    branch: &str,
+    locale: HelpLocale,
+) -> String {
+    let markdown = build_initial_help_index_markdown_for_locale(repo, locale);
+    build_content_put_body(
+        "Initialize soraneDocs repository with OKF help index.md",
+        &markdown,
+        branch,
+        None,
+    )
+}
+
+pub fn build_content_put_body(
+    message: &str,
+    content: &str,
+    branch: &str,
+    sha: Option<&str>,
+) -> String {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
+    let mut obj = serde_json::json!({
+        "message": message,
         "content": encoded,
         "branch": branch,
-    })
-    .to_string()
+    });
+    if let Some(sha) = sha {
+        obj["sha"] = serde_json::Value::String(sha.to_string());
+    }
+    obj.to_string()
 }
 
 /// Short-lived Copilot session token returned by `GET https://api.github.com/copilot_internal/v2/token`.
@@ -614,9 +851,34 @@ mod tests {
     fn initial_help_index_has_okf_frontmatter_and_sections() {
         let md = build_initial_help_index_markdown("soraneDocs");
         assert!(md.contains("profile: sorane-okf/0.1"));
+        assert!(md.contains("[[help/index|"));
         assert!(md.contains("## 1. 基本的な使い方"));
         assert!(md.contains("## 2. 対応しているファイル形式"));
         assert!(md.contains("## 3. おすすめのフォルダ構成"));
+
+        let en_md = build_initial_help_index_markdown_for_locale("soraneDocs", HelpLocale::En);
+        assert!(en_md.contains("profile: sorane-okf/0.1"));
+        assert!(en_md.contains("[[help/index|Help Index]]"));
+    }
+
+    #[test]
+    fn builtin_help_files_exist_for_ja_and_en() {
+        for locale in [HelpLocale::Ja, HelpLocale::En] {
+            let files = help_files(locale);
+            assert_eq!(files.len(), 9);
+            assert!(help_file(locale, "help/index.md").is_some());
+            assert!(help_file(locale, "help/shortcuts.md").is_some());
+            assert!(help_file(locale, "help/markdown-basics.md").is_some());
+            assert!(help_file(locale, "help/marp-slides.md").is_some());
+            assert!(help_file(locale, "help/workbook-markdown.md").is_some());
+            assert!(help_file(locale, "help/mermaid-diagrams.md").is_some());
+            assert!(help_file(locale, "help/okf-and-vault.md").is_some());
+            assert!(help_file(locale, "help/office-and-lawtext.md").is_some());
+            assert!(help_file(locale, "help/getting-started.md").is_some());
+            let initial = build_initial_vault_files("soraneDocs", locale);
+            assert_eq!(initial.len(), 10);
+            assert_eq!(initial[0].0, "index.md");
+        }
     }
 
     #[test]

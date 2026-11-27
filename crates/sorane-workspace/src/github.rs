@@ -15,10 +15,11 @@ use serde::{Deserialize, Serialize};
 use sorane_github::{
     DeviceCodeResponse, DeviceTokenPoll, GITHUB_API_BASE, GITHUB_API_VERSION, GITHUB_APP_CLIENT_ID,
     GITHUB_DEVICE_CODE_URL, GITHUB_OAUTH_TOKEN_URL, GitHubInstallation, GitHubRepo, GitHubUser,
-    RepoCatalog, build_create_repo_body, build_init_index_put_body, evaluate_catalog,
-    is_valid_repo_name, parse_created_repo_response, parse_device_code_response,
-    parse_device_token_response, parse_installation_repos_response, parse_installations_response,
-    parse_user_repos_response, parse_user_response,
+    HelpLocale, RepoCatalog, build_content_put_body, build_create_repo_body,
+    build_init_index_put_body_for_locale, evaluate_catalog, help_files, is_valid_repo_name,
+    parse_created_repo_response, parse_device_code_response, parse_device_token_response,
+    parse_installation_repos_response, parse_installations_response, parse_user_repos_response,
+    parse_user_response,
 };
 
 const GITHUB_SESSION_FILE: &str = "sorane-github-session.json";
@@ -240,6 +241,15 @@ pub fn create_private_vault_repo(
     login: &str,
     repo_name: &str,
 ) -> Result<GitHubRepo, String> {
+    create_private_vault_repo_with_locale(access_token, login, repo_name, HelpLocale::Ja)
+}
+
+pub fn create_private_vault_repo_with_locale(
+    access_token: &str,
+    login: &str,
+    repo_name: &str,
+    locale: HelpLocale,
+) -> Result<GitHubRepo, String> {
     let trimmed = repo_name.trim();
     if !is_valid_repo_name(trimmed) {
         return Err("リポジトリ名には英数字・ハイフン・アンダースコア・ドットのみ使用できます。".to_string());
@@ -268,15 +278,18 @@ pub fn create_private_vault_repo(
         "{GITHUB_API_BASE}/repos/{}/{}/contents/index.md",
         created.owner, created.repo
     );
-    let init_body = build_init_index_put_body(&created.repo, &created.default_branch);
+    let init_body =
+        build_init_index_put_body_for_locale(&created.repo, &created.default_branch, locale);
 
     let retry_delays = [Duration::from_millis(300), Duration::from_millis(700)];
     let mut last_status = 0u16;
+    let mut index_ok = false;
     for attempt in 0..=retry_delays.len() {
         let init_res = curl_json("PUT", &init_url, Some(access_token), Some(&init_body))?;
         last_status = init_res.status;
         if init_res.status < 400 {
-            return Ok(created);
+            index_ok = true;
+            break;
         }
         if !matches!(init_res.status, 404 | 502 | 503) {
             break;
@@ -286,10 +299,29 @@ pub fn create_private_vault_repo(
         }
     }
 
-    Err(format!(
-        "リポジトリ {} は作成されましたが、初期ファイル index.md の書き込みに失敗しました (HTTP {last_status})。GitHub App の設定で「All repositories」が許可されているか確認してください。",
-        created.full_name
-    ))
+    if !index_ok {
+        return Err(format!(
+            "リポジトリ {} は作成されましたが、初期ファイル index.md の書き込みに失敗しました (HTTP {last_status})。GitHub App の設定で「All repositories」が許可されているか確認してください。",
+            created.full_name
+        ));
+    }
+
+    // Best-effort creation of localized help/ files.
+    for help in help_files(locale) {
+        let url = format!(
+            "{GITHUB_API_BASE}/repos/{}/{}/contents/{}",
+            created.owner, created.repo, help.path
+        );
+        let body = build_content_put_body(
+            &format!("Add {}", help.path),
+            help.content,
+            &created.default_branch,
+            None,
+        );
+        let _ = curl_json("PUT", &url, Some(access_token), Some(&body));
+    }
+
+    Ok(created)
 }
 
 /// Ephemeral `GIT_ASKPASS` helper (VSCode / Zed style) so tokens are never embedded in `.git/config`.
@@ -495,6 +527,15 @@ mod wasm_stub {
         _access_token: &str,
         _login: &str,
         _name: &str,
+    ) -> Result<GitHubRepo, String> {
+        Err("Web 版ではページ側の GitHub ログインを利用してください。".to_string())
+    }
+
+    pub fn create_private_vault_repo_with_locale(
+        _access_token: &str,
+        _login: &str,
+        _name: &str,
+        _locale: sorane_github::HelpLocale,
     ) -> Result<GitHubRepo, String> {
         Err("Web 版ではページ側の GitHub ログインを利用してください。".to_string())
     }

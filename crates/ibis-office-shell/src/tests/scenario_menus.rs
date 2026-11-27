@@ -130,7 +130,7 @@ fn menus_pptx_selected_no_empty_submenu() {
 /// the state. A menu item shown with a shortcut that is not bound is the same kind of fault (⌘⌥F of 脚注 was). The ids in the lists are the
 /// ones known not to be made yet (take one out when it is); a new one fails the scenario. How to find them in another format: open a
 /// file of it, list `e.menus().menus` with `dead_items`, and put what is not made into the list (2026-10-19).
-const DOCX_DEAD: &[&str] = &["file.export.svg", "file.language", "edit.duplicate", "insert.video", "insert.audio", "format.options", "help.help", "help.shortcuts"];
+const DOCX_DEAD: &[&str] = &["file.export.svg", "file.language", "edit.duplicate", "insert.video", "insert.audio", "format.options"];
 
 fn dead_items(entries: &[MenuEntry], out: &mut Vec<&'static str>) {
     for entry in entries {
@@ -163,7 +163,7 @@ fn menus_docx_no_dead_items() {
 
 /// xlsx: the items not made yet (2026-10-19; the rest were connected: 書式に合わせて貼り付け, 書式のコピーと貼り付け, 保護, 区切り位置,
 /// ユーザー補助). The scenario fails for a new one, and for one that works now (take it out).
-const XLSX_DEAD: &[&str] = &["file.export.svg", "file.language", "edit.duplicate", "insert.video", "insert.audio", "insert.equation", "help.help", "help.shortcuts"];
+const XLSX_DEAD: &[&str] = &["file.export.svg", "file.language", "edit.duplicate", "insert.video", "insert.audio", "insert.equation"];
 
 /// pptx: not checked yet (the list is for its owner to go through: many are handled by other means, such as a selection's
 /// context menu); the list is written to `target/menus-dead-<format>.txt`.
@@ -175,7 +175,7 @@ fn menus_xlsx_no_dead_items() {
 /// Items of the pptx menus that are made in no state: the intersection of the dead items of nothing selected, a text shape
 /// selected, text being edited, a picture, a chart, a table, and everything selected (an item that only a selection connects is
 /// not dead). Not made yet; take an id out of the list when it is.
-const PPTX_DEAD: &[&str] = &["file.export.svg", "file.language", "help.help", "help.shortcuts"];
+const PPTX_DEAD: &[&str] = &["file.export.svg", "file.language"];
 /// Items only a state this check does not reach connects: an animation chosen in the animation pane, a vertex selected while the edit
 /// points are on, a character format copied.
 const PPTX_STATE_ONLY: &[&str] = &["pptx.animation.options-dialog", "pptx.edit-points.smooth", "pptx.edit-points.straight", "pptx.edit-points.corner", "edit.paste-format"];
