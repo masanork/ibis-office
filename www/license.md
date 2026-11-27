@@ -16,7 +16,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | Unicode 15.0 | 文字の表示可否データ | Unicode-3.0 |
 | 異体字クラスターマップ | 異体字照合 | 調製・提供 楠 正憲 |
 
-## Rust の部品（660 件）
+## Rust の部品（663 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -270,6 +270,7 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | http-body | 1.1.0 | MIT | https://github.com/hyperium/http-body |
 | hybrid-array | 0.4.15 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hybrid-array |
 | ibis-calc | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-calc |
+| ibis-lawtext | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-lawtext |
 | ibis-m-lang | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-m-lang |
 | ibis-odf | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-odf |
 | ibis-ofd | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-ofd |
@@ -538,6 +539,8 @@ ibisOffice の Web 版（`www/`）に含まれる、ibisOffice 以外の部品�
 | snafu | 0.9.2 | MIT OR Apache-2.0 | https://github.com/shepmaster/snafu |
 | snafu-derive | 0.8.9 | MIT OR Apache-2.0 | https://github.com/shepmaster/snafu |
 | snafu-derive | 0.9.2 | MIT OR Apache-2.0 | https://github.com/shepmaster/snafu |
+| sorane-github | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/sorane-github |
+| sorane-workspace | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/sorane-workspace |
 | spin | 0.10.1 | MIT | https://github.com/mvdnes/spin-rs.git |
 | spin | 0.9.9 | MIT | https://github.com/mvdnes/spin-rs.git |
 | spki | 0.7.3 | Apache-2.0 OR MIT | https://github.com/RustCrypto/formats/tree/master/spki |

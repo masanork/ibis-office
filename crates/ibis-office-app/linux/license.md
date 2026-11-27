@@ -17,7 +17,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | Unicode 15.0 | 文字の表示可否データ | Unicode-3.0 |
 | 異体字クラスターマップ | 異体字照合 | 調製・提供 楠 正憲 |
 
-## Rust の部品（866 件）
+## Rust の部品（919 件）
 
 | 名前 | 版 | ライセンス | 入手先 |
 |---|---|---|---|
@@ -143,6 +143,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | ciborium-io | 0.2.2 | Apache-2.0 | https://github.com/enarx/ciborium |
 | ciborium-ll | 0.2.2 | Apache-2.0 | https://github.com/enarx/ciborium |
 | cipher | 0.4.4 | MIT OR Apache-2.0 | https://github.com/RustCrypto/traits |
+| clru | 0.6.3 | MIT | https://github.com/marmeladema/clru-rs |
 | cmov | 0.5.4 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils |
 | codespan-reporting | 0.13.1 | Apache-2.0 | https://github.com/brendanzab/codespan |
 | color_quant | 1.1.0 | MIT | https://github.com/image-rs/color_quant.git |
@@ -252,6 +253,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | extfmt | 0.2.0 | Apache-2.0 | https://github.com/Gilnaa/extfmt |
 | fallible-iterator | 0.3.0 | MIT/Apache-2.0 | https://github.com/sfackler/rust-fallible-iterator |
 | fastbloom | 0.14.1 | MIT OR Apache-2.0 | https://github.com/tomtomwombat/fastbloom/ |
+| faster-hex | 0.10.1 | MIT | https://github.com/NervosFoundation/faster-hex |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT | https://github.com/smol-rs/fastrand |
 | fax | 0.2.7 | MIT | https://github.com/pdf-rs/fax |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | https://github.com/image-rs/fdeflate |
@@ -300,6 +302,45 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | ghash | 0.5.1 | Apache-2.0 OR MIT | https://github.com/RustCrypto/universal-hashes |
 | gif | 0.14.2 | MIT OR Apache-2.0 | https://github.com/image-rs/image-gif |
 | gimli | 0.32.3 | MIT OR Apache-2.0 | https://github.com/gimli-rs/gimli |
+| gix | 0.90.0 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-actor | 0.44.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-chunk | 0.10.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-command | 0.12.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-commitgraph | 0.42.0 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-config | 0.62.2 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-config-value | 0.21.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-date | 0.18.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-diff | 0.70.0 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-discover | 0.57.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-error | 0.5.2 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-fs | 0.24.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-glob | 0.29.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-hash | 0.28.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-hashtable | 0.18.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-lock | 26.0.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-macros | 0.2.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-object | 0.66.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-odb | 0.87.0 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-pack | 0.77.0 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-packetline | 0.24.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-parallel | 0.50.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-path | 0.14.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-protocol | 0.68.0 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-quote | 0.10.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-ref | 0.69.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-refspec | 0.47.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-revision | 0.52.0 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-revwalk | 0.38.0 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-sec | 0.16.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-shallow | 0.15.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-tempfile | 26.0.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-trace | 0.3.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-transport | 0.62.0 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-traverse | 0.64.0 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-url | 0.40.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-utils | 0.5.2 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-validate | 0.13.1 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
+| gix-zlib | 0.4.0 | MIT OR Apache-2.0 | https://github.com/GitoxideLabs/gitoxide |
 | glob | 0.3.4 | MIT OR Apache-2.0 | https://github.com/rust-lang/glob |
 | globset | 0.4.20 | Unlicense OR MIT | https://github.com/BurntSushi/ripgrep/tree/master/crates/globset |
 | globwalk | 0.8.1 | MIT | https://github.com/gilnaa/globwalk |
@@ -347,6 +388,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | hayro-jpeg2000 | 0.3.5 | Apache-2.0 OR MIT | https://github.com/LaurenzV/hayro |
 | hayro-postscript | 0.2.0 | Apache-2.0 OR MIT | https://github.com/LaurenzV/hayro |
 | hayro-syntax | 0.7.2 | Apache-2.0 OR MIT | https://github.com/LaurenzV/hayro |
+| heapless | 0.8.0 | MIT OR Apache-2.0 | https://github.com/rust-embedded/heapless |
 | heapless | 0.9.3 | MIT OR Apache-2.0 | https://github.com/rust-embedded/heapless |
 | heck | 0.4.1 | MIT OR Apache-2.0 | https://github.com/withoutboats/heck |
 | heck | 0.5.0 | MIT OR Apache-2.0 | https://github.com/withoutboats/heck |
@@ -363,7 +405,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | iana-time-zone | 0.1.65 | MIT OR Apache-2.0 | https://github.com/strawlab/iana-time-zone |
 | ibis-calc | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-calc |
 | ibis-doc-service | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-doc-service |
-| ibis-heic-web | 0.8.0 | （license-file：None） | https://crates.io/crates/ibis-heic-web |
+| ibis-lawtext | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-lawtext |
 | ibis-m-lang | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-m-lang |
 | ibis-mcp | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-mcp |
 | ibis-odf | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-odf |
@@ -372,6 +414,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | ibis-office-updater | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-office-updater |
 | ibis-ooxml | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-ooxml |
 | ibis-pdf | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-pdf |
+| ibis-vsdx | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-vsdx |
 | ibis-xdw | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-xdw |
 | ibis-xdw-read | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-xdw-read |
 | ibis-xps | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/ibis-xps |
@@ -416,6 +459,8 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | itoa | 1.0.18 | MIT OR Apache-2.0 | https://github.com/dtolnay/itoa |
 | j2k-rs | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/j2k-rs |
 | jfifdump | 0.6.0 | MIT OR Apache-2.0 | https://github.com/vstroebel/jfifdump.git |
+| jiff | 0.2.46 | Unlicense OR MIT | https://github.com/BurntSushi/jiff |
+| jiff-core | 0.1.8 | Unlicense OR MIT | https://github.com/BurntSushi/jiff |
 | jxl-bitstream | 1.1.0 | MIT OR Apache-2.0 | https://github.com/tirr-c/jxl-oxide.git |
 | jxl-coding | 1.0.1 | MIT OR Apache-2.0 | https://github.com/tirr-c/jxl-oxide.git |
 | jxl-color | 0.11.0 | MIT OR Apache-2.0 | https://github.com/tirr-c/jxl-oxide.git |
@@ -481,6 +526,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | nohash-hasher | 0.2.0 | Apache-2.0 OR MIT | https://github.com/paritytech/nohash-hasher |
 | nom | 7.1.3 | MIT | https://github.com/Geal/nom |
 | non-empty-string | 0.2.6 | MIT OR Apache-2.0 | https://github.com/MidasLamb/non-empty-string |
+| nonempty | 0.12.0 | MIT | https://github.com/cloudhead/nonempty |
 | nonempty-collections | 1.4.0 | MIT | https://github.com/fosskers/nonempty-collections |
 | normpath | 1.5.2 | MIT OR Apache-2.0 | https://github.com/dylni/normpath |
 | notify | 7.0.0 | CC0-1.0 | https://github.com/notify-rs/notify.git |
@@ -571,10 +617,12 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | proc-macro-error-attr | 1.0.4 | MIT OR Apache-2.0 | https://gitlab.com/CreepySkeleton/proc-macro-error |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 | https://github.com/dtolnay/proc-macro2 |
 | proc-macro2-diagnostics | 0.10.1 | MIT/Apache-2.0 | https://github.com/SergioBenitez/proc-macro2-diagnostics |
+| prodash | 31.0.1 | MIT | https://github.com/GitoxideLabs/prodash |
 | profiling | 1.0.18 | MIT OR Apache-2.0 | https://github.com/aclysma/profiling |
 | profiling-procmacros | 1.0.18 | MIT OR Apache-2.0 | https://github.com/aclysma/profiling |
 | proptest | 1.11.0 | MIT OR Apache-2.0 | https://github.com/proptest-rs/proptest |
 | proptest-macro | 0.5.0 | MIT OR Apache-2.0 | https://github.com/proptest-rs/proptest |
+| pulldown-cmark | 0.13.6 | MIT | https://github.com/raphlinus/pulldown-cmark |
 | pulp | 0.22.3 | MIT | https://github.com/sarah-quinones/pulp/ |
 | pulp-wasm-simd-flag | 0.1.1 | MIT | https://github.com/sarah-quinones/pulp/ |
 | pure_jpegls | 2.1.0 | MIT OR Apache-2.0 | https://github.com/jpfielding/dicos.rs |
@@ -675,6 +723,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | sha1 | 0.10.7 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
 | sha1 | 0.11.0 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
 | sha1_smol | 1.0.1 | BSD-3-Clause | https://github.com/mitsuhiko/sha1-smol |
+| sha1dc | 0.1.5 | MIT OR Apache-2.0 | https://github.com/srijs/sha1dc |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
 | sha2 | 0.11.0 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
 | sharded-slab | 0.1.7 | MIT | https://github.com/hawkw/sharded-slab |
@@ -684,6 +733,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | signature | 3.0.0 | Apache-2.0 OR MIT | https://github.com/RustCrypto/traits |
 | simd-adler32 | 0.3.10 | MIT | https://github.com/mcountryman/simd-adler32 |
 | simdutf8 | 0.1.5 | MIT OR Apache-2.0 | https://github.com/rusticstuff/simdutf8 |
+| similar | 2.7.0 | Apache-2.0 | https://github.com/mitsuhiko/similar |
 | simplecss | 0.2.2 | Apache-2.0 OR MIT | https://github.com/linebender/simplecss |
 | siphasher | 1.0.3 | MIT/Apache-2.0 | https://github.com/jedisct1/rust-siphash |
 | skrifa | 0.40.0 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
@@ -703,6 +753,8 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | snap | 1.1.2 | BSD-3-Clause | https://github.com/BurntSushi/rust-snappy |
 | softaes | 0.1.8 | MIT | https://github.com/jedisct1/rust-softaes |
 | solana-nohash-hasher | 0.2.1 | Apache-2.0 OR MIT | https://github.com/solana-labs/nohash-hasher |
+| sorane-github | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/sorane-github |
+| sorane-workspace | 0.8.0 | AGPL-3.0-only | https://crates.io/crates/sorane-workspace |
 | spin | 0.10.1 | MIT | https://github.com/mvdnes/spin-rs.git |
 | spin | 0.9.9 | MIT | https://github.com/mvdnes/spin-rs.git |
 | spirv | 0.4.0+sdk-1.4.341.0 | Apache-2.0 | https://github.com/gfx-rs/rspirv |
@@ -781,6 +833,7 @@ ibisOffice の Linux 版（AppImage）に含まれる、ibisOffice 以外の部�
 | unicase | 2.9.0 | MIT OR Apache-2.0 | https://github.com/seanmonstar/unicase |
 | unicode-bidi | 0.3.18 | MIT OR Apache-2.0 | https://github.com/servo/unicode-bidi |
 | unicode-bidi-mirroring | 0.4.0 | MIT/Apache-2.0 | https://github.com/RazrFalcon/unicode-bidi-mirroring |
+| unicode-bom | 2.0.3 | Apache-2.0 | https://gitlab.com/philbooth/unicode-bom |
 | unicode-ccc | 0.4.0 | MIT/Apache-2.0 | https://github.com/RazrFalcon/unicode-ccc |
 | unicode-id | 0.3.7 | MIT OR Apache-2.0 | https://github.com/Boshen/unicode-id |
 | unicode-ident | 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 | https://github.com/dtolnay/unicode-ident |
@@ -1355,6 +1408,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **ciborium-io 0.2.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **ciborium-ll 0.2.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **cipher 0.4.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016-2020 RustCrypto Developers
+- **clru 0.6.3**：Copyright (c) 2020 Élie ROUDNINSKI (marmeladema) <xademax@gmail.com>
 - **cmov 0.5.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2022-2026 The RustCrypto Project Developers
 - **codespan-reporting 0.13.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **color_quant 1.1.0**：Copyright (c) 2016 PistonDevelopers
@@ -1449,6 +1503,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **exr 1.74.2**：Copyright (c) Contributors to the OpenEXR Project. All rights reserved. / Copyright (c) Contributors to the exrs Project. All rights reserved.
 - **fallible-iterator 0.3.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 The rust-openssl-verify Developers
 - **fastbloom 0.14.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2023 Thomas Pendock
+- **faster-hex 0.10.1**：Copyright (c) 2018 Nervos Foundation
 - **fastrand 2.5.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **fax 0.2.7**：Copyright © 2021 The pdf-rs contributers.
 - **fdeflate 0.3.7**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
@@ -1496,6 +1551,45 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **ghash 0.5.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2019 RustCrypto Developers
 - **gif 0.14.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 nwin
 - **gimli 0.32.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 The Rust Project Developers
+- **gix 0.90.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-actor 0.44.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-chunk 0.10.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-command 0.12.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-commitgraph 0.42.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-config 0.62.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-config-value 0.21.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-date 0.18.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-diff 0.70.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-discover 0.57.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-error 0.5.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-fs 0.24.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-glob 0.29.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-hash 0.28.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-hashtable 0.18.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-lock 26.0.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-macros 0.2.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-object 0.66.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-odb 0.87.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-pack 0.77.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-packetline 0.24.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-parallel 0.50.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-path 0.14.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-protocol 0.68.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-quote 0.10.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-ref 0.69.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-refspec 0.47.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-revision 0.52.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-revwalk 0.38.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-sec 0.16.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-shallow 0.15.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-tempfile 26.0.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-trace 0.3.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) Quinn Okabayashi
+- **gix-transport 0.62.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-traverse 0.64.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-url 0.40.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-utils 0.5.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-validate 0.13.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **gix-zlib 0.4.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **glob 0.3.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014 The Rust Project Developers
 - **globset 0.4.20**：Copyright (c) 2015 Andrew Gallant
 - **globwalk 0.8.1**：Copyright (c) 2017 Gilad Naaman
@@ -1538,6 +1632,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **hayro-jpeg2000 0.3.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) The Hayro Authors
 - **hayro-postscript 0.2.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) The Hayro Authors
 - **hayro-syntax 0.7.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) The Hayro Authors
+- **heapless 0.8.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2017 Jorge Aparicio
 - **heapless 0.9.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2017 Jorge Aparicio
 - **heck 0.4.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 The Rust Project Developers
 - **heck 0.5.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 The Rust Project Developers
@@ -1588,6 +1683,8 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **itertools 0.14.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015
 - **itertools 0.15.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015
 - **itoa 1.0.18**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **jiff 0.2.46**：Copyright (c) 2015 Andrew Gallant
+- **jiff-core 0.1.8**：Copyright (c) 2015 Andrew Gallant
 - **jxl-bitstream 1.1.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **jxl-coding 1.0.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **jxl-color 0.11.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
@@ -1646,6 +1743,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **nohash-hasher 0.2.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2018 Parity Technologies (UK) Ltd.
 - **nom 7.1.3**：Copyright (c) 2014-2019 Geoffroy Couprie
 - **non-empty-string 0.2.6**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2021 Midas Lambrichts / Copyright (c) 2021 Midas Lambrichts
+- **nonempty 0.12.0**：Copyright (c) 2019 Alexis Sellier
 - **nonempty-collections 1.4.0**：Copyright (c) 2021 Colin Woodbury
 - **normpath 1.5.2**：Copyright (c) 2020 dylni (https://github.com/dylni) / copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020 Nikolai Vazquez
 - **notify-rust 4.18.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2017 Hendrik Sollich
@@ -1732,8 +1830,10 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **proc-macro-error-attr 1.0.4**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2019-2020 CreepySkeleton <creepy-skeleton@yandex.ru> / Copyright (c) 2019-2020 CreepySkeleton
 - **proc-macro2 1.0.107**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **proc-macro2-diagnostics 0.10.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016-2020 Sergio Benitez / COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+- **prodash 31.0.1**：Copyright © `2020` `Sebastian Thiel`
 - **proptest 1.11.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 FullContact, Inc
 - **proptest-macro 0.5.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016 FullContact, Inc
+- **pulldown-cmark 0.13.6**：Copyright 2015 Google Inc. All rights reserved.
 - **pulp 0.22.3**：Copyright (c) 2021 sarah
 - **pxfm 0.1.30**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright 2024 Radzivon Bartoshyk / Copyright (c) Radzivon Bartoshyk. All rights reserved.
 - **qoi 0.4.1**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2022 Ivan Smirnov
@@ -1825,6 +1925,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **sha1 0.10.7**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2006-2009 Graydon Hoare / Copyright (c) 2009-2013 Mozilla Foundation / Copyright (c) 2016 Artyom Pavlov
 - **sha1 0.11.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016-2026 The RustCrypto Project Developers / Copyright (c) 2016 Artyom Pavlov / Copyright (c) 2009-2013 Mozilla Foundation / Copyright (c) 2006-2009 Graydon Hoare
 - **sha1_smol 1.0.1**：Copyright (c) 2018, the respective contributors, as shown by the AUTHORS file. / Copyright (c) 2006-2009 Graydon Hoare / Copyright (c) 2009-2013 Mozilla Foundation
+- **sha1dc 0.1.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2017 Marc Stevens (Cryptology Group, Centrum Wiskunde & Informatica) / Copyright (c) 2017 Dan Shumow (Microsoft Research) / Copyright (c) 2026 Sam Reis
 - **sha2 0.10.9**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2006-2009 Graydon Hoare / Copyright (c) 2009-2013 Mozilla Foundation / Copyright (c) 2016 Artyom Pavlov
 - **sha2 0.11.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2016-2026 The RustCrypto Project Developers / Copyright (c) 2016 Artyom Pavlov / Copyright (c) 2009-2013 Mozilla Foundation / Copyright (c) 2006-2009 Graydon Hoare
 - **sharded-slab 0.1.7**：Copyright (c) 2019 Eliza Weisman
@@ -1834,6 +1935,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **signature 3.0.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018-2026 RustCrypto Developers
 - **simd-adler32 0.3.10**：Copyright (c) [2021] [Marvin Countryman]
 - **simdutf8 0.1.5**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
+- **similar 2.7.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **simplecss 0.2.2**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2018 Reizner Evgeniy
 - **siphasher 1.0.3**：Copyright 2012-2016 The Rust Project Developers. / Copyright 2016-2026 Frank Denis.
 - **skrifa 0.40.0**：Copyright 2019 Colin Rothfels / Copyright (c) 2019 Colin Rothfels
@@ -1922,6 +2024,7 @@ Copyright Google LLC. Apache License 2.0（本文は下の「ライセンス本�
 - **unicase 2.9.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2014-2026 Sean McArthur
 - **unicode-bidi 0.3.18**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 The Rust Project Developers
 - **unicode-bidi-mirroring 0.4.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020 Yevhenii Reizner
+- **unicode-bom 2.0.3**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works
 - **unicode-ccc 0.4.0**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2020 Yevhenii Reizner
 - **unicode-id 0.3.7**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / Copyright (c) 2015 The Rust Project Developers
 - **unicode-ident 1.0.26**：copyright notice that is included in or attached to the work / copyright license to reproduce, prepare Derivative Works of, / (c) You must retain, in the Source form of any Derivative Works / COPYRIGHT AND PERMISSION NOTICE / Copyright © 1991-2023 Unicode, Inc.
@@ -4827,9 +4930,419 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 
+## 依存元の帰属表示と個別ライセンス
+
+### apache-avro 0.22.0 / NOTICE
+
+```text
+Apache Avro
+Copyright 2010-2025 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (https://www.apache.org/).
+
+The initial implementation of the Apache Avro Rust SDK has been 
+developed by Flavien Raynaud (https://github.com/flavray/avro-rs)
+and donated to the Apache Avro project in 2020.
+```
+
+### arrow-array 60.1.0 / NOTICE.txt, arrow-buffer 60.1.0 / NOTICE.txt, arrow-cmp 60.1.0 / NOTICE.txt, arrow-data 60.1.0 / NOTICE.txt, arrow-ipc 60.1.0 / NOTICE.txt, arrow-schema 60.1.0 / NOTICE.txt, arrow-select 60.1.0 / NOTICE.txt, parquet 60.1.0 / NOTICE.txt
+
+```text
+Apache Arrow
+Copyright 2016-2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+This product includes software from the chronoutil crate (MIT)
+ * Copyright (c) 2020-2022 Oliver Margetts
+ * https://github.com/olliemath/chronoutil
+
+This product includes software from the compact-thrift project (Apache 2.0)
+ * Copyright Jörn Horstmann
+ * https://github.com/jhorstmann/compact-thrift
+```
+
+### ring 0.17.14 / LICENSE
+
+```text
+*ring* uses an "ISC" license, like BoringSSL used to use, for new code
+files. See LICENSE-other-bits for the text of that license.
+
+See LICENSE-BoringSSL for code that was sourced from BoringSSL under the
+Apache 2.0 license. Some code that was sourced from BoringSSL under the ISC
+license. In each case, the license info is at the top of the file.
+
+See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
+for the license to code that was sourced from the once_cell project.
+```
+
+### ring 0.17.14 / LICENSE-BoringSSL
+
+```text
+Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+
+Licenses for support code
+-------------------------
+
+Parts of the TLS test suite are under the Go license. This code is not included
+in BoringSSL (i.e. libcrypto and libssl) when compiled, however, so
+distributing code linked against BoringSSL does not trigger this license:
+
+Copyright (c) 2009 The Go Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+BoringSSL uses the Chromium test infrastructure to run a continuous build,
+trybots etc. The scripts which manage this, and the script for generating build
+metadata, are under the Chromium license. Distributing code linked against
+BoringSSL does not trigger this license.
+
+Copyright 2015 The Chromium Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### ring 0.17.14 / LICENSE-other-bits
+
+```text
+Copyright 2015-2025 Brian Smith.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+### subsetter 0.2.6 / NOTICE
+
+```text
+# Code
+
+ttf-parser
+Code from ttf-parser was used/adapted for the following parts:
+- Reader, Writer, LazyArray16 and LazyArray16Iter
+- `name` table parsing.
+- `hmtx` table parsing.
+- Most of the `cff` parsing logic as well auxiliary structs and functions
+such as `calc_subroutine_bias`, `SIDMetadata`, `CIDMetadata` `RealNumber`,
+`Index`, `IndexSize`, `OffsetSize`, `FDSelect`, `ArgumentStack`, `Top Dict` and `FONT Dict`,
+`DictionaryParser`.
+
+The MIT license applies:
+
+Copyright (c) 2018 Yevhenii Reizner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+==============================================================================
+
+fonttools
+Code from fonttools was used/adapted for the following parts:
+- The `Decompiler` for charstrings.
+
+The MIT license applies:
+MIT License
+
+Copyright (c) 2017 Just van Rossum
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+
 ## ライセンス本文
 
-複数のライセンスから選べる部品は、MIT または Apache-2.0 を選んでいます。
+選択可能な場合は MIT または Apache-2.0 を使用します。AND で結ばれた条件は併せて適用します。
 
 ### Apache-2.0
 
