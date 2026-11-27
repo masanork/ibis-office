@@ -1,0 +1,19 @@
+[package]
+name = "ibis-ocr"
+description = "Pure Rust Japanese/multilingual OCR engine implementing NDL OCR-Lite (DEIMv2 + PARSeq) over tract-onnx."
+license = "AGPL-3.0-only"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+sha2 = "0.10"
+tract-onnx = { version = "0.23.10", optional = true }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"], optional = true }
+
+[features]
+default = ["tract"]
+tract = ["dep:tract-onnx", "dep:getrandom"]

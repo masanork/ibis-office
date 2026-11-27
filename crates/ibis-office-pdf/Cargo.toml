@@ -21,3 +21,8 @@ gpui-kit.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
 ibis-xdw.workspace = true
+ibis-ocr = { workspace = true, optional = true }
+
+[features]
+default = []
+ocr = ["dep:ibis-ocr"]

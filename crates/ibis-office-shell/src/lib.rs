@@ -150,6 +150,8 @@ pub mod infobar;
 pub mod format;
 pub mod font_list;
 pub mod font_setup;
+#[cfg(not(target_family = "wasm"))]
+pub mod ocr_setup;
 pub mod resource_list;
 pub mod font_setup_dialog;
 pub mod fonts_late;

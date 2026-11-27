@@ -62,6 +62,12 @@ pub fn design_systems_dir() -> Option<PathBuf> {
     Some(base()?.join("ibisOffice").join("DesignSystems"))
 }
 
+/// Where optional NDLOCR-Lite ONNX model weights are kept: `ibisOffice/models/ndlocr-lite-v2` under [`base`].
+#[cfg(not(target_family = "wasm"))]
+pub fn ocr_models_dir() -> Option<PathBuf> {
+    Some(base()?.join("ibisOffice").join("models").join("ndlocr-lite-v2"))
+}
+
 /// The font files in [`fonts_dir`] (`.ttf`, `.otf`, `.ttc` in the folder of each font), sorted. The app gives them to its text
 /// system at start, so they are fonts of the app (a document that names one draws with it).
 #[cfg(not(target_family = "wasm"))]

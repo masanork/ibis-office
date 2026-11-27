@@ -20,6 +20,8 @@ pub mod markdown;
 pub mod docx;
 mod docx_tags;
 pub mod text;
+#[cfg(feature = "ocr")]
+pub mod ocr;
 pub use editor::PdfDocument;
 
 enum ViewerSource {
