@@ -37,7 +37,7 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
   国文学研究資料館 国書データベース異体字リスト（MIT、他の資料と一致する組のみ）、常用漢字表の康熙字典体（告示）、
   デジタル庁 代替マップの独自定義分（事務連絡）。帰属表示とライセンス本文は `crates/ibis-doc-model/resources/gjs-variant-clusters/`
   にあり、`scripts/gen-web-licenses.py` が各版の license.md に載せる。MJ縮退マップ（CC BY-SA 2.1 JP）は基本版に含まない。
-- 完全版は GJS の Pages（<https://gjs-9w9.pages.dev/datasets/variant-clusters/>）から、NOTICE（IPA の帰属表示・加工内容・ライセンス）と一緒に配る。
+- 完全版は GJS の Pages（<https://moji.sorane.dev/datasets/variant-clusters/>）から、NOTICE（IPA の帰属表示・加工内容・ライセンス）と一緒に配る。
   アプリは読むだけで改変しないので、プログラムに CC BY-SA の継承条件は及ばない。フォント（IPAmj明朝など）と同じ扱い。
 - 照合で「髙」と「高」のように同じクラスタに属する別の文字を曖昧一致として扱う。
   クラスタ所属が示すのは確認候補であり、同一人物や安全な置換を示すものではない。異体字セレクタを含むシーケンスは対象外。

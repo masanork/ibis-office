@@ -1141,7 +1141,7 @@ SPDX-License-Identifier: Unicode-3.0
 - ファイル: `clusters.csv` (member_codepoint, cluster_id, representative_codepoint)、`variant-clusters.zst` (ibis-variant-bitmap/1+zstd)
 - クラスタへの所属は「確認が必要な候補」を示すもので、同一人物や安全な置換を意味しない。
 - 現代日本語では別字として扱う組 (托/拓・愉/愈・伙/火・䄷/石) には辺を張らない。
-- 配布元: https://gjs-9w9.pages.dev/datasets/variant-clusters/
+- 配布元: https://moji.sorane.dev/datasets/variant-clusters/
 - 作成手順・評価: GJS リポジトリの `docs/legal/variant-cluster-data-sources.md`
 
 ### 出典と利用条件 (基本版)
