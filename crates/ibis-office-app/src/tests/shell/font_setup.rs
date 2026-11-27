@@ -18,6 +18,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("shell::font_setup_cancel_stops_a_running_download", cancel_download),
         ("shell::font_setup_an_unreadable_list_is_told_in_the_dialog", list_unreadable),
         ("shell::font_setup_startup_check_asks_once_for_a_version", startup_check),
+        ("shell::font_setup_a_variant_dictionary_is_offered_unchecked_and_used_once_installed", variant_dictionary),
     ]
 }
 
@@ -330,5 +331,68 @@ fn startup_check() {
     }
     assert!(!s.with(|e, _| e.font_setup_open()), "all skipped: the check reads the list and asks nothing");
     drop(s);
+    forget();
+}
+
+/// A variant dictionary (`"kind":"variant-dictionary"`): offered beside the fonts but unchecked; once the user checks it and installs,
+/// it is kept with the data sets (not the fonts) and used from then on by the name comparison, in place of the bundled one.
+/// The dictionary is a made-up one of a single cluster, 一 and 丁, so the change is seen.
+fn variant_dictionary() {
+    forget();
+    const DICT: &str = "k1-dict.zst";
+    let dict = std::fs::read(repo_root().join("crates/ibis-office-app/src/tests/shell/fixtures/one-cluster-variant-dictionary.zst")).expect("the fixture");
+    let font = carlito();
+    let files = Server::start(vec![
+        ("/fonts/k1-alpha/k1-alpha.ttf", Route::Body(font.clone())),
+        ("/fonts/k1-alpha/OFL.txt", Route::Body(b"OFL".to_vec())),
+        ("/datasets/k1-dict/k1-dict.zst", Route::Body(dict.clone())),
+        ("/datasets/k1-dict/NOTICE.md", Route::Body(b"NOTICE".to_vec())),
+    ]);
+    let list = format!(
+        "{{\"id\":\"k1-alpha\",\"name_en\":\"alpha\",\"file\":\"k1-alpha.ttf\",\"size\":{},\"url\":\"{}\",\"license\":\"SIL OFL 1.1\",\"license_url\":\"{}\"}}\n\
+         {{\"id\":\"k1-dict\",\"kind\":\"variant-dictionary\",\"name_en\":\"dictionary\",\"file\":\"{DICT}\",\"size\":{},\"url\":\"{}\",\"license\":\"CC BY-SA 2.1 JP\",\"license_url\":\"{}\"}}\n",
+        font.len(),
+        files.url("/fonts/k1-alpha/k1-alpha.ttf"),
+        files.url("/fonts/k1-alpha/OFL.txt"),
+        dict.len(),
+        files.url("/datasets/k1-dict/k1-dict.zst"),
+        files.url("/datasets/k1-dict/NOTICE.md"),
+    );
+    HOLD.with(|h| h.borrow_mut().push(files));
+    let lister = Server::start(vec![("/font-list.txt", Route::Body(list.into_bytes()))]);
+    use_list(&lister);
+    let dataset_dir = ibis_office_base::app_data::datasets_dir().unwrap().join("k1-dict");
+    let _ = std::fs::remove_dir_all(&dataset_dir);
+    let same_cluster = |a: char, b: char| {
+        ibis_doc_model::variant_clusters::active().and_then(|d| Some(d.cluster_index(a)? == d.cluster_index(b)?)).unwrap_or(false)
+    };
+    assert!(!same_cluster('一', '丁'), "not in the bundled dictionary");
+
+    let mut s = Scenario::start_view();
+    open_from_the_menu(&mut s);
+    let rows = s.with(|e, _| e.font_setup_rows());
+    assert_eq!(rows, vec![("k1-alpha.ttf".into(), true, false), (DICT.into(), false, false)], "the dictionary is offered unchecked: {rows:?}");
+    s.update(|e, _, cx| e.font_setup_click_check(Some(DICT), cx));
+    press(&mut s, "font-setup-install");
+    wait_idle(&mut s);
+
+    assert_eq!(std::fs::read(dataset_dir.join(DICT)).unwrap(), dict, "kept with the data sets");
+    assert_eq!(std::fs::read(dataset_dir.join("NOTICE.md")).unwrap(), b"NOTICE", "with its notice beside it");
+    assert!(!ibis_office_base::app_data::downloaded_font_files().iter().any(|p| p.ends_with(DICT)), "not given to the text system");
+    assert!(same_cluster('一', '丁'), "the downloaded dictionary is used now");
+    let (message, running, _) = s.with(|e, _| e.font_setup_status());
+    assert!(!running && message.as_deref().is_some_and(|m| m.contains('2')), "the dialog says the dictionary is in use: {message:?}");
+    drop(s);
+
+    // The next start reads it again (before a window opens).
+    ibis_doc_model::variant_clusters::reset_to_embedded();
+    let (path, len) = crate::shell::dataset::load_installed().expect("the kept dictionary");
+    assert!(path.ends_with(DICT) && len == 2, "{}", path.display());
+
+    ibis_doc_model::variant_clusters::reset_to_embedded();
+    crate::shell::settings::remove(crate::shell::dataset::CHOSEN_KEY);
+    let _ = std::fs::remove_dir_all(&dataset_dir);
+    let _ = std::fs::remove_dir_all(ibis_office_base::app_data::fonts_dir().unwrap().join("k1-alpha"));
+    font_setup::set_skipped("k1-alpha.ttf", false);
     forget();
 }
