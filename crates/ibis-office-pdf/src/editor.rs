@@ -311,7 +311,11 @@ impl FormatEditor for PdfDocument {
             .pdf_bytes
             .as_ref()
             .filter(|bytes| !bytes.is_empty())
-            .and_then(|bytes| PdfViewerState::open(bytes.clone()).ok())
+            .and_then(|bytes| {
+                let mut v = PdfViewerState::open(bytes.clone()).ok()?;
+                v.set_text_system(cx.text_system().clone());
+                Some(v)
+            })
             .unwrap_or_else(PdfViewerState::empty);
         let find_input = cx.new(|cx| InputState::new(window, cx).placeholder(ibis_office_shell::i18n::text("_shell.find-what")));
         let page_input = cx.new(|cx| InputState::new(window, cx).placeholder(ibis_office_shell::i18n::text("shell.pdf.page-number")));

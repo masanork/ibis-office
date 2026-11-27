@@ -6,15 +6,16 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use gpui_kit::{App, Bounds, Pixels, Point, RenderImage, Window, px, size};
+use gpui_kit::{App, Bounds, Pixels, Point, RenderImage, TextSystem, Window, px, size};
 use ibis_ofd::OfdContainer;
 use ibis_xps::XpsContainer;
-use ibis_pdf::interpret::interpret_page_scene;
+use ibis_pdf::interpret::{FontResolver, interpret_page_scene_with_font_resolver};
 use ibis_pdf::scene::{PageInfo, PageScene, collect_pages};
 use ibis_pdf::signature::{SignatureRecord, inspect_signatures};
 use ibis_pdf::{PdfContainer, Result};
 
 pub mod editor;
+mod font_resolver;
 pub mod render;
 pub mod markdown;
 pub mod docx;
@@ -82,6 +83,10 @@ pub struct PdfViewerState {
     pub find_query: String,
     /// Whether some page has text (a picked, copied, searched document): found by reading the pages once, and remembered (`has_text`).
     text_found: Option<bool>,
+    /// System font resolver backed by GPUI's [`TextSystem`] for non-embedded PDF fonts.
+    font_resolver: Option<FontResolver>,
+    /// `ibis_office_render::shape_view::fonts_generation()` at the time `scene_cache` was populated.
+    fonts_generation: u64,
 }
 
 impl PdfViewerState {
@@ -101,7 +106,17 @@ impl PdfViewerState {
             find_current: None,
             find_query: String::new(),
             text_found: None,
+            font_resolver: None,
+            fonts_generation: ibis_office_render::shape_view::fonts_generation(),
         }
+    }
+
+    /// Attach a GPUI [`TextSystem`] so non-embedded PDF fonts can resolve system/installed fallback fonts.
+    pub fn set_text_system(&mut self, text_system: Arc<TextSystem>) {
+        self.font_resolver = Some(font_resolver::build_font_resolver(text_system));
+        self.fonts_generation = ibis_office_render::shape_view::fonts_generation();
+        self.scene_cache.clear();
+        self.image_cache.clear();
     }
 
     /// Open a PDF or OFD container, resolving page metadata and signature counts
@@ -123,17 +138,8 @@ impl PdfViewerState {
             return Ok(Self {
                 source: ViewerSource::Ofd(Arc::new(ofd)),
                 pages,
-                signatures: Vec::new(),
                 ofd_signature_status,
-                scene_cache: HashMap::new(),
-                image_cache: HashMap::new(),
-                zoom: 1.0,
-                current_page: 0,
-                selection: None,
-                find_matches: Vec::new(),
-                find_current: None,
-            find_query: String::new(),
-            text_found: None,
+                ..Self::empty()
             });
         }
         if ibis_xps::is_xps(&raw) {
@@ -144,17 +150,8 @@ impl PdfViewerState {
             return Ok(Self {
                 source: ViewerSource::Xps(Arc::new(xps)),
                 pages,
-                signatures: Vec::new(),
                 ofd_signature_status,
-                scene_cache: HashMap::new(),
-                image_cache: HashMap::new(),
-                zoom: 1.0,
-                current_page: 0,
-                selection: None,
-                find_matches: Vec::new(),
-                find_current: None,
-            find_query: String::new(),
-            text_found: None,
+                ..Self::empty()
             });
         }
         if ibis_vsdx::is_vsdx(&raw) {
@@ -172,16 +169,7 @@ impl PdfViewerState {
             source: ViewerSource::Pdf(Arc::new(Mutex::new(container))),
             pages,
             signatures,
-            ofd_signature_status: None,
-            scene_cache: HashMap::new(),
-            image_cache: HashMap::new(),
-            zoom: 1.0,
-            current_page: 0,
-            selection: None,
-            find_matches: Vec::new(),
-            find_current: None,
-            find_query: String::new(),
-            text_found: None,
+            ..Self::empty()
         })
     }
 
@@ -302,7 +290,11 @@ impl PdfViewerState {
             ViewerSource::Empty => return Err(ibis_pdf::Error::new("empty pdf viewer")),
             ViewerSource::Pdf(container) => {
                 let mut guard = container.lock().expect("pdf container lock poisoned");
-                Arc::new(interpret_page_scene(&mut guard, page_index)?)
+                Arc::new(interpret_page_scene_with_font_resolver(
+                    &mut guard,
+                    page_index,
+                    self.font_resolver.as_ref(),
+                )?)
             }
             ViewerSource::Ofd(ofd) => Arc::new(
                 ofd.interpret_page_scene(page_index)
@@ -510,6 +502,14 @@ impl PdfViewerState {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<()> {
+        let current_gen = ibis_office_render::shape_view::fonts_generation();
+        if self.font_resolver.is_none() {
+            self.set_text_system(cx.text_system().clone());
+        } else if self.fonts_generation != current_gen {
+            self.fonts_generation = current_gen;
+            self.scene_cache.clear();
+            self.image_cache.clear();
+        }
         let scene = self.page_scene(page_index)?;
         let bounds = Bounds::new(
             origin,
