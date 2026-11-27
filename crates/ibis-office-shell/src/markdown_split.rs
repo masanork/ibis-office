@@ -36,6 +36,84 @@ pub const DEFAULT_SPLIT_RATIO: f32 = 0.45;
 pub const MIN_SPLIT_RATIO: f32 = 0.20;
 pub const MAX_SPLIT_RATIO: f32 = 0.80;
 
+/// Automatically detected document kind for plain-text sources (`text` / `.md` / `.lawtext`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextContentKind {
+    Markdown,
+    Marp,
+    Workbook,
+    Lawtext,
+}
+
+impl TextContentKind {
+    pub fn badge_label(self) -> &'static str {
+        match self {
+            Self::Markdown => "MD",
+            Self::Marp => "Marp",
+            Self::Workbook => "Sheet",
+            Self::Lawtext => "Law",
+        }
+    }
+}
+
+/// Detect whether plain-text content is Marp presentation, Workbook Markdown, Lawtext, or standard Markdown.
+pub fn detect_text_content_kind(data: &[u8]) -> TextContentKind {
+    if ibis_formats::markdown::is_presentation_markdown(data) {
+        TextContentKind::Marp
+    } else if ibis_formats::markdown::is_workbook_markdown(data) {
+        TextContentKind::Workbook
+    } else if ibis_lawtext::is_lawtext(data) {
+        TextContentKind::Lawtext
+    } else {
+        TextContentKind::Markdown
+    }
+}
+
+pub const TEMPLATE_MARP: &str = "\
+---
+marp: true
+theme: default
+paginate: true
+---
+
+# タイトル
+
+サブタイトル
+
+---
+
+## スライド 2
+
+- 箇条書き 1
+- 箇条書き 2
+";
+
+pub const TEMPLATE_WORKBOOK: &str = "\
+---
+workbook: true
+---
+
+<!-- xlsx-sheet \"Sheet1\" -->
+
+## Sheet1
+
+| 項目 | 値 | メモ |
+| --- | ---: | --- |
+| A | 100 | |
+| B | 200 | |
+| 合計 | =SUM(B2:B3) | |
+";
+
+pub const TEMPLATE_LAWTEXT: &str = "\
+新規法令案（令和六年架空規則第一号）
+
+  （目的）
+第一条　この規則は、必要な事項を定めることを目的とする。
+
+  附則
+この規則は、公布の日から施行する。
+";
+
 /// View mode for bidirectional Markdown editing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MarkdownViewMode {
@@ -161,6 +239,7 @@ pub struct InlineCompletionState {
     pub error: Option<String>,
     /// Monotonic generation counter to discard stale debounced responses.
     pub generation: u64,
+    pub auto_switch_generation: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -2484,7 +2563,164 @@ impl SlideEditor {
             );
         }
 
+        let current_kind = self.current_text_content_kind();
+        bar = bar.child(
+            div()
+                .px(px(6.))
+                .py(px(1.))
+                .rounded(px(4.))
+                .bg(theme.background)
+                .border_1()
+                .border_color(theme.border)
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.muted_foreground)
+                .child(format!("自動判定: {}", current_kind.badge_label())),
+        );
+
+        if !readonly {
+            let templates: [(&'static str, &'static str, &'static str); 3] = [
+                ("marp", "Marp", TEMPLATE_MARP),
+                ("sheet", "Sheet", TEMPLATE_WORKBOOK),
+                ("law", "Law", TEMPLATE_LAWTEXT),
+            ];
+            for (slug, label, body) in templates {
+                let ed = editor.clone();
+                bar = bar.child(
+                    Button::new(SharedString::from(format!("{id_prefix}-tpl-{slug}")))
+                        .label(label)
+                        .compact()
+                        .ghost()
+                        .on_click(cx.listener(move |this, _ev, window, cx| {
+                            ed.update(cx, |state, cx| {
+                                state.set_value(body.to_string(), window, cx);
+                            });
+                            let _ = this.reopen_text_source_as_detected(
+                                body.to_string(),
+                                window,
+                                cx,
+                            );
+                        })),
+                );
+            }
+        }
+
         bar.into_any_element()
+    }
+
+    pub fn current_text_content_kind(&self) -> TextContentKind {
+        match self.kind() {
+            ibis_formats::Kind::Presentation => TextContentKind::Marp,
+            ibis_formats::Kind::Workbook => TextContentKind::Workbook,
+            ibis_formats::Kind::Document if self.is_law_document() => TextContentKind::Lawtext,
+            _ => TextContentKind::Markdown,
+        }
+    }
+
+    /// Schedule a debounced check to auto-switch between Markdown / Marp / Workbook / Lawtext
+    /// when the user edits or pastes content whose format differs from the active editor kind.
+    pub fn schedule_text_content_auto_switch(
+        &mut self,
+        editor: Entity<EditorState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.inline_completion.auto_switch_generation =
+            self.inline_completion.auto_switch_generation.wrapping_add(1);
+        let expected_gen = self.inline_completion.auto_switch_generation;
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(450))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.inline_completion.auto_switch_generation != expected_gen {
+                    return;
+                }
+                let text = editor.read(cx).value().to_string();
+                let _ = this.reopen_text_source_as_detected(text, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// If `text` is detected as a different [`TextContentKind`] than the current editor,
+    /// re-open it in-place in that format while preserving the text source and split view.
+    pub fn reopen_text_source_as_detected(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if text.trim().is_empty() {
+            return false;
+        }
+        let detected = detect_text_content_kind(text.as_bytes());
+        if detected == self.current_text_content_kind() {
+            return false;
+        }
+        let base_dir = self.current_path().and_then(|p| p.parent()).map(std::path::Path::to_path_buf);
+        let opened_result: Result<(ibis_formats::Opened, bool), String> = match detected {
+            TextContentKind::Marp => {
+                crate::read_file::open_markdown_bytes(text.as_bytes().to_vec(), base_dir.as_deref(), true)
+                    .map(|o| (o, false))
+            }
+            TextContentKind::Workbook => {
+                ibis_formats::markdown::open_markdown_workbook(text.as_bytes().to_vec())
+                    .map(|o| (o, false))
+                    .map_err(|e| e.to_string())
+            }
+            TextContentKind::Lawtext => match ibis_lawtext::parse_lawtext(&text) {
+                Ok(law) => {
+                    let law_md = ibis_lawtext::to_markdown(&law);
+                    crate::read_file::open_markdown_bytes(law_md.into_bytes(), base_dir.as_deref(), false)
+                        .map(|o| (o, true))
+                }
+                Err(_) => return false,
+            },
+            TextContentKind::Markdown => {
+                crate::read_file::open_markdown_bytes(text.as_bytes().to_vec(), base_dir.as_deref(), false)
+                    .map(|o| (o, false))
+            }
+        };
+        let Ok((opened, is_law)) = opened_result else {
+            return false;
+        };
+        let next_name: SharedString = match self.file_name.as_deref() {
+            Some(current) => {
+                let lower = current.to_ascii_lowercase();
+                let is_untitled = lower.starts_with("untitled")
+                    || current.starts_with("文書 ")
+                    || current.starts_with("無題");
+                if is_untitled {
+                    if is_law {
+                        "Untitled.lawtext".into()
+                    } else {
+                        "Untitled.md".into()
+                    }
+                } else {
+                    current.to_string().into()
+                }
+            }
+            None => {
+                if is_law {
+                    "Untitled.lawtext".into()
+                } else {
+                    "Untitled.md".into()
+                }
+            }
+        };
+        self.load(opened.presentation, next_name, window, cx);
+        self.source = Some(std::sync::Arc::new(opened.source));
+        #[cfg(target_family = "wasm")]
+        {
+            self.web.law_source = if is_law { Some(text) } else { None };
+        }
+        crate::format::with_format!(self, new_file_shown(self, cx));
+        if !self.should_auto_open_markdown_split() {
+            window.dispatch_action(Box::new(crate::actions::ToggleMarkdownSource), cx);
+        }
+        cx.notify();
+        true
     }
 
     /// Render the shared Split container: left Markdown source pane + draggable divider + right Visual pane.
@@ -2619,6 +2855,26 @@ impl SlideEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn detect_text_content_kind_classifies_all_four_formats() {
+        assert_eq!(
+            detect_text_content_kind(b"# Plain Note\n\nHello world\n"),
+            TextContentKind::Markdown
+        );
+        assert_eq!(
+            detect_text_content_kind(TEMPLATE_MARP.as_bytes()),
+            TextContentKind::Marp
+        );
+        assert_eq!(
+            detect_text_content_kind(TEMPLATE_WORKBOOK.as_bytes()),
+            TextContentKind::Workbook
+        );
+        assert_eq!(
+            detect_text_content_kind(TEMPLATE_LAWTEXT.as_bytes()),
+            TextContentKind::Lawtext
+        );
+    }
 
     #[::core::prelude::v1::test]
     fn marp_slide_spans_handles_frontmatter_fences_and_slide_breaks() {

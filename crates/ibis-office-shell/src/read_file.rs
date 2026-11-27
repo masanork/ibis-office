@@ -138,15 +138,32 @@ pub(crate) fn open_document_bytes(
         return Ok(Some(CommonOpen::StructuredPreview(opened)));
     }
     if external_document_format == Some(DocxConvertFormat::Markdown) {
-        let opened = if ibis_formats::markdown::is_presentation_markdown(data) {
-            open_markdown_bytes(data.to_vec(), base_dir, true)?
-        } else if ibis_formats::markdown::is_workbook_markdown(data) {
-            ibis_formats::markdown::open_markdown_workbook(data.to_vec())
-                .map_err(|e| e.to_string())?
-        } else {
-            open_markdown_bytes(data.to_vec(), base_dir, false)?
-        };
-        return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: false }));
+        match crate::markdown_split::detect_text_content_kind(data) {
+            crate::markdown_split::TextContentKind::Marp => {
+                let opened = open_markdown_bytes(data.to_vec(), base_dir, true)?;
+                return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: false }));
+            }
+            crate::markdown_split::TextContentKind::Workbook => {
+                let opened = ibis_formats::markdown::open_markdown_workbook(data.to_vec())
+                    .map_err(|e| e.to_string())?;
+                return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: false }));
+            }
+            crate::markdown_split::TextContentKind::Lawtext => {
+                if let Ok(text) = std::str::from_utf8(data)
+                    && let Ok(law) = ibis_lawtext::parse_lawtext(text)
+                {
+                    let law_md = ibis_lawtext::to_markdown(&law);
+                    let opened = open_markdown_bytes(law_md.into_bytes(), base_dir, false)?;
+                    return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: true }));
+                }
+                let opened = open_markdown_bytes(data.to_vec(), base_dir, false)?;
+                return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: false }));
+            }
+            crate::markdown_split::TextContentKind::Markdown => {
+                let opened = open_markdown_bytes(data.to_vec(), base_dir, false)?;
+                return Ok(Some(CommonOpen::Standard { opened, editable_import: None, bom_format: None, is_law: false }));
+            }
+        }
     }
     if let Some(format) = editable_import {
         let opened = format.open(data, base_dir).map_err(|e| e.to_string())?;
@@ -159,7 +176,7 @@ pub(crate) fn open_document_bytes(
     Ok(None)
 }
 
-fn open_markdown_bytes(
+pub(crate) fn open_markdown_bytes(
     bytes: Vec<u8>,
     base_dir: Option<&std::path::Path>,
     presentation: bool,

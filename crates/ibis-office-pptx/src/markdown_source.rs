@@ -159,7 +159,7 @@ impl SlideEditor {
             state
         });
 
-        let subscription = cx.subscribe(&editor, |this, ed, event: &InputEvent, cx| {
+        let subscription = cx.subscribe_in(&editor, window, |this, ed, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::Change) {
                 let suppressed = this
                     .pptx()
@@ -181,6 +181,7 @@ impl SlideEditor {
                     should_schedule = ms.mode == MarkdownViewMode::Split;
                 }
                 this.schedule_inline_completion(ed.clone(), cx);
+                this.schedule_text_content_auto_switch(ed.clone(), window, cx);
                 if should_schedule {
                     this.pptx_schedule_source_to_visual_sync(cx);
                 }
