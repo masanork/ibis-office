@@ -12,7 +12,7 @@ publish = false
 [workspace.dependencies]
 ibis-calc = { path = "crates/ibis-calc" }
 ibis-m-lang = { path = "crates/ibis-m-lang" }
-ibis-ocr = { path = "crates/ibis-ocr" }
+ibis-ocr = { path = "crates/ibis-ocr", default-features = false }
 ibis-office-base = { path = "crates/ibis-office-base" }
 ibis-office-macros = { path = "crates/ibis-office-macros" }
 ibis-office-render = { path = "crates/ibis-office-render" }
