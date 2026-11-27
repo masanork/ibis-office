@@ -54,6 +54,7 @@ sorane-workspace.workspace = true
 # For the `export` feature: GPUI's headless renderer is part of its test
 # support, which also turns on GPUI's entity leak tracking (a small cost).
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+ibis-office-pdf = { path = "../ibis-office-pdf", features = ["ocr-gpu"] }
 gpui-pre-platform = { version = "=0.3.6", features = ["test-support"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg", "tiff"], optional = true }
 miniz_oxide = { version = "0.8", optional = true }

@@ -11,6 +11,8 @@ allow = [
   "IJG",
   # Only while its sources are used unmodified (see AGENTS.md).
   "MPL-2.0",
+  # Permissive data/roots license (webpki-roots via burn-wgpu/rustls).
+  "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 
