@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/235)
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/80#issuecomment-6868471583)
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Decryption of PDFs encrypted with the Standard security handler (ISO 32000-2 7.6.4), opened with the empty user
 //! password: the common case of a file anyone may open whose owner restricted printing or copying.

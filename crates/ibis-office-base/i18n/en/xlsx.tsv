@@ -122,6 +122,8 @@ xlsx.group	Group
 xlsx.ungroup	Ungroup
 xlsx.collapse	Hide Detail
 xlsx.expand	Show Detail
+xlsx.outline-summary-below	Summary Rows Below Detail
+xlsx.outline-summary-right	Summary Columns to Right of Detail
 xlsx.conditional	Conditional Formatting
 xlsx.paste-skip-blanks	Skip Blanks
 xlsx.clear-all	Clear All
@@ -1021,7 +1023,7 @@ _xlsx.define-name	Define Name…
 _xlsx.protect-sheet	Protect Sheet…
 _xlsx.group-select-all	Select All Sheets
 _xlsx.group-ungroup	Ungroup Sheets
-_xlsx.group-title	[Group]
+_xlsx.group-title	- Group
 _xlsx.group-blocked	That command cannot be used on multiple selected sheets. Select a single sheet and then try the command again.
 _xlsx.the-number-in-this-cell-is-formatted-as-text	The number in this cell is formatted as text
 _xlsx.the-formula-in-this-cell-results-in-an-error	The formula in this cell results in an error
@@ -1958,6 +1960,7 @@ query.tab.combine	Combine
 query.op.promote	Use First Row as Headers
 query.op.demote	Use Headers as First Row
 query.op.change-type	Change Type
+query.op.change-type-locale	Change Type Using Locale
 query.op.select-columns	Choose Columns
 query.op.remove-columns	Remove Columns
 query.op.rename	Rename Column
@@ -3111,6 +3114,8 @@ query.step-name.added-custom	Added Custom
 query.step-name.added-conditional-column	Added Conditional Column
 query.step-name.added-index	Added Index
 query.culture.zh-cn	Chinese (Simplified, China)
+query.culture.en-gb	English (United Kingdom)
+query.culture.th-th	Thai (Thailand)
 query.step-name.inserted-text-length	Inserted Text Length
 query.step-name.inserted-absolute-value	Inserted Absolute Value
 query.step-name.inserted-square-root	Inserted Square Root

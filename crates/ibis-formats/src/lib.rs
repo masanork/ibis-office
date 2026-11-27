@@ -58,6 +58,8 @@ mod workbook_assembly;
 pub mod student_record;
 pub mod form_assist;
 pub mod verifier_batch;
+pub mod form_data;
+pub mod form_fill;
 pub mod form_template;
 pub mod dpc;
 pub mod fhir;
@@ -85,7 +87,7 @@ mod reader;
 pub mod save;
 mod style;
 mod table_style;
-pub use table_style::styled_with_table;
+pub use table_style::{restyled_cells, styled_cells, styled_with_table};
 pub use xlsx_external::{link_display, link_path, new_external_book, read_external_book, refreshed_sheets};
 pub use xlsx_pivot::{pivot_chart_commands, pivot_data, pivot_source, pivot_source_location, rebuilt_pivot, refreshed_pivot};
 #[doc(hidden)]

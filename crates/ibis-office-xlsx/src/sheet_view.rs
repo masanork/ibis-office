@@ -4039,6 +4039,13 @@ impl EditLayout {
     }
 }
 
+pub(crate) fn drawn_fill(sheet: &Arc<Sheet>, default_style: Option<&CellStyle>, row: u32, column: u32) -> Option<ibis_doc_model::Rgb> {
+    match super::conditional::applied(sheet).as_ref() {
+        Some((drawn, _)) => cell_or_default_style(drawn, default_style, row, column).fill,
+        None => cell_or_default_style(sheet, default_style, row, column).fill,
+    }
+}
+
 /// Style of the cell at (`row`, `column`), falling back to the workbook's
 /// default style (vertically centred in a new workbook or CSV) when the cell
 /// has not been created yet.

@@ -173,10 +173,18 @@ pub enum Culture {
     French,
     /// Chinese (simplified, China): numbers and dates written as in Japanese.
     ChineseChina,
+    /// English (United Kingdom): `1,234.5`, dates day first.
+    EnglishGb,
+    /// Thai (Thailand): `1,234.5`, dates day first, the year in the Buddhist calendar (Gregorian + 543).
+    Thai,
 }
 
 impl Culture {
-    pub const ALL: [Culture; 6] = [Self::Invariant, Self::EnglishUs, Self::Japanese, Self::German, Self::French, Self::ChineseChina];
+    pub const ALL: [Culture; 8] = [Self::Invariant, Self::EnglishUs, Self::Japanese, Self::German, Self::French, Self::ChineseChina, Self::EnglishGb, Self::Thai];
+
+    /// The cultures the locale dialog lists (`Table.TransformColumnTypes(..., culture)`): the ones the M interpreter holds the data of,
+    /// without the invariant one (the dialog's list has no empty name).
+    pub const LOCALES: [Culture; 7] = [Self::Japanese, Self::EnglishUs, Self::ChineseChina, Self::German, Self::French, Self::EnglishGb, Self::Thai];
 
     /// The culture's name (`en-US`).
     pub fn name(self) -> &'static str {
@@ -187,6 +195,8 @@ impl Culture {
             Self::German => "de-DE",
             Self::French => "fr-FR",
             Self::ChineseChina => "zh-CN",
+            Self::EnglishGb => "en-GB",
+            Self::Thai => "th-TH",
         }
     }
 
@@ -208,7 +218,7 @@ impl Culture {
     fn date_order(self) -> DateOrder {
         match self {
             Self::EnglishUs => DateOrder::Mdy,
-            Self::German | Self::French => DateOrder::Dmy,
+            Self::German | Self::French | Self::EnglishGb | Self::Thai => DateOrder::Dmy,
             _ => DateOrder::Ymd,
         }
     }
@@ -625,7 +635,7 @@ fn parse_date_time(text: &str, culture: Culture) -> Option<f64> {
         serial = parse_date_in_order(date_part, DateOrder::Ymd, false);
     }
     if serial.is_none() {
-        serial = parse_date_in_order(date_part, culture.date_order(), false);
+        serial = if culture == Culture::Thai { parse_thai_date(date_part) } else { parse_date_in_order(date_part, culture.date_order(), false) };
     }
     let serial = match (serial, time_part) {
         (Some(s), _) => s,
@@ -638,6 +648,19 @@ fn parse_date_time(text: &str, culture: Culture) -> Option<f64> {
         None => 0.0,
     };
     Some(serial + time)
+}
+
+/// A date as th-TH writes it: day first, the year in the Buddhist calendar (the Gregorian year + 543), as .NET's Thai calendar reads it.
+fn parse_thai_date(text: &str) -> Option<f64> {
+    let sep = text.find(['/', '-', '.'])?;
+    let sep = text[sep..].chars().next()?;
+    let parts: Vec<&str> = text.split(sep).collect();
+    let year = parts.last()?.trim();
+    if parts.len() != 3 || year.len() != 4 {
+        return parse_date_in_order(text, Culture::Thai.date_order(), false);
+    }
+    let gregorian = year.parse::<i64>().ok()? - 543;
+    parse_date_in_order(&format!("{}{sep}{}{sep}{gregorian}", parts[0], parts[1]), DateOrder::Dmy, false)
 }
 
 fn parse_time_fraction(text: &str) -> Option<f64> {
@@ -688,13 +711,14 @@ pub fn convert(v: &CellValue, ty: QType, culture: Culture) -> CellValue {
                 _ => return bad(),
             };
             match ty {
-                QType::Whole => CellValue::Number(n.signum() * (n.abs() + 0.5).floor()),
+                // As the M interpreter converts (what Excel was measured to do): halves go to the even number (2.5 -> 2, 0.5 -> 0).
+                QType::Whole => CellValue::Number(ibis_m_lang::culture::round_scaled(n, 0, 4)),
                 QType::Int32 => {
-                    let r = n.signum() * (n.abs() + 0.5).floor();
+                    let r = ibis_m_lang::culture::round_scaled(n, 0, 4);
                     if r.abs() > f64::from(i32::MAX) { bad() } else { CellValue::Number(r) }
                 }
                 // A fixed decimal keeps four decimals.
-                QType::Currency => CellValue::Number((n * 1e4).round() / 1e4),
+                QType::Currency => CellValue::Number(ibis_m_lang::culture::round_scaled(n, 4, 4)),
                 _ => CellValue::Number(n),
             }
         }

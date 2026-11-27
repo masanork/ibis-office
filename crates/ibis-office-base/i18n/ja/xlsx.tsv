@@ -122,6 +122,8 @@ xlsx.group	グループ化
 xlsx.ungroup	グループ解除
 xlsx.collapse	詳細を表示しない
 xlsx.expand	詳細を表示
+xlsx.outline-summary-below	詳細データの下に集計行を表示する
+xlsx.outline-summary-right	詳細データの右に集計列を表示する
 xlsx.conditional	条件付き書式
 xlsx.paste-skip-blanks	空白セルを無視する
 xlsx.clear-all	すべてクリア
@@ -1022,7 +1024,7 @@ _xlsx.define-name	名前の定義…
 _xlsx.protect-sheet	シートの保護…
 _xlsx.group-select-all	すべてのシートを選択
 _xlsx.group-ungroup	シートのグループ解除
-_xlsx.group-title	[グループ]
+_xlsx.group-title	- グループ
 _xlsx.group-blocked	このコマンドは、複数のシートを選択している場合は使用できません。1 つのシートだけを選択してから、もう一度やり直してください。
 _xlsx.the-number-in-this-cell-is-formatted-as-text	このセルの数値は、文字列形式で保存されています
 _xlsx.the-formula-in-this-cell-results-in-an-error	このセルの数式の結果はエラーです
@@ -1955,6 +1957,7 @@ query.tab.combine	結合
 query.op.promote	1 行目をヘッダーとして使用
 query.op.demote	ヘッダーを 1 行目として使用
 query.op.change-type	データ型の変更
+query.op.change-type-locale	ロケールを使用して型を変更
 query.op.select-columns	列の選択
 query.op.remove-columns	列の削除
 query.op.rename	列名の変更
@@ -3108,6 +3111,8 @@ query.step-name.added-custom	追加されたカスタム
 query.step-name.added-conditional-column	追加された条件列
 query.step-name.added-index	追加されたインデックス
 query.culture.zh-cn	中国語 (簡体字、中国)
+query.culture.en-gb	英語 (英国)
+query.culture.th-th	タイ語 (タイ)
 query.step-name.inserted-text-length	挿入されたテキストの長さ
 query.step-name.inserted-absolute-value	挿入された絶対値
 query.step-name.inserted-square-root	挿入された平方根

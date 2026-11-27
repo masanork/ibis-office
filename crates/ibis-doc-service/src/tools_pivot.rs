@@ -25,7 +25,7 @@ pub(crate) const CREATE_PIVOT: Tool = Tool {
     description: "Create an Excel PivotTable at a blank location. Supply either a source range with headers or a named Excel table. Count counts nonblank values.",
     access: Access::Edit,
     returns_content: false,
-    schema: || {
+    schema: &|| {
         object(
             &[
                 document_id(),
@@ -73,7 +73,7 @@ pub(crate) const LIST_PIVOTS: Tool = Tool {
     description: "List PivotTables on a worksheet with their source, current location, axes and measures.",
     access: Access::Read,
     returns_content: true,
-    schema: || {
+    schema: &|| {
         object(
             &[
                 document_id(),
@@ -95,7 +95,7 @@ pub(crate) const REFRESH_PIVOT: Tool = Tool {
     description: "Rebuild an existing PivotTable from its current workbook table or range while preserving its field configuration.",
     access: Access::Edit,
     returns_content: false,
-    schema: || {
+    schema: &|| {
         object(
             &[
                 document_id(),

@@ -16,7 +16,7 @@ pub(crate) fn tools() -> [Tool; 1] {
         description: "Compare one SD-JWT or mdoc presentation against explicit attribute paths or a supported DCQL query. Returns diagnostics, not a trust decision or claim values.",
         access: Access::Read,
         returns_content: true,
-        schema: || {
+        schema: &|| {
             let mut schema = object(
                 &[
                     ("format", json!({"enum": ["sd-jwt", "mdoc"]})),

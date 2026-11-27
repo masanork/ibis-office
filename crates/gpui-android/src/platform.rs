@@ -12,10 +12,9 @@ use futures::channel::oneshot;
 use gpui::{
     Action, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, ClipboardItem, CursorStyle,
     DummyKeyboardMapper, ForegroundExecutor, KeyDownEvent, KeyUpEvent, Keymap, Keystroke, Menu,
-    MenuItem, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathPromptOptions, PinchEvent, Pixels, Platform, PlatformDisplay, PlatformInput,
+    MenuItem, Modifiers, PathPromptOptions, PinchEvent, Pixels, Platform, PlatformDisplay, PlatformInput,
     PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point,
-    ScrollDelta, ScrollWheelEvent, Task, ThermalState, TouchPhase, WindowAppearance,
+    Task, ThermalState, TouchEvent, TouchId, TouchPhase, WindowAppearance,
     WindowParams, WindowVisibility, point, px,
 };
 use gpui_wgpu::{CosmicTextSystem, GpuContext};
@@ -28,19 +27,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const TAP_SLOP_PX: f32 = 8.0;
-const DOUBLE_TAP_MAX_DIST_PX: f32 = 24.0;
-const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(400);
-const FLING_DECEL: f32 = 4.2;
-const MIN_FLING_VELOCITY_PX_S: f32 = 80.0;
-const STOP_FLING_VELOCITY_PX_S: f32 = 15.0;
-const MAX_FLING_VELOCITY_PX_S: f32 = 6000.0;
-const FLING_STALE_WINDOW: Duration = Duration::from_millis(80);
 
-#[derive(Debug, Clone, Copy)]
-struct FlingState {
-    pos: (f32, f32),
-    velocity: (f32, f32),
-    last_tick: Instant,
+/// What the platform keeps of the touches, to know a tap (for the soft keyboard).
+#[derive(Debug, Clone, Copy, Default)]
+struct TapState {
+    /// Fingers on the screen now.
+    active: u32,
+    start: (f32, f32),
+    /// The only finger has not moved out of the slop since it went down.
+    candidate: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -48,12 +43,7 @@ enum TouchState {
     Idle,
     Single {
         pointer_id: i32,
-        start: (f32, f32),
         last: (f32, f32),
-        last_time: Instant,
-        velocity: (f32, f32),
-        panning: bool,
-        suppressed_tap: bool,
     },
     Pinch {
         p1_id: i32,
@@ -103,8 +93,12 @@ pub struct AndroidPlatform {
     callbacks: RefCell<PlatformCallbacks>,
     quit_requested: Cell<bool>,
     touch_state: Cell<TouchState>,
-    fling: Cell<Option<FlingState>>,
-    last_tap: Cell<Option<(Instant, (f32, f32), usize)>>,
+    tap: Cell<TapState>,
+    /// A tap ended: whether the soft keyboard shows is decided on the next turn.
+    keyboard_check: Cell<bool>,
+    /// The soft keyboard the window was last laid out with (K0064).
+    keyboard_seen: Cell<jni_bridge::KeyboardInfo>,
+    safe_area_seen: Cell<[f32; 4]>,
 }
 
 impl AndroidPlatform {
@@ -131,8 +125,10 @@ impl AndroidPlatform {
             callbacks: RefCell::new(PlatformCallbacks::default()),
             quit_requested: Cell::new(false),
             touch_state: Cell::new(TouchState::Idle),
-            fling: Cell::new(None),
-            last_tap: Cell::new(None),
+            tap: Cell::new(TapState::default()),
+            keyboard_check: Cell::new(false),
+            keyboard_seen: Cell::new(jni_bridge::KeyboardInfo::HIDDEN),
+            safe_area_seen: Cell::new([0.0; 4]),
         }
     }
 
@@ -155,6 +151,29 @@ impl AndroidPlatform {
                 state.scale_factor = scale;
             }
         }
+    }
+
+    /// The soft keyboard moved: the window is laid out again (the shell reads `gpui_android::keyboard()` as it lays out; K0064).
+    fn handle_keyboard(&self) {
+        let now = jni_bridge::keyboard();
+        let area = jni_bridge::safe_area();
+        if now == self.keyboard_seen.get() && area == self.safe_area_seen.get() {
+            return;
+        }
+        self.keyboard_seen.set(now);
+        self.safe_area_seen.set(area);
+        self.update_display_from_window();
+    }
+
+    /// One touch of the screen for gpui's touch recognizer (K0065).
+    fn touch(window: &AndroidWindowInner, id: i32, phase: TouchPhase, at: (f32, f32)) {
+        window.dispatch_input(PlatformInput::Touch(TouchEvent {
+            id: TouchId(id as u64),
+            phase,
+            position: point(px(at.0), px(at.1)),
+            predicted_position: None,
+            force: None,
+        }));
     }
 
     fn send_key(&self, window: &AndroidWindowInner, key: &str) {
@@ -180,8 +199,26 @@ impl AndroidPlatform {
         for event in events {
             match event {
                 ImeBridgeEvent::Commit(text) => {
+                    // The keyboard's Enter may come as text: "\n", or the letters and then "\n" ("あ\n"). The letters are committed and the Enter is the key
+                    // (a cell's Enter commits it and goes down; a document's is a new paragraph), whichever way the keyboard sent it.
+                    let letters = text.trim_end_matches(['\n', '\r']);
+                    let enter = letters.len() < text.len() && !letters.contains(['\n', '\r']);
+                    let commit = if enter { letters } else { text.as_str() };
+                    if !commit.is_empty() {
+                        window.with_input_handler(|handler| {
+                            handler.replace_text_in_range(None, commit);
+                        });
+                    }
+                    if enter {
+                        log::info!("ibis-android: ime enter via commitText({:?})", text);
+                        self.send_key(&window, "enter");
+                    }
+                    window.request_frame();
+                }
+                ImeBridgeEvent::FinishComposing => {
+                    // (The marked text stays and is no longer marked, as the OS's unmarkText does; before, it was emptied as if the keyboard had composed "".)
                     window.with_input_handler(|handler| {
-                        handler.replace_text_in_range(None, &text);
+                        handler.unmark_text();
                     });
                     window.request_frame();
                 }
@@ -192,7 +229,10 @@ impl AndroidPlatform {
                     window.request_frame();
                 }
                 ImeBridgeEvent::Backspace => self.send_key(&window, "backspace"),
-                ImeBridgeEvent::Enter => self.send_key(&window, "enter"),
+                ImeBridgeEvent::Enter => {
+                    log::info!("ibis-android: ime enter via the Enter key event");
+                    self.send_key(&window, "enter")
+                }
             }
         }
     }
@@ -326,49 +366,6 @@ impl AndroidPlatform {
         }
     }
 
-    fn step_fling(&self) {
-        let Some(mut fling) = self.fling.get() else {
-            return;
-        };
-        let Some(window) = self.window.borrow().clone() else {
-            self.fling.set(None);
-            return;
-        };
-        let now = Instant::now();
-        let dt = now.duration_since(fling.last_tick).as_secs_f32().min(0.05);
-        if dt < 0.001 {
-            window.request_frame();
-            return;
-        }
-        let decay = (-FLING_DECEL * dt).exp();
-        let step_x = fling.velocity.0 * (1.0 - decay) / FLING_DECEL;
-        let step_y = fling.velocity.1 * (1.0 - decay) / FLING_DECEL;
-        fling.velocity.0 *= decay;
-        fling.velocity.1 *= decay;
-        fling.last_tick = now;
-
-        window.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
-            position: point(px(fling.pos.0), px(fling.pos.1)),
-            delta: ScrollDelta::Pixels(point(px(step_x), px(step_y))),
-            modifiers: Modifiers::default(),
-            touch_phase: TouchPhase::Moved,
-        }));
-
-        let speed = (fling.velocity.0.powi(2) + fling.velocity.1.powi(2)).sqrt();
-        if speed < STOP_FLING_VELOCITY_PX_S {
-            self.fling.set(None);
-            window.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
-                position: point(px(fling.pos.0), px(fling.pos.1)),
-                delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
-                modifiers: Modifiers::default(),
-                touch_phase: TouchPhase::Ended,
-            }));
-        } else {
-            self.fling.set(Some(fling));
-        }
-        window.request_frame();
-    }
-
     fn handle_input_events(&self) {
         let Ok(mut iter) = self.app.input_events_iter() else {
             return;
@@ -377,25 +374,13 @@ impl AndroidPlatform {
             return;
         };
         let scale = self.current_scale_factor();
-        let mut pending_scroll: Option<((f32, f32), (f32, f32))> = None;
-        let flush_scroll = |pending: &mut Option<((f32, f32), (f32, f32))>| {
-            if let Some((pos, (dx, dy))) = pending.take() {
-                window.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
-                    position: point(px(pos.0), px(pos.1)),
-                    delta: ScrollDelta::Pixels(point(px(dx), px(dy))),
-                    modifiers: Modifiers::default(),
-                    touch_phase: TouchPhase::Moved,
-                }));
-                window.request_frame();
-            }
-        };
 
         while iter.next(|event| match event {
-            InputEvent::KeyEvent(key_event) => {
-                flush_scroll(&mut pending_scroll);
-                self.handle_hardware_key(&window, key_event)
-            }
+            InputEvent::KeyEvent(key_event) => self.handle_hardware_key(&window, key_event),
             InputEvent::MotionEvent(motion) => {
+                // Every finger goes to gpui's touch recognizer as a touch of its own (K0065): one finger taps, drags and scrolls, two fingers scroll
+                // together, as on every platform. The platform keeps the pinch (the two fingers' distance) and whether the touch was a tap, for the
+                // soft keyboard.
                 let action_idx = motion.pointer_index();
                 let active_ptr = motion.pointer_at_index(action_idx);
                 let ptr_id = active_ptr.pointer_id();
@@ -403,157 +388,80 @@ impl AndroidPlatform {
 
                 match motion.action() {
                     MotionAction::Down => {
-                        flush_scroll(&mut pending_scroll);
-                        let was_flinging = self.fling.take().is_some();
-                        if was_flinging {
-                            window.dispatch_input(PlatformInput::ScrollWheel(
-                                ScrollWheelEvent {
-                                    position: point(px(pos.0), px(pos.1)),
-                                    delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
-                                    modifiers: Modifiers::default(),
-                                    touch_phase: TouchPhase::Ended,
-                                },
-                            ));
-                        }
-                        self.touch_state.set(TouchState::Single {
-                            pointer_id: ptr_id,
-                            start: pos,
-                            last: pos,
-                            last_time: Instant::now(),
-                            velocity: (0.0, 0.0),
-                            panning: false,
-                            suppressed_tap: was_flinging,
-                        });
-                        window.dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
-                            position: point(px(pos.0), px(pos.1)),
-                            pressed_button: None,
-                            modifiers: Modifiers::default(),
-                        }));
-                        window.request_frame();
+                        self.tap.set(TapState { active: 1, start: pos, candidate: true });
+                        self.touch_state.set(TouchState::Single { pointer_id: ptr_id, last: pos });
+                        Self::touch(&window, ptr_id, TouchPhase::Started, pos);
                         InputStatus::Handled
                     }
                     MotionAction::PointerDown => {
-                        flush_scroll(&mut pending_scroll);
-                        self.fling.set(None);
-                        if let TouchState::Single {
-                            pointer_id: p1_id,
-                            last: p1,
-                            ..
-                        } = self.touch_state.get()
+                        let mut tap = self.tap.get();
+                        tap.active += 1;
+                        tap.candidate = false;
+                        self.tap.set(tap);
+                        Self::touch(&window, ptr_id, TouchPhase::Started, pos);
+                        if let TouchState::Single { pointer_id: p1_id, last: p1 } = self.touch_state.get()
+                            && ptr_id != p1_id
                         {
-                            if ptr_id != p1_id {
-                                let dist = distance(p1, pos).max(1.0);
-                                let mid = midpoint(p1, pos);
-                                self.touch_state.set(TouchState::Pinch {
-                                    p1_id,
-                                    p1,
-                                    p2_id: ptr_id,
-                                    p2: pos,
-                                    last_dist: dist,
-                                });
-                                window.dispatch_input(PlatformInput::Pinch(PinchEvent {
-                                    position: point(px(mid.0), px(mid.1)),
-                                    delta: 0.0,
-                                    modifiers: Modifiers::default(),
-                                    phase: TouchPhase::Started,
-                                }));
-                                window.request_frame();
-                            }
+                            let dist = distance(p1, pos).max(1.0);
+                            let mid = midpoint(p1, pos);
+                            self.touch_state.set(TouchState::Pinch { p1_id, p1, p2_id: ptr_id, p2: pos, last_dist: dist });
+                            window.dispatch_input(PlatformInput::Pinch(PinchEvent {
+                                position: point(px(mid.0), px(mid.1)),
+                                delta: 0.0,
+                                modifiers: Modifiers::default(),
+                                phase: TouchPhase::Started,
+                            }));
                         }
+                        window.request_frame();
                         InputStatus::Handled
                     }
                     MotionAction::Move => {
-                        match self.touch_state.get() {
-                            TouchState::Single {
-                                pointer_id,
-                                start,
-                                last,
-                                last_time,
-                                mut velocity,
-                                mut panning,
-                                suppressed_tap,
-                            } if pointer_id == ptr_id => {
-                                let now = Instant::now();
-                                let dt = now.duration_since(last_time).as_secs_f32();
-                                if !panning && distance(start, pos) >= TAP_SLOP_PX {
-                                    panning = true;
-                                    window.dispatch_input(PlatformInput::ScrollWheel(
-                                        ScrollWheelEvent {
-                                            position: point(px(pos.0), px(pos.1)),
-                                            delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
-                                            modifiers: Modifiers::default(),
-                                            touch_phase: TouchPhase::Started,
-                                        },
-                                    ));
-                                }
-                                let dx = pos.0 - last.0;
-                                let dy = pos.1 - last.1;
-                                if dt >= 0.001 && dt <= 0.1 {
-                                    let inst_vx = (dx / dt).clamp(-MAX_FLING_VELOCITY_PX_S, MAX_FLING_VELOCITY_PX_S);
-                                    let inst_vy = (dy / dt).clamp(-MAX_FLING_VELOCITY_PX_S, MAX_FLING_VELOCITY_PX_S);
-                                    velocity = (
-                                        velocity.0 * 0.55 + inst_vx * 0.45,
-                                        velocity.1 * 0.55 + inst_vy * 0.45,
-                                    );
-                                } else if dt > 0.1 {
-                                    velocity = (0.0, 0.0);
-                                }
-                                if panning {
-                                    let acc = pending_scroll
-                                        .map(|(_, (ax, ay))| (ax + dx, ay + dy))
-                                        .unwrap_or((dx, dy));
-                                    pending_scroll = Some((pos, acc));
-                                }
-                                self.touch_state.set(TouchState::Single {
-                                    pointer_id,
-                                    start,
-                                    last: pos,
-                                    last_time: now,
-                                    velocity,
-                                    panning,
-                                    suppressed_tap,
-                                });
-                            }
-                            TouchState::Pinch {
-                                p1_id,
-                                mut p1,
-                                p2_id,
-                                mut p2,
-                                last_dist,
-                            } => {
-                                for p in motion.pointers() {
-                                    let id = p.pointer_id();
-                                    let pt = (p.x() / scale, p.y() / scale);
-                                    if id == p1_id {
-                                        p1 = pt;
-                                    } else if id == p2_id {
-                                        p2 = pt;
+                        let mut tap = self.tap.get();
+                        let mut state = self.touch_state.get();
+                        for p in motion.pointers() {
+                            let id = p.pointer_id();
+                            let pt = (p.x() / scale, p.y() / scale);
+                            Self::touch(&window, id, TouchPhase::Moved, pt);
+                            match &mut state {
+                                TouchState::Single { pointer_id, last } if *pointer_id == id => {
+                                    *last = pt;
+                                    if tap.candidate && distance(tap.start, pt) >= TAP_SLOP_PX {
+                                        tap.candidate = false;
                                     }
                                 }
-                                let new_dist = distance(p1, p2).max(1.0);
-                                let delta = (new_dist / last_dist.max(1.0)) - 1.0;
-                                let mid = midpoint(p1, p2);
-                                self.touch_state.set(TouchState::Pinch {
-                                    p1_id,
-                                    p1,
-                                    p2_id,
-                                    p2,
-                                    last_dist: new_dist,
-                                });
-                                window.dispatch_input(PlatformInput::Pinch(PinchEvent {
-                                    position: point(px(mid.0), px(mid.1)),
-                                    delta,
-                                    modifiers: Modifiers::default(),
-                                    phase: TouchPhase::Moved,
-                                }));
-                                window.request_frame();
+                                TouchState::Pinch { p1_id, p1, p2_id, p2, .. } => {
+                                    if id == *p1_id {
+                                        *p1 = pt;
+                                    } else if id == *p2_id {
+                                        *p2 = pt;
+                                    }
+                                }
+                                _ => {}
                             }
-                            _ => {}
                         }
+                        self.tap.set(tap);
+                        if let TouchState::Pinch { p1, p2, last_dist, p1_id, p2_id } = state {
+                            let new_dist = distance(p1, p2).max(1.0);
+                            let delta = (new_dist / last_dist.max(1.0)) - 1.0;
+                            let mid = midpoint(p1, p2);
+                            state = TouchState::Pinch { p1_id, p1, p2_id, p2, last_dist: new_dist };
+                            window.dispatch_input(PlatformInput::Pinch(PinchEvent {
+                                position: point(px(mid.0), px(mid.1)),
+                                delta,
+                                modifiers: Modifiers::default(),
+                                phase: TouchPhase::Moved,
+                            }));
+                        }
+                        self.touch_state.set(state);
+                        window.request_frame();
                         InputStatus::Handled
                     }
                     MotionAction::PointerUp => {
-                        flush_scroll(&mut pending_scroll);
+                        Self::touch(&window, ptr_id, TouchPhase::Ended, pos);
+                        let mut tap = self.tap.get();
+                        tap.active = tap.active.saturating_sub(1);
+                        tap.candidate = false;
+                        self.tap.set(tap);
                         if let TouchState::Pinch { p1, p2, .. } = self.touch_state.get() {
                             let mid = midpoint(p1, p2);
                             window.dispatch_input(PlatformInput::Pinch(PinchEvent {
@@ -563,90 +471,33 @@ impl AndroidPlatform {
                                 phase: TouchPhase::Ended,
                             }));
                             self.touch_state.set(TouchState::Idle);
-                            window.request_frame();
                         }
+                        window.request_frame();
                         InputStatus::Handled
                     }
                     MotionAction::Up | MotionAction::Cancel => {
-                        flush_scroll(&mut pending_scroll);
-                        match self.touch_state.get() {
-                            TouchState::Single {
-                                panning: true,
-                                last_time,
-                                velocity,
-                                ..
-                            } => {
-                                let now = Instant::now();
-                                let speed = (velocity.0.powi(2) + velocity.1.powi(2)).sqrt();
-                                if motion.action() == MotionAction::Up
-                                    && now.duration_since(last_time) <= FLING_STALE_WINDOW
-                                    && speed >= MIN_FLING_VELOCITY_PX_S
-                                {
-                                    self.fling.set(Some(FlingState {
-                                        pos,
-                                        velocity,
-                                        last_tick: now,
-                                    }));
-                                } else {
-                                    window.dispatch_input(PlatformInput::ScrollWheel(
-                                        ScrollWheelEvent {
-                                            position: point(px(pos.0), px(pos.1)),
-                                            delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
-                                            modifiers: Modifiers::default(),
-                                            touch_phase: TouchPhase::Ended,
-                                        },
-                                    ));
-                                }
+                        let cancelled = motion.action() == MotionAction::Cancel;
+                        if cancelled {
+                            for p in motion.pointers() {
+                                Self::touch(&window, p.pointer_id(), TouchPhase::Cancelled, (p.x() / scale, p.y() / scale));
                             }
-                            TouchState::Single {
-                                panning: false,
-                                suppressed_tap: false,
-                                ..
-                            } if motion.action() == MotionAction::Up => {
-                                let now = Instant::now();
-                                let click_count = match self.last_tap.get() {
-                                    Some((prev_t, prev_pos, prev_count))
-                                        if now.duration_since(prev_t) <= DOUBLE_TAP_WINDOW
-                                            && distance(prev_pos, pos) <= DOUBLE_TAP_MAX_DIST_PX =>
-                                    {
-                                        (prev_count % 3) + 1
-                                    }
-                                    _ => 1,
-                                };
-                                self.last_tap.set(Some((now, pos, click_count)));
-                                let gpui_pos: Point<Pixels> = point(px(pos.0), px(pos.1));
-                                window.dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
-                                    button: MouseButton::Left,
-                                    position: gpui_pos,
-                                    modifiers: Modifiers::default(),
-                                    click_count,
-                                    first_mouse: false,
-                                }));
-                                window.dispatch_input(PlatformInput::MouseUp(MouseUpEvent {
-                                    button: MouseButton::Left,
-                                    position: gpui_pos,
-                                    modifiers: Modifiers::default(),
-                                    click_count,
-                                }));
-                                let accepts_text = window
-                                    .with_input_handler(|h| h.query_accepts_text_input())
-                                    .unwrap_or(false);
-                                if accepts_text {
-                                    jni_bridge::show_keyboard();
-                                } else {
-                                    jni_bridge::hide_keyboard();
-                                }
-                            }
-                            TouchState::Pinch { p1, p2, .. } => {
-                                let mid = midpoint(p1, p2);
-                                window.dispatch_input(PlatformInput::Pinch(PinchEvent {
-                                    position: point(px(mid.0), px(mid.1)),
-                                    delta: 0.0,
-                                    modifiers: Modifiers::default(),
-                                    phase: TouchPhase::Ended,
-                                }));
-                            }
-                            _ => {}
+                        } else {
+                            Self::touch(&window, ptr_id, TouchPhase::Ended, pos);
+                        }
+                        let tap = self.tap.get();
+                        if !cancelled && tap.candidate {
+                            // A tap: whether the soft keyboard shows is decided on the next turn (the page has handled the tap by then).
+                            self.keyboard_check.set(true);
+                        }
+                        self.tap.set(TapState::default());
+                        if let TouchState::Pinch { p1, p2, .. } = self.touch_state.get() {
+                            let mid = midpoint(p1, p2);
+                            window.dispatch_input(PlatformInput::Pinch(PinchEvent {
+                                position: point(px(mid.0), px(mid.1)),
+                                delta: 0.0,
+                                modifiers: Modifiers::default(),
+                                phase: TouchPhase::Ended,
+                            }));
                         }
                         self.touch_state.set(TouchState::Idle);
                         window.request_frame();
@@ -657,7 +508,6 @@ impl AndroidPlatform {
             }
             _ => InputStatus::Unhandled,
         }) {}
-        flush_scroll(&mut pending_scroll);
     }
 }
 
@@ -679,7 +529,6 @@ impl Platform for AndroidPlatform {
 
         while !self.quit_requested.get() {
             let needs_immediate = self.dispatcher.has_pending_main_tasks()
-                || self.fling.get().is_some()
                 || self
                     .window
                     .borrow()
@@ -770,9 +619,19 @@ impl Platform for AndroidPlatform {
             }
 
             self.handle_input_events();
+            if self.keyboard_check.take()
+                && let Some(window) = self.window.borrow().clone()
+            {
+                let accepts_text = window.with_input_handler(|h| h.query_accepts_text_input()).unwrap_or(false);
+                if accepts_text {
+                    jni_bridge::show_keyboard();
+                } else {
+                    jni_bridge::hide_keyboard();
+                }
+            }
+            self.handle_keyboard();
             self.handle_ime_events();
             self.handle_open_paths();
-            self.step_fling();
             self.dispatcher.drain_main_tasks();
 
             if let Some(window) = self.window.borrow().clone() {

@@ -22,6 +22,8 @@ pub struct Server {
     service: Service,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     assistant: Option<crate::live_assistant::LiveAssistant>,
+    /// An `initialize` that asks for a version the server does not speak is an error (the HTTP transport, #231), not answered with the server's own.
+    strict_versions: bool,
 }
 
 fn failure(id: &Value, code: i64, message: &str, data: Option<Value>) -> Value {
@@ -38,6 +40,7 @@ impl Server {
             service,
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             assistant: None,
+            strict_versions: false,
         }
     }
 
@@ -45,6 +48,11 @@ impl Server {
     pub(crate) fn with_live_assistant(mut self, assistant: crate::live_assistant::LiveAssistant) -> Self {
         self.assistant = Some(assistant);
         self
+    }
+
+    /// Refuse an `initialize` of a version the server does not speak (instead of answering with the one it has).
+    pub fn set_strict_versions(&mut self, strict: bool) {
+        self.strict_versions = strict;
     }
 
     pub fn parse_error(message: &str) -> Value {
@@ -91,6 +99,9 @@ impl Server {
         match method {
             "initialize" => {
                 let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PREVIOUS);
+                if self.strict_versions && !SUPPORTED.contains(&asked) {
+                    return failure(id, INVALID_PARAMS, &format!("unsupported protocol version {asked}"), Some(json!({ "supported": SUPPORTED })));
+                }
                 let version = if SUPPORTED.contains(&asked) { asked } else { PREVIOUS };
                 ok(json!({ "protocolVersion": version, "capabilities": { "tools": { "listChanged": false } }, "serverInfo": Self::server_info(), "instructions": Self::instructions() }))
             }

@@ -9,13 +9,15 @@ mod live_assistant;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod assistant_workspace;
 mod cli;
+mod http;
 mod protocol;
 mod stdio;
 
-/// The version of the app this server is of (version.txt).
+/// The version of the app this server is of (build-version.txt).
 pub const VERSION: &str = env!("IBIS_VERSION");
 
 pub use cli::run_from_args;
+pub use http::{HttpConfig, HttpServer, Stopper};
 pub use protocol::Server;
 pub use stdio::serve;
 

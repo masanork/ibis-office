@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/272)
+// Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Markdown export for the fixed-layout viewer.
 
 use std::fmt::Write as _;
@@ -388,6 +390,166 @@ mod tests {
             image::load_from_memory(&png).unwrap().to_rgba8().as_raw(),
             &[255, 0, 0, 255]
         );
+    }
+
+    fn svg_of(markdown: &str) -> String {
+        let b64 = markdown
+            .split_once("data:image/svg+xml;base64,")
+            .unwrap()
+            .1
+            .split_once(')')
+            .unwrap()
+            .0;
+        String::from_utf8(STANDARD.decode(b64).unwrap()).unwrap()
+    }
+
+    fn synthetic_pdf() -> Vec<u8> {
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R \
+             /Resources << /Font << /F1 5 0 R >> >> >>"
+                .to_owned(),
+            {
+                let stream = "0.9 g 10 10 80 30 re f BT /F1 18 Tf 20 60 Td (PDF sample) Tj ET";
+                format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len())
+            },
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend(format!("{} 0 obj\n{body}\nendobj\n", i + 1).bytes());
+        }
+        let xref = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for offset in offsets {
+            out.extend(format!("{offset:010} 00000 n \n").bytes());
+        }
+        out.extend(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .bytes(),
+        );
+        out
+    }
+
+    fn synthetic_xps() -> Vec<u8> {
+        let mut w = ibis_ooxml::zip::Writer::new();
+        let meta = ibis_ooxml::zip::EntryMeta::default();
+        w.add(
+            "FixedDocSeq.fdseq",
+            meta,
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<FixedDocumentSequence xmlns="http://schemas.microsoft.com/xps/2005/06">
+  <DocumentReference Source="Documents/1/FixedDoc.fdoc"/>
+</FixedDocumentSequence>"#,
+        )
+        .unwrap();
+        w.add(
+            "Documents/1/FixedDoc.fdoc",
+            meta,
+            br#"<?xml version="1.0" encoding="utf-8"?>
+<FixedDocument xmlns="http://schemas.microsoft.com/xps/2005/06">
+  <PageContent Source="Pages/1.fpage"/>
+</FixedDocument>"#,
+        )
+        .unwrap();
+        w.add(
+            "Documents/1/Pages/1.fpage",
+            meta,
+            r##"<?xml version="1.0" encoding="utf-8"?>
+<FixedPage Width="793.7" Height="1122.5" xmlns="http://schemas.microsoft.com/xps/2005/06" xml:lang="ja-JP">
+  <Path Data="M 40,40 L 200,40 L 200,100 L 40,100 Z" Fill="#FFEFEFEF" Stroke="#FF000000" StrokeThickness="1"/>
+  <Glyphs OriginX="50" OriginY="80" FontRenderingEmSize="16" Fill="#FF112233" UnicodeString="XPSテスト"/>
+</FixedPage>"##
+                .as_bytes(),
+        )
+        .unwrap();
+        w.finish().unwrap()
+    }
+
+    fn synthetic_ofd() -> Vec<u8> {
+        let mut w = ibis_ooxml::zip::Writer::new();
+        let meta = ibis_ooxml::zip::EntryMeta::default();
+        w.add(
+            "OFD.xml",
+            meta,
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:OFD xmlns:ofd="http://www.ofdspec.org/2016" Version="1.1">
+  <ofd:DocBody><ofd:DocRoot>Doc_0/Document.xml</ofd:DocRoot></ofd:DocBody>
+</ofd:OFD>"#,
+        )
+        .unwrap();
+        w.add(
+            "Doc_0/Document.xml",
+            meta,
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Document xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:CommonData><ofd:PageArea><ofd:PhysicalBox>0 0 210 297</ofd:PhysicalBox></ofd:PageArea></ofd:CommonData>
+  <ofd:Pages><ofd:Page ID="1" BaseLoc="Pages/Page_0/Content.xml"/></ofd:Pages>
+</ofd:Document>"#,
+        )
+        .unwrap();
+        w.add(
+            "Doc_0/Pages/Page_0/Content.xml",
+            meta,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<ofd:Page xmlns:ofd="http://www.ofdspec.org/2016">
+  <ofd:Content>
+    <ofd:Layer ID="1">
+      <ofd:PathObject ID="2" Boundary="10 10 50 20" Stroke="true" Fill="true">
+        <ofd:FillColor Value="240 240 240"/>
+        <ofd:StrokeColor Value="0 0 0"/>
+        <ofd:AbbreviatedData>M 0 0 L 50 0 L 50 20 L 0 20 C</ofd:AbbreviatedData>
+      </ofd:PathObject>
+      <ofd:TextObject ID="3" Boundary="15 15 40 10" Font="1" Size="4">
+        <ofd:FillColor Value="0 0 0"/>
+        <ofd:TextCode X="0" Y="5">OFD sample</ofd:TextCode>
+      </ofd:TextObject>
+    </ofd:Layer>
+  </ofd:Content>
+</ofd:Page>"#
+                .as_bytes(),
+        )
+        .unwrap();
+        w.finish().unwrap()
+    }
+
+    #[test]
+    fn pdf_xps_and_ofd_export_text_and_a_svg_figure_per_page() {
+        for (bytes, text) in [
+            (synthetic_pdf(), "PDF sample"),
+            (synthetic_xps(), "XPSテスト"),
+            (synthetic_ofd(), "OFD sample"),
+        ] {
+            let markdown = export(&bytes).unwrap().expect("a fixed-layout document");
+            assert!(markdown.contains(text), "{text}: {markdown}");
+            let svg = svg_of(&markdown);
+            assert!(svg.contains("<svg"), "{text}");
+            assert!(svg.contains("<path"), "{text}: the filled shape is drawn");
+        }
+        assert!(export(b"not a fixed-layout document").unwrap().is_none());
+    }
+
+    #[test]
+    fn exported_markdown_becomes_a_docx_that_keeps_the_figure() {
+        for bytes in [synthetic_pdf(), synthetic_xps(), synthetic_ofd()] {
+            let markdown = export(&bytes).unwrap().unwrap();
+            let docx = ibis_formats::markdown::import_markdown_to_docx_bytes(markdown.as_bytes()).unwrap();
+            let opened = ibis_formats::open(docx).unwrap();
+            assert!(
+                opened
+                    .presentation
+                    .media
+                    .iter()
+                    .any(|m| m.format == ibis_doc_model::MediaFormat::Svg),
+                "the page figure is kept as SVG"
+            );
+        }
     }
 
     fn text_scene(chars: Vec<CharBox>) -> PageScene {

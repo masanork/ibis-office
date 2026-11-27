@@ -3521,6 +3521,7 @@ fn chart_series_marker_and_stroke_save_and_reopen() {
         symbol: MarkerSymbol::Diamond,
         size: 7,
         fill: Fill::Solid(Color::opaque(Rgb(0xFF0000))),
+        edge: None,
     });
     modified.groups[0].series[0].stroke = Some(Stroke::solid(Color::opaque(Rgb(0x00FF00)), 38_100));
 
@@ -3548,6 +3549,7 @@ fn chart_series_marker_and_stroke_save_and_reopen() {
         symbol: MarkerSymbol::None,
         size: 5,
         fill: Fill::None,
+        edge: None,
     });
     edited.groups[0].series[0].stroke = Some(Stroke::solid(Color::opaque(Rgb(0x0000FF)), 12_700));
 
@@ -10171,7 +10173,7 @@ fn test_sheet_shape_fill_line_shadow_roundtrip() {
     let mut changed = auto.clone();
     changed.fill = Fill::Solid(Color::opaque(Rgb(0xFF0000)));
     changed.stroke = Some(Stroke::solid(Color::opaque(Rgb(0x00B050)), 25_400).with_dash(LineDash::Dash));
-    changed.shadow = Some(Shadow::simple(Color { rgb: Rgb(0), alpha: 102 }, 50_800, 38_100, 2_700_000));
+    changed.shadow = Some(Shadow::simple(Color { rgb: Rgb(0), alpha: 102, theme: None }, 50_800, 38_100, 2_700_000));
     d.execute(vec![Command::SetShapeKind { slide: s0, shape: id, kind: Box::new(ShapeKind::Auto(changed.clone())) }]).unwrap();
     let saved = opened.source.save(d.presentation(), ibis_formats::SaveOptions::default()).unwrap();
 

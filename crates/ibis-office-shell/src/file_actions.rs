@@ -873,6 +873,38 @@ impl SlideEditor {
         }))
     }
 
+    /// ファイル > 書き出し > Web ページ: the document as one HTML page at `target`, its charts and SmartArt as pictures (#208). The work is `--export html` of a copy of the document
+    /// (the one place that draws them: `ibis_office_app::html_export`), a job to run off the window's thread.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn write_html_with_pictures(&self, target: std::path::PathBuf, sheet: Option<usize>) -> Result<Box<dyn FnOnce() -> Result<std::path::PathBuf, String> + Send + 'static>, String> {
+        let crate::format::PdfJob { bytes, .. } = with_format!(self, pdf_job(self, false))?;
+        let (stem, ext) = self.name_parts();
+        let own_args = with_format!(self, export_args(self));
+        Ok(Box::new(move || {
+            let dir = std::env::temp_dir().join(format!("ibisoffice-html-job-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let out = dir.join("out");
+            std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+            let file = dir.join(format!("{stem}.{ext}"));
+            std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+            let mut cmd = std::process::Command::new(export_program()?);
+            cmd.args(["--export", "html", "--out-dir"]).arg(&out).args(&own_args);
+            if let Some(sheet) = sheet {
+                // A workbook's page is one sheet (the 1-based `--range` of it).
+                cmd.args(["--range", &sheet.to_string()]);
+            }
+            cmd.arg(&file);
+            let status = cmd.status().map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err(crate::i18n::format("file.pdf-exit", &[("status", &status)]));
+            }
+            let made = std::fs::read(out.join(format!("{stem}.html"))).map_err(|e| e.to_string())?;
+            crate::save::write_replacing(&target, &made).map_err(|e| crate::i18n::format("file.cannot-write", &[("path", &target.display()), ("error", &e)]))?;
+            let _ = std::fs::remove_dir_all(&dir);
+            Ok(target)
+        }))
+    }
+
     /// The file as it is now, as PNG pictures at `png`: saved to a temporary file
     /// and drawn by this program's `--export png` (on another thread).
     #[cfg(not(target_family = "wasm"))]

@@ -15,7 +15,7 @@ use std::rc::Rc;
 use gpui_kit::*;
 use ibis_doc_model::{FontAlign, TextAlign};
 
-use crate::line_break::{Kinsoku, LatinBreaks, is_ideographic, may_break};
+use crate::line_break::{Kinsoku, LatinBreaks, may_break};
 use crate::math_view::{self, MathBox};
 use crate::font_metrics::{POWERPOINT_SINGLE, natural_below, powerpoint_below_baseline};
 
@@ -452,7 +452,6 @@ pub(crate) struct RichParagraph {
     pub hanging_punct: bool,
     /// `a:pPr/@latinLnBrk`: a line may break inside a Latin word.
     pub latin_line_break: bool,
-    pub keep_hangul_words: bool,
     /// The width the lines are broken to, in pixels, when it is known
     /// exactly (else the element's width, which the layout rounds to
     /// pixels, so that the lines would break differently at each zoom).
@@ -475,6 +474,8 @@ pub(crate) struct RichParagraph {
     pub last: bool,
     /// Word's lines (`TextBody::word_lines`): a justified paragraph's last line is not spread.
     pub word_lines: bool,
+    /// Lines as high as their font makes them (`TextBody::font_lines`): single spacing is the font's ascent plus descent.
+    pub font_lines: bool,
     /// East Asian vertical writing (`eaVert`): the text is turned a quarter
     /// turn, its East Asian characters drawn upright.
     pub upright: bool,
@@ -1288,15 +1289,7 @@ impl Element for RichParagraphElement {
             let shown_width: f32 = shown_slice.iter().map(|c| c.advance).sum();
             // A comma or full stop that hangs past the edge (the line broke because it did not fit) is not spread over the room: the characters before it
             // are, and it follows the last of them (PowerPoint's justified line of 032 p10 ends past the edge with its comma).
-            let hang = if paragraph.hanging_punct && shown_width > room + 0.01
-                && let [.., prev, last] = shown_slice
-                && shown_chars > 2
-                && hangs_char(last.c, last.east_asian, prev.c)
-            {
-                last.advance
-            } else {
-                0.0
-            };
+            let hang = shown_slice.last().filter(|c| paragraph.hanging_punct && hangs_char(c.c, c.east_asian, shown_slice.len().checked_sub(2).map(|i| shown_slice[i].c)) && shown_width > room + 0.01 && shown_chars > 2).map_or(0.0, |c| c.advance);
             let spread_chars = shown_chars - usize::from(hang > 0.0);
             let spread_width = shown_width - hang;
             let spread = match paragraph.align {
@@ -2228,16 +2221,6 @@ fn text_above(paragraph: &RichParagraph) -> f32 {
     }
 }
 
-pub(crate) fn kana_width_advance(kana_widths: &[u16; 192], c: char, next_c: Option<char>, size: f32, spacing: f32) -> Option<f32> {
-    if matches!(c as usize, 0x3041..=0x30fa | 0x30fc..=0x30fe)
-        && !next_c.is_some_and(|n| "（「『【〔〈《［｛〘〖".contains(n)) // i18n-ok（禁則の文字の並び）
-    {
-        Some((kana_widths[c as usize - 0x3040] as f32 / 256.0) * size + spacing)
-    } else {
-        None
-    }
-}
-
 /// Where the paragraph of `t` starts in the strip of columns (`column_lane`): where the paragraph above it ended, and the space above it.
 fn column_start(t: &TextTop) -> f32 {
     let ends = t.block.strip_end.borrow();
@@ -2309,8 +2292,11 @@ fn lay_out_in(paragraph: &RichParagraph, width: Option<f32>, top_above: f32, tex
                     .and_then(|(font_id, glyph)| text.font_data(font_id).and_then(|(data, index)| vertical_advance_em(&data, index, glyph)))
                     .unwrap_or(1.0);
                 em * piece.size + piece.spacing_px()
-            } else if let Some(advance) = piece.kana_widths.and_then(|w| kana_width_advance(w, c, next_c, piece.size, piece.spacing_px())) {
-                let cell = advance - piece.spacing_px();
+            } else if let Some(w) = piece.kana_widths
+                && ((0x3041..=0x30fa).contains(&(c as usize)) || (0x30fc..=0x30fe).contains(&(c as usize)))
+                && !next_c.is_some_and(|n| "（「『【〔〈《［｛〘〖".contains(n)) // i18n-ok（禁則の文字の並び）
+            {
+                let cell = (w[c as usize - 0x3040] as f32 / 256.0) * piece.size;
                 shift = glyph_shift(c, raw, cell);
                 // The typeface's own glyph is narrower than the stand-in's (the cell is narrower than the one the stand-in's glyph was cut
                 // for): the stand-in's glyph is drawn as wide as that ink and centred on it.
@@ -2373,7 +2359,7 @@ fn lay_out_in(paragraph: &RichParagraph, width: Option<f32>, top_above: f32, tex
         (Some(_), Some(room)) => (Some(room), 0.02 * paragraph.px_per_point.max(0.05)),
         _ => (width, 0.5),
     };
-    let rules = Breaks { hang: paragraph.hanging_punct, latin: LatinBreaks { anywhere: paragraph.latin_line_break, ..LatinBreaks::default() }, hang_tab: !paragraph.word_lines, keep_hangul_words: paragraph.keep_hangul_words };
+    let rules = Breaks { hang: paragraph.hanging_punct, latin: LatinBreaks { anywhere: paragraph.latin_line_break, ..LatinBreaks::default() }, hang_tab: !paragraph.word_lines };
     // Among obstacles (text wrap round pictures): a line is looked for room at the place it would have, `top_above` pixels
     // below the top of the text area for the paragraph's first; the lines are taken to be as high as the paragraph's largest
     // characters make them (their real heights come after the breaks) and need room for one of them.
@@ -2431,8 +2417,10 @@ fn lay_out_in(paragraph: &RichParagraph, width: Option<f32>, top_above: f32, tex
                 None => (a, d),
             };
             let largest = sized_by_mark.map_or(largest, |m| m.2);
-            let single = POWERPOINT_SINGLE * largest;
+            // (Word's SmartArt: a line of a font is the font's ascent plus descent, and the percentage is of that.)
+            let single = if paragraph.font_lines && a + d > 0.0 { a + d } else { POWERPOINT_SINGLE * largest };
             let height = match paragraph.line {
+                LineRule::Multiple(m) if paragraph.font_lines => m / POWERPOINT_SINGLE * single,
                 LineRule::Multiple(m) => m * largest,
                 LineRule::Fixed(h) => h,
             };
@@ -2633,7 +2621,7 @@ fn break_lines_in(
             }
         }
         let c = chars[i];
-        if i > start && may_break_between(chars, i, rules) {
+        if i > start && may_break_between(chars, i, rules.latin) {
             last_break = Some(i);
         }
         // Spaces, and with `hangingPunct` the commas and full stops, hang past the edge: one of them, after characters that fit (PowerPoint's
@@ -2642,13 +2630,12 @@ fn break_lines_in(
         let room = if lines.is_empty() { width - first_line } else { width };
         // Only where the line may end after it (or after the spaces that follow it): the full stop inside "figshare.com" does not hang, the word
         // breaks before it (PowerPoint's PDF of corpus 152); "words, and" hangs its comma (`kinsoku-*-hang1-probe.pptx`).
-        let ends_here = chars.get(i + 1).is_none_or(|n| n.c.is_whitespace() || may_break_between(chars, i + 1, rules));
+        let ends_here = chars.get(i + 1).is_none_or(|n| n.c.is_whitespace() || may_break_between(chars, i + 1, rules.latin));
         // The Latin comma and full stop hang only in a run of an East Asian language (PowerPoint's PDFs: "words," of `kinsoku-*-hang1-probe.pptx`,
         // lang ja-JP, hangs; "range," of corpus 139, English, goes down with its word).
         // Hanging punctuation is, like the kinsoku lists, for a run of an East Asian language: in en-US or with no lang a 。 that does not fit goes
         // down (PowerPoint's PDF of test/editing/pptx-text-turn-matrix4.pptx, slide 4).
-        let hang = rules.hang && i > start && hangs_char(c.c, c.east_asian, chars[i - 1].c)
-            && ends_here && used <= room + slack;
+        let hang = rules.hang && hangs_char(c.c, c.east_asian, i.checked_sub(1).map(|p| chars[p].c)) && ends_here && used <= room + slack;
         // A tab that does not fit does not hang past the edge as a space does: it starts the next line, where it goes to that line's first tab stop
         // and the spaces after it follow (PowerPoint's PDF of 079.ppt, slide 13: "…その時期<tab>    に取組め…", the second line begins in from the margin).
         let tab_wraps = c.c == '\t';
@@ -2686,18 +2673,12 @@ fn break_lines_in(
 /// ideographic spaces is not parted from the character after it when a line may not start with that character ("(　　　)": the
 /// brackets and the spaces go to the next line together, and a line does not start with the spaces and a lone ")": PowerPoint's PDF of
 /// corpus pptx-C011-b1).
-fn may_break_between(chars: &[Char], at: usize, rules: Breaks) -> bool {
-    let left = chars[at - 1].c;
-    let right = chars[at].c;
-    let hangul = |c| matches!(c, '\u{1100}'..='\u{11ff}' | '\u{3130}'..='\u{318f}' | '\u{ac00}'..='\u{d7ff}');
-    if rules.keep_hangul_words && left.is_alphanumeric() && right.is_alphanumeric() && (hangul(left) || hangul(right)) {
-        return false;
-    }
+fn may_break_between(chars: &[Char], at: usize, latin: LatinBreaks) -> bool {
     // The line-start and line-end lists (禁則, `p:kinsoku` of a language) apply to the text of a Japanese, Chinese or Korean run (`a:rPr@lang`): a
     // line may start with 。 in a run of lang en-US or with none (PowerPoint's PDF of test/editing/pptx-text-turn-matrix4.pptx: the same sentence in
     // ja-JP breaks before the word the 。 follows, in en-US and without lang it breaks before the 。).
     let kinsoku = kinsoku_of(chars[at].east_asian);
-    if !may_break(left, right, kinsoku, rules.latin) {
+    if !may_break(chars[at - 1].c, chars[at].c, kinsoku, latin) {
         return false;
     }
     if chars[at].c == '\u{3000}'
@@ -2713,7 +2694,6 @@ fn may_break_between(chars: &[Char], at: usize, rules: Breaks) -> bool {
 pub struct Breaks {
     pub hang: bool,
     pub latin: LatinBreaks,
-    pub keep_hangul_words: bool,
     /// The hanging indent's margin is a tab stop on the first line (PowerPoint's lines; TODO: Word's lines too, where the hanging indent's position
     /// is an implicit tab stop, once the docx corpus is measured with it).
     pub(crate) hang_tab: bool,
@@ -2721,7 +2701,7 @@ pub struct Breaks {
 
 impl Default for Breaks {
     fn default() -> Self {
-        Breaks { hang: true, latin: LatinBreaks::default(), hang_tab: false, keep_hangul_words: false }
+        Breaks { hang: true, latin: LatinBreaks::default(), hang_tab: false }
     }
 }
 
@@ -2751,16 +2731,16 @@ fn hangs(c: char) -> bool {
     matches!(c, '、' | '。' | '，' | '．' | ',' | '.')
 }
 
-/// Whether `c` hangs past the end of a line in a run of `language`. PowerPoint's PDFs of a justified Latin line one punctuation mark too long
-/// (30 pt Calibri, altLang set): zh-CN and ko-KR let `: ; ! ? )` and the comma and full stop hang (the line stays one line, the mark past the
-/// edge), ja-JP only the comma and full stop, en-US none (the last word goes down); `-` hangs in none.
-/// In ko-KR, the same ASCII marks move to the next line after CJK text when
-/// they do not fit (PowerPoint 16.109.2, Korean and Latin text box probes).
-fn hangs_char(c: char, language: ibis_doc_model::EastAsianLang, previous: char) -> bool {
+/// Whether `c` hangs past the end of a line in a run of `language`, `before` being the character in front of it. PowerPoint's PDFs of a justified Latin line one
+/// punctuation mark too long (30 pt Calibri, altLang set): zh-CN and ko-KR let `: ; ! ? )` and the comma and full stop hang (the line stays one line, the mark past
+/// the edge), ja-JP only the comma and full stop, en-US none (the last word goes down); `-` hangs in none. A ko-KR run with a Latin "." or "," after kana does not hang
+/// it: the mark starts the next line (matrix 5, `tasks/doc/m64-text-turn-matrix.md`: 141 pt gives あ…こ／.あ), so in ko-KR the Latin marks hang only after a character
+/// that is not East Asian (the two measurements together; zh-CN with a Latin mark after kana is not measured and keeps hanging).
+fn hangs_char(c: char, language: ibis_doc_model::EastAsianLang, before: Option<char>) -> bool {
     use ibis_doc_model::EastAsianLang::*;
     match language {
         Japanese | Chinese if hangs(c) => hangs_in(language),
-        Korean if is_ideographic(previous) => false,
+        Korean if before.is_some_and(is_cjk) => false,
         Chinese | Korean => matches!(c, ',' | '.' | ':' | ';' | '!' | '?' | ')'),
         _ => false,
     }
@@ -2839,14 +2819,29 @@ pub fn joins_previous(prev: Option<char>, c: char) -> bool {
     is_cluster_extender(c) || prev == Some('\u{200D}')
 }
 
+/// A regional indicator (U+1F1E6..1F1FF): two of them, one after the other, are a flag (🇯🇵), one cluster.
+fn is_regional_indicator(c: char) -> bool {
+    matches!(c as u32, 0x1F1E6..=0x1F1FF)
+}
+
 /// The start and the end (exclusive) of the cluster that holds `chars[at]`.
 pub fn cluster_bounds(chars: &[char], at: usize) -> (usize, usize) {
     let mut start = at;
     while start > 0 && joins_previous(Some(chars[start - 1]), chars[start]) {
         start -= 1;
     }
-    let mut end = at + 1;
-    while end < chars.len() && joins_previous(Some(chars[end - 1]), chars[end]) {
+    // A run of regional indicators is flags two by two: the cluster begins at the first of its pair.
+    if is_regional_indicator(chars[start]) {
+        let mut run = start;
+        while run > 0 && is_regional_indicator(chars[run - 1]) {
+            run -= 1;
+        }
+        start = run + (start - run) / 2 * 2;
+    }
+    let mut end = start + 1;
+    let mut flag_open = is_regional_indicator(chars[start]);
+    while end < chars.len() && (joins_previous(Some(chars[end - 1]), chars[end]) || (flag_open && is_regional_indicator(chars[end]))) {
+        flag_open = false;
         end += 1;
     }
     (start, end)
@@ -2855,9 +2850,15 @@ pub fn cluster_bounds(chars: &[char], at: usize) -> (usize, usize) {
 /// The end (byte offset, exclusive) of the cluster that starts at byte `start` of `text`.
 pub fn cluster_end(text: &str, start: usize) -> usize {
     let mut prev: Option<char> = None;
+    let mut flag_open = false;
     for (i, c) in text[start..].char_indices() {
-        if i > 0 && !joins_previous(prev, c) {
+        if i > 0 && !(joins_previous(prev, c) || (flag_open && is_regional_indicator(c))) {
             return start + i;
+        }
+        if i == 0 {
+            flag_open = is_regional_indicator(c);
+        } else {
+            flag_open = false;
         }
         prev = Some(c);
     }
@@ -2869,6 +2870,11 @@ pub fn cluster_end(text: &str, start: usize) -> usize {
 pub fn is_emoji_cluster(cluster: &[char]) -> bool {
     // The text presentation selector (U+FE0E) keeps a character an emoji by default (⌛ ♈) a plain glyph.
     !cluster.contains(&'\u{fe0e}') && cluster.iter().any(|&c| matches!(c as u32, 0xFE0F | 0x200D | 0x1F300..=0x1FAFF) || emoji_presentation(c))
+}
+
+/// Whether the cluster is a character that is an emoji by default (`Emoji_Presentation`) with the text presentation selector (U+FE0E): the request for its plain glyph.
+pub fn asks_text_presentation(cluster: &[char]) -> bool {
+    cluster.contains(&'\u{fe0e}') && cluster.first().is_some_and(|&c| matches!(c as u32, 0x1F300..=0x1FAFF) || emoji_presentation(c))
 }
 
 /// The characters below U+1F300 whose `Emoji_Presentation` is `Yes` (Unicode's emoji-data.txt): drawn as an emoji without
@@ -2885,12 +2891,17 @@ fn emoji_presentation(c: char) -> bool {
 
 /// The colour emoji typeface of the OS: what Word draws emoji with (Segoe UI Emoji on Windows; Apple Color Emoji on a Mac).
 pub(crate) fn emoji_family() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "Apple Color Emoji"
-    } else if cfg!(target_os = "windows") {
-        "Segoe UI Emoji"
-    } else {
-        "Noto Color Emoji"
+    emoji_family_of(std::env::consts::OS)
+}
+
+/// The colour emoji typeface of the OS named `os` (`std::env::consts::OS`). iOS has Apple Color Emoji too (K0066: it was the Noto name, which no iPhone has, so no emoji
+/// was drawn there).
+pub fn emoji_family_of(os: &str) -> &'static str {
+    match os {
+        "macos" | "ios" => "Apple Color Emoji",
+        "windows" => "Segoe UI Emoji",
+        // Linux, Android (the Noto Color Emoji of the system).
+        _ => "Noto Color Emoji",
     }
 }
 
@@ -3076,10 +3087,10 @@ mod tests {
             (vec![(format!("{ja}。ー"), Japanese)], vec![(0, 9), (9, 12)], vec![(0, 9), (9, 12)], "ja-JP: ー may not start a line, so 。 goes down with こ; no hanging"),
             (vec![(format!("{ja}。ー"), Other)], vec![(0, 10), (10, 12)], vec![(0, 11), (11, 12)], "en-US or no lang: no lists"),
             (vec![(format!("{ja}。ー"), Korean)], vec![(0, 10), (10, 12)], vec![(0, 11), (11, 12)], "ko-KR: no lists, no hanging"),
-            (vec![(format!("{ja}。ー"), Chinese)], vec![(0, 11), (11, 12)], vec![(0, 11), (11, 12)], "zh: 。 hangs, ー may start a line"),
-            (vec![(format!("{ja}，あ"), Chinese)], vec![(0, 11), (11, 12)], vec![(0, 11), (11, 12)], "zh-CN ，"),
             (vec![(format!("{ja}.あ"), Korean)], vec![(0, 10), (10, 12)], vec![(0, 11), (11, 12)], "ko-KR ."),
             (vec![(format!("{ja},あ"), Korean)], vec![(0, 10), (10, 12)], vec![(0, 11), (11, 12)], "ko-KR ,"),
+            (vec![(format!("{ja}。ー"), Chinese)], vec![(0, 11), (11, 12)], vec![(0, 11), (11, 12)], "zh: 。 hangs, ー may start a line"),
+            (vec![(format!("{ja}，あ"), Chinese)], vec![(0, 11), (11, 12)], vec![(0, 11), (11, 12)], "zh-CN ，"),
             (vec![(format!("{ja}ーあ"), Japanese)], vec![(0, 9), (9, 12)], vec![(0, 11), (11, 12)], "ja-JP ー"),
             (vec![(format!("{ja}っあ"), Japanese)], vec![(0, 9), (9, 12)], vec![(0, 11), (11, 12)], "ja-JP っ"),
             (vec![(format!("{ja}）あ"), Japanese)], vec![(0, 9), (9, 12)], vec![(0, 11), (11, 12)], "ja-JP ）"),
@@ -3105,39 +3116,23 @@ mod tests {
         }
     }
 
+    /// A Latin "." or "," hangs in ko-KR after Latin text (pptx 157's justified lines), not after kana (matrix 5).
+    #[test]
+    fn korean_latin_marks_hang_only_after_latin_text() {
+        use ibis_doc_model::EastAsianLang::{Chinese, Korean, Other};
+        assert!(super::hangs_char('.', Korean, Some('d')));
+        assert!(super::hangs_char(',', Korean, Some('d')));
+        assert!(!super::hangs_char('.', Korean, Some('こ')));
+        assert!(!super::hangs_char(',', Korean, Some('こ')));
+        assert!(super::hangs_char('.', Chinese, Some('こ')), "zh-CN after kana is not measured and keeps hanging");
+        assert!(!super::hangs_char('.', Other, Some('d')));
+    }
+
     #[test]
     fn breaks_at_spaces() {
         let mut c = chars("ab cd ef", 1.0);
         // The space after "cd" hangs past the edge.
         assert_eq!(break_lines(&mut c, Some(5.0), 0.0, 0.0, &[], 0.0, 0.5, Breaks::default()), vec![(0, 6), (6, 8)]);
-    }
-
-    #[test]
-    fn korean_hanging_punctuation_respects_the_preceding_script() {
-        for mark in ['.', ',', ':', ';', '!', '?', ')'] {
-            for (text, expected) in [
-                (format!("가나다{mark} 라"), [(0, 3), (3, 6)]),
-                (format!("ABC{mark} DEF"), [(0, 5), (5, 8)]),
-            ] {
-                let mut c = chars(&text, 1.0);
-                for c in &mut c {
-                    c.east_asian = ibis_doc_model::EastAsianLang::Korean;
-                }
-                assert_eq!(break_lines(&mut c, Some(3.0), 0.0, 0.0, &[], 0.0, 0.01, Breaks::default()), expected);
-            }
-        }
-    }
-
-    #[test]
-    fn hangul_word_wrap_reflows_when_the_text_or_width_changes() {
-        let rules = Breaks { keep_hangul_words: true, ..Breaks::default() };
-        let wrap = |text, width| {
-            break_lines(&mut chars(text, 1.0), Some(width), 0.0, 0.0, &[], 0.0, 0.01, rules)
-        };
-        assert_eq!(wrap("묶음 안 글상자 가나다", 5.0), [(0, 5), (5, 9), (9, 12)]);
-        assert_eq!(wrap("묶음 안 글상자 가나다", 8.0), [(0, 9), (9, 12)]);
-        assert_eq!(wrap("묶음 글상자 가나다", 6.0), [(0, 7), (7, 10)]);
-        assert_eq!(wrap("대한민국", 3.0), [(0, 3), (3, 4)]);
     }
 
     #[test]
@@ -3175,6 +3170,32 @@ mod tests {
     fn a_comma_hangs_past_the_end_of_a_line() {
         let mut c = chars("あいう、え", 1.0);
         assert_eq!(break_lines(&mut c, Some(3.0), 0.0, 0.0, &[], 0.0, 0.5, Breaks::default()), vec![(0, 4), (4, 5)]);
+    }
+
+    /// K0066 (E8): each OS draws emoji in its own typeface; iOS's is Apple Color Emoji (it was Noto's name, which no iPhone has: nothing was drawn).
+    #[test]
+    fn the_emoji_typeface_of_each_os() {
+        for (os, family) in [("macos", "Apple Color Emoji"), ("ios", "Apple Color Emoji"), ("windows", "Segoe UI Emoji"), ("linux", "Noto Color Emoji"), ("android", "Noto Color Emoji")] {
+            assert_eq!(super::emoji_family_of(os), family, "{os}");
+        }
+        assert_eq!(super::emoji_family(), super::emoji_family_of(std::env::consts::OS));
+    }
+
+    /// K0066 (E2, E7): two regional indicators are one cluster (a flag), pair by pair; a lone one is a cluster of its own.
+    #[test]
+    fn regional_indicators_make_flags_two_by_two() {
+        let jp: Vec<char> = "🇯🇵".chars().collect();
+        assert_eq!(super::cluster_bounds(&jp, 0), (0, 2));
+        assert_eq!(super::cluster_bounds(&jp, 1), (0, 2));
+        let two: Vec<char> = "🇯🇵🇺🇸".chars().collect();
+        assert_eq!(super::cluster_bounds(&two, 1), (0, 2));
+        assert_eq!(super::cluster_bounds(&two, 2), (2, 4));
+        assert_eq!(super::cluster_bounds(&two, 3), (2, 4));
+        let odd: Vec<char> = "🇯🇵🇺".chars().collect();
+        assert_eq!(super::cluster_bounds(&odd, 2), (2, 3));
+        let text = "a🇯🇵b";
+        assert_eq!(super::cluster_end(text, 1), 1 + 8, "the flag is 8 bytes and one cluster");
+        assert!(super::is_emoji_cluster(&jp));
     }
 
     /// #66: a character Unicode draws as an emoji by default is an emoji without the selector; one drawn as text by
@@ -3260,24 +3281,6 @@ mod tests {
         let (x, y) = t.apply(12.0, 7.0);
         let (bx, by) = t.invert(x, y);
         assert!((bx - 12.0).abs() < 1e-3 && (by - 7.0).abs() < 1e-3, "{bx} {by}");
-    }
-
-    #[test]
-    fn kana_widths_apply_to_prolonged_sound_mark_and_iteration_marks() {
-        use super::kana_width_advance;
-        let w = &crate::font_metrics::MEIRYO_UI_KANA_WIDTHS;
-        let expected_bar = (w[0x30fc - 0x3040] as f32 / 256.0) * 20.0;
-        let expected_iter = (w[0x30fd - 0x3040] as f32 / 256.0) * 20.0;
-        assert_eq!(kana_width_advance(w, 'ー', None, 20.0, 0.0), Some(expected_bar));
-        assert_eq!(kana_width_advance(w, 'ヽ', None, 20.0, 0.0), Some(expected_iter));
-        assert_eq!(kana_width_advance(w, 'ヾ', None, 20.0, 0.0), Some(expected_iter));
-        assert_eq!(kana_width_advance(w, 'ー', Some('（'), 20.0, 0.0), None);
-    }
-
-    #[test]
-    fn narrower_kana_centers_its_glyph() {
-        assert_eq!(super::glyph_shift('ア', 20.0, 14.0), -3.0);
-        assert_eq!(super::glyph_shift('亜', 20.0, 20.0), 0.0);
     }
 }
 

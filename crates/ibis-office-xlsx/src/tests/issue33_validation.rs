@@ -61,7 +61,7 @@ pub(super) fn run() {
         s.key("enter");
         assert!(s.with(|e,_|e.panel_message.is_none()));
         assert!(s.with(|e,_|e.cell_edit().is_none()),"dismissal ends invalid editing");
-        assert!(s.value(cell).is_empty(),"dismissal preserves an originally empty cell");
+        assert!(s.value(cell).is_empty(),"dismissal clears the cell");
         s.key("escape");
     }
     // Confirm the filtered selection by clicking a different cell.
@@ -75,8 +75,10 @@ pub(super) fn run() {
     s.click_cell("A10");
     s.type_text("H");
     s.key("enter");
+    assert_eq!(s.value("A10"),CellValue::Text("Microsoft".into()));
     s.key("enter");
-    assert_eq!(s.value("A10"), CellValue::Text("Microsoft".into()));
+    // Excel measurement (#284, tasks/doc/requests/2026-11-24-284-ignore-blank-result.md): dismissing the message keeps the old value.
+    assert_eq!(s.value("A10"),CellValue::Text("Microsoft".into()),"dismissal keeps the old value and drops the invalid draft");
     // A cell near the right edge cannot accommodate the message on its right.
     let target=s.with(|e,_|(0..30).filter_map(|c|e.cell_center(c,9)).find(|p|f32::from(p.x)>900. && f32::from(p.x)<1100.).unwrap());
     s.click((f32::from(target.x),f32::from(target.y)));
@@ -106,24 +108,4 @@ pub(super) fn run() {
     s.screenshot("upward-common-dropdown");
     s.key("escape");
 
-}
-
-pub(super) fn preserves_value_on_dismissal() {
-    let mut s = super::Scenario::open("test/fixtures/structured-preview/site-entry-form.xlsx");
-    s.menu("xlsx.insert-sheet");
-    s.click_cell("A1");
-    s.update(|e, _, cx| e.set_list_validation("Apple,Meta", "", cx));
-    s.type_text("Apple");
-    s.key("enter");
-    let original = CellValue::Text("Apple".into());
-    for dismiss in ["escape", "enter"] {
-        s.click_cell("A1");
-        s.type_text("H");
-        s.key("enter");
-        assert!(s.with(|e, _| e.panel_message.is_some()));
-        assert_eq!(s.value("A1"), original);
-        s.key(dismiss);
-        assert!(s.with(|e, _| e.panel_message.is_none() && e.cell_edit().is_none()));
-        assert_eq!(s.value("A1"), original, "{dismiss} discards only the invalid draft");
-    }
 }

@@ -27,3 +27,6 @@ ibis-ocr = { workspace = true, default-features = true, optional = true }
 default = []
 ocr = ["dep:ibis-ocr"]
 ocr-gpu = ["ocr", "ibis-ocr/gpu-wgpu"]
+
+[dev-dependencies]
+ibis-ooxml.workspace = true

@@ -322,21 +322,10 @@ pub trait FormatEditor {
         false
     }
 
-    /// Active cell selection range for AI Assistant (xlsx only).
-    fn ai_sheet_selection(
-        _editor: &SlideEditor,
-        _slide: SlideId,
-    ) -> Option<ibis_doc_model::sheet::CellRange> {
+    fn ai_sheet_selection(_editor: &SlideEditor, _slide: SlideId) -> Option<ibis_doc_model::sheet::CellRange> {
         None
     }
-
-    /// Update active cell selection range from AI Assistant (xlsx only).
-    fn set_ai_sheet_selection(
-        _editor: &mut SlideEditor,
-        _slide: SlideId,
-        _range: ibis_doc_model::sheet::CellRange,
-    ) {
-    }
+    fn set_ai_sheet_selection(_editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange) {}
 
     fn reveal_ai_paragraph(_editor: &mut SlideEditor, _id: u32, _cx: &mut Context<SlideEditor>) {}
 
@@ -348,32 +337,19 @@ pub trait FormatEditor {
         }
     }
 
-
-    /// Active caret paragraph index for AI Assistant (docx only).
-    fn ai_docx_cursor_paragraph(_editor: &SlideEditor) -> Option<u32> {
-        None
-    }
-
-    /// Plain text of the user's selection (docx). Empty when nothing is selected.
-    fn ai_selection_plain_text(_editor: &SlideEditor) -> Option<String> {
-        None
-    }
-
+    fn ai_docx_cursor_paragraph(_editor: &SlideEditor) -> Option<u32> { None }
+    fn ai_selection_plain_text(_editor: &SlideEditor) -> Option<String> { None }
     fn ai_editable_source(_editor: &SlideEditor, _kind: crate::ai_tools::EditableSourceKind) -> Result<crate::ai_tools::EditableSource, String> {
         Err("editable source is unavailable in this format".into())
     }
-
     fn apply_ai_source(_editor: &mut SlideEditor, _kind: crate::ai_tools::EditableSourceKind, _source: String, _cx: &mut Context<SlideEditor>) -> Result<(), String> {
         Err("editable source is unavailable in this format".into())
     }
-
-    /// Apply a reviewed assistant edit through the format's normal editing path.
     fn apply_ai_commands(editor: &mut SlideEditor, commands: Vec<ibis_doc_model::Command>, cx: &mut Context<SlideEditor>) -> bool {
         let before = editor.document.undo_len();
         editor.run(commands, cx);
         editor.document.undo_len() > before
     }
-
     fn live_analysis_preview_diff(_editor: &SlideEditor, _args: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({"error":"Analysis preview comparison is only available for desktop spreadsheets"})
     }
@@ -383,21 +359,9 @@ pub trait FormatEditor {
     fn live_analysis(_editor: &mut SlideEditor, _values: Option<&serde_json::Value>, _cx: &mut Context<SlideEditor>) -> serde_json::Value {
         serde_json::json!({"error":"Live analysis requires a worksheet"})
     }
-
-    fn preview_assistant_report_refresh(
-        _editor: &mut SlideEditor, _table: &str,
-        _files: std::collections::BTreeMap<String, std::path::PathBuf>,
-        _cx: &mut Context<SlideEditor>,
-    ) {}
-
-    /// Capture an editable text selection for a proposed assistant replacement.
-    fn ai_replacement_target(_editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget> {
-        None
-    }
-
-    fn apply_ai_replacement(_editor: &mut SlideEditor, _target: &crate::ai_assistant::AiReplacementTarget, _text: &str, _cx: &mut Context<SlideEditor>) -> bool {
-        false
-    }
+    fn preview_assistant_report_refresh(_editor: &mut SlideEditor, _table: &str, _files: std::collections::BTreeMap<String, std::path::PathBuf>, _cx: &mut Context<SlideEditor>) {}
+    fn ai_replacement_target(_editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget> { None }
+    fn apply_ai_replacement(_editor: &mut SlideEditor, _target: &crate::ai_assistant::AiReplacementTarget, _text: &str, _cx: &mut Context<SlideEditor>) -> bool { false }
 
     /// Show page `slide`: whether the format handled it (else it is shown
     /// as a presentation shows a slide).
@@ -414,6 +378,12 @@ pub trait FormatEditor {
 
     /// The window's content between the toolbar and the status bar (the sidebar goes on its right).
     fn render_body(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> AnyElement;
+
+    /// A row of the body that goes to the window's bottom, under the toolbar, in a narrow window of a touch device (`narrow_layout::bars_at_bottom`, K0089), and then
+    /// is left out of `render_body`: a worksheet's formula bar. `None` (the default): the format has none, or it is not to move.
+    fn render_bottom_row(_editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> Option<AnyElement> {
+        None
+    }
 
     /// Items the status bar shows after the page number.
     fn status_items(_editor: &SlideEditor) -> Vec<SharedString> {
@@ -448,6 +418,41 @@ pub trait FormatEditor {
         false
     }
 
+    /// Whether a finger put at `point` of the window is on a place to type in rather than on the empty space around the content (K0091: the soft
+    /// keyboard the ⌄ closed comes back only for a tap on a place to type in). The default: the whole workspace is.
+    fn tap_on_text_place(_editor: &SlideEditor, _point: Point<Pixels>) -> bool {
+        true
+    }
+
+    /// The clause of the composing text being chosen (the thick underline), as UTF-16 code units from the start of the composing text; none when there is none
+    /// or the format has none (the soft keyboard's scrolling keeps it in view, `keyboard_scroll.rs`).
+    fn ime_thick_clause(_editor: &SlideEditor) -> Option<Range<usize>> {
+        None
+    }
+
+    /// What is being typed into when the text hooks cannot tell where it is (the worksheet's current cell before its editor opens): its box in the window.
+    fn input_place(_editor: &SlideEditor) -> Option<Bounds<Pixels>> {
+        None
+    }
+
+    /// What is typed into is in a field outside the body (the worksheet's formula bar or name box): the body is not scrolled to bring that field in view; what the field
+    /// edits (`input_place`, the current cell) is brought in instead.
+    fn typing_outside_the_body(_editor: &SlideEditor, _window: &Window, _cx: &App) -> bool {
+        false
+    }
+
+    /// The format brings what is typed into in view by its own scrolling (the worksheet's current cell, which it knows how to scroll to with the headers in mind): whether it did
+    /// (then the body's scroll is not moved by the generic way).
+    fn reveal_input_by_itself(_editor: &mut SlideEditor, _view: Bounds<Pixels>) -> bool {
+        false
+    }
+
+    /// Whether a finger put at `point` is on a text field of the format that lies outside the workspace (the worksheet's formula bar, which a press on types
+    /// into the selected cell): the soft keyboard the ⌄ closed comes back for it as for a place in the workspace. The default: none.
+    fn tap_on_text_field(_editor: &SlideEditor, _point: Point<Pixels>) -> bool {
+        false
+    }
+
     fn text_for_range(_editor: &mut SlideEditor, _range: Range<usize>, _adjusted: &mut Option<Range<usize>>, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> Option<String> {
         None
     }
@@ -461,6 +466,12 @@ pub trait FormatEditor {
     }
 
     fn unmark_text(_editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) {}
+
+    /// The text an input method is composing that the screen shows over its text but has not put in it (a document's; the screens whose composing text is part
+    /// of what they edit have none here). The keyboard's hide button commits it (`SlideEditor::commit_composition`).
+    fn marked_text(_editor: &SlideEditor) -> Option<String> {
+        None
+    }
 
     fn replace_text_in_range(_editor: &mut SlideEditor, _range: Option<Range<usize>>, _text: &str, _window: &mut Window, _cx: &mut Context<SlideEditor>) {}
 
@@ -491,6 +502,12 @@ pub trait FormatEditor {
     /// A character picked in the symbols panel (`shell/symbols.rs`) goes in where the format types: a document's caret, a
     /// workbook's cell, a slide's text.
     fn insert_symbol(_editor: &mut SlideEditor, _c: char, _window: &mut Window, _cx: &mut Context<SlideEditor>) {}
+
+    /// A picture made by the screen itself (the anonymised medical image, `shell/dicom_dialog.rs`) goes where the format puts a
+    /// picture: a slide's middle, a document's caret. `data` is a PNG; it is one step to undo.
+    fn insert_made_picture(editor: &mut SlideEditor, name: &str, data: Vec<u8>, cx: &mut Context<SlideEditor>) {
+        editor.insert_picture(name, data, cx);
+    }
 
     // ----- Dialogs (see `shell/dialog.rs`) -----------------------------------
 
@@ -646,10 +663,7 @@ pub trait FormatEditor {
     }
 
     /// Form controls are in design mode (a group box then takes the mouse).
-    fn workspace_chart_preview(_editor: &SlideEditor) -> Option<&ibis_doc_model::Slide> {
-        None
-    }
-
+    fn workspace_chart_preview(_editor: &SlideEditor) -> Option<&ibis_doc_model::Slide> { None }
     fn workspace_shape_design_mode(_editor: &SlideEditor) -> bool {
         false
     }
@@ -890,6 +904,7 @@ pub trait FormatEditor {
 
     /// Why the file cannot be saved for now, in the user's words (`SlideEditor::save_to` gives it as its error): a view
     /// that edits the model in a form that is not the file's is open (a presentation's master view, its notes formatting).
+    fn source_bytes_for_name(_editor: &SlideEditor, _name: &str, _source: &ibis_formats::Source) -> Option<Result<FileBytes, String>> { None }
     fn save_refused(_editor: &SlideEditor) -> Option<String> {
         None
     }
@@ -962,6 +977,12 @@ pub trait FormatEditor {
     /// What is selected on the screen, as data for the menu bar's context menus and the sidebars (`shell/menu_context.rs`):
     /// the format fills in the fields of its own screen (`state` comes with nothing selected).
     fn selection_context(_editor: &SlideEditor, _state: &mut crate::menu_context::ContextState) {}
+
+    /// Where the user is typing, for the toolbar over the soft keyboard (K0064: a table's cell, a list, a sheet's formula, the notes), or
+    /// `None` for plain text.
+    fn soft_keyboard_target(_editor: &SlideEditor) -> Option<crate::keyboard_toolbar::Target> {
+        None
+    }
 
     /// The picture トリミング (`shell/crop_mode.rs`) would work on now, the place the whole picture has (EMU of the slide,
     /// the sheet or the page it is on) and its crop; `None` when the selection is not one picture that can be cropped
@@ -1139,8 +1160,11 @@ pub trait FormatEditor {
         editor.apply_chart_panel(window, cx)
     }
 
-    /// The current document's theme colours, in colour-picker order.
+    /// The theme's ten colours the colour palettes show in their theme rows (`shell/chrome.rs`), in SpreadsheetML's order
+    /// (lt1, dk1, lt2, dk2, accent1–6). Office's own by default, as it was before the hook: only a workbook's theme
+    /// reaches the palettes (the file was asked for a workbook's theme part, which a presentation and a document lack).
     fn palette_theme_colors(editor: &SlideEditor) -> [ibis_doc_model::Rgb; 10] {
+        // The file's own theme (a colour scheme chosen on the design tab shows in the palettes), Office's where it has none (#290).
         ibis_formats::workbook_theme_colors_from_slice(&editor.presentation().theme_colors)
     }
 
@@ -1178,16 +1202,6 @@ pub trait FormatEditor {
     /// password encrypts). `copy`: the file is written beside its own (the AutoRecover snapshot, a backup), not saved.
     #[cfg(not(target_family = "wasm"))]
     fn bytes_for_path(_editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_formats::Source, _copy: bool) -> Option<Result<FileBytes, String>> {
-        None
-    }
-
-    /// Cross-platform source export for `.md` / `.markdown` / `.lawtext` / e-Gov `.xml` when saving
-    /// by file name (used on Web/WASM and shared with `bytes_for_path` on desktop).
-    fn source_bytes_for_name(
-        _editor: &SlideEditor,
-        _name: &str,
-        _source: &ibis_formats::Source,
-    ) -> Option<Result<FileBytes, String>> {
         None
     }
 
@@ -1268,14 +1282,14 @@ pub trait FormatEditor {
     /// The format's scenario tests: (name, function), run by
     /// `tests/scenarios.rs` on the main thread. Put them in
     /// `src/<format>/scenarios.rs` (under `#[cfg(feature = "scenarios")]`).
-    #[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+    #[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
     fn scenarios() -> Vec<(&'static str, fn())> {
         Vec::new()
     }
 
     /// The format's scenarios of bugs not fixed yet (its corpus reports and the like): a plain `cargo test` skips them,
     /// `--ignored` or `--include-ignored` runs them.
-    #[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+    #[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
     fn ignored_scenarios() -> Vec<(&'static str, fn())> {
         Vec::new()
     }
@@ -1432,15 +1446,23 @@ pub trait FormatDriver: Sync {
     fn page_changed(&self, _editor: &mut SlideEditor, _from: SlideId, _to: SlideId);
     fn before_render(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>);
     fn render_body(&self, editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> AnyElement;
+    fn render_bottom_row(&self, editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> Option<AnyElement>;
     fn status_items(&self, _editor: &SlideEditor) -> Vec<SharedString>;
     fn status_items_at_right(&self) -> bool;
     fn status_hint(&self, _editor: &SlideEditor) -> Option<SharedString>;
     fn status_tab_scroll(&self, _editor: &SlideEditor) -> Option<ScrollHandle>;
     fn wants_text_input(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
+    fn tap_on_text_place(&self, _editor: &SlideEditor, _point: Point<Pixels>) -> bool;
+    fn ime_thick_clause(&self, _editor: &SlideEditor) -> Option<Range<usize>>;
+    fn input_place(&self, _editor: &SlideEditor) -> Option<Bounds<Pixels>>;
+    fn typing_outside_the_body(&self, _editor: &SlideEditor, _window: &Window, _cx: &App) -> bool;
+    fn reveal_input_by_itself(&self, _editor: &mut SlideEditor, _view: Bounds<Pixels>) -> bool;
+    fn tap_on_text_field(&self, _editor: &SlideEditor, _point: Point<Pixels>) -> bool;
     fn text_for_range(&self, _editor: &mut SlideEditor, _range: Range<usize>, _adjusted: &mut Option<Range<usize>>, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> Option<String>;
     fn selected_text_range(&self, _editor: &mut SlideEditor, _ignore_disabled_input: bool, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> Option<UTF16Selection>;
     fn marked_text_range(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> Option<Range<usize>>;
     fn unmark_text(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>);
+    fn marked_text(&self, _editor: &SlideEditor) -> Option<String>;
     fn replace_text_in_range(&self, _editor: &mut SlideEditor, _range: Option<Range<usize>>, _text: &str, _window: &mut Window, _cx: &mut Context<SlideEditor>);
     fn replace_and_mark_text_in_range(&self, _editor: &mut SlideEditor, _range: Option<Range<usize>>, _text: &str, _selected: Option<Range<usize>>, _window: &mut Window, _cx: &mut Context<SlideEditor>);
     fn set_ime_clauses(&self, _editor: &mut SlideEditor, _clauses: Vec<ImeClause>, _window: &mut Window, _cx: &mut Context<SlideEditor>);
@@ -1448,6 +1470,7 @@ pub trait FormatDriver: Sync {
     fn text_vertical(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
     fn character_index_for_point(&self, _editor: &mut SlideEditor, _point: Point<Pixels>, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> Option<usize>;
     fn insert_symbol(&self, _editor: &mut SlideEditor, _c: char, _window: &mut Window, _cx: &mut Context<SlideEditor>);
+    fn insert_made_picture(&self, _editor: &mut SlideEditor, _name: &str, _data: Vec<u8>, _cx: &mut Context<SlideEditor>);
     fn range_pick_active(&self, _editor: &SlideEditor) -> bool;
     fn finish_range_pick(&self, _editor: &mut SlideEditor, _accept: bool, _window: &mut Window, _cx: &mut Context<SlideEditor>);
     fn range_pick_panel(&self, _editor: &mut SlideEditor, _cx: &mut Context<SlideEditor>) -> Option<SidebarPanel>;
@@ -1534,6 +1557,7 @@ pub trait FormatDriver: Sync {
     fn document_loaded(&self, _editor: &mut SlideEditor);
     #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
     fn file_opened(&self, _editor: &mut SlideEditor);
+    fn source_bytes_for_name(&self, _editor: &SlideEditor, _name: &str, _source: &ibis_formats::Source) -> Option<Result<FileBytes, String>>;
     fn save_refused(&self, _editor: &SlideEditor) -> Option<String>;
     fn model_for_save<'a>(&self, _editor: &'a SlideEditor) -> std::borrow::Cow<'a, Presentation>;
     #[cfg(not(target_family = "wasm"))]
@@ -1549,6 +1573,7 @@ pub trait FormatDriver: Sync {
     fn link_under_pointer(&self, _editor: &SlideEditor, _position: Point<Pixels>) -> bool;
     fn link_pressed(&self, _editor: &mut SlideEditor, _event: &MouseDownEvent, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool;
     fn selection_context(&self, _editor: &SlideEditor, _state: &mut crate::menu_context::ContextState);
+    fn soft_keyboard_target(&self, _editor: &SlideEditor) -> Option<crate::keyboard_toolbar::Target>;
     fn crop_target(&self, _editor: &SlideEditor) -> Option<(crate::crop_mode::CropTarget, EmuRect, ibis_doc_model::Crop)>;
     fn crop_keep(&self, _editor: &mut SlideEditor, _target: &crate::crop_mode::CropTarget, _full: EmuRect, _crop: ibis_doc_model::Crop, _cx: &mut Context<SlideEditor>);
     fn crop_pointer(&self, _editor: &SlideEditor, _target: &crate::crop_mode::CropTarget, _position: Point<Pixels>) -> Option<(f64, f64)>;
@@ -1589,12 +1614,6 @@ pub trait FormatDriver: Sync {
     fn pdf_job(&self, editor: &SlideEditor, _printing: bool) -> Result<PdfJob, String>;
     #[cfg(not(target_family = "wasm"))]
     fn bytes_for_path(&self, _editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_formats::Source, _copy: bool) -> Option<Result<FileBytes, String>>;
-    fn source_bytes_for_name(
-        &self,
-        _editor: &SlideEditor,
-        _name: &str,
-        _source: &ibis_formats::Source,
-    ) -> Option<Result<FileBytes, String>>;
     #[cfg(not(target_family = "wasm"))]
     fn new_file_save_folder(&self, _editor: &SlideEditor) -> Option<std::path::PathBuf>;
     fn export_args(&self, _editor: &SlideEditor) -> Vec<&'static str>;
@@ -1611,9 +1630,9 @@ pub trait FormatDriver: Sync {
     fn box_edit_set_goal_x(&self, _editor: &mut SlideEditor, _goal: (usize, f32));
     fn note_open_failed(&self, _path: &std::path::Path);
     fn note_opened(&self, _path: &std::path::Path);
-    #[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+    #[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
     fn scenarios(&self) -> Vec<(&'static str, fn())>;
-    #[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+    #[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
     fn ignored_scenarios(&self) -> Vec<(&'static str, fn())>;
     fn menus(&self, _editor: &SlideEditor, _menus: &mut Menus);
     fn format_paint(&self, _editor: &SlideEditor) -> Option<(bool, crate::chrome::Handler)>;
@@ -1686,55 +1705,22 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn step_page(&self, _editor: &mut SlideEditor, _forward: bool, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
         F::step_page(_editor, _forward, _window, _cx)
     }
-    fn ai_sheet_selection(&self, _editor: &SlideEditor, _slide: SlideId) -> Option<ibis_doc_model::sheet::CellRange> {
-        F::ai_sheet_selection(_editor, _slide)
-    }
-    fn set_ai_sheet_selection(&self, _editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange) {
-        F::set_ai_sheet_selection(_editor, _slide, _range);
-    }
-    fn reveal_ai_paragraph(&self, editor: &mut SlideEditor, id: u32, cx: &mut Context<SlideEditor>) {
-        F::reveal_ai_paragraph(editor, id, cx);
-    }
-    fn outline_heading_folded(&self, editor: &SlideEditor, id: u32) -> Option<bool> {
-        F::outline_heading_folded(editor, id)
-    }
-    fn navigate_outline_heading(&self, editor: &mut SlideEditor, id: u32, toggle_body: bool, cx: &mut Context<SlideEditor>) {
-        F::navigate_outline_heading(editor, id, toggle_body, cx);
-    }
-
-    fn ai_docx_cursor_paragraph(&self, _editor: &SlideEditor) -> Option<u32> {
-        F::ai_docx_cursor_paragraph(_editor)
-    }
-    fn ai_selection_plain_text(&self, _editor: &SlideEditor) -> Option<String> {
-        F::ai_selection_plain_text(_editor)
-    }
-    fn ai_editable_source(&self, editor: &SlideEditor, kind: crate::ai_tools::EditableSourceKind) -> Result<crate::ai_tools::EditableSource, String> {
-        F::ai_editable_source(editor, kind)
-    }
-    fn apply_ai_source(&self, editor: &mut SlideEditor, kind: crate::ai_tools::EditableSourceKind, source: String, cx: &mut Context<SlideEditor>) -> Result<(), String> {
-        F::apply_ai_source(editor, kind, source, cx)
-    }
-    fn apply_ai_commands(&self, editor: &mut SlideEditor, commands: Vec<ibis_doc_model::Command>, cx: &mut Context<SlideEditor>) -> bool {
-        F::apply_ai_commands(editor, commands, cx)
-    }
-    fn preview_assistant_report_refresh(&self, editor: &mut SlideEditor, table: &str, files: std::collections::BTreeMap<String, std::path::PathBuf>, cx: &mut Context<SlideEditor>) {
-        F::preview_assistant_report_refresh(editor, table, files, cx);
-    }
-    fn live_analysis_preview_diff(&self, editor: &SlideEditor, args: &serde_json::Value) -> serde_json::Value {
-        F::live_analysis_preview_diff(editor, args)
-    }
-    fn live_chart_drill_down(&self, editor: &SlideEditor, args: &serde_json::Value) -> serde_json::Value {
-        F::live_chart_drill_down(editor, args)
-    }
-    fn live_analysis(&self, editor: &mut SlideEditor, values: Option<&serde_json::Value>, cx: &mut Context<SlideEditor>) -> serde_json::Value {
-        F::live_analysis(editor, values, cx)
-    }
-    fn ai_replacement_target(&self, editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget> {
-        F::ai_replacement_target(editor)
-    }
-    fn apply_ai_replacement(&self, editor: &mut SlideEditor, target: &crate::ai_assistant::AiReplacementTarget, text: &str, cx: &mut Context<SlideEditor>) -> bool {
-        F::apply_ai_replacement(editor, target, text, cx)
-    }
+    fn ai_sheet_selection(&self, _editor: &SlideEditor, _slide: SlideId) -> Option<ibis_doc_model::sheet::CellRange> { F::ai_sheet_selection(_editor, _slide) }
+    fn set_ai_sheet_selection(&self, _editor: &mut SlideEditor, _slide: SlideId, _range: ibis_doc_model::sheet::CellRange) { F::set_ai_sheet_selection(_editor, _slide, _range); }
+    fn reveal_ai_paragraph(&self, editor: &mut SlideEditor, id: u32, cx: &mut Context<SlideEditor>) { F::reveal_ai_paragraph(editor, id, cx); }
+    fn outline_heading_folded(&self, editor: &SlideEditor, id: u32) -> Option<bool> { F::outline_heading_folded(editor, id) }
+    fn navigate_outline_heading(&self, editor: &mut SlideEditor, id: u32, toggle_body: bool, cx: &mut Context<SlideEditor>) { F::navigate_outline_heading(editor, id, toggle_body, cx); }
+    fn ai_docx_cursor_paragraph(&self, _editor: &SlideEditor) -> Option<u32> { F::ai_docx_cursor_paragraph(_editor) }
+    fn ai_selection_plain_text(&self, _editor: &SlideEditor) -> Option<String> { F::ai_selection_plain_text(_editor) }
+    fn ai_editable_source(&self, editor: &SlideEditor, kind: crate::ai_tools::EditableSourceKind) -> Result<crate::ai_tools::EditableSource, String> { F::ai_editable_source(editor, kind) }
+    fn apply_ai_source(&self, editor: &mut SlideEditor, kind: crate::ai_tools::EditableSourceKind, source: String, cx: &mut Context<SlideEditor>) -> Result<(), String> { F::apply_ai_source(editor, kind, source, cx) }
+    fn apply_ai_commands(&self, editor: &mut SlideEditor, commands: Vec<ibis_doc_model::Command>, cx: &mut Context<SlideEditor>) -> bool { F::apply_ai_commands(editor, commands, cx) }
+    fn live_analysis_preview_diff(&self, editor: &SlideEditor, args: &serde_json::Value) -> serde_json::Value { F::live_analysis_preview_diff(editor, args) }
+    fn live_chart_drill_down(&self, editor: &SlideEditor, args: &serde_json::Value) -> serde_json::Value { F::live_chart_drill_down(editor, args) }
+    fn live_analysis(&self, editor: &mut SlideEditor, values: Option<&serde_json::Value>, cx: &mut Context<SlideEditor>) -> serde_json::Value { F::live_analysis(editor, values, cx) }
+    fn preview_assistant_report_refresh(&self, editor: &mut SlideEditor, table: &str, files: std::collections::BTreeMap<String, std::path::PathBuf>, cx: &mut Context<SlideEditor>) { F::preview_assistant_report_refresh(editor, table, files, cx); }
+    fn ai_replacement_target(&self, editor: &SlideEditor) -> Option<crate::ai_assistant::AiReplacementTarget> { F::ai_replacement_target(editor) }
+    fn apply_ai_replacement(&self, editor: &mut SlideEditor, target: &crate::ai_assistant::AiReplacementTarget, text: &str, cx: &mut Context<SlideEditor>) -> bool { F::apply_ai_replacement(editor, target, text, cx) }
     fn show_page(&self, _editor: &mut SlideEditor, _slide: SlideId, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
         F::show_page(_editor, _slide, _window, _cx)
     }
@@ -1746,6 +1732,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn render_body(&self, editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> AnyElement {
         F::render_body(editor, window, cx)
+    }
+    fn render_bottom_row(&self, editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> Option<AnyElement> {
+        F::render_bottom_row(editor, window, cx)
     }
     fn status_items(&self, _editor: &SlideEditor) -> Vec<SharedString> {
         F::status_items(_editor)
@@ -1762,6 +1751,24 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn wants_text_input(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
         F::wants_text_input(_editor, _window, _cx)
     }
+    fn tap_on_text_place(&self, _editor: &SlideEditor, _point: Point<Pixels>) -> bool {
+        F::tap_on_text_place(_editor, _point)
+    }
+    fn ime_thick_clause(&self, _editor: &SlideEditor) -> Option<Range<usize>> {
+        F::ime_thick_clause(_editor)
+    }
+    fn input_place(&self, _editor: &SlideEditor) -> Option<Bounds<Pixels>> {
+        F::input_place(_editor)
+    }
+    fn typing_outside_the_body(&self, _editor: &SlideEditor, _window: &Window, _cx: &App) -> bool {
+        F::typing_outside_the_body(_editor, _window, _cx)
+    }
+    fn reveal_input_by_itself(&self, _editor: &mut SlideEditor, _view: Bounds<Pixels>) -> bool {
+        F::reveal_input_by_itself(_editor, _view)
+    }
+    fn tap_on_text_field(&self, _editor: &SlideEditor, _point: Point<Pixels>) -> bool {
+        F::tap_on_text_field(_editor, _point)
+    }
     fn text_for_range(&self, _editor: &mut SlideEditor, _range: Range<usize>, _adjusted: &mut Option<Range<usize>>, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> Option<String> {
         F::text_for_range(_editor, _range, _adjusted, _window, _cx)
     }
@@ -1770,6 +1777,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn marked_text_range(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> Option<Range<usize>> {
         F::marked_text_range(_editor, _window, _cx)
+    }
+    fn marked_text(&self, _editor: &SlideEditor) -> Option<String> {
+        F::marked_text(_editor)
     }
     fn unmark_text(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>) {
         F::unmark_text(_editor, _window, _cx)
@@ -1794,6 +1804,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn insert_symbol(&self, _editor: &mut SlideEditor, _c: char, _window: &mut Window, _cx: &mut Context<SlideEditor>) {
         F::insert_symbol(_editor, _c, _window, _cx)
+    }
+    fn insert_made_picture(&self, _editor: &mut SlideEditor, _name: &str, _data: Vec<u8>, _cx: &mut Context<SlideEditor>) {
+        F::insert_made_picture(_editor, _name, _data, _cx)
     }
     fn range_pick_active(&self, _editor: &SlideEditor) -> bool {
         F::range_pick_active(_editor)
@@ -1888,9 +1901,7 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn workspace_sheet_overlays(&self, _editor: &SlideEditor, _scale: f32, _cx: &mut Context<SlideEditor>) -> SheetOverlays {
         F::workspace_sheet_overlays(_editor, _scale, _cx)
     }
-    fn workspace_chart_preview<'a>(&self, editor: &'a SlideEditor) -> Option<&'a ibis_doc_model::Slide> {
-        F::workspace_chart_preview(editor)
-    }
+    fn workspace_chart_preview<'a>(&self, editor: &'a SlideEditor) -> Option<&'a ibis_doc_model::Slide> { F::workspace_chart_preview(editor) }
     fn workspace_shape_design_mode(&self, _editor: &SlideEditor) -> bool {
         F::workspace_shape_design_mode(_editor)
     }
@@ -2047,6 +2058,7 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn file_opened(&self, _editor: &mut SlideEditor) {
         F::file_opened(_editor)
     }
+    fn source_bytes_for_name(&self, _editor: &SlideEditor, _name: &str, _source: &ibis_formats::Source) -> Option<Result<FileBytes, String>> { F::source_bytes_for_name(_editor, _name, _source) }
     fn save_refused(&self, _editor: &SlideEditor) -> Option<String> {
         F::save_refused(_editor)
     }
@@ -2086,6 +2098,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn link_pressed(&self, _editor: &mut SlideEditor, _event: &MouseDownEvent, _window: &mut Window, _cx: &mut Context<SlideEditor>) -> bool {
         F::link_pressed(_editor, _event, _window, _cx)
+    }
+    fn soft_keyboard_target(&self, _editor: &SlideEditor) -> Option<crate::keyboard_toolbar::Target> {
+        F::soft_keyboard_target(_editor)
     }
     fn selection_context(&self, _editor: &SlideEditor, _state: &mut crate::menu_context::ContextState) {
         F::selection_context(_editor, _state)
@@ -2208,14 +2223,6 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn bytes_for_path(&self, _editor: &SlideEditor, _path: &std::path::Path, _source: &ibis_formats::Source, _copy: bool) -> Option<Result<FileBytes, String>> {
         F::bytes_for_path(_editor, _path, _source, _copy)
     }
-    fn source_bytes_for_name(
-        &self,
-        _editor: &SlideEditor,
-        _name: &str,
-        _source: &ibis_formats::Source,
-    ) -> Option<Result<FileBytes, String>> {
-        F::source_bytes_for_name(_editor, _name, _source)
-    }
     #[cfg(not(target_family = "wasm"))]
     fn new_file_save_folder(&self, _editor: &SlideEditor) -> Option<std::path::PathBuf> {
         F::new_file_save_folder(_editor)
@@ -2262,11 +2269,11 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     fn note_opened(&self, _path: &std::path::Path) {
         F::note_opened(_path)
     }
-    #[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+    #[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
     fn scenarios(&self) -> Vec<(&'static str, fn())> {
         F::scenarios()
     }
-    #[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+    #[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
     fn ignored_scenarios(&self) -> Vec<(&'static str, fn())> {
         F::ignored_scenarios()
     }

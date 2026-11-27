@@ -8,45 +8,11 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Linux updates never signal the parent: inability to confirm its exit aborts.
-#[cfg(target_os = "linux")]
-pub fn wait_for_linux_exit(pid: u32, timeout: Duration) -> Result<(), String> {
-    if pid == 0 {
-        return Err("invalid parent pid".into());
-    }
-    let started = Instant::now();
-    loop {
-        // Confirm procfs itself is available before interpreting a missing PID.
-        std::fs::read_to_string("/proc/self/stat")
-            .map_err(|e| format!("cannot inspect procfs: {e}"))?;
-        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Ok(stat) => {
-                let state = stat
-                    .rsplit_once(')')
-                    .and_then(|(_, rest)| rest.split_whitespace().next())
-                    .ok_or("invalid process status")?;
-                if state == "Z" || state == "X" {
-                    return Ok(());
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(format!("cannot inspect parent process: {e}")),
-        }
-        if started.elapsed() >= timeout {
-            return Err("parent still running; nothing was changed".into());
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 /// Whether process `pid` is running (a zombie, waiting to be reaped, is not).
 pub fn is_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        let out = Command::new("ps")
-            .args(["-o", "stat=", "-p", &pid.to_string()])
-            .stderr(Stdio::null())
-            .output();
+        let out = Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).stderr(Stdio::null()).output();
         match out {
             Ok(out) => {
                 let stat = String::from_utf8_lossy(&out.stdout);
@@ -58,10 +24,8 @@ pub fn is_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        let out = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
-            .stderr(Stdio::null())
-            .output();
+        use std::os::windows::process::CommandExt as _;
+        let out = Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"]).creation_flags(0x0800_0000).stderr(Stdio::null()).output();
         match out {
             Ok(out) => String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\"")),
             Err(_) => false,
@@ -79,14 +43,13 @@ pub fn terminate(pid: u32, force: bool) {
     #[cfg(unix)]
     {
         let signal = if force { "-KILL" } else { "-TERM" };
-        let _ = Command::new("kill")
-            .args([signal, &pid.to_string()])
-            .stderr(Stdio::null())
-            .status();
+        let _ = Command::new("kill").args([signal, &pid.to_string()]).stderr(Stdio::null()).status();
     }
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt as _;
         let mut command = Command::new("taskkill");
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         command.args(["/PID", &pid.to_string()]);
         if force {
             command.arg("/F");
@@ -128,11 +91,7 @@ pub fn wait_for_exit(pid: u32, timeout: Duration) -> Exit {
         return Exit::Ended;
     }
     terminate(pid, true);
-    if wait(Duration::from_secs(5)) {
-        Exit::Ended
-    } else {
-        Exit::Running
-    }
+    if wait(Duration::from_secs(5)) { Exit::Ended } else { Exit::Running }
 }
 
 /// Whether a process runs the program `exe` (the full path; macOS: the
@@ -141,21 +100,13 @@ pub fn wait_for_exit(pid: u32, timeout: Duration) -> Exit {
 pub fn is_running(exe: &std::path::Path) -> bool {
     // pgrep -f matches the whole command line with a regular expression: the
     // path, then the end of the line or the first argument.
-    // LaunchServices reports the canonical executable path (for example,
-    // `/private/var/...` even when the app was opened via `/var/...`).
-    let resolved = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
     let mut pattern = String::from("^");
-    for c in resolved.to_string_lossy().chars() {
+    for c in exe.to_string_lossy().chars() {
         if "\\.^$*+?()[]{}|".contains(c) {
             pattern.push('\\');
         }
         pattern.push(c);
     }
     pattern.push_str("( |$)");
-    Command::new("pgrep")
-        .args(["-f", &pattern])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    Command::new("pgrep").args(["-f", &pattern]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }

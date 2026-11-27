@@ -49,10 +49,10 @@ else
   BIN_DIR=target/debug
 fi
 
-# The version shown for macOS, from version.txt (a platform, a tab and its
+# The version shown for macOS, from build-version.txt (a platform, a tab and its
 # version, per line).
-VERSION=$(awk -F'\t' '$1 == "macOS" { sub(/\r$/, "", $2); print $2 }' version.txt)
-[[ -n $VERSION ]] || { echo "version.txt has no macOS line" >&2; exit 1; }
+VERSION=$(awk -F'\t' '$1 == "macOS" { sub(/\r$/, "", $2); print $2 }' crates/build-version.txt)
+[[ -n $VERSION ]] || { echo "build-version.txt has no macOS line" >&2; exit 1; }
 
 APP="target/$PROFILE/Docs.app"
 rm -rf "$APP"

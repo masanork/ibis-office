@@ -205,7 +205,7 @@ fn synthetic_xlsx_sd_jwt_bindings_roundtrip() {
 
     doc.execute(vec![
         Command::Sheet(SheetCommand::SetCells {
-            slide,
+            sheet: slide,
             edits: vec![
                 CellEdit { row: 0, column: 1, input: CellInput::Value(CellValue::Text("urn:eu.europa.ec.eudi:pid:1".into())) },
                 CellEdit { row: 1, column: 1, input: CellInput::Value(CellValue::Text("山田".into())) },
@@ -219,12 +219,12 @@ fn synthetic_xlsx_sd_jwt_bindings_roundtrip() {
             ],
         }),
         Command::Sheet(SheetCommand::SetFormat {
-            slide,
+            sheet: slide,
             ranges: vec![b4_range],
             change: StyleChange::NumberFormat("yyyy-mm-dd".into()),
         }),
         Command::Sheet(SheetCommand::SetFormat {
-            slide,
+            sheet: slide,
             ranges: vec![b5_range],
             change: StyleChange::Checkbox(true),
         }),

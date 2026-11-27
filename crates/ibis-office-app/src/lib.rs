@@ -48,6 +48,8 @@ pub(crate) use shell::pdf_picture;
 pub(crate) use ibis_office_xlsx as xlsx;
 #[cfg(any(headless_export, target_family = "wasm"))]
 mod export;
+#[cfg(headless_export)]
+mod html_export;
 #[cfg(any(headless_export, target_family = "wasm"))]
 mod export_print;
 #[cfg(any(headless_export, target_family = "wasm"))]
@@ -63,33 +65,52 @@ mod ui_snapshot;
 
 pub use shell::editor::SlideEditor;
 
-#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+#[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
 #[path = "tests/shell/native_quit.rs"]
 mod native_quit_scenarios;
 
-#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+#[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
 #[path = "tests/offscreen_3d.rs"]
 mod offscreen_3d_scenarios;
 
-#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+#[cfg(all(test, any(target_os = "macos", all(target_os = "linux", feature = "export"))))]
+#[path = "tests/offscreen_readback.rs"]
+mod offscreen_readback_tests;
+
+#[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
 mod scenario_list;
 
-#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+#[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
 mod pptx_scenarios;
 
 // The text rectangle check of a slide (`crate::export`, the app's): a `#[test]` on Windows, a scenario elsewhere, so it is declared here and
 // not under `pptx_scenarios` (which only Mac and Linux build).
-#[cfg(all(headless_export, any(all(test, windows), all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))))]
+#[cfg(all(headless_export, any(all(test, windows), all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))))]
 #[path = "tests/pptx/text_rect.rs"]
 mod pptx_text_rect;
 
 // The document's layout checks that export a page (`crate::export`, the app's): they stay in the app (tasks/doc/crate-split-plan.md, 15.2).
-#[cfg(any(all(test, windows), all(any(target_os = "macos", target_os = "linux"), feature = "scenarios")))]
+#[cfg(any(all(test, windows), all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios")))]
 #[path = "tests/docx/layout_tests.rs"]
 pub(crate) mod docx_layout_tests;
-#[cfg(any(all(test, windows), all(any(target_os = "macos", target_os = "linux"), feature = "scenarios")))]
+#[cfg(any(all(test, windows), all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios")))]
 #[path = "tests/docx/layout_tests_grid.rs"]
 pub(crate) mod docx_layout_tests_grid;
+#[cfg(all(test, windows))]
+#[path = "tests/docx/layout_tests_vertical_footnote.rs"]
+mod docx_layout_tests_vertical_footnote;
+#[cfg(all(test, windows))]
+#[path = "tests/docx/layout_tests_space_advance.rs"]
+mod docx_layout_tests_space_advance;
+#[cfg(all(test, windows))]
+#[path = "tests/docx/pdf_blank_characters.rs"]
+mod docx_pdf_blank_characters;
+#[cfg(all(test, windows))]
+#[path = "tests/docx/layout_tests_mirror_foot.rs"]
+mod docx_layout_tests_mirror_foot;
+#[cfg(all(test, windows))]
+#[path = "tests/docx/layout_tests_smartart_wrap.rs"]
+mod docx_layout_tests_smartart_wrap;
 #[cfg(test)]
 #[path = "tests/docx/probe.rs"]
 mod docx_probe;
@@ -107,9 +128,27 @@ mod xlsx_print_bounds;
 #[cfg(test)]
 #[path = "tests/shell/menu_context_table.rs"]
 mod menu_context_table;
+#[cfg(all(test, headless_export))]
+#[path = "tests/shell/pdf_font_descriptor.rs"]
+mod pdf_font_descriptor;
+
+/// The iOS system fonts the app adds to its text system by their file (mapped, not read): the system's fonts are not found on iOS by the font database, so a
+/// character none of them (nor the bundled UI font) has is drawn as a box. Apple Symbols is there for the arrows and signs the others lack: the document's
+/// editing marks (↵ U+21B5, the paragraph's end and the line break) are in none of the others (Hiragino Sans, PingFang and SF have →, ↓ and ¶ but not ↵), where a
+/// Mac's font database finds Apple Symbols, Menlo or STIX by itself.
+pub const IOS_SYSTEM_FONTS: [&std::ffi::CStr; 6] = [
+    c"HiraginoSans-W3",
+    c"HiraginoSans-W6",
+    c"PingFangSC-Regular",
+    c".AppleSystemUIFont",
+    // The colour emoji (sbix) (K0066).
+    c"AppleColorEmoji",
+    // The arrows and signs of the editing marks.
+    c"AppleSymbols",
+];
 
 /// Run the scenario tests (`tests/scenarios.rs`; see `shell/scenario.rs`).
-#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+#[cfg(all(any(target_os = "macos", target_os = "linux", windows), feature = "scenarios"))]
 pub fn run_scenarios(filter: &[String]) -> i32 {
     register_hooks();
     shell::scenario::run(filter, scenario_list::all, scenario_list::ignored)
@@ -294,19 +333,22 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("tab", pptx::slide_view::NextTableCell, Some(pptx::slide_view::CONTEXT)),
         KeyBinding::new("shift-tab", pptx::slide_view::PreviousTableCell, Some(pptx::slide_view::CONTEXT)),
         // フォント サイズ（PowerPoint: ⌘⇧> で大きく、⌘⇧< で小さく、⌘] で大きく、⌘[ で小さく）.
-        KeyBinding::new("cmd-shift->", pptx::slide_view::IncreaseFontSize, Some(pptx::slide_view::CONTEXT)),
-        KeyBinding::new("cmd-shift-.", pptx::slide_view::IncreaseFontSize, Some(pptx::slide_view::CONTEXT)),
-        KeyBinding::new("cmd-shift-<", pptx::slide_view::DecreaseFontSize, Some(pptx::slide_view::CONTEXT)),
-        KeyBinding::new("cmd-shift-,", pptx::slide_view::DecreaseFontSize, Some(pptx::slide_view::CONTEXT)),
+        KeyBinding::new(&secondary("shift->"), pptx::slide_view::IncreaseFontSize, Some(pptx::slide_view::CONTEXT)),
+        KeyBinding::new(&secondary("shift-."), pptx::slide_view::IncreaseFontSize, Some(pptx::slide_view::CONTEXT)),
+        KeyBinding::new(&secondary("shift-<"), pptx::slide_view::DecreaseFontSize, Some(pptx::slide_view::CONTEXT)),
+        KeyBinding::new(&secondary("shift-,"), pptx::slide_view::DecreaseFontSize, Some(pptx::slide_view::CONTEXT)),
         KeyBinding::new(&secondary("]"), pptx::slide_view::IncreaseFontSize, Some(pptx::slide_view::CONTEXT)),
         KeyBinding::new(&secondary("["), pptx::slide_view::DecreaseFontSize, Some(pptx::slide_view::CONTEXT)),
         // 配置（PowerPoint: ⌘L 左・⌘E 中央・⌘R 右・⌘J 両端）、書式のコピー・貼り付け（⌥⌘C・⌥⌘V）.
-        KeyBinding::new("cmd-l", pptx::slide_view::AlignTextLeft, Some(pptx::slide_view::CONTEXT)),
-        KeyBinding::new("cmd-e", pptx::slide_view::AlignTextCenter, Some(pptx::slide_view::CONTEXT)),
-        KeyBinding::new("cmd-r", pptx::slide_view::AlignTextRight, Some(pptx::slide_view::CONTEXT)),
-        KeyBinding::new("cmd-j", pptx::slide_view::AlignTextJustify, Some(pptx::slide_view::CONTEXT)),
+        KeyBinding::new(&secondary("l"), pptx::slide_view::AlignTextLeft, Some(pptx::slide_view::CONTEXT)),
+        KeyBinding::new(&secondary("e"), pptx::slide_view::AlignTextCenter, Some(pptx::slide_view::CONTEXT)),
+        KeyBinding::new(&secondary("r"), pptx::slide_view::AlignTextRight, Some(pptx::slide_view::CONTEXT)),
+        KeyBinding::new(&secondary("j"), pptx::slide_view::AlignTextJustify, Some(pptx::slide_view::CONTEXT)),
         KeyBinding::new("alt-cmd-c", pptx::slide_view::CopyTextFormat, Some(pptx::slide_view::CONTEXT)),
         KeyBinding::new("alt-cmd-v", pptx::slide_view::PasteTextFormat, Some(pptx::slide_view::CONTEXT)),
+        // Windows: cmd is the Windows key, so the same two as Ctrl (as the docx screen binds alt-ctrl-c / alt-ctrl-v).
+        KeyBinding::new("alt-ctrl-c", pptx::slide_view::CopyTextFormat, Some(pptx::slide_view::CONTEXT)),
+        KeyBinding::new("alt-ctrl-v", pptx::slide_view::PasteTextFormat, Some(pptx::slide_view::CONTEXT)),
         KeyBinding::new("home", FirstSlide, Some(editor::WORKSPACE_CONTEXT)),
         KeyBinding::new("end", LastSlide, Some(editor::WORKSPACE_CONTEXT)),
         KeyBinding::new("home", FirstSlide, Some(editor::LIST_CONTEXT)),
@@ -336,6 +378,22 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&secondary("p"), StartNewPresentation, Some(shell::start_menu::START_CONTEXT)),
         KeyBinding::new(&secondary("q"), Quit, None),
         KeyBinding::new(&secondary(","), OpenSettings, None),
+    ]);
+    // Windows: Ctrl is the secondary key, so the show's Ctrl keys (pen, laser, grid ...) have a binding with no context beside them (Ctrl+P
+    // Print, Ctrl+S Save ...), and a binding with no context is as deep as any: the later one wins. Bound again here, after the global ones,
+    // the show's keys win in the show (as PowerPoint for Windows: Ctrl+P is the pen). Macs bind the show's Control keys apart from Command.
+    #[cfg(windows)]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-l", LaserPointer, Some(slideshow::SLIDESHOW_CONTEXT)),
+        KeyBinding::new("ctrl-p", PenPointer, Some(slideshow::SLIDESHOW_CONTEXT)),
+        KeyBinding::new("ctrl-i", HighlighterPointer, Some(slideshow::SLIDESHOW_CONTEXT)),
+        KeyBinding::new("ctrl-a", ArrowPointer, Some(slideshow::SLIDESHOW_CONTEXT)),
+        KeyBinding::new("ctrl-e", EraserPointer, Some(slideshow::SLIDESHOW_CONTEXT)),
+        KeyBinding::new("ctrl-s", ToggleSlideshowGrid, Some(slideshow::SLIDESHOW_CONTEXT)),
+        KeyBinding::new("ctrl-+", ZoomInSlideshow, Some(slideshow::SLIDESHOW_CONTEXT)),
+        KeyBinding::new("ctrl-=", ZoomInSlideshow, Some(slideshow::SLIDESHOW_CONTEXT)),
+        KeyBinding::new("ctrl--", ZoomOutSlideshow, Some(slideshow::SLIDESHOW_CONTEXT)),
+        KeyBinding::new("ctrl-0", ResetSlideshowZoom, Some(slideshow::SLIDESHOW_CONTEXT)),
     ]);
     // ウィンドウ > しまう and ibisOffice > ibisOffice を隠す: the keys of a Mac's apps.
     if is_mac() {
@@ -459,6 +517,9 @@ struct Args {
     handout: Option<u8>,
     /// スライドに枠を付けて印刷 (PPTX-RECORD-018).
     print_frame: bool,
+    /// 用紙 (#225): `--print-paper <name>` puts the pages on a paper, `--no-print-fit-paper` at 100 % instead of scaled to it.
+    print_paper: Option<String>,
+    no_print_fit_paper: bool,
     /// 配布資料: a landscape page, and what it carries (header, date, footer, page numbers).
     handout_landscape: bool,
     notes_pages: bool,
@@ -540,6 +601,8 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
             "--print-color" => args.print_color = Some(value()?),
             "--handout" => args.handout = Some(value()?.parse().ok().filter(|n| matches!(n, 1 | 2 | 3 | 4 | 6 | 8 | 9 | 16)).ok_or_else(|| "--handout needs one of 1, 2, 3, 4, 6, 8, 9 or 16".to_string())?),
             "--print-frame" => args.print_frame = true,
+            "--print-paper" => args.print_paper = Some(value()?),
+            "--no-print-fit-paper" => args.no_print_fit_paper = true,
             "--handout-landscape" => args.handout_landscape = true,
             "--notes-pages" => args.notes_pages = true,
             "--outline-pages" => args.outline_pages = true,
@@ -649,7 +712,7 @@ fn handout_marks(args: &Args, data: &[u8]) -> export_print::HandoutMarks {
     let (date_on, number_on) = flags.map_or((true, true), |f| (f.date, f.number));
     let date = args.handout_date.clone().or_else(|| (date_on && !args.no_handout_date).then(shell::header_footer::today));
     let number = args.handout_number || (number_on && !args.no_handout_number);
-    export_print::HandoutMarks { header: args.handout_header.clone(), date: date.filter(|_| !args.no_handout_date), footer: args.handout_footer.clone(), number, layout: ibis_formats::handout_master::layout(data).ok(), notes: ibis_formats::handout_master::notes_frames(data).ok(), vertical_order: args.handout_order_vertical, slide_numbers: Vec::new(), slide_size_pt: None }
+    export_print::HandoutMarks { header: args.handout_header.clone(), date: date.filter(|_| !args.no_handout_date), footer: args.handout_footer.clone(), number, layout: ibis_formats::handout_master::layout(data).ok(), notes: ibis_formats::handout_master::notes_frames(data).ok(), vertical_order: args.handout_order_vertical, slide_numbers: Vec::new(), slide_size_pt: None, on_paper: None }
 }
 
 /// The options of an export from the arguments `--export` takes (`file` the file's bytes, for the notes' formatting and the handout master).
@@ -676,6 +739,8 @@ fn export_options(args: &Args, format: export::Format, out_dir: std::path::PathB
         handout: args.handout,
         frame: args.print_frame,
         handout_landscape: args.handout_landscape,
+        paper: args.print_paper.as_deref().map(export_print::Paper::parse).transpose()?,
+        fit_paper: !args.no_print_fit_paper,
         notes_pages: args.notes_pages,
         outline_pages: args.outline_pages,
         notes_source: args.notes_pages.then(|| data.to_vec()),
@@ -1059,6 +1124,20 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     .unwrap_or_else(|| "start".into());
                 return ui_snapshot::run(document, &out_dir, &stem, args.steps.as_deref().unwrap_or("start"));
             }
+            "html" => {
+                // Web page: the document as one HTML page, its charts and SmartArt as pictures (`html_export`).
+                let path = args.path.as_deref().ok_or("name the .pptx, .xlsx or .docx file to export")?;
+                let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());
+                std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
+                let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "page".into());
+                // Read as the window reads it (a .csv, .tsv or .tab text table opens as a sheet too).
+                let presentation = read_file(path)?.presentation;
+                let sheet = args.slides.as_deref().map(export::parse_slides).transpose()?.and_then(|v| v.first().copied());
+                let english = shell::i18n::language() == shell::i18n::Language::English;
+                let written = html_export::export_html(&presentation, &out_dir, &name, english, sheet)?;
+                println!("{}", written.display());
+                return Ok(());
+            }
             "png" => export::Format::Png,
             "pdf" => export::Format::Pdf,
             "pdfa-2b" => export::Format::PdfA2b,
@@ -1070,7 +1149,9 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
         std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
         let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "slides".into());
         let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let presentation = ibis_odf::read(&data).map_err(|e| format!("{}: {e}", path.display()))?;
+        // Read as the window reads it when the file is opened (a text table .csv/.tsv/.tab, Markdown, a legacy binary file, a fixed layout file...),
+        // not as an OOXML/ODF package only: `ibis_odf::read` alone refused a .csv or .tsv ("not a ZIP file").
+        let presentation = read_file(path)?.presentation;
         let file_name = path.file_name().map(|s| s.to_string_lossy().into_owned());
         let options = export_options(args, format, out_dir, name, file_name, &data)?;
         export::export(presentation, &options)
@@ -1704,6 +1785,8 @@ mod android_entry {
     pub extern "Rust" fn android_main(android_app: gpui_android::android_activity::AndroidApp) {
         gpui_android::init_logging();
         super::install_native_panic_log_hook();
+        // The safe area and the keyboard's height from one set of insets (`shell::safe_area`; the activity asks for them with `nativeSafeArea`).
+        gpui_android::set_safe_area_fn(crate::shell::safe_area::compute);
         super::register_hooks();
         ibis_calc::eval::convert::set_clock(super::clock::calc_clock);
 
@@ -1815,53 +1898,31 @@ mod ios_entry {
 
         let app = super::Application::with_platform(platform)
             .with_assets(crate::shell::icons::Assets::new(""));
-        let mut fonts: Vec<std::borrow::Cow<'static, [u8]>> =
-            vec![std::borrow::Cow::Borrowed(UI_FONT)];
+        let _ = app.text_system().add_fonts(vec![std::borrow::Cow::Borrowed(UI_FONT)]);
         unsafe extern "C" {
             fn ibis_ios_find_font_path(name: *const std::ffi::c_char) -> *mut std::ffi::c_char;
             fn ibis_ios_free_c_string(ptr: *mut std::ffi::c_char);
         }
-        let mut loaded_paths = std::collections::HashSet::new();
-        for font_name in [
-            c"HiraginoSans-W3",
-            c"HiraginoSans-W6",
-            c"HiraMinProN-W3",
-            c"HiraMinProN-W6",
-            c"HiraMaruProN-W4",
-            c"TimesNewRomanPSMT",
-            c"TimesNewRomanPS-BoldMT",
-            c"TimesNewRomanPS-ItalicMT",
-            c"TimesNewRomanPS-BoldItalicMT",
-            c"PingFangSC-Regular",
-            c".AppleSystemUIFont",
-        ] {
+        // The system's fonts are mapped, not read (K0066): they are 41 MB (Hiragino, W3 and W6 are two faces of one file), 61 MB (PingFang), 8 MB (SF) and 139 MB (Apple Color Emoji), 144 MB in memory before. A file holding several faces is added once: `add_font_file` registers all its faces.
+        let mut added: Vec<String> = Vec::new();
+        for font_name in crate::IOS_SYSTEM_FONTS {
             let ptr = unsafe { ibis_ios_find_font_path(font_name.as_ptr()) };
             if !ptr.is_null() {
                 let path = unsafe { std::ffi::CStr::from_ptr(ptr) }
                     .to_string_lossy()
                     .into_owned();
                 unsafe { ibis_ios_free_c_string(ptr) };
-                if loaded_paths.insert(path.clone())
-                    && let Ok(bytes) = std::fs::read(&path)
-                {
-                    fonts.push(std::borrow::Cow::Owned(bytes));
+                if added.contains(&path) {
+                    continue;
                 }
+                PLATFORM.with(|p| {
+                    if let Some(platform) = p.borrow().as_ref() {
+                        let _ = platform.add_font_file(std::path::Path::new(&path));
+                    }
+                });
+                added.push(path);
             }
         }
-        for fallback_path in [
-            "/System/Library/Fonts/AppFonts/HiraginoMincho.ttc",
-            "/System/Library/Fonts/Core/TimesNewRoman.ttf",
-            "/System/Library/Fonts/Core/TimesNewRomanBold.ttf",
-            "/System/Library/Fonts/Core/TimesNewRomanItalic.ttf",
-            "/System/Library/Fonts/Core/TimesNewRomanBoldItalic.ttf",
-        ] {
-            if loaded_paths.insert(fallback_path.to_string())
-                && let Ok(bytes) = std::fs::read(fallback_path)
-            {
-                fonts.push(std::borrow::Cow::Owned(bytes));
-            }
-        }
-        let _ = app.text_system().add_fonts(fonts);
         let names = app.text_system().all_font_names();
         let ui_font = [
             "Hiragino Sans",
@@ -1930,29 +1991,12 @@ mod ios_entry {
         });
     }
 
+    /// One touch of the screen (`apps/ios/main.m`): `id` tells the fingers apart, `phase` 0 began, 1 moved, 2 ended, 3 cancelled (K0065).
     #[unsafe(no_mangle)]
-    pub extern "C" fn ibis_ios_touch_began(x: f32, y: f32) {
+    pub extern "C" fn ibis_ios_touch(id: u64, phase: u8, x: f32, y: f32) {
         PLATFORM.with(|p| {
             if let Some(platform) = p.borrow().as_ref() {
-                platform.touch_began(x, y);
-            }
-        });
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn ibis_ios_touch_moved(x: f32, y: f32) {
-        PLATFORM.with(|p| {
-            if let Some(platform) = p.borrow().as_ref() {
-                platform.touch_moved(x, y);
-            }
-        });
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn ibis_ios_touch_ended(x: f32, y: f32, cancelled: bool) {
-        PLATFORM.with(|p| {
-            if let Some(platform) = p.borrow().as_ref() {
-                platform.touch_ended(x, y, cancelled);
+                platform.touch(id, phase, x, y);
             }
         });
     }

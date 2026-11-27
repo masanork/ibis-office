@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) ibis inc. and masanork (contributed under the ibisOffice CLA, https://github.com/ibisjp/ibis-office/issues/80#issuecomment-6868471583)
+// Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Plain text export for the fixed-layout viewer: the characters of each page as lines, nothing else.
 
 use ibis_pdf::text_layout::{TextLayout, page_text};

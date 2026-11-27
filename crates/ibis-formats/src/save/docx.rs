@@ -109,6 +109,7 @@ fn same_document(a: &FlowDocument, b: &FlowDocument) -> bool {
         track_changes,
         styles,
         watermark,
+        genko,
         section_watermarks,
         page_color,
         properties,
@@ -160,6 +161,7 @@ fn same_document(a: &FlowDocument, b: &FlowDocument) -> bool {
         do_not_use_html_paragraph_auto_spacing: _,
         split_pg_break_and_para_mark: _,
         compat_mode: _,
+        theme_fonts: _,
     } = a;
     *page == b.page
         && *header == b.header
@@ -181,6 +183,7 @@ fn same_document(a: &FlowDocument, b: &FlowDocument) -> bool {
         && *track_changes == b.track_changes
         && *styles == b.styles
         && *watermark == b.watermark
+        && *genko == b.genko
         && *section_watermarks == b.section_watermarks
         && *page_color == b.page_color
         && *properties == b.properties
@@ -959,6 +962,19 @@ pub(crate) fn write_changes(package: &mut Package, map: &SourceMap, baseline: &P
         let area = (pt(page.size.width - page.left - page.right - page.gutter), pt(page.size.height - page.top - page.bottom));
         for (i, part) in parts.into_iter().enumerate() {
             write_watermark(package, part, cur.watermark.as_ref(), area, i)?;
+        }
+    }
+    // The drawing follows the text area, so it is written again when the page moved.
+    let text_area = |p: &ibis_doc_model::PageSetup| (p.left, p.right, p.top, p.bottom, p.gutter, p.gutter_at_top, p.size, p.direction);
+    if base.genko != cur.genko || (cur.genko.is_some() && text_area(&base.page) != text_area(&cur.page)) {
+        let mut parts: Vec<&String> = part_of.iter().filter(|((_, k), _)| !k.is_footer()).map(|(_, p)| p).collect();
+        parts.sort();
+        parts.dedup();
+        if cur.genko.is_some() && parts.is_empty() {
+            return Err(unsupported("ヘッダーの無い文書の原稿用紙"));
+        }
+        for (i, part) in parts.into_iter().enumerate() {
+            write_genko(package, part, cur.genko.as_ref(), &cur.page, i)?;
         }
     }
     if base.even_and_odd != cur.even_and_odd {
@@ -3805,6 +3821,13 @@ impl Writer<'_> {
                     let anchor = self.doc.append_element(tc_pr, &w("vAlign"));
                     let value = if cell.anchor == ibis_doc_model::CellAnchor::Center { "center" } else { "bottom" };
                     self.doc.set_attr(anchor, "w:val", value);
+                }
+                // The cell's fill: a table made in this session writes it as an edited one does (it was lost on saving).
+                if let Some(c) = cell.shading {
+                    let e = self.ensure(tc_pr, "shd", TC_PR_ORDER);
+                    self.doc.set_attr(e, "w:val", "clear");
+                    self.doc.set_attr(e, "w:color", "auto");
+                    self.doc.set_attr(e, "w:fill", &format!("{:06X}", c.0));
                 }
                 for block in &cell.blocks {
                     match block {
@@ -6834,7 +6857,7 @@ impl Writer<'_> {
                         let leaves = group.leaf_shape_ids();
                         if leaves.first().copied() == Some(shape.id) {
                             let node = if let Some(n) = original.filter(|&n| {
-                                self.doc.descendants(n).into_iter().any(|d| self.doc.is_element(d) && self.doc.local_name(d) == "wgp")
+                                self.doc.descendants(n).into_iter().any(|d| self.doc.is_element(d) && matches!(self.doc.local_name(d), "wgp" | "relIds"))
                             }) {
                                 self.doc.deep_clone(n)
                             } else {
@@ -7390,7 +7413,12 @@ impl Writer<'_> {
         if c0 != c1 {
             self.val(rpr, "rStyle", c1.as_deref(), o);
         }
-        if f0.font != f1.font || f0.h_ansi_font != f1.h_ansi_font || f0.east_asian_font != f1.east_asian_font || f0.cs_font != f1.cs_font || f0.east_asia_hint != f1.east_asia_hint {
+        let fonts_differ = |a: &RunFormat, b: &RunFormat| {
+            a.font != b.font || a.h_ansi_font != b.h_ansi_font || a.east_asian_font != b.east_asian_font || a.cs_font != b.cs_font
+                || a.font_theme != b.font_theme || a.h_ansi_font_theme != b.h_ansi_font_theme || a.east_asian_font_theme != b.east_asian_font_theme || a.cs_font_theme != b.cs_font_theme
+                || a.east_asia_hint != b.east_asia_hint
+        };
+        if fonts_differ(f0, f1) {
             let fonts = self.ensure(rpr, "rFonts", o);
             if f0.east_asia_hint != f1.east_asia_hint {
                 // `w:hint` is the run's own: a copy of another run's takes the model's (the reader reads `eastAsia` as true, else false).
@@ -7400,33 +7428,28 @@ impl Writer<'_> {
                     None => self.doc.remove_attr(fonts, "w:hint"),
                 }
             }
-            if f0.font != f1.font {
-                self.doc.remove_attr(fonts, "w:asciiTheme");
-                match &f1.font {
-                    Some(f) => self.doc.set_attr(fonts, "w:ascii", f),
-                    None => self.doc.remove_attr(fonts, "w:ascii"),
+            // One typeface: a theme reference newly set is written as the reference alone (`w:asciiTheme`, no `w:ascii`: K0086); any other
+            // change writes the typeface and drops the reference. `w:hAnsi` is written as the model has it: a run with a font and no hAnsi
+            // typeface leaves hAnsi to the styles (Word's inheritance, per attribute).
+            let slots: [(&str, &str, &Option<String>, &Option<String>, &Option<String>, &Option<String>); 4] = [
+                ("w:ascii", "w:asciiTheme", &f0.font, &f1.font, &f0.font_theme, &f1.font_theme),
+                ("w:hAnsi", "w:hAnsiTheme", &f0.h_ansi_font, &f1.h_ansi_font, &f0.h_ansi_font_theme, &f1.h_ansi_font_theme),
+                ("w:eastAsia", "w:eastAsiaTheme", &f0.east_asian_font, &f1.east_asian_font, &f0.east_asian_font_theme, &f1.east_asian_font_theme),
+                ("w:cs", "w:cstheme", &f0.cs_font, &f1.cs_font, &f0.cs_font_theme, &f1.cs_font_theme),
+            ];
+            for (plain, themed, font0, font1, theme0, theme1) in slots {
+                if font0 == font1 && theme0 == theme1 {
+                    continue;
                 }
-            }
-            // `w:hAnsi` is written as the model has it: a run with a font and no hAnsi typeface leaves hAnsi to the styles (Word's inheritance, per attribute).
-            if f0.h_ansi_font != f1.h_ansi_font {
-                self.doc.remove_attr(fonts, "w:hAnsiTheme");
-                match &f1.h_ansi_font {
-                    Some(f) => self.doc.set_attr(fonts, "w:hAnsi", f),
-                    None => self.doc.remove_attr(fonts, "w:hAnsi"),
+                if theme0 != theme1 && theme1.is_some() {
+                    self.doc.remove_attr(fonts, plain);
+                    self.doc.set_attr(fonts, themed, theme1.as_deref().unwrap_or_default());
+                    continue;
                 }
-            }
-            if f0.east_asian_font != f1.east_asian_font {
-                self.doc.remove_attr(fonts, "w:eastAsiaTheme");
-                match &f1.east_asian_font {
-                    Some(f) => self.doc.set_attr(fonts, "w:eastAsia", f),
-                    None => self.doc.remove_attr(fonts, "w:eastAsia"),
-                }
-            }
-            if f0.cs_font != f1.cs_font {
-                self.doc.remove_attr(fonts, "w:cstheme");
-                match &f1.cs_font {
-                    Some(f) => self.doc.set_attr(fonts, "w:cs", f),
-                    None => self.doc.remove_attr(fonts, "w:cs"),
+                self.doc.remove_attr(fonts, themed);
+                match font1 {
+                    Some(f) => self.doc.set_attr(fonts, plain, f),
+                    None => self.doc.remove_attr(fonts, plain),
                 }
             }
             if self.doc.attributes(fonts).is_empty() {
@@ -8690,6 +8713,85 @@ fn paragraph_border_name(style: ibis_doc_model::BorderStyle) -> &'static str {
 
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// 原稿用紙設定 in header `part`: Word's own (a run with a `Genko:…` drawing) taken out, `genko` (if any) put at the end of the
+/// header's first paragraph as Word writes it (one drawing anchored to the page at the text area's corner: a group of rectangles
+/// and lines, or for 外枠付き a single rectangle).
+fn write_genko(package: &mut Package, part: &str, genko: Option<&ibis_doc_model::GenkoPaper>, page: &ibis_doc_model::PageSetup, index: usize) -> Result<(), Error> {
+    let doc = package.xml_mut(part)?;
+    let root = doc.root_element().ok_or_else(|| unsupported("空のヘッダーのパーツ"))?;
+    let old: Vec<NodeId> = doc
+        .descendants(root)
+        .into_iter()
+        .filter(|&n| doc.is_element(n) && doc.local_name(n) == "docPr" && doc.attr(n, "name").is_some_and(|name| name.starts_with("Genko:")))
+        .collect();
+    for pr in old {
+        let mut run = doc.parent(pr);
+        while let Some(r) = run {
+            if doc.is_element(r) && doc.local_name(r) == "r" && doc.namespace(r) == Some(W_NS) {
+                break;
+            }
+            run = doc.parent(r);
+        }
+        if let Some(r) = run {
+            doc.detach(r);
+        }
+    }
+    let Some(g) = genko else { return Ok(()) };
+    let para = doc.descendants(root).into_iter().find(|&n| doc.is_element(n) && doc.local_name(n) == "p" && doc.namespace(n) == Some(W_NS));
+    let para = match para {
+        Some(p) => p,
+        None => {
+            let prefix = doc.lookup_prefix(root, W_NS).unwrap_or_else(|| "w".into());
+            doc.append_element(root, &format!("{prefix}:p"))
+        }
+    };
+    let xml = genko_xml(g, page, 0x0A00_0000 + index as u64 * 1000);
+    let fragment = XmlDocument::parse(xml.as_bytes()).map_err(|_| unsupported("原稿用紙の XML"))?;
+    let run = fragment.root_element().ok_or_else(|| unsupported("原稿用紙の XML"))?;
+    let node = doc.import(&fragment, run);
+    let at = doc.children(para).len();
+    doc.insert(para, at, node);
+    Ok(())
+}
+
+/// The run of a 原稿用紙 (see [`write_genko`]); `id` is the first of the numbers the drawing and its parts use.
+fn genko_xml(g: &ibis_doc_model::GenkoPaper, page: &ibis_doc_model::PageSetup, id: u64) -> String {
+    use ibis_doc_model::GenkoPart;
+    let vertical = page.direction == ibis_doc_model::CellDirection::TbRl;
+    let left = page.left + if page.gutter_at_top { 0 } else { page.gutter };
+    let top = page.top + if page.gutter_at_top { page.gutter } else { 0 };
+    let width = (page.size.width - left - page.right).max(1);
+    let height = (page.size.height - top - page.bottom).max(1);
+    let color = format!("{:06X}", g.color.0 & 0xFF_FF_FF);
+    let shape = |n: u64, part: &GenkoPart| -> String {
+        let (geometry, x, y, w, h, line_w) = match *part {
+            GenkoPart::Rect { x, y, w, h, thick } => ("rect", x, y, w, h, if thick { 12_700 } else { 6_350 }),
+            GenkoPart::Line { x, y, w, h } => ("line", x, y, w, h, 6_350),
+        };
+        let fill = if geometry == "rect" { r#"<a:solidFill><a:srgbClr val="FFFFFF"><a:alpha val="0"/></a:srgbClr></a:solidFill>"# } else { "" };
+        format!(
+            r#"<wps:wsp><wps:cNvPr id="{n}" name="{name} {n}"/><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="{geometry}"><a:avLst/></a:prstGeom>{fill}<a:ln w="{line_w}"><a:solidFill><a:srgbClr val="{color}"/></a:solidFill></a:ln></wps:spPr><wps:bodyPr/></wps:wsp>"#,
+            name = if geometry == "rect" { "Rectangle" } else { "Line" },
+        )
+    };
+    let parts = g.parts(width, height, vertical);
+    let single = g.style == ibis_doc_model::GenkoStyle::Frame;
+    let (requires, uri, content) = if single {
+        ("wps", "http://schemas.microsoft.com/office/word/2010/wordprocessingShape", shape(id + 1, &parts[0]))
+    } else {
+        let shapes: String = parts.iter().enumerate().map(|(i, p)| shape(id + 1 + i as u64, p)).collect();
+        (
+            "wpg",
+            "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup",
+            format!(r#"<wpg:wgp><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{width}" cy="{height}"/><a:chOff x="0" y="0"/><a:chExt cx="{width}" cy="{height}"/></a:xfrm></wpg:grpSpPr>{shapes}</wpg:wgp>"#),
+        )
+    };
+    format!(
+        r#"<w:r xmlns:w="{W_NS}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"><w:rPr><w:noProof/></w:rPr><mc:AlternateContent><mc:Choice Requires="{requires}"><w:drawing><wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" relativeHeight="251659264" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>{left}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>{top}</wp:posOffset></wp:positionV><wp:extent cx="{width}" cy="{height}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="{id}" name="{name}"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="{uri}">{content}</a:graphicData></a:graphic></wp:anchor></w:drawing></mc:Choice></mc:AlternateContent></w:r>"#,
+        name = xml_escape(&g.name(vertical)),
+    )
 }
 
 /// The watermark in header `part`: Word's own (a run of a `v:shape`

@@ -23,6 +23,8 @@ pub mod text;
 #[cfg(feature = "ocr")]
 pub mod ocr;
 pub use editor::PdfDocument;
+/// How a page's text is laid out by the Markdown and text exports (`--text-layout`).
+pub use ibis_pdf::text_layout::TextLayout;
 
 enum ViewerSource {
     Empty,
@@ -317,10 +319,21 @@ impl PdfViewerState {
                     .map_err(|e| ibis_pdf::Error::new(e.to_string()))?,
             ),
         };
-        if (self.is_xdw() || self.is_vsdx()) && self.scene_cache.len() >= 4 {
-            // Bound retained page scenes and decoded images in long documents.
-            self.scene_cache.clear();
-            self.image_cache.clear();
+        let max_cached = if self.is_xdw() || self.is_vsdx() || cfg!(any(target_os = "android", target_os = "ios", target_family = "wasm")) {
+            4
+        } else {
+            8
+        };
+        if self.scene_cache.len() >= max_cached {
+            // Bound retained page scenes and decoded images in long documents,
+            // evicting pages farthest from `page_index` so visible pages stay cached.
+            let keep = max_cached.saturating_sub(1);
+            let mut pages: Vec<usize> = self.scene_cache.keys().copied().collect();
+            pages.sort_by_key(|&p| p.abs_diff(page_index));
+            for evicted in pages.into_iter().skip(keep) {
+                self.scene_cache.remove(&evicted);
+                self.image_cache.retain(|&(p, _), _| p != evicted);
+            }
         }
         self.scene_cache.insert(page_index, scene.clone());
         Ok(scene)
@@ -548,6 +561,32 @@ mod tests {
         let xs: Vec<f32> = (0..6).filter_map(|i| viewer.char_rect(0, i)).map(|r| r.x0).collect();
         assert_eq!(xs.len(), 6);
         assert!(xs.windows(2).all(|p| p[1] > p[0]), "{xs:?}");
+    }
+
+    #[test]
+    fn scene_cache_evicts_distant_pages() {
+        let mut w = Writer::new();
+        let meta = EntryMeta::default();
+        w.add("FixedDocSeq.fdseq", meta, br#"<?xml version="1.0" encoding="utf-8"?><FixedDocumentSequence xmlns="http://schemas.microsoft.com/xps/2005/06"><DocumentReference Source="Documents/1/FixedDoc.fdoc"/></FixedDocumentSequence>"#).unwrap();
+        let mut fdoc = String::from(r#"<?xml version="1.0" encoding="utf-8"?><FixedDocument xmlns="http://schemas.microsoft.com/xps/2005/06">"#);
+        for i in 1..=10 {
+            fdoc.push_str(&format!(r#"<PageContent Source="Pages/{i}.fpage"/>"#));
+            w.add(
+                &format!("Documents/1/Pages/{i}.fpage"),
+                meta,
+                format!(r##"<?xml version="1.0" encoding="utf-8"?><FixedPage Width="595" Height="842" xmlns="http://schemas.microsoft.com/xps/2005/06"><Glyphs OriginX="50" OriginY="80" FontRenderingEmSize="16" Fill="#FF112233" UnicodeString="Page {i}"/></FixedPage>"##).as_bytes(),
+            ).unwrap();
+        }
+        fdoc.push_str("</FixedDocument>");
+        w.add("Documents/1/FixedDoc.fdoc", meta, fdoc.as_bytes()).unwrap();
+        let mut viewer = PdfViewerState::open(w.finish().unwrap()).unwrap();
+        for p in 0..10 {
+            viewer.image_cache.insert((p, 0), None);
+            viewer.page_scene(p).unwrap();
+        }
+        assert!(viewer.scene_cache.len() <= 8);
+        assert!(viewer.scene_cache.contains_key(&9));
+        assert!(!viewer.image_cache.contains_key(&(0, 0)));
     }
 }
 

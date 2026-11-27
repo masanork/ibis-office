@@ -13,6 +13,10 @@ pub mod crypt;
 #[cfg(feature = "interpret")]
 pub mod interpret;
 pub mod pdfa;
+#[cfg(feature = "interpret")]
+pub mod gradient;
+#[cfg(feature = "interpret")]
+pub mod softmask;
 pub mod scene;
 pub mod text_layout;
 pub mod signature;

@@ -71,6 +71,9 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                     .then(|| shape.text_body().filter(|b| b.paragraphs.iter().any(|p| p.runs.iter().any(|r| r.style.link.is_some()))))
                     .flatten()
                     .map(|body| (body.clone(), crate::render::rich_text::TextPositions::default()));
+                // The dark page: the text of a shape with no light fill of its own turns light as the body's does (K0099).
+                let dark_shape = (res.dark_page && !res.print).then(|| dark_text_of_shape(shape)).flatten();
+                let shape = dark_shape.as_ref().unwrap_or(shape);
                 let elem = crate::render::shape_view::shape_element_with_positions(shape, s_frame, scale, res, None, positions.as_ref().or(for_links.as_ref().map(|(_, p)| p)));
                 if let Some((body, pos)) = for_links {
                     crate::render::shape_view::record_text_box(body, pos);
@@ -132,6 +135,8 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                 let ts_gen = (std::sync::Arc::as_ptr(window.text_system()) as usize as u64)
                     ^ crate::render::shape_view::fonts_generation().wrapping_mul(0xA24B_AED4_963E_E407);
                 let recording_glyph_text = crate::render::glyph_text::recording();
+                // The light fills drawn so far (a highlight, a light shading): the text drawn on one keeps its own colour on the dark page (K0099).
+                let mut light_fills: Vec<(f32, f32, f32, f32)> = Vec::new();
                 for (i, item) in page.items.iter().enumerate() {
                     if hide_body && i < page.body_items_count {
                         continue;
@@ -139,6 +144,9 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                     let faint = dim_body && i < page.body_items_count;
                     match item {
                         Item::Rect { x, y, w, h, color } => {
+                            if dark && *h >= 3.0 && *w >= 3.0 && is_light_fill(dark_color(*color, dark)) && color.a > 0.99 {
+                                light_fills.push((*x, *y, *w, *h));
+                            }
                             let color = &dark_color(*color, dark);
                             let color = &fade(*color, faint);
                             // At least a device pixel, so thin rules show.
@@ -149,7 +157,7 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                             }
                         }
                         Item::Text { x, y, text, offsets, font, size: font_size, color } => {
-                            let color = &dark_color(*color, dark);
+                            let color = &if on_light_fill(&light_fills, *x, *y, *font_size) { *color } else { dark_color(*color, dark) };
                             let color = &fade(*color, faint);
                             let size_px = font_size * k;
                             let top = o.y + px(y * k - size_px);
@@ -170,7 +178,9 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                     continue;
                                 }
                                 let s = &text[i..crate::render::rich_text::cluster_end(text, i)];
-                                if s.trim().is_empty() {
+                                // A blank cluster has no ink: the screen skips it, a PDF being written draws it as the character it is (Word's PDF has every
+                                // space, U+3000 too, as a glyph: it is what a search and a copy of the text find), unless it is a control character.
+                                if s.trim().is_empty() && (!crate::render::glyph_text::recording() || s.chars().all(char::is_control)) {
                                     continue;
                                 }
                                 #[allow(unused_mut)]
@@ -323,7 +333,7 @@ pub fn page_element(document: &Arc<FlowDocument>, index: usize, frame: EmuRect, 
                                 continue;
                             }
                             // The glyph squeezed about where it starts.
-                            let color = &dark_color(*color, dark);
+                            let color = &if on_light_fill(&light_fills, *x, *y, *font_size) { *color } else { dark_color(*color, dark) };
                             let color = &fade(*color, faint);
                             let run = TextRun { len: text.len(), font: font.clone(), color: *color, background_color: None, underline: None, strikethrough: None };
                             #[allow(unused_mut)]
@@ -493,7 +503,7 @@ fn fade(color: Hsla, faint: bool) -> Hsla {
 }
 
 /// The paper of a page shown dark.
-const DARK_PAPER: u32 = 0x262626;
+const DARK_PAPER: u32 = crate::caret_backdrop::DARK_PAPER.0;
 
 /// A colour as it is on a dark page: black (what the text and the lines are by default) is a light grey, a lighter colour stays.
 fn dark_color(color: Hsla, dark: bool) -> Hsla {
@@ -502,6 +512,68 @@ fn dark_color(color: Hsla, dark: bool) -> Hsla {
     } else {
         color
     }
+}
+
+/// A fill light enough for black text on it: by its luminance, not HSL lightness (pure yellow, a highlight, has l = 0.5 but is bright).
+fn is_light_fill(c: Hsla) -> bool {
+    let r: Rgba = c.into();
+    0.299 * r.r + 0.587 * r.g + 0.114 * r.b > 0.5
+}
+
+/// Whether the text at (`x`, `y` baseline) of `size` stands on one of the `fills` (rectangles x, y, w, h): its own colour is kept there, black on a highlight.
+fn on_light_fill(fills: &[(f32, f32, f32, f32)], x: f32, y: f32, size: f32) -> bool {
+    let (px, py) = (x + size * 0.25, y - size * 0.3);
+    fills.iter().any(|(fx, fy, fw, fh)| px >= *fx && px <= fx + fw && py >= *fy && py <= fy + fh)
+}
+
+/// A colour is black enough for `dark_color` to lighten it.
+fn is_dark_text(c: ibis_doc_model::Rgb) -> bool {
+    let h: Hsla = rgb(c.0).into();
+    h.l < 0.15
+}
+
+/// The shape `shape` with the black of its text made light, for the dark page (the text box whose fill is none or dark; a run with a highlight keeps its colour), `None` if there is nothing to change.
+fn dark_text_of_shape(shape: &ibis_doc_model::Shape) -> Option<ibis_doc_model::Shape> {
+    use ibis_doc_model::{Fill, ShapeKind};
+    let on_dark = match &shape.kind {
+        ShapeKind::TextBox(_) => true,
+        ShapeKind::Auto(a) => match &a.fill {
+            Fill::None => true,
+            fill => fill.backdrop_rgb().is_some_and(|c| Hsla::from(rgb(c.0)).l < 0.5),
+        },
+        _ => false,
+    };
+    if !on_dark {
+        return None;
+    }
+    let light = ibis_doc_model::Rgb(0xf2f2f2);
+    let mut out = shape.clone();
+    let body = out.text_body_mut()?;
+    let body_color = body.style.color;
+    let mut changed = false;
+    for run in body.paragraphs.iter_mut().flat_map(|p| p.runs.iter_mut()) {
+        let own = run.style.color.unwrap_or(body_color);
+        if is_dark_text(own) && run.style.highlight.is_none() {
+            run.style.color = Some(light);
+            run.style.color_theme = None;
+            changed = true;
+        } else if run.style.color.is_none() && run.style.highlight.is_some() && is_dark_text(body_color) {
+            run.style.color = Some(body_color);
+            changed = true;
+        }
+    }
+    if is_dark_text(body_color) {
+        body.style.color = light;
+        changed = true;
+    }
+    changed.then_some(out)
+}
+
+/// A fill (a shading) as it is drawn on a dark page: `dark_color` takes every rectangle, so a very dark fill is drawn light (the caret over it follows what is drawn: GitHub #245).
+pub(crate) fn fill_as_drawn(fill: ibis_doc_model::Rgb, dark: bool) -> ibis_doc_model::Rgb {
+    let drawn: Rgba = dark_color(rgb(fill.0).into(), dark).into();
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    ibis_doc_model::Rgb::from_rgb(byte(drawn.r), byte(drawn.g), byte(drawn.b))
 }
 
 #[cfg(test)]
@@ -518,5 +590,45 @@ mod dark_tests {
         assert_eq!(dark_color(red, true), red, "a colour stays");
         let white = hsla(0.0, 0.0, 1.0, 1.0);
         assert_eq!(dark_color(white, true), white);
+    }
+
+    fn text_box(fill: ibis_doc_model::Fill, highlight: Option<ibis_doc_model::Rgb>) -> ibis_doc_model::Shape {
+        use ibis_doc_model::*;
+        let mut body = TextBody::plain("ab", TextStyle::default());
+        body.paragraphs[0].runs[0].style.highlight = highlight;
+        Shape::new(ShapeId(1), EmuRect::new(0, 0, 100, 100), ShapeKind::Auto(AutoShape::text_box(fill, body)))
+    }
+
+    fn color_of(shape: &ibis_doc_model::Shape) -> Option<ibis_doc_model::Rgb> {
+        let body = shape.text_body()?;
+        Some(body.paragraphs[0].runs[0].style.color.unwrap_or(body.style.color))
+    }
+
+    // K0099: on the dark page the black text of a text box with no fill turns light, as the body's does; over a light fill or a highlight it stays black.
+    #[test]
+    fn the_text_of_a_text_box_turns_light_unless_it_stands_on_a_light_fill() {
+        use ibis_doc_model::{Color, Fill, Rgb};
+        let none = super::dark_text_of_shape(&text_box(Fill::None, None)).expect("changed");
+        assert_eq!(color_of(&none), Some(Rgb(0xf2f2f2)), "no fill: the page's dark shows");
+        let dark = super::dark_text_of_shape(&text_box(Fill::Solid(Color::opaque(Rgb(0x000040))), None)).expect("changed");
+        assert_eq!(color_of(&dark), Some(Rgb(0xf2f2f2)), "a dark fill");
+        assert!(super::dark_text_of_shape(&text_box(Fill::Solid(Color::opaque(Rgb(0xffff99))), None)).is_none(), "a light fill keeps the black");
+        let marked = super::dark_text_of_shape(&text_box(Fill::None, Some(Rgb(0xffff00)))).expect("the body's colour changes");
+        assert_eq!(color_of(&marked), Some(Rgb(0x000000)), "a highlighted run keeps its black");
+    }
+
+    #[test]
+    fn a_yellow_highlight_is_a_light_fill() {
+        assert!(super::is_light_fill(super::rgb(0xffff00).into()), "pure yellow has HSL l = 0.5 but is light");
+        assert!(super::is_light_fill(super::rgb(0xffff99).into()));
+        assert!(!super::is_light_fill(super::rgb(0x000040).into()));
+        assert!(!super::is_light_fill(super::rgb(0x0000ff).into()));
+    }
+
+    #[test]
+    fn text_on_a_light_fill_keeps_its_colour() {
+        assert!(super::on_light_fill(&[(10.0, 10.0, 50.0, 12.0)], 12.0, 20.0, 10.0));
+        assert!(!super::on_light_fill(&[(10.0, 10.0, 50.0, 12.0)], 12.0, 60.0, 10.0));
+        assert!(!super::on_light_fill(&[], 12.0, 20.0, 10.0));
     }
 }

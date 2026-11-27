@@ -283,6 +283,7 @@ pub struct Resources {
     /// The scale a printed sheet is drawn at on its paper (for where Excel
     /// starts its dashed borders), set by the export before each sheet.
     pub print_scale: std::cell::Cell<f64>,
+    pub grid_limit: std::cell::Cell<Option<(u32, u32)>>,
     /// Where each printed page of the sheet starts (row tops and column lefts in EMU of the sheet),
     /// set by the export with the scale: a fill does not reach back over the page's edge.
     pub print_breaks: std::cell::RefCell<Arc<(Vec<i64>, Vec<i64>)>>,
@@ -470,7 +471,6 @@ impl Resources {
             default_tab: paragraph.default_tab.unwrap_or(914_400).max(1) as f32 * scale,
             hanging_punct: !paragraph.no_hanging_punct,
             latin_line_break: paragraph.latin_line_break,
-            keep_hangul_words: paragraph.word_wrap == Some(true),
             room: Some(room),
             px_per_point,
             text_top: None,
@@ -478,6 +478,7 @@ impl Resources {
             positions: None,
             last,
             word_lines: body.word_lines,
+            font_lines: body.font_lines,
             upright: body.vertical,
             mirror: false,
             at_x: None,
@@ -679,6 +680,7 @@ impl Resources {
             markup_view: Default::default(),
             ime_marked: None,
             print_scale: std::cell::Cell::new(1.0),
+            grid_limit: std::cell::Cell::new(None),
             print_breaks: Default::default(),
             exact: false,
             theme_fonts: presentation.theme_fonts.as_ref().map(|t| t.minor.clone()),
@@ -2464,6 +2466,12 @@ pub fn system_font_names() -> Option<&'static HashSet<String>> {
 
 /// The font names once fonts were added while the app runs (セットアップ's download): the system's with them. Made anew (and kept for
 /// the run) at each such addition, which is rare.
+pub fn ensure_system_font_names(cx: &gpui_kit::App) {
+    if SYSTEM_FONTS.get().is_none() {
+        let _ = Fonts::new(cx);
+    }
+}
+
 static LATE_FONTS: std::sync::RwLock<Option<&'static HashSet<String>>> = std::sync::RwLock::new(None);
 /// How many times fonts were added while the app runs: the font list (font_list.rs) is made again when it changes.
 static FONTS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -3078,6 +3086,34 @@ pub(crate) fn background_with_mode(fill: &Fill, mode: ColorMode) -> Option<Backg
         Fill::Path { stops, .. } => Some(hsla_mode(stops.last()?.color, mode).into()),
         Fill::None | Fill::Image(_) | Fill::TileImage { .. } | Fill::Blip(_) | Fill::TileLinear { .. } => None,
     }
+}
+
+/// The preset names of the dot patterns PowerPoint's pure black and white print gives the 3rd to 19th automatic series of a chart (`printDots3` to `printDots19`, then the series repeat with period 19):
+/// 1 unit (1/96 inch) squares of the paper's grid, black or white by the series' number (`tasks/doc/requests/2026-11-21-225-chart-stripes-result.md`).
+pub const PRINT_DOTS_PRESET_PREFIX: &str = "printDots";
+
+/// The series number (3 to 19) of a `printDots` preset.
+pub fn print_dots_of(preset: &str) -> Option<u8> {
+    preset.strip_prefix(PRINT_DOTS_PRESET_PREFIX)?.parse().ok().filter(|n| (3..=19).contains(n))
+}
+
+/// A gradient angle no gradient has: the background of the dots of series `n` is a gradient of this angle plus `n` (GPUI's background has no
+/// field for a pattern of our own), which the PDF writer takes for the tiling pattern of the dots (`print_dots_series`).
+const PRINT_DOTS_ANGLE: f32 = 7200.0;
+
+/// The background of the dots of automatic series `n` (see `PRINT_DOTS_ANGLE`); its stops are the dots' black and white.
+pub fn print_dots_background(n: u8) -> Background {
+    linear_gradient(
+        PRINT_DOTS_ANGLE + f32::from(n),
+        linear_color_stop(hsla(DocColor::opaque(Rgb(0))), 0.0),
+        linear_color_stop(hsla(DocColor::opaque(Rgb(0xffffff))), 1.0),
+    )
+}
+
+/// The series number of a background made by `print_dots_background`, from the angle of its gradient.
+pub fn print_dots_series(angle: f32) -> Option<u8> {
+    let n = angle - PRINT_DOTS_ANGLE;
+    ((3.0..=19.0).contains(&n) && n.fract() == 0.0).then_some(n as u8)
 }
 
 /// A fill as a GPUI background, for fills that are not pictures.
@@ -4662,7 +4698,7 @@ fn paint_bevel_stroke(window: &mut Window, pts: &[Point<Pixels>], bevel: &ibis_d
     for (poly, [r, g, b]) in crate::bevel::stroke_pieces(&flat, width, ratio, bevel.preset, rgb) {
         let corners: Vec<Point<Pixels>> = poly.iter().map(|&(x, y)| point(px(x), px(y))).collect();
         if let Some(path) = compound_path(&[(corners, true)], None) {
-            window.paint_path(path, hsla(ibis_doc_model::Color { rgb: ibis_doc_model::Rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)), alpha: 255 }));
+            window.paint_path(path, hsla(ibis_doc_model::Color { rgb: ibis_doc_model::Rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)), alpha: 255, theme: None }));
         }
     }
 }
@@ -4675,7 +4711,7 @@ fn paint_bevel(window: &mut Window, pts: &[Point<Pixels>], bevel: &ibis_doc_mode
     for (poly, [r, g, b]) in crate::bevel::pieces(&flat, width, ratio, bevel.preset, base, solid) {
         let corners: Vec<Point<Pixels>> = poly.iter().map(|&(x, y)| point(px(x), px(y))).collect();
         if let Some(path) = compound_path(&[(corners, true)], None) {
-            window.paint_path(path, hsla(ibis_doc_model::Color { rgb: ibis_doc_model::Rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)), alpha: 255 }));
+            window.paint_path(path, hsla(ibis_doc_model::Color { rgb: ibis_doc_model::Rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)), alpha: 255, theme: None }));
         }
     }
 }
@@ -6519,10 +6555,10 @@ fn picture_element(container: Div, shape: &Shape, picture: &Picture, frame: EmuR
     let lum_overlay = picture.luminance.filter(|_| styled.is_none()).and_then(|(bright, _)| {
         if bright > 0 {
             let alpha = ((bright as f32 / 100_000.0).clamp(0.0, 0.85) * 255.0) as u8;
-            Some(div().absolute().size_full().bg(hsla(DocColor { rgb: ibis_doc_model::Rgb(0xffffff), alpha })))
+            Some(div().absolute().size_full().bg(hsla(DocColor { rgb: ibis_doc_model::Rgb(0xffffff), alpha, theme: None })))
         } else if bright < 0 {
             let alpha = (((-bright) as f32 / 100_000.0).clamp(0.0, 0.85) * 255.0) as u8;
-            Some(div().absolute().size_full().bg(hsla(DocColor { rgb: ibis_doc_model::Rgb(0x000000), alpha })))
+            Some(div().absolute().size_full().bg(hsla(DocColor { rgb: ibis_doc_model::Rgb(0x000000), alpha, theme: None })))
         } else {
             None
         }
@@ -7138,8 +7174,7 @@ pub(crate) fn text_body_element(
                 default_tab: paragraph.default_tab.unwrap_or(914_400).max(1) as f32 * scale,
                 hanging_punct: !paragraph.no_hanging_punct,
                 latin_line_break: paragraph.latin_line_break,
-                keep_hangul_words: paragraph.word_wrap == Some(true),
-                room: width.map(|w| {
+                    room: width.map(|w| {
                     let total_w = (w as f32 - (body.insets.left + body.insets.right) as f32).max(0.0);
                     let col_w = if body.columns > 1 {
                         let cols = body.columns.clamp(1, 16) as f32;
@@ -7162,6 +7197,7 @@ pub(crate) fn text_body_element(
                 positions: slots.as_ref().map(|s| s[index].clone()),
                 last: index + 1 == body.paragraphs.len(),
                 word_lines: body.word_lines,
+                font_lines: body.font_lines,
                 upright: body.vertical,
                 mirror: body.vertical && body.vertical_kind == ibis_doc_model::VerticalKind::Mongolian,
                 at_x: origin_x.filter(|_| turn.is_none() && !body.vertical && paragraph.align.unwrap_or(body.style.align) == TextAlign::Left).map(|x0| {

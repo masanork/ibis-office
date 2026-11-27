@@ -19,7 +19,7 @@ pub(crate) fn tool() -> Tool {
         description: "Create an editable chart linked to worksheet cells. Supply a table with headers or explicit series, and a destination worksheet and anchor cell.",
         access: Access::Edit,
         returns_content: false,
-        schema: || json!({
+        schema: &|| json!({
             "type": "object",
             "properties": {
                 "document_id": { "type": "string", "description": "The open workbook handle." },
