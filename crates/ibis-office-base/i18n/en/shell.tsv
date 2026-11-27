@@ -1309,6 +1309,19 @@ shell.ocr-setup.failed	Download failed: {error}
 shell.ocr-setup.cancelled	Cancelled.
 shell.ocr-setup.done	OCR models installed.
 shell.ocr-setup.removed	OCR models removed.
+shell.asr-setup.title	Speech Model Setup
+shell.asr-setup.heading	Whisper-tiny Multilingual Speech Model (Optional download, approx. {size})
+shell.asr-setup.license	License: {license} (Models are downloaded on demand from Hugging Face, not bundled.)
+shell.asr-setup.installed	Installed
+shell.asr-setup.not-installed	Not installed
+shell.asr-setup.install	Install
+shell.asr-setup.remove	Remove Models
+shell.asr-setup.cancel	Cancel
+shell.asr-setup.progress	Downloading {name} ({index}/{count}, {received} / {total})
+shell.asr-setup.failed	Download failed: {error}
+shell.asr-setup.cancelled	Cancelled.
+shell.asr-setup.done	Speech models installed.
+shell.asr-setup.removed	Speech models removed.
 file.csv-encoding.title	Choose the CSV encoding
 file.csv-encoding.detail	The encoding cannot be determined uniquely. Choose the encoding used to open and overwrite this file. Shift_JIS is treated as Windows CP932.
 file.csv-encoding.changed	The file changed while you were choosing. Open it again.

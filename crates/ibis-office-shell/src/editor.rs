@@ -4739,7 +4739,7 @@ impl SlideEditor {
             // The settings dialog (modal) over the start view: its panel is built, and drawn, by the sidebar's code as in a document.
             // The セットアップ dialog (K0001) is shown the same way: the first window at launch is often this one.
             #[cfg(not(target_family = "wasm"))]
-            let ocr_setup_open = self.ocr_setup_is_open();
+            let ocr_setup_open = self.ocr_setup_is_open() || self.asr_setup_is_open();
             #[cfg(target_family = "wasm")]
             let ocr_setup_open = false;
             if self.settings.is_some() || self.font_setup_is_open() || ocr_setup_open {

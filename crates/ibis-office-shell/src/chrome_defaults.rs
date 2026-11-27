@@ -87,6 +87,8 @@ pub(crate) fn menus(editor: &SlideEditor) -> Menus {
                     entries.push(item("help.setup", "download").on(|this, window, cx| this.open_font_setup(window, cx)).into());
                     #[cfg(not(target_family = "wasm"))]
                     entries.push(item("help.ocr-setup", "download").on(|this, window, cx| this.open_ocr_setup(window, cx)).into());
+                    #[cfg(not(target_family = "wasm"))]
+                    entries.push(item("help.asr-setup", "download").on(|this, window, cx| this.open_asr_setup(window, cx)).into());
                 }
                 // ソースコード (AGPL)… (K0036): the project's page on GitHub, so that the users of a fork's build also learn of ibis-office.
                 entries.push(item("help.source-code", "link").on(|_, _, cx| crate::external::open_url(&crate::host::source_url(), cx)).into());

@@ -19,6 +19,7 @@ ibis-lawtext.workspace = true
 ibis-odf.workspace = true
 ibis-pdf = { path = "../ibis-pdf" }
 ibis-ocr = { workspace = true, default-features = false }
+ibis-asr = { workspace = true, default-features = false }
 ibis-ofd.workspace = true
 ibis-xps.workspace = true
 ibis-vsdx.workspace = true
@@ -98,6 +99,8 @@ default = ["export"]
 scenarios = ["export", "ibis-office-base/scenarios", "ibis-office-render/scenarios"]
 # The headless drawing (cfg(headless_export), set by build.rs); ibis-office-app's `export` turns it on.
 export = ["dep:gpui-pre-platform", "dep:gpui-pre-windows", "dep:gpui-pre-wgpu", "dep:miniz_oxide", "dep:krilla", "dep:usvg", "dep:gpui-pre-macos", "ibis-office-render/export"]
+# Pure-Rust Whisper speech-to-text inference engine (desktop only).
+asr = ["ibis-asr/engine"]
 
 [dev-dependencies]
 ibis-office-base = { workspace = true, features = ["test-user-data"] }

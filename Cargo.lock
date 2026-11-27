@@ -7712,6 +7712,7 @@ dependencies = [
  "gpui-pre-platform",
  "gpui-pre-wgpu",
  "gpui-pre-windows",
+ "ibis-asr",
  "ibis-calc",
  "ibis-doc-model",
  "ibis-doc-service",

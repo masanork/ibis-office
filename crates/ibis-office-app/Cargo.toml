@@ -55,6 +55,8 @@ sorane-workspace.workspace = true
 # support, which also turns on GPUI's entity leak tracking (a small cost).
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 ibis-office-pdf = { path = "../ibis-office-pdf", features = ["ocr-gpu"] }
+ibis-office-shell = { workspace = true, features = ["asr"] }
+ibis-office-pptx = { workspace = true, features = ["asr"] }
 gpui-pre-platform = { version = "=0.3.6", features = ["test-support"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg", "tiff"], optional = true }
 miniz_oxide = { version = "0.8", optional = true }
@@ -128,6 +130,8 @@ export = ["dep:gpui-pre-platform", "dep:gpui-pre-windows", "dep:gpui-pre-wgpu", 
 # Optional Pure-Rust NDLOCR-Lite engine for scanned PDF/OFD/XPS/XDW pages.
 ocr = ["ibis-office-pdf/ocr"]
 ocr-gpu = ["ocr", "ibis-office-pdf/ocr-gpu"]
+# Optional Pure-Rust Whisper-tiny speech-to-text engine.
+asr = ["ibis-office-shell/asr", "ibis-office-pptx/asr"]
 
 # For the `export` feature on Linux: the headless renderer of ibisOffice's
 # fork of GPUI's wgpu renderer (GPUI has none for Linux).

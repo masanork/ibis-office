@@ -560,3 +560,4 @@ menu.group.wrap-text	Text Wrapping
 help.register-desktop	Add to List of Apps
 help.setup	Setup
 help.ocr-setup	OCR Model Setup
+help.asr-setup	Speech Model Setup

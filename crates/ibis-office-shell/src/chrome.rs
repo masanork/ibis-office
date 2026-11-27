@@ -2181,6 +2181,13 @@ impl SlideEditor {
                 { None::<SidebarPanel> }
             } {
                 Some(panel.modal_named("ocr_setup_dialog"))
+            } else if let Some(panel) = {
+                #[cfg(not(target_family = "wasm"))]
+                { self.asr_setup_dialog(cx) }
+                #[cfg(target_family = "wasm")]
+                { None::<SidebarPanel> }
+            } {
+                Some(panel.modal_named("asr_setup_dialog"))
             } else if let Some(panel) = self.replace_fonts_panel(cx) {
                 Some(panel.modal_named("replace_fonts_panel"))
             } else if let Some(panel) = self.host_file_dialog_panel(window, cx) {
