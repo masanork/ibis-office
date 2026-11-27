@@ -2283,7 +2283,12 @@ impl SlideEditor {
                     }
                     Err(err) => {
                         this.inline_completion.suggestion = None;
-                        this.inline_completion.error = Some(err);
+                        let explained = crate::ai_client::explain_ai_error(&err);
+                        this.inline_completion.error = if explained.is_empty() {
+                            None
+                        } else {
+                            Some(explained)
+                        };
                     }
                 }
                 cx.notify();
@@ -2467,7 +2472,7 @@ impl SlideEditor {
             let hint = if enabled {
                 "入力停止で提案 / Alt+]: 今すぐ補完"
             } else {
-                "GitHub Models / AI で先読み補完 (Alt+]: 今すぐ補完)"
+                "GitHub Copilot / AI で先読み補完 (Alt+]: 今すぐ補完)"
             };
             bar = bar.child(
                 div()

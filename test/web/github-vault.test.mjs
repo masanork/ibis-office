@@ -459,7 +459,7 @@ test('POST /api/github/repos/create returns alreadyExists guidance on 422', asyn
   }
 });
 
-test('GET /api/ai/models and POST /api/ai/chat proxy authenticated requests to GitHub Models', async () => {
+test('GET /api/ai/models and POST /api/ai/chat dynamically discover and proxy GitHub Copilot API models', async () => {
   const unauth = await dispatchGitHubVault(
     new Request('https://docs.sorane.dev/api/ai/models'),
     TEST_ENV,
@@ -470,42 +470,111 @@ test('GET /api/ai/models and POST /api/ai/chat proxy authenticated requests to G
     { accessToken: 'ghu_ai_tok', login: 'masanork', vault: null, iat: 1700000000000 },
     TEST_ENV.GITHUB_SESSION_SECRET,
   );
-  const modelsRes = await dispatchGitHubVault(
-    new Request('https://docs.sorane.dev/api/ai/models', {
-      headers: { Cookie: `sorane_gh_session=${sealed}` },
-    }),
-    TEST_ENV,
-  );
-  assert.equal(modelsRes.status, 200);
-  const catalog = await modelsRes.json();
-  assert.ok(typeof catalog.csrf === 'string' && catalog.csrf.length > 10);
-  assert.ok(Array.isArray(catalog.models) && catalog.models.length >= 1);
-  assert.equal(catalog.models[0].key, 'openai/gpt-4.1-mini');
-
-  const badCsrf = await dispatchGitHubVault(
-    new Request('https://docs.sorane.dev/api/ai/chat', {
-      method: 'POST',
-      headers: {
-        Cookie: `sorane_gh_session=${sealed}`,
-        'Content-Type': 'application/json',
-        'X-Sorane-CSRF': 'wrong',
-      },
-      body: JSON.stringify({ model: 'openai/gpt-4.1-mini', messages: [{ role: 'user', content: 'hi' }] }),
-    }),
-    TEST_ENV,
-  );
-  assert.equal(badCsrf.status, 403);
 
   const origFetch = globalThis.fetch;
+  const seenChatModels = [];
   globalThis.fetch = async (input, init) => {
-    assert.equal(String(input), 'https://models.github.ai/inference/chat/completions');
-    assert.equal(init.headers.Authorization, 'Bearer ghu_ai_tok');
-    return new Response('data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n', {
-      status: 200,
-      headers: { 'Content-Type': 'text/event-stream' },
-    });
+    const url = String(input);
+    if (url === 'https://api.github.com/copilot_internal/v2/token') {
+      assert.equal(init.headers.Authorization, 'Bearer ghu_ai_tok');
+      assert.ok(init.headers['Copilot-Integration-Id']);
+      return new Response(
+        JSON.stringify({
+          token: 'tid=copilot_session_tok',
+          expires_at: 1900000000,
+          endpoints: { api: 'https://api.individual.githubcopilot.com' },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url === 'https://api.individual.githubcopilot.com/models') {
+      assert.equal(init.headers.Authorization, 'Bearer tid=copilot_session_tok');
+      return new Response(
+        JSON.stringify({
+          object: 'list',
+          data: [
+            {
+              id: 'text-embedding-3-small',
+              capabilities: { type: 'embeddings' },
+            },
+            {
+              id: 'disabled-chat',
+              policy: { state: 'disabled' },
+              capabilities: { type: 'chat' },
+            },
+            {
+              id: 'gpt-4.1',
+              name: 'GPT-4.1',
+              vendor: 'OpenAI',
+              model_picker_enabled: true,
+              capabilities: {
+                type: 'chat',
+                limits: { max_prompt_tokens: 64000 },
+                supports: { streaming: true, tool_calls: true },
+              },
+            },
+            {
+              id: 'gpt-5-mini',
+              name: 'GPT-5 mini',
+              vendor: 'OpenAI',
+              model_picker_enabled: true,
+              capabilities: {
+                type: 'chat',
+                limits: { max_prompt_tokens: 32000 },
+                supports: { streaming: true, tool_calls: true },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url === 'https://api.individual.githubcopilot.com/chat/completions') {
+      assert.equal(init.headers.Authorization, 'Bearer tid=copilot_session_tok');
+      assert.equal(init.headers['Openai-Intent'], 'conversation-panel');
+      const payload = JSON.parse(String(init.body));
+      seenChatModels.push(payload.model);
+      return new Response('data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
   };
+
   try {
+    const modelsRes = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/ai/models', {
+        headers: { Cookie: `sorane_gh_session=${sealed}` },
+      }),
+      TEST_ENV,
+    );
+    assert.equal(modelsRes.status, 200);
+    const catalog = await modelsRes.json();
+    assert.ok(typeof catalog.csrf === 'string' && catalog.csrf.length > 10);
+    assert.equal(catalog.provider, 'github-copilot');
+    assert.deepEqual(
+      catalog.models.map((m) => m.key),
+      ['gpt-4.1', 'gpt-5-mini'],
+    );
+    assert.equal(catalog.defaultModel, 'gpt-4.1');
+    assert.equal(catalog.completionModel, 'gpt-5-mini');
+
+    const badCsrf = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/ai/chat', {
+        method: 'POST',
+        headers: {
+          Cookie: `sorane_gh_session=${sealed}`,
+          'Content-Type': 'application/json',
+          'X-Sorane-CSRF': 'wrong',
+        },
+        body: JSON.stringify({ model: 'gpt-4.1', messages: [{ role: 'user', content: 'hi' }] }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(badCsrf.status, 403);
+
+    // Explicitly requested available model
     const chatRes = await dispatchGitHubVault(
       new Request('https://docs.sorane.dev/api/ai/chat', {
         method: 'POST',
@@ -514,13 +583,35 @@ test('GET /api/ai/models and POST /api/ai/chat proxy authenticated requests to G
           'Content-Type': 'application/json',
           'X-Sorane-CSRF': catalog.csrf,
         },
-        body: JSON.stringify({ model: 'openai/gpt-4.1-mini', messages: [{ role: 'user', content: 'hi' }] }),
+        body: JSON.stringify({ model: 'gpt-4.1', messages: [{ role: 'user', content: 'hi' }] }),
       }),
       TEST_ENV,
     );
     assert.equal(chatRes.status, 200);
+    assert.equal(chatRes.headers.get('X-Sorane-Model'), 'gpt-4.1');
     const sseText = await chatRes.text();
     assert.match(sseText, /"content":"hello"/);
+
+    // Stale/unlisted model for completion falls back to dynamically discovered fast completionModel
+    const completionRes = await dispatchGitHubVault(
+      new Request('https://docs.sorane.dev/api/ai/chat', {
+        method: 'POST',
+        headers: {
+          Cookie: `sorane_gh_session=${sealed}`,
+          'Content-Type': 'application/json',
+          'X-Sorane-CSRF': catalog.csrf,
+        },
+        body: JSON.stringify({
+          model: 'openai/gpt-4.1-mini',
+          purpose: 'completion',
+          messages: [{ role: 'user', content: 'complete this' }],
+        }),
+      }),
+      TEST_ENV,
+    );
+    assert.equal(completionRes.status, 200);
+    assert.equal(completionRes.headers.get('X-Sorane-Model'), 'gpt-5-mini');
+    assert.deepEqual(seenChatModels, ['gpt-4.1', 'gpt-5-mini']);
   } finally {
     globalThis.fetch = origFetch;
   }

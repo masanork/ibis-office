@@ -41,8 +41,8 @@ use crate::ai_client::{AiConfig, BrowserModel, ChatMessage, ToolCall, stream_cha
 use crate::ai_client::{ConnectionChoice, NativeConnection, ToolDefinition};
 #[cfg(target_family = "wasm")]
 use crate::ai_client::{
-    abort_browser_stream, browser_csrf, explain_ai_error, fit_browser_messages, load_browser_catalog, set_browser_csrf,
-    utf16_units,
+    BrowserProvider, abort_browser_stream, browser_csrf, explain_ai_error, fit_browser_messages,
+    load_browser_catalog, set_browser_csrf, utf16_units,
 };
 use crate::ai_tools::{
     ApplyVcTemplateArgs, BindVcClaimArgs,
@@ -3227,18 +3227,31 @@ impl SlideEditor {
     #[cfg(target_family = "wasm")]
     fn apply_browser_catalog(&mut self, catalog: Result<crate::ai_client::BrowserCatalog, String>, cx: &mut Context<Self>) {
         let Some(panel) = self.ai_assistant.as_mut() else { return };
+        let provider = BrowserProvider::load();
         match catalog {
             Ok(catalog) => {
-                set_browser_csrf(&catalog.csrf);
-                panel.browser_status.clear();
+                if provider == BrowserProvider::GitHubCopilot {
+                    set_browser_csrf(&catalog.csrf);
+                }
+                if let Some(err_code) = catalog.error.as_deref().filter(|s| !s.is_empty()) {
+                    let msg = explain_ai_error(err_code);
+                    panel.browser_status = if msg.is_empty() {
+                        err_code.to_string()
+                    } else {
+                        msg
+                    };
+                } else {
+                    panel.browser_status.clear();
+                }
                 panel.browser_models = catalog.models;
-                let current = AiConfig::load().model;
-                let known = panel.browser_models.iter().any(|model| model.key == current);
+                let current = AiConfig::load_saved().model;
+                let known = !current.is_empty()
+                    && panel.browser_models.iter().any(|model| model.key == current);
                 if !known {
-                    let fallback = panel
-                        .browser_models
-                        .iter()
-                        .find(|model| model.key == "deepseek-flash")
+                    let fallback = catalog
+                        .default_model
+                        .as_deref()
+                        .and_then(|id| panel.browser_models.iter().find(|model| model.key == id))
                         .or_else(|| panel.browser_models.first());
                     if let Some(model) = fallback {
                         crate::settings::set(crate::ai_client::SETTING_MODEL, &model.key);
@@ -3246,12 +3259,51 @@ impl SlideEditor {
                 }
             }
             Err(err) => {
-                set_browser_csrf("");
+                if provider == BrowserProvider::GitHubCopilot {
+                    set_browser_csrf("");
+                }
                 let message = explain_ai_error(&err);
                 panel.browser_status = if message.is_empty() { err } else { message };
             }
         }
         cx.notify();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn select_browser_provider(
+        &mut self,
+        provider: BrowserProvider,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        provider.save();
+        if let Some(panel) = self.ai_assistant.as_mut() {
+            panel.browser_models.clear();
+            panel.browser_status.clear();
+            let default_base = provider.default_base_url().to_string();
+            if !default_base.is_empty() {
+                panel.base_url_input.update(cx, |input, cx| {
+                    input.set_value(default_base.clone(), window, cx);
+                });
+                crate::settings::set(crate::ai_client::SETTING_BASE_URL, &default_base);
+            }
+        }
+        self.load_ai_browser_catalog(cx);
+        cx.notify();
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn save_browser_ai_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.ai_assistant.as_ref() else {
+            return;
+        };
+        let cfg = AiConfig {
+            base_url: p.base_url_input.read(cx).value().trim().to_string(),
+            model: p.model_input.read(cx).value().trim().to_string(),
+            api_key: p.api_key_input.read(cx).value().trim().to_string(),
+        };
+        cfg.save();
+        self.load_ai_browser_catalog(cx);
     }
 
     #[cfg(target_family = "wasm")]
@@ -3299,7 +3351,8 @@ impl SlideEditor {
         if panel.streaming {
             return;
         }
-        if browser_csrf().is_empty() {
+        let provider = BrowserProvider::load();
+        if provider == BrowserProvider::GitHubCopilot && browser_csrf().is_empty() {
             let message = if panel.browser_status.is_empty() {
                 "ログイン状態を確認しています。少し待ってからもう一度試してください。".to_string()
             } else {
@@ -3308,7 +3361,13 @@ impl SlideEditor {
             self.push_ai_error(message, cx);
             return;
         }
-        let model_known = panel.browser_models.iter().any(|model| model.key == AiConfig::load().model);
+        let active_model = AiConfig::load_saved().model;
+        let model_known = if provider == BrowserProvider::GitHubCopilot {
+            !active_model.is_empty()
+                && panel.browser_models.iter().any(|model| model.key == active_model)
+        } else {
+            !active_model.is_empty()
+        };
         if !model_known {
             self.push_ai_error(explain_ai_error("invalid_model"), cx);
             return;
@@ -5288,11 +5347,8 @@ impl SlideEditor {
             .count();
         let scroll_handle = panel.scroll_handle.clone();
         let prompt_input = panel.prompt_input.clone();
-        #[cfg(not(target_family = "wasm"))]
         let base_url_input = panel.base_url_input.clone();
-        #[cfg(not(target_family = "wasm"))]
         let model_input = panel.model_input.clone();
-        #[cfg(not(target_family = "wasm"))]
         let api_key_input = panel.api_key_input.clone();
         #[cfg(target_family = "wasm")]
         let browser_models = panel.browser_models.clone();
@@ -5538,7 +5594,19 @@ impl SlideEditor {
         });
         #[cfg(target_family = "wasm")]
         let settings_box = show_settings.then(|| {
-            v_flex()
+            use gpui_kit::component::Disableable as _;
+            let provider = BrowserProvider::load();
+            let options: Vec<_> = BrowserProvider::ALL
+                .into_iter()
+                .map(|option| {
+                    crate::chrome::DropdownItem::new(option.label())
+                        .checked(provider == option)
+                        .on_select(std::rc::Rc::new(move |editor, window, cx| {
+                            editor.select_browser_provider(option, window, cx);
+                        }))
+                })
+                .collect();
+            let mut box_ui = v_flex()
                 .gap_2()
                 .p_2()
                 .rounded_md()
@@ -5548,8 +5616,61 @@ impl SlideEditor {
                 .child(
                     div()
                         .text_xs()
-                        .child("ブラウザでは、ログイン中の Docs から選んだモデルを使います。APIキーはこの画面には置きません。返答は提案です。文書は変わりません。"),
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("接続先 API"),
                 )
+                .child(
+                    crate::chrome::Dropdown::new(
+                        "ai-browser-provider",
+                        provider.label(),
+                        options,
+                        &cx.weak_entity(),
+                    )
+                    .searchable(false)
+                    .fill_width()
+                    .disabled(streaming),
+                );
+            if provider == BrowserProvider::GitHubCopilot {
+                box_ui = box_ui
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("ログイン中の GitHub アカウントで GitHub Copilot API の利用可能モデルを取得します。"),
+                    )
+                    .child(
+                        Button::new("ai-browser-refresh-models")
+                            .outline()
+                            .small()
+                            .disabled(streaming)
+                            .label("モデル一覧を再取得")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.load_ai_browser_catalog(cx);
+                            })),
+                    );
+            } else {
+                box_ui = box_ui
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("エンドポイント URL と API キーを設定してモデル一覧を取得できます（ブラウザから直接接続します）。"),
+                    )
+                    .child(Input::new(&base_url_input).small())
+                    .child(Input::new(&model_input).small())
+                    .child(Input::new(&api_key_input).small())
+                    .child(
+                        Button::new("ai-browser-save-settings")
+                            .primary()
+                            .small()
+                            .disabled(streaming)
+                            .label("保存してモデル一覧を取得")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.save_browser_ai_settings(cx);
+                            })),
+                    );
+            }
+            box_ui
         });
         #[cfg(target_family = "wasm")]
         let browser_box = {

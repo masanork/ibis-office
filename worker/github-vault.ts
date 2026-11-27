@@ -177,13 +177,245 @@ async function githubFetch(path: string, accessToken: string, init?: RequestInit
   return fetch(`${GITHUB_API}${path}`, { ...init, headers });
 }
 
-const GITHUB_MODELS_CHAT_URL = 'https://models.github.ai/inference/chat/completions';
-const AI_MODELS = [
-  { key: 'openai/gpt-4.1-mini', label: 'GitHub Models: GPT-4.1 mini (標準)', maxInputChars: 24000 },
-  { key: 'openai/gpt-4.1', label: 'GitHub Models: GPT-4.1', maxInputChars: 24000 },
-  { key: 'openai/gpt-4o-mini', label: 'GitHub Models: GPT-4o mini', maxInputChars: 24000 },
-  { key: 'openai/gpt-4o', label: 'GitHub Models: GPT-4o', maxInputChars: 24000 },
-] as const;
+const GITHUB_COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token';
+const GITHUB_COPILOT_API_BASE = 'https://api.githubcopilot.com';
+const COPILOT_EDITOR_VERSION = 'vscode/1.99.0';
+const COPILOT_EDITOR_PLUGIN_VERSION = 'copilot-chat/0.26.0';
+const COPILOT_INTEGRATION_ID = 'vscode-chat';
+
+export interface AiModelEntry {
+  key: string;
+  label: string;
+  maxInputChars: number;
+  vendor?: string;
+  fast?: boolean;
+  supportsToolCalls?: boolean;
+}
+
+interface CopilotTokenResult {
+  token: string;
+  apiBase: string;
+  expiresAt: number;
+}
+
+interface CopilotModelRaw {
+  id?: string;
+  name?: string;
+  vendor?: string;
+  model_picker_enabled?: boolean;
+  policy?: { state?: string };
+  capabilities?: {
+    type?: string;
+    limits?: {
+      max_prompt_tokens?: number;
+      max_context_window_tokens?: number;
+    };
+    supports?: {
+      streaming?: boolean;
+      tool_calls?: boolean;
+    };
+  };
+}
+
+function copilotHeaders(token: string, extra?: Record<string, string>): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/json',
+    'User-Agent': 'soraneDocs-Web',
+    'Editor-Version': COPILOT_EDITOR_VERSION,
+    'Editor-Plugin-Version': COPILOT_EDITOR_PLUGIN_VERSION,
+    'Copilot-Integration-Id': COPILOT_INTEGRATION_ID,
+    ...extra,
+  };
+}
+
+function isFastModelId(id: string): boolean {
+  const lower = id.toLowerCase();
+  return (
+    lower.includes('mini') ||
+    lower.includes('flash') ||
+    lower.includes('haiku') ||
+    lower.includes('nano') ||
+    lower.includes('lite') ||
+    lower.includes('small')
+  );
+}
+
+export function normalizeCopilotModels(payload: unknown): {
+  models: AiModelEntry[];
+  defaultModel: string | null;
+  completionModel: string | null;
+} {
+  const rawList: CopilotModelRaw[] = Array.isArray(payload)
+    ? payload
+    : payload && typeof payload === 'object' && Array.isArray((payload as { data?: unknown }).data)
+      ? ((payload as { data: CopilotModelRaw[] }).data)
+      : [];
+
+  const seen = new Set<string>();
+  const allChat: Array<AiModelEntry & { pickerEnabled: boolean; streaming: boolean }> = [];
+
+  for (const item of rawList) {
+    const id = typeof item?.id === 'string' ? item.id.trim() : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+
+    const policyState = item.policy?.state?.toLowerCase();
+    if (policyState === 'disabled' || policyState === 'unconfigured' || policyState === 'blocked') {
+      continue;
+    }
+    const kind = item.capabilities?.type?.toLowerCase();
+    if (kind && kind !== 'chat') continue;
+
+    const streaming = item.capabilities?.supports?.streaming !== false;
+    const supportsToolCalls = Boolean(item.capabilities?.supports?.tool_calls);
+    const tokens =
+      item.capabilities?.limits?.max_prompt_tokens ??
+      item.capabilities?.limits?.max_context_window_tokens ??
+      16000;
+    const maxInputChars = Math.max(8000, Math.min(120000, Math.round(tokens * 2.5)));
+    const rawName = typeof item.name === 'string' ? item.name.trim() : '';
+    const label = rawName && rawName.toLowerCase() !== id.toLowerCase()
+      ? `GitHub Copilot: ${rawName} (${id})`
+      : `GitHub Copilot: ${id}`;
+    const vendor = typeof item.vendor === 'string' && item.vendor.trim() ? item.vendor.trim() : undefined;
+
+    allChat.push({
+      key: id,
+      label,
+      maxInputChars,
+      ...(vendor ? { vendor } : {}),
+      fast: isFastModelId(id),
+      supportsToolCalls,
+      pickerEnabled: item.model_picker_enabled !== false,
+      streaming,
+    });
+  }
+
+  const pickerFiltered = allChat.filter(m => m.pickerEnabled);
+  const chosen = pickerFiltered.length > 0 ? pickerFiltered : allChat;
+  const models: AiModelEntry[] = chosen.map(({ pickerEnabled: _p, streaming: _s, ...entry }) => entry);
+
+  const streamingChosen = chosen.filter(m => m.streaming);
+  const pool = streamingChosen.length > 0 ? streamingChosen : chosen;
+  const defaultEntry =
+    pool.find(m => m.supportsToolCalls && !m.fast) ??
+    pool.find(m => !m.fast) ??
+    pool[0] ??
+    null;
+  const completionEntry =
+    pool.find(m => m.fast) ??
+    pool[0] ??
+    null;
+
+  return {
+    models,
+    defaultModel: defaultEntry?.key ?? null,
+    completionModel: completionEntry?.key ?? null,
+  };
+}
+
+async function exchangeCopilotToken(
+  githubAccessToken: string,
+): Promise<{ ok: true; data: CopilotTokenResult } | { ok: false; status: number; code: string; detail?: string }> {
+  let res: Response;
+  try {
+    res = await fetch(GITHUB_COPILOT_TOKEN_URL, {
+      method: 'GET',
+      headers: {
+        ...copilotHeaders(githubAccessToken),
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      code: 'ai_failed',
+      detail: err instanceof Error ? err.message : 'copilot_token_fetch_failed',
+    };
+  }
+
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { message?: string };
+    const code =
+      res.status === 401
+        ? 'login_required'
+        : res.status === 403 || res.status === 404
+          ? 'copilot_unavailable'
+          : res.status === 429
+            ? 'rate_limited'
+            : 'ai_failed';
+    return { ok: false, status: res.status, code, detail: errBody.message };
+  }
+
+  const parsed = (await res.json().catch(() => null)) as {
+    token?: string;
+    expires_at?: number;
+    endpoints?: { api?: string };
+  } | null;
+  const token = typeof parsed?.token === 'string' ? parsed.token.trim() : '';
+  if (!token) {
+    return { ok: false, status: 502, code: 'copilot_unavailable', detail: 'missing copilot session token' };
+  }
+  const rawApiBase = typeof parsed?.endpoints?.api === 'string' ? parsed.endpoints.api.trim().replace(/\/+$/, '') : '';
+  const apiBase = rawApiBase.startsWith('https://') ? rawApiBase : GITHUB_COPILOT_API_BASE;
+  return {
+    ok: true,
+    data: {
+      token,
+      apiBase,
+      expiresAt: typeof parsed?.expires_at === 'number' ? parsed.expires_at : 0,
+    },
+  };
+}
+
+async function fetchCopilotModelCatalog(
+  copilot: CopilotTokenResult,
+): Promise<
+  | { ok: true; models: AiModelEntry[]; defaultModel: string | null; completionModel: string | null }
+  | { ok: false; status: number; code: string; detail?: string }
+> {
+  let res: Response;
+  try {
+    res = await fetch(`${copilot.apiBase}/models`, {
+      method: 'GET',
+      headers: copilotHeaders(copilot.token),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      code: 'ai_failed',
+      detail: err instanceof Error ? err.message : 'copilot_models_fetch_failed',
+    };
+  }
+
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: { message?: string }; message?: string };
+    const code =
+      res.status === 401
+        ? 'login_required'
+        : res.status === 403 || res.status === 404
+          ? 'copilot_unavailable'
+          : res.status === 429
+            ? 'rate_limited'
+            : 'ai_failed';
+    return {
+      ok: false,
+      status: res.status,
+      code,
+      detail: errBody.error?.message || errBody.message,
+    };
+  }
+
+  const data = await res.json().catch(() => null);
+  const catalog = normalizeCopilotModels(data);
+  if (catalog.models.length === 0) {
+    return { ok: false, status: 502, code: 'copilot_unavailable', detail: 'no_chat_models_available' };
+  }
+  return { ok: true, ...catalog };
+}
 
 async function deriveCsrfToken(session: GitHubSessionPayload, secret: string): Promise<string> {
   const data = new TextEncoder().encode(`sorane-ai-csrf:${secret}:${session.login}:${session.iat}`);
@@ -883,7 +1115,37 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
 
   if (pathname === '/api/ai/models' && request.method === 'GET') {
     const csrf = await deriveCsrfToken(session, env.GITHUB_SESSION_SECRET!);
-    return json({ csrf, models: AI_MODELS });
+    const exchanged = await exchangeCopilotToken(session.accessToken);
+    if (!exchanged.ok) {
+      return json({
+        csrf,
+        provider: 'github-copilot',
+        models: [],
+        defaultModel: null,
+        completionModel: null,
+        error: exchanged.code,
+        ...(exchanged.detail ? { detail: exchanged.detail } : {}),
+      });
+    }
+    const catalog = await fetchCopilotModelCatalog(exchanged.data);
+    if (!catalog.ok) {
+      return json({
+        csrf,
+        provider: 'github-copilot',
+        models: [],
+        defaultModel: null,
+        completionModel: null,
+        error: catalog.code,
+        ...(catalog.detail ? { detail: catalog.detail } : {}),
+      });
+    }
+    return json({
+      csrf,
+      provider: 'github-copilot',
+      models: catalog.models,
+      defaultModel: catalog.defaultModel,
+      completionModel: catalog.completionModel,
+    });
   }
 
   if (pathname === '/api/ai/chat' && request.method === 'POST') {
@@ -896,16 +1158,39 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
     const body = (await request.json().catch(() => null)) as {
       model?: unknown;
       messages?: unknown;
+      purpose?: unknown;
     } | null;
     if (!body || !Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > 24) {
       return json({ error: 'invalid_message' }, 400);
     }
-    const requestedModel = typeof body.model === 'string' && body.model.trim()
-      ? body.model.trim()
-      : AI_MODELS[0].key;
-    const allowedModel = AI_MODELS.find(m => m.key === requestedModel);
+
+    const exchanged = await exchangeCopilotToken(session.accessToken);
+    if (!exchanged.ok) {
+      return json(
+        { error: exchanged.code, ...(exchanged.detail ? { detail: exchanged.detail } : {}) },
+        exchanged.status === 401 ? 401 : 502,
+      );
+    }
+
+    const catalog = await fetchCopilotModelCatalog(exchanged.data);
+    if (!catalog.ok) {
+      return json(
+        { error: catalog.code, ...(catalog.detail ? { detail: catalog.detail } : {}) },
+        catalog.status === 401 ? 401 : 502,
+      );
+    }
+
+    const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
+    const preferFast = body.purpose === 'completion';
+    const fallbackKey = preferFast
+      ? (catalog.completionModel || catalog.defaultModel)
+      : (catalog.defaultModel || catalog.completionModel);
+    const allowedModel =
+      (requestedModel ? catalog.models.find(m => m.key === requestedModel) : undefined) ??
+      (fallbackKey ? catalog.models.find(m => m.key === fallbackKey) : undefined) ??
+      catalog.models[0];
     if (!allowedModel) {
-      return json({ error: 'invalid_model' }, 400);
+      return json({ error: 'copilot_unavailable' }, 502);
     }
 
     const totalChars = body.messages.reduce<number>((sum, item) => {
@@ -918,27 +1203,33 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
       return json({ error: 'too_long' }, 413);
     }
 
-    const upstream = await fetch(GITHUB_MODELS_CHAT_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${session.accessToken}`,
-        Accept: 'text/event-stream',
-        'Content-Type': 'application/json',
-        'User-Agent': 'soraneDocs-Web',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-      body: JSON.stringify({
-        model: allowedModel.key,
-        messages: body.messages,
-        stream: true,
-      }),
-    });
+    let upstream: Response;
+    try {
+      upstream = await fetch(`${exchanged.data.apiBase}/chat/completions`, {
+        method: 'POST',
+        headers: copilotHeaders(exchanged.data.token, {
+          Accept: 'text/event-stream',
+          'Content-Type': 'application/json',
+          'Openai-Intent': 'conversation-panel',
+        }),
+        body: JSON.stringify({
+          model: allowedModel.key,
+          messages: body.messages,
+          stream: true,
+        }),
+      });
+    } catch (err) {
+      return json(
+        { error: 'ai_failed', detail: err instanceof Error ? err.message : 'copilot_chat_fetch_failed' },
+        502,
+      );
+    }
 
     if (!upstream.ok) {
       const code = upstream.status === 401
         ? 'login_required'
-        : upstream.status === 403
-          ? 'ai_not_configured'
+        : upstream.status === 403 || upstream.status === 404
+          ? 'copilot_unavailable'
           : upstream.status === 429
             ? 'rate_limited'
             : upstream.status === 413
@@ -952,6 +1243,7 @@ export async function dispatchGitHubVault(request: Request, env: GitHubVaultEnv)
       headers: {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-store',
+        'X-Sorane-Model': allowedModel.key,
       },
     });
   }

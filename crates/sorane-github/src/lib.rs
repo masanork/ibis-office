@@ -16,9 +16,13 @@ pub const GITHUB_APP_SLUG: &str = "soranedocs";
 pub const GITHUB_APP_INSTALL_URL: &str =
     "https://github.com/apps/soranedocs/installations/new";
 pub const GITHUB_API_BASE: &str = "https://api.github.com";
-pub const GITHUB_MODELS_BASE_URL: &str = "https://models.github.ai/inference";
-pub const GITHUB_MODELS_CHAT_URL: &str = "https://models.github.ai/inference/chat/completions";
-pub const DEFAULT_GITHUB_MODEL: &str = "openai/gpt-4.1-mini";
+pub const GITHUB_COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
+pub const GITHUB_COPILOT_API_BASE_URL: &str = "https://api.githubcopilot.com";
+pub const GITHUB_COPILOT_MODELS_URL: &str = "https://api.githubcopilot.com/models";
+pub const GITHUB_COPILOT_CHAT_URL: &str = "https://api.githubcopilot.com/chat/completions";
+pub const COPILOT_EDITOR_VERSION: &str = "vscode/1.99.0";
+pub const COPILOT_EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.26.0";
+pub const COPILOT_INTEGRATION_ID: &str = "vscode-chat";
 pub const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 pub const GITHUB_OAUTH_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 pub const DEFAULT_VAULT_REPO_NAME: &str = "soraneDocs";
@@ -378,6 +382,220 @@ pub fn build_init_index_put_body(repo: &str, branch: &str) -> String {
     .to_string()
 }
 
+/// Short-lived Copilot session token returned by `GET https://api.github.com/copilot_internal/v2/token`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopilotTokenResponse {
+    pub token: String,
+    pub expires_at: u64,
+    pub api_base: String,
+}
+
+/// Model metadata parsed from `GET {copilot_api_base}/models`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopilotModel {
+    pub id: String,
+    pub name: String,
+    pub vendor: Option<String>,
+    pub model_picker_enabled: bool,
+    pub supports_streaming: bool,
+    pub supports_tool_calls: bool,
+    pub max_prompt_tokens: Option<usize>,
+    pub max_context_window_tokens: Option<usize>,
+}
+
+impl CopilotModel {
+    pub fn display_label(&self) -> String {
+        if self.name.trim().is_empty() || self.name.eq_ignore_ascii_case(&self.id) {
+            format!("GitHub Copilot: {}", self.id)
+        } else {
+            format!("GitHub Copilot: {} ({})", self.name.trim(), self.id)
+        }
+    }
+
+    pub fn max_input_chars(&self) -> usize {
+        let tokens = self
+            .max_prompt_tokens
+            .or(self.max_context_window_tokens)
+            .unwrap_or(16_000);
+        ((tokens as f64) * 2.5).round().clamp(8_000.0, 120_000.0) as usize
+    }
+}
+
+pub fn parse_copilot_token_response(json_str: &str) -> Result<CopilotTokenResponse, String> {
+    #[derive(Deserialize)]
+    struct EndpointsRaw {
+        api: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Raw {
+        token: Option<String>,
+        expires_at: Option<u64>,
+        endpoints: Option<EndpointsRaw>,
+        message: Option<String>,
+    }
+    let raw: Raw = serde_json::from_str(json_str).map_err(|e| e.to_string())?;
+    let token = raw
+        .token
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| raw.message.unwrap_or_else(|| "missing copilot token".to_string()))?;
+    let api_base = raw
+        .endpoints
+        .and_then(|ep| ep.api)
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| s.starts_with("https://"))
+        .unwrap_or_else(|| GITHUB_COPILOT_API_BASE_URL.to_string());
+    Ok(CopilotTokenResponse {
+        token,
+        expires_at: raw.expires_at.unwrap_or(0),
+        api_base,
+    })
+}
+
+pub fn parse_copilot_models_response(json_str: &str) -> Result<Vec<CopilotModel>, String> {
+    #[derive(Deserialize)]
+    struct LimitsRaw {
+        max_prompt_tokens: Option<usize>,
+        max_context_window_tokens: Option<usize>,
+    }
+    #[derive(Deserialize)]
+    struct SupportsRaw {
+        streaming: Option<bool>,
+        tool_calls: Option<bool>,
+    }
+    #[derive(Deserialize)]
+    struct CapabilitiesRaw {
+        #[serde(rename = "type")]
+        kind: Option<String>,
+        limits: Option<LimitsRaw>,
+        supports: Option<SupportsRaw>,
+    }
+    #[derive(Deserialize)]
+    struct PolicyRaw {
+        state: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct ModelRaw {
+        id: Option<String>,
+        name: Option<String>,
+        vendor: Option<String>,
+        model_picker_enabled: Option<bool>,
+        policy: Option<PolicyRaw>,
+        capabilities: Option<CapabilitiesRaw>,
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wrapper {
+        Object { data: Vec<ModelRaw> },
+        Array(Vec<ModelRaw>),
+    }
+
+    let items = match serde_json::from_str::<Wrapper>(json_str).map_err(|e| e.to_string())? {
+        Wrapper::Object { data } => data,
+        Wrapper::Array(data) => data,
+    };
+
+    let mut all_chat = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for raw in items {
+        let Some(id) = raw.id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let policy_disabled = raw
+            .policy
+            .as_ref()
+            .and_then(|p| p.state.as_deref())
+            .is_some_and(|state| {
+                let s = state.to_ascii_lowercase();
+                s == "disabled" || s == "unconfigured" || s == "blocked"
+            });
+        if policy_disabled {
+            continue;
+        }
+        let kind = raw
+            .capabilities
+            .as_ref()
+            .and_then(|c| c.kind.as_deref())
+            .map(str::to_ascii_lowercase);
+        if let Some(kind) = kind.as_deref()
+            && kind != "chat"
+        {
+            continue;
+        }
+        let limits = raw.capabilities.as_ref().and_then(|c| c.limits.as_ref());
+        let supports = raw.capabilities.as_ref().and_then(|c| c.supports.as_ref());
+        all_chat.push(CopilotModel {
+            name: raw
+                .name
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| id.clone()),
+            id,
+            vendor: raw.vendor.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+            model_picker_enabled: raw.model_picker_enabled.unwrap_or(true),
+            supports_streaming: supports.and_then(|s| s.streaming).unwrap_or(true),
+            supports_tool_calls: supports.and_then(|s| s.tool_calls).unwrap_or(false),
+            max_prompt_tokens: limits.and_then(|l| l.max_prompt_tokens),
+            max_context_window_tokens: limits.and_then(|l| l.max_context_window_tokens),
+        });
+    }
+
+    let picker_models: Vec<CopilotModel> = all_chat
+        .iter()
+        .filter(|m| m.model_picker_enabled)
+        .cloned()
+        .collect();
+    if picker_models.is_empty() {
+        Ok(all_chat)
+    } else {
+        Ok(picker_models)
+    }
+}
+
+pub fn is_fast_completion_model(model_id: &str) -> bool {
+    let lower = model_id.to_ascii_lowercase();
+    lower.contains("mini")
+        || lower.contains("flash")
+        || lower.contains("haiku")
+        || lower.contains("nano")
+        || lower.contains("lite")
+        || lower.contains("small")
+}
+
+/// Dynamically select a model from the fetched Copilot model catalog.
+/// Never invents a model ID that is absent from `models`.
+pub fn select_copilot_model<'a>(
+    models: &'a [CopilotModel],
+    preferred: Option<&str>,
+    prefer_fast: bool,
+) -> Option<&'a CopilotModel> {
+    if let Some(pref) = preferred.map(str::trim).filter(|s| !s.is_empty())
+        && let Some(found) = models.iter().find(|m| m.id == pref)
+    {
+        return Some(found);
+    }
+    if prefer_fast {
+        if let Some(fast) = models
+            .iter()
+            .find(|m| m.supports_streaming && is_fast_completion_model(&m.id))
+        {
+            return Some(fast);
+        }
+    } else if let Some(standard) = models
+        .iter()
+        .find(|m| m.supports_streaming && m.supports_tool_calls && !is_fast_completion_model(&m.id))
+    {
+        return Some(standard);
+    }
+    models
+        .iter()
+        .find(|m| m.supports_streaming)
+        .or_else(|| models.first())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,5 +669,33 @@ mod tests {
                 access_token: "ghu_abc".to_string()
             }
         );
+    }
+
+    #[test]
+    fn copilot_token_and_models_parse_and_select_dynamically() {
+        let token = parse_copilot_token_response(
+            r#"{"token":"tid=abc","expires_at":1800000000,"endpoints":{"api":"https://api.individual.githubcopilot.com/"}}"#,
+        )
+        .unwrap();
+        assert_eq!(token.token, "tid=abc");
+        assert_eq!(token.api_base, "https://api.individual.githubcopilot.com");
+
+        let models = parse_copilot_models_response(
+            r#"{
+              "object": "list",
+              "data": [
+                {"id": "text-embedding-3-small", "capabilities": {"type": "embeddings"}},
+                {"id": "blocked-model", "policy": {"state": "disabled"}, "capabilities": {"type": "chat"}},
+                {"id": "gpt-4.1", "name": "GPT-4.1", "model_picker_enabled": true, "capabilities": {"type": "chat", "supports": {"streaming": true, "tool_calls": true}, "limits": {"max_prompt_tokens": 64000}}},
+                {"id": "gpt-5-mini", "name": "GPT-5 mini", "model_picker_enabled": true, "capabilities": {"type": "chat", "supports": {"streaming": true, "tool_calls": true}, "limits": {"max_prompt_tokens": 32000}}}
+              ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(select_copilot_model(&models, None, false).unwrap().id, "gpt-4.1");
+        assert_eq!(select_copilot_model(&models, None, true).unwrap().id, "gpt-5-mini");
+        assert_eq!(select_copilot_model(&models, Some("gpt-5-mini"), false).unwrap().id, "gpt-5-mini");
+        assert_eq!(select_copilot_model(&models, Some("nonexistent"), true).unwrap().id, "gpt-5-mini");
     }
 }

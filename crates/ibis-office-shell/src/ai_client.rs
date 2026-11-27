@@ -15,12 +15,77 @@ use serde_json::Value;
 pub const SETTING_BASE_URL: &str = "ai.base_url";
 pub const SETTING_MODEL: &str = "ai.model";
 pub const SETTING_API_KEY: &str = "ai.api_key";
+pub const SETTING_PROVIDER: &str = "ai.provider";
 
-#[cfg(not(target_family = "wasm"))]
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL: &str = "gpt-6.1-terra";
+
+/// Provider selection for Web (WASM) assistant and inline completion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrowserProvider {
+    GitHubCopilot,
+    OpenAi,
+    Gemini,
+    Anthropic,
+}
+
+impl BrowserProvider {
+    pub const ALL: [Self; 4] = [
+        Self::GitHubCopilot,
+        Self::OpenAi,
+        Self::Gemini,
+        Self::Anthropic,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GitHubCopilot => "github-copilot",
+            Self::OpenAi => "openai",
+            Self::Gemini => "gemini",
+            Self::Anthropic => "anthropic",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "openai" | "custom" => Self::OpenAi,
+            "gemini" => Self::Gemini,
+            "anthropic" | "claude" => Self::Anthropic,
+            _ => Self::GitHubCopilot,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::GitHubCopilot => "GitHub Copilot（ログイン済み）",
+            Self::OpenAi => "OpenAI 互換 API",
+            Self::Gemini => "Google Gemini API",
+            Self::Anthropic => "Claude (Anthropic API)",
+        }
+    }
+
+    pub fn default_base_url(self) -> &'static str {
+        match self {
+            Self::GitHubCopilot => "",
+            Self::OpenAi => DEFAULT_BASE_URL,
+            Self::Gemini => GEMINI_BASE_URL,
+            Self::Anthropic => ANTHROPIC_BASE_URL,
+        }
+    }
+
+    pub fn load() -> Self {
+        crate::settings::get(SETTING_PROVIDER)
+            .map(|raw| Self::parse(&raw))
+            .unwrap_or(Self::GitHubCopilot)
+    }
+
+    pub fn save(self) {
+        crate::settings::set(SETTING_PROVIDER, self.as_str());
+    }
+}
 
 /// Local configuration for the OpenAI-compatible endpoint.
 #[derive(Clone, PartialEq, Eq)]
@@ -382,7 +447,7 @@ fn default_reasoning_effort(model: &str, has_tools: bool) -> Option<&'static str
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConnectionChoice {
     Auto,
-    GitHubModels,
+    GitHubCopilot,
     OpenAi,
     Claude,
     Gemini,
@@ -394,7 +459,7 @@ pub(crate) enum ConnectionChoice {
 impl ConnectionChoice {
     pub(crate) const ALL: [Self; 7] = [
         Self::Auto,
-        Self::GitHubModels,
+        Self::GitHubCopilot,
         Self::OpenAi,
         Self::Claude,
         Self::Gemini,
@@ -405,7 +470,7 @@ impl ConnectionChoice {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Auto => "自動選択",
-            Self::GitHubModels => "GitHub Models（ログイン済み）",
+            Self::GitHubCopilot => "GitHub Copilot（ログイン済み）",
             Self::OpenAi => "OpenAI 互換 API",
             Self::Claude => "Claude API（環境変数）",
             Self::Gemini => "Google Gemini（環境変数）",
@@ -419,21 +484,19 @@ impl ConnectionChoice {
         saved: &AiConfig,
         env: impl Fn(&str) -> Option<String>,
     ) -> Result<NativeConnection, String> {
-        if self == Self::GitHubModels {
+        if self == Self::GitHubCopilot {
             let token = load_github_session_token().ok_or_else(|| {
                 "GitHub にログインしてください（左サイドバーの Git パネルからログインできます）。".to_string()
             })?;
-            let model = if saved.model.trim().contains('/') {
-                saved.model.trim().to_string()
-            } else {
-                sorane_github::DEFAULT_GITHUB_MODEL.to_string()
-            };
             return Ok(NativeConnection {
-                provider: Provider::OpenAi,
+                provider: Provider::GitHubCopilot {
+                    github_token: token,
+                    resolved: false,
+                },
                 config: AiConfig {
-                    base_url: sorane_github::GITHUB_MODELS_BASE_URL.to_string(),
-                    model,
-                    api_key: token,
+                    base_url: sorane_github::GITHUB_COPILOT_API_BASE_URL.to_string(),
+                    model: saved.model.trim().to_string(),
+                    api_key: String::new(),
                 },
             });
         }
@@ -451,17 +514,15 @@ impl ConnectionChoice {
             && config.api_key.is_empty()
             && let Some(token) = load_github_session_token()
         {
-            let model = if saved.model.trim().contains('/') {
-                saved.model.trim().to_string()
-            } else {
-                sorane_github::DEFAULT_GITHUB_MODEL.to_string()
-            };
             return Ok(NativeConnection {
-                provider: Provider::OpenAi,
+                provider: Provider::GitHubCopilot {
+                    github_token: token,
+                    resolved: false,
+                },
                 config: AiConfig {
-                    base_url: sorane_github::GITHUB_MODELS_BASE_URL.to_string(),
-                    model,
-                    api_key: token,
+                    base_url: sorane_github::GITHUB_COPILOT_API_BASE_URL.to_string(),
+                    model: saved.model.trim().to_string(),
+                    api_key: String::new(),
                 },
             });
         }
@@ -504,6 +565,113 @@ fn load_github_session_token() -> Option<String> {
 }
 
 #[cfg(not(target_family = "wasm"))]
+fn curl_get_json(url: &str, headers: &[(&str, String)]) -> Result<(u16, String), String> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let quote = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut curl_config = String::new();
+    for (name, value) in headers {
+        if value.bytes().any(|b| b.is_ascii_control()) {
+            return Err("HTTP ヘッダーに無効な文字が含まれています。".into());
+        }
+        curl_config.push_str(&format!("header = \"{name}: {}\"\n", quote(value)));
+    }
+    const STATUS_MARKER: &str = "\n__IBIS_HTTP_STATUS__:";
+    let mut cmd = Command::new("curl");
+    cmd.arg("--disable")
+        .arg("-sS")
+        .args(["--proto", "=https,http"])
+        .args(["--connect-timeout", "15"])
+        .args(["--max-time", "20"])
+        .args(["--config", "-"])
+        .args(["-w", &format!("{STATUS_MARKER}%{{http_code}}")])
+        .args(["--globoff", "--url", url])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to launch curl: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(curl_config.as_bytes())
+            .map_err(|e| format!("failed to write curl config: {e}"))?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("curl wait failed: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("curl exited with {}", output.status)
+        } else {
+            stderr
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let Some((body, status_str)) = stdout.rsplit_once(STATUS_MARKER) else {
+        return Err("HTTP ステータスコードを読み取れませんでした。".into());
+    };
+    let status = status_str
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| "HTTP ステータスコードが不正です。".to_string())?;
+    Ok((status, body.to_string()))
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn resolve_copilot_session(
+    github_token: &str,
+    preferred_model: Option<&str>,
+    prefer_fast: bool,
+) -> Result<(String, String, String), String> {
+    let token_headers = [
+        ("Authorization", format!("Bearer {github_token}")),
+        ("Accept", "application/json".to_string()),
+        ("User-Agent", "soraneDocs-Desktop".to_string()),
+        ("X-GitHub-Api-Version", sorane_github::GITHUB_API_VERSION.to_string()),
+        ("Editor-Version", sorane_github::COPILOT_EDITOR_VERSION.to_string()),
+        ("Editor-Plugin-Version", sorane_github::COPILOT_EDITOR_PLUGIN_VERSION.to_string()),
+        ("Copilot-Integration-Id", sorane_github::COPILOT_INTEGRATION_ID.to_string()),
+    ];
+    let (status, body) = curl_get_json(sorane_github::GITHUB_COPILOT_TOKEN_URL, &token_headers)?;
+    if status == 401 {
+        return Err("GitHub の認証トークンが期限切れです。再ログインしてください。".into());
+    }
+    if status == 403 || status == 404 {
+        return Err(explain_ai_error("copilot_unavailable"));
+    }
+    if status >= 400 {
+        return Err(format!("GitHub Copilot トークン取得に失敗しました (HTTP {status})。"));
+    }
+    let copilot = sorane_github::parse_copilot_token_response(&body)
+        .map_err(|e| format!("GitHub Copilot トークン応答の解析に失敗しました: {e}"))?;
+
+    let models_url = format!("{}/models", copilot.api_base);
+    let model_headers = [
+        ("Authorization", format!("Bearer {}", copilot.token)),
+        ("Accept", "application/json".to_string()),
+        ("User-Agent", "soraneDocs-Desktop".to_string()),
+        ("Editor-Version", sorane_github::COPILOT_EDITOR_VERSION.to_string()),
+        ("Editor-Plugin-Version", sorane_github::COPILOT_EDITOR_PLUGIN_VERSION.to_string()),
+        ("Copilot-Integration-Id", sorane_github::COPILOT_INTEGRATION_ID.to_string()),
+    ];
+    let (m_status, m_body) = curl_get_json(&models_url, &model_headers)?;
+    if m_status == 401 {
+        return Err("GitHub Copilot の認証に失敗しました。再ログインしてください。".into());
+    }
+    if m_status >= 400 {
+        return Err(format!("GitHub Copilot モデル一覧の取得に失敗しました (HTTP {m_status})。"));
+    }
+    let models = sorane_github::parse_copilot_models_response(&m_body)
+        .map_err(|e| format!("GitHub Copilot モデル一覧の解析に失敗しました: {e}"))?;
+    let selected = sorane_github::select_copilot_model(&models, preferred_model, prefer_fast)
+        .ok_or_else(|| explain_ai_error("copilot_unavailable"))?;
+    Ok((copilot.api_base, copilot.token, selected.id.clone()))
+}
+
+#[cfg(not(target_family = "wasm"))]
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct NativeConnection {
     provider: Provider,
@@ -525,16 +693,19 @@ impl NativeConnection {
 
     pub(crate) fn caption(&self) -> (&'static str, String) {
         let choice = match self.provider {
-            Provider::OpenAi if self.config.base_url == sorane_github::GITHUB_MODELS_BASE_URL => {
-                ConnectionChoice::GitHubModels
-            }
+            Provider::GitHubCopilot { .. } => ConnectionChoice::GitHubCopilot,
             Provider::OpenAi if self.config.base_url == GEMINI_BASE_URL => ConnectionChoice::Gemini,
             Provider::OpenAi | Provider::OpenAiResponses => ConnectionChoice::OpenAi,
             Provider::Anthropic => ConnectionChoice::Claude,
             Provider::Bedrock => ConnectionChoice::BedrockKey,
             Provider::BedrockProfile { .. } => ConnectionChoice::BedrockProfile,
         };
-        (choice.label(), self.config.model.clone())
+        let model = if self.config.model.is_empty() {
+            "（接続時に自動選択）".to_string()
+        } else {
+            self.config.model.clone()
+        };
+        (choice.label(), model)
     }
 
     pub(crate) fn endpoint(&self) -> Option<&str> {
@@ -552,11 +723,31 @@ impl NativeConnection {
     }
 
     pub(crate) fn check_connection(&mut self) -> Result<(), String> {
+        self.check_connection_with_preference(false)
+    }
+
+    pub(crate) fn check_connection_with_preference(&mut self, prefer_fast: bool) -> Result<(), String> {
         self.check_configuration()?;
-        if let Provider::BedrockProfile { region } = &mut self.provider {
-            let selected_region = bedrock::check_profile(region.clone())?;
-            self.config.base_url = bedrock::messages_url(&selected_region)?;
-            *region = Some(selected_region);
+        match &mut self.provider {
+            Provider::GitHubCopilot {
+                github_token,
+                resolved,
+            } => {
+                let preferred = (!self.config.model.trim().is_empty())
+                    .then_some(self.config.model.trim());
+                let (api_base, copilot_token, model_id) =
+                    resolve_copilot_session(github_token, preferred, prefer_fast)?;
+                self.config.base_url = api_base;
+                self.config.api_key = copilot_token;
+                self.config.model = model_id;
+                *resolved = true;
+            }
+            Provider::BedrockProfile { region } => {
+                let selected_region = bedrock::check_profile(region.clone())?;
+                self.config.base_url = bedrock::messages_url(&selected_region)?;
+                *region = Some(selected_region);
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -565,6 +756,7 @@ impl NativeConnection {
 #[cfg(not(target_family = "wasm"))]
 #[derive(Clone, PartialEq, Eq)]
 enum Provider {
+    GitHubCopilot { github_token: String, resolved: bool },
     OpenAi,
     OpenAiResponses,
     Anthropic,
@@ -687,7 +879,9 @@ impl Provider {
                 let api_key = api_key.unwrap_or_default();
                 (base_url, model, api_key)
             }
-            Self::BedrockProfile { .. } | Self::OpenAiResponses => unreachable!(),
+            Self::BedrockProfile { .. }
+            | Self::OpenAiResponses
+            | Self::GitHubCopilot { .. } => unreachable!(),
         };
         Ok((
             provider,
@@ -977,10 +1171,25 @@ pub(crate) async fn stream_chat_completion(
     tools: Vec<ToolDefinition>,
     mut on_delta: impl FnMut(&str),
 ) -> Result<CompletionOutcome, String> {
+    let mut conn = connection.clone();
+    if let Provider::GitHubCopilot { resolved: false, .. } = conn.provider {
+        conn.check_connection()?;
+    }
     let NativeConnection {
         provider,
         mut config,
-    } = connection.clone();
+    } = conn;
+    if matches!(provider, Provider::GitHubCopilot { .. }) {
+        return stream_chat_completion_once(
+            &config,
+            provider,
+            messages,
+            tools,
+            None,
+            &mut on_delta,
+        )
+        .await;
+    }
     if provider == Provider::OpenAi
         && let Some(url) = openai_responses_url(&config)
     {
@@ -1069,13 +1278,14 @@ async fn stream_chat_completion_once(
     use std::process::{Command, Stdio};
 
     let responses = provider == Provider::OpenAiResponses;
+    let is_copilot = matches!(provider, Provider::GitHubCopilot { .. });
     let (url, payload) = if responses {
         (
             config.base_url.clone(),
             serde_json::to_vec(&responses_request(&config.model, messages, tools))
                 .map_err(|error| format!("failed to serialize request: {error}"))?,
         )
-    } else if provider == Provider::OpenAi {
+    } else if provider == Provider::OpenAi || is_copilot {
         let payload = serde_json::to_vec(&ChatCompletionRequest {
             model: &config.model,
             messages,
@@ -1096,7 +1306,7 @@ async fn stream_chat_completion_once(
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<Result<Option<String>, String>>();
 
     let model = config.model.clone();
-    let openai = responses || provider == Provider::OpenAi;
+    let openai = responses || provider == Provider::OpenAi || is_copilot;
     std::thread::spawn(move || {
         if let Provider::BedrockProfile { region } = provider {
             let result = bedrock::stream_profile(region, &model, &payload, |event| {
@@ -1131,7 +1341,16 @@ async fn stream_chat_completion_once(
             .args(["-X", "POST"])
             .args(["-H", "Content-Type: application/json"])
             .args(["-H", "Accept: text/event-stream"]);
-        if !openai {
+        if is_copilot {
+            cmd.args(["-H", "User-Agent: soraneDocs-Desktop"])
+                .args(["-H", &format!("Editor-Version: {}", sorane_github::COPILOT_EDITOR_VERSION)])
+                .args([
+                    "-H",
+                    &format!("Editor-Plugin-Version: {}", sorane_github::COPILOT_EDITOR_PLUGIN_VERSION),
+                ])
+                .args(["-H", &format!("Copilot-Integration-Id: {}", sorane_github::COPILOT_INTEGRATION_ID)])
+                .args(["-H", "Openai-Intent: conversation-panel"]);
+        } else if !openai {
             cmd.args(["-H", "anthropic-version: 2023-06-01"]);
         }
         cmd.args(["--config", "-"])
@@ -1251,8 +1470,10 @@ async fn stream_chat_completion_once(
 pub struct BrowserModel {
     pub key: String,
     pub label: String,
-    #[serde(rename = "maxInputChars")]
+    #[serde(rename = "maxInputChars", default = "default_browser_max_input_chars")]
     pub max_input_chars: usize,
+    #[serde(default)]
+    pub fast: bool,
     #[serde(default)]
     pub note: Option<String>,
     #[serde(rename = "inputPrice", default)]
@@ -1261,14 +1482,31 @@ pub struct BrowserModel {
     pub output_price: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+fn default_browser_max_input_chars() -> usize {
+    24_000
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct BrowserCatalog {
+    #[serde(default)]
     pub csrf: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
     pub models: Vec<BrowserModel>,
+    #[serde(rename = "defaultModel", default)]
+    pub default_model: Option<String>,
+    #[serde(rename = "completionModel", default)]
+    pub completion_model: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 thread_local! {
     static BROWSER_CSRF: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    static BROWSER_CACHED_CATALOG: std::cell::RefCell<Option<(BrowserProvider, BrowserCatalog)>> = const { std::cell::RefCell::new(None) };
 }
 
 pub fn set_browser_csrf(token: &str) {
@@ -1279,18 +1517,35 @@ pub fn browser_csrf() -> String {
     BROWSER_CSRF.with(|slot| slot.borrow().clone())
 }
 
-/// Turn a Worker error code into a sentence for the Assistant pane.
+#[cfg(target_family = "wasm")]
+pub fn cache_browser_catalog(provider: BrowserProvider, catalog: &BrowserCatalog) {
+    BROWSER_CACHED_CATALOG.with(|slot| *slot.borrow_mut() = Some((provider, catalog.clone())));
+}
+
+#[cfg(target_family = "wasm")]
+pub fn cached_browser_catalog(provider: BrowserProvider) -> Option<BrowserCatalog> {
+    BROWSER_CACHED_CATALOG.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .filter(|(p, _)| *p == provider)
+            .map(|(_, c)| c.clone())
+    })
+}
+
+/// Turn a Worker or direct-API error code into a sentence for the Assistant pane or inline completion bar.
 pub fn explain_ai_error(code: &str) -> String {
     match code {
         "login_required" => "ログインが必要です。スタート画面の「GitHub でログイン」からログインしてください。".to_string(),
         "invalid_csrf" => "ログイン情報を確認できませんでした。アシスタントを開き直してください。".to_string(),
         "invalid_origin" => "このページからはアシスタントを使えません。docs.sorane.dev で開いてください。".to_string(),
-        "invalid_model" => "選んだモデルは使えません。アシスタントを開き直してください。".to_string(),
+        "invalid_model" => "選んだモデルは使えません。モデル一覧を再取得して選択し直してください。".to_string(),
         "invalid_message" => "この依頼は送れませんでした。".to_string(),
         "too_long" => "文書が選んだモデルの上限を超えています。".to_string(),
         "rate_limited" => "短時間に送りすぎました。少し待ってからもう一度試してください。".to_string(),
         "quota_exceeded" => "今日の利用回数の上限に達しました。".to_string(),
-        "ai_not_configured" => "GitHub Models へのアクセス権限（Models: Read）が未承認です。GitHub App の権限を更新して再ログインしてください。".to_string(),
+        "copilot_unavailable" | "ai_not_configured" => "GitHub Copilot API を利用できません（有効な Copilot サブスクリプション／トークン権限が必要です）。アシスタントの「設定」から OpenAI・Gemini・Claude などの別 API に切り替えることもできます。".to_string(),
+        "invalid_api_key" => "API キーが無効です。アシスタントの「設定」で API キーを確認してください。".to_string(),
+        "network_error" | "Failed to fetch" => "API サーバーに接続できませんでした（ネットワーク・CORS・エンドポイント設定を確認してください）。".to_string(),
         "ai_failed" => "応答を受け取れませんでした。".to_string(),
         "aborted" => String::new(),
         other => other.to_string(),
@@ -1336,17 +1591,52 @@ fn browser_message_units(messages: &[ChatMessage]) -> usize {
 }
 
 #[cfg(target_family = "wasm")]
-pub async fn load_browser_catalog() -> Result<BrowserCatalog, String> {
+pub async fn load_browser_catalog_for(
+    provider: BrowserProvider,
+    config: &AiConfig,
+) -> Result<BrowserCatalog, String> {
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen]
     extern "C" {
         #[wasm_bindgen(catch, js_name = ibisOfficeAiModels)]
         fn ai_models_js() -> Result<js_sys::Promise, JsValue>;
+        #[wasm_bindgen(catch, js_name = ibisOfficeAiDirectModels)]
+        fn ai_direct_models_js(
+            provider: &str,
+            base_url: &str,
+            api_key: &str,
+        ) -> Result<js_sys::Promise, JsValue>;
     }
-    let promise = ai_models_js().map_err(js_error)?;
-    let value = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(js_error)?;
-    let text = value.as_string().ok_or_else(|| "モデル一覧を読めませんでした。".to_string())?;
-    serde_json::from_str(&text).map_err(|_| "モデル一覧を読めませんでした。".to_string())
+    let promise = match provider {
+        BrowserProvider::GitHubCopilot => ai_models_js().map_err(js_error)?,
+        BrowserProvider::OpenAi | BrowserProvider::Gemini | BrowserProvider::Anthropic => {
+            let base = if config.base_url.trim().is_empty() {
+                provider.default_base_url()
+            } else {
+                config.base_url.trim()
+            };
+            ai_direct_models_js(provider.as_str(), base, config.api_key.trim())
+                .map_err(js_error)?
+        }
+    };
+    let value = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(js_error)?;
+    let text = value
+        .as_string()
+        .ok_or_else(|| "モデル一覧を読めませんでした。".to_string())?;
+    let catalog: BrowserCatalog =
+        serde_json::from_str(&text).map_err(|_| "モデル一覧を読めませんでした。".to_string())?;
+    if provider == BrowserProvider::GitHubCopilot && !catalog.csrf.is_empty() {
+        set_browser_csrf(&catalog.csrf);
+    }
+    cache_browser_catalog(provider, &catalog);
+    Ok(catalog)
+}
+
+#[cfg(target_family = "wasm")]
+pub async fn load_browser_catalog() -> Result<BrowserCatalog, String> {
+    load_browser_catalog_for(BrowserProvider::load(), &AiConfig::load_saved()).await
 }
 
 #[cfg(target_family = "wasm")]
@@ -1371,12 +1661,25 @@ fn js_error(err: wasm_bindgen::JsValue) -> String {
         .unwrap_or_else(|| "ai_failed".to_string())
 }
 
-/// Stream a reply from the same-origin Docs Worker. Tools and provider model ids are not sent.
+/// Stream a reply from GitHub Copilot (via same-origin Worker) or a user-configured browser API provider.
 #[cfg(target_family = "wasm")]
 pub async fn stream_chat_completion(
     config: &AiConfig,
     messages: &[ChatMessage],
+    tools: Vec<ToolDefinition>,
+    on_delta: impl FnMut(&str),
+) -> Result<CompletionOutcome, String> {
+    stream_browser_chat_completion(BrowserProvider::load(), config, messages, tools, None, on_delta)
+        .await
+}
+
+#[cfg(target_family = "wasm")]
+async fn stream_browser_chat_completion(
+    provider: BrowserProvider,
+    config: &AiConfig,
+    messages: &[ChatMessage],
     _tools: Vec<ToolDefinition>,
+    purpose: Option<&str>,
     mut on_delta: impl FnMut(&str),
 ) -> Result<CompletionOutcome, String> {
     use futures::StreamExt as _;
@@ -1384,11 +1687,19 @@ pub async fn stream_chat_completion(
     #[wasm_bindgen]
     extern "C" {
         #[wasm_bindgen(catch, js_name = ibisOfficeAiStream)]
-        fn ai_stream_js(body: &str, csrf: &str, on_line: &js_sys::Function) -> Result<js_sys::Promise, JsValue>;
-    }
-    let csrf = browser_csrf();
-    if csrf.is_empty() {
-        return Err("login_required".to_string());
+        fn ai_stream_js(
+            body: &str,
+            csrf: &str,
+            on_line: &js_sys::Function,
+        ) -> Result<js_sys::Promise, JsValue>;
+        #[wasm_bindgen(catch, js_name = ibisOfficeAiDirectStream)]
+        fn ai_direct_stream_js(
+            provider: &str,
+            base_url: &str,
+            api_key: &str,
+            body: &str,
+            on_line: &js_sys::Function,
+        ) -> Result<js_sys::Promise, JsValue>;
     }
     let outbound: Vec<ChatMessage> = messages
         .iter()
@@ -1399,23 +1710,39 @@ pub async fn stream_chat_completion(
         })
         .cloned()
         .collect();
-    let body = serde_json::to_string(&serde_json::json!({
+    let mut payload = serde_json::json!({
         "model": config.model,
         "messages": outbound,
-    }))
-    .map_err(|_| "invalid_message".to_string())?;
+    });
+    if let Some(purpose) = purpose {
+        payload["purpose"] = serde_json::json!(purpose);
+    }
+    let body = serde_json::to_string(&payload).map_err(|_| "invalid_message".to_string())?;
     let (tx, mut rx) = futures::channel::mpsc::unbounded::<String>();
     // The closure has to stay alive until the page promise settles. Dropping it
     // earlier unregisters the callback while JavaScript can still call it.
     let mut closure = Some(wasm_bindgen::closure::Closure::wrap(Box::new(move |line: String| {
         let _ = tx.unbounded_send(line);
     }) as Box<dyn FnMut(String)>));
-    let promise = ai_stream_js(
-        &body,
-        &csrf,
-        closure.as_ref().expect("closure").as_ref().unchecked_ref(),
-    )
-    .map_err(js_error)?;
+    let on_line_fn: &js_sys::Function = closure.as_ref().expect("closure").as_ref().unchecked_ref();
+    let promise = match provider {
+        BrowserProvider::GitHubCopilot => {
+            let csrf = browser_csrf();
+            if csrf.is_empty() {
+                return Err("login_required".to_string());
+            }
+            ai_stream_js(&body, &csrf, on_line_fn).map_err(js_error)?
+        }
+        BrowserProvider::OpenAi | BrowserProvider::Gemini | BrowserProvider::Anthropic => {
+            let base = if config.base_url.trim().is_empty() {
+                provider.default_base_url()
+            } else {
+                config.base_url.trim()
+            };
+            ai_direct_stream_js(provider.as_str(), base, config.api_key.trim(), &body, on_line_fn)
+                .map_err(js_error)?
+        }
+    };
     let mut request = wasm_bindgen_futures::JsFuture::from(promise);
     let mut parser = SseStreamParser::default();
     let mut failed: Option<String> = None;
@@ -1534,6 +1861,7 @@ pub(crate) fn clean_inline_suggestion(raw: &str) -> String {
         .strip_prefix("```markdown")
         .or_else(|| trimmed.strip_prefix("```md"))
         .or_else(|| trimmed.strip_prefix("```"))
+        .map(|s| s.trim_start_matches(|c| c == '\r' || c == '\n'))
         .unwrap_or(trimmed);
     let without_end = without_fence.strip_suffix("```").unwrap_or(without_fence);
     without_end.trim_end().chars().take(200).collect()
@@ -1541,26 +1869,82 @@ pub(crate) fn clean_inline_suggestion(raw: &str) -> String {
 
 #[cfg(target_family = "wasm")]
 pub(crate) async fn complete_inline_suggestion(prefix: &str, suffix: &str) -> Result<String, String> {
-    if browser_csrf().is_empty() {
-        let catalog = load_browser_catalog().await?;
-        set_browser_csrf(&catalog.csrf);
-    }
-    let saved_model = AiConfig::load_saved().model;
-    let model = if saved_model.is_empty() {
-        sorane_github::DEFAULT_GITHUB_MODEL.to_string()
-    } else {
-        saved_model
+    let provider = BrowserProvider::load();
+    let saved = AiConfig::load_saved();
+    let catalog = match cached_browser_catalog(provider) {
+        Some(c)
+            if !c.models.is_empty()
+                && (provider != BrowserProvider::GitHubCopilot || !browser_csrf().is_empty()) =>
+        {
+            Some(c)
+        }
+        _ => match load_browser_catalog_for(provider, &saved).await {
+            Ok(c) => Some(c),
+            Err(err) => {
+                if provider == BrowserProvider::GitHubCopilot || saved.model.trim().is_empty() {
+                    return Err(err);
+                }
+                None
+            }
+        },
     };
+
+    if let Some(c) = &catalog
+        && c.models.is_empty()
+        && let Some(err) = &c.error
+    {
+        return Err(err.clone());
+    }
+
+    let model = if let Some(c) = &catalog {
+        let saved_ok = !saved.model.trim().is_empty()
+            && c.models.iter().any(|m| m.key == saved.model.trim());
+        if saved_ok {
+            saved.model.trim().to_string()
+        } else if let Some(comp) = c
+            .completion_model
+            .as_deref()
+            .filter(|id| c.models.iter().any(|m| m.key == *id))
+        {
+            comp.to_string()
+        } else if let Some(fast) = c.models.iter().find(|m| m.fast) {
+            fast.key.clone()
+        } else if let Some(def) = c
+            .default_model
+            .as_deref()
+            .filter(|id| c.models.iter().any(|m| m.key == *id))
+        {
+            def.to_string()
+        } else if let Some(first) = c.models.first() {
+            first.key.clone()
+        } else if !saved.model.trim().is_empty() {
+            saved.model.trim().to_string()
+        } else {
+            return Err("copilot_unavailable".to_string());
+        }
+    } else if !saved.model.trim().is_empty() {
+        saved.model.trim().to_string()
+    } else {
+        return Err("invalid_model".to_string());
+    };
+
     let config = AiConfig {
-        base_url: String::new(),
+        base_url: saved.base_url,
         model,
-        api_key: String::new(),
+        api_key: saved.api_key,
     };
     let messages = build_inline_completion_messages(prefix, suffix);
     let mut collected = String::new();
-    let outcome = stream_chat_completion(&config, &messages, Vec::new(), |delta| {
-        collected.push_str(delta);
-    })
+    let outcome = stream_browser_chat_completion(
+        provider,
+        &config,
+        &messages,
+        Vec::new(),
+        Some("completion"),
+        |delta| {
+            collected.push_str(delta);
+        },
+    )
     .await?;
     let text = if collected.is_empty() { outcome.content } else { collected };
     Ok(clean_inline_suggestion(&text))
@@ -1569,7 +1953,7 @@ pub(crate) async fn complete_inline_suggestion(prefix: &str, suffix: &str) -> Re
 #[cfg(not(target_family = "wasm"))]
 pub(crate) async fn complete_inline_suggestion(prefix: &str, suffix: &str) -> Result<String, String> {
     let mut connection = ConnectionChoice::Auto.load()?;
-    connection.check_connection()?;
+    connection.check_connection_with_preference(true)?;
     let messages = build_inline_completion_messages(prefix, suffix);
     let mut collected = String::new();
     let outcome = stream_chat_completion(&connection, &messages, Vec::new(), |delta| {
