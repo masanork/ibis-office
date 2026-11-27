@@ -9,6 +9,7 @@ use ibis_doc_model::sd_jwt_import::{
 use serde_json::Value;
 
 pub mod ai_datasets;
+pub mod columnar_sql;
 pub mod notebook_schema;
 pub mod ontology;
 pub mod personas_evals;
@@ -45,7 +46,7 @@ pub struct CredentialDetails {
 pub fn supports_extension(extension: &str) -> bool {
     [
         "json", "jsonld", "jsonl", "ndjson", "yaml", "yml", "toml", "ipynb", "xml", "rdf", "owl",
-        "ttl", "nt", "nq", "trig", "sd-jwt", "mdoc",
+        "ttl", "nt", "nq", "trig", "parquet", "arrow", "ipc", "feather", "sql", "sd-jwt", "mdoc",
     ]
     .iter()
     .any(|candidate| extension.eq_ignore_ascii_case(candidate))
@@ -175,6 +176,37 @@ pub fn read(extension: &str, bytes: &[u8]) -> Result<Preview, String> {
                 credential: None,
                 summary,
                 blocks: t_blocks,
+            });
+        }
+        "parquet" => {
+            let (p_fields, summary, p_blocks) = columnar_sql::read_parquet(bytes, raw_len)?;
+            return Ok(Preview {
+                format: "Parquet",
+                fields: p_fields,
+                credential: None,
+                summary,
+                blocks: p_blocks,
+            });
+        }
+        "arrow" | "ipc" | "feather" => {
+            let (a_fields, summary, a_blocks) = columnar_sql::read_arrow_ipc(bytes, raw_len)?;
+            return Ok(Preview {
+                format: "Arrow IPC",
+                fields: a_fields,
+                credential: None,
+                summary,
+                blocks: a_blocks,
+            });
+        }
+        "sql" => {
+            let src = text()?;
+            let (s_fields, summary, s_blocks) = columnar_sql::read_sql(src, raw_len)?;
+            return Ok(Preview {
+                format: "SQL",
+                fields: s_fields,
+                credential: None,
+                summary,
+                blocks: s_blocks,
             });
         }
         "sd-jwt" => return credential("SD-JWT", raw_len, parse_sd_jwt(text()?, None)),
