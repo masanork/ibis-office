@@ -72,7 +72,8 @@ Runs completely in the background without opening any GUI window. Documents are 
 
 | Option | Argument | Description |
 |---|---|---|
-| `--export` | `<format>` | Export format (required).<br>• `pdf`: High-quality vector PDF with embedded fonts and graphics.<br>• `pdfa-2b`: Archival vector PDF/A-2b.<br>• `pdfa-3b`: Archival vector PDF/A-3b with the source file embedded.<br>• `png`: Raster image sequence for each page or slide.<br>• `tif` / `tiff`: Multi-page LZW-compressed TIFF.<br>• `pdf-image`: PDF containing full-page rasterized images.<br>• `ui`: Snapshot of the editor UI window. |
+| `--export` | `<format>` | Export format (required).<br>• `pdf`: High-quality vector PDF with embedded fonts and graphics.<br>• `pdfa-2b`: Archival vector PDF/A-2b.<br>• `pdfa-3b`: Archival vector PDF/A-3b with the source file embedded.<br>• `png`: Raster image sequence for each page or slide.<br>• `tif` / `tiff`: Multi-page LZW-compressed TIFF.<br>• `csv` / `tsv`: Export spreadsheet sheet to CSV or TSV (UTF-8 BOM by default).<br>• `pdf-image`: PDF containing full-page rasterized images.<br>• `ui`: Snapshot of the editor UI window. |
+| `--encoding` | `<enc>` | Text encoding for `--export csv|tsv`: `utf8-bom` (default), `utf8`, `sjis`, or `cp932`. |
 | `--out-dir` | `<dir>` | Target output directory (default: current directory `.`). Created automatically if it does not exist. |
 | `--width` | `<px>` | Width of PNG export in pixels (default: `1920`). Aspect ratio is preserved. |
 | `--range` | `<range>` | Slide or page range to export (e.g., `1`, `1,3-5`, `2-`). The old name `--slides` still works but prints a warning. Exports all pages/slides if omitted. |

@@ -505,6 +505,7 @@ struct Args {
     text_layout_physical: Option<bool>,
     width: Option<u32>,
     slides: Option<String>,
+    encoding: Option<String>,
     layout: bool,
     /// 印刷オプション: 背景の色とイメージを印刷する (DOCX-OPTIONS-010).
     print_backgrounds: bool,
@@ -584,6 +585,7 @@ fn parse_args_from(arguments: impl IntoIterator<Item = String>) -> Result<Args, 
                 }
             }
             "--out-dir" => args.out_dir = Some(value()?.into()),
+            "--encoding" => args.encoding = Some(value()?),
             "--width" => args.width = Some(value()?.parse().map_err(|_| "--width needs a width in pixels".to_string())?),
             "--range" => args.slides = Some(value()?),
             // K0038: the old names still work, with a warning (`--slides` is pages for a document, and a singular `--slide` opens at one slide).
@@ -912,7 +914,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
         std::fs::write(&out_path, text.as_bytes()).map_err(|e| format!("{}: {e}", out_path.display()))?;
         return Ok(());
     }
-    if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx" | "lawxml" | "lawtext" | "ai-json") {
+    if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx" | "csv" | "tsv" | "lawxml" | "lawtext" | "ai-json") {
         let path = args
             .path
             .as_deref()
@@ -1033,6 +1035,56 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 let out_path = out_dir.join(format!("{stem}.xlsx"));
                 std::fs::write(&out_path, out_bytes)
                     .map_err(|e| format!("{}: {e}", out_path.display()))?;
+            }
+            "csv" | "tsv" => {
+                use ibis_formats::csv::{
+                    CsvEncoding, CsvOptions, OriginalCsvFormat, OriginalEncoding, RecordEnding,
+                    sheet_to_delimited, sheet_to_original_csv,
+                };
+                let opened = ibis_formats::open(data)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let slide_idx = args.slide.unwrap_or(1).saturating_sub(1);
+                if slide_idx >= opened.presentation.slides.len() {
+                    return Err(format!(
+                        "{}: sheet {} out of range (1..={})",
+                        path.display(),
+                        slide_idx + 1,
+                        opened.presentation.slides.len()
+                    ));
+                }
+                let delimiter = if format == "tsv" { '\t' } else { ',' };
+                let out_bytes = match args.encoding.as_deref().map(|s| s.to_ascii_lowercase()).as_deref() {
+                    None | Some("utf8-bom") | Some("utf-8-bom") => sheet_to_delimited(
+                        &opened.presentation,
+                        slide_idx,
+                        CsvOptions { encoding: CsvEncoding::Utf8Bom, delimiter },
+                    ),
+                    Some("utf8") | Some("utf-8") => sheet_to_delimited(
+                        &opened.presentation,
+                        slide_idx,
+                        CsvOptions { encoding: CsvEncoding::Utf8, delimiter },
+                    ),
+                    Some("sjis") | Some("shift_jis") | Some("shift-jis") | Some("cp932") => {
+                        sheet_to_original_csv(
+                            &opened.presentation,
+                            slide_idx,
+                            OriginalCsvFormat {
+                                encoding: OriginalEncoding::Cp932,
+                                delimiter,
+                                record_ending: RecordEnding::CrLf,
+                                final_record_ending: true,
+                            },
+                        )
+                        .map_err(|e| format!("{}: {e}", path.display()))?
+                    }
+                    Some(other) => {
+                        return Err(format!("--encoding takes utf8-bom, utf8, sjis or cp932: {other}"));
+                    }
+                };
+                let out_path = out_dir.join(format!("{stem}.{format}"));
+                std::fs::write(&out_path, out_bytes)
+                    .map_err(|e| format!("{}: {e}", out_path.display()))?;
+                println!("{}", out_path.display());
             }
             "lawxml" | "lawtext" => {
                 let presentation = if is_text_md {
