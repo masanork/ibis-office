@@ -1977,6 +1977,7 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
         write_pdf(&path, &pages, options.paper.filter(|_| handout_paper(options).is_none()).map(|p| (p, options.fit_paper)))?;
         println!("{}", path.display());
     }
+    #[cfg(not(target_family = "wasm"))]
     if options.format == Format::Tiff {
         let path = options.out_dir.join(format!("{}.tif", options.name));
         write_multipage_tiff(&path, &pages)?;
@@ -1985,6 +1986,7 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
     Ok(Rendered { writer: pdf_writer })
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn write_multipage_tiff(path: &Path, pages: &[(image::RgbaImage, (f32, f32))]) -> Result<(), String> {
     use tiff::encoder::{Compression, Predictor, TiffEncoder, colortype::RGB8};
     if pages.is_empty() {

@@ -9,11 +9,11 @@
 //!                   --version <new version> --log <updater.log> [--workdir <folder to remove>]
 //! ```
 //!
-//! `installed` and `unpacked` are the `.app` folders on macOS and the folders
-//! holding `ibisOffice.exe` on Windows. The steps, each logged as it starts
+//! `installed` and `unpacked` are the `.app` folders on macOS, the folders
+//! holding `ibisOffice.exe` on Windows, and AppImage files on Linux. The steps, each logged as it starts
 //! and as it succeeds or fails:
 //!
-//! 1. `wait-exit`: wait for ibisOffice to quit (30 s; then end it).
+//! 1. `wait-exit`: wait for ibisOffice to quit (30 s; Linux aborts on timeout).
 //! 2. `install`: replace the installed copy (`swap`. macOS: the new one copied
 //!    next to it and checked, the old one moved aside, the copy moved into
 //!    place. Windows: the files of the new version replace the old ones one by
@@ -26,12 +26,14 @@
 //! The exit code is 0 only for a finished update.
 
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use ibis_office_updater::log::Log;
-use ibis_office_updater::process::{self, Exit};
+use ibis_office_updater::process;
+#[cfg(not(target_os = "linux"))]
+use ibis_office_updater::process::Exit;
 
 struct Args {
     pid: u32,
@@ -41,6 +43,8 @@ struct Args {
     log: PathBuf,
     workdir: Option<PathBuf>,
     wait: Duration,
+    #[cfg(target_os = "linux")]
+    expected: ibis_office_updater::signed_manifest::Artifact,
 }
 
 fn parse() -> Result<Args, String> {
@@ -51,7 +55,31 @@ fn parse() -> Result<Args, String> {
         map.insert(key, value);
     }
     let get = |key: &str| map.get(key).cloned().ok_or(format!("{key} is missing"));
+    #[cfg(target_os = "linux")]
+    let expected = {
+        let sha256 = get("--sha256")?;
+        let size: u64 = get("--size")?
+            .parse()
+            .map_err(|_| "invalid size".to_string())?;
+        if size == 0
+            || size > 2 * 1024 * 1024 * 1024
+            || sha256.len() != 64
+            || !sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("invalid expected artifact".into());
+        }
+        ibis_office_updater::signed_manifest::Artifact {
+            target: String::new(),
+            filename: String::new(),
+            size,
+            sha256,
+        }
+    };
     Ok(Args {
+        #[cfg(target_os = "linux")]
+        expected,
         pid: get("--pid")?.parse().map_err(|_| "--pid is not a number".to_string())?,
         old: PathBuf::from(get("--old")?),
         new: PathBuf::from(get("--new")?),
@@ -78,6 +106,14 @@ fn run(args: &Args, log: &Log) -> i32 {
     log.start("update", &format!("ibisOfficeUpdater {}, {} -> {}", env!("CARGO_PKG_VERSION"), args.new.display(), args.old.display()));
 
     log.start("wait-exit", &format!("pid {}", args.pid));
+    #[cfg(target_os = "linux")]
+    if let Err(err) = process::wait_for_linux_exit(args.pid, args.wait) {
+        log.fail("wait-exit", &err);
+        return 1;
+    } else {
+        log.ok("wait-exit", "ibisOffice quit");
+    }
+    #[cfg(not(target_os = "linux"))]
     match process::wait_for_exit(args.pid, args.wait) {
         Exit::Quit => log.ok("wait-exit", "ibisOffice quit"),
         Exit::Ended => log.ok("wait-exit", "ibisOffice did not quit in time and was ended"),
@@ -88,7 +124,11 @@ fn run(args: &Args, log: &Log) -> i32 {
     }
 
     log.start("install", "replacing the installed copy");
-    if let Err(err) = platform::install(&args.old, &args.new) {
+    #[cfg(target_os = "linux")]
+    let installed = platform::install(&args.old, &args.new, &args.expected);
+    #[cfg(not(target_os = "linux"))]
+    let installed = platform::install(&args.old, &args.new);
+    if let Err(err) = installed {
         log.fail("install", &err);
         relaunch_old(args, log);
         return 1;
@@ -262,7 +302,55 @@ mod platform {
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+mod platform {
+    use super::*;
+    use ibis_office_updater::appimage_swap;
+
+    pub type Started = std::process::Child;
+
+    pub fn install(
+        old: &Path,
+        new: &Path,
+        expected: &ibis_office_updater::signed_manifest::Artifact,
+    ) -> Result<(), String> {
+        appimage_swap::install(old, new, expected)
+    }
+
+    pub fn rollback(old: &Path, _: &Path) -> Result<(), String> {
+        appimage_swap::rollback(old)
+    }
+
+    pub fn cleanup(old: &Path, _: &Path) -> Result<(), String> {
+        appimage_swap::cleanup(old)
+    }
+
+    pub fn launch(app: &Path) -> Result<Started, String> {
+        let mut command = Command::new(app);
+        command
+            .current_dir(std::env::temp_dir())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for name in ["APPIMAGE", "APPDIR", "ARGV0", "OWD"] {
+            command.env_remove(name);
+        }
+        command
+            .spawn()
+            .map_err(|e| format!("{}: {e}", app.display()))
+    }
+
+    pub fn check_running(_: &Path, child: &mut Started) -> Result<(), String> {
+        std::thread::sleep(Duration::from_secs(3));
+        match child.try_wait() {
+            Ok(None) => Ok(()),
+            Ok(Some(status)) => Err(format!("ibisOffice quit within 3 seconds ({status})")),
+            Err(e) => Err(format!("cannot inspect started process: {e}")),
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod platform {
     use super::*;
 
