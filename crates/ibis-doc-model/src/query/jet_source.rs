@@ -723,6 +723,238 @@ fn cell_to_json(cell: &CellValue) -> serde_json::Value {
     }
 }
 
+fn text_mentions_ident(haystack_lower: &str, needle: &str) -> bool {
+    let needle_lower = needle.to_ascii_lowercase();
+    if needle_lower.is_empty() {
+        return false;
+    }
+    let mut start = 0usize;
+    while let Some(pos) = haystack_lower[start..].find(&needle_lower) {
+        let abs = start + pos;
+        let before_ok = abs == 0
+            || !haystack_lower[..abs]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let after = abs + needle_lower.len();
+        let after_ok = after >= haystack_lower.len()
+            || !haystack_lower[after..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + needle_lower.len();
+    }
+    false
+}
+
+fn collect_macro_targets(stmts: &[serde_json::Value], out: &mut std::collections::BTreeMap<&'static str, Vec<String>>) {
+    for stmt in stmts {
+        match stmt.get("type").and_then(serde_json::Value::as_str) {
+            Some("action") => {
+                let action = stmt.get("name").and_then(serde_json::Value::as_str).unwrap_or("");
+                let args = stmt.get("arguments").and_then(serde_json::Value::as_object);
+                let push_arg = |key: &'static str, arg_name: &str, map: &mut std::collections::BTreeMap<&'static str, Vec<String>>| {
+                    if let Some(val) = args.and_then(|a| a.get(arg_name)).and_then(serde_json::Value::as_str)
+                        && !val.is_empty()
+                    {
+                        let list = map.entry(key).or_default();
+                        if !list.iter().any(|x| x == val) {
+                            list.push(val.to_owned());
+                        }
+                    }
+                };
+                match action.to_ascii_lowercase().as_str() {
+                    "openform" => push_arg("opens_forms", "FormName", out),
+                    "openreport" => push_arg("opens_reports", "ReportName", out),
+                    "openquery" => push_arg("opens_queries", "QueryName", out),
+                    "opentable" => push_arg("opens_tables", "TableName", out),
+                    "runmacro" => push_arg("runs_macros", "MacroName", out),
+                    "runcode" => push_arg("runs_vba", "FunctionName", out),
+                    _ => {}
+                }
+            }
+            Some("conditional") => {
+                if let Some(branches) = stmt.get("branches").and_then(serde_json::Value::as_array) {
+                    for b in branches {
+                        if let Some(sub) = b.get("statements").and_then(serde_json::Value::as_array) {
+                            collect_macro_targets(sub, out);
+                        }
+                    }
+                }
+            }
+            Some("group" | "sub_macro" | "data_block") => {
+                if let Some(sub) = stmt.get("statements").and_then(serde_json::Value::as_array) {
+                    collect_macro_targets(sub, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn build_jet_cross_references(
+    tables: &[serde_json::Value],
+    queries: &[serde_json::Value],
+    forms: &[serde_json::Value],
+    macros: &[serde_json::Value],
+    vba_modules: &[serde_json::Value],
+) -> serde_json::Value {
+    let table_names: Vec<String> = tables
+        .iter()
+        .filter_map(|t| t.get("name").and_then(serde_json::Value::as_str).map(str::to_owned))
+        .collect();
+    let query_names: Vec<String> = queries
+        .iter()
+        .filter_map(|q| q.get("name").and_then(serde_json::Value::as_str).map(str::to_owned))
+        .collect();
+    let form_names: Vec<String> = forms
+        .iter()
+        .filter_map(|f| f.get("name").and_then(serde_json::Value::as_str).map(str::to_owned))
+        .collect();
+
+    let query_refs: Vec<serde_json::Value> = queries
+        .iter()
+        .filter_map(|q| {
+            let name = q.get("name").and_then(serde_json::Value::as_str)?;
+            let sql_lower = q
+                .get("sql")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let tables_used: Vec<String> = table_names
+                .iter()
+                .filter(|t| text_mentions_ident(&sql_lower, t))
+                .cloned()
+                .collect();
+            let queries_used: Vec<String> = query_names
+                .iter()
+                .filter(|qn| qn.as_str() != name && text_mentions_ident(&sql_lower, qn))
+                .cloned()
+                .collect();
+            Some(json!({
+                "name": name,
+                "tables": tables_used,
+                "queries": queries_used,
+            }))
+        })
+        .collect();
+
+    let form_refs: Vec<serde_json::Value> = forms
+        .iter()
+        .filter_map(|f| {
+            let name = f.get("name").and_then(serde_json::Value::as_str)?;
+            let record_source = f
+                .get("named_properties")
+                .and_then(|np| np.get("RecordSource"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let mut events = serde_json::Map::new();
+            if let Some(np) = f.get("named_properties").and_then(serde_json::Value::as_object) {
+                for (k, v) in np {
+                    if k.starts_with("On") || k.ends_with("Update") {
+                        events.insert(format!("Form.{k}"), v.clone());
+                    }
+                }
+            }
+            let mut bound_controls = Vec::new();
+            if let Some(ctrls) = f.get("controls").and_then(serde_json::Value::as_array) {
+                for c in ctrls {
+                    let cname = c.get("name").and_then(serde_json::Value::as_str).unwrap_or("");
+                    if let Some(np) = c.get("named_properties").and_then(serde_json::Value::as_object) {
+                        let cs = np.get("ControlSource").cloned();
+                        let rs = np.get("RowSource").cloned();
+                        if cs.is_some() || rs.is_some() {
+                            bound_controls.push(json!({
+                                "control": cname,
+                                "control_source": cs,
+                                "row_source": rs,
+                            }));
+                        }
+                        for (k, v) in np {
+                            if k.starts_with("On") || k.ends_with("Update") {
+                                events.insert(format!("{cname}.{k}"), v.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            let mut macro_targets = std::collections::BTreeMap::new();
+            if let Some(ems) = f.get("embedded_macros").and_then(serde_json::Value::as_array) {
+                for em in ems {
+                    if let Some(stmts) = em.get("statements").and_then(serde_json::Value::as_array) {
+                        collect_macro_targets(stmts, &mut macro_targets);
+                    }
+                }
+            }
+            Some(json!({
+                "name": name,
+                "record_source": record_source,
+                "bound_controls": bound_controls,
+                "events": events,
+                "embedded_macro_targets": macro_targets,
+            }))
+        })
+        .collect();
+
+    let macro_refs: Vec<serde_json::Value> = macros
+        .iter()
+        .filter_map(|m| {
+            let name = m.get("name").and_then(serde_json::Value::as_str)?;
+            let mut targets = std::collections::BTreeMap::new();
+            if let Some(stmts) = m.get("statements").and_then(serde_json::Value::as_array) {
+                collect_macro_targets(stmts, &mut targets);
+            }
+            Some(json!({
+                "name": name,
+                "targets": targets,
+            }))
+        })
+        .collect();
+
+    let vba_refs: Vec<serde_json::Value> = vba_modules
+        .iter()
+        .filter_map(|m| {
+            let name = m.get("name").and_then(serde_json::Value::as_str)?;
+            let src_lower = m
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let tables_used: Vec<String> = table_names
+                .iter()
+                .filter(|t| text_mentions_ident(&src_lower, t))
+                .cloned()
+                .collect();
+            let queries_used: Vec<String> = query_names
+                .iter()
+                .filter(|q| text_mentions_ident(&src_lower, q))
+                .cloned()
+                .collect();
+            let forms_used: Vec<String> = form_names
+                .iter()
+                .filter(|f| text_mentions_ident(&src_lower, f))
+                .cloned()
+                .collect();
+            Some(json!({
+                "name": name,
+                "tables": tables_used,
+                "queries": queries_used,
+                "forms": forms_used,
+            }))
+        })
+        .collect();
+
+    json!({
+        "forms": form_refs,
+        "queries": query_refs,
+        "macros": macro_refs,
+        "vba_modules": vba_refs,
+    })
+}
+
 /// Export a machine-readable reverse-engineering bundle from an Access database.
 pub fn jet_export_bundle(
     path: &Path,
@@ -958,6 +1190,8 @@ pub fn jet_export_bundle(
         })
         .unwrap_or_default();
 
+    let cross_references = build_jet_cross_references(&tables, &queries, &forms, &macros, &vba_modules);
+
     let mut bundle = json!({
         "format": version,
         "mode": mode.as_str(),
@@ -975,6 +1209,7 @@ pub fn jet_export_bundle(
         "forms": forms,
         "macros": macros,
         "vba_modules": vba_modules,
+        "cross_references": cross_references,
     });
 
     if mode == JetBundleMode::Full {
@@ -2072,6 +2307,37 @@ mod tests {
             jet_sql_to_sqlite("SELECT UCase(Trim([Name])), Len([Name]), Left([Code], 3), Mid([Code], 2, 4), Year([OrderDate]) FROM [Orders]"),
             "SELECT UPPER(TRIM(\"Name\")), LENGTH(\"Name\"), SUBSTR(\"Code\", 1, 3), SUBSTR(\"Code\", 2, 4), CAST(strftime('%Y', \"OrderDate\") AS INTEGER) FROM \"Orders\""
         );
+    }
+
+    #[test]
+    fn builds_cross_references_from_forms_queries_macros_and_vba() {
+        let tables = vec![json!({"name": "Orders"}), json!({"name": "Customers"})];
+        let queries = vec![json!({"name": "qOpenOrders", "sql": "SELECT * FROM Orders JOIN Customers ON Orders.CID = Customers.ID"})];
+        let forms = vec![json!({
+            "name": "frmOrders",
+            "named_properties": {"RecordSource": "qOpenOrders", "OnOpen": "[Event Procedure]"},
+            "controls": [{"name": "btnSave", "named_properties": {"ControlSource": "Amount", "OnClick": "mcrSave"}}],
+            "embedded_macros": [{"name": "btnPrint.OnClick", "statements": [{"type": "action", "name": "OpenReport", "arguments": {"ReportName": "rptInvoice"}}]}],
+        })];
+        let macros = vec![json!({
+            "name": "mcrSave",
+            "statements": [{"type": "action", "name": "OpenForm", "arguments": {"FormName": "frmOrders"}}]
+        })];
+        let vba = vec![json!({
+            "name": "Form_frmOrders",
+            "source": "Private Sub Form_Open()\nDoCmd.OpenQuery \"qOpenOrders\"\nEnd Sub"
+        })];
+
+        let xref = build_jet_cross_references(&tables, &queries, &forms, &macros, &vba);
+        assert_eq!(xref["queries"][0]["tables"], json!(["Orders", "Customers"]));
+        assert_eq!(xref["forms"][0]["record_source"], json!("qOpenOrders"));
+        assert_eq!(xref["forms"][0]["events"]["btnSave.OnClick"], json!("mcrSave"));
+        assert_eq!(
+            xref["forms"][0]["embedded_macro_targets"]["opens_reports"],
+            json!(["rptInvoice"])
+        );
+        assert_eq!(xref["macros"][0]["targets"]["opens_forms"], json!(["frmOrders"]));
+        assert_eq!(xref["vba_modules"][0]["queries"], json!(["qOpenOrders"]));
     }
 }
 
