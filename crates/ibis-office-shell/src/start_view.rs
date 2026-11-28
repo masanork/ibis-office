@@ -489,11 +489,11 @@ impl SlideEditor {
             .gap_4()
             .flex_wrap()
             .ml(px(BADGE_OVERHANG - TILE_PADDING))
+            .child(self.new_markdown_tile(cx))
             .children(crate::format::creatable_infos().into_iter().map(|(kind, info)| self.new_file_tile(kind, info.extension, info.new_badge_color, cx)));
         let new_files = new_files.when(!crate::host::is_connected(), |row| {
             row.child(self.render_new_tile("vsdx", 0x2563a8, |this, window, cx| this.new_visio_draft(window, cx), cx))
         });
-        let new_files = new_files.child(self.new_markdown_tile(cx));
 
         div()
             .id("start-view")
