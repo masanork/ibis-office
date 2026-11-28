@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, dataset_sql_type, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
+    SqliteRows, SqliteScalar, JetBundleMode, dataset_sql_type, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -80,6 +80,18 @@ const TOOLS: &[Tool] = &[
             ("form", string("Exact form or report name from jet_inspect_schema.")),
         ], &[PATH, "form"]),
         run: inspect_jet_form,
+    },
+    Tool {
+        name: "jet_export_bundle",
+        description: "Dump a machine-readable reverse-engineering JSON bundle of a Microsoft Access (.mdb/.accdb) database in 'metadata', 'code', or 'full' mode.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .mdb or .accdb file under an allowed folder.")),
+            ("mode", json!({"type": "string", "enum": ["metadata", "code", "full"], "description": "Bundle detail level: 'metadata' (schema, queries, decoded forms), 'code' (metadata + VBA source, default), or 'full' (code + bounded table rows)."})),
+            ("max_rows_per_table", integer("Maximum rows per table in 'full' mode (default 100, maximum 1000).")),
+        ], &[PATH]),
+        run: export_jet_bundle,
     },
     Tool {
         name: "jet_export_sqlite",
@@ -569,6 +581,38 @@ fn inspect_jet_form(service: &mut Service, args: &Value) -> Result<Value, ToolEr
         return Err(ToolError::new(
             "result_too_large",
             "Form properties exceed the response size limit",
+        ));
+    }
+    Ok(result)
+}
+
+fn export_jet_bundle(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "mode", "max_rows_per_table"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, JET_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an Access database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Access database exceeds the file size limit",
+        ));
+    }
+    let mode = match args.opt_str("mode")? {
+        Some(raw) => JetBundleMode::parse(&raw).map_err(ToolError::invalid)?,
+        None => JetBundleMode::Code,
+    };
+    let max_rows_per_table = args
+        .get("max_rows_per_table")
+        .and_then(Value::as_u64)
+        .map(|v| (v as usize).clamp(1, 1_000))
+        .unwrap_or(100);
+    let result = jet_export_bundle(&path, mode, max_rows_per_table).map_err(sqlite_error)?;
+    if result.to_string().len() > service.limits.page_bytes {
+        return Err(ToolError::new(
+            "result_too_large",
+            "Access bundle exceeds the response size limit; try mode='metadata' or lower max_rows_per_table",
         ));
     }
     Ok(result)
