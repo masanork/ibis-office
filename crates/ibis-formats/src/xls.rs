@@ -2095,7 +2095,7 @@ mod biff5_tests {
         formula[20..].copy_from_slice(&[3, 0, 0x1E, 42, 0]);
         record(&mut stream, 0x0006, &formula);
         record(&mut stream, 0x000A, &[]);
-        cfb::write(&[cfb::Item::stream("Book", stream)])
+        ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream("Book", stream)])
     }
 
     #[test]
