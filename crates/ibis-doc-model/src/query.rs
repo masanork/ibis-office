@@ -46,7 +46,7 @@ pub use pst_source::{is_pst_extension, pst_dataset_columns, pst_export_sqlite, p
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod sqlite_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use sqlite_source::{DATASET_MEMORY_LIMIT, DiskDataset, SqliteInputSchema, SqlitePredicate, SqliteQuerySession, SqliteRows, SqliteScalar, dataset_sql_type, read_sqlite_table, read_sqlite_table_bounded, sqlite_columns, sqlite_count, sqlite_dataset_columns, sqlite_query, sqlite_query_datasets, sqlite_tables, validate_sqlite_select};
+pub use sqlite_source::{DATASET_MEMORY_LIMIT, DiskDataset, SqliteInputSchema, SqlitePredicate, SqliteQuerySession, SqliteRows, SqliteScalar, dataset_sql_type, read_sqlite_table, read_sqlite_table_bounded, sqlite_columns, sqlite_count, sqlite_dataset_columns, sqlite_execute, sqlite_query, sqlite_query_datasets, sqlite_tables, validate_sqlite_select};
 #[cfg(all(feature = "report-profiling", any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub mod report_profile;
 mod book;

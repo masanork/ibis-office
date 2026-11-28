@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
     SqliteRows, SqliteScalar, FixedWidthField, JetBundleMode, dataset_sql_type, dbf_export_sqlite, dbf_inspect_schema, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, fixed_width_export_sqlite, fixed_width_preview, is_dbf_extension, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
-    sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
+    sqlite_count, sqlite_dataset_columns, sqlite_execute, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
 
@@ -217,6 +217,23 @@ const TOOLS: &[Tool] = &[
             ("overwrite", boolean("Overwrite an existing output file (default false).")),
         ], &[PATH, "output", "fields"]),
         run: export_fixed_width_sqlite,
+    },
+    Tool {
+        name: "sqlite_execute",
+        description: "Execute one or more SQLite INSERT, UPDATE, DELETE, or DDL statements in a transaction against a local SQLite file via Turso.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .sqlite, .sqlite3, or .db file under an allowed folder.")),
+            ("sql", string("Single SQL statement to execute (use either sql or statements).")),
+            ("params", json!({"type": "array", "maxItems": 100, "description": "Optional positional ? parameters for sql."})),
+            ("statements", json!({"type": "array", "minItems": 1, "maxItems": 256, "items": object(&[
+                ("sql", string("SQL statement.")),
+                ("params", json!({"type": "array", "maxItems": 100})),
+            ], &["sql"])})),
+            ("foreign_keys", boolean("Enforce PRAGMA foreign_keys = ON (default true).")),
+        ], &[PATH]),
+        run: execute_sqlite,
     },
     Tool {
         name: "sqlite_describe_datasets",
@@ -832,6 +849,51 @@ fn export_fixed_width_sqlite(service: &mut Service, args: &Value) -> Result<Valu
         overwrite,
     )
     .map_err(sqlite_error)
+}
+
+fn execute_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "sql", "params", "statements", "foreign_keys"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an existing SQLite database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "SQLite database exceeds the file size limit",
+        ));
+    }
+    let foreign_keys = args.opt_bool("foreign_keys")?.unwrap_or(true);
+    let mut owned_stmts: Vec<(String, Vec<Option<SqliteScalar<'_>>>)> = Vec::new();
+    match (args.opt_str("sql")?, args.get("statements")) {
+        (Some(sql), None) => {
+            let params = sql_params(args)?;
+            owned_stmts.push((sql.to_owned(), params));
+        }
+        (None, Some(Value::Array(items))) => {
+            if args.get("params").is_some() {
+                return Err(ToolError::invalid("pass params inside each statements entry"));
+            }
+            for item in items {
+                crate::edit::only_known(item, &["sql", "params"])?;
+                let sql = item.str_arg("sql")?.to_owned();
+                let params = sql_params(item)?;
+                owned_stmts.push((sql, params));
+            }
+        }
+        (Some(_), Some(_)) => {
+            return Err(ToolError::invalid("pass either sql or statements, not both"));
+        }
+        (None, _) => {
+            return Err(ToolError::invalid("pass sql or a statements array"));
+        }
+    }
+    let borrowed: Vec<(&str, &[Option<SqliteScalar<'_>>])> = owned_stmts
+        .iter()
+        .map(|(sql, params)| (sql.as_str(), params.as_slice()))
+        .collect();
+    sqlite_execute(&path, &borrowed, foreign_keys).map_err(sqlite_error)
 }
 
 fn export_ese_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
