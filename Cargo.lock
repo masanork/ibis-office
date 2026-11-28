@@ -7741,6 +7741,7 @@ dependencies = [
  "sorane-workspace",
  "subsetter",
  "tempfile",
+ "tiff",
  "ttf-parser",
  "unicode-vo",
  "unicode-width 0.2.2",
