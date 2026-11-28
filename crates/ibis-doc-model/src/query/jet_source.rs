@@ -770,25 +770,79 @@ fn encode_blob_properties(
     (list, named)
 }
 
+fn twips_to_px(twips: f64) -> f64 {
+    (twips / 15.0 * 10.0).round() / 10.0
+}
+
+fn json_as_f64(val: Option<&serde_json::Value>) -> Option<f64> {
+    val.and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)))
+}
+
+fn extract_control_layout(named: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+    let left_twips = json_as_f64(named.get("Left"));
+    let top_twips = json_as_f64(named.get("Top"));
+    let width_twips = json_as_f64(named.get("Width"));
+    let height_twips = json_as_f64(named.get("Height"));
+    let control_source = named.get("ControlSource").and_then(|v| v.as_str());
+    let expression = control_source.filter(|s| s.trim_start().starts_with('='));
+
+    json!({
+        "left_px": left_twips.map(twips_to_px),
+        "top_px": top_twips.map(twips_to_px),
+        "width_px": width_twips.map(twips_to_px),
+        "height_px": height_twips.map(twips_to_px),
+        "tab_index": named.get("TabIndex").cloned().unwrap_or(serde_json::Value::Null),
+        "tab_stop": named.get("TabStop").cloned().unwrap_or(serde_json::Value::Null),
+        "visible": named.get("Visible").cloned().unwrap_or(serde_json::Value::Null),
+        "caption": named.get("Caption").cloned().unwrap_or(serde_json::Value::Null),
+        "control_source": control_source,
+        "expression": expression,
+    })
+}
+
 fn form_properties_to_json(fp: &jetdb::FormProperties) -> serde_json::Value {
     let (properties, named_properties) = encode_blob_properties(&fp.properties);
+    let mut tab_entries: Vec<(i64, f64, f64, String)> = Vec::new();
     let controls: Vec<_> = fp
         .controls
         .iter()
         .map(|c| {
             let (props, named_props) = encode_blob_properties(&c.properties);
+            let layout = extract_control_layout(&named_props);
+            let tab_idx = named_props
+                .get("TabIndex")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(i64::MAX);
+            let top = json_as_f64(named_props.get("Top")).unwrap_or(f64::MAX);
+            let left = json_as_f64(named_props.get("Left")).unwrap_or(f64::MAX);
+            tab_entries.push((tab_idx, top, left, c.name.clone()));
             json!({
                 "name": c.name,
                 "type": control_type_name(c.type_code),
                 "type_code": c.type_code,
+                "layout": layout,
                 "named_properties": named_props,
                 "properties": props,
             })
         })
         .collect();
+    tab_entries.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.total_cmp(&b.1))
+            .then_with(|| a.2.total_cmp(&b.2))
+    });
+    let tab_order: Vec<String> = tab_entries.into_iter().map(|e| e.3).collect();
+    let form_layout = json!({
+        "width_px": json_as_f64(named_properties.get("Width")).map(twips_to_px),
+        "caption": named_properties.get("Caption").cloned().unwrap_or(serde_json::Value::Null),
+        "record_source": named_properties.get("RecordSource").cloned().unwrap_or(serde_json::Value::Null),
+        "default_view": named_properties.get("DefaultView").cloned().unwrap_or(serde_json::Value::Null),
+        "tab_order": tab_order,
+    });
     json!({
         "name": fp.form_name,
         "object_type": format!("{:?}", fp.object_type),
+        "layout": form_layout,
         "named_properties": named_properties,
         "properties": properties,
         "controls": controls,
@@ -2478,6 +2532,24 @@ mod tests {
         );
         assert_eq!(xref["macros"][0]["targets"]["opens_forms"], json!(["frmOrders"]));
         assert_eq!(xref["vba_modules"][0]["queries"], json!(["qOpenOrders"]));
+    }
+
+    #[test]
+    fn normalizes_form_control_layout_and_expressions() {
+        let mut named = serde_json::Map::new();
+        named.insert("Left".into(), json!(1500));
+        named.insert("Top".into(), json!(300));
+        named.insert("Width".into(), json!(2250));
+        named.insert("Height".into(), json!(360));
+        named.insert("TabIndex".into(), json!(2));
+        named.insert("ControlSource".into(), json!("=Sum([Amount])"));
+        let layout = extract_control_layout(&named);
+        assert_eq!(layout["left_px"], json!(100.0));
+        assert_eq!(layout["top_px"], json!(20.0));
+        assert_eq!(layout["width_px"], json!(150.0));
+        assert_eq!(layout["height_px"], json!(24.0));
+        assert_eq!(layout["tab_index"], json!(2));
+        assert_eq!(layout["expression"], json!("=Sum([Amount])"));
     }
 }
 
