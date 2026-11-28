@@ -8,6 +8,37 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Linux updates never signal the parent: inability to confirm its exit aborts.
+#[cfg(target_os = "linux")]
+pub fn wait_for_linux_exit(pid: u32, timeout: Duration) -> Result<(), String> {
+    if pid == 0 {
+        return Err("invalid parent pid".into());
+    }
+    let started = Instant::now();
+    loop {
+        // Confirm procfs itself is available before interpreting a missing PID.
+        std::fs::read_to_string("/proc/self/stat")
+            .map_err(|e| format!("cannot inspect procfs: {e}"))?;
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => {
+                let state = stat
+                    .rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().next())
+                    .ok_or("invalid process status")?;
+                if state == "Z" || state == "X" {
+                    return Ok(());
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("cannot inspect parent process: {e}")),
+        }
+        if started.elapsed() >= timeout {
+            return Err("parent still running; nothing was changed".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Whether process `pid` is running (a zombie, waiting to be reaped, is not).
 pub fn is_alive(pid: u32) -> bool {
     #[cfg(unix)]

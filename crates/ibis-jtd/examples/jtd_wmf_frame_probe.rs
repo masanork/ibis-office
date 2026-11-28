@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Compare raw frame candidates with WMF mapping records, without placing images.
-use ibis_formats::jtd::{self, EmbeddedMetafile, FrameLink};
+use ibis_jtd::{self as jtd, EmbeddedMetafile, FrameLink};
 use std::collections::BTreeMap;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -220,7 +220,7 @@ mod tests {
     }
     #[test]
     fn ambiguous_or_missing_matches_are_not_selected() {
-        use ibis_formats::jtd::FrameCandidate;
+        use ibis_jtd::FrameCandidate;
         let frame = || FrameCandidate {
             row: 0,
             id: 2,

@@ -67,9 +67,7 @@ mod document_compare;
 pub mod git_workspace;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub mod folder_context;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_family = "wasm"))]
 mod structured_view;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_family = "wasm"))]
 pub(crate) mod structured_code_view;
 pub mod selection_handles;
 pub mod autocorrect;

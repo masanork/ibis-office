@@ -458,7 +458,7 @@ impl PreviewImport {
     pub(crate) fn detect(extension: Option<&str>, data: &[u8]) -> Option<Self> {
         if let Some(format) = FixedLayoutFormat::detect(extension, data) {
             Some(Self::FixedLayout(format))
-        } else if extension.is_some_and(ibis_formats::jtd::is_extension) || ibis_formats::jtd::is_jtd(data) {
+        } else if extension.is_some_and(ibis_jtd::is_extension) || ibis_jtd::is_jtd(data) {
             Some(Self::Jtd)
         } else {
             None

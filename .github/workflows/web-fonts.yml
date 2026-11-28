@@ -2,6 +2,7 @@
 name: Web CI
 on:
   push:
+    branches: [sorane]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -39,10 +40,10 @@ jobs:
           key: wasm-bindgen-cli-${{ runner.os }}-0.2.128
       - run: wasm-bindgen --version | grep -qx 'wasm-bindgen 0.2.128' || cargo install wasm-bindgen-cli --version 0.2.128 --locked
       - run: cargo test --locked -p ibis-emf
-      - run: 'cargo test --locked -p ibis-formats --lib jtd::'
+      - run: 'cargo test --locked -p ibis-jtd --lib'
       - run: cargo test --locked -p ibis-formats --test html_export
       - run: cargo test --locked -p ibis-formats --lib markdown::tests
-      - run: cargo test --locked -p ibis-formats --example jtd_embedded
+      - run: cargo test --locked -p ibis-jtd --example jtd_embedded
       - run: npm run test:web
       - run: npm run check:worker
       - run: npx wrangler deploy --dry-run

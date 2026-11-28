@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("usage: jtd_thumbnail_info INPUT [NEW_OUTPUT.bmp]".into());
     }
     let data = std::fs::read(path)?;
-    match ibis_formats::jtd::inspect_thumbnail(&data)? {
+    match ibis_jtd::inspect_thumbnail(&data)? {
         None => {
             if output.is_some() {
                 return Err("no observed thumbnail candidate".into());
@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(t) => {
             if let Some(output) = &output {
-                let bmp = ibis_formats::jtd::decode_thumbnail_bmp(&data)?
+                let bmp = ibis_jtd::decode_thumbnail_bmp(&data)?
                     .ok_or("no observed thumbnail candidate")?;
                 write_new(Path::new(output), &bmp)?;
             }

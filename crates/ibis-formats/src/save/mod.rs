@@ -206,6 +206,9 @@ pub fn open_progressive_with_options(
         crate::progress::fraction(1.0);
         return Ok((opened, None));
     }
+    if crate::is_jtd(&data) {
+        return Err(Error::new(crate::JTD_MESSAGE));
+    }
     if crate::is_opendocument(&data) {
         return Err(Error::new(crate::ODF_MESSAGE));
     }

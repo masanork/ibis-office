@@ -14,13 +14,12 @@ pub fn extract_to_markdown(extension: Option<&str>, data: &[u8]) -> Result<Extra
     let ext = extension.map(str::to_ascii_lowercase);
 
     if matches!(ext.as_deref(), Some("jtd" | "jtt" | "jttc")) {
-        let pres = crate::jtd::read(data)?;
-        let markdown = export_presentation_to_markdown(&pres)?;
-        return Ok(ExtractedMarkdown {
-            format: "jtd",
-            markdown,
-            page_count: None,
-        });
+        // JTD parsing lives in ibis-jtd, which itself depends on this crate's
+        // Error and model types, so it cannot be called from here. Callers
+        // that can depend on both crates route JTD through ibis_jtd::read
+        // plus markdown::export_presentation_to_markdown (as the doc-service
+        // extract tool does), the same split as ibis_formats::read.
+        return Err(Error::new(crate::JTD_MESSAGE));
     }
 
     if matches!(ext.as_deref(), Some("epub")) || crate::epub::is_epub(data) {

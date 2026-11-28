@@ -71,6 +71,7 @@ fn a_zero_text_rectangle_of_a_custom_shape_is_one_line() {
         notes_pages: false,
         outline_pages: false,
         notes_source: None,
+        embed_source: None,
         handout_marks: Default::default(),
     };
     export(presentation, &options).expect("the export");

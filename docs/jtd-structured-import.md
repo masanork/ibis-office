@@ -60,9 +60,9 @@ Wordモデルの組版機構を再利用しているが、JTDの表示行をWord
 - 原本は公開アセットに置かず、検証はローカルのみ。私的文書や本文を配布しない。
 
 ```sh
-cargo test -p ibis-formats --lib jtd::
+cargo test -p ibis-jtd --lib
 python3 -m unittest discover -s scripts -p test_audit_jtd.py -v
-cargo build -p ibis-formats --example jtd_import
+cargo build -p ibis-jtd --example jtd_import
 python3 scripts/qualify-jtd.py /path/to/local-samples --json-out /tmp/jtd-results.json
 python3 scripts/test_audit_jtd.py --write-probes /tmp/jtd-probes
 python3 scripts/qualify-jtd.py /tmp/jtd-probes

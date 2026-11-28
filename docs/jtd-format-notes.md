@@ -98,7 +98,7 @@
 `jtd::inspect_embedded_metafiles`は、このうち`EmbeddedPress`の観測形に限って、
 WMFヘッダー・宣言長・レコード境界・終端を検査したバイト列を返す診断APIである。
 件数と合計サイズに実装上の上限を設け、不正・未対応の候補を別に数える。
-`cargo run -p ibis-formats --example jtd_embedded -- INPUT`は候補数とサイズのみを出力する。
+`cargo run -p ibis-jtd --example jtd_embedded -- INPUT`は候補数とサイズのみを出力する。
 第2引数に**まだ存在しない**出力ディレクトリを指定すると、候補のWMFと、既存変換器が
 描画できた場合は近似SVGを別々に取り出す。既存ディレクトリは変更しない。中断時は
 出力が不完全になる場合がある。得られる画像は原本ページではなく、位置や順序も未確定である。
@@ -142,7 +142,7 @@ OpenJTD側の一部の診断投影ではこれらの仮定を使うため、こ�
 横が約0.0283、縦が約0.0281〜0.0284。もう1文書では4件が横約0.0400、縦約0.0426〜0.0428、
 1件が横約0.0284、縦約0.0282だった。WMF論理座標をピクセルや物理寸法と断定せず、
 差の原因も未確定とする。比の類似や単一の参照関係だけではページ配置を導けない。
-`cargo run -p ibis-formats --example jtd_wmf_frame_probe -- INPUT`は、枠・WMFの候補数と
+`cargo run -p ibis-jtd --example jtd_wmf_frame_probe -- INPUT`は、枠・WMFの候補数と
 マッピングレコードを読み取り専用で列挙する。複数候補は選択せず、描画状態の再生や配置は行わない。
 
 **縮小画像と他の枠候補（同じ2文書）。** `EmbedFrame`は8-byte先行部と100-byteずつの
@@ -160,7 +160,7 @@ OpenJTD側の一部の診断投影ではこれらの仮定を使うため、こ�
 ピクセル単位の照合を意味しない。埋め込み時点からの変更やページとの対応も未検証で、
 現行ページの再構成として扱わない。
 
-`cargo run -p ibis-formats --example jtd_thumbnail_info -- INPUT`はヘッダー候補を検査する。
+`cargo run -p ibis-jtd --example jtd_thumbnail_info -- INPUT`はヘッダー候補を検査する。
 第2引数に**まだ存在しない**BMPファイルを指定すると、この限定形を長さ・連長を検査して
 展開する。既存ファイルは上書きしない。書き込み中の中断では出力が不完全になることがある。
 画像は埋め込みスナップショット候補であり、元の画像の位置や順序を確定するものではない。
@@ -423,7 +423,7 @@ Wordの矩形グリッドを満たす空の補完セルと原区画は区別す�
 | 終端のない罫線ヘッダー | 公開1文書で48ヘッダーに対し47出力行 | 改ページ前後の制御の意味と一太郎での見た目を照合 |
 | 未知の書式末尾・QLST末尾値 | 境界と原byte値を保持 | 異なる版、編集・保存前後の比較 |
 
-実装場所は`crates/ibis-formats/src/jtd/{decode,font}.rs`と`jtd.rs`。
+実装場所は`crates/ibis-jtd/src/{decode,font}.rs`と`lib.rs`。
 独立診断は`scripts/audit-jtd.py`、Rust経路との照合は`scripts/qualify-jtd.py`。
 合成probeの生成方法・原本照合のコマンドは[構造化インポート](jtd-structured-import.md#検証)を参照。
 合成probeはparserの不変条件を調べるためのもので、一太郎本体が受理する証拠ではない。

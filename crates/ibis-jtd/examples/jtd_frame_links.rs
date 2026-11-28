@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Diagnostic only: no recovered page association, placement, or paint order.
-use ibis_formats::jtd;
+use ibis_jtd as jtd;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);

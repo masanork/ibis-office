@@ -138,6 +138,7 @@ fn pdf_word_tops(file: &str) -> std::collections::HashMap<String, f32> {
         notes_pages: false,
         outline_pages: false,
         notes_source: None,
+        embed_source: None,
         handout_marks: Default::default(),
     };
     export(presentation, &options).expect("the PDF");

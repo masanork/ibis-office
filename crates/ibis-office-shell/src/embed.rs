@@ -186,7 +186,7 @@ impl SlideEditor {
     /// Download only the content currently recognized from the read-only JTD.
     pub(crate) fn export_jtd_docx(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_jtd_read_only() || self.jtd.gallery { return; }
-        match ibis_formats::jtd::export_docx(self.presentation()) {
+        match ibis_jtd::export_docx(self.presentation()) {
             Ok(bytes) => {
                 let name = self.file_name.as_deref().unwrap_or("document.jtd");
                 let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
@@ -200,7 +200,7 @@ impl SlideEditor {
     /// Download the content currently recognized from the read-only JTD as HTML.
     pub(crate) fn export_jtd_html(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_jtd_read_only() { return; }
-        match ibis_formats::jtd::export_html(self.presentation()) {
+        match ibis_jtd::export_html(self.presentation()) {
             Ok(bytes) => {
                 let name = self.file_name.as_deref().unwrap_or("document.jtd");
                 let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);

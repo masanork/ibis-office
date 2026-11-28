@@ -6,9 +6,9 @@ use ibis_doc_model::{
 };
 
 pub fn read(data: &[u8]) -> Result<(Presentation, bool), String> {
-    match ibis_formats::jtd::read_preview(data).map_err(|e| e.to_string())? {
-        ibis_formats::jtd::Preview::Document(document) => Ok((document, false)),
-        ibis_formats::jtd::Preview::UnplacedImages(images) => {
+    match ibis_jtd::read_preview(data).map_err(|e| e.to_string())? {
+        ibis_jtd::Preview::Document(document) => Ok((document, false)),
+        ibis_jtd::Preview::UnplacedImages(images) => {
             gallery(images, "jtd.gallery-unavailable").map(|document| (document, true))
         }
     }
@@ -16,13 +16,13 @@ pub fn read(data: &[u8]) -> Result<(Presentation, bool), String> {
 
 /// Inspect unplaced images separately even when the document has body text.
 pub fn images(data: &[u8]) -> Result<Presentation, String> {
-    let images = ibis_formats::jtd::inspect_embedded_metafiles(data).map_err(|e| e.to_string())?;
+    let images = ibis_jtd::inspect_embedded_metafiles(data).map_err(|e| e.to_string())?;
     gallery(images, "jtd.no-embedded-images")
 }
 
 /// An embedded snapshot, which may be stale and is not a reconstructed page.
 pub fn thumbnail(data: &[u8]) -> Result<Presentation, String> {
-    let bmp = ibis_formats::jtd::decode_thumbnail_bmp(data)
+    let bmp = ibis_jtd::decode_thumbnail_bmp(data)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| crate::i18n::text("jtd.thumbnail-unavailable").to_string())?;
     let (width, height) = crate::shape_items::validated_picture_size(MediaFormat::Bmp, &bmp)
@@ -41,7 +41,7 @@ pub fn thumbnail(data: &[u8]) -> Result<Presentation, String> {
     Ok(document)
 }
 
-fn gallery(mut images: ibis_formats::jtd::EmbeddedMetafileInspection, empty_key: &str) -> Result<Presentation, String> {
+fn gallery(mut images: ibis_jtd::EmbeddedMetafileInspection, empty_key: &str) -> Result<Presentation, String> {
     let bytes = ibis_formats::blank_file(ibis_formats::Kind::Document).map_err(|e| e.to_string())?;
     let mut document = ibis_formats::read(&bytes).map_err(|e| e.to_string())?;
     images.metafiles.sort_by_key(|entry| entry.embedding_index);

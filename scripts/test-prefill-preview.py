@@ -67,8 +67,9 @@ with subprocess.Popen(
                 )
                 cli_report = json.loads(completed.stdout)
                 assert isinstance(cli_report.get("state"), str) and cli_report["state"], completed.stdout
-                assert {k: v for k, v in cli_report.items() if k != "state"} == {
-                    k: v for k, v in report.items() if k != "state"
+                assert isinstance(cli_report.get("document_id"), str) and cli_report["document_id"], completed.stdout
+                assert {k: v for k, v in cli_report.items() if k not in ("state", "document_id")} == {
+                    k: v for k, v in report.items() if k not in ("state", "document_id")
                 }, completed.stdout
                 denied = call("xlsx_apply_prefill", {
                     **args, "preview_id": report["preview_id"], "targets": ["training_name"],

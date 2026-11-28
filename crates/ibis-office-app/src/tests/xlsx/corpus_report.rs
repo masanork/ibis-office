@@ -429,6 +429,7 @@ fn export_pdf(file: &str, label: &str) -> PathBuf {
         notes_pages: false,
         outline_pages: false,
         notes_source: None,
+        embed_source: None,
         handout_marks: Default::default(),
     };
     let result = export(presentation, &options);

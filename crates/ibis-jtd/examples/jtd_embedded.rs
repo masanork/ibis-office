@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Inspect or explicitly recover unplaced embedded metafiles.
-use ibis_formats::jtd::{self, EmbeddedMetafileInspection};
+use ibis_jtd::{self as jtd, EmbeddedMetafileInspection};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -68,7 +68,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ibis_formats::jtd::EmbeddedMetafile;
+    use ibis_jtd::EmbeddedMetafile;
 
     #[test]
     fn recovers_wmf_and_svg_without_overwriting_a_directory() {

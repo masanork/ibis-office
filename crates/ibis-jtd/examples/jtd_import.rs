@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Local qualification tool. Reports counts, never document contents.
-use ibis_formats::jtd::{self, RecordKind};
+use ibis_jtd::{self as jtd, RecordKind};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);

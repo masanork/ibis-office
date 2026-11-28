@@ -59,7 +59,7 @@ previous view. The snapshot can be outdated or incomplete and is not evidence
 of the current page layout. It is read-only and cannot be converted to DOCX.
 If there is no displayable snapshot, the previous view remains open.
 
-For format investigation, `cargo run -p ibis-formats --example jtd_frame_links -- INPUT`
+For format investigation, `cargo run -p ibis-jtd --example jtd_frame_links -- INPUT`
 reports candidate links between `EmbeddingInfo` references and `Frame` IDs.
 It exposes duplicate matches, missing matches, and raw size comparisons rather
 than selecting a position. It reads the source without writing to it. Values,

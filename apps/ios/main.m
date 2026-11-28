@@ -8,9 +8,7 @@
 extern void ibis_ios_start(void *ui_view, float logical_width, float logical_height, float scale_factor);
 extern void ibis_ios_tick(void);
 extern void ibis_ios_resize(float logical_width, float logical_height, float scale_factor);
-extern void ibis_ios_touch_began(float x, float y);
-extern void ibis_ios_touch_moved(float x, float y);
-extern void ibis_ios_touch_ended(float x, float y, bool cancelled);
+extern void ibis_ios_touch(uint64_t id, uint8_t phase, float x, float y);
 extern void ibis_ios_pinch(float x, float y, float delta, uint8_t phase);
 extern void ibis_ios_lifecycle(uint8_t phase);
 extern void ibis_ios_memory_warning(void);
@@ -82,33 +80,31 @@ static NSMutableDictionary<NSString *, NSURL *> *g_exportUrlByTempPath = nil;
 }
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (event.allTouches.count > 1) return;
-    UITouch *touch = [touches anyObject];
-    if (!touch) return;
-    CGPoint pt = [touch locationInView:self];
-    ibis_ios_touch_began((float)pt.x, (float)pt.y);
+    for (UITouch *touch in touches) {
+        CGPoint pt = [touch locationInView:self];
+        ibis_ios_touch((uint64_t)(uintptr_t)touch, 0, (float)pt.x, (float)pt.y);
+    }
 }
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (event.allTouches.count > 1) return;
-    UITouch *touch = [touches anyObject];
-    if (!touch) return;
-    CGPoint pt = [touch locationInView:self];
-    ibis_ios_touch_moved((float)pt.x, (float)pt.y);
+    for (UITouch *touch in touches) {
+        CGPoint pt = [touch locationInView:self];
+        ibis_ios_touch((uint64_t)(uintptr_t)touch, 1, (float)pt.x, (float)pt.y);
+    }
 }
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (event.allTouches.count > 1) return;
-    UITouch *touch = [touches anyObject];
-    if (!touch) return;
-    CGPoint pt = [touch locationInView:self];
-    ibis_ios_touch_ended((float)pt.x, (float)pt.y, false);
+    for (UITouch *touch in touches) {
+        CGPoint pt = [touch locationInView:self];
+        ibis_ios_touch((uint64_t)(uintptr_t)touch, 2, (float)pt.x, (float)pt.y);
+    }
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    UITouch *touch = [touches anyObject];
-    CGPoint pt = touch ? [touch locationInView:self] : CGPointZero;
-    ibis_ios_touch_ended((float)pt.x, (float)pt.y, true);
+    for (UITouch *touch in touches) {
+        CGPoint pt = [touch locationInView:self];
+        ibis_ios_touch((uint64_t)(uintptr_t)touch, 3, (float)pt.x, (float)pt.y);
+    }
 }
 
 - (void)handlePinch:(UIPinchGestureRecognizer *)gesture {
@@ -401,6 +397,82 @@ bool ibis_ios_sync_saved_file(const char *path) {
     }
     if (scoped) [url stopAccessingSecurityScopedResource];
     return ok;
+}
+
+void ibis_ios_free_bytes(uint8_t *bytes) {
+    free(bytes);
+}
+
+uint8_t *ibis_ios_raster_glyph(
+    const char *name,
+    uint16_t glyph,
+    float px,
+    int32_t *left,
+    int32_t *top,
+    uint32_t *width,
+    uint32_t *height
+) {
+    if (!name || px <= 0.0f || !left || !top || !width || !height) return NULL;
+    NSString *nsName = [NSString stringWithUTF8String:name];
+    if (!nsName) return NULL;
+    CTFontRef font = CTFontCreateWithName((__bridge CFStringRef)nsName, (CGFloat)px, NULL);
+    if (!font) return NULL;
+    CGGlyph cgGlyph = (CGGlyph)glyph;
+    CGRect bbox = CTFontGetBoundingRectsForGlyphs(font, kCTFontOrientationDefault, &cgGlyph, NULL, 1);
+    if (CGRectIsEmpty(bbox) || bbox.size.width <= 0.0 || bbox.size.height <= 0.0) {
+        CFRelease(font);
+        return NULL;
+    }
+    int32_t x0 = (int32_t)floor(CGRectGetMinX(bbox));
+    int32_t y0 = (int32_t)floor(CGRectGetMinY(bbox));
+    int32_t x1 = (int32_t)ceil(CGRectGetMaxX(bbox));
+    int32_t y1 = (int32_t)ceil(CGRectGetMaxY(bbox));
+    if (x1 <= x0 || y1 <= y0) {
+        CFRelease(font);
+        return NULL;
+    }
+    uint32_t w = (uint32_t)(x1 - x0);
+    uint32_t h = (uint32_t)(y1 - y0);
+    if (w > 4096 || h > 4096) {
+        CFRelease(font);
+        return NULL;
+    }
+    size_t count = (size_t)w * (size_t)h;
+    uint8_t *buf = (uint8_t *)calloc(count, 4);
+    if (!buf) {
+        CFRelease(font);
+        return NULL;
+    }
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(
+        buf, w, h, 8, (size_t)w * 4, cs,
+        (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big
+    );
+    CGColorSpaceRelease(cs);
+    if (!ctx) {
+        free(buf);
+        CFRelease(font);
+        return NULL;
+    }
+    CGPoint pos = CGPointMake((CGFloat)(-x0), (CGFloat)(-y0));
+    CTFontDrawGlyphs(font, &cgGlyph, &pos, 1, ctx);
+    CGContextRelease(ctx);
+    CFRelease(font);
+
+    for (size_t i = 0; i < count; i++) {
+        uint8_t a = buf[i * 4 + 3];
+        if (a > 0 && a < 255) {
+            for (size_t c = 0; c < 3; c++) {
+                uint32_t v = ((uint32_t)buf[i * 4 + c] * 255u) / (uint32_t)a;
+                buf[i * 4 + c] = v > 255u ? 255u : (uint8_t)v;
+            }
+        }
+    }
+    *left = x0;
+    *top = y1;
+    *width = w;
+    *height = h;
+    return buf;
 }
 
 int main(int argc, char *argv[]) {

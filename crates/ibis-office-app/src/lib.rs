@@ -16,6 +16,7 @@
 pub(crate) use ibis_office_base::clock;
 // The document screen is its own crate (tasks/doc/crate-split-plan.md, 15); the app and the tests name it `crate::docx`.
 pub(crate) use ibis_office_docx as docx;
+#[cfg(any(test, feature = "scenarios"))]
 pub(crate) use ibis_office_shell::jtd_preview;
 #[cfg(windows)]
 mod open_with;
@@ -1015,9 +1016,16 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             } else if ibis_formats::just_legacy::is_just_legacy(&raw_data) {
                 ibis_formats::just_legacy::to_markdown(&raw_data)
             } else if ibis_formats::access::is_access(&raw_data) {
-                ibis_doc_model::query::jet_migration_markdown(path)
-                    .or_else(|_| ibis_formats::access::to_markdown(&raw_data).map_err(|e| e.to_string()))
-                    .map_err(ibis_formats::Error::new)
+                #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                {
+                    ibis_doc_model::query::jet_migration_markdown(path)
+                        .or_else(|_| ibis_formats::access::to_markdown(&raw_data).map_err(|e| e.to_string()))
+                        .map_err(ibis_formats::Error::new)
+                }
+                #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+                {
+                    ibis_formats::access::to_markdown(&raw_data)
+                }
             } else {
                 ibis_formats::archive::to_markdown(&raw_data)
             }
@@ -1216,6 +1224,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     )
                     .map_err(|e| format!("{}: {e}", path.display()))?
                     .presentation
+                } else if ibis_jtd::is_jtd(&data) {
+                    ibis_jtd::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 } else {
                     ibis_odf::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 };
@@ -1242,6 +1252,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     )
                     .map_err(|e| format!("{}: {e}", path.display()))?
                     .presentation
+                } else if ibis_jtd::is_jtd(&data) {
+                    ibis_jtd::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 } else {
                     ibis_odf::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 };
