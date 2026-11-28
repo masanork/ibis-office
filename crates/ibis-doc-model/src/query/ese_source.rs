@@ -275,6 +275,40 @@ pub fn ese_inspect_schema(path: &Path) -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Materialize user tables from an ESE / JET Blue database into a standalone SQLite file via Turso.
+pub fn ese_export_sqlite(
+    input_path: &Path,
+    output_path: &Path,
+    tables_filter: Option<&[String]>,
+    overwrite: bool,
+) -> Result<serde_json::Value, String> {
+    let available = ese_tables(input_path)?;
+    let target_tables: Vec<String> = match tables_filter {
+        Some(filter) => {
+            if filter.is_empty() {
+                return Err("tables filter must not be empty".into());
+            }
+            for name in filter {
+                if !available.iter().any(|t| t == name) {
+                    return Err(format!("ESE table does not exist: {name}"));
+                }
+            }
+            filter.to_vec()
+        }
+        None => available,
+    };
+    let sources: Vec<_> = target_tables
+        .into_iter()
+        .map(|name| {
+            (
+                name.clone(),
+                super::sqlite_source::DiskDataset::Ese(input_path.to_path_buf(), name, Vec::new()),
+            )
+        })
+        .collect();
+    super::sqlite_source::export_datasets_to_sqlite(&sources, output_path, overwrite)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

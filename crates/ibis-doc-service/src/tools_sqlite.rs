@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, dataset_sql_type, ese_dataset_columns, ese_inspect_schema, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_sqlite, jet_inspect_schema, pst_dataset_columns, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
+    SqliteRows, SqliteScalar, dataset_sql_type, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_sqlite, jet_inspect_schema, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -52,6 +52,14 @@ const TOOLS: &[Tool] = &[
         run: inspect_jet_schema,
     },
     Tool {
+        name: "jet_migration_markdown",
+        description: "Generate a Markdown migration specification with a Mermaid erDiagram, saved query SQL, and form/VBA inventory for a Microsoft Access (.mdb/.accdb) database.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[("path", string("Path to a local .mdb or .accdb file under an allowed folder."))], &[PATH]),
+        run: migration_markdown_jet,
+    },
+    Tool {
         name: "jet_export_sqlite",
         description: "Materialize user tables from a Microsoft Access (.mdb/.accdb) database into a standalone SQLite file via Turso for fast repeated querying.",
         access: Access::Edit,
@@ -73,12 +81,38 @@ const TOOLS: &[Tool] = &[
         run: inspect_ese_schema,
     },
     Tool {
+        name: "ese_export_sqlite",
+        description: "Materialize tables from an ESE / JET Blue (.edb, .sdb, .dat) database into a standalone SQLite file via Turso.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .edb, .sdb, or .dat file under an allowed folder.")),
+            ("output", string("Destination .sqlite, .sqlite3, or .db file path under an allowed folder.")),
+            ("tables", json!({"type": "array", "minItems": 1, "maxItems": 256, "items": string("Exact table name from ese_inspect_schema.")})),
+            ("overwrite", boolean("Overwrite an existing output file (default false).")),
+        ], &[PATH, "output"]),
+        run: export_ese_sqlite,
+    },
+    Tool {
         name: "pst_list_folders",
         description: "List folder hierarchy and item counts in an Outlook (.ost/.pst) file. Use 'folders' or 'messages' as table in datasets.",
         access: Access::Read,
         returns_content: true,
         schema: &|| object(&[("path", string("Path to a local .ost or .pst file under an allowed folder."))], &[PATH]),
         run: list_pst_folders,
+    },
+    Tool {
+        name: "pst_export_sqlite",
+        description: "Materialize Outlook (.ost/.pst) 'folders' and 'messages' tables into a standalone SQLite file via Turso for fast repeated querying.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .ost or .pst file under an allowed folder.")),
+            ("output", string("Destination .sqlite, .sqlite3, or .db file path under an allowed folder.")),
+            ("tables", json!({"type": "array", "minItems": 1, "maxItems": 2, "items": json!({"type": "string", "enum": ["folders", "messages"]})})),
+            ("overwrite", boolean("Overwrite an existing output file (default false).")),
+        ], &[PATH, "output"]),
+        run: export_pst_sqlite,
     },
     Tool {
         name: "sqlite_describe_datasets",
@@ -442,6 +476,79 @@ fn list_pst_folders(service: &mut Service, args: &Value) -> Result<Value, ToolEr
         ));
     }
     Ok(folders)
+}
+
+fn migration_markdown_jet(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, JET_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an Access database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Access database exceeds the file size limit",
+        ));
+    }
+    let markdown = jet_migration_markdown(&path).map_err(sqlite_error)?;
+    if markdown.len() > service.limits.page_bytes {
+        return Err(ToolError::new(
+            "result_too_large",
+            "Migration specification exceeds the response size limit",
+        ));
+    }
+    Ok(json!({ "markdown": markdown }))
+}
+
+fn export_ese_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "output", "tables", "overwrite"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, ESE_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an ESE database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "ESE database exceeds the file size limit",
+        ));
+    }
+    let output = paths::resolve(&service.allow_dirs, args.str_arg("output")?, EXTENSIONS, false)?;
+    let tables = match args.get("tables") {
+        None => None,
+        Some(value) => Some(
+            dataset_names(value, 256)
+                .ok_or_else(|| ToolError::invalid("tables must contain 1 to 256 non-empty table names"))?,
+        ),
+    };
+    let overwrite = args.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+    ese_export_sqlite(&path, &output, tables.as_deref(), overwrite).map_err(sqlite_error)
+}
+
+fn export_pst_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "output", "tables", "overwrite"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, PST_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an Outlook .ost or .pst file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Outlook store exceeds the file size limit",
+        ));
+    }
+    let output = paths::resolve(&service.allow_dirs, args.str_arg("output")?, EXTENSIONS, false)?;
+    let tables = match args.get("tables") {
+        None => None,
+        Some(value) => Some(
+            dataset_names(value, 2)
+                .ok_or_else(|| ToolError::invalid("tables must contain 1 to 2 non-empty table names"))?,
+        ),
+    };
+    let overwrite = args.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+    pst_export_sqlite(&path, &output, tables.as_deref(), overwrite).map_err(sqlite_error)
 }
 
 fn list_tables(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
