@@ -338,6 +338,14 @@ same names in one folder (for example `src/office/vendor/`). Do not edit them; w
 - `?view=1`, `?menuBar=0`, `?toolBar=0`, `?close=1`, `?download=1`, `?fd=0`, `?origin=` and the events above stay as they were. Options given
   to `attachIframe` win over the same ones of the address.
 
+### Initial document errors from the low-level `run()` API
+
+Register a listener on the editor window before calling `run(base, name, bytes)`.
+The `ibisoffice:open-error` event carries `detail.name` and `detail.error` when the
+initial document fails to open. Awaiting `run()` only waits for editor startup.
+If your own script calls `run()` inside a sandboxed iframe, listen in that iframe
+and forward the event to the parent with `postMessage` and an explicit target origin.
+
 ## Pinning a version
 
 The files of a release do not change once it is published, so a version you have checked (see [Get the browser version](#get-the-browser-version)) stays the same.

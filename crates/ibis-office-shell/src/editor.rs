@@ -1752,6 +1752,12 @@ impl SlideEditor {
         let closed = self.closed;
         cx.spawn_in(window, async move |this, cx| {
             let name: SharedString = name.into();
+            let fail_open = |editor: &mut Self, name: &str, error: &str, cx: &mut Context<Self>| {
+                editor.fail_loading(crate::i18n::format("file.open-failed", &[("name", name), ("error", error)]), cx);
+                if initial {
+                    crate::web::initial_open_failed(name, error);
+                }
+            };
             let kind = name.rsplit_once('.').and_then(|(_, e)| ibis_formats::Kind::from_extension(e));
             let Ok(true) = this.update_in(cx, |this, window, cx| {
                 if this.closed != closed || this.web.open_generation != generation { return false; }
@@ -1784,10 +1790,7 @@ impl SlideEditor {
                                 cx.notify();
                             }
                             Err(err) => {
-                                this.fail_loading(
-                                    crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]),
-                                    cx,
-                                );
+                                fail_open(this, &name, &err, cx);
                             }
                         }
                     })
@@ -1802,7 +1805,7 @@ impl SlideEditor {
                     if this.closed != closed || this.web.open_generation != generation { return; }
                     match result {
                         Ok(opened) => this.load(opened.presentation, name, window, cx),
-                        Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                        Err(err) => fail_open(this, &name, &err, cx),
                     }
                 }).ok();
                 return;
@@ -1815,7 +1818,7 @@ impl SlideEditor {
                     if this.closed != closed || this.web.open_generation != generation { return; }
                     match result {
                         Ok(presentation) => this.load(presentation, name, window, cx),
-                        Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                        Err(err) => fail_open(this, &name, &err, cx),
                     }
                 }).ok();
                 return;
@@ -1826,7 +1829,7 @@ impl SlideEditor {
                     if this.closed != closed || this.web.open_generation != generation { return; }
                     match result {
                         Ok((presentation, gallery)) => this.load_jtd(presentation, name, data, gallery, window, cx),
-                        Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                        Err(err) => fail_open(this, &name, &err, cx),
                     }
                 }).ok();
                 return;
@@ -1881,10 +1884,7 @@ impl SlideEditor {
                                 return;
                             }
                             if let Err(err) = this.open_structured_code_view(source, window, cx) {
-                                this.fail_loading(
-                                    crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]),
-                                    cx,
-                                );
+                                fail_open(this, &name, &err, cx);
                             }
                         })
                         .ok();
@@ -1899,7 +1899,7 @@ impl SlideEditor {
                         if this.closed != closed || this.web.open_generation != generation { return; }
                         match result {
                             Ok(presentation) => this.load(presentation, name, window, cx),
-                            Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                            Err(err) => fail_open(this, &name, &err, cx),
                         }
                     }).ok();
                     return;
@@ -1966,7 +1966,7 @@ impl SlideEditor {
                     }
                     this.show_import_warning(opened.import_warning, window, cx);
                 }
-                Err(err) => this.fail_loading(crate::i18n::format("file.open-failed", &[("name", &name), ("error", &err)]), cx),
+                Err(err) => fail_open(this, &name, &err, cx),
             })
             .ok();
         })

@@ -1715,8 +1715,9 @@ mod web {
     /// `location.origin`: the icon loader fetches with reqwest, which rejects
     /// relative URLs, so `None` (an empty base) loads no icons.
     ///
-    /// `file` is a .pptx, .xlsx or .docx to open, named `file_name`; without it (or if it
-    /// cannot be read) the editor shows the start view.
+    /// `file` is a document to open asynchronously, named `file_name`. Listen for
+    /// `ibisoffice:open-error` on the window for a read failure (`detail.name` and
+    /// `detail.error`). Without a file the editor opens its start view.
     #[wasm_bindgen]
     pub async fn run(asset_base: Option<String>, file_name: Option<String>, file: Option<Vec<u8>>) -> Result<(), JsValue> {
         if APPLICATION.with(|app| app.borrow().is_some()) || STARTING.with(|starting| starting.replace(true)) {
