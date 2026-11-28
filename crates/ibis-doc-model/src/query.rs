@@ -24,6 +24,18 @@ mod avro_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use avro_source::read_avro;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod jet_source;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub use jet_source::{is_jet_extension, jet_dataset_columns, jet_export_sqlite, jet_inspect_schema, jet_tables, read_jet_table_bounded};
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod ese_source;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub use ese_source::{ese_dataset_columns, ese_inspect_schema, ese_tables, is_ese_extension, read_ese_table_bounded};
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod pst_source;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub use pst_source::{is_pst_extension, pst_dataset_columns, pst_list_folders, read_pst_table_bounded};
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod sqlite_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use sqlite_source::{DATASET_MEMORY_LIMIT, DiskDataset, SqliteInputSchema, SqlitePredicate, SqliteQuerySession, SqliteRows, SqliteScalar, dataset_sql_type, read_sqlite_table, read_sqlite_table_bounded, sqlite_columns, sqlite_count, sqlite_dataset_columns, sqlite_query, sqlite_query_datasets, sqlite_tables, validate_sqlite_select};

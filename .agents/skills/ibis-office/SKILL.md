@@ -12,4 +12,4 @@ Choose the connection based on what the user wants to change.
 
 If the server is unavailable, read [references/mcp-setup.md](references/mcp-setup.md) for connection examples and platform differences. If an advertised tool differs from an example, use the installed schema.
 
-For recurring workbook checks, use [references/monthly-report.md](references/monthly-report.md). It includes a small synthetic input and an expected result for checking the workflow. For ad hoc dataset analysis, describe the datasets before writing SQL, use bounded result windows, and report the exact query, source, and any truncation. Respect the user's choice to preview, edit, or save.
+For recurring workbook checks, use [references/monthly-report.md](references/monthly-report.md). It includes a small synthetic input and an expected result for checking the workflow. For ad hoc dataset analysis (including Microsoft Access `.mdb`/`.accdb` via `jet_inspect_schema` and `datasets`), describe the datasets before writing SQL, use bounded result windows, and report the exact query, source, and any truncation. Respect the user's choice to preview, edit, or save.

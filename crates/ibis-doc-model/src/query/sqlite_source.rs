@@ -107,7 +107,7 @@ fn checked_table(connection: &Arc<Connection>, table: &str) -> Result<String, St
     Ok(sql_identifier(table))
 }
 
-fn sql_identifier(name: &str) -> String {
+pub(super) fn sql_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
@@ -647,7 +647,7 @@ impl SqliteQuerySession {
     }
 }
 
-fn dataset_value(value: CellValue, ty: QType) -> Result<Value, String> {
+pub(super) fn dataset_value(value: CellValue, ty: QType) -> Result<Value, String> {
     Ok(match value {
         CellValue::Empty => Value::Null,
         CellValue::Text(text) => Value::from_text(text),
@@ -673,6 +673,9 @@ pub enum DiskDataset {
     JsonLinesPaths(std::path::PathBuf, Vec<String>),
     Avro(std::path::PathBuf, Vec<String>),
     Sqlite(std::path::PathBuf, String),
+    Jet(std::path::PathBuf, String, Vec<String>),
+    Ese(std::path::PathBuf, String, Vec<String>),
+    Pst(std::path::PathBuf, String, Vec<String>),
     Csv(std::path::PathBuf),
     Log(std::path::PathBuf),
     Parquet(std::path::PathBuf, Vec<String>, Vec<(String, super::ParquetPredicate)>),
@@ -727,6 +730,15 @@ impl DiskDataset {
                 super::parquet_source::visit_parquet(path, selected, &filters, schema_only, visit)
             }
             Self::Sqlite(path, table) => visit_sqlite_table(path, table, schema_only, visit),
+            Self::Jet(path, table, selected) => {
+                super::jet_source::visit_jet_table(path, table, selected, schema_only, visit)
+            }
+            Self::Ese(path, table, selected) => {
+                super::ese_source::visit_ese_table(path, table, selected, schema_only, visit)
+            }
+            Self::Pst(path, table, selected) => {
+                super::pst_source::visit_pst_table(path, table, selected, schema_only, visit)
+            }
             Self::Log(path) => super::log_source::visit_log(path, schema_only, visit),
             Self::Csv(path) => super::csv_source::visit_csv(path, schema_only, visit),
             Self::Table(table) => {
@@ -1032,7 +1044,7 @@ impl SqliteQuerySession {
                     width = names.len();
                     let batch = matches!(
                         source,
-                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::RecoverableJsonLines(..) | DiskDataset::JsonLinesPaths(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Csv(..) | DiskDataset::Log(..)
+                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::RecoverableJsonLines(..) | DiskDataset::JsonLinesPaths(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Jet(..) | DiskDataset::Ese(..) | DiskDataset::Pst(..) | DiskDataset::Csv(..) | DiskDataset::Log(..)
                     );
                     #[cfg(feature = "report-profiling")]
                     let batch = batch && !super::report_profile::single_row_inserts_forced();
