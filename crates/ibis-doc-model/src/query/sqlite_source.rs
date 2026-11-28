@@ -743,6 +743,7 @@ pub enum DiskDataset {
     Jet(std::path::PathBuf, String, Vec<String>),
     Dbf(std::path::PathBuf, Vec<String>),
     FixedWidth(std::path::PathBuf, Vec<super::FixedWidthField>, Option<String>, usize),
+    Bson(std::path::PathBuf, Vec<String>),
     Ese(std::path::PathBuf, String, Vec<String>),
     Pst(std::path::PathBuf, String, Vec<String>),
     Csv(std::path::PathBuf),
@@ -814,6 +815,9 @@ impl DiskDataset {
                     schema_only,
                     visit,
                 )
+            }
+            Self::Bson(path, selected) => {
+                super::bson_source::visit_bson(path, selected, schema_only, visit)
             }
             Self::Ese(path, table, selected) => {
                 super::ese_source::visit_ese_table(path, table, selected, schema_only, visit)
@@ -1238,7 +1242,7 @@ impl SqliteQuerySession {
                     width = names.len();
                     let batch = matches!(
                         source,
-                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::RecoverableJsonLines(..) | DiskDataset::JsonLinesPaths(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Jet(..) | DiskDataset::Dbf(..) | DiskDataset::FixedWidth(..) | DiskDataset::Ese(..) | DiskDataset::Pst(..) | DiskDataset::Csv(..) | DiskDataset::Log(..)
+                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::RecoverableJsonLines(..) | DiskDataset::JsonLinesPaths(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Jet(..) | DiskDataset::Dbf(..) | DiskDataset::FixedWidth(..) | DiskDataset::Bson(..) | DiskDataset::Ese(..) | DiskDataset::Pst(..) | DiskDataset::Csv(..) | DiskDataset::Log(..)
                     );
                     #[cfg(feature = "report-profiling")]
                     let batch = batch && !super::report_profile::single_row_inserts_forced();
