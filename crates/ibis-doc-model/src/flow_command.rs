@@ -4152,14 +4152,13 @@ pub fn resolve_revisions_filter(
     commands
 }
 
-/// The paragraph that `chain` becomes once the marks of all but the last are gone: the last one's formatting and mark, the text of all of
-/// them in order. It is named by the first (`first_id`: what a save finds the joined paragraph by) or by the last.
+/// The paragraph that `chain` becomes once the marks of all but the last are gone: the last one's formatting, mark, and `para_id`, and the
+/// text of all of them in order. Its `id` comes from the first (`first_id`: what a save finds the joined paragraph by) or from the last.
 pub fn join_marked(chain: &[&FlowParagraph], first_id: bool) -> FlowParagraph {
     let Some(last) = chain.last() else { return FlowParagraph::default() };
     let mut joined = (*last).clone();
     if first_id {
         joined.id = chain[0].id;
-        joined.para_id = chain[0].para_id.clone();
     }
     joined.runs = chain.iter().flat_map(|p| p.runs.iter().cloned()).collect();
     joined.bookmarks = Vec::new();
@@ -7388,6 +7387,62 @@ mod tests {
         // Expand paragraph
         run(&mut d, FlowCommand::SetParagraphFormat { first: p_id, last: p_id, change: ParaChange::Collapsed(false) });
         assert!(!paragraph(&d, p_id).unwrap().collapsed);
+    }
+
+    #[test]
+    fn join_marked_first_id_keeps_last_para_id() {
+        let make_para = |id: u32, para_id: &str, text: &str, deleted_mark: bool| FlowParagraph {
+            id,
+            para_id: Some(para_id.into()),
+            runs: vec![FlowRun::new(
+                FlowRunKind::Text(text.into()),
+                FlowRunStyle::default(),
+            )],
+            mark_revision: deleted_mark.then(|| crate::flow::Revision {
+                kind: crate::flow::RevisionKind::Delete,
+                author: "Alice".into(),
+                date: "2026-11-28T00:00:00Z".into(),
+            }),
+            ..FlowParagraph::default()
+        };
+
+        let p1 = make_para(1, "11111111", "first", true);
+        let p2 = make_para(2, "22222222", "second", true);
+        let p3 = make_para(3, "33333333", "third", false);
+
+        let joined = join_marked(&[&p1, &p2, &p3], true);
+        assert_eq!(joined.id, 1);
+        assert_eq!(joined.para_id.as_deref(), Some("33333333"));
+        assert_eq!(joined.text(), "firstsecondthird");
+
+        let mut d = FlowDocument {
+            body: vec![
+                Block::Paragraph(p1),
+                Block::Paragraph(p2),
+                Block::Paragraph(p3),
+            ],
+            id_floor: 3,
+            ..FlowDocument::default()
+        };
+        let styles = d.styles.clone();
+        for b in &mut d.body {
+            if let Block::Paragraph(p) = b {
+                p.resolve(&styles);
+            }
+        }
+        let cmds = resolve_revisions(&d, None, true);
+        assert!(!cmds.is_empty());
+        for cmd in cmds {
+            apply_to(&mut d, cmd).unwrap();
+        }
+        assert_eq!(d.body.len(), 1);
+        let Block::Paragraph(accepted) = &d.body[0] else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(accepted.id, 1);
+        assert_eq!(accepted.para_id.as_deref(), Some("33333333"));
+        assert!(accepted.mark_revision.is_none());
+        assert_eq!(accepted.text(), "firstsecondthird");
     }
 }
 
