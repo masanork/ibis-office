@@ -1539,6 +1539,210 @@ pub fn jet_verify_sqlite(
     }))
 }
 
+fn sanitize_fs_component(raw: &str, fallback: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+            out.push(ch);
+        } else if !ch.is_control() && !matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches(|c| c == '.' || c == ' ');
+    if trimmed.is_empty() {
+        fallback.to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn sniff_binary_ext(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"%PDF-") {
+        "pdf"
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "png"
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        "jpg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "gif"
+    } else if bytes.starts_with(b"BM") {
+        "bmp"
+    } else if bytes.starts_with(b"PK\x03\x04") {
+        "zip"
+    } else {
+        "bin"
+    }
+}
+
+/// Export Access Attachment (`ComplexType`) and `Binary`/`Ole` column payloads to `output_dir`
+/// along with a `manifest.json` mapping table/row/column to exported file paths.
+pub fn jet_export_attachments(
+    jet_path: &Path,
+    output_dir: &Path,
+    tables_filter: Option<&[String]>,
+    overwrite: bool,
+) -> Result<serde_json::Value, String> {
+    let available = jet_tables(jet_path)?;
+    let target_tables: Vec<String> = match tables_filter {
+        Some(filter) => {
+            if filter.is_empty() {
+                return Err("tables filter must not be empty".into());
+            }
+            for name in filter {
+                if !available.iter().any(|t| t == name) {
+                    return Err(format!("Access table does not exist: {name}"));
+                }
+            }
+            filter.to_vec()
+        }
+        None => available,
+    };
+
+    std::fs::create_dir_all(output_dir).map_err(|e| e.to_string())?;
+    let mut reader = open_jet(jet_path)?;
+    let catalog = read_catalog(&mut reader).map_err(|e| e.to_string())?;
+
+    let mut exported_files = Vec::new();
+    let mut total_bytes = 0usize;
+
+    for table_name in &target_tables {
+        let entry = find_table(&catalog, table_name).map_err(|e| e.to_string())?;
+        let table_def =
+            read_table_def(&mut reader, &entry.name, entry.table_page).map_err(|e| e.to_string())?;
+
+        let blob_indices: Vec<usize> = table_def
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, col)| {
+                matches!(
+                    col.col_type,
+                    ColumnType::ComplexType | ColumnType::Binary | ColumnType::Ole
+                )
+                .then_some(idx)
+            })
+            .collect();
+        if blob_indices.is_empty() {
+            continue;
+        }
+
+        let complex_cols: Vec<(usize, Option<ComplexColumn>)> = blob_indices
+            .iter()
+            .map(|&idx| {
+                let col = &table_def.columns[idx];
+                let cc = if col.col_type == ColumnType::ComplexType {
+                    read_complex_column(&mut reader, &catalog, &table_def, col)
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+                (idx, cc)
+            })
+            .collect();
+
+        let table_dir_name = sanitize_fs_component(table_name, "table");
+        let table_dir = output_dir.join(&table_dir_name);
+        let calculated = calculated_column_types_in(&catalog, &table_def);
+        let mut rows = TableRows::new(&table_def, &calculated);
+        let mut row_num = 0usize;
+
+        while let Some(row) = rows.next_row(&mut reader).map_err(|e| e.to_string())? {
+            row_num += 1;
+            if row_num > MAX_ROWS {
+                break;
+            }
+            for (col_idx, cc_opt) in &complex_cols {
+                let col = &table_def.columns[*col_idx];
+                let col_part = sanitize_fs_component(&col.name, "col");
+                let Some(val) = row.values.get(*col_idx) else {
+                    continue;
+                };
+                if let (Some(cc), Value::Long(complex_id)) = (cc_opt, val) {
+                    if let Ok(ComplexValues::Attachment(atts)) = cc.values(&mut reader, *complex_id) {
+                        for (att_idx, att) in atts.into_iter().enumerate() {
+                            let Value::Binary(bytes) = att.data else {
+                                continue;
+                            };
+                            let raw_name = match att.name {
+                                Value::Text(s) => s,
+                                _ => format!("attachment_{}", att_idx + 1),
+                            };
+                            let safe_name = sanitize_fs_component(&raw_name, "attachment.bin");
+                            let file_name = format!("row{row_num}_{col_part}_{safe_name}");
+                            std::fs::create_dir_all(&table_dir).map_err(|e| e.to_string())?;
+                            let dest = table_dir.join(&file_name);
+                            if dest.exists() && !overwrite {
+                                return Err(format!(
+                                    "Attachment output file already exists: {}",
+                                    dest.display()
+                                ));
+                            }
+                            std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+                            total_bytes = total_bytes.saturating_add(bytes.len());
+                            exported_files.push(json!({
+                                "table": table_name,
+                                "row": row_num,
+                                "column": col.name,
+                                "kind": "attachment",
+                                "filename": raw_name,
+                                "bytes": bytes.len(),
+                                "relative_path": format!("{table_dir_name}/{file_name}"),
+                            }));
+                        }
+                    }
+                } else if let Value::Binary(bytes) = val
+                    && !bytes.is_empty()
+                {
+                    let ext = sniff_binary_ext(bytes);
+                    let file_name = format!("row{row_num}_{col_part}.{ext}");
+                    std::fs::create_dir_all(&table_dir).map_err(|e| e.to_string())?;
+                    let dest = table_dir.join(&file_name);
+                    if dest.exists() && !overwrite {
+                        return Err(format!(
+                            "Binary output file already exists: {}",
+                            dest.display()
+                        ));
+                    }
+                    std::fs::write(&dest, bytes).map_err(|e| e.to_string())?;
+                    total_bytes = total_bytes.saturating_add(bytes.len());
+                    exported_files.push(json!({
+                        "table": table_name,
+                        "row": row_num,
+                        "column": col.name,
+                        "kind": "binary",
+                        "bytes": bytes.len(),
+                        "relative_path": format!("{table_dir_name}/{file_name}"),
+                    }));
+                }
+            }
+        }
+    }
+
+    let manifest = json!({
+        "output_dir": output_dir.display().to_string(),
+        "exported_count": exported_files.len(),
+        "total_bytes": total_bytes,
+        "files": exported_files,
+    });
+    let manifest_path = output_dir.join("manifest.json");
+    if manifest_path.exists() && !overwrite {
+        return Err(format!(
+            "Manifest already exists: {}",
+            manifest_path.display()
+        ));
+    }
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(manifest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1734,6 +1938,11 @@ mod tests {
         assert_eq!(verified["missing_tables"], json!([]));
         assert_eq!(verified["pk_violations"], json!([]));
         assert_eq!(verified["fk_violations"], json!([]));
+
+        let att_dir = dir.path().join("attachments");
+        let att_res = jet_export_attachments(&mdb_path, &att_dir, None, false).unwrap();
+        assert_eq!(att_res["exported_count"], 0);
+        assert!(att_dir.join("manifest.json").is_file());
 
         // 4. Generate Markdown + Mermaid ER migration spec
         let md = jet_migration_markdown(&mdb_path).unwrap();
