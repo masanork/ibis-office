@@ -209,22 +209,42 @@ pub fn open_progressive_with_options(
     if crate::is_opendocument(&data) {
         return Err(Error::new(crate::ODF_MESSAGE));
     }
+    // 三四郎 (.jsd/.jst) は `Book` ストリームを持つため .xls より先に判定し、CSV 変換してスプレッドシートとして開く
+    let mut forced_csv = false;
+    if crate::just_legacy::is_sanshiro(&data) {
+        let csv_text = crate::just_legacy::to_delimited(&data, ',')?;
+        if !csv_text.trim().is_empty() {
+            data = csv_text.into_bytes().into();
+            forced_csv = true;
+        } else {
+            let md = crate::just_legacy::to_markdown(&data)?;
+            let opened = crate::markdown::open_markdown(md.into_bytes())?;
+            crate::progress::fraction(1.0);
+            return Ok((opened, None));
+        }
+    }
+    if !forced_csv && crate::just_legacy::is_hanako(&data) {
+        let md = crate::just_legacy::to_markdown(&data)?;
+        let opened = crate::markdown::open_markdown(md.into_bytes())?;
+        crate::progress::fraction(1.0);
+        return Ok((opened, None));
+    }
     // An old workbook (.xls): read into the .xlsx the rest reads.
-    if crate::ppt::is_ppt(&data) {
+    if !forced_csv && crate::ppt::is_ppt(&data) {
         data = crate::ppt_write::to_pptx(&data)?.into();
     }
-    if crate::xls::is_xls(&data) {
+    if !forced_csv && crate::xls::is_xls(&data) {
         data = crate::xls::to_xlsx(&data)?.into();
     }
     // A binary workbook (.xlsb) likewise.
-    if crate::xlsb::is_xlsb(&data) {
+    if !forced_csv && crate::xlsb::is_xlsb(&data) {
         data = crate::xlsb::to_xlsx(&data)?.into();
     }
     // An old Word document (.doc) likewise.
-    if crate::docx_convert::is_doc(&data) {
+    if !forced_csv && crate::docx_convert::is_doc(&data) {
         data = crate::docx_convert::import_doc_to_docx_bytes(&data)?.into();
     }
-    if crate::markdown::is_markdown(&data) {
+    if !forced_csv && crate::markdown::is_markdown(&data) {
         let opened = crate::markdown::open_markdown(data.to_vec())?;
         crate::progress::fraction(1.0);
         return Ok((opened, None));
@@ -236,31 +256,57 @@ pub fn open_progressive_with_options(
     #[allow(unused_mut)]
     let mut csv_rx = None;
 
-    if let Some(dicom_md) = crate::dicom::input_to_markdown(&data)? {
-        let opened = crate::markdown::open_markdown(dicom_md.into_bytes())?;
-        crate::progress::fraction(1.0);
-        return Ok((opened, None));
+    if !forced_csv {
+        if let Some(dicom_md) = crate::dicom::input_to_markdown(&data)? {
+            let opened = crate::markdown::open_markdown(dicom_md.into_bytes())?;
+            crate::progress::fraction(1.0);
+            return Ok((opened, None));
+        }
+
+        if let Some(fhir_md) = crate::fhir::input_to_markdown(&data)? {
+            let opened = crate::markdown::open_markdown(fhir_md.into_bytes())?;
+            crate::progress::fraction(1.0);
+            return Ok((opened, None));
+        }
+
+        if crate::dpc::is_dpc_ef(&data) {
+            let opened = crate::dpc::open_dpc_ef(&data)?;
+            crate::progress::fraction(1.0);
+            return Ok((opened, None));
+        }
+
+        if crate::uke::is_uke(&data) {
+            let opened = crate::uke::open_uke(&data)?;
+            crate::progress::fraction(1.0);
+            return Ok((opened, None));
+        }
+
+        // 2D CAD・GIS・GTFS・CALS/EC・メール・アーカイブ・Access を Markdown 文書として開く
+        let md_opt = if crate::email::is_tnef(&data) || crate::email::is_eml(&data) {
+            Some(crate::email::to_markdown(&data)?)
+        } else if crate::cals_xml::is_cals_xml(&data) {
+            Some(crate::cals_xml::to_markdown(&data)?)
+        } else if crate::cad::is_cad(&data) {
+            Some(crate::cad::to_markdown(&data)?)
+        } else if crate::gis::is_gis(&data) {
+            Some(crate::gis::to_markdown(&data)?)
+        } else if crate::gtfs::is_gtfs(&data) {
+            Some(crate::gtfs::to_markdown(&data)?)
+        } else if crate::access::is_access(&data) {
+            Some(crate::access::to_markdown(&data)?)
+        } else if crate::archive::is_lzh(&data) || crate::archive::is_7z(&data) {
+            Some(crate::archive::to_markdown(&data)?)
+        } else {
+            None
+        };
+        if let Some(md) = md_opt {
+            let opened = crate::markdown::open_markdown(md.into_bytes())?;
+            crate::progress::fraction(1.0);
+            return Ok((opened, None));
+        }
     }
 
-    if let Some(fhir_md) = crate::fhir::input_to_markdown(&data)? {
-        let opened = crate::markdown::open_markdown(fhir_md.into_bytes())?;
-        crate::progress::fraction(1.0);
-        return Ok((opened, None));
-    }
-
-    if crate::dpc::is_dpc_ef(&data) {
-        let opened = crate::dpc::open_dpc_ef(&data)?;
-        crate::progress::fraction(1.0);
-        return Ok((opened, None));
-    }
-
-    if crate::uke::is_uke(&data) {
-        let opened = crate::uke::open_uke(&data)?;
-        crate::progress::fraction(1.0);
-        return Ok((opened, None));
-    }
-
-    if crate::csv::is_csv(&data) {
+    if forced_csv || crate::csv::is_csv(&data) {
         original_csv_bytes = Some(data.clone());
         let (decoded, encoding) = crate::csv::decode_with_choice(&data, csv_encoding)?;
         let text: std::sync::Arc<str> = std::sync::Arc::from(decoded);
