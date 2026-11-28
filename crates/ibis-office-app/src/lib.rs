@@ -914,7 +914,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
         std::fs::write(&out_path, text.as_bytes()).map_err(|e| format!("{}: {e}", out_path.display()))?;
         return Ok(());
     }
-    if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx" | "csv" | "tsv" | "lawxml" | "lawtext" | "ai-json") {
+    if matches!(format, "md" | "markdown" | "docx" | "pptx" | "xlsx" | "csv" | "tsv" | "unpack" | "lawxml" | "lawtext" | "ai-json") {
         let path = args
             .path
             .as_deref()
@@ -938,6 +938,43 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             let bytes = bytes.map_err(|e| format!("{}: {e}", path.display()))?;
             let output = out_dir.join(format!("{stem}.{extension}"));
             std::fs::write(&output, bytes).map_err(|e| format!("{}: {e}", output.display()))?;
+            return Ok(());
+        }
+        if format == "unpack" {
+            let entries = if ibis_formats::email::is_tnef(&raw_data) || ibis_formats::email::is_eml(&raw_data) {
+                ibis_formats::email::extract_attachments(&raw_data)
+            } else {
+                ibis_formats::archive::extract(&raw_data)
+            }
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+            for entry in entries {
+                let target = out_dir.join(&entry.path);
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("{}: {e}", parent.display()))?;
+                }
+                std::fs::write(&target, &entry.bytes)
+                    .map_err(|e| format!("{}: {e}", target.display()))?;
+                println!("{}", target.display());
+            }
+            return Ok(());
+        }
+        if matches!(format, "md" | "markdown")
+            && (ibis_formats::email::is_tnef(&raw_data)
+                || ibis_formats::email::is_eml(&raw_data)
+                || ibis_formats::archive::is_lzh(&raw_data)
+                || ibis_formats::archive::is_7z(&raw_data))
+        {
+            let md = if ibis_formats::email::is_tnef(&raw_data) || ibis_formats::email::is_eml(&raw_data) {
+                ibis_formats::email::to_markdown(&raw_data)
+            } else {
+                ibis_formats::archive::to_markdown(&raw_data)
+            }
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+            let out_path = out_dir.join(format!("{stem}.md"));
+            std::fs::write(&out_path, md.as_bytes())
+                .map_err(|e| format!("{}: {e}", out_path.display()))?;
+            println!("{}", out_path.display());
             return Ok(());
         }
         if format == "ai-json" {
