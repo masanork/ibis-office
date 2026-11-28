@@ -2,10 +2,11 @@
 use super::{QColumn, QTable, QType, sqlite_source::dataset_sql_type};
 use crate::CellValue;
 use jetdb::{
-    BlobValue, ColumnType, ComplexColumn, ComplexValues, PageReader, TableRows, Value,
-    calculated_column_types_in, column_flags, control_type_name, find_table, list_forms,
-    query_to_sql, read_catalog, read_complex_column, read_form_properties, read_queries,
-    read_relationships, read_table_def, read_vba_project, table_names,
+    BlobValue, ColumnType, ComplexColumn, ComplexValues, MacroDef, MacroStatement, PageReader,
+    TableRows, Value, calculated_column_types_in, column_flags, control_type_name, find_table,
+    list_forms, list_macros, query_to_sql, read_catalog, read_complex_column,
+    read_embedded_macros, read_form_properties, read_macro, read_queries, read_relationships,
+    read_table_def, read_vba_project, table_names,
 };
 use serde_json::json;
 use std::path::Path;
@@ -436,12 +437,19 @@ pub fn jet_inspect_schema(path: &Path) -> Result<serde_json::Value, String> {
         })
         .unwrap_or_default();
 
+    let macros: Vec<_> = list_macros(&mut reader)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| m.name)
+        .collect();
+
     Ok(json!({
         "format": version,
         "tables": tables,
         "relationships": relationships,
         "queries": queries,
         "forms": forms,
+        "macros": macros,
         "vba_modules": vba_modules,
     }))
 }
@@ -808,16 +816,122 @@ pub fn jet_export_bundle(
         })
         .collect::<Vec<_>>();
 
+    fn macro_statements_to_json(stmts: &[MacroStatement]) -> Vec<serde_json::Value> {
+        stmts
+            .iter()
+            .map(|stmt| match stmt {
+                MacroStatement::Action { name, arguments } => {
+                    let args: serde_json::Map<String, serde_json::Value> = arguments
+                        .iter()
+                        .map(|a| (a.name.clone(), json!(a.value)))
+                        .collect();
+                    json!({
+                        "type": "action",
+                        "name": name,
+                        "arguments": args,
+                    })
+                }
+                MacroStatement::Comment(text) => json!({
+                    "type": "comment",
+                    "text": text,
+                }),
+                MacroStatement::Conditional { branches } => json!({
+                    "type": "conditional",
+                    "branches": branches.iter().map(|b| json!({
+                        "condition": b.condition,
+                        "statements": macro_statements_to_json(&b.statements),
+                    })).collect::<Vec<_>>(),
+                }),
+                MacroStatement::Group { description, statements } => json!({
+                    "type": "group",
+                    "description": description,
+                    "statements": macro_statements_to_json(statements),
+                }),
+                MacroStatement::SubMacro { name, statements } => json!({
+                    "type": "sub_macro",
+                    "name": name,
+                    "statements": macro_statements_to_json(statements),
+                }),
+                MacroStatement::DataBlock { kind, data, statements } => {
+                    let data_map: serde_json::Map<String, serde_json::Value> = data
+                        .iter()
+                        .map(|(k, v)| (k.clone(), json!(v)))
+                        .collect();
+                    json!({
+                        "type": "data_block",
+                        "kind": kind,
+                        "data": data_map,
+                        "statements": macro_statements_to_json(statements),
+                    })
+                }
+                MacroStatement::Unknown(elem) => json!({
+                    "type": "unknown",
+                    "tag": elem.name,
+                }),
+                _ => json!({ "type": "unknown" }),
+            })
+            .collect()
+    }
+
+    fn macro_def_to_json(name: &str, def: &MacroDef) -> serde_json::Value {
+        json!({
+            "name": name,
+            "statements": macro_statements_to_json(&def.statements),
+        })
+    }
+
     let form_entries = list_forms(&mut reader).unwrap_or_default();
     let mut forms = Vec::with_capacity(form_entries.len());
     for entry in &form_entries {
         match read_form_properties(&mut reader, &entry.name) {
-            Ok(fp) => forms.push(form_properties_to_json(&fp)),
+            Ok(fp) => {
+                let mut form_json = form_properties_to_json(&fp);
+                if mode != JetBundleMode::Metadata
+                    && let Ok(embedded) = read_embedded_macros(&mut reader, &entry.name)
+                    && !embedded.is_empty()
+                {
+                    let em_json: Vec<_> = embedded
+                        .iter()
+                        .map(|def| {
+                            let label = match &def.source {
+                                jetdb::MacroSource::Embedded { control, event, .. } => {
+                                    match control.as_deref() {
+                                        Some(ctrl) if !ctrl.is_empty() => {
+                                            format!("{ctrl}.{event}")
+                                        }
+                                        _ => event.clone(),
+                                    }
+                                }
+                                _ => "embedded".to_owned(),
+                            };
+                            macro_def_to_json(&label, def)
+                        })
+                        .collect();
+                    form_json["embedded_macros"] = serde_json::Value::Array(em_json);
+                }
+                forms.push(form_json);
+            }
             Err(error) => forms.push(json!({
                 "name": entry.name,
                 "object_type": format!("{:?}", entry.object_type),
                 "error": error.to_string(),
             })),
+        }
+    }
+
+    let macro_entries = list_macros(&mut reader).unwrap_or_default();
+    let mut macros = Vec::with_capacity(macro_entries.len());
+    for entry in macro_entries {
+        if mode == JetBundleMode::Metadata {
+            macros.push(json!({ "name": entry.name }));
+        } else {
+            match read_macro(&mut reader, &entry.name) {
+                Ok(def) => macros.push(macro_def_to_json(&entry.name, &def)),
+                Err(error) => macros.push(json!({
+                    "name": entry.name,
+                    "error": error.to_string(),
+                })),
+            }
         }
     }
 
@@ -852,12 +966,14 @@ pub fn jet_export_bundle(
             "relationships": relationships.len(),
             "queries": queries.len(),
             "forms": forms.len(),
+            "macros": macros.len(),
             "vba_modules": vba_modules.len(),
         },
         "tables": tables,
         "relationships": relationships,
         "queries": queries,
         "forms": forms,
+        "macros": macros,
         "vba_modules": vba_modules,
     });
 
