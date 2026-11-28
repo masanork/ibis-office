@@ -35,6 +35,7 @@ fn pdf_text(file: &str) -> String {
         notes_pages: false,
         outline_pages: false,
         notes_source: None,
+        embed_source: None,
         handout_marks: Default::default(),
     };
     export(presentation, &options).expect("the PDF");

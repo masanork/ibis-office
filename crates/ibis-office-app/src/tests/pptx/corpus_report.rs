@@ -126,6 +126,7 @@ fn render_slides_at(file: &str, label: &str, slides: &[usize], width: u32) -> Ve
         notes_pages: false,
         outline_pages: false,
         notes_source: None,
+        embed_source: None,
         handout_marks: Default::default(),
     };
     let result = export(presentation, &options);
