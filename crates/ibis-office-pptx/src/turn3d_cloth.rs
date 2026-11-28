@@ -169,7 +169,7 @@ impl Cloth {
         let vertices = Arc::new(vertices);
         bands
             .into_iter()
-            .map(|(band, indices)| Card { face: Face::Old, transform, cull_back: false, shade: (band as f32 * SHADE_STEP).min(1.0), mesh: Some(Mesh { vertices: vertices.clone(), indices: indices.into() }), white: 0.0, opacity: 1.0 })
+            .map(|(band, indices)| Card { face: Face::Old, transform, cull_back: false, shade: (band as f32 * SHADE_STEP).min(1.0), mesh: Some(Mesh { vertices: vertices.clone().into(), indices: indices.into() }), white: 0.0, opacity: 1.0 })
             .collect()
     }
 }
