@@ -1289,6 +1289,63 @@ pub fn run_native() {
         ibis_calc::eval::convert::set_clock(clock::calc_clock);
         std::process::exit(ibis_mcp::run_from_args(std::env::args().skip(2)));
     }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if std::env::args().nth(1).as_deref() == Some("--jet-to-sqlite") {
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        let overwrite = rest.iter().any(|a| a == "--overwrite");
+        let positional: Vec<&str> = rest.iter().filter(|a| a.as_str() != "--overwrite").map(String::as_str).collect();
+        if positional.len() != 2 {
+            eprintln!("usage: ibisOffice --jet-to-sqlite <input.mdb|accdb|edb|sdb|ost|pst> <output.sqlite> [--overwrite]");
+            std::process::exit(2);
+        }
+        let input = std::path::Path::new(positional[0]);
+        let output = std::path::Path::new(positional[1]);
+        let result = if ibis_doc_model::query::is_jet_extension(input) {
+            ibis_doc_model::query::jet_export_sqlite(input, output, None, overwrite)
+        } else if ibis_doc_model::query::is_ese_extension(input) {
+            ibis_doc_model::query::ese_export_sqlite(input, output, None, overwrite)
+        } else if ibis_doc_model::query::is_pst_extension(input) {
+            ibis_doc_model::query::pst_export_sqlite(input, output, None, overwrite)
+        } else {
+            Err("Unsupported database extension; expected .mdb, .accdb, .edb, .sdb, .ost, or .pst".into())
+        };
+        match result {
+            Ok(summary) => {
+                println!("{summary}");
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("ibisOffice --jet-to-sqlite: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if std::env::args().nth(1).as_deref() == Some("--jet-migration-md") {
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        if rest.is_empty() || rest.len() > 2 {
+            eprintln!("usage: ibisOffice --jet-migration-md <input.mdb|accdb> [output.md]");
+            std::process::exit(2);
+        }
+        let input = std::path::Path::new(&rest[0]);
+        match ibis_doc_model::query::jet_migration_markdown(input) {
+            Ok(md) => {
+                if let Some(out) = rest.get(1) {
+                    if let Err(error) = std::fs::write(out, &md) {
+                        eprintln!("ibisOffice --jet-migration-md: {error}");
+                        std::process::exit(1);
+                    }
+                } else {
+                    print!("{md}");
+                }
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("ibisOffice --jet-migration-md: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if std::env::args().nth(1).as_deref() == Some("--assistant-headless-demo") {
         let mut paths = std::env::args_os().skip(2);
