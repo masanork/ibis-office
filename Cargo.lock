@@ -7493,6 +7493,7 @@ dependencies = [
  "ibis-doc-model",
  "ibis-formats",
  "ibis-odf",
+ "ibis-pdf",
  "serde",
  "serde_json",
  "sha2 0.10.9",
