@@ -6,7 +6,7 @@
 
 /// Whether the file is one of the page formats: by its extension, or by what it starts with.
 pub fn is_fixed_layout(extension: Option<&str>, data: &[u8]) -> bool {
-    extension.is_some_and(|ext| ["pdf", "ofd", "xps", "oxps", "xdw", "xbd"].iter().any(|x| ext.eq_ignore_ascii_case(x)))
+    extension.is_some_and(|ext| ["pdf", "ai", "ofd", "xps", "oxps", "xdw", "xbd"].iter().any(|x| ext.eq_ignore_ascii_case(x)))
         || data.starts_with(b"%PDF-")
         || ibis_ofd::is_ofd(data)
         || ibis_xps::is_xps(data)
