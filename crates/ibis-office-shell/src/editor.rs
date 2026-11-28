@@ -1187,7 +1187,7 @@ impl SlideEditor {
         })
     }
 
-    pub(crate) fn phone_view_only(&self) -> bool {
+    pub fn phone_view_only(&self) -> bool {
         #[cfg(any(target_os = "android", target_os = "ios", target_family = "wasm"))]
         { self.phone_view_only }
         #[cfg(not(any(target_os = "android", target_os = "ios", target_family = "wasm")))]

@@ -1892,8 +1892,30 @@ impl FormatEditor for Workbook {
     }
 
     fn render_bottom_row(editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> Option<AnyElement> {
-        let hidden = editor.is_workbook_window_hidden() || editor.sheet_state().map_or(false, |s| !s.show_formula_bar || s.panels.query_editor.is_some());
+        let hidden = editor.is_workbook_window_hidden() || editor.phone_view_only() || editor.sheet_state().map_or(false, |s| !s.show_formula_bar || s.panels.query_editor.is_some());
         (!hidden && crate::shell::narrow_layout::bars_at_bottom(editor, window)).then(|| editor.render_formula_bar(window, cx).into_any_element())
+    }
+
+    fn mobile_cell_preview(editor: &SlideEditor) -> Option<(SharedString, SharedString, Option<SharedString>)> {
+        let (_, sheet) = editor.current_sheet()?;
+        let (column, row) = editor.current_cell()?;
+        let cell = sheet.cell(row, column)?;
+        let reference: SharedString = ibis_doc_model::cell_name(column, row).into();
+        let display = match &cell.value {
+            ibis_doc_model::CellValue::Number(n) if cell.text.is_empty() => {
+                ibis_calc::input::number_edit_text(*n, &sheet.styles[cell.style as usize].number_format, editor.presentation().workbook.as_ref().is_some_and(|w| w.date1904))
+            }
+            _ => cell.text.clone(),
+        };
+        let formula = (!editor.formula_hidden_here())
+            .then(|| sheet.shown_formula(cell))
+            .flatten()
+            .filter(|f| !f.is_empty())
+            .map(SharedString::from);
+        if display.is_empty() && formula.is_none() {
+            return None;
+        }
+        Some((reference, display.into(), formula))
     }
 
     /// Excel's layout: the formula bar over the sheet, the sheet tabs under

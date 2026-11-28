@@ -385,6 +385,11 @@ pub trait FormatEditor {
         None
     }
 
+    /// Active cell preview `(reference, display_value, optional_formula)` for phone viewing mode.
+    fn mobile_cell_preview(_editor: &SlideEditor) -> Option<(SharedString, SharedString, Option<SharedString>)> {
+        None
+    }
+
     /// Items the status bar shows after the page number.
     fn status_items(_editor: &SlideEditor) -> Vec<SharedString> {
         Vec::new()
@@ -1447,6 +1452,7 @@ pub trait FormatDriver: Sync {
     fn before_render(&self, _editor: &mut SlideEditor, _window: &mut Window, _cx: &mut Context<SlideEditor>);
     fn render_body(&self, editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> AnyElement;
     fn render_bottom_row(&self, editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> Option<AnyElement>;
+    fn mobile_cell_preview(&self, editor: &SlideEditor) -> Option<(SharedString, SharedString, Option<SharedString>)>;
     fn status_items(&self, _editor: &SlideEditor) -> Vec<SharedString>;
     fn status_items_at_right(&self) -> bool;
     fn status_hint(&self, _editor: &SlideEditor) -> Option<SharedString>;
@@ -1735,6 +1741,9 @@ impl<F: FormatEditor> FormatDriver for Driver<F> {
     }
     fn render_bottom_row(&self, editor: &mut SlideEditor, window: &mut Window, cx: &mut Context<SlideEditor>) -> Option<AnyElement> {
         F::render_bottom_row(editor, window, cx)
+    }
+    fn mobile_cell_preview(&self, editor: &SlideEditor) -> Option<(SharedString, SharedString, Option<SharedString>)> {
+        F::mobile_cell_preview(editor)
     }
     fn status_items(&self, _editor: &SlideEditor) -> Vec<SharedString> {
         F::status_items(_editor)

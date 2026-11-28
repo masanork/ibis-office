@@ -8,6 +8,7 @@
 //! and floating pill provide navigation, search, export/open, fit-to-width, and an
 //! explicit switch to editing mode.
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Icon, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -363,15 +364,71 @@ impl SlideEditor {
         let position = self.mobile_position_label();
         let zoom_label: SharedString = format!("{:.0}%", self.current_zoom() * 100.0).into();
         let can_edit = narrow_phone && !self.file_is_read_only() && self.host.read_only.is_none();
+        let slides = &self.presentation().slides;
+        let current_idx = self.presentation().slide_index(self.current_slide).unwrap_or(0);
+        let is_workbook = self.presentation().workbook.is_some();
+        let show_page_arrows = slides.len() > 1 && !is_workbook;
+        let prev_id = show_page_arrows.then(|| slides.get(current_idx.saturating_sub(1)).filter(|_| current_idx > 0).map(|s| s.id)).flatten();
+        let next_id = show_page_arrows.then(|| slides.get(current_idx + 1).map(|s| s.id)).flatten();
+        let cell_preview = with_format!(self, mobile_cell_preview(self));
 
         Some(
-            div()
+            v_flex()
                 .absolute()
-                .left_0()
-                .right_0()
+                .left_2()
+                .right_2()
                 .bottom(px(14.))
-                .flex()
-                .justify_center()
+                .gap_2()
+                .items_center()
+                .when_some(cell_preview, |stack, (reference, display, formula)| {
+                    stack.child(
+                        v_flex()
+                            .id("mobile-cell-preview")
+                            .w_full()
+                            .max_w(px(520.))
+                            .px_3()
+                            .py_2()
+                            .gap_1()
+                            .rounded_xl()
+                            .bg(theme.popover.opacity(0.96))
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_md()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_start()
+                                    .child(
+                                        div()
+                                            .px_1p5()
+                                            .py_0p5()
+                                            .rounded_sm()
+                                            .bg(theme.accent)
+                                            .text_color(theme.accent_foreground)
+                                            .text_xs()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(reference),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_xs()
+                                            .text_color(theme.popover_foreground)
+                                            .child(display),
+                                    ),
+                            )
+                            .when_some(formula, |card, f| {
+                                card.child(
+                                    div()
+                                        .w_full()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(f),
+                                )
+                            }),
+                    )
+                })
                 .child(
                     h_flex()
                         .id("mobile-viewer-pill")
@@ -384,6 +441,25 @@ impl SlideEditor {
                         .border_1()
                         .border_color(theme.border)
                         .shadow_lg()
+                        .when(show_page_arrows, |pill| {
+                            pill.child(
+                                div()
+                                    .id("mobile-prev-page")
+                                    .size(px(32.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .when(prev_id.is_some(), |d| d.cursor_pointer().text_color(theme.popover_foreground).hover(|s| s.bg(theme.list_hover)))
+                                    .when(prev_id.is_none(), |d| d.text_color(theme.muted_foreground.opacity(0.4)))
+                                    .child(Icon::new(IconName::ChevronLeft).size(px(16.)))
+                                    .when_some(prev_id, |d, id| {
+                                        d.on_click(cx.listener(move |this, _, window, cx| {
+                                            this.select_slide(id, window, cx);
+                                        }))
+                                    }),
+                            )
+                        })
                         .child(
                             h_flex()
                                 .id("mobile-page-picker-trigger")
@@ -406,6 +482,25 @@ impl SlideEditor {
                                     cx.notify();
                                 })),
                         )
+                        .when(show_page_arrows, |pill| {
+                            pill.child(
+                                div()
+                                    .id("mobile-next-page")
+                                    .size(px(32.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_full()
+                                    .when(next_id.is_some(), |d| d.cursor_pointer().text_color(theme.popover_foreground).hover(|s| s.bg(theme.list_hover)))
+                                    .when(next_id.is_none(), |d| d.text_color(theme.muted_foreground.opacity(0.4)))
+                                    .child(Icon::new(IconName::ChevronRight).size(px(16.)))
+                                    .when_some(next_id, |d, id| {
+                                        d.on_click(cx.listener(move |this, _, window, cx| {
+                                            this.select_slide(id, window, cx);
+                                        }))
+                                    }),
+                            )
+                        })
                         .child(div().w(px(1.)).h(px(18.)).bg(theme.border))
                         .child(
                             h_flex()
