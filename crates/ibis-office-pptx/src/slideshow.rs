@@ -2206,23 +2206,72 @@ impl SlideEditor {
                         }
                         TransitionPlan::Flip { old: old_share, new: new_share } => {
                             // The slide seen as a strip about the vertical middle (the turn's edge-on view), on black.
-                            let (shown_slide, share) = if old_share > 0.0 { (old, old_share) } else { (slide, new_share) };
-                            let w = zw * share as f32;
+                            let (shown_slide, share, id) = if old_share > 0.0 {
+                                (old, old_share as f32, OffscreenId(0x5315))
+                            } else {
+                                (slide, new_share as f32, OffscreenId(0x5316))
+                            };
+                            let w = zw * share;
+                            let texture = slide_offscreen(id, shown_slide, true);
                             div()
                                 .absolute()
                                 .top_0()
                                 .left_0()
                                 .size_full()
                                 .bg(black())
-                                .child(div().absolute().left(px((zw - w) / 2.0)).top_0().w(px(w)).h(px(zh)).overflow_hidden().child(div().absolute().left(px(-(zw - w) / 2.0)).top_0().w(px(zw)).h(px(zh)).child(page(shown_slide))))
+                                .child(texture)
+                                .child(
+                                    canvas(
+                                        |_, _, _| (),
+                                        move |bounds, _, window, _| {
+                                            let frame = Bounds {
+                                                origin: gpui_kit::point(bounds.origin.x + px((zw - w) / 2.0), bounds.origin.y),
+                                                size: gpui_kit::size(px(w), px(zh)),
+                                            };
+                                            window.paint_textured_quad(id, frame, Transform3D::identity(), 1.0, 1.0, [0.0, 0.0, 1.0, 1.0], false);
+                                        },
+                                    )
+                                    .absolute()
+                                    .size_full(),
+                                )
                                 .into_any_element()
                         }
                         TransitionPlan::Slide { from, old_to, new_on_top } => {
-                            let moved = |s: &ibis_doc_model::Slide, (fx, fy): (f64, f64), k: f32| page(s).left(px(fx as f32 * zw * k)).top(px(fy as f32 * zh * k));
-                            let (new_page, old_page) = (moved(slide, from, 1.0 - q), moved(old, old_to, q));
-                            let mut stack = div().absolute().top_0().left_0().size_full();
-                            stack = if new_on_top { stack.child(old_page).child(new_page) } else { stack.child(new_page).child(old_page) };
-                            stack.into_any_element()
+                            let (old_id, new_id) = (OffscreenId(0x5317), OffscreenId(0x5318));
+                            let (ox, oy) = (old_to.0 as f32 * zw * q, old_to.1 as f32 * zh * q);
+                            let (nx, ny) = (from.0 as f32 * zw * (1.0 - q), from.1 as f32 * zh * (1.0 - q));
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .overflow_hidden()
+                                .child(slide_offscreen(old_id, old, true))
+                                .child(slide_offscreen(new_id, slide, true))
+                                .child(
+                                    canvas(
+                                        |_, _, _| (),
+                                        move |bounds, _, window, _| {
+                                            let draw_at = |window: &mut Window, id: OffscreenId, dx: f32, dy: f32| {
+                                                let frame = Bounds {
+                                                    origin: gpui_kit::point(bounds.origin.x + px(dx), bounds.origin.y + px(dy)),
+                                                    size: gpui_kit::size(px(zw), px(zh)),
+                                                };
+                                                window.paint_textured_quad(id, frame, Transform3D::identity(), 1.0, 1.0, [0.0, 0.0, 1.0, 1.0], false);
+                                            };
+                                            if new_on_top {
+                                                draw_at(window, old_id, ox, oy);
+                                                draw_at(window, new_id, nx, ny);
+                                            } else {
+                                                draw_at(window, new_id, nx, ny);
+                                                draw_at(window, old_id, ox, oy);
+                                            }
+                                        },
+                                    )
+                                    .absolute()
+                                    .size_full(),
+                                )
+                                .into_any_element()
                         }
                         TransitionPlan::StripMix { strips, backdrop, scale } => {
                             // Both slides are painted once to a texture; each vertical strip of them is drawn over a flat backdrop at its own
@@ -2296,22 +2345,34 @@ impl SlideEditor {
                         }
                         TransitionPlan::Windows(rects) => {
                             // The new slide shows through the windows, over the old one.
-                            let mut stack = div().absolute().top_0().left_0().size_full().child(page(old));
-                            for r in rects {
-                                let (rx, ry) = (r[0] as f32 * zw, r[1] as f32 * zh);
-                                let (rw, rh) = ((r[2] - r[0]) as f32 * zw, (r[3] - r[1]) as f32 * zh);
-                                stack = stack.child(
-                                    div()
-                                        .absolute()
-                                        .left(px(rx))
-                                        .top(px(ry))
-                                        .w(px(rw))
-                                        .h(px(rh))
-                                        .overflow_hidden()
-                                        .child(div().absolute().left(px(-rx)).top(px(-ry)).w(px(zw)).h(px(zh)).child(page(slide))),
-                                );
-                            }
-                            stack.into_any_element()
+                            let (old_id, new_id) = (OffscreenId(0x5319), OffscreenId(0x531a));
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .child(slide_offscreen(old_id, old, true))
+                                .child(slide_offscreen(new_id, slide, true))
+                                .child(
+                                    canvas(
+                                        |_, _, _| (),
+                                        move |bounds, _, window, _| {
+                                            let full = Bounds { origin: bounds.origin, size: gpui_kit::size(px(zw), px(zh)) };
+                                            window.paint_textured_quad(old_id, full, Transform3D::identity(), 1.0, 1.0, [0.0, 0.0, 1.0, 1.0], false);
+                                            for r in &rects {
+                                                let frame = Bounds {
+                                                    origin: gpui_kit::point(bounds.origin.x + px(r[0] as f32 * zw), bounds.origin.y + px(r[1] as f32 * zh)),
+                                                    size: gpui_kit::size(px((r[2] - r[0]) as f32 * zw), px((r[3] - r[1]) as f32 * zh)),
+                                                };
+                                                let uv = [r[0] as f32, r[1] as f32, (r[2] - r[0]) as f32, (r[3] - r[1]) as f32];
+                                                window.paint_textured_quad(new_id, frame, Transform3D::identity(), 1.0, 1.0, uv, false);
+                                            }
+                                        },
+                                    )
+                                    .absolute()
+                                    .size_full(),
+                                )
+                                .into_any_element()
                         }
                     }
                 }
@@ -3549,7 +3610,18 @@ fn animated_view(
 ) -> AnyElement {
     {
         let mine: Vec<usize> = slide.animations.iter().enumerate().filter(|(i, a)| target.moves(*i, a, shape.id)).map(|(i, _)| i).collect();
+        let can_cache_paint = clock.is_some() && !matches!(shape.kind, ibis_doc_model::ShapeKind::Picture(_));
+        let paint_cache_id = ((slide.id.0 as u64) << 32) ^ ((shape.id.0 as u64).wrapping_mul(2_654_435_761) ^ target.key() as u64);
+        let paint_cache_key = || {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            (slide.id, shape.id, target.key(), played, step, triggered_played, scale.to_bits()).hash(&mut hasher);
+            hasher.finish()
+        };
         if mine.is_empty() {
+            if can_cache_paint {
+                return gpui_kit::cached_paint(paint_cache_id, paint_cache_key(), div().absolute().top_0().left_0().size_full().child(element(shape))).into_any_element();
+            }
             return element(shape);
         }
         let (w, h) = (size.width as f32 * scale, size.height as f32 * scale);
@@ -3809,7 +3881,12 @@ fn animated_view(
                 return place(holder, ShapeMotion { opacity: 1.0, ..m }).into_any_element();
             }
             let holder = if m.turn == 0.0 && styles.is_empty() {
-                div().absolute().top_0().left_0().size_full().child(element(shape))
+                let inner = div().absolute().top_0().left_0().size_full().child(element(shape));
+                if can_cache_paint && m.opacity == 1.0 {
+                    div().absolute().top_0().left_0().size_full().child(gpui_kit::cached_paint(paint_cache_id, paint_cache_key(), inner))
+                } else {
+                    inner
+                }
             } else {
                 let (shown, shear) = styled_shape(shape, m, &styles);
                 let element = |s: &ibis_doc_model::Shape| crate::render::shape_view::with_shear(shear, || element(s));
