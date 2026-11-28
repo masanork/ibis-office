@@ -1679,7 +1679,9 @@ mod web {
     #[wasm_bindgen]
     pub fn set_start_view_config(json: &str) -> Result<(), JsValue> {
         crate::shell::start_view::set_start_view_config(json).map_err(|err| JsValue::from_str(&err))?;
-        with_app(|cx| crate::shell::host_editor::with_editor(cx, |_, _, cx| cx.notify()));
+        wasm_bindgen_futures::spawn_local(async {
+            with_app(|cx| crate::shell::host_editor::with_editor(cx, |_, _, cx| cx.notify()));
+        });
         Ok(())
     }
 
