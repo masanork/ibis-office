@@ -1364,6 +1364,181 @@ pub fn jet_export_sqlite(
     }))
 }
 
+/// Verify an exported SQLite database against its source Access (`.mdb`/`.accdb`) database:
+/// checks table presence, exact row counts, primary-key uniqueness, foreign-key integrity, and view execution.
+pub fn jet_verify_sqlite(
+    jet_path: &Path,
+    sqlite_path: &Path,
+) -> Result<serde_json::Value, String> {
+    let jet_table_list = jet_tables(jet_path)?;
+    let sqlite_table_list = super::sqlite_source::sqlite_tables(sqlite_path)?;
+
+    let mut missing_tables = Vec::new();
+    let mut table_checks = Vec::with_capacity(jet_table_list.len());
+    let mut pk_violations = Vec::new();
+    let mut all_rows_match = true;
+
+    let mut jet_reader = open_jet(jet_path)?;
+    let catalog = read_catalog(&mut jet_reader).ok();
+
+    for table_name in &jet_table_list {
+        let mut jet_rows = 0usize;
+        visit_jet_table(jet_path, table_name, &[], false, |_, row| {
+            if row.is_some() {
+                jet_rows += 1;
+            }
+            Ok(())
+        })?;
+
+        let Some(sqlite_table_name) = sqlite_table_list
+            .iter()
+            .find(|t| t.eq_ignore_ascii_case(table_name))
+        else {
+            all_rows_match = false;
+            missing_tables.push(table_name.clone());
+            table_checks.push(json!({
+                "table": table_name,
+                "jet_rows": jet_rows,
+                "sqlite_rows": serde_json::Value::Null,
+                "match": false,
+            }));
+            continue;
+        };
+
+        let ident = super::sqlite_source::sql_identifier(sqlite_table_name);
+        let count_res = super::sqlite_source::sqlite_query(
+            sqlite_path,
+            &format!("SELECT COUNT(*) FROM {ident}"),
+            &[],
+            1,
+            4096,
+        )?;
+        let sqlite_rows = count_res
+            .rows
+            .first()
+            .and_then(|r| r.first())
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+
+        let matched = jet_rows == sqlite_rows;
+        if !matched {
+            all_rows_match = false;
+        }
+        table_checks.push(json!({
+            "table": table_name,
+            "jet_rows": jet_rows,
+            "sqlite_rows": sqlite_rows,
+            "match": matched,
+        }));
+
+        if let Some(cat) = &catalog
+            && let Ok(entry) = find_table(cat, table_name)
+            && let Ok(def) = read_table_def(&mut jet_reader, &entry.name, entry.table_page)
+            && let Some(pk_idx) = def.indexes.iter().find(|idx| idx.index_type == 0x01)
+        {
+            let pk_cols: Vec<String> = pk_idx
+                .columns
+                .iter()
+                .filter_map(|c| {
+                    def.columns
+                        .iter()
+                        .find(|col| col.col_num == c.col_num)
+                        .map(|col| super::sqlite_source::sql_identifier(&col.name))
+                })
+                .collect();
+            if !pk_cols.is_empty() {
+                let group_list = pk_cols.join(", ");
+                let dup_sql = format!(
+                    "SELECT COUNT(*) FROM (SELECT 1 FROM {ident} GROUP BY {group_list} HAVING COUNT(*) > 1)"
+                );
+                if let Ok(dup_res) =
+                    super::sqlite_source::sqlite_query(sqlite_path, &dup_sql, &[], 1, 4096)
+                {
+                    let dup_count = dup_res
+                        .rows
+                        .first()
+                        .and_then(|r| r.first())
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if dup_count > 0 {
+                        pk_violations.push(json!({
+                            "table": table_name,
+                            "duplicate_keys": dup_count,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    let fk_res = super::sqlite_source::sqlite_query(
+        sqlite_path,
+        "PRAGMA foreign_key_check",
+        &[],
+        100,
+        64 * 1024,
+    );
+    let fk_violations: Vec<serde_json::Value> = match fk_res {
+        Ok(res) => res
+            .rows
+            .into_iter()
+            .map(|r| {
+                json!({
+                    "table": r.first().cloned().unwrap_or(serde_json::Value::Null),
+                    "rowid": r.get(1).cloned().unwrap_or(serde_json::Value::Null),
+                    "parent": r.get(2).cloned().unwrap_or(serde_json::Value::Null),
+                    "fkid": r.get(3).cloned().unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    let mut view_checks = Vec::new();
+    let mut views_ok = true;
+    if let Ok(views_res) = super::sqlite_source::sqlite_query(
+        sqlite_path,
+        "SELECT name FROM sqlite_master WHERE type = 'view' ORDER BY name",
+        &[],
+        256,
+        64 * 1024,
+    ) {
+        for row in views_res.rows {
+            if let Some(name) = row.first().and_then(|v| v.as_str()) {
+                let v_ident = super::sqlite_source::sql_identifier(name);
+                match super::sqlite_source::sqlite_query(
+                    sqlite_path,
+                    &format!("SELECT * FROM {v_ident} LIMIT 1"),
+                    &[],
+                    1,
+                    16 * 1024,
+                ) {
+                    Ok(_) => view_checks.push(json!({ "name": name, "ok": true })),
+                    Err(err) => {
+                        views_ok = false;
+                        view_checks.push(json!({ "name": name, "ok": false, "error": err }));
+                    }
+                }
+            }
+        }
+    }
+
+    let ok = all_rows_match
+        && missing_tables.is_empty()
+        && pk_violations.is_empty()
+        && fk_violations.is_empty()
+        && views_ok;
+
+    Ok(json!({
+        "ok": ok,
+        "tables": table_checks,
+        "missing_tables": missing_tables,
+        "pk_violations": pk_violations,
+        "fk_violations": fk_violations,
+        "views": view_checks,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1552,6 +1727,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(q.rows, vec![vec![json!("A01"), json!(1500)]]);
+
+        let verified = jet_verify_sqlite(&mdb_path, &sqlite_out).unwrap();
+        assert_eq!(verified["ok"], true, "verified={verified:#}");
+        assert_eq!(verified["tables"][0]["match"], true);
+        assert_eq!(verified["missing_tables"], json!([]));
+        assert_eq!(verified["pk_violations"], json!([]));
+        assert_eq!(verified["fk_violations"], json!([]));
 
         // 4. Generate Markdown + Mermaid ER migration spec
         let md = jet_migration_markdown(&mdb_path).unwrap();
