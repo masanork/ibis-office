@@ -1135,12 +1135,12 @@ SPDX-License-Identifier: Unicode-3.0
 
 照合に使う異体字の対応表。より大きい完全版（CC BY-SA 2.1 JP）は同梱せず、ヘルプ > セットアップから利用者が選んで取得する。
 
-## GJS 異体字クラスタ 基本版 (SA 条件なし) — dict20261128
+## GJS 異体字クラスタ 基本版 (SA 条件なし) — dict20261128b
 
-- 収録: 22,135 文字・8,463 クラスタ
+- 収録: 22,135 文字・8,464 クラスタ
 - ファイル: `clusters.csv` (member_codepoint, cluster_id, representative_codepoint)、`variant-clusters.zst` (ibis-variant-bitmap/1+zstd)
 - クラスタへの所属は「確認が必要な候補」を示すもので、同一人物や安全な置換を意味しない。
-- 現代日本語では別字として扱う組 (托/拓・愉/愈・伙/火・䄷/石) には辺を張らない。
+- 現代日本語では別字として扱う組 (托/拓・愉/愈・伙/火・䄷/石・椎/槌) には辺を張らない。
 - 配布元: https://moji.sorane.dev/datasets/variant-clusters/
 - 作成手順・評価: GJS リポジトリの `docs/legal/variant-cluster-data-sources.md`
 
