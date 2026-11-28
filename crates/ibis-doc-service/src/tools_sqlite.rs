@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, dataset_sql_type, is_jet_extension, jet_dataset_columns, jet_inspect_schema, read_arrow_ipc_dataset, parquet_dataset_columns, read_jet_table_bounded, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
+    SqliteRows, SqliteScalar, dataset_sql_type, is_jet_extension, jet_dataset_columns, jet_export_sqlite, jet_inspect_schema, read_arrow_ipc_dataset, parquet_dataset_columns, read_jet_table_bounded, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -48,6 +48,19 @@ const TOOLS: &[Tool] = &[
         returns_content: true,
         schema: &|| object(&[("path", string("Path to a local .mdb or .accdb file under an allowed folder."))], &[PATH]),
         run: inspect_jet_schema,
+    },
+    Tool {
+        name: "jet_export_sqlite",
+        description: "Materialize user tables from a Microsoft Access (.mdb/.accdb) database into a standalone SQLite file via Turso for fast repeated querying.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .mdb or .accdb file under an allowed folder.")),
+            ("output", string("Destination .sqlite, .sqlite3, or .db file path under an allowed folder.")),
+            ("tables", json!({"type": "array", "minItems": 1, "maxItems": 256, "items": string("Exact table name from jet_inspect_schema.")})),
+            ("overwrite", boolean("Overwrite an existing output file (default false).")),
+        ], &[PATH, "output"]),
+        run: export_jet_sqlite,
     },
     Tool {
         name: "sqlite_describe_datasets",
@@ -340,6 +353,31 @@ fn inspect_jet_schema(service: &mut Service, args: &Value) -> Result<Value, Tool
         ));
     }
     Ok(schema)
+}
+
+fn export_jet_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "output", "tables", "overwrite"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, JET_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an Access database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Access database exceeds the file size limit",
+        ));
+    }
+    let output = paths::resolve(&service.allow_dirs, args.str_arg("output")?, EXTENSIONS, false)?;
+    let tables = match args.get("tables") {
+        None => None,
+        Some(value) => Some(
+            dataset_names(value, 256)
+                .ok_or_else(|| ToolError::invalid("tables must contain 1 to 256 non-empty table names"))?,
+        ),
+    };
+    let overwrite = args.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+    jet_export_sqlite(&path, &output, tables.as_deref(), overwrite).map_err(sqlite_error)
 }
 
 fn list_tables(service: &mut Service, args: &Value) -> Result<Value, ToolError> {

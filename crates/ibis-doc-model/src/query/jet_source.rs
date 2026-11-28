@@ -353,6 +353,138 @@ pub fn jet_inspect_schema(path: &Path) -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Materialize user tables from an Access (.mdb / .accdb) database into a standalone SQLite file via Turso.
+pub fn jet_export_sqlite(
+    input_path: &Path,
+    output_path: &Path,
+    tables_filter: Option<&[String]>,
+    overwrite: bool,
+) -> Result<serde_json::Value, String> {
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
+    use turso_core::{Database, PlatformIO, SqliteDialect};
+
+    if output_path.exists() && !overwrite {
+        return Err(format!(
+            "Output SQLite file already exists: {}",
+            output_path.display()
+        ));
+    }
+    let available = jet_tables(input_path)?;
+    let target_tables: Vec<String> = match tables_filter {
+        Some(filter) => {
+            if filter.is_empty() {
+                return Err("tables filter must not be empty".into());
+            }
+            for name in filter {
+                if !available.iter().any(|t| t == name) {
+                    return Err(format!("Access table does not exist: {name}"));
+                }
+            }
+            filter.to_vec()
+        }
+        None => available,
+    };
+
+    let parent = output_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or("Invalid output SQLite path")?;
+    let temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    let temp_str = temp
+        .path()
+        .to_str()
+        .ok_or("Temporary SQLite path is not valid UTF-8")?
+        .to_owned();
+
+    let io = Arc::new(PlatformIO::new().map_err(|e| e.to_string())?);
+    let database =
+        Database::open_file(io, &temp_str, Arc::new(SqliteDialect)).map_err(|e| e.to_string())?;
+    let connection = database.connect().map_err(|e| e.to_string())?;
+    let execute = |sql: &str| {
+        connection
+            .prepare(sql)
+            .and_then(|mut stmt| stmt.run_ignore_rows())
+            .map_err(|e| e.to_string())
+    };
+
+    let mut exported = Vec::with_capacity(target_tables.len());
+    let mut total_rows = 0usize;
+
+    for table_name in &target_tables {
+        let identifier = super::sqlite_source::sql_identifier(table_name);
+        let mut stmt_insert: Option<turso_core::Statement> = None;
+        let mut row_count = 0usize;
+        let mut batch_count = 0usize;
+
+        execute("BEGIN")?;
+        let res = visit_jet_table(input_path, table_name, &[], false, |columns, row| {
+            if let Some(row) = row {
+                let stmt = stmt_insert
+                    .as_mut()
+                    .ok_or("Missing Access table schema")?;
+                for (index, value) in row.into_iter().enumerate() {
+                    let sql_val = super::sqlite_source::dataset_value(value, columns[index].ty)?;
+                    stmt.bind_at(NonZeroUsize::new(index + 1).unwrap(), sql_val)
+                        .map_err(|e| e.to_string())?;
+                }
+                stmt.run_ignore_rows()
+                    .and_then(|_| stmt.reset())
+                    .map_err(|e| e.to_string())?;
+                row_count += 1;
+                batch_count += 1;
+                if batch_count >= 4096 {
+                    execute("COMMIT")?;
+                    execute("BEGIN")?;
+                    batch_count = 0;
+                }
+            } else {
+                let col_defs: Vec<String> = columns
+                    .iter()
+                    .map(|col| {
+                        format!(
+                            "{} {}",
+                            super::sqlite_source::sql_identifier(&col.name),
+                            dataset_sql_type(col.ty)
+                        )
+                    })
+                    .collect();
+                execute(&format!("CREATE TABLE {identifier} ({})", col_defs.join(", ")))?;
+                let placeholders = vec!["?"; columns.len()].join(", ");
+                let stmt = connection
+                    .prepare(format!("INSERT INTO {identifier} VALUES ({placeholders})"))
+                    .map_err(|e| e.to_string())?;
+                stmt_insert = Some(stmt);
+            }
+            Ok(())
+        });
+        if let Err(err) = res {
+            let _ = execute("ROLLBACK");
+            return Err(err);
+        }
+        execute("COMMIT")?;
+        total_rows += row_count;
+        exported.push(json!({
+            "name": table_name,
+            "rows": row_count,
+        }));
+    }
+
+    drop(connection);
+    drop(database);
+
+    if overwrite && output_path.exists() {
+        std::fs::remove_file(output_path).map_err(|e| e.to_string())?;
+    }
+    temp.persist(output_path).map_err(|e| e.error.to_string())?;
+
+    Ok(json!({
+        "output": output_path.display().to_string(),
+        "tables": exported,
+        "total_rows": total_rows,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

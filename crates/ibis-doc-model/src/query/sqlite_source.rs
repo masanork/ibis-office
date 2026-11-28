@@ -107,7 +107,7 @@ fn checked_table(connection: &Arc<Connection>, table: &str) -> Result<String, St
     Ok(sql_identifier(table))
 }
 
-fn sql_identifier(name: &str) -> String {
+pub(super) fn sql_identifier(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
@@ -647,7 +647,7 @@ impl SqliteQuerySession {
     }
 }
 
-fn dataset_value(value: CellValue, ty: QType) -> Result<Value, String> {
+pub(super) fn dataset_value(value: CellValue, ty: QType) -> Result<Value, String> {
     Ok(match value {
         CellValue::Empty => Value::Null,
         CellValue::Text(text) => Value::from_text(text),
