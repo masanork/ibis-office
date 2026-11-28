@@ -964,6 +964,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 || ibis_formats::gis::is_geojson(&raw_data)
             {
                 ibis_formats::gis::to_svg(&raw_data)
+            } else if ibis_formats::just_legacy::is_hanako(&raw_data) {
+                ibis_formats::just_legacy::to_svg(&raw_data)
             } else {
                 ibis_formats::cad::to_svg(&raw_data)
             }
