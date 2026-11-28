@@ -198,6 +198,12 @@ fn mcp_jet_inspect_schema_is_available_in_read_only_mode() {
         tool["name"] == "jet_migration_markdown" && tool["annotations"]["readOnlyHint"] == true
     }));
     assert!(tools.iter().any(|tool| {
+        tool["name"] == "jet_inspect_vba" && tool["annotations"]["readOnlyHint"] == true
+    }));
+    assert!(tools.iter().any(|tool| {
+        tool["name"] == "jet_inspect_form" && tool["annotations"]["readOnlyHint"] == true
+    }));
+    assert!(tools.iter().any(|tool| {
         tool["name"] == "ese_inspect_schema" && tool["annotations"]["readOnlyHint"] == true
     }));
     assert!(tools.iter().any(|tool| {

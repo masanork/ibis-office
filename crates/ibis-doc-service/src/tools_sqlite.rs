@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, dataset_sql_type, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_sqlite, jet_inspect_schema, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
+    SqliteRows, SqliteScalar, dataset_sql_type, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -58,6 +58,28 @@ const TOOLS: &[Tool] = &[
         returns_content: true,
         schema: &|| object(&[("path", string("Path to a local .mdb or .accdb file under an allowed folder."))], &[PATH]),
         run: migration_markdown_jet,
+    },
+    Tool {
+        name: "jet_inspect_vba",
+        description: "Extract VBA module source code from a Microsoft Access (.mdb/.accdb) database for migration to Apps Script or modern workflows.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .mdb or .accdb file under an allowed folder.")),
+            ("module", string("Optional VBA module name to extract (omit to return all modules).")),
+        ], &[PATH]),
+        run: inspect_jet_vba,
+    },
+    Tool {
+        name: "jet_inspect_form",
+        description: "Inspect form or report properties and bound controls in a Microsoft Access (.mdb/.accdb) database.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .mdb or .accdb file under an allowed folder.")),
+            ("form", string("Exact form or report name from jet_inspect_schema.")),
+        ], &[PATH, "form"]),
+        run: inspect_jet_form,
     },
     Tool {
         name: "jet_export_sqlite",
@@ -502,6 +524,54 @@ fn migration_markdown_jet(service: &mut Service, args: &Value) -> Result<Value, 
         ));
     }
     Ok(json!({ "markdown": markdown }))
+}
+
+fn inspect_jet_vba(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "module"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, JET_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an Access database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Access database exceeds the file size limit",
+        ));
+    }
+    let module = args.opt_str("module")?;
+    let result = jet_inspect_vba(&path, module).map_err(sqlite_error)?;
+    if result.to_string().len() > service.limits.page_bytes {
+        return Err(ToolError::new(
+            "result_too_large",
+            "VBA module source exceeds the response size limit; pass a specific module name",
+        ));
+    }
+    Ok(result)
+}
+
+fn inspect_jet_form(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "form"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, JET_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an Access database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Access database exceeds the file size limit",
+        ));
+    }
+    let form = args.str_arg("form")?;
+    let result = jet_inspect_form(&path, form).map_err(sqlite_error)?;
+    if result.to_string().len() > service.limits.page_bytes {
+        return Err(ToolError::new(
+            "result_too_large",
+            "Form properties exceed the response size limit",
+        ));
+    }
+    Ok(result)
 }
 
 fn export_ese_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {

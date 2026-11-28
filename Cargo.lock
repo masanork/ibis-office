@@ -7488,6 +7488,7 @@ dependencies = [
  "apache-avro",
  "arrow-array",
  "arrow-ipc",
+ "datacraft-jet",
  "ibis-calc",
  "ibis-doc-model",
  "ibis-formats",

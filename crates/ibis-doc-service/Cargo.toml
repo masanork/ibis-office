@@ -22,4 +22,5 @@ sha2 = "0.10"
 apache-avro = { version = "0.22", default-features = false }
 arrow-array = "60"
 arrow-ipc = { version = "60", default-features = false }
+datacraft-jet = "0.2"
 tempfile = "3"

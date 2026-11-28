@@ -1884,3 +1884,105 @@ fn saved_report_comparison_persists_with_generic_columns() {
     set(&mut service, &reopened, serde_json::Value::Null).unwrap();
     assert!(read(&mut service).is_null());
 }
+
+#[test]
+fn jet_query_to_table_and_refresh_reports() {
+    use datacraft_jet::StorageValue;
+    use datacraft_jet::jet::{
+        create::create_jet4_file,
+        tdef::{JetColumn, JetType, flags as tdef_flags},
+        writer::Jet4Writer,
+    };
+
+    let write_mdb = |path: &std::path::Path, rows: &[(&str, i64)]| {
+        create_jet4_file(path, 0.0).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let mut writer = Jet4Writer::new(bytes).unwrap();
+        let cols = vec![
+            JetColumn {
+                name: "sku".into(),
+                data_type: JetType::Text,
+                flags: 0,
+                column_id: 0,
+                var_index: Some(0),
+                fixed_offset: 0,
+                len: 64,
+                compressed_text: false,
+                indexed: Default::default(),
+                misc: 0,
+            },
+            JetColumn {
+                name: "qty".into(),
+                data_type: JetType::LongInt,
+                flags: tdef_flags::FIXED,
+                column_id: 1,
+                var_index: None,
+                fixed_offset: 0,
+                len: 4,
+                compressed_text: false,
+                indexed: Default::default(),
+                misc: 0,
+            },
+        ];
+        let tdef = writer.create_table("Inventory", &cols).unwrap();
+        for (sku, qty) in rows {
+            writer
+                .insert_row(
+                    tdef,
+                    &[StorageValue::Text((*sku).into()), StorageValue::Int(*qty)],
+                )
+                .unwrap();
+        }
+        std::fs::write(path, writer.into_file()).unwrap();
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let v1 = dir.path().join("inventory_v1.mdb");
+    let v2 = dir.path().join("inventory_v2.mdb");
+    let blank = dir.path().join("report.xlsx");
+    write_mdb(&v1, &[("A01", 10), ("B02", 20)]);
+    write_mdb(&v2, &[("A01", 15), ("B02", 25), ("C03", 30)]);
+    std::fs::write(&blank, ibis_formats::blank_file(ibis_formats::Kind::Workbook).unwrap()).unwrap();
+
+    let mut service = Service::new(&[dir.path().to_owned()], false, Limits::default());
+    let id = service.call("app_open_document", &json!({"path": blank})).unwrap()["document_id"].clone();
+    let sheet = service.call("xlsx_list_sheets", &json!({"document_id": id})).unwrap()["sheets"][0]["name"].clone();
+
+    let created = service
+        .call(
+            "sqlite_query_to_table",
+            &json!({
+                "document_id": id,
+                "destination_sheet": sheet,
+                "anchor": "A1",
+                "sql": "SELECT sku, qty FROM inv ORDER BY sku",
+                "datasets": [{"source": v1, "table": "Inventory", "alias": "inv"}],
+            }),
+        )
+        .unwrap();
+    let table_name = created["table"].as_str().unwrap().to_owned();
+
+    let refreshed = service
+        .call(
+            "sqlite_refresh_query_reports",
+            &json!({
+                "document_id": id,
+                "tables": [table_name],
+                "bindings": {"inventory_v1.mdb": v2},
+            }),
+        )
+        .unwrap();
+    assert_eq!(refreshed["reports"][0]["previous_rows"], 2);
+    assert_eq!(refreshed["reports"][0]["rows"], 3);
+
+    let cells = service
+        .call(
+            "xlsx_get_cells",
+            &json!({"document_id": id, "sheet": sheet, "range": "A1:B4"}),
+        )
+        .unwrap();
+    assert_eq!(
+        cells["rows"],
+        json!([["sku", "qty"], ["A01", 15.0], ["B02", 25.0], ["C03", 30.0]])
+    );
+}
