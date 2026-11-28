@@ -214,3 +214,72 @@ fn a_glyph_turned_a_quarter_gets_its_box_on_the_page_and_reads_as_vertical() {
     // B below A.
     assert!(boxes[1].rect_pt.y0 > boxes[0].rect_pt.y0);
 }
+
+#[test]
+fn non_embedded_cid_font_queries_font_resolver_with_japan1_collection() {
+    use ibis_pdf::interpret::{
+        CidCollection, FallbackFontRequest, FontResolver, interpret_page_scene_with_font_resolver,
+    };
+    use std::io::Write as _;
+    use std::sync::{Arc, Mutex};
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
+    let mut offsets = Vec::new();
+    offsets.push((1, out.len()));
+    out.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    offsets.push((2, out.len()));
+    out.extend_from_slice(
+        b"2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] /MediaBox [0 0 595 842] >>\nendobj\n",
+    );
+    offsets.push((3, out.len()));
+    out.extend_from_slice(
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n",
+    );
+
+    // "A会員" in UniJIS-UCS2-H: U+0041, U+4F1A, U+54E1
+    let stream = b"BT /F1 12 Tf 72 720 Td <00414F1A54E1> Tj ET";
+    offsets.push((4, out.len()));
+    let _ = writeln!(out, "4 0 obj\n<< /Length {} >>\nstream", stream.len());
+    out.extend_from_slice(stream);
+    out.extend_from_slice(b"\nendstream\nendobj\n");
+
+    offsets.push((5, out.len()));
+    out.extend_from_slice(
+        b"5 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /HeiseiMin-W3-UniJIS-UCS2-H /Encoding /UniJIS-UCS2-H /DescendantFonts [6 0 R] >>\nendobj\n",
+    );
+    offsets.push((6, out.len()));
+    out.extend_from_slice(
+        b"6 0 obj\n<< /Type /Font /Subtype /CIDFontType0 /BaseFont /HeiseiMin-W3 /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 4 >> /DW 1000 >>\nendobj\n",
+    );
+
+    let xref_offset = out.len();
+    out.extend_from_slice(b"xref\n0 7\n0000000000 65535 f \n");
+    for &(_, off) in &offsets {
+        let _ = writeln!(out, "{off:010} 00000 n ");
+    }
+    let _ = writeln!(
+        out,
+        "trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF"
+    );
+
+    let captured: Arc<Mutex<Vec<FallbackFontRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_clone = captured.clone();
+    let resolver: FontResolver = Arc::new(move |req| {
+        captured_clone.lock().unwrap().push(req.clone());
+        None
+    });
+
+    let mut container = PdfContainer::from_bytes(out).unwrap();
+    let scene =
+        interpret_page_scene_with_font_resolver(&mut container, 0, Some(&resolver)).unwrap();
+    assert_eq!(scene.text_index.plain_text(), "A会員");
+
+    let queries = captured.lock().unwrap();
+    assert_eq!(queries.len(), 1);
+    assert_eq!(
+        queries[0].post_script_name.as_deref(),
+        Some("HeiseiMin-W3-UniJIS-UCS2-H")
+    );
+    assert_eq!(queries[0].cid_collection, Some(CidCollection::Japan1));
+}

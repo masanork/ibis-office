@@ -27,12 +27,18 @@ pub(crate) fn open_shared_directory(cx: &gpui_kit::App) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn shared_directory() -> Option<std::path::PathBuf> {
     Some(
         crate::app_data::base()?
             .join("ibisOffice")
             .join("xml-views"),
     )
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) fn shared_directory() -> Option<std::path::PathBuf> {
+    None
 }
 
 pub fn open(extension: &str, data: &[u8], definition: Option<&Path>) -> Result<Opened, String> {

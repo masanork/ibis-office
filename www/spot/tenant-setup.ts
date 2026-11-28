@@ -55,6 +55,51 @@ export function buildShareableFormUrl(origin: string, pathname: string, manifest
   return url.toString();
 }
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
+}
+
+export async function encodeCompressedManifestParam(manifest: SpotFormManifest): Promise<string> {
+  const raw = new TextEncoder().encode(JSON.stringify(manifest));
+  if (typeof CompressionStream === 'undefined') {
+    return base64UrlEncode(raw);
+  }
+  const stream = new Blob([toArrayBuffer(raw)]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  const compressed = new Uint8Array(await new Response(stream).arrayBuffer());
+  return base64UrlEncode(compressed);
+}
+
+export async function decodeCompressedManifestParam(encoded: string): Promise<SpotFormManifest> {
+  const compressed = base64UrlDecode(encoded.trim());
+  if (typeof DecompressionStream === 'undefined') {
+    throw new Error('DecompressionStream unavailable for ?mz= manifest');
+  }
+  const stream = new Blob([toArrayBuffer(compressed)]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  const raw = new Uint8Array(await new Response(stream).arrayBuffer());
+  const parsed = JSON.parse(new TextDecoder().decode(raw)) as SpotFormManifest;
+  if (!parsed || typeof parsed.tenant_id !== 'string' || typeof parsed.form_id !== 'string' || !Array.isArray(parsed.fields)) {
+    throw new Error('Invalid compressed Spot manifest');
+  }
+  return parsed;
+}
+
+export async function buildCompactShareableFormUrl(
+  origin: string,
+  pathname: string,
+  manifest: SpotFormManifest,
+): Promise<string> {
+  const url = new URL(pathname, origin);
+  url.search = '';
+  if (typeof CompressionStream !== 'undefined') {
+    url.searchParams.set('mz', await encodeCompressedManifestParam(manifest));
+  } else {
+    url.searchParams.set('m', encodeManifestParam(manifest));
+  }
+  return url.toString();
+}
+
 export async function generateReadToken(): Promise<{ readToken: string; readTokenHash: string }> {
   const random = crypto.getRandomValues(new Uint8Array(32));
   const readToken = base64UrlEncode(random);

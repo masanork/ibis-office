@@ -44,7 +44,6 @@ pub mod fixed_layout;
 #[cfg(not(target_family = "wasm"))]
 pub mod crash_report;
 pub mod read_file;
-#[cfg(not(target_family = "wasm"))]
 mod structured_preview;
 pub mod jtd_preview;
 #[cfg(not(target_family = "wasm"))]
@@ -70,6 +69,8 @@ pub mod git_workspace;
 pub mod folder_context;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_family = "wasm"))]
 mod structured_view;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_family = "wasm"))]
+pub(crate) mod structured_code_view;
 pub mod selection_handles;
 pub mod autocorrect;
 pub mod autorecover;

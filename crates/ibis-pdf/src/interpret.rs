@@ -10,10 +10,10 @@ use std::sync::Arc;
 use crate::softmask::MaskRaster;
 use hayro_interpret::CacheKey;
 
-use hayro_interpret::font::Glyph;
+use hayro_interpret::font::{FallbackFontQuery, FontData, FontQuery, Glyph};
 use hayro_interpret::pattern::Pattern;
 use hayro_interpret::shading::ShadingType;
-use hayro_interpret::hayro_cmap::BfString;
+use hayro_interpret::hayro_cmap::{BfString, CidFamily};
 use hayro_interpret::hayro_syntax::Pdf;
 use hayro_interpret::{
     BlendMode, ClipPath, Context, Device, FillRule as HayroFillRule, GlyphDrawMode, Image,
@@ -29,19 +29,86 @@ use crate::scene::{
 };
 use crate::{Error, Result};
 
+/// Character collection (registry/ordering) of a non-embedded CID font.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CidCollection {
+    Japan1,
+    GB1,
+    CNS1,
+    Korea1,
+    Identity,
+    Custom { registry: String, ordering: String },
+}
+
+/// Metadata describing a non-embedded PDF font that needs a fallback font file.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FallbackFontRequest {
+    pub post_script_name: Option<String>,
+    pub font_name: Option<String>,
+    pub font_family: Option<String>,
+    pub font_weight: u32,
+    pub is_fixed_pitch: bool,
+    pub is_serif: bool,
+    pub is_italic: bool,
+    pub is_bold: bool,
+    pub cid_collection: Option<CidCollection>,
+}
+
+/// Callback returning `(font_bytes, face_index)` for a non-embedded PDF font.
+pub type FontResolver =
+    Arc<dyn Fn(&FallbackFontRequest) -> Option<(Arc<Vec<u8>>, u32)> + Send + Sync>;
+
+fn fallback_request_from_query(q: &FallbackFontQuery) -> FallbackFontRequest {
+    let cid_collection = q.character_collection.as_ref().map(|cc| match &cc.family {
+        CidFamily::AdobeJapan1 => CidCollection::Japan1,
+        CidFamily::AdobeGB1 => CidCollection::GB1,
+        CidFamily::AdobeCNS1 => CidCollection::CNS1,
+        CidFamily::AdobeKorea1 => CidCollection::Korea1,
+        CidFamily::AdobeIdentity => CidCollection::Identity,
+        CidFamily::Custom { registry, ordering } => CidCollection::Custom {
+            registry: String::from_utf8_lossy(registry).into_owned(),
+            ordering: String::from_utf8_lossy(ordering).into_owned(),
+        },
+    });
+    FallbackFontRequest {
+        post_script_name: q.post_script_name.clone(),
+        font_name: q.font_name.clone(),
+        font_family: q.font_family.clone(),
+        font_weight: q.font_weight,
+        is_fixed_pitch: q.is_fixed_pitch,
+        is_serif: q.is_serif,
+        is_italic: q.is_italic,
+        is_bold: q.is_bold,
+        cid_collection,
+    }
+}
+
 /// Interpret page `page_index` (0-based) into a [`PageScene`] containing both
 /// GPUI-ready display commands and a character-level [`PageTextIndex`].
 pub fn interpret_page_scene(
     container: &mut PdfContainer,
     page_index: usize,
 ) -> Result<PageScene> {
+    interpret_page_scene_with_font_resolver(container, page_index, None)
+}
+
+/// Interpret page `page_index` (0-based) into a [`PageScene`], using `font_resolver`
+/// to locate font data for non-embedded PDF fonts.
+pub fn interpret_page_scene_with_font_resolver(
+    container: &mut PdfContainer,
+    page_index: usize,
+    font_resolver: Option<&FontResolver>,
+) -> Result<PageScene> {
+    let resolver = font_resolver.cloned();
     #[cfg(not(target_family = "wasm"))]
     {
         std::thread::scope(|scope| {
             let handle = std::thread::Builder::new()
                 .name("pdf-interpret".into())
                 .stack_size(8 * 1024 * 1024)
-                .spawn_scoped(scope, || interpret_page_scene_inner(container, page_index))
+                .spawn_scoped(scope, move || {
+                    interpret_page_scene_inner(container, page_index, resolver.as_ref())
+                })
                 .map_err(|e| Error::new(format!("failed to spawn pdf-interpret thread: {e}")))?;
             handle
                 .join()
@@ -50,13 +117,14 @@ pub fn interpret_page_scene(
     }
     #[cfg(target_family = "wasm")]
     {
-        interpret_page_scene_inner(container, page_index)
+        interpret_page_scene_inner(container, page_index, resolver.as_ref())
     }
 }
 
 fn interpret_page_scene_inner(
     container: &mut PdfContainer,
     page_index: usize,
+    font_resolver: Option<&FontResolver>,
 ) -> Result<PageScene> {
     let pages = collect_pages(container)?;
     let info = pages
@@ -65,7 +133,7 @@ fn interpret_page_scene_inner(
         .ok_or_else(|| Error::new(format!("page index {page_index} out of range")))?;
 
     let pdf = parse_for_interpretation(container)?;
-    interpret_scene(&pdf, &InterpreterCache::new(), info, Purpose::View)
+    interpret_scene(&pdf, &InterpreterCache::new(), info, Purpose::View, font_resolver)
 }
 
 /// Visit each page for export, keeping glyph outlines only when Unicode is unavailable.
@@ -77,7 +145,7 @@ pub fn visit_export_scenes(
     let pdf = parse_for_interpretation(container)?;
     let cache = InterpreterCache::new();
     for info in pages {
-        visit(interpret_scene(&pdf, &cache, info, Purpose::Export)?)?;
+        visit(interpret_scene(&pdf, &cache, info, Purpose::Export, None)?)?;
     }
     Ok(())
 }
@@ -91,7 +159,7 @@ pub fn visit_marked_export_scenes(
     let pdf = parse_for_interpretation(container)?;
     let cache = InterpreterCache::new();
     for info in pages {
-        let mut device = scene_device(&pdf, &cache, info, Purpose::Export, true)?;
+        let mut device = scene_device(&pdf, &cache, info, Purpose::Export, true, None)?;
         let marks = std::mem::take(&mut device.character_marks);
         visit(device.finish(), marks)?;
     }
@@ -107,7 +175,7 @@ pub fn visit_text_scenes(
     let pdf = parse_for_interpretation(container)?;
     let cache = InterpreterCache::new();
     for info in pages {
-        visit(interpret_scene(&pdf, &cache, info, Purpose::Text)?)?;
+        visit(interpret_scene(&pdf, &cache, info, Purpose::Text, None)?)?;
     }
     Ok(())
 }
@@ -133,8 +201,9 @@ fn interpret_scene<'a>(
     cache: &'a InterpreterCache<'a>,
     info: PageInfo,
     purpose: Purpose,
+    font_resolver: Option<&FontResolver>,
 ) -> Result<PageScene> {
-    Ok(scene_device(pdf, cache, info, purpose, false)?.finish())
+    Ok(scene_device(pdf, cache, info, purpose, false, font_resolver)?.finish())
 }
 
 fn scene_device<'a>(
@@ -143,6 +212,7 @@ fn scene_device<'a>(
     info: PageInfo,
     purpose: Purpose,
     collect_marks: bool,
+    font_resolver: Option<&FontResolver>,
 ) -> Result<SceneDevice> {
     let page_index = info.index;
     let page = pdf
@@ -150,7 +220,21 @@ fn scene_device<'a>(
         .get(page_index)
         .ok_or_else(|| Error::new(format!("page {page_index} missing in hayro-syntax")))?;
 
-    let settings = InterpreterSettings::default();
+    let mut settings = InterpreterSettings::default();
+    if let Some(resolver) = font_resolver {
+        let resolver = resolver.clone();
+        settings.font_resolver = Arc::new(move |query| match query {
+            FontQuery::Standard(s) => Some(s.get_font_data()),
+            FontQuery::Fallback(f) => {
+                let req = fallback_request_from_query(f);
+                if let Some((data, index)) = resolver(&req) {
+                    Some((data as FontData, index))
+                } else {
+                    Some(f.pick_standard_font().get_font_data())
+                }
+            }
+        });
+    }
     let initial_transform = Affine::new(page.initial_transform(true).as_coeffs());
     let (pw, ph) = page.render_dimensions();
     let bbox = Rect::new(0.0, 0.0, pw as f64, ph as f64);

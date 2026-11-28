@@ -8,7 +8,8 @@ import {
 import { formatSpotCsv, formatSpotTsv, type SpotDecryptedRecord } from './export.js';
 import { renderQrSvg } from './qr.js';
 import {
-  buildShareableFormUrl,
+  buildCompactShareableFormUrl,
+  decodeCompressedManifestParam,
   decodeManifestParam,
   generateReadToken,
   type SpotFormManifest,
@@ -105,6 +106,10 @@ async function ensureDemoKeys(kid: string): Promise<{ publicJwk: SpotRecipientJw
 
 async function loadManifest(): Promise<SpotFormManifest> {
   const params = new URLSearchParams(location.search);
+  const compressedManifest = params.get('mz');
+  if (compressedManifest) {
+    return decodeCompressedManifestParam(compressedManifest);
+  }
   const inlineManifest = params.get('m');
   if (inlineManifest) {
     return decodeManifestParam(inlineManifest);
@@ -491,7 +496,7 @@ async function main(): Promise<void> {
       };
       localStorage.setItem(`sorane.spot.read-token.${tenantId}`, readToken);
 
-      const shareUrl = buildShareableFormUrl(location.origin, location.pathname, issuedManifest);
+      const shareUrl = await buildCompactShareableFormUrl(location.origin, location.pathname, issuedManifest);
       (document.getElementById('setup-share-url') as HTMLInputElement).value = shareUrl;
       const qrEl = document.getElementById('setup-share-qr')!;
       try {

@@ -9,7 +9,9 @@ import {
 import { formatSpotCsv, formatSpotTsv } from '../../www/spot/export.js';
 import { encodeQrMatrix, renderQrSvg } from '../../www/spot/qr.js';
 import {
+  buildCompactShareableFormUrl,
   buildShareableFormUrl,
+  decodeCompressedManifestParam,
   decodeManifestParam,
   generateReadToken,
 } from '../../www/spot/tenant-setup.js';
@@ -221,4 +223,39 @@ test('Tenant registration enforces per-tenant Bearer read_token and ?m= manifest
   const decoded = decodeManifestParam(encoded);
   assert.equal(decoded.tenant_id, 'chiyoda-2026');
   assert.equal(decoded.fields[0].claim_path, 'person.full_name');
+});
+
+test('QR v40-L supports large ?mz= compressed shareable manifest URLs', async () => {
+  const { publicJwk } = await generateRecipientKeyPair('chiyoda-2026-01');
+  const compactUrl = await buildCompactShareableFormUrl('https://spot.sorane.dev', '/', {
+    schema: 'sorane.spot.form.v1',
+    tenant_id: 'chiyoda-2026',
+    form_id: 'evac-checkin',
+    version: '1.1.0',
+    title: '千代田区避難所受付票（個人単位）',
+    relay_url: 'https://spot.sorane.dev/api/relay/v1/submit',
+    inbox_url: 'https://spot.sorane.dev/api/relay/v1/inbox',
+    recipient_key: publicJwk,
+    fields: [
+      { id: 'name', label: '氏名', type: 'text', required: true, claim_path: 'person.full_name' },
+      { id: 'birth_date', label: '生年月日', type: 'text', claim_path: 'person.birth_date' },
+      { id: 'address', label: '住所', type: 'text', claim_path: 'person.address' },
+      { id: 'shelter', label: '避難場所', type: 'text' },
+      { id: 'needs', label: '要配慮事項', type: 'textarea' },
+      { id: 'input_helper', label: '入力補助者', type: 'text' },
+      { id: 'group_id', label: '同行者グループID', type: 'text' },
+    ],
+  });
+  const mz = new URL(compactUrl).searchParams.get('mz');
+  assert.ok(mz);
+  const decoded = await decodeCompressedManifestParam(mz);
+  assert.equal(decoded.tenant_id, 'chiyoda-2026');
+  assert.equal(decoded.fields.length, 7);
+
+  // Also verify QR matrix & SVG for > 1,000 byte payloads (Version > 20).
+  const largePayload = 'spot1:' + 'A'.repeat(1200);
+  const matrix = encodeQrMatrix(largePayload);
+  assert.ok(matrix.version > 20 && matrix.version <= 40);
+  const svg = renderQrSvg(compactUrl);
+  assert.ok(svg.startsWith('<svg ') && svg.includes('</svg>'));
 });

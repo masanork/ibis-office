@@ -249,9 +249,9 @@ pub fn is_presentation_markdown(data: &[u8]) -> bool {
 
 /// Return `true` when the Markdown bytes represent a spreadsheet workbook:
 /// either via YAML frontmatter (`type: workbook`, `type: spreadsheet`, `type: xlsx`,
-/// `workbook: true`, `x-ibis-format: workbook|spreadsheet|xlsx`) or via ibisOffice
-/// workbook sheet/metadata markers (`<!-- xlsx-sheet ... -->`, `<!-- xlsx-date-system:1904 -->`,
-/// `<!-- xlsx-defined-names ... -->`) outside fenced code blocks.
+/// `workbook: true`, `ibis-workbook: true`, `x-ibis-format: workbook|spreadsheet|xlsx`) or via
+/// workbook sheet/metadata markers (`<!-- xlsx-sheet ... -->`, `<!-- ibis-sheet: ... -->`,
+/// `<!-- xlsx-date-system:1904 -->`, `<!-- xlsx-defined-names ... -->`) outside fenced code blocks.
 pub fn is_workbook_markdown(data: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(data) else {
         return false;
@@ -270,6 +270,7 @@ pub fn is_workbook_markdown(data: &[u8]) -> bool {
             matches!(
                 (key.as_str(), value.as_str()),
                 ("workbook", "true")
+                    | ("ibis-workbook", "true")
                     | ("type", "workbook" | "spreadsheet" | "xlsx")
             )
         }) {
@@ -286,6 +287,7 @@ pub fn is_workbook_markdown(data: &[u8]) -> bool {
             continue;
         }
         if line_trimmed.starts_with(XLSX_SHEET_MARKER)
+            || parse_ibis_sheet_marker(line_trimmed).is_some()
             || line_trimmed == XLSX_1904_MARKER
             || line_trimmed.starts_with(XLSX_DEFINED_NAMES_MARKER)
         {
@@ -637,6 +639,7 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
     }
     workbook.active_tab = active_tab;
     ibis_doc_model::sheet_command::sync_sheet_book_context(presentation);
+    let _ = ibis_doc_model::calculate_missing_values(presentation);
     if sheet_states.is_empty() && !preserve_name_formulas {
         return Ok(opened);
     }
@@ -647,6 +650,7 @@ pub fn open_markdown_workbook(data: Vec<u8>) -> Result<Opened, Error> {
 
 const XLSX_1904_MARKER: &str = "<!-- xlsx-date-system:1904 -->";
 const XLSX_SHEET_MARKER: &str = "<!-- xlsx-sheet ";
+const IBIS_SHEET_MARKER: &str = "<!-- ibis-sheet:";
 
 const XLSX_DEFINED_NAMES_MARKER: &str = "<!-- xlsx-defined-names ";
 
@@ -890,6 +894,24 @@ fn markdown_validation(rule: &ibis_doc_model::Validation) -> serde_json::Value {
     })
 }
 
+fn parse_ibis_sheet_marker(trimmed: &str) -> Option<MarkdownSheetMarker> {
+    let encoded = trimmed.strip_prefix(IBIS_SHEET_MARKER)?.strip_suffix("-->")?.trim();
+    if encoded.is_empty() {
+        return None;
+    }
+    if let Some(marker) = parse_markdown_sheet_marker(encoded) {
+        return Some(marker);
+    }
+    Some(MarkdownSheetMarker {
+        name: encoded.to_owned(),
+        origin: None,
+        state: None,
+        validations: Vec::new(),
+        hidden_rows: Vec::new(),
+        hidden_columns: Vec::new(),
+    })
+}
+
 fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<MarkdownSheetMarker>, &str)>, Error> {
     let mut sections = Vec::new();
     let mut current = None;
@@ -901,11 +923,19 @@ fn markdown_workbook_sections(text: &str) -> Result<Vec<(Option<MarkdownSheetMar
         if !fenced && trimmed.starts_with(XLSX_DEFINED_NAMES_MARKER) {
             return Err(Error::new("xlsx-defined-names はブックの先頭に1回だけ指定できます"));
         }
-        if !fenced && let Some(encoded) = trimmed.strip_prefix(XLSX_SHEET_MARKER)
-        {
-            let marker = encoded.strip_suffix(" -->").and_then(parse_markdown_sheet_marker)
-                .ok_or_else(|| Error::new("xlsx-sheet の指定が不正です"))?;
-            if let Some((previous, start)) = current.replace((marker, offset + line.len())) {
+        if !fenced {
+            let parsed_marker = if let Some(encoded) = trimmed.strip_prefix(XLSX_SHEET_MARKER) {
+                Some(encoded.strip_suffix(" -->").and_then(parse_markdown_sheet_marker)
+                    .ok_or_else(|| Error::new("xlsx-sheet の指定が不正です"))?)
+            } else if trimmed.starts_with(IBIS_SHEET_MARKER) {
+                Some(parse_ibis_sheet_marker(trimmed)
+                    .ok_or_else(|| Error::new("ibis-sheet の指定が不正です"))?)
+            } else {
+                None
+            };
+            if let Some(marker) = parsed_marker
+                && let Some((previous, start)) = current.replace((marker, offset + line.len()))
+            {
                 sections.push((Some(previous), &text[start..offset]));
             }
         }
@@ -1055,6 +1085,14 @@ fn markdown_workbook_cells(
                             number_format = Some(code);
                         }
                         let explicit_text = named.then(|| trimmed.strip_suffix(XLSX_TEXT_CELL_MARKER)).flatten();
+                        let mut direct_formula = false;
+                        if formula.is_none()
+                            && explicit_text.is_none()
+                            && let Some(expr) = trimmed.strip_prefix('=').map(str::trim).filter(|s| !s.is_empty())
+                        {
+                            formula = Some(expr.to_owned());
+                            direct_formula = true;
+                        }
                         let (trimmed, value) = if let Some(text) = explicit_text {
                             let text = text.trim_end();
                             (text, CellValue::Text(text.to_owned()))
@@ -1064,6 +1102,8 @@ fn markdown_workbook_cells(
                             (display.trim_end(), CellValue::Number(value))
                         } else if spill_end.is_some() && trimmed == "#SPILL!" {
                             (trimmed, CellValue::Error(CellError::Spill))
+                        } else if direct_formula {
+                            ("", CellValue::Empty)
                         } else {
                             if trimmed.is_empty() {
                                 if formula.is_none() {
@@ -14420,6 +14460,32 @@ xychart-beta
         for invalid in [input.replace("D4", "B4"), input.replace("D4", "XFE4"), input.replace("C5", "D5")] {
             assert!(open_markdown_workbook(invalid.into_bytes()).is_err());
         }
+    }
+
+    #[test]
+    fn ibis_workbook_and_direct_formulas_evaluate_on_open() {
+        use ibis_doc_model::{CellValue, sheet_calc::sheet_of_slide};
+
+        let sample = include_str!("../../../assets/help/samples/workbook-sheet.md");
+        assert!(is_workbook_markdown(sample.as_bytes()));
+
+        let opened = open_markdown_workbook(sample.as_bytes().to_vec()).expect("open sample workbook-sheet.md");
+        let wb = opened.presentation.workbook.as_deref().expect("workbook metadata");
+        assert_eq!(wb.sheets.len(), 2);
+        assert_eq!(wb.sheets[0].name, "売上計画");
+        assert_eq!(wb.sheets[1].name, "構成メモ");
+
+        let sheet = sheet_of_slide(&opened.presentation.slides[0]).expect("売上計画 sheet");
+        assert_eq!(sheet.cell(1, 3).unwrap().formula.as_deref(), Some("B2+C2"));
+        assert_eq!(sheet.cell(1, 3).unwrap().value, CellValue::Number(270.0));
+        assert_eq!(sheet.cell(2, 3).unwrap().formula.as_deref(), Some("B3+C3"));
+        assert_eq!(sheet.cell(2, 3).unwrap().value, CellValue::Number(175.0));
+        assert_eq!(sheet.cell(3, 1).unwrap().formula.as_deref(), Some("SUM(B2:B3)"));
+        assert_eq!(sheet.cell(3, 1).unwrap().value, CellValue::Number(200.0));
+        assert_eq!(sheet.cell(3, 2).unwrap().formula.as_deref(), Some("SUM(C2:C3)"));
+        assert_eq!(sheet.cell(3, 2).unwrap().value, CellValue::Number(245.0));
+        assert_eq!(sheet.cell(3, 3).unwrap().formula.as_deref(), Some("SUM(D2:D3)"));
+        assert_eq!(sheet.cell(3, 3).unwrap().value, CellValue::Number(445.0));
     }
 
     #[test]
