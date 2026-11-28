@@ -39,9 +39,30 @@ pub struct HanakoTextBox {
 
 #[derive(Debug, Clone)]
 pub enum HanakoShape {
-    Line(i32, i32, i32, i32),
-    Polyline { points: Vec<(i32, i32)>, closed: bool },
-    Ellipse { cx: i32, cy: i32, rx: i32, ry: i32 },
+    Line {
+        x1: i32,
+        y1: i32,
+        x2: i32,
+        y2: i32,
+        color: String,
+        width: f64,
+    },
+    Polyline {
+        points: Vec<(i32, i32)>,
+        closed: bool,
+        color: String,
+        width: f64,
+    },
+    Ellipse {
+        cx: i32,
+        cy: i32,
+        rx: i32,
+        ry: i32,
+        start_deg: f64,
+        sweep_deg: f64,
+        color: String,
+        width: f64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +166,29 @@ pub fn is_hanako(data: &[u8]) -> bool {
     detect_kind_from_entries(data, &entries) == Some(JustLegacyKind::Hanako)
 }
 
+/// バイト列が三四郎 (`.jsd`/`.jst`) かどうかを判定する。
+pub fn is_sanshiro(data: &[u8]) -> bool {
+    if !cfb::is_cfb(data) {
+        return false;
+    }
+    let Ok(entries) = cfb::directory(data) else {
+        return false;
+    };
+    detect_kind_from_entries(data, &entries) == Some(JustLegacyKind::Sanshiro)
+}
+
+fn maybe_decompress_zlib(bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.len() >= 2
+        && bytes[0] == 0x78
+        && matches!(bytes[1], 0x01 | 0x5e | 0x9c | 0xda)
+    {
+        if let Ok(decompressed) = miniz_oxide::inflate::decompress_to_vec_zlib(&bytes) {
+            return decompressed;
+        }
+    }
+    bytes
+}
+
 /// 花子 / 三四郎 CFB コンテナを解析してメタデータ・テキスト・図形・表データを抽出する。
 pub fn inspect_just_legacy(data: &[u8]) -> Result<JustLegacyReport, Error> {
     if !cfb::is_cfb(data) {
@@ -187,12 +231,12 @@ pub fn inspect_just_legacy(data: &[u8]) -> Result<JustLegacyReport, Error> {
         JustLegacyKind::Hanako => {
             if let Some(entry) = entries.iter().find(|e| !e.is_storage && e.path == "FDMText") {
                 if let Ok(bytes) = reader.stream_path(&entry.path) {
-                    hanako_texts = parse_fdm_text(&bytes);
+                    hanako_texts = parse_fdm_text(&maybe_decompress_zlib(bytes));
                 }
             }
             if let Some(entry) = entries.iter().find(|e| !e.is_storage && e.path == "FDMVector") {
                 if let Ok(bytes) = reader.stream_path(&entry.path) {
-                    hanako_shapes = parse_fdm_vector(&bytes);
+                    hanako_shapes = parse_fdm_vector(&maybe_decompress_zlib(bytes));
                 }
             }
         }
@@ -201,7 +245,7 @@ pub fn inspect_just_legacy(data: &[u8]) -> Result<JustLegacyReport, Error> {
                 .iter()
                 .find(|e| !e.is_storage && e.path == "Book")
                 .and_then(|e| reader.stream_path(&e.path).ok())
-                .map(|b| parse_sanshiro_book(&b))
+                .map(|b| parse_sanshiro_book(&maybe_decompress_zlib(b)))
                 .unwrap_or_default();
 
             let mut ws_entries: Vec<(usize, String)> = entries
@@ -218,7 +262,7 @@ pub fn inspect_just_legacy(data: &[u8]) -> Result<JustLegacyReport, Error> {
 
             for (idx, path) in ws_entries {
                 if let Ok(bytes) = reader.stream_path(&path) {
-                    let cells = parse_sanshiro_worksheet(&bytes);
+                    let cells = parse_sanshiro_worksheet(&maybe_decompress_zlib(bytes));
                     let name = sheet_names
                         .get(idx.saturating_sub(1))
                         .cloned()
@@ -308,6 +352,54 @@ pub fn to_markdown(data: &[u8]) -> Result<String, Error> {
     Ok(out)
 }
 
+/// 三四郎 (`.jsd`/`.jst`) の最初の非空シートを CSV/TSV 文字列として出力する。
+pub fn to_delimited(data: &[u8], delimiter: char) -> Result<String, Error> {
+    let report = inspect_just_legacy(data)?;
+    if report.kind != JustLegacyKind::Sanshiro {
+        return Err(Error::new("CSV/TSV export is only supported for Sanshiro (.jsd/.jst)"));
+    }
+    let Some(sheet) = report
+        .sanshiro_sheets
+        .iter()
+        .find(|s| !s.cells.is_empty())
+        .or_else(|| report.sanshiro_sheets.first())
+    else {
+        return Ok(String::new());
+    };
+    if sheet.cells.is_empty() {
+        return Ok(String::new());
+    }
+    let max_row = sheet.cells.iter().map(|c| c.row).max().unwrap_or(0) as usize;
+    let max_col = sheet.cells.iter().map(|c| c.col).max().unwrap_or(0) as usize;
+    let mut grid = vec![vec![String::new(); max_col + 1]; max_row + 1];
+    for c in &sheet.cells {
+        grid[c.row as usize][c.col as usize] = c.value.clone();
+    }
+    let mut out = String::new();
+    for row in grid {
+        let line: Vec<String> = row
+            .into_iter()
+            .map(|cell| {
+                if cell.contains(delimiter) || cell.contains('"') || cell.contains('\n') || cell.contains('\r') {
+                    format!("\"{}\"", cell.replace('"', "\"\""))
+                } else {
+                    cell
+                }
+            })
+            .collect();
+        out.push_str(&line.join(&delimiter.to_string()));
+        out.push_str("\r\n");
+    }
+    Ok(out)
+}
+
+/// 三四郎 (`.jsd`/`.jst`) の最初の非空シートを Shift_JIS (CP932) の CSV/TSV バイト列として出力する。
+pub fn to_delimited_cp932(data: &[u8], delimiter: char) -> Result<Vec<u8>, Error> {
+    let text = to_delimited(data, delimiter)?;
+    let (cow, _, _) = encoding_rs::SHIFT_JIS.encode(&text);
+    Ok(cow.into_owned())
+}
+
 /// 花子 (`.jhd`/`.jhb`) のベクター図形・テキストを SVG 文字列として出力する。
 pub fn to_svg(data: &[u8]) -> Result<String, Error> {
     let report = inspect_just_legacy(data)?;
@@ -328,7 +420,7 @@ pub fn to_svg(data: &[u8]) -> Result<String, Error> {
 
     for s in &report.hanako_shapes {
         match s {
-            HanakoShape::Line(x1, y1, x2, y2) => {
+            HanakoShape::Line { x1, y1, x2, y2, .. } => {
                 expand(*x1, *y1);
                 expand(*x2, *y2);
             }
@@ -337,7 +429,7 @@ pub fn to_svg(data: &[u8]) -> Result<String, Error> {
                     expand(x, y);
                 }
             }
-            HanakoShape::Ellipse { cx, cy, rx, ry } => {
+            HanakoShape::Ellipse { cx, cy, rx, ry, .. } => {
                 expand(cx - rx, cy - ry);
                 expand(cx + rx, cy + ry);
             }
@@ -369,13 +461,25 @@ pub fn to_svg(data: &[u8]) -> Result<String, Error> {
 
     for s in &report.hanako_shapes {
         match s {
-            HanakoShape::Line(x1, y1, x2, y2) => {
+            HanakoShape::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                color,
+                width,
+            } => {
                 out.push_str(&format!(
-                    "<line x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"#222\" stroke-width=\"1.2\"/>\n",
+                    "<line x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"{color}\" stroke-width=\"{width:.2}\"/>\n",
                     tx(*x1), ty(*y1), tx(*x2), ty(*y2)
                 ));
             }
-            HanakoShape::Polyline { points, closed } => {
+            HanakoShape::Polyline {
+                points,
+                closed,
+                color,
+                width,
+            } => {
                 if points.len() >= 2 {
                     let pts: Vec<String> = points
                         .iter()
@@ -383,32 +487,70 @@ pub fn to_svg(data: &[u8]) -> Result<String, Error> {
                         .collect();
                     let tag = if *closed { "polygon" } else { "polyline" };
                     out.push_str(&format!(
-                        "<{tag} points=\"{}\" fill=\"none\" stroke=\"#222\" stroke-width=\"1.2\"/>\n",
+                        "<{tag} points=\"{}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{width:.2}\"/>\n",
                         pts.join(" ")
                     ));
                 }
             }
-            HanakoShape::Ellipse { cx, cy, rx, ry } => {
-                out.push_str(&format!(
-                    "<ellipse cx=\"{:.2}\" cy=\"{:.2}\" rx=\"{:.2}\" ry=\"{:.2}\" fill=\"none\" stroke=\"#222\" stroke-width=\"1.2\"/>\n",
-                    tx(*cx), ty(*cy), (*rx as f64 * scale).max(0.5), (*ry as f64 * scale).max(0.5)
-                ));
+            HanakoShape::Ellipse {
+                cx,
+                cy,
+                rx,
+                ry,
+                start_deg,
+                sweep_deg,
+                color,
+                width,
+            } => {
+                let srx = (*rx as f64 * scale).max(0.5);
+                let sry = (*ry as f64 * scale).max(0.5);
+                let scx = tx(*cx);
+                let scy = ty(*cy);
+                if *sweep_deg <= 0.1 || *sweep_deg >= 359.5 {
+                    out.push_str(&format!(
+                        "<ellipse cx=\"{scx:.2}\" cy=\"{scy:.2}\" rx=\"{srx:.2}\" ry=\"{sry:.2}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{width:.2}\"/>\n"
+                    ));
+                } else {
+                    let a0 = start_deg.to_radians();
+                    let a1 = (start_deg + sweep_deg).to_radians();
+                    let x0 = scx + srx * a0.cos();
+                    let y0 = scy + sry * a0.sin();
+                    let x1 = scx + srx * a1.cos();
+                    let y1 = scy + sry * a1.sin();
+                    let large = if *sweep_deg > 180.0 { 1 } else { 0 };
+                    out.push_str(&format!(
+                        "<path d=\"M {x0:.2} {y0:.2} A {srx:.2} {sry:.2} 0 {large} 1 {x1:.2} {y1:.2}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{width:.2}\"/>\n"
+                    ));
+                }
             }
         }
     }
 
     for tb in &report.hanako_texts {
-        let first_line = tb.text.lines().next().unwrap_or("");
-        if first_line.is_empty() {
+        let lines: Vec<&str> = tb.text.lines().collect();
+        if lines.is_empty() {
             continue;
         }
-        let font_sz = ((tb.bottom - tb.top).abs() as f64 * scale * 0.45).clamp(9.0, 18.0);
+        let line_count = lines.len().max(1) as f64;
+        let box_h = (tb.bottom - tb.top).abs() as f64 * scale;
+        let font_sz = (box_h / (line_count * 1.35)).clamp(8.5, 16.0);
+        let x = tx(tb.left);
+        let y0 = ty(tb.top) + font_sz;
         out.push_str(&format!(
-            "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{font_sz:.1}\" font-family=\"sans-serif\" fill=\"#111\">{}</text>\n",
-            tx(tb.left),
-            ty(tb.top) + font_sz,
-            escape_xml(first_line)
+            "<text x=\"{x:.2}\" y=\"{y0:.2}\" font-size=\"{font_sz:.1}\" font-family=\"sans-serif\" fill=\"#111\">"
         ));
+        for (idx, line) in lines.iter().enumerate() {
+            if idx == 0 {
+                out.push_str(&escape_xml(line));
+            } else {
+                out.push_str(&format!(
+                    "<tspan x=\"{x:.2}\" dy=\"{:.1}\">{}</tspan>",
+                    font_sz * 1.3,
+                    escape_xml(line)
+                ));
+            }
+        }
+        out.push_str("</text>\n");
     }
 
     out.push_str("</svg>\n");
@@ -579,21 +721,65 @@ fn parse_fdm_vector(data: &[u8]) -> Vec<HanakoShape> {
     shapes
 }
 
+fn extract_vector_style(rec: &[u8]) -> (String, f64) {
+    let raw_w = if rec.len() >= 10 {
+        u16::from_be_bytes([rec[8], rec[9]])
+    } else {
+        8
+    };
+    let width = if raw_w == 0 {
+        1.0
+    } else {
+        (raw_w as f64 / 8.0).clamp(0.8, 4.0)
+    };
+    let color = if rec.len() >= 16 && rec[12] == 0x00 && (rec[13] != 0 || rec[14] != 0 || rec[15] != 0) {
+        // 00 BB GG RR (Windows COLORREF) or 00 RR GG BB
+        format!("#{:02x}{:02x}{:02x}", rec[15], rec[14], rec[13])
+    } else {
+        "#222222".to_string()
+    };
+    (color, width)
+}
+
 fn parse_vector_record(kind: u8, rec: &[u8], out: &mut Vec<HanakoShape>) {
+    let (color, width) = extract_vector_style(rec);
     match kind {
         0x01 if rec.len() >= 32 => {
             let x1 = i32::from_be_bytes(rec[16..20].try_into().unwrap_or([0; 4]));
             let y1 = i32::from_be_bytes(rec[20..24].try_into().unwrap_or([0; 4]));
             let x2 = i32::from_be_bytes(rec[24..28].try_into().unwrap_or([0; 4]));
             let y2 = i32::from_be_bytes(rec[28..32].try_into().unwrap_or([0; 4]));
-            out.push(HanakoShape::Line(x1, y1, x2, y2));
+            out.push(HanakoShape::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                color,
+                width,
+            });
         }
         0x04 if rec.len() >= 28 => {
             let cx = i32::from_be_bytes(rec[16..20].try_into().unwrap_or([0; 4]));
             let cy = i32::from_be_bytes(rec[20..24].try_into().unwrap_or([0; 4]));
             let rx = u16::from_be_bytes([rec[24], rec[25]]) as i32;
             let ry = u16::from_be_bytes([rec[26], rec[27]]) as i32;
-            out.push(HanakoShape::Ellipse { cx, cy, rx, ry });
+            let (start_deg, sweep_deg) = if rec.len() >= 32 {
+                let s = u16::from_be_bytes([rec[28], rec[29]]) as f64 / 256.0;
+                let sw = u16::from_be_bytes([rec[30], rec[31]]) as f64 / 256.0;
+                (s, sw)
+            } else {
+                (0.0, 360.0)
+            };
+            out.push(HanakoShape::Ellipse {
+                cx,
+                cy,
+                rx,
+                ry,
+                start_deg,
+                sweep_deg,
+                color,
+                width,
+            });
         }
         0x05 | 0x06 | 0x09 if rec.len() >= 18 => {
             let count = u16::from_be_bytes([rec[16], rec[17]]) as usize;
@@ -613,6 +799,8 @@ fn parse_vector_record(kind: u8, rec: &[u8], out: &mut Vec<HanakoShape>) {
                 out.push(HanakoShape::Polyline {
                     points: pts,
                     closed,
+                    color,
+                    width,
                 });
             }
         }
@@ -813,6 +1001,7 @@ mod tests {
             cfb::Item::stream("WorkSheet1", ws),
         ]);
         assert!(is_just_legacy(&cfb_bytes));
+        assert!(is_sanshiro(&cfb_bytes));
         assert!(!is_hanako(&cfb_bytes));
 
         let md = to_markdown(&cfb_bytes).unwrap();
@@ -820,5 +1009,8 @@ mod tests {
         assert!(md.contains("集計表"));
         assert!(md.contains("`C2`"));
         assert!(md.contains("東京都庁"));
+
+        let csv = to_delimited(&cfb_bytes, ',').unwrap();
+        assert!(csv.contains(",,東京都庁"));
     }
 }

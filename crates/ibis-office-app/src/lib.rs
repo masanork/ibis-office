@@ -1115,6 +1115,39 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     CsvEncoding, CsvOptions, OriginalCsvFormat, OriginalEncoding, RecordEnding,
                     sheet_to_delimited, sheet_to_original_csv,
                 };
+                let delimiter = if format == "tsv" { '\t' } else { ',' };
+                if ibis_formats::just_legacy::is_sanshiro(&data) {
+                    let text = ibis_formats::just_legacy::to_delimited(&data, delimiter)
+                        .map_err(|e| format!("{}: {e}", path.display()))?;
+                    let out_bytes: Vec<u8> = match args
+                        .encoding
+                        .as_deref()
+                        .map(|s| s.to_ascii_lowercase())
+                        .as_deref()
+                    {
+                        None | Some("utf8-bom") | Some("utf-8-bom") => {
+                            let mut b = vec![0xEF, 0xBB, 0xBF];
+                            b.extend_from_slice(text.as_bytes());
+                            b
+                        }
+                        Some("utf8") | Some("utf-8") => text.into_bytes(),
+                        Some("sjis") | Some("shift_jis") | Some("shift-jis") | Some("cp932") => {
+                            ibis_formats::just_legacy::to_delimited_cp932(&data, delimiter)
+                                .map_err(|e| format!("{}: {e}", path.display()))?
+                        }
+                        Some(other) => {
+                            return Err(format!(
+                                "unsupported --encoding '{other}' (expected utf8-bom, utf8, sjis, or cp932)"
+                            ));
+                        }
+                    };
+                    let ext = if format == "tsv" { "tsv" } else { "csv" };
+                    let out_path = out_dir.join(format!("{stem}.{ext}"));
+                    std::fs::write(&out_path, out_bytes)
+                        .map_err(|e| format!("{}: {e}", out_path.display()))?;
+                    println!("{}", out_path.display());
+                    return Ok(());
+                }
                 let opened = ibis_formats::open(data)
                     .map_err(|e| format!("{}: {e}", path.display()))?;
                 let slide_idx = args.slide.unwrap_or(1).saturating_sub(1);
