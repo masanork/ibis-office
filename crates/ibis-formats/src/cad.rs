@@ -88,7 +88,7 @@ fn decode_cad_text(data: &[u8]) -> String {
 
 pub fn parse(data: &[u8]) -> Result<CadDrawing, Error> {
     if is_jww(data) {
-        return parse_jww_header(data);
+        return Ok(parse_jww(data)?);
     }
     if is_sxf_sfc(data) {
         return Ok(parse_sxf_sfc(&decode_cad_text(data)));
@@ -102,17 +102,272 @@ pub fn parse(data: &[u8]) -> Result<CadDrawing, Error> {
     Err(Error::new("unsupported CAD format (expected DXF, SXF .sfc/.p21, or Jw_cad .jww)"))
 }
 
-fn parse_jww_header(data: &[u8]) -> Result<CadDrawing, Error> {
+fn read_jww_cstring(data: &[u8], pos: usize) -> Option<(usize, &[u8])> {
+    let b0 = *data.get(pos)?;
+    if b0 == 0xff {
+        if pos + 3 > data.len() {
+            return None;
+        }
+        let n = u16::from_le_bytes([data[pos + 1], data[pos + 2]]) as usize;
+        if pos + 3 + n > data.len() {
+            return None;
+        }
+        Some((pos + 3 + n, &data[pos + 3..pos + 3 + n]))
+    } else {
+        let n = b0 as usize;
+        if pos + 1 + n > data.len() {
+            return None;
+        }
+        Some((pos + 1 + n, &data[pos + 1..pos + 1 + n]))
+    }
+}
+
+fn jww_f64(data: &[u8], pos: usize) -> f64 {
+    f64::from_le_bytes(data[pos..pos + 8].try_into().unwrap_or([0; 8]))
+}
+
+fn parse_jww(data: &[u8]) -> Result<CadDrawing, Error> {
     if data.len() < 12 {
         return Err(Error::new("truncated Jw_cad .jww file"));
     }
     let version = u32::from_le_bytes(data[8..12].try_into().unwrap());
-    Ok(CadDrawing {
+    let mut drawing = CadDrawing {
         format: format!("Jw_cad (.jww, version {version})"),
         title: "Jw_cad Drawing".into(),
         entities: Vec::new(),
         layers: BTreeSet::new(),
-    })
+    };
+
+    let mut i = 12usize;
+    let Some((next_i, memo_bytes)) = read_jww_cstring(data, i) else {
+        return Ok(drawing);
+    };
+    let (memo_cow, _, _) = encoding_rs::SHIFT_JIS.decode(memo_bytes);
+    let memo = memo_cow.trim().to_string();
+    if !memo.is_empty() {
+        drawing.title = memo;
+    }
+    i = next_i;
+
+    // Skip JWW variable-length header up to entity count
+    let skip_header = (|| -> Option<usize> {
+        let mut p = i.checked_add(8)?; // m_nZumen
+        for _ in 0..16 {
+            p = p.checked_add(20 + 16 * 8)?;
+        }
+        p = p.checked_add(14 * 4 + 100)?;
+        for _ in 0..16 {
+            for _ in 0..16 {
+                p = read_jww_cstring(data, p)?.0;
+            }
+        }
+        for _ in 0..16 {
+            p = read_jww_cstring(data, p)?.0;
+        }
+        p = p.checked_add(96)?;
+        if version >= 300 {
+            p = p.checked_add(8 * 28 + 44 + 12)?;
+        } else {
+            p = p.checked_add(4 * 24)?;
+        }
+        p = p.checked_add(10 * 8 + 8 + 10 * 8 + 10 * 16 + 8 * 16 + 5 * 20 + 4 * 16 + 144)?;
+        p = p.checked_add(257 * 8)?;
+        for _ in 0..257 {
+            p = read_jww_cstring(data, p)?.0;
+            p = p.checked_add(16)?;
+        }
+        p = p.checked_add(33 * 16)?;
+        for _ in 0..33 {
+            p = read_jww_cstring(data, p)?.0;
+            p = p.checked_add(4 + 10 * 8)?;
+        }
+        p = p.checked_add(10 * 28 + 100)?;
+        Some(p)
+    })();
+
+    let Some(mut p) = skip_header else {
+        return Ok(drawing);
+    };
+    if p + 2 > data.len() {
+        return Ok(drawing);
+    }
+
+    let cnt16 = u16::from_le_bytes([data[p], data[p + 1]]);
+    let n_ent = if cnt16 == 0xFFFF {
+        if p + 6 > data.len() {
+            return Ok(drawing);
+        }
+        let n = u32::from_le_bytes(data[p + 2..p + 6].try_into().unwrap()) as usize;
+        p += 6;
+        n
+    } else {
+        p += 2;
+        cnt16 as usize
+    };
+
+    let mut classes: Vec<String> = Vec::new();
+    let mut id_map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut next_class_id = 0usize;
+
+    for no in 1..=n_ent {
+        if p + 2 > data.len() {
+            break;
+        }
+        let tag = u16::from_le_bytes([data[p], data[p + 1]]);
+        let cname = if tag == 0xFFFF {
+            if p + 6 > data.len() {
+                break;
+            }
+            let nlen = u16::from_le_bytes([data[p + 4], data[p + 5]]) as usize;
+            if p + 6 + nlen > data.len() {
+                break;
+            }
+            let name = String::from_utf8_lossy(&data[p + 6..p + 6 + nlen]).into_owned();
+            p += 6 + nlen;
+            let idx = classes.len();
+            classes.push(name);
+            id_map.insert(no + next_class_id, idx);
+            next_class_id += 1;
+            classes[idx].as_str()
+        } else if tag == 0x7FFF {
+            if p + 6 > data.len() {
+                break;
+            }
+            let cid = (u32::from_le_bytes(data[p + 2..p + 6].try_into().unwrap()) & 0x7FFF_FFFF) as usize;
+            p += 6;
+            let Some(&idx) = id_map.get(&cid) else { break };
+            classes[idx].as_str()
+        } else {
+            let cid = (tag & 0x7FFF) as usize;
+            p += 2;
+            let Some(&idx) = id_map.get(&cid) else { break };
+            classes[idx].as_str()
+        };
+
+        if p + 15 > data.len() {
+            break;
+        }
+        let ly = u16::from_le_bytes([data[p + 9], data[p + 10]]);
+        let lg = u16::from_le_bytes([data[p + 11], data[p + 12]]);
+        let layer = format!("G{lg:X}-L{ly:X}");
+        drawing.layers.insert(layer.clone());
+
+        match cname {
+            "CDataSen" => {
+                if p + 47 > data.len() {
+                    break;
+                }
+                let x1 = jww_f64(data, p + 15);
+                let y1 = jww_f64(data, p + 23);
+                let x2 = jww_f64(data, p + 31);
+                let y2 = jww_f64(data, p + 39);
+                drawing.entities.push(CadEntity::Line {
+                    layer,
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                });
+                p += 47;
+            }
+            "CDataEnko" => {
+                if p + 75 > data.len() {
+                    break;
+                }
+                let cx = jww_f64(data, p + 15);
+                let cy = jww_f64(data, p + 23);
+                let r = jww_f64(data, p + 31).abs();
+                let start_rad = jww_f64(data, p + 39);
+                let sweep_rad = jww_f64(data, p + 47);
+                let zenen = u32::from_le_bytes(data[p + 71..p + 75].try_into().unwrap());
+                if zenen != 0 || sweep_rad.abs() >= std::f64::consts::TAU - 1e-4 {
+                    drawing.entities.push(CadEntity::Circle { layer, cx, cy, r });
+                } else {
+                    drawing.entities.push(CadEntity::Arc {
+                        layer,
+                        cx,
+                        cy,
+                        r,
+                        start_deg: start_rad.to_degrees(),
+                        end_deg: (start_rad + sweep_rad).to_degrees(),
+                    });
+                }
+                p += 75;
+            }
+            "CDataMoji" => {
+                if p + 84 > data.len() {
+                    break;
+                }
+                let x = jww_f64(data, p + 15);
+                let y = jww_f64(data, p + 23);
+                let height = jww_f64(data, p + 59).abs().max(1.5);
+                let Some((p_font, _)) = read_jww_cstring(data, p + 83) else {
+                    break;
+                };
+                let Some((p_end, text_bytes)) = read_jww_cstring(data, p_font) else {
+                    break;
+                };
+                let (txt_cow, _, _) = encoding_rs::SHIFT_JIS.decode(text_bytes);
+                let text = txt_cow.trim().to_string();
+                if !text.is_empty() {
+                    drawing.entities.push(CadEntity::Text {
+                        layer,
+                        x,
+                        y,
+                        height,
+                        text,
+                    });
+                }
+                p = p_end;
+            }
+            "CDataSolid" => {
+                let sz = if data[p + 5] == 10 { 83 } else { 79 };
+                if p + sz > data.len() {
+                    break;
+                }
+                let points = vec![
+                    (jww_f64(data, p + 15), jww_f64(data, p + 23)),
+                    (jww_f64(data, p + 31), jww_f64(data, p + 39)),
+                    (jww_f64(data, p + 47), jww_f64(data, p + 55)),
+                    (jww_f64(data, p + 63), jww_f64(data, p + 71)),
+                ];
+                drawing.entities.push(CadEntity::Polyline {
+                    layer,
+                    points,
+                    closed: true,
+                });
+                p += sz;
+            }
+            "CDataTen" => {
+                let sz = if data[p + 4] == 100 { 55 } else { 35 };
+                if p + sz > data.len() {
+                    break;
+                }
+                p += sz;
+            }
+            "CDataSunpou" => {
+                if p + 146 > data.len() {
+                    break;
+                }
+                let Some((p_font, _)) = read_jww_cstring(data, p + 145) else {
+                    break;
+                };
+                let Some((p_end, _)) = read_jww_cstring(data, p_font) else {
+                    break;
+                };
+                p = p_end.saturating_add(236);
+            }
+            "CDataBlock" => {
+                if p + 59 > data.len() {
+                    break;
+                }
+                p += 59;
+            }
+            _ => break,
+        }
+    }
+
+    Ok(drawing)
 }
 
 fn parse_sxf_p21(text: &str) -> CadDrawing {
@@ -622,5 +877,68 @@ mod tests {
         assert!(is_jww(&jww));
         let md = to_markdown(&jww).unwrap();
         assert!(md.contains("version 700"));
+    }
+
+    #[test]
+    fn parses_synthetic_jww_entities_to_svg_and_markdown() {
+        let mut jww = b"JwwData.".to_vec();
+        jww.extend_from_slice(&700u32.to_le_bytes());
+        let (memo_sjis, _, _) = encoding_rs::SHIFT_JIS.encode("建築平面図");
+        jww.push(memo_sjis.len() as u8);
+        jww.extend_from_slice(&memo_sjis);
+        // Zero-filled variable header (all CStrings empty = 1 byte 0x00)
+        let header_tail = 8
+            + 16 * (20 + 16 * 8)
+            + (14 * 4 + 100)
+            + 16 * 16
+            + 16
+            + 96
+            + (8 * 28 + 44 + 12)
+            + (10 * 8 + 8 + 10 * 8 + 10 * 16 + 8 * 16 + 5 * 20 + 4 * 16 + 144)
+            + 257 * 8
+            + 257 * 17
+            + 33 * 16
+            + 33 * (1 + 4 + 10 * 8)
+            + (10 * 28 + 100);
+        jww.extend(std::iter::repeat_n(0u8, header_tail));
+
+        // 2 entities: CDataSen + CDataMoji
+        jww.extend_from_slice(&2u16.to_le_bytes());
+
+        // Entity 1: new class CDataSen
+        jww.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        jww.extend_from_slice(&700u16.to_le_bytes());
+        jww.extend_from_slice(&8u16.to_le_bytes());
+        jww.extend_from_slice(b"CDataSen");
+        jww.extend(std::iter::repeat_n(0u8, 15));
+        for v in [0.0f64, 0.0, 100.0, 50.0] {
+            jww.extend_from_slice(&v.to_le_bytes());
+        }
+
+        // Entity 2: new class CDataMoji
+        jww.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        jww.extend_from_slice(&700u16.to_le_bytes());
+        jww.extend_from_slice(&9u16.to_le_bytes());
+        jww.extend_from_slice(b"CDataMoji");
+        let mut moji = vec![0u8; 83];
+        moji[15..23].copy_from_slice(&10.0f64.to_le_bytes());
+        moji[23..31].copy_from_slice(&20.0f64.to_le_bytes());
+        moji[59..67].copy_from_slice(&3.5f64.to_le_bytes());
+        jww.extend_from_slice(&moji);
+        jww.push(0); // font name empty
+        let (txt_sjis, _, _) = encoding_rs::SHIFT_JIS.encode("耐震天井");
+        jww.push(txt_sjis.len() as u8);
+        jww.extend_from_slice(&txt_sjis);
+
+        let drawing = parse(&jww).unwrap();
+        assert_eq!(drawing.title, "建築平面図");
+        assert_eq!(drawing.entities.len(), 2);
+
+        let svg = to_svg(&jww).unwrap();
+        assert!(svg.contains("<line"));
+        assert!(svg.contains("耐震天井"));
+        let md = to_markdown(&jww).unwrap();
+        assert!(md.contains("建築平面図"));
+        assert!(md.contains("耐震天井"));
     }
 }
