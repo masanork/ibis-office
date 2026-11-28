@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, JetBundleMode, dataset_sql_type, dbf_export_sqlite, dbf_inspect_schema, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, is_dbf_extension, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
+    SqliteRows, SqliteScalar, FixedWidthField, JetBundleMode, dataset_sql_type, dbf_export_sqlite, dbf_inspect_schema, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, fixed_width_export_sqlite, fixed_width_preview, is_dbf_extension, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -23,6 +23,7 @@ const JET_EXTENSIONS: &[&str] = &["mdb", "accdb", "mde", "accde"];
 const ESE_EXTENSIONS: &[&str] = &["edb", "sdb", "dat"];
 const PST_EXTENSIONS: &[&str] = &["ost", "pst"];
 const DBF_EXTENSIONS: &[&str] = &["dbf"];
+const FIXED_WIDTH_EXTENSIONS: &[&str] = &["dat", "txt", "prn", "fwf", "zengin"];
 const LEGACY_XML_EXTENSIONS: &[&str] = &["dxl", "xml"];
 const PATH: &str = "path";
 const MAX_FILTERS: usize = 16;
@@ -178,6 +179,44 @@ const TOOLS: &[Tool] = &[
         returns_content: true,
         schema: &|| object(&[("path", string("Path to a local .dxl or .xml file under an allowed folder."))], &[PATH]),
         run: inspect_legacy_xml,
+    },
+    Tool {
+        name: "fixed_width_preview",
+        description: "Preview rows from a fixed-width record file (.dat/.txt/.zengin) using byte-width field definitions and Shift-JIS or UTF-8 decoding.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local fixed-width .dat/.txt/.prn/.fwf/.zengin file under an allowed folder.")),
+            ("fields", json!({"type": "array", "minItems": 1, "maxItems": 512, "items": object(&[
+                ("name", string("Column name.")),
+                ("width", integer("Field width in bytes.")),
+                ("type", json!({"type": "string", "enum": ["text", "integer", "decimal", "boolean", "datetime"]})),
+            ], &["name", "width"])})),
+            ("encoding", string("Character encoding (default 'utf-8'; e.g. 'shift_jis', 'cp932', 'windows-1252').")),
+            ("skip_header_lines", integer("Number of leading header lines to skip (default 0).")),
+            ("limit", integer("Maximum preview rows to return (default 50, maximum 200).")),
+        ], &[PATH, "fields"]),
+        run: preview_fixed_width,
+    },
+    Tool {
+        name: "fixed_width_export_sqlite",
+        description: "Materialize a fixed-width record file (.dat/.txt/.zengin) into a standalone SQLite file via Turso using byte-width field definitions.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local fixed-width .dat/.txt/.prn/.fwf/.zengin file under an allowed folder.")),
+            ("output", string("Destination .sqlite, .sqlite3, or .db file path under an allowed folder.")),
+            ("fields", json!({"type": "array", "minItems": 1, "maxItems": 512, "items": object(&[
+                ("name", string("Column name.")),
+                ("width", integer("Field width in bytes.")),
+                ("type", json!({"type": "string", "enum": ["text", "integer", "decimal", "boolean", "datetime"]})),
+            ], &["name", "width"])})),
+            ("table", string("Optional SQLite table name (default: input file stem).")),
+            ("encoding", string("Character encoding (default 'utf-8'; e.g. 'shift_jis', 'cp932', 'windows-1252').")),
+            ("skip_header_lines", integer("Number of leading header lines to skip (default 0).")),
+            ("overwrite", boolean("Overwrite an existing output file (default false).")),
+        ], &[PATH, "output", "fields"]),
+        run: export_fixed_width_sqlite,
     },
     Tool {
         name: "sqlite_describe_datasets",
@@ -707,6 +746,92 @@ fn inspect_legacy_xml(service: &mut Service, args: &Value) -> Result<Value, Tool
         ));
     }
     Ok(result)
+}
+
+fn parse_fixed_width_fields(args: &Value) -> Result<Vec<FixedWidthField>, ToolError> {
+    let raw_fields = args
+        .get("fields")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ToolError::invalid("fields must be a non-empty array"))?;
+    let mut fields = Vec::with_capacity(raw_fields.len());
+    for item in raw_fields {
+        crate::edit::only_known(item, &["name", "width", "type"])?;
+        let name = item.str_arg("name")?.to_owned();
+        let width = item
+            .get("width")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| ToolError::invalid("each field requires an integer width > 0"))?
+            as usize;
+        let ty = FixedWidthField::parse_type(item.opt_str("type")?)
+            .map_err(ToolError::invalid)?;
+        fields.push(FixedWidthField { name, width, ty });
+    }
+    Ok(fields)
+}
+
+fn preview_fixed_width(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "fields", "encoding", "skip_header_lines", "limit"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, FIXED_WIDTH_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select a fixed-width text/data file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Fixed-width file exceeds the file size limit",
+        ));
+    }
+    let fields = parse_fixed_width_fields(args)?;
+    let encoding = args.opt_str("encoding")?;
+    let skip_header_lines = args
+        .get("skip_header_lines")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(50);
+    fixed_width_preview(&path, &fields, encoding.as_deref(), skip_header_lines, limit)
+        .map_err(sqlite_error)
+}
+
+fn export_fixed_width_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(
+        args,
+        &[PATH, "output", "fields", "table", "encoding", "skip_header_lines", "overwrite"],
+    )?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, FIXED_WIDTH_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select a fixed-width text/data file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Fixed-width file exceeds the file size limit",
+        ));
+    }
+    let output = paths::resolve(&service.allow_dirs, args.str_arg("output")?, EXTENSIONS, false)?;
+    let fields = parse_fixed_width_fields(args)?;
+    let table = args.opt_str("table")?;
+    let encoding = args.opt_str("encoding")?;
+    let skip_header_lines = args
+        .get("skip_header_lines")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let overwrite = args.opt_bool("overwrite")?.unwrap_or(false);
+    fixed_width_export_sqlite(
+        &path,
+        &output,
+        table.as_deref(),
+        &fields,
+        encoding.as_deref(),
+        skip_header_lines,
+        overwrite,
+    )
+    .map_err(sqlite_error)
 }
 
 fn export_ese_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
