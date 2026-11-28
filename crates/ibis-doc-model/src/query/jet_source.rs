@@ -2,10 +2,10 @@
 use super::{QColumn, QTable, QType, sqlite_source::dataset_sql_type};
 use crate::CellValue;
 use jetdb::{
-    ColumnType, ComplexColumn, ComplexValues, PageReader, TableRows, Value,
-    calculated_column_types_in, column_flags, find_table, list_forms, query_to_sql, read_catalog,
-    read_complex_column, read_queries, read_relationships, read_table_def, read_vba_project,
-    table_names,
+    BlobValue, ColumnType, ComplexColumn, ComplexValues, PageReader, TableRows, Value,
+    calculated_column_types_in, column_flags, control_type_name, find_table, list_forms,
+    query_to_sql, read_catalog, read_complex_column, read_form_properties, read_queries,
+    read_relationships, read_table_def, read_vba_project, table_names,
 };
 use serde_json::json;
 use std::path::Path;
@@ -28,7 +28,18 @@ fn open_jet(path: &Path) -> Result<PageReader, String> {
     if !path.is_file() {
         return Err("Select a local Microsoft Access (.mdb/.accdb) database file".into());
     }
-    PageReader::open(path).map_err(|error| format!("Failed to open Access database: {error}"))
+    PageReader::open(path).map_err(|error| match error {
+        jetdb::FileError::PasswordRequired => {
+            "Access database is password-protected (password_required)".into()
+        }
+        jetdb::FileError::InvalidPassword => {
+            "Access database password is invalid (invalid_password)".into()
+        }
+        jetdb::FileError::UnsupportedEncryption { reason } => {
+            format!("Access database uses unsupported encryption: {reason}")
+        }
+        other => format!("Failed to open Access database: {other}"),
+    })
 }
 
 pub(crate) fn jet_type_to_qtype(col_type: ColumnType) -> QType {
@@ -545,6 +556,93 @@ pub fn jet_migration_markdown(path: &Path) -> Result<String, String> {
     Ok(md)
 }
 
+fn blob_value_to_json(val: &BlobValue) -> serde_json::Value {
+    match val {
+        BlobValue::Bool(b) => json!(b),
+        BlobValue::Long(l) => json!(l),
+        BlobValue::Double(d) => json!(d),
+        BlobValue::Guid(s) | BlobValue::Text(s) => json!(s),
+        BlobValue::Binary(bytes) => json!(format!("[{} bytes]", bytes.len())),
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// Extract VBA module source code from an Access database.
+pub fn jet_inspect_vba(path: &Path, module: Option<&str>) -> Result<serde_json::Value, String> {
+    let mut reader = open_jet(path)?;
+    let project = match read_vba_project(&mut reader) {
+        Ok(proj) => proj,
+        Err(jetdb::FileError::ModuleNotFound { .. }) => {
+            return Ok(json!({ "modules": [] }));
+        }
+        Err(error) => return Err(format!("Failed to read VBA project: {error}")),
+    };
+    let mut modules = Vec::new();
+    for m in project.modules {
+        if let Some(target) = module
+            && m.name != target
+        {
+            continue;
+        }
+        modules.push(json!({
+            "name": m.name,
+            "module_type": format!("{:?}", m.module_type),
+            "source": m.source,
+        }));
+    }
+    if let Some(target) = module
+        && modules.is_empty()
+    {
+        return Err(format!("VBA module not found: {target}"));
+    }
+    Ok(json!({ "modules": modules }))
+}
+
+/// Extract form or report properties and bound controls from an Access database.
+pub fn jet_inspect_form(path: &Path, form_name: &str) -> Result<serde_json::Value, String> {
+    let mut reader = open_jet(path)?;
+    let fp = read_form_properties(&mut reader, form_name)
+        .map_err(|error| format!("Failed to read form/report '{form_name}': {error}"))?;
+    let properties: Vec<_> = fp
+        .properties
+        .iter()
+        .map(|p| {
+            json!({
+                "prop_id": format!("0x{:04x}", p.prop_id),
+                "value": blob_value_to_json(&p.value),
+            })
+        })
+        .collect();
+    let controls: Vec<_> = fp
+        .controls
+        .iter()
+        .map(|c| {
+            let props: Vec<_> = c
+                .properties
+                .iter()
+                .map(|p| {
+                    json!({
+                        "prop_id": format!("0x{:04x}", p.prop_id),
+                        "value": blob_value_to_json(&p.value),
+                    })
+                })
+                .collect();
+            json!({
+                "name": c.name,
+                "type": control_type_name(c.type_code),
+                "type_code": c.type_code,
+                "properties": props,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "name": fp.form_name,
+        "object_type": format!("{:?}", fp.object_type),
+        "properties": properties,
+        "controls": controls,
+    }))
+}
+
 /// Materialize user tables from an Access (.mdb / .accdb) database into a standalone SQLite file via Turso.
 pub fn jet_export_sqlite(
     input_path: &Path,
@@ -874,5 +972,84 @@ mod tests {
         assert!(md.contains("```mermaid\nerDiagram"));
         assert!(md.contains("INTEGER id PK"));
         assert!(md.contains("TEXT code"));
+    }
+
+    #[test]
+    fn synthetic_jet4_japanese_identifiers() {
+        use super::super::sqlite_source::{DiskDataset, SqliteQuerySession};
+        use datacraft_jet::jet::{
+            create::create_jet4_file,
+            tdef::{JetColumn, JetType, flags as tdef_flags},
+            writer::Jet4Writer,
+        };
+        use datacraft_jet::StorageValue;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mdb_path = dir.path().join("legacy_ja.mdb");
+        create_jet4_file(&mdb_path, 0.0).unwrap();
+
+        let table_name = "Orders 2026 (JA)";
+        {
+            let bytes = std::fs::read(&mdb_path).unwrap();
+            let mut writer = Jet4Writer::new(bytes).unwrap();
+            let cols = vec![
+                JetColumn {
+                    name: "顧客名".into(),
+                    data_type: JetType::Text,
+                    flags: 0,
+                    column_id: 0,
+                    var_index: Some(0),
+                    fixed_offset: 0,
+                    len: 100,
+                    compressed_text: false,
+                    indexed: Default::default(),
+                    misc: 0,
+                },
+                JetColumn {
+                    name: "金額（税込）".into(),
+                    data_type: JetType::LongInt,
+                    flags: tdef_flags::FIXED,
+                    column_id: 1,
+                    var_index: None,
+                    fixed_offset: 0,
+                    len: 4,
+                    compressed_text: false,
+                    indexed: Default::default(),
+                    misc: 0,
+                },
+            ];
+            let tdef_page = writer.create_table(table_name, &cols).unwrap();
+            writer
+                .insert_row(
+                    tdef_page,
+                    &[
+                        StorageValue::Text("株式会社テスト".into()),
+                        StorageValue::Int(11000),
+                    ],
+                )
+                .unwrap();
+            std::fs::write(&mdb_path, writer.into_file()).unwrap();
+        }
+
+        assert_eq!(jet_tables(&mdb_path).unwrap(), vec![table_name]);
+        let session = SqliteQuerySession::from_disk_datasets(&[(
+            "ja_orders".into(),
+            DiskDataset::Jet(mdb_path.clone(), table_name.into(), vec![]),
+        )])
+        .unwrap();
+        let res = session
+            .query(
+                "SELECT \"顧客名\", \"金額（税込）\" FROM ja_orders",
+                &[],
+                50,
+                64 * 1024,
+            )
+            .unwrap();
+        assert_eq!(res.rows, vec![vec![json!("株式会社テスト"), json!(11000)]]);
+
+        let md = jet_migration_markdown(&mdb_path).unwrap();
+        assert!(md.contains("```mermaid\nerDiagram"));
+        // Non-ASCII characters are sanitized to '_' for Mermaid identifier safety
+        assert!(md.contains("TEXT ___"));
     }
 }
