@@ -49,6 +49,10 @@ pub use clip_poster::{clip_poster, screenshot_snapshot};
 mod chart;
 mod chart_ex;
 pub mod csv;
+#[cfg(not(target_family = "wasm"))]
+pub mod dicom;
+#[cfg(target_family = "wasm")]
+#[path = "dicom_wasm.rs"]
 pub mod dicom;
 pub mod markdown_source_map;
 pub mod production_image;

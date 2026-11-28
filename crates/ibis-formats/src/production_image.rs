@@ -107,14 +107,20 @@ pub fn open_with_dpx_color(
             encode_png(DynamicImage::ImageRgb8(dpx::decode(bytes, dpx_color)?))?,
             None,
         ),
+        #[cfg(not(target_family = "wasm"))]
         Format::OpenExr => {
             let exposure = ExrExposure(decode_openexr(bytes)?);
             (exposure.preview_png(0)?, Some(exposure))
         }
+        #[cfg(target_family = "wasm")]
+        Format::OpenExr => return Err("OpenEXR preview is unavailable in the web version".into()),
         Format::Tiff => return tiff_pages::open(bytes).map(|opened| Some((opened, None))),
         Format::Raster(format) => (encode_png(decode_raster(bytes, format, 4)?)?, None),
         Format::Jpeg2000 => (encode_png(decode_jpeg2000(bytes)?)?, None),
+        #[cfg(not(target_family = "wasm"))]
         Format::Photoshop => (encode_png(decode_psd(bytes)?)?, None),
+        #[cfg(target_family = "wasm")]
+        Format::Photoshop => return Err("PSD preview is unavailable in the web version".into()),
     };
     open_preview_png(&png).map(|opened| Some((opened, exposure)))
 }
@@ -265,6 +271,7 @@ fn decode_raster_reader(
     reader.decode()
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn decode_openexr(bytes: &[u8]) -> Result<image::Rgba32FImage, String> {
     let metadata = exr::meta::MetaData::read_from_buffered(Cursor::new(bytes), false)
         .map_err(|error| error.to_string())?;
@@ -289,6 +296,7 @@ fn decode_openexr(bytes: &[u8]) -> Result<image::Rgba32FImage, String> {
     Ok(decode_raster(bytes, ImageFormat::OpenExr, 16)?.into_rgba32f())
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn is_rec709_exr(header: &exr::meta::header::Header) -> bool {
     use exr::meta::attribute::AttributeValue;
     let attributes = &header.shared_attributes;
@@ -336,6 +344,7 @@ fn encode_srgb(linear: f32) -> u8 {
     (encoded * 255.0).round() as u8
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn decode_psd(bytes: &[u8]) -> Result<DynamicImage, String> {
     let header = bytes.get(..26).ok_or("Incomplete PSD header")?;
     if &header[..6] != b"8BPS\0\x01" || header[22..26] != [0, 8, 0, 3] {

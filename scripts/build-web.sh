@@ -35,7 +35,14 @@ python3 scripts/check-gpui-hazards.py
 
 PROFILE=debug
 FLAGS=()
-if [[ "${1:-}" == "--release" ]]; then PROFILE=release; FLAGS=(--release); fi
+if [[ "${1:-}" == "--release" ]]; then
+  PROFILE=release
+  FLAGS=(--release)
+  export CARGO_PROFILE_RELEASE_OPT_LEVEL=z
+  export CARGO_PROFILE_RELEASE_LTO=thin
+  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+  export CARGO_PROFILE_RELEASE_PANIC=abort
+fi
 
 # Capture the source before generated notices and assets are written to www/.
 if [[ -n "${IBIS_WEB_BOM_DIR:-}" ]]; then

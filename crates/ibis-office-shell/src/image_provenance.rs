@@ -2,9 +2,12 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 
+#[cfg(not(target_family = "wasm"))]
 use std::io::Cursor;
 
+#[cfg(not(target_family = "wasm"))]
 use c2pa::settings::{TrustAnchor, TrustListKind};
+#[cfg(not(target_family = "wasm"))]
 use c2pa::{Context as C2paContext, Error, Reader, Settings, ValidationState};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -13,8 +16,11 @@ use gpui_kit::{Context, IntoElement};
 use crate::editor::SlideEditor;
 use crate::i18n::{format, text};
 
+#[cfg(not(target_family = "wasm"))]
 const MAX_ITEMS: usize = 8;
+#[cfg(not(target_family = "wasm"))]
 const MANIFEST_TRUST: &str = include_str!("../data/c2pa/C2PA-TRUST-LIST.pem");
+#[cfg(not(target_family = "wasm"))]
 const TSA_TRUST: &str = include_str!("../data/c2pa/C2PA-TSA-TRUST-LIST.pem");
 
 #[derive(Debug, Default)]
@@ -26,6 +32,7 @@ pub(crate) struct Report {
     ingredients: Vec<String>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn mime_type(extension: &str) -> Option<&'static str> {
     match extension.to_ascii_lowercase().as_str() {
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -35,6 +42,7 @@ fn mime_type(extension: &str) -> Option<&'static str> {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn offline_settings() -> Settings {
     let mut settings = Settings::new();
     settings.verify.verify_after_reading = true;
@@ -72,19 +80,11 @@ fn read_original(mime: &str, original: &[u8], settings: Settings) -> Result<Read
 }
 
 #[cfg(target_family = "wasm")]
-pub(crate) async fn inspect(extension: &str, original: &[u8]) -> Option<Report> {
-    let mime = mime_type(extension)?;
-    let result = match C2paContext::new().with_settings(offline_settings()) {
-        Ok(context) => {
-            Reader::from_context(context)
-                .with_stream_async(mime, Cursor::new(original))
-                .await
-        }
-        Err(error) => Err(error),
-    };
-    Some(report(result))
+pub(crate) async fn inspect(_extension: &str, _original: &[u8]) -> Option<Report> {
+    None
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn report(result: Result<Reader, Error>) -> Report {
     let reader = match result {
         Ok(reader) => reader,
@@ -176,6 +176,7 @@ fn report(result: Result<Reader, Error>) -> Report {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn caption(value: &str) -> String {
     let mut chars = value.chars().filter(|ch| {
         !ch.is_control() && !matches!(ch, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')

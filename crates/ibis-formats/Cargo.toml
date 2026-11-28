@@ -12,9 +12,7 @@ chrono = "0.4"
 ibis-calc.workspace = true
 ibis-doc-model.workspace = true
 j2k-rs = { workspace = true, features = ["color-managed-preview"] }
-exr = { version = "1.74", default-features = false }
-ag-psd = "0.3.0"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "tiff", "exr"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tga", "tiff"] }
 tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
 tiff = { version = "0.11", default-features = false, features = ["deflate", "fax", "lzw"] }
 ibis-ooxml.workspace = true
@@ -23,9 +21,6 @@ miniz_oxide = "0.8"
 roxmltree = "0.21"
 encoding_rs = "0.8"
 delharc = { version = "0.8", default-features = false }
-dicom-object = { version = "0.10.1", default-features = false, features = ["deflate"] }
-pure_jpegls = "2.1"
-jxl-oxide = { version = "0.12", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
 percent-encoding = "2"
@@ -37,6 +32,12 @@ pulldown-cmark = { version = "0.13", default-features = false }
 ibis-pdf.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+exr = { version = "1.74", default-features = false }
+ag-psd = "0.3.0"
+image = { version = "0.25", default-features = false, features = ["exr"] }
+dicom-object = { version = "0.10.1", default-features = false, features = ["deflate"] }
+pure_jpegls = "2.1"
+jxl-oxide = { version = "0.12", default-features = false }
 krilla = { version = "=0.8.2", default-features = false, features = ["simple-text"] }
 rustybuzz = "0.20.1"
 tempfile = "3"
