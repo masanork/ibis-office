@@ -962,11 +962,14 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
         if matches!(format, "md" | "markdown")
             && (ibis_formats::email::is_tnef(&raw_data)
                 || ibis_formats::email::is_eml(&raw_data)
+                || ibis_formats::cals_xml::is_cals_xml(&raw_data)
                 || ibis_formats::archive::is_lzh(&raw_data)
                 || ibis_formats::archive::is_7z(&raw_data))
         {
             let md = if ibis_formats::email::is_tnef(&raw_data) || ibis_formats::email::is_eml(&raw_data) {
                 ibis_formats::email::to_markdown(&raw_data)
+            } else if ibis_formats::cals_xml::is_cals_xml(&raw_data) {
+                ibis_formats::cals_xml::to_markdown(&raw_data)
             } else {
                 ibis_formats::archive::to_markdown(&raw_data)
             }
