@@ -285,8 +285,8 @@ mod tests {
             return;
         }
         let dict = embedded().expect("default gjs dictionary");
-        // The GJS basic edition (dict20261128b; no share-alike sources). The full edition is downloaded with セットアップ.
-        assert_eq!(dict.len(), 22_135);
+        // The GJS basic edition (dict20261128c; no share-alike sources). The full edition is downloaded with セットアップ.
+        assert_eq!(dict.len(), 22_124);
         let high = dict.cluster_index('高').expect("高 in bundled gjs dictionary");
         assert_eq!(dict.cluster_index('髙'), Some(high));
         // Pairs GJS added in dict20261128 (none of the redistributable sources had them).
@@ -294,8 +294,8 @@ mod tests {
             assert_eq!(dict.cluster_index(a), dict.cluster_index(b), "{a} and {b}");
             assert!(dict.cluster_index(a).is_some(), "{a} in bundled gjs dictionary");
         }
-        // Different characters that only share a reading and meaning (通用字), kept apart since dict20261128b.
-        for (a, b) in [('鎚', '槌'), ('椎', '槌')] {
+        // Different characters (通用字・分化字 in GJS's interchangeable.csv), kept apart since dict20261128b/c.
+        for (a, b) in [('鎚', '槌'), ('椎', '槌'), ('佑', '祐'), ('個', '箇'), ('岩', '巖')] {
             assert_ne!(dict.cluster_index(a), dict.cluster_index(b), "{a} and {b}");
         }
         let book = crate::Presentation::empty(crate::geometry::EmuSize::WIDESCREEN);

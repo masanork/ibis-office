@@ -28,10 +28,10 @@ soroe は調査対象として参照した。soroe のコード、辞書、テ�
 異体字クラスタは GJS（Masanori Kusunoki が公開データから再構築し、ibisOffice に CLA に沿って提供）が配布する。
 版は2つで、ibisOffice はライセンス条件に合わせて扱いを分ける。
 
-| 版 | 収録（dict20261128b） | ライセンス | ibisOffice での扱い |
+| 版 | 収録（dict20261128c） | ライセンス | ibisOffice での扱い |
 | --- | --- | --- | --- |
-| 基本版 | 22,135 文字・8,464 クラスタ（zstd 110,982 B） | Unicode-3.0 AND BSD-3-Clause AND Apache-2.0 AND MIT AND CC0-1.0。告示・通達類は著作権法第13条 | `crates/ibis-doc-model/resources/gjs-variant-clusters.zst` として同梱 |
-| 完全版 | 34,521 文字・9,558 クラスタ（zstd 171,012 B） | CC BY-SA 2.1 JP（IPA「MJ縮退マップ」を含む） | 同梱しない。ヘルプ > セットアップで利用者が選んだときだけ取得 |
+| 基本版 | 22,124 文字・8,473 クラスタ（zstd 110,956 B） | Unicode-3.0 AND BSD-3-Clause AND Apache-2.0 AND MIT AND CC0-1.0。告示・通達類は著作権法第13条 | `crates/ibis-doc-model/resources/gjs-variant-clusters.zst` として同梱 |
+| 完全版 | 34,513 文字・9,570 クラスタ（zstd 170,984 B） | CC BY-SA 2.1 JP（IPA「MJ縮退マップ」を含む） | 同梱しない。ヘルプ > セットアップで利用者が選んだときだけ取得 |
 
 - 基本版の出典: Unicode Unihan、Mozc（BSD-3-Clause、「別字」区分は除外）、OpenCC（Apache-2.0）、
   国文学研究資料館 国書データベース異体字リスト（MIT、他の資料と一致する組のみ）、常用漢字表の康熙字典体（告示）、

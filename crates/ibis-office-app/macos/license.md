@@ -1135,12 +1135,13 @@ SPDX-License-Identifier: Unicode-3.0
 
 照合に使う異体字の対応表。より大きい完全版（CC BY-SA 2.1 JP）は同梱せず、ヘルプ > セットアップから利用者が選んで取得する。
 
-## GJS 異体字クラスタ 基本版 (SA 条件なし) — dict20261128b
+## GJS 異体字クラスタ 基本版 (SA 条件なし) — dict20261128c
 
-- 収録: 22,135 文字・8,464 クラスタ
-- ファイル: `clusters.csv` (member_codepoint, cluster_id, representative_codepoint)、`variant-clusters.zst` (ibis-variant-bitmap/1+zstd)
+- 収録: 22,124 文字・8,473 クラスタ
+- ファイル: `clusters.csv` (member_codepoint, cluster_id, representative_codepoint)、`variant-clusters.zst` (ibis-variant-bitmap/1+zstd)、
+  `interchangeable.csv` (クラスタでつながない字の組: 通用字 interchangeable・分化字 divergent・字形類似 similar。GJS の判断、CC0 1.0)
 - クラスタへの所属は「確認が必要な候補」を示すもので、同一人物や安全な置換を意味しない。
-- 現代日本語では別字として扱う組 (托/拓・愉/愈・伙/火・䄷/石・椎/槌) には辺を張らない。
+- GJS が通用字・分化字・字形類似などと判断した組 (39 組。一覧は `interchangeable.csv`) には辺を張らない。
 - 配布元: https://moji.sorane.dev/datasets/variant-clusters/
 - 作成手順・評価: GJS リポジトリの `docs/legal/variant-cluster-data-sources.md`
 
@@ -1153,8 +1154,8 @@ SPDX-License-Identifier: Unicode-3.0
 | OpenCC `data/dictionary/JPShinjitaiCharacters.txt` | 常用・人名用・表外漢字字体表の新旧字体 | Apache License 2.0 (LICENSE-OpenCC.txt) |
 | 国文学研究資料館 国書データベース異体字リスト (kokubunken/kokusho-itaiji-search) のうち他の資料と一致する組 | 異体字関係 | MIT, Copyright 2023 国文学研究資料館 (LICENSE-NIJL.txt) |
 | 常用漢字表 (平成22年内閣告示第2号) の括弧内康熙字典体、人名用漢字、誤字俗字・正字一覧表など | 新旧字体・俗字 | 告示・法令・通達 (著作権法第13条) |
-| デジタル庁「JIS X 0213への代替マップ 1.0版」のうちデジタル庁が独自に定義した区分1 | 行政事務標準文字 (GJ) と MJ 文字の代替 | 事務連絡 (通達に類するもの。著作権法第13条第2号) |
-| GJS 追記分 (GJS リポジトリ `data/sources/custom/v2n_annotated_jp.csv` の出典 GJS の行) | 氏名で問題になるのに上記の資料に無かった組 | CC0 1.0 |
+| デジタル庁「JIS X 0213への代替マップ 1.0版」のうちデジタル庁が独自に定義した区分1 | 行政事務標準文字 (GJ) と MJ 文字の代替 | デジタル庁 事務連絡 |
+| GJS 追記分と判断 (GJS の `v2n_annotated_jp.csv` の出典 GJS の行と `gjs_pair_judgments.csv`) | 氏名で問題になるのに上記の資料に無かった組、クラスタでつながない組 (`interchangeable.csv`) | CC0 1.0 |
 
 基本版は上記の各条件に従って再配布できる (SA 条件はない)。再配布時はこの NOTICE.md と LICENSE-*.txt を同梱すること。
 
