@@ -284,7 +284,7 @@ impl SlideEditor {
     /// Show `opened`, a new file named `name` that has no path yet.
     pub(crate) fn show_new(&mut self, opened: ibis_formats::Opened, name: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         self.load(opened.presentation, name, window, cx);
-        #[cfg(any(target_os = "android", target_family = "wasm"))]
+        #[cfg(any(target_os = "android", target_os = "ios", target_family = "wasm"))]
         {
             self.phone_editing = true;
             self.update_phone_view(Self::narrow_phone_editor(window), window, cx);

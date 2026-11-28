@@ -54,7 +54,7 @@ pub struct TouchScroll {
 impl SlideEditor {
     /// Whether a finger that goes down at `position` is the mouse for the page.
     fn finger_drags_at(&self, position: Point<Pixels>, cx: &App) -> bool {
-        self.is_touch_device() && !self.dialog_is_modal() && self.workspace_bounds.is_some_and(|bounds| bounds.contains(&position)) && !self.popup_at(position, cx)
+        self.is_touch_device() && !self.phone_view_only() && !self.dialog_is_modal() && self.workspace_bounds.is_some_and(|bounds| bounds.contains(&position)) && !self.popup_at(position, cx)
     }
 
     /// Whether a menu or a dropdown list that is open lies over `position`: a finger on it scrolls it (K0078), it is not the page's mouse. (A menu, its submenus and the menu

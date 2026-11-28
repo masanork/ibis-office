@@ -275,23 +275,29 @@ try {
   await tap(viewerTouch, 99, 120, 150);
   assert.equal(await viewerMirror.getAttribute('inputmode'), 'none', 'viewing must not open the virtual keyboard');
   const viewerChooser = viewer.waitForEvent('filechooser', { timeout: 15_000 });
-  await tap(viewerTouch, 100, 296, 24);
+  await tap(viewerTouch, 100, 362, 24); // Open overflow menu (⋯)
+  await viewer.waitForTimeout(250);
+  await tap(viewerTouch, 110, 277, 78); // Open
   await (await viewerChooser).setFiles('www/samples/sorane-welcome.docx');
   await viewer.waitForTimeout(1000);
 
-  await tap(viewerTouch, 101, 350, 24); // Edit
+  await tap(viewerTouch, 101, 362, 24); // Open overflow menu (⋯)
+  await viewer.waitForTimeout(250);
+  await tap(viewerTouch, 111, 277, 262); // Edit
   await viewer.waitForTimeout(500);
   await tap(viewerTouch, 102, 120, 112);
   await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'text');
   await viewer.keyboard.insertText('Mode switch test');
   await viewer.waitForFunction(() => document.querySelector('textarea')?.value.includes('Mode switch test'));
 
-  await tap(viewerTouch, 103, 350, 24); // Viewing
+  await tap(viewerTouch, 103, 350, 24); // Viewing (in editing top bar)
   await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'none');
   await tap(viewerTouch, 104, 120, 112);
   assert.equal(await viewerMirror.getAttribute('inputmode'), 'none', 'returning to viewing must suppress the keyboard');
 
-  await tap(viewerTouch, 105, 350, 24); // Edit again
+  await tap(viewerTouch, 105, 362, 24); // Open overflow menu (⋯)
+  await viewer.waitForTimeout(250);
+  await tap(viewerTouch, 112, 277, 262); // Edit again
   await viewer.waitForTimeout(500);
   await tap(viewerTouch, 106, 120, 112);
   await viewer.waitForFunction(() => document.querySelector('textarea')?.inputMode === 'text');
@@ -381,7 +387,9 @@ sys.stdout.buffer.write(buf.getvalue())
     ['XPS', 'synthetic.xps', 'application/vnd.ms-xpsdocument', xps, 0],
   ]) {
     const chooser = fixed.waitForEvent('filechooser', { timeout: 15_000 });
-    await fixed.touchscreen.tap(342, 24); // Read-only bar has only Open.
+    await fixed.touchscreen.tap(362, 24); // Open overflow menu (⋯)
+    await fixed.waitForTimeout(250);
+    await fixed.touchscreen.tap(277, 78); // Open
     await (await chooser).setFiles({ name, mimeType, buffer });
     await fixed.waitForFunction(name => document.title.includes(name), name);
     await assertPageFitted(format, channel);

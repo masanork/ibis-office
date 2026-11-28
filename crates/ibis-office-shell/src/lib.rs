@@ -207,6 +207,7 @@ pub(crate) mod menu_scrollbar;
 pub mod keyboard_toolbar;
 pub mod keyboard_scroll;
 pub mod mobile_os;
+pub mod mobile_viewer;
 pub mod safe_area;
 pub mod narrow_layout;
 pub mod touch_scroll;
