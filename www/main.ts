@@ -104,10 +104,6 @@ declare global {
     /** Record a file in the local recent-files history (no contents). */
     soraneRecordRecent?: (input: RecentOpenInput) => Promise<void>;
     ibisOfficeDecodeHeic: (bytes: Uint8Array) => Promise<Uint8Array>;
-    /** Download a locally generated DOCX without sending the document to a server. */
-    ibisOfficeDownloadDocx: (name: string, bytes: Uint8Array) => void;
-    /** Download an exported HTML document without sending it to a server. */
-    ibisOfficeDownloadHtml: (name: string, bytes: Uint8Array) => void;
     /** Called from Rust for the CMYK profile setting (ICC file picker, kept in IndexedDB). */
     ibisOfficePickDesignTokens: (maxBytes: number) => Promise<PickedFile | null>;
     ibisOfficePickIcc: () => Promise<PickedFile | null>;
