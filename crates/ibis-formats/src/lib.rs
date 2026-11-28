@@ -146,6 +146,7 @@ pub mod email;
 pub mod cals_xml;
 pub mod cad;
 pub mod access;
+pub mod gis;
 pub mod repair;
 pub use repair::{RepairLogEntry, RepairLogLevel, RepairMode, RepairReport, RepairedWorkbook, RepairedDocument, repair_workbook, repair_document};
 pub mod chart_template;

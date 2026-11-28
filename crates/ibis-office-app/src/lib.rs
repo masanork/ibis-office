@@ -960,8 +960,14 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             return Ok(());
         }
         if format == "svg" {
-            let svg = ibis_formats::cad::to_svg(&raw_data)
-                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let svg = if ibis_formats::gis::is_shp(&raw_data)
+                || ibis_formats::gis::is_geojson(&raw_data)
+            {
+                ibis_formats::gis::to_svg(&raw_data)
+            } else {
+                ibis_formats::cad::to_svg(&raw_data)
+            }
+            .map_err(|e| format!("{}: {e}", path.display()))?;
             let out_path = out_dir.join(format!("{stem}.svg"));
             std::fs::write(&out_path, svg.as_bytes())
                 .map_err(|e| format!("{}: {e}", out_path.display()))?;
@@ -973,6 +979,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 || ibis_formats::email::is_eml(&raw_data)
                 || ibis_formats::cals_xml::is_cals_xml(&raw_data)
                 || ibis_formats::cad::is_cad(&raw_data)
+                || ibis_formats::gis::is_gis(&raw_data)
                 || ibis_formats::access::is_access(&raw_data)
                 || ibis_formats::archive::is_lzh(&raw_data)
                 || ibis_formats::archive::is_7z(&raw_data))
@@ -983,6 +990,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 ibis_formats::cals_xml::to_markdown(&raw_data)
             } else if ibis_formats::cad::is_cad(&raw_data) {
                 ibis_formats::cad::to_markdown(&raw_data)
+            } else if ibis_formats::gis::is_gis(&raw_data) {
+                ibis_formats::gis::to_markdown(&raw_data)
             } else if ibis_formats::access::is_access(&raw_data) {
                 ibis_formats::access::to_markdown(&raw_data)
             } else {
