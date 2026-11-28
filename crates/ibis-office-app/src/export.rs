@@ -194,6 +194,8 @@ struct SlidePicture {
     extra: Vec<((f32, f32), (f32, f32), Size<Pixels>)>,
     /// Text positions collected during rendering for layout inspection.
     shape_positions: Rc<RefCell<Vec<(ibis_doc_model::ShapeId, crate::render::rich_text::TextPositions)>>>,
+    /// Fixed-layout page (`Pdf`, `Xdw`, `Ofd`, `Xps`) to paint on top of the white page background.
+    fixed_page: Option<(Rc<RefCell<ibis_office_pdf::PdfViewerState>>, usize, f32)>,
 }
 
 impl Render for SlidePicture {
@@ -237,6 +239,17 @@ impl Render for SlidePicture {
                     })),
             ),
         )
+        .when_some(self.fixed_page.clone(), |d, (state, page_idx, scale_pt)| {
+            d.child(
+                canvas(|_, _, _| {}, move |bounds, _, window, cx| {
+                    let _ = state.borrow_mut().paint_page(page_idx, bounds.origin, scale_pt, window, cx);
+                })
+                .size_full()
+                .absolute()
+                .top_0()
+                .left_0(),
+            )
+        })
         .when(!self.marks.is_empty() || !self.rules.is_empty(), |d| {
             let (marks, rules) = (self.marks.clone(), self.rules.clone());
             d.child(
@@ -1162,7 +1175,7 @@ impl crate::export_text::TextLayer for SlideTextLayer<'_> {
         let shape_positions = positions.clone();
         let window = self
             .cx
-            .open_window(window_size, |_, app| app.new(|_| SlidePicture { slide, scale, size: window_size, origin: (0.0, 0.0), inset: (0.0, 0.0), view: window_size, resources, marks: Vec::new(), extra: Vec::new(), rules: Vec::new(), shape_positions }))
+            .open_window(window_size, |_, app| app.new(|_| SlidePicture { slide, scale, size: window_size, origin: (0.0, 0.0), inset: (0.0, 0.0), view: window_size, resources, marks: Vec::new(), extra: Vec::new(), rules: Vec::new(), shape_positions, fixed_page: None }))
             .ok()?;
         let picture = if self.vector {
             // Only recorded: the PDF is made of the record.
@@ -1712,6 +1725,15 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
     };
     let total_sheet_pages: usize = sheet_page_counts.iter().sum();
     let mut sheet_pages_before = 0usize;
+    let fixed_state: Option<Rc<RefCell<ibis_office_pdf::PdfViewerState>>> = presentation
+        .pdf_bytes
+        .as_ref()
+        .map(|raw| {
+            ibis_office_pdf::PdfViewerState::open(raw.clone())
+                .map(|s| Rc::new(RefCell::new(s)))
+                .map_err(|e| e.to_string())
+        })
+        .transpose()?;
     for (position, &number) in numbers.iter().enumerate() {
         // The outline has no pictures of the slides.
         if pages_asked && options.outline_pages {
@@ -1779,7 +1801,7 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
                     }
                     let resources = resources.clone();
                     let window = cx
-                        .open_window(window_size, |_, app| app.new(|_| SlidePicture { slide, scale, size: window_size, origin, inset: (0.0, 0.0), view: window_size, resources, marks: Vec::new(), extra: Vec::new(), rules: Vec::new(), shape_positions: link_positions.clone() }))
+                        .open_window(window_size, |_, app| app.new(|_| SlidePicture { slide, scale, size: window_size, origin, inset: (0.0, 0.0), view: window_size, resources, marks: Vec::new(), extra: Vec::new(), rules: Vec::new(), shape_positions: link_positions.clone(), fixed_page: fixed_state.as_ref().map(|s| (s.clone(), number - 1, f32::from(window_size.width) / (area.width as f32 / 12_700.0).max(1.0))) }))
                         .map_err(|e| format!("Cannot create the window for drawing: {e}"))?;
                     cx.update_window(window.into(), |_, window, _| {
                         window.record_paints();
@@ -1858,7 +1880,7 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
         let resources = resources.clone();
         let shape_positions = Rc::new(RefCell::new(Vec::new()));
         let window = cx
-            .open_window(window_size, |_, app| app.new(|_| SlidePicture { slide, scale, size: window_size, origin, inset: (0.0, 0.0), view: window_size, resources, marks: Vec::new(), extra: Vec::new(), rules: Vec::new(), shape_positions: shape_positions.clone() }))
+            .open_window(window_size, |_, app| app.new(|_| SlidePicture { slide, scale, size: window_size, origin, inset: (0.0, 0.0), view: window_size, resources, marks: Vec::new(), extra: Vec::new(), rules: Vec::new(), shape_positions: shape_positions.clone(), fixed_page: fixed_state.as_ref().map(|s| (s.clone(), number - 1, f32::from(window_size.width) / (area.width as f32 / 12_700.0).max(1.0))) }))
             .map_err(|e| format!("Cannot create the window for drawing: {e}"))?;
         // Pictures decode asynchronously; draw until they have all arrived.
         let mut image = None;
@@ -2049,7 +2071,7 @@ fn print_sheet(
         .unwrap_or_default();
     let window = cx
         .open_window(window_size, |_, app| {
-            app.new(|_| SlidePicture { slide, scale: px_per_emu, size: window_size, origin: (0.0, 0.0), inset: (0.0, 0.0), view: window_size, resources, marks: Vec::new(), extra: Vec::new(), rules: Vec::new(), shape_positions: Rc::new(RefCell::new(Vec::new())) })
+            app.new(|_| SlidePicture { slide, scale: px_per_emu, size: window_size, origin: (0.0, 0.0), inset: (0.0, 0.0), view: window_size, resources, marks: Vec::new(), extra: Vec::new(), rules: Vec::new(), shape_positions: Rc::new(RefCell::new(Vec::new())), fixed_page: None })
         })
         .map_err(|e| format!("Cannot create the window for drawing: {e}"))?;
     cx.update_window(window.into(), |_, window, _| {

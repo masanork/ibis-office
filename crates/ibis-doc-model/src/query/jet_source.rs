@@ -2,10 +2,11 @@
 use super::{QColumn, QTable, QType, sqlite_source::dataset_sql_type};
 use crate::CellValue;
 use jetdb::{
-    BlobValue, ColumnType, ComplexColumn, ComplexValues, PageReader, TableRows, Value,
-    calculated_column_types_in, column_flags, control_type_name, find_table, list_forms,
-    query_to_sql, read_catalog, read_complex_column, read_form_properties, read_queries,
-    read_relationships, read_table_def, read_vba_project, table_names,
+    BlobValue, ColumnType, ComplexColumn, ComplexValues, MacroDef, MacroStatement, PageReader,
+    TableRows, Value, calculated_column_types_in, column_flags, control_type_name, find_table,
+    list_forms, list_macros, query_to_sql, read_catalog, read_complex_column,
+    read_embedded_macros, read_form_properties, read_macro, read_queries, read_relationships,
+    read_table_def, read_vba_project, table_names,
 };
 use serde_json::json;
 use std::path::Path;
@@ -436,12 +437,19 @@ pub fn jet_inspect_schema(path: &Path) -> Result<serde_json::Value, String> {
         })
         .unwrap_or_default();
 
+    let macros: Vec<_> = list_macros(&mut reader)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| m.name)
+        .collect();
+
     Ok(json!({
         "format": version,
         "tables": tables,
         "relationships": relationships,
         "queries": queries,
         "forms": forms,
+        "macros": macros,
         "vba_modules": vba_modules,
     }))
 }
@@ -619,49 +627,416 @@ pub fn jet_inspect_vba(path: &Path, module: Option<&str>) -> Result<serde_json::
     Ok(json!({ "modules": modules }))
 }
 
+fn encode_blob_properties(
+    props: &[jetdb::BlobProperty],
+) -> (Vec<serde_json::Value>, serde_json::Map<String, serde_json::Value>) {
+    let mut list = Vec::with_capacity(props.len());
+    let mut named = serde_json::Map::new();
+    for p in props {
+        let val = blob_value_to_json(&p.value);
+        if let Some(name) = p.name() {
+            named.insert(name.to_owned(), val.clone());
+        }
+        list.push(json!({
+            "prop_id": format!("0x{:04x}", p.prop_id),
+            "name": p.display_name(),
+            "value": val,
+        }));
+    }
+    (list, named)
+}
+
+fn form_properties_to_json(fp: &jetdb::FormProperties) -> serde_json::Value {
+    let (properties, named_properties) = encode_blob_properties(&fp.properties);
+    let controls: Vec<_> = fp
+        .controls
+        .iter()
+        .map(|c| {
+            let (props, named_props) = encode_blob_properties(&c.properties);
+            json!({
+                "name": c.name,
+                "type": control_type_name(c.type_code),
+                "type_code": c.type_code,
+                "named_properties": named_props,
+                "properties": props,
+            })
+        })
+        .collect();
+    json!({
+        "name": fp.form_name,
+        "object_type": format!("{:?}", fp.object_type),
+        "named_properties": named_properties,
+        "properties": properties,
+        "controls": controls,
+    })
+}
+
 /// Extract form or report properties and bound controls from an Access database.
 pub fn jet_inspect_form(path: &Path, form_name: &str) -> Result<serde_json::Value, String> {
     let mut reader = open_jet(path)?;
     let fp = read_form_properties(&mut reader, form_name)
         .map_err(|error| format!("Failed to read form/report '{form_name}': {error}"))?;
-    let properties: Vec<_> = fp
-        .properties
-        .iter()
-        .map(|p| {
-            json!({
-                "prop_id": format!("0x{:04x}", p.prop_id),
-                "value": blob_value_to_json(&p.value),
-            })
-        })
-        .collect();
-    let controls: Vec<_> = fp
-        .controls
-        .iter()
-        .map(|c| {
-            let props: Vec<_> = c
-                .properties
-                .iter()
-                .map(|p| {
-                    json!({
-                        "prop_id": format!("0x{:04x}", p.prop_id),
-                        "value": blob_value_to_json(&p.value),
-                    })
+    Ok(form_properties_to_json(&fp))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JetBundleMode {
+    Metadata,
+    Code,
+    Full,
+}
+
+impl JetBundleMode {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "metadata" => Ok(Self::Metadata),
+            "code" => Ok(Self::Code),
+            "full" | "all" | "data" => Ok(Self::Full),
+            other => Err(format!(
+                "Invalid bundle mode '{other}': expected 'metadata', 'code', or 'full'"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Metadata => "metadata",
+            Self::Code => "code",
+            Self::Full => "full",
+        }
+    }
+}
+
+fn cell_to_json(cell: &CellValue) -> serde_json::Value {
+    match cell {
+        CellValue::Empty => serde_json::Value::Null,
+        CellValue::Bool(b) => json!(b),
+        CellValue::Number(n) => {
+            if n.is_finite() && n.fract() == 0.0 && n.abs() < (1i64 << 53) as f64 {
+                json!(*n as i64)
+            } else {
+                json!(n)
+            }
+        }
+        CellValue::Text(s) => json!(s),
+        other => json!(format!("{other:?}")),
+    }
+}
+
+/// Export a machine-readable reverse-engineering bundle from an Access database.
+pub fn jet_export_bundle(
+    path: &Path,
+    mode: JetBundleMode,
+    max_rows_per_table: usize,
+) -> Result<serde_json::Value, String> {
+    let mut reader = open_jet(path)?;
+    let version = format!("{:?}", reader.header().version);
+    let catalog = read_catalog(&mut reader).map_err(|error| error.to_string())?;
+    let mut names = table_names(&mut reader).map_err(|error| error.to_string())?;
+    if names.len() > MAX_TABLES {
+        return Err("Access database has too many tables to inspect".into());
+    }
+    names.sort();
+
+    let mut tables = Vec::with_capacity(names.len());
+    for name in &names {
+        let entry = find_table(&catalog, name).map_err(|error| error.to_string())?;
+        let def = read_table_def(&mut reader, &entry.name, entry.table_page)
+            .map_err(|error| error.to_string())?;
+        let columns: Vec<_> = def
+            .columns
+            .iter()
+            .map(|col| {
+                let qtype = jet_type_to_qtype(col.col_type);
+                json!({
+                    "name": col.name,
+                    "jet_type": format!("{:?}", col.col_type),
+                    "sql_type": dataset_sql_type(qtype),
+                    "size": col.col_size,
+                    "auto_number": (col.flags & column_flags::AUTO_LONG) != 0,
                 })
-                .collect();
+            })
+            .collect();
+        let indexes: Vec<_> = def
+            .indexes
+            .iter()
+            .map(|idx| {
+                let cols: Vec<_> = idx
+                    .columns
+                    .iter()
+                    .filter_map(|c| {
+                        def.columns
+                            .iter()
+                            .find(|col| col.col_num == c.col_num)
+                            .map(|col| col.name.as_str())
+                    })
+                    .collect();
+                json!({
+                    "name": idx.name,
+                    "columns": cols,
+                })
+            })
+            .collect();
+        tables.push(json!({
+            "name": def.name,
+            "row_count": def.num_rows,
+            "columns": columns,
+            "indexes": indexes,
+        }));
+    }
+
+    let relationships = read_relationships(&mut reader)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|rel| {
             json!({
-                "name": c.name,
-                "type": control_type_name(c.type_code),
-                "type_code": c.type_code,
-                "properties": props,
+                "name": rel.name,
+                "from_table": rel.from_table,
+                "to_table": rel.to_table,
+                "columns": rel.columns.iter().map(|c| json!({
+                    "from": c.from_column,
+                    "to": c.to_column,
+                })).collect::<Vec<_>>(),
             })
         })
-        .collect();
-    Ok(json!({
-        "name": fp.form_name,
-        "object_type": format!("{:?}", fp.object_type),
-        "properties": properties,
-        "controls": controls,
-    }))
+        .collect::<Vec<_>>();
+
+    let queries = read_queries(&mut reader)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|qdef| {
+            let sql = query_to_sql(&qdef);
+            let sqlite_sql = jet_sql_to_sqlite(&sql);
+            json!({
+                "name": qdef.name,
+                "query_type": format!("{:?}", qdef.query_type),
+                "sql": sql,
+                "sqlite_sql": sqlite_sql,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    fn macro_statements_to_json(stmts: &[MacroStatement]) -> Vec<serde_json::Value> {
+        stmts
+            .iter()
+            .map(|stmt| match stmt {
+                MacroStatement::Action { name, arguments } => {
+                    let args: serde_json::Map<String, serde_json::Value> = arguments
+                        .iter()
+                        .map(|a| (a.name.clone(), json!(a.value)))
+                        .collect();
+                    json!({
+                        "type": "action",
+                        "name": name,
+                        "arguments": args,
+                    })
+                }
+                MacroStatement::Comment(text) => json!({
+                    "type": "comment",
+                    "text": text,
+                }),
+                MacroStatement::Conditional { branches } => json!({
+                    "type": "conditional",
+                    "branches": branches.iter().map(|b| json!({
+                        "condition": b.condition,
+                        "statements": macro_statements_to_json(&b.statements),
+                    })).collect::<Vec<_>>(),
+                }),
+                MacroStatement::Group { description, statements } => json!({
+                    "type": "group",
+                    "description": description,
+                    "statements": macro_statements_to_json(statements),
+                }),
+                MacroStatement::SubMacro { name, statements } => json!({
+                    "type": "sub_macro",
+                    "name": name,
+                    "statements": macro_statements_to_json(statements),
+                }),
+                MacroStatement::DataBlock { kind, data, statements } => {
+                    let data_map: serde_json::Map<String, serde_json::Value> = data
+                        .iter()
+                        .map(|(k, v)| (k.clone(), json!(v)))
+                        .collect();
+                    json!({
+                        "type": "data_block",
+                        "kind": kind,
+                        "data": data_map,
+                        "statements": macro_statements_to_json(statements),
+                    })
+                }
+                MacroStatement::Unknown(elem) => json!({
+                    "type": "unknown",
+                    "tag": elem.name,
+                }),
+                _ => json!({ "type": "unknown" }),
+            })
+            .collect()
+    }
+
+    fn macro_def_to_json(name: &str, def: &MacroDef) -> serde_json::Value {
+        json!({
+            "name": name,
+            "statements": macro_statements_to_json(&def.statements),
+        })
+    }
+
+    let form_entries = list_forms(&mut reader).unwrap_or_default();
+    let mut forms = Vec::with_capacity(form_entries.len());
+    for entry in &form_entries {
+        match read_form_properties(&mut reader, &entry.name) {
+            Ok(fp) => {
+                let mut form_json = form_properties_to_json(&fp);
+                if mode != JetBundleMode::Metadata
+                    && let Ok(embedded) = read_embedded_macros(&mut reader, &entry.name)
+                    && !embedded.is_empty()
+                {
+                    let em_json: Vec<_> = embedded
+                        .iter()
+                        .map(|def| {
+                            let label = match &def.source {
+                                jetdb::MacroSource::Embedded { control, event, .. } => {
+                                    match control.as_deref() {
+                                        Some(ctrl) if !ctrl.is_empty() => {
+                                            format!("{ctrl}.{event}")
+                                        }
+                                        _ => event.clone(),
+                                    }
+                                }
+                                _ => "embedded".to_owned(),
+                            };
+                            macro_def_to_json(&label, def)
+                        })
+                        .collect();
+                    form_json["embedded_macros"] = serde_json::Value::Array(em_json);
+                }
+                forms.push(form_json);
+            }
+            Err(error) => forms.push(json!({
+                "name": entry.name,
+                "object_type": format!("{:?}", entry.object_type),
+                "error": error.to_string(),
+            })),
+        }
+    }
+
+    let macro_entries = list_macros(&mut reader).unwrap_or_default();
+    let mut macros = Vec::with_capacity(macro_entries.len());
+    for entry in macro_entries {
+        if mode == JetBundleMode::Metadata {
+            macros.push(json!({ "name": entry.name }));
+        } else {
+            match read_macro(&mut reader, &entry.name) {
+                Ok(def) => macros.push(macro_def_to_json(&entry.name, &def)),
+                Err(error) => macros.push(json!({
+                    "name": entry.name,
+                    "error": error.to_string(),
+                })),
+            }
+        }
+    }
+
+    let vba_modules = read_vba_project(&mut reader)
+        .ok()
+        .map(|proj| {
+            proj.modules
+                .into_iter()
+                .map(|m| {
+                    if mode == JetBundleMode::Metadata {
+                        json!({
+                            "name": m.name,
+                            "module_type": format!("{:?}", m.module_type),
+                        })
+                    } else {
+                        json!({
+                            "name": m.name,
+                            "module_type": format!("{:?}", m.module_type),
+                            "source": m.source,
+                        })
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut bundle = json!({
+        "format": version,
+        "mode": mode.as_str(),
+        "summary": {
+            "tables": tables.len(),
+            "relationships": relationships.len(),
+            "queries": queries.len(),
+            "forms": forms.len(),
+            "macros": macros.len(),
+            "vba_modules": vba_modules.len(),
+        },
+        "tables": tables,
+        "relationships": relationships,
+        "queries": queries,
+        "forms": forms,
+        "macros": macros,
+        "vba_modules": vba_modules,
+    });
+
+    if mode == JetBundleMode::Full {
+        let mut table_data = serde_json::Map::new();
+        let row_limit = max_rows_per_table.clamp(1, 1_000);
+        let mut remaining_cells = 100_000usize;
+        let mut remaining_text = 8 * 1024 * 1024usize;
+        for name in &names {
+            let mut col_names = Vec::new();
+            let mut rows_out = Vec::new();
+            let mut total_rows = 0usize;
+            let mut truncated = false;
+            let visit_res = visit_jet_table(path, name, &[], false, |columns, row| {
+                if col_names.is_empty() {
+                    col_names = columns.iter().map(|c| c.name.clone()).collect();
+                }
+                if let Some(row) = row {
+                    total_rows += 1;
+                    if rows_out.len() >= row_limit
+                        || remaining_cells < row.len()
+                    {
+                        truncated = true;
+                        return Ok(());
+                    }
+                    if super::sqlite_source::charge_dataset_text(&row, &mut remaining_text).is_err()
+                    {
+                        truncated = true;
+                        return Ok(());
+                    }
+                    remaining_cells -= row.len();
+                    rows_out.push(serde_json::Value::Array(
+                        row.iter().map(cell_to_json).collect(),
+                    ));
+                }
+                Ok(())
+            });
+            match visit_res {
+                Ok(()) => {
+                    table_data.insert(
+                        name.clone(),
+                        json!({
+                            "columns": col_names,
+                            "rows": rows_out,
+                            "total_rows": total_rows,
+                            "truncated": truncated,
+                        }),
+                    );
+                }
+                Err(error) => {
+                    table_data.insert(
+                        name.clone(),
+                        json!({
+                            "error": error,
+                        }),
+                    );
+                }
+            }
+        }
+        bundle["table_data"] = serde_json::Value::Object(table_data);
+    }
+
+    Ok(bundle)
 }
 
 /// Materialize user tables from an Access (.mdb / .accdb) database into a standalone SQLite file via Turso.
@@ -719,11 +1094,30 @@ pub fn jet_export_sqlite(
             .map_err(|e| e.to_string())
     };
 
+    let (catalog_opt, relationships) = match open_jet(input_path) {
+        Ok(mut reader) => (
+            read_catalog(&mut reader).ok(),
+            read_relationships(&mut reader).unwrap_or_default(),
+        ),
+        Err(_) => (None, Vec::new()),
+    };
+
     let mut exported = Vec::with_capacity(target_tables.len());
     let mut total_rows = 0usize;
+    let mut indexes_created = Vec::new();
+    let mut skipped_indexes = Vec::new();
 
     for table_name in &target_tables {
         let identifier = super::sqlite_source::sql_identifier(table_name);
+        let table_def_opt = if let Some(catalog) = &catalog_opt {
+            open_jet(input_path).ok().and_then(|mut reader| {
+                let entry = find_table(catalog, table_name).ok()?;
+                read_table_def(&mut reader, &entry.name, entry.table_page).ok()
+            })
+        } else {
+            None
+        };
+
         let mut stmt_insert: Option<turso_core::Statement> = None;
         let mut row_count = 0usize;
         let mut batch_count = 0usize;
@@ -750,16 +1144,87 @@ pub fn jet_export_sqlite(
                     batch_count = 0;
                 }
             } else {
-                let col_defs: Vec<String> = columns
+                let pk_cols: Vec<String> = table_def_opt
+                    .as_ref()
+                    .and_then(|def| def.indexes.iter().find(|idx| idx.index_type == 0x01))
+                    .map(|idx| {
+                        idx.columns
+                            .iter()
+                            .filter_map(|c| {
+                                table_def_opt.as_ref().and_then(|def| {
+                                    def.columns
+                                        .iter()
+                                        .find(|col| col.col_num == c.col_num)
+                                        .map(|col| col.name.clone())
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let auto_col_name: Option<String> = table_def_opt.as_ref().and_then(|def| {
+                    if pk_cols.len() == 1 {
+                        let pk_name = &pk_cols[0];
+                        def.columns
+                            .iter()
+                            .find(|c| {
+                                &c.name == pk_name && (c.flags & column_flags::AUTO_LONG) != 0
+                            })
+                            .map(|c| c.name.clone())
+                    } else if pk_cols.is_empty() {
+                        def.columns
+                            .iter()
+                            .find(|c| (c.flags & column_flags::AUTO_LONG) != 0)
+                            .map(|c| c.name.clone())
+                    } else {
+                        None
+                    }
+                });
+
+                let mut col_defs: Vec<String> = columns
                     .iter()
                     .map(|col| {
-                        format!(
-                            "{} {}",
-                            super::sqlite_source::sql_identifier(&col.name),
-                            dataset_sql_type(col.ty)
-                        )
+                        let col_ident = super::sqlite_source::sql_identifier(&col.name);
+                        if auto_col_name.as_deref() == Some(col.name.as_str()) {
+                            format!("{col_ident} INTEGER PRIMARY KEY")
+                        } else {
+                            format!("{col_ident} {}", dataset_sql_type(col.ty))
+                        }
                     })
                     .collect();
+
+                if auto_col_name.is_none() && !pk_cols.is_empty() {
+                    let pk_list: Vec<String> = pk_cols
+                        .iter()
+                        .map(|c| super::sqlite_source::sql_identifier(c))
+                        .collect();
+                    col_defs.push(format!("PRIMARY KEY ({})", pk_list.join(", ")));
+                }
+
+                for rel in &relationships {
+                    if &rel.from_table == table_name
+                        && target_tables.iter().any(|t| t == &rel.to_table)
+                        && !rel.columns.is_empty()
+                    {
+                        let from_cols: Vec<String> = rel
+                            .columns
+                            .iter()
+                            .map(|c| super::sqlite_source::sql_identifier(&c.from_column))
+                            .collect();
+                        let to_cols: Vec<String> = rel
+                            .columns
+                            .iter()
+                            .map(|c| super::sqlite_source::sql_identifier(&c.to_column))
+                            .collect();
+                        let to_ident = super::sqlite_source::sql_identifier(&rel.to_table);
+                        col_defs.push(format!(
+                            "FOREIGN KEY ({}) REFERENCES {to_ident} ({})",
+                            from_cols.join(", "),
+                            to_cols.join(", ")
+                        ));
+                    }
+                }
+
                 execute(&format!("CREATE TABLE {identifier} ({})", col_defs.join(", ")))?;
                 let placeholders = vec!["?"; columns.len()].join(", ");
                 let stmt = connection
@@ -774,6 +1239,55 @@ pub fn jet_export_sqlite(
             return Err(err);
         }
         execute("COMMIT")?;
+
+        if let Some(def) = &table_def_opt {
+            for idx in &def.indexes {
+                if idx.index_type != 0x00 || idx.columns.is_empty() {
+                    continue;
+                }
+                let cols: Vec<String> = idx
+                    .columns
+                    .iter()
+                    .filter_map(|c| {
+                        def.columns
+                            .iter()
+                            .find(|col| col.col_num == c.col_num)
+                            .map(|col| {
+                                let col_ident = super::sqlite_source::sql_identifier(&col.name);
+                                match c.order {
+                                    jetdb::IndexColumnOrder::Descending => {
+                                        format!("{col_ident} DESC")
+                                    }
+                                    jetdb::IndexColumnOrder::Ascending => col_ident,
+                                }
+                            })
+                    })
+                    .collect();
+                if cols.is_empty() {
+                    continue;
+                }
+                let unique = if (idx.flags & 0x01) != 0 {
+                    "UNIQUE "
+                } else {
+                    ""
+                };
+                let idx_name = format!("{}_{}", table_name, idx.name);
+                let idx_ident = super::sqlite_source::sql_identifier(&idx_name);
+                let create_idx = format!(
+                    "CREATE {unique}INDEX IF NOT EXISTS {idx_ident} ON {identifier} ({})",
+                    cols.join(", ")
+                );
+                match execute(&create_idx) {
+                    Ok(()) => indexes_created.push(idx_name),
+                    Err(error) => skipped_indexes.push(json!({
+                        "table": table_name,
+                        "name": idx.name,
+                        "error": error,
+                    })),
+                }
+            }
+        }
+
         total_rows += row_count;
         exported.push(json!({
             "name": table_name,
@@ -786,6 +1300,7 @@ pub fn jet_export_sqlite(
     if let Ok(mut reader) = open_jet(input_path)
         && let Ok(queries) = read_queries(&mut reader)
     {
+        let mut pending: Vec<(String, String)> = Vec::new();
         for qdef in queries {
             if !matches!(qdef.query_type, jetdb::QueryType::Select) {
                 continue;
@@ -798,13 +1313,32 @@ pub fn jet_export_sqlite(
             }
             let view_ident = super::sqlite_source::sql_identifier(&qdef.name);
             let create_sql = format!("CREATE VIEW IF NOT EXISTS {view_ident} AS {trimmed}");
-            match execute(&create_sql) {
-                Ok(()) => views.push(qdef.name),
-                Err(error) => skipped_views.push(json!({
-                    "name": qdef.name,
-                    "error": error,
-                })),
+            pending.push((qdef.name, create_sql));
+        }
+
+        while !pending.is_empty() {
+            let mut next_pending = Vec::new();
+            let mut last_errors = Vec::new();
+            let prev_len = pending.len();
+            for (name, create_sql) in pending {
+                match execute(&create_sql) {
+                    Ok(()) => views.push(name),
+                    Err(error) => {
+                        next_pending.push((name.clone(), create_sql));
+                        last_errors.push((name, error));
+                    }
+                }
             }
+            if next_pending.len() == prev_len {
+                for (name, error) in last_errors {
+                    skipped_views.push(json!({
+                        "name": name,
+                        "error": error,
+                    }));
+                }
+                break;
+            }
+            pending = next_pending;
         }
     }
 
@@ -822,6 +1356,8 @@ pub fn jet_export_sqlite(
     Ok(json!({
         "output": output_path.display().to_string(),
         "tables": exported,
+        "indexes": indexes_created,
+        "skipped_indexes": skipped_indexes,
         "views": views,
         "skipped_views": skipped_views,
         "total_rows": total_rows,
@@ -1106,6 +1642,29 @@ mod tests {
         let vba = jet_inspect_vba(&mdb_path, None).unwrap();
         assert_eq!(vba["modules"], json!([]));
         assert!(jet_inspect_form(&mdb_path, "MissingForm").is_err());
+
+        // Machine-readable bundle export in metadata / code / full modes
+        let meta_bundle = jet_export_bundle(&mdb_path, JetBundleMode::Metadata, 100).unwrap();
+        assert_eq!(meta_bundle["mode"], "metadata");
+        assert_eq!(meta_bundle["summary"]["tables"], 1);
+        assert!(meta_bundle.get("table_data").is_none());
+
+        let code_bundle = jet_export_bundle(&mdb_path, JetBundleMode::Code, 100).unwrap();
+        assert_eq!(code_bundle["mode"], "code");
+        assert!(code_bundle.get("table_data").is_none());
+
+        let full_bundle = jet_export_bundle(&mdb_path, JetBundleMode::Full, 10).unwrap();
+        assert_eq!(full_bundle["mode"], "full");
+        assert_eq!(
+            full_bundle["table_data"][table_name]["rows"],
+            json!([["株式会社テスト", 11000]])
+        );
+        assert_eq!(full_bundle["table_data"][table_name]["truncated"], false);
+
+        assert_eq!(JetBundleMode::parse("metadata").unwrap(), JetBundleMode::Metadata);
+        assert_eq!(JetBundleMode::parse("code").unwrap(), JetBundleMode::Code);
+        assert_eq!(JetBundleMode::parse("all").unwrap(), JetBundleMode::Full);
+        assert!(JetBundleMode::parse("unknown").is_err());
     }
 
     #[test]
@@ -1117,6 +1676,10 @@ mod tests {
         assert_eq!(
             jet_sql_to_sqlite("SELECT IIf([Paid] = True, 'Yes', IIf(IsNull([Note]), 'Pending', [Note])) FROM [Orders]"),
             "SELECT CASE WHEN \"Paid\" = True THEN 'Yes' ELSE CASE WHEN (\"Note\" IS NULL) THEN 'Pending' ELSE \"Note\" END END FROM \"Orders\""
+        );
+        assert_eq!(
+            jet_sql_to_sqlite("SELECT UCase(Trim([Name])), Len([Name]), Left([Code], 3), Mid([Code], 2, 4), Year([OrderDate]) FROM [Orders]"),
+            "SELECT UPPER(TRIM(\"Name\")), LENGTH(\"Name\"), SUBSTR(\"Code\", 1, 3), SUBSTR(\"Code\", 2, 4), CAST(strftime('%Y', \"OrderDate\") AS INTEGER) FROM \"Orders\""
         );
     }
 }
@@ -1366,6 +1929,67 @@ fn rewrite_jet_functions(input: &str) -> String {
                     i = close + 1;
                     continue;
                 }
+            } else if rest.len() >= 5 && rest[..5].eq_ignore_ascii_case("left(") {
+                if let Some(close) = find_matching_paren(input, i + 4) {
+                    let args = split_top_level_args(&input[i + 5..close]);
+                    if args.len() == 2 {
+                        let s = rewrite_jet_functions(args[0]);
+                        let n = rewrite_jet_functions(args[1]);
+                        out.push_str("SUBSTR(");
+                        out.push_str(&s);
+                        out.push_str(", 1, ");
+                        out.push_str(&n);
+                        out.push(')');
+                        i = close + 1;
+                        continue;
+                    }
+                }
+            } else if let Some((prefix_len, sql_fn)) = [
+                ("len(", "LENGTH("),
+                ("ucase(", "UPPER("),
+                ("lcase(", "LOWER("),
+                ("trim(", "TRIM("),
+                ("ltrim(", "LTRIM("),
+                ("rtrim(", "RTRIM("),
+                ("mid(", "SUBSTR("),
+            ]
+            .into_iter()
+            .find(|(p, _)| rest.len() >= p.len() && rest[..p.len()].eq_ignore_ascii_case(p))
+            {
+                if let Some(close) = find_matching_paren(input, i + prefix_len.len() - 1) {
+                    let inner = rewrite_jet_functions(&input[i + prefix_len.len()..close]);
+                    out.push_str(sql_fn);
+                    out.push_str(&inner);
+                    out.push(')');
+                    i = close + 1;
+                    continue;
+                }
+            } else if let Some((prefix_len, fmt)) = [
+                ("year(", "%Y"),
+                ("month(", "%m"),
+                ("day(", "%d"),
+            ]
+            .into_iter()
+            .find(|(p, _)| rest.len() >= p.len() && rest[..p.len()].eq_ignore_ascii_case(p))
+            {
+                if let Some(close) = find_matching_paren(input, i + prefix_len.len() - 1) {
+                    let inner = rewrite_jet_functions(input[i + prefix_len.len()..close].trim());
+                    out.push_str("CAST(strftime('");
+                    out.push_str(fmt);
+                    out.push_str("', ");
+                    out.push_str(&inner);
+                    out.push_str(") AS INTEGER)");
+                    i = close + 1;
+                    continue;
+                }
+            } else if rest.len() >= 5 && rest[..5].eq_ignore_ascii_case("now()") {
+                out.push_str("CURRENT_TIMESTAMP");
+                i += 5;
+                continue;
+            } else if rest.len() >= 6 && rest[..6].eq_ignore_ascii_case("date()") {
+                out.push_str("CURRENT_DATE");
+                i += 6;
+                continue;
             }
         }
 

@@ -698,9 +698,16 @@ impl SoraneWorkspace {
             launched_empty,
             cx.windows().len(),
             &INITIAL_SESSION_RESTORE_DONE,
-        ) && let Some(session) = load_last_session()
-        {
-            ws.restore_session(session, window, cx);
+        ) {
+            if let Some(session) = load_last_session() {
+                ws.restore_session(session, window, cx);
+            } else {
+                #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+                if let Ok(default_vault) = github::ensure_default_local_vault(current_help_locale())
+                {
+                    ws.open_vault_path(default_vault, window, cx);
+                }
+            }
         }
 
         if ws.github_session.is_some() {
@@ -3187,6 +3194,34 @@ impl SoraneWorkspace {
                                 })),
                         );
                     }
+                }
+                if !vault.has_git() {
+                    list = list.child(
+                        v_flex()
+                            .mt_3()
+                            .mx_1()
+                            .p_2()
+                            .gap_1()
+                            .rounded(px(6.))
+                            .bg(theme.background)
+                            .border_1()
+                            .border_color(theme.border)
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(theme.muted_foreground)
+                                    .child("ローカル保存中 · クラウド同期する場合は GitHub に接続できます。"),
+                            )
+                            .child(
+                                Button::new("ws-vault-cloud-sync")
+                                    .xsmall()
+                                    .label("GitHub でクラウド同期…")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.left_panel = LeftPanelKind::Git;
+                                        cx.notify();
+                                    })),
+                            ),
+                    );
                 }
             }
             (Some(vault), LeftPanelKind::Search) => {

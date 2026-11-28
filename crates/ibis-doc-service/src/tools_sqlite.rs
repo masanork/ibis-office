@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, dataset_sql_type, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
-    sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
+    SqliteRows, SqliteScalar, FixedWidthField, JetBundleMode, dataset_sql_type, dbf_export_sqlite, dbf_inspect_schema, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, fixed_width_export_sqlite, fixed_width_preview, is_dbf_extension, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
+    sqlite_count, sqlite_dataset_columns, sqlite_execute, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
 
@@ -17,11 +17,14 @@ use crate::{ToolError, paths};
 
 pub const DESKTOP_TEXT_DATASET_LIMIT: u64 = 512 * 1024 * 1024;
 
-pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "jsonl", "ndjson", "avro", "sqlite", "sqlite3", "db", "log", "syslog", "mdb", "accdb", "mde", "accde", "edb", "sdb", "ost", "pst"];
+pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "jsonl", "ndjson", "avro", "sqlite", "sqlite3", "db", "log", "syslog", "mdb", "accdb", "mde", "accde", "dbf", "edb", "sdb", "ost", "pst"];
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
 const JET_EXTENSIONS: &[&str] = &["mdb", "accdb", "mde", "accde"];
 const ESE_EXTENSIONS: &[&str] = &["edb", "sdb", "dat"];
 const PST_EXTENSIONS: &[&str] = &["ost", "pst"];
+const DBF_EXTENSIONS: &[&str] = &["dbf"];
+const FIXED_WIDTH_EXTENSIONS: &[&str] = &["dat", "txt", "prn", "fwf", "zengin"];
+const LEGACY_XML_EXTENSIONS: &[&str] = &["dxl", "xml"];
 const PATH: &str = "path";
 const MAX_FILTERS: usize = 16;
 const REPORT_DEFINITION_BYTES: usize = 32 * 1024;
@@ -82,6 +85,18 @@ const TOOLS: &[Tool] = &[
         run: inspect_jet_form,
     },
     Tool {
+        name: "jet_export_bundle",
+        description: "Dump a machine-readable reverse-engineering JSON bundle of a Microsoft Access (.mdb/.accdb) database in 'metadata', 'code', or 'full' mode.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .mdb or .accdb file under an allowed folder.")),
+            ("mode", json!({"type": "string", "enum": ["metadata", "code", "full"], "description": "Bundle detail level: 'metadata' (schema, queries, decoded forms), 'code' (metadata + VBA source, default), or 'full' (code + bounded table rows)."})),
+            ("max_rows_per_table", integer("Maximum rows per table in 'full' mode (default 100, maximum 1000).")),
+        ], &[PATH]),
+        run: export_jet_bundle,
+    },
+    Tool {
         name: "jet_export_sqlite",
         description: "Materialize user tables from a Microsoft Access (.mdb/.accdb) database into a standalone SQLite file via Turso for fast repeated querying.",
         access: Access::Edit,
@@ -135,6 +150,90 @@ const TOOLS: &[Tool] = &[
             ("overwrite", boolean("Overwrite an existing output file (default false).")),
         ], &[PATH, "output"]),
         run: export_pst_sqlite,
+    },
+    Tool {
+        name: "dbf_inspect_schema",
+        description: "Inspect field definitions, record count, and character encoding in a dBase / FoxPro (.dbf) file.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[("path", string("Path to a local .dbf file under an allowed folder."))], &[PATH]),
+        run: inspect_dbf_schema,
+    },
+    Tool {
+        name: "dbf_export_sqlite",
+        description: "Materialize a dBase / FoxPro (.dbf) file into a standalone SQLite file via Turso for fast repeated querying.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .dbf file under an allowed folder.")),
+            ("output", string("Destination .sqlite, .sqlite3, or .db file path under an allowed folder.")),
+            ("table", string("Optional SQLite table name (default: input file stem).")),
+            ("overwrite", boolean("Overwrite an existing output file (default false).")),
+        ], &[PATH, "output"]),
+        run: export_dbf_sqlite,
+    },
+    Tool {
+        name: "legacy_xml_inspect",
+        description: "Inspect Lotus Notes DXL (.dxl) or FileMaker DDR / fmresultset (.xml) exports into structured JSON.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[("path", string("Path to a local .dxl or .xml file under an allowed folder."))], &[PATH]),
+        run: inspect_legacy_xml,
+    },
+    Tool {
+        name: "fixed_width_preview",
+        description: "Preview rows from a fixed-width record file (.dat/.txt/.zengin) using byte-width field definitions and Shift-JIS or UTF-8 decoding.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local fixed-width .dat/.txt/.prn/.fwf/.zengin file under an allowed folder.")),
+            ("fields", json!({"type": "array", "minItems": 1, "maxItems": 512, "items": object(&[
+                ("name", string("Column name.")),
+                ("width", integer("Field width in bytes.")),
+                ("type", json!({"type": "string", "enum": ["text", "integer", "decimal", "boolean", "datetime"]})),
+            ], &["name", "width"])})),
+            ("encoding", string("Character encoding (default 'utf-8'; e.g. 'shift_jis', 'cp932', 'windows-1252').")),
+            ("skip_header_lines", integer("Number of leading header lines to skip (default 0).")),
+            ("limit", integer("Maximum preview rows to return (default 50, maximum 200).")),
+        ], &[PATH, "fields"]),
+        run: preview_fixed_width,
+    },
+    Tool {
+        name: "fixed_width_export_sqlite",
+        description: "Materialize a fixed-width record file (.dat/.txt/.zengin) into a standalone SQLite file via Turso using byte-width field definitions.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local fixed-width .dat/.txt/.prn/.fwf/.zengin file under an allowed folder.")),
+            ("output", string("Destination .sqlite, .sqlite3, or .db file path under an allowed folder.")),
+            ("fields", json!({"type": "array", "minItems": 1, "maxItems": 512, "items": object(&[
+                ("name", string("Column name.")),
+                ("width", integer("Field width in bytes.")),
+                ("type", json!({"type": "string", "enum": ["text", "integer", "decimal", "boolean", "datetime"]})),
+            ], &["name", "width"])})),
+            ("table", string("Optional SQLite table name (default: input file stem).")),
+            ("encoding", string("Character encoding (default 'utf-8'; e.g. 'shift_jis', 'cp932', 'windows-1252').")),
+            ("skip_header_lines", integer("Number of leading header lines to skip (default 0).")),
+            ("overwrite", boolean("Overwrite an existing output file (default false).")),
+        ], &[PATH, "output", "fields"]),
+        run: export_fixed_width_sqlite,
+    },
+    Tool {
+        name: "sqlite_execute",
+        description: "Execute one or more SQLite INSERT, UPDATE, DELETE, or DDL statements in a transaction against a local SQLite file via Turso.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .sqlite, .sqlite3, or .db file under an allowed folder.")),
+            ("sql", string("Single SQL statement to execute (use either sql or statements).")),
+            ("params", json!({"type": "array", "maxItems": 100, "description": "Optional positional ? parameters for sql."})),
+            ("statements", json!({"type": "array", "minItems": 1, "maxItems": 256, "items": object(&[
+                ("sql", string("SQL statement.")),
+                ("params", json!({"type": "array", "maxItems": 100})),
+            ], &["sql"])})),
+            ("foreign_keys", boolean("Enforce PRAGMA foreign_keys = ON (default true).")),
+        ], &[PATH]),
+        run: execute_sqlite,
     },
     Tool {
         name: "sqlite_describe_datasets",
@@ -572,6 +671,229 @@ fn inspect_jet_form(service: &mut Service, args: &Value) -> Result<Value, ToolEr
         ));
     }
     Ok(result)
+}
+
+fn export_jet_bundle(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "mode", "max_rows_per_table"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, JET_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an Access database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Access database exceeds the file size limit",
+        ));
+    }
+    let mode = match args.opt_str("mode")? {
+        Some(raw) => JetBundleMode::parse(&raw).map_err(ToolError::invalid)?,
+        None => JetBundleMode::Code,
+    };
+    let max_rows_per_table = args
+        .get("max_rows_per_table")
+        .and_then(Value::as_u64)
+        .map(|v| (v as usize).clamp(1, 1_000))
+        .unwrap_or(100);
+    let result = jet_export_bundle(&path, mode, max_rows_per_table).map_err(sqlite_error)?;
+    if result.to_string().len() > service.limits.page_bytes {
+        return Err(ToolError::new(
+            "result_too_large",
+            "Access bundle exceeds the response size limit; try mode='metadata' or lower max_rows_per_table",
+        ));
+    }
+    Ok(result)
+}
+
+fn inspect_dbf_schema(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, DBF_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select a dBase (.dbf) file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "dBase file exceeds the file size limit",
+        ));
+    }
+    dbf_inspect_schema(&path).map_err(sqlite_error)
+}
+
+fn export_dbf_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "output", "table", "overwrite"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, DBF_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select a dBase (.dbf) file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "dBase file exceeds the file size limit",
+        ));
+    }
+    let output = paths::resolve(&service.allow_dirs, args.str_arg("output")?, EXTENSIONS, false)?;
+    let table = args.opt_str("table")?;
+    let overwrite = args.opt_bool("overwrite")?.unwrap_or(false);
+    dbf_export_sqlite(&path, &output, table.as_deref(), overwrite).map_err(sqlite_error)
+}
+
+fn inspect_legacy_xml(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, LEGACY_XML_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select a Lotus Notes DXL or FileMaker XML file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "XML export exceeds the file size limit",
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(sqlite_error)?;
+    let result = ibis_formats::legacy_db_xml::inspect_legacy_db_xml(&bytes)
+        .map_err(|e| ToolError::new("extract_error", e.to_string()))?;
+    if result.to_string().len() > service.limits.page_bytes {
+        return Err(ToolError::new(
+            "result_too_large",
+            "Legacy XML inspection result exceeds the response size limit",
+        ));
+    }
+    Ok(result)
+}
+
+fn parse_fixed_width_fields(args: &Value) -> Result<Vec<FixedWidthField>, ToolError> {
+    let raw_fields = args
+        .get("fields")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ToolError::invalid("fields must be a non-empty array"))?;
+    let mut fields = Vec::with_capacity(raw_fields.len());
+    for item in raw_fields {
+        crate::edit::only_known(item, &["name", "width", "type"])?;
+        let name = item.str_arg("name")?.to_owned();
+        let width = item
+            .get("width")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| ToolError::invalid("each field requires an integer width > 0"))?
+            as usize;
+        let ty = FixedWidthField::parse_type(item.opt_str("type")?)
+            .map_err(ToolError::invalid)?;
+        fields.push(FixedWidthField { name, width, ty });
+    }
+    Ok(fields)
+}
+
+fn preview_fixed_width(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "fields", "encoding", "skip_header_lines", "limit"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, FIXED_WIDTH_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select a fixed-width text/data file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Fixed-width file exceeds the file size limit",
+        ));
+    }
+    let fields = parse_fixed_width_fields(args)?;
+    let encoding = args.opt_str("encoding")?;
+    let skip_header_lines = args
+        .get("skip_header_lines")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(50);
+    fixed_width_preview(&path, &fields, encoding.as_deref(), skip_header_lines, limit)
+        .map_err(sqlite_error)
+}
+
+fn export_fixed_width_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(
+        args,
+        &[PATH, "output", "fields", "table", "encoding", "skip_header_lines", "overwrite"],
+    )?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, FIXED_WIDTH_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select a fixed-width text/data file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Fixed-width file exceeds the file size limit",
+        ));
+    }
+    let output = paths::resolve(&service.allow_dirs, args.str_arg("output")?, EXTENSIONS, false)?;
+    let fields = parse_fixed_width_fields(args)?;
+    let table = args.opt_str("table")?;
+    let encoding = args.opt_str("encoding")?;
+    let skip_header_lines = args
+        .get("skip_header_lines")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let overwrite = args.opt_bool("overwrite")?.unwrap_or(false);
+    fixed_width_export_sqlite(
+        &path,
+        &output,
+        table.as_deref(),
+        &fields,
+        encoding.as_deref(),
+        skip_header_lines,
+        overwrite,
+    )
+    .map_err(sqlite_error)
+}
+
+fn execute_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "sql", "params", "statements", "foreign_keys"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an existing SQLite database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "SQLite database exceeds the file size limit",
+        ));
+    }
+    let foreign_keys = args.opt_bool("foreign_keys")?.unwrap_or(true);
+    let mut owned_stmts: Vec<(String, Vec<Option<SqliteScalar<'_>>>)> = Vec::new();
+    match (args.opt_str("sql")?, args.get("statements")) {
+        (Some(sql), None) => {
+            let params = sql_params(args)?;
+            owned_stmts.push((sql.to_owned(), params));
+        }
+        (None, Some(Value::Array(items))) => {
+            if args.get("params").is_some() {
+                return Err(ToolError::invalid("pass params inside each statements entry"));
+            }
+            for item in items {
+                crate::edit::only_known(item, &["sql", "params"])?;
+                let sql = item.str_arg("sql")?.to_owned();
+                let params = sql_params(item)?;
+                owned_stmts.push((sql, params));
+            }
+        }
+        (Some(_), Some(_)) => {
+            return Err(ToolError::invalid("pass either sql or statements, not both"));
+        }
+        (None, _) => {
+            return Err(ToolError::invalid("pass sql or a statements array"));
+        }
+    }
+    let borrowed: Vec<(&str, &[Option<SqliteScalar<'_>>])> = owned_stmts
+        .iter()
+        .map(|(sql, params)| (sql.as_str(), params.as_slice()))
+        .collect();
+    sqlite_execute(&path, &borrowed, foreign_keys).map_err(sqlite_error)
 }
 
 fn export_ese_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -1405,6 +1727,8 @@ fn source_kind(path: &Path) -> &'static str {
         "sqlite"
     } else if is_jet_extension(path) {
         "jet"
+    } else if is_dbf_extension(path) {
+        "dbf"
     } else if is_ese_extension(path) {
         "ese"
     } else if is_pst_extension(path) {
@@ -1875,7 +2199,7 @@ fn dataset_file_limit(limits: &Limits, kind: &str) -> u64 {
 }
 
 fn streamable_kind(kind: &str) -> bool {
-    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite" | "jet" | "ese" | "pst" | "csv" | "log")
+    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite" | "jet" | "dbf" | "ese" | "pst" | "csv" | "log")
 }
 
 fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) -> Result<SqliteQuerySession, ToolError> {
@@ -1923,6 +2247,7 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
                 .ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?.to_owned()),
             "jet" => DiskDataset::Jet(path, spec.opt_str("table")?
                 .ok_or_else(|| ToolError::invalid("Access datasets require a source table"))?.to_owned(), columns),
+            "dbf" => DiskDataset::Dbf(path, columns),
             "ese" => DiskDataset::Ese(path, spec.opt_str("table")?
                 .ok_or_else(|| ToolError::invalid("ESE datasets require a source table"))?.to_owned(), columns),
             "pst" => DiskDataset::Pst(path, spec.opt_str("table")?.unwrap_or("messages").to_owned(), columns),

@@ -61,7 +61,7 @@ const ROW_HEIGHT: f32 = 26.;
 /// The file name's longest length (what the file systems allow).
 const NAME_MAX: usize = 255;
 /// The extensions the editor opens.
-const OPEN_EXTENSIONS: [&str; 8] = ["docx", "xlsx", "pptx", "doc", "xls", "ppt", "xdw", "xbd"];
+const OPEN_EXTENSIONS: [&str; 9] = ["docx", "xlsx", "pptx", "doc", "xls", "ppt", "xdw", "xbd", "ai"];
 
 /// What the window is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

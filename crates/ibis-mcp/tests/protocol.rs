@@ -204,15 +204,75 @@ fn mcp_jet_inspect_schema_is_available_in_read_only_mode() {
         tool["name"] == "jet_inspect_form" && tool["annotations"]["readOnlyHint"] == true
     }));
     assert!(tools.iter().any(|tool| {
+        tool["name"] == "jet_export_bundle" && tool["annotations"]["readOnlyHint"] == true
+    }));
+    assert!(tools.iter().any(|tool| {
         tool["name"] == "ese_inspect_schema" && tool["annotations"]["readOnlyHint"] == true
     }));
     assert!(tools.iter().any(|tool| {
         tool["name"] == "pst_list_folders" && tool["annotations"]["readOnlyHint"] == true
     }));
+    assert!(tools.iter().any(|tool| {
+        tool["name"] == "dbf_inspect_schema" && tool["annotations"]["readOnlyHint"] == true
+    }));
+    assert!(tools.iter().any(|tool| {
+        tool["name"] == "legacy_xml_inspect" && tool["annotations"]["readOnlyHint"] == true
+    }));
+    assert!(tools.iter().any(|tool| {
+        tool["name"] == "fixed_width_preview" && tool["annotations"]["readOnlyHint"] == true
+    }));
     assert!(!tools.iter().any(|tool| {
-        matches!(tool["name"].as_str(), Some("jet_export_sqlite" | "ese_export_sqlite" | "pst_export_sqlite"))
+        matches!(tool["name"].as_str(), Some("sqlite_execute" | "jet_export_sqlite" | "dbf_export_sqlite" | "fixed_width_export_sqlite" | "ese_export_sqlite" | "pst_export_sqlite"))
     }));
     assert_eq!(answers[1]["result"]["isError"], true);
+}
+
+#[test]
+fn mcp_doc_extract_markdown_is_available_in_read_only_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let md_path = dir.path().join("notes.md");
+    std::fs::write(&md_path, "# Hello\n\n0123456789abcdef").unwrap();
+    let csv_path = dir.path().join("sample.csv");
+    std::fs::write(&csv_path, "code,name\nA01,Tokyo\n").unwrap();
+
+    let service = Service::new(&[dir.path().to_path_buf()], true, Limits::default());
+    let answers = talk(service, &[
+        request(1, "tools/list", json!({})),
+        request(2, "tools/call", json!({
+            "name": "doc_extract_markdown",
+            "arguments": {"path": md_path, "offset": 0, "max_chars": 9},
+        })),
+        request(3, "tools/call", json!({
+            "name": "doc_extract_markdown",
+            "arguments": {"path": md_path, "offset": 9, "max_chars": 100},
+        })),
+        request(4, "tools/call", json!({
+            "name": "doc_extract_markdown",
+            "arguments": {"path": csv_path},
+        })),
+    ]);
+    let tools = answers[0]["result"]["tools"].as_array().unwrap();
+    assert!(tools.iter().any(|tool| {
+        tool["name"] == "doc_extract_markdown" && tool["annotations"]["readOnlyHint"] == true
+    }));
+
+    let page1 = &answers[1]["result"];
+    assert_eq!(page1["isError"], false);
+    assert!(page1["_meta"]["io.ibisoffice/untrusted-content"].is_string());
+    assert_eq!(page1["structuredContent"]["format"], "markdown");
+    assert_eq!(page1["structuredContent"]["truncated"], true);
+    assert_eq!(page1["structuredContent"]["next_offset"], 9);
+    assert_eq!(page1["structuredContent"]["markdown"], "# Hello\n\n");
+
+    let page2 = &answers[2]["result"];
+    assert_eq!(page2["isError"], false);
+    assert_eq!(page2["structuredContent"]["truncated"], false);
+    assert_eq!(page2["structuredContent"]["markdown"], "0123456789abcdef");
+
+    let csv_res = &answers[3]["result"];
+    assert_eq!(csv_res["isError"], false);
+    assert_eq!(csv_res["structuredContent"]["format"], "workbook");
+    assert!(csv_res["structuredContent"]["markdown"].as_str().unwrap().contains("A01"));
 }
 
 /// An existing file outside every allowed folder (`/etc/passwd` is not an absolute path on Windows).

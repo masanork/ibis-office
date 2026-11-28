@@ -84,6 +84,45 @@ pub fn default_clone_target(repo_name: &str) -> PathBuf {
     home.join(safe_name)
 }
 
+/// Ensure the local default Vault directory (`$HOME/soraneDocs` or `%USERPROFILE%\soraneDocs`)
+/// exists, seeding `index.md` and `help/` when the directory is empty.
+pub fn ensure_default_local_vault(locale: HelpLocale) -> Result<PathBuf, String> {
+    let root = default_clone_target(sorane_github::DEFAULT_VAULT_REPO_NAME);
+    ensure_local_vault_in(&root, locale)?;
+    Ok(root)
+}
+
+/// Seed `index.md` and `help/` inside `root` if `root` does not exist or is empty.
+/// Existing non-empty directories are never overwritten.
+pub fn ensure_local_vault_in(root: &Path, locale: HelpLocale) -> Result<(), String> {
+    if !root.exists() {
+        fs::create_dir_all(root)
+            .map_err(|e| format!("ローカル Vault フォルダの作成に失敗しました: {e}"))?;
+    }
+    let is_empty = fs::read_dir(root)
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(false);
+    if !is_empty {
+        return Ok(());
+    }
+
+    let index_md = sorane_github::build_initial_help_index_markdown_for_locale(
+        sorane_github::DEFAULT_VAULT_REPO_NAME,
+        locale,
+    );
+    fs::write(root.join("index.md"), index_md)
+        .map_err(|e| format!("index.md の作成に失敗しました: {e}"))?;
+
+    for help in help_files(locale) {
+        let dest = root.join(help.path);
+        if let Some(parent) = dest.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(&dest, help.content);
+    }
+    Ok(())
+}
+
 pub fn has_git_cli() -> bool {
     Command::new("git")
         .arg("--version")
@@ -396,6 +435,43 @@ fn run_git_with_token(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+fn commit_with_fallback_identity(
+    access_token: &str,
+    repo_root: &Path,
+    login: &str,
+    message: &str,
+) -> Result<(), String> {
+    let has_name = Command::new("git")
+        .current_dir(repo_root)
+        .args(["config", "user.name"])
+        .output()
+        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty());
+    if has_name {
+        run_git_with_token(access_token, Some(repo_root), &["commit", "-m", message])?;
+    } else {
+        let fallback_login = if login.trim().is_empty() {
+            "soraneDocs"
+        } else {
+            login.trim()
+        };
+        let email = format!("{fallback_login}@users.noreply.github.com");
+        run_git_with_token(
+            access_token,
+            Some(repo_root),
+            &[
+                "-c",
+                &format!("user.name={fallback_login}"),
+                "-c",
+                &format!("user.email={email}"),
+                "commit",
+                "-m",
+                message,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn clone_or_open_repo(
     access_token: &str,
     repo: &GitHubRepo,
@@ -410,10 +486,65 @@ pub fn clone_or_open_repo(
             .map(|mut d| d.next().is_none())
             .unwrap_or(false);
         if !is_empty {
-            return Err(format!(
-                "保存先フォルダ {} はすでに存在し、空ではありません。",
-                target_dir.display()
-            ));
+            let branch = if repo.default_branch.trim().is_empty() {
+                "main"
+            } else {
+                repo.default_branch.trim()
+            };
+            if run_git_with_token(access_token, Some(target_dir), &["init", "-b", branch]).is_err()
+            {
+                run_git_with_token(access_token, Some(target_dir), &["init"])?;
+                run_git_with_token(access_token, Some(target_dir), &["checkout", "-B", branch])?;
+            }
+            if run_git_with_token(
+                access_token,
+                Some(target_dir),
+                &["remote", "add", "origin", &repo.clone_url],
+            )
+            .is_err()
+            {
+                run_git_with_token(
+                    access_token,
+                    Some(target_dir),
+                    &["remote", "set-url", "origin", &repo.clone_url],
+                )?;
+            }
+            run_git_with_token(access_token, Some(target_dir), &["fetch", "origin"])?;
+            run_git_with_token(access_token, Some(target_dir), &["add", "-A"])?;
+            let status =
+                run_git_with_token(access_token, Some(target_dir), &["status", "--porcelain"])?;
+            if !status.is_empty() {
+                commit_with_fallback_identity(
+                    access_token,
+                    target_dir,
+                    &repo.owner,
+                    "Initial local soraneDocs notes",
+                )?;
+            }
+            let remote_ref = format!("origin/{branch}");
+            if run_git_with_token(
+                access_token,
+                Some(target_dir),
+                &["rev-parse", "--verify", &remote_ref],
+            )
+            .is_ok()
+            {
+                run_git_with_token(
+                    access_token,
+                    Some(target_dir),
+                    &[
+                        "merge",
+                        "--allow-unrelated-histories",
+                        "-X",
+                        "ours",
+                        &remote_ref,
+                        "-m",
+                        "Merge local soraneDocs with GitHub repository",
+                    ],
+                )?;
+            }
+            run_git_with_token(access_token, Some(target_dir), &["push", "-u", "origin", branch])?;
+            return Ok(target_dir.to_path_buf());
         }
     } else if let Some(parent) = target_dir.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("フォルダ作成に失敗しました: {e}"))?;
@@ -564,3 +695,151 @@ mod wasm_stub {
 
 #[cfg(target_family = "wasm")]
 pub use wasm_stub::*;
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir().join(format!(
+                "sorane-gh-test-{label}-{}-{nanos}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn ensure_local_vault_in_seeds_empty_and_preserves_existing() {
+        let dir = TempDir::new("seed");
+        let vault_dir = dir.path().join("soraneDocs");
+
+        ensure_local_vault_in(&vault_dir, sorane_github::HelpLocale::Ja).unwrap();
+        assert!(vault_dir.join("index.md").is_file());
+        assert!(vault_dir.join("help/index.md").is_file());
+
+        // Write a custom note and overwrite index.md, then re-run ensure_local_vault_in.
+        fs::write(vault_dir.join("my-note.md"), "# My Note\n").unwrap();
+        fs::write(vault_dir.join("index.md"), "# Custom Index\n").unwrap();
+
+        ensure_local_vault_in(&vault_dir, sorane_github::HelpLocale::Ja).unwrap();
+        assert_eq!(
+            fs::read_to_string(vault_dir.join("index.md")).unwrap(),
+            "# Custom Index\n"
+        );
+        assert_eq!(
+            fs::read_to_string(vault_dir.join("my-note.md")).unwrap(),
+            "# My Note\n"
+        );
+    }
+
+    #[test]
+    fn clone_or_open_repo_syncs_existing_nonempty_local_vault() {
+        let dir = TempDir::new("sync");
+        let remote_bare = dir.path().join("remote.git");
+        let seed_work = dir.path().join("seed");
+        let local_vault = dir.path().join("soraneDocs");
+
+        // Create a bare remote with an initial commit on `main`.
+        assert!(Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .arg(&remote_bare)
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .arg("clone")
+            .arg(&remote_bare)
+            .arg(&seed_work)
+            .status()
+            .unwrap()
+            .success());
+        fs::write(seed_work.join("index.md"), "# Remote Index\n").unwrap();
+        fs::write(seed_work.join("remote-only.md"), "# Remote Only\n").unwrap();
+        assert!(Command::new("git")
+            .current_dir(&seed_work)
+            .args(["add", "-A"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .current_dir(&seed_work)
+            .args([
+                "-c",
+                "user.name=tester",
+                "-c",
+                "user.email=tester@example.com",
+                "commit",
+                "-m",
+                "init remote",
+            ])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .current_dir(&seed_work)
+            .args(["push", "-u", "origin", "main"])
+            .status()
+            .unwrap()
+            .success());
+
+        // Populate local_vault without .git (simulating offline local usage first).
+        fs::create_dir_all(&local_vault).unwrap();
+        fs::write(local_vault.join("index.md"), "# Local Edited Index\n").unwrap();
+        fs::write(local_vault.join("local-note.md"), "# Local Note\n").unwrap();
+
+        let repo = sorane_github::GitHubRepo {
+            owner: "tester".to_string(),
+            repo: "soraneDocs".to_string(),
+            full_name: "tester/soraneDocs".to_string(),
+            private: true,
+            default_branch: "main".to_string(),
+            clone_url: remote_bare.to_string_lossy().to_string(),
+            updated_at: String::new(),
+        };
+
+        let result_path = clone_or_open_repo("dummy-token", &repo, &local_vault).unwrap();
+        assert_eq!(result_path, local_vault);
+        assert!(local_vault.join(".git").is_dir());
+        // Local priority: local edits to index.md and local-note.md are kept, and remote-only.md is pulled.
+        assert_eq!(
+            fs::read_to_string(local_vault.join("index.md")).unwrap(),
+            "# Local Edited Index\n"
+        );
+        assert!(local_vault.join("local-note.md").is_file());
+        assert!(local_vault.join("remote-only.md").is_file());
+
+        // Verify local-note.md was pushed to remote_bare.
+        let verify_clone = dir.path().join("verify");
+        assert!(Command::new("git")
+            .arg("clone")
+            .arg(&remote_bare)
+            .arg(&verify_clone)
+            .status()
+            .unwrap()
+            .success());
+        assert!(verify_clone.join("local-note.md").is_file());
+    }
+}

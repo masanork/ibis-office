@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::error::ToolError;
 use crate::service::Service;
-use crate::{tools_app, tools_docx, tools_docx_layout, tools_docx_more, tools_docx_objects, tools_docx_read, tools_docx_set, tools_docx_struct, tools_pptx, tools_pptx_b, tools_xlsx, tools_xlsx_chart, tools_xlsx_read, tools_xlsx_set, tools_xlsx_struct};
+use crate::{tools_app, tools_docx, tools_docx_layout, tools_docx_more, tools_docx_objects, tools_docx_read, tools_docx_set, tools_docx_struct, tools_extract, tools_pptx, tools_pptx_b, tools_xlsx, tools_xlsx_chart, tools_xlsx_read, tools_xlsx_set, tools_xlsx_struct};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
@@ -63,6 +63,7 @@ pub fn catalog() -> &'static [Tool] {
     ALL.get_or_init(|| {
         let mut all = Vec::new();
         all.extend(tools_app::tools());
+        all.extend(tools_extract::tools());
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         all.extend(crate::sqlite_tools());
         all.extend(crate::tools_wallet::tools());

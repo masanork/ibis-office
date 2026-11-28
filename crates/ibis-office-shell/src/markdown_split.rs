@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::input::{
-    CompletionProvider, Editor, EditorState, Escape, FoldRange, HighlightStyleResolver,
-    IndentInline, InputEdit, InputHighlighter, InputHighlighterFactory, Rope,
+    CompletionProvider, Editor, EditorState, Escape, FoldRange, HighlightStyleResolver, InputEdit,
+    InputHighlighter, InputHighlighterFactory, Rope,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -2336,43 +2336,6 @@ impl SlideEditor {
         cx.notify();
     }
 
-    pub fn clear_inline_completion(
-        &mut self,
-        editor: Option<Entity<EditorState>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let had_suggestion = self.inline_completion.has_suggestion;
-        self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
-        self.inline_completion.loading = false;
-        self.inline_completion.has_suggestion = false;
-        self.inline_completion.error = None;
-        if had_suggestion && let Some(ed) = editor {
-            ed.update(cx, |state, cx| {
-                state.focus(window, cx);
-            });
-            window.dispatch_action(Box::new(Escape), cx);
-        }
-        cx.notify();
-    }
-
-    pub fn accept_inline_completion(
-        &mut self,
-        editor: Entity<EditorState>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.inline_completion.generation = self.inline_completion.generation.wrapping_add(1);
-        self.inline_completion.loading = false;
-        self.inline_completion.has_suggestion = false;
-        self.inline_completion.error = None;
-        editor.update(cx, |state, cx| {
-            state.focus(window, cx);
-        });
-        window.dispatch_action(Box::new(IndentInline), cx);
-        cx.notify();
-    }
-
     pub fn handle_inline_completion_key(
         &mut self,
         editor: Entity<EditorState>,
@@ -2434,9 +2397,11 @@ impl SlideEditor {
 
         let theme = cx.theme().clone();
         let enabled = self.inline_completion.enabled;
-        let loading = self.inline_completion.loading;
-        let has_suggestion = self.inline_completion.has_suggestion;
-        let error = self.inline_completion.error.clone();
+        let tooltip_text: SharedString = if let Some(err) = &self.inline_completion.error {
+            err.clone().into()
+        } else {
+            "AIインライン補完 (Alt+]: 今すぐ補完 / Tab: 確定 / Esc: 却下)".into()
+        };
 
         let toggle_label = if enabled {
             "AI補完: ON"
@@ -2462,94 +2427,15 @@ impl SlideEditor {
                     .disabled(readonly)
                     .when(enabled, |btn| btn.primary())
                     .when(!enabled, |btn| btn.ghost())
+                    .tooltip(tooltip_text)
                     .on_click(cx.listener({
                         let editor = editor.clone();
                         move |this, _ev, window, cx| {
                             this.toggle_inline_completion(Some(editor.clone()), window, cx);
                         }
                     })),
-            );
-
-        if loading {
-            bar = bar.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_color(theme.muted_foreground)
-                    .child("先読み補完を生成中..."),
-            );
-        } else if let Some(err) = error {
-            bar = bar
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(theme.danger)
-                        .child(err),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("{id_prefix}-inline-err-dismiss")))
-                        .label("閉じる")
-                        .compact()
-                        .ghost()
-                        .on_click(cx.listener({
-                            let editor = editor.clone();
-                            move |this, _ev, window, cx| {
-                                this.clear_inline_completion(Some(editor.clone()), window, cx);
-                            }
-                        })),
-                );
-        } else if has_suggestion {
-            bar = bar
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(theme.muted_foreground)
-                        .child("インライン補完を表示中 (Tab: 確定 / Esc: 却下)"),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("{id_prefix}-inline-accept")))
-                        .label("確定 (Tab)")
-                        .compact()
-                        .primary()
-                        .disabled(readonly)
-                        .on_click(cx.listener({
-                            let editor = editor.clone();
-                            move |this, _ev, window, cx| {
-                                this.accept_inline_completion(editor.clone(), window, cx);
-                            }
-                        })),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("{id_prefix}-inline-dismiss")))
-                        .label("却下 (Esc)")
-                        .compact()
-                        .ghost()
-                        .on_click(cx.listener({
-                            let editor = editor.clone();
-                            move |this, _ev, window, cx| {
-                                this.clear_inline_completion(Some(editor.clone()), window, cx);
-                            }
-                        })),
-                );
-        } else {
-            let hint = if enabled {
-                "入力停止でインライン補完 / Alt+]: 今すぐ補完"
-            } else {
-                "GitHub Copilot / AI でインライン補完 (Alt+]: 今すぐ補完)"
-            };
-            bar = bar.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(theme.muted_foreground)
-                    .child(hint),
-            );
-        }
+            )
+            .child(div().flex_1());
 
         let current_kind = self.current_text_content_kind();
         bar = bar.child(
