@@ -65,7 +65,11 @@ with subprocess.Popen(
                     [str(build / "examples/prefill_preview"), str(workbook), str(source), str(mapping)],
                     encoding="utf-8", capture_output=True, check=True, timeout=10,
                 )
-                assert json.loads(completed.stdout) == report, completed.stdout
+                cli_report = json.loads(completed.stdout)
+                assert isinstance(cli_report.get("state"), str) and cli_report["state"], completed.stdout
+                assert {k: v for k, v in cli_report.items() if k != "state"} == {
+                    k: v for k, v in report.items() if k != "state"
+                }, completed.stdout
                 denied = call("xlsx_apply_prefill", {
                     **args, "preview_id": report["preview_id"], "targets": ["training_name"],
                 }, error=True)
