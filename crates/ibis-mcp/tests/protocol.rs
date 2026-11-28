@@ -195,12 +195,17 @@ fn mcp_jet_inspect_schema_is_available_in_read_only_mode() {
         tool["name"] == "jet_inspect_schema" && tool["annotations"]["readOnlyHint"] == true
     }));
     assert!(tools.iter().any(|tool| {
+        tool["name"] == "jet_migration_markdown" && tool["annotations"]["readOnlyHint"] == true
+    }));
+    assert!(tools.iter().any(|tool| {
         tool["name"] == "ese_inspect_schema" && tool["annotations"]["readOnlyHint"] == true
     }));
     assert!(tools.iter().any(|tool| {
         tool["name"] == "pst_list_folders" && tool["annotations"]["readOnlyHint"] == true
     }));
-    assert!(!tools.iter().any(|tool| tool["name"] == "jet_export_sqlite"));
+    assert!(!tools.iter().any(|tool| {
+        matches!(tool["name"].as_str(), Some("jet_export_sqlite" | "ese_export_sqlite" | "pst_export_sqlite"))
+    }));
     assert_eq!(answers[1]["result"]["isError"], true);
 }
 

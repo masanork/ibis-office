@@ -26,15 +26,15 @@ pub use avro_source::read_avro;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod jet_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use jet_source::{is_jet_extension, jet_dataset_columns, jet_export_sqlite, jet_inspect_schema, jet_tables, read_jet_table_bounded};
+pub use jet_source::{is_jet_extension, jet_dataset_columns, jet_export_sqlite, jet_inspect_schema, jet_migration_markdown, jet_tables, read_jet_table_bounded};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod ese_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use ese_source::{ese_dataset_columns, ese_inspect_schema, ese_tables, is_ese_extension, read_ese_table_bounded};
+pub use ese_source::{ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, ese_tables, is_ese_extension, read_ese_table_bounded};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod pst_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use pst_source::{is_pst_extension, pst_dataset_columns, pst_list_folders, read_pst_table_bounded};
+pub use pst_source::{is_pst_extension, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_pst_table_bounded};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod sqlite_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]

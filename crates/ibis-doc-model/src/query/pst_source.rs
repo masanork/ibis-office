@@ -358,6 +358,42 @@ pub fn read_pst_table_bounded(
     Ok(table_out)
 }
 
+/// Materialize Outlook (.ost / .pst) 'folders' and 'messages' virtual tables into a standalone SQLite file via Turso.
+pub fn pst_export_sqlite(
+    input_path: &Path,
+    output_path: &Path,
+    tables_filter: Option<&[String]>,
+    overwrite: bool,
+) -> Result<serde_json::Value, String> {
+    let _ = open_pst_store(input_path)?;
+    let target_tables: Vec<String> = match tables_filter {
+        Some(filter) => {
+            if filter.is_empty() {
+                return Err("tables filter must not be empty".into());
+            }
+            for name in filter {
+                if !matches!(name.as_str(), "folders" | "messages") {
+                    return Err(format!(
+                        "Unknown Outlook virtual table '{name}'; expected 'folders' or 'messages'"
+                    ));
+                }
+            }
+            filter.to_vec()
+        }
+        None => vec!["folders".into(), "messages".into()],
+    };
+    let sources: Vec<_> = target_tables
+        .into_iter()
+        .map(|name| {
+            (
+                name.clone(),
+                super::sqlite_source::DiskDataset::Pst(input_path.to_path_buf(), name, Vec::new()),
+            )
+        })
+        .collect();
+    super::sqlite_source::export_datasets_to_sqlite(&sources, output_path, overwrite)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
