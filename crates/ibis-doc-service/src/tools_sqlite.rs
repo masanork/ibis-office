@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, JetBundleMode, dataset_sql_type, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
+    SqliteRows, SqliteScalar, JetBundleMode, dataset_sql_type, dbf_export_sqlite, dbf_inspect_schema, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, is_dbf_extension, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -17,11 +17,13 @@ use crate::{ToolError, paths};
 
 pub const DESKTOP_TEXT_DATASET_LIMIT: u64 = 512 * 1024 * 1024;
 
-pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "jsonl", "ndjson", "avro", "sqlite", "sqlite3", "db", "log", "syslog", "mdb", "accdb", "mde", "accde", "edb", "sdb", "ost", "pst"];
+pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "jsonl", "ndjson", "avro", "sqlite", "sqlite3", "db", "log", "syslog", "mdb", "accdb", "mde", "accde", "dbf", "edb", "sdb", "ost", "pst"];
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
 const JET_EXTENSIONS: &[&str] = &["mdb", "accdb", "mde", "accde"];
 const ESE_EXTENSIONS: &[&str] = &["edb", "sdb", "dat"];
 const PST_EXTENSIONS: &[&str] = &["ost", "pst"];
+const DBF_EXTENSIONS: &[&str] = &["dbf"];
+const LEGACY_XML_EXTENSIONS: &[&str] = &["dxl", "xml"];
 const PATH: &str = "path";
 const MAX_FILTERS: usize = 16;
 const REPORT_DEFINITION_BYTES: usize = 32 * 1024;
@@ -147,6 +149,35 @@ const TOOLS: &[Tool] = &[
             ("overwrite", boolean("Overwrite an existing output file (default false).")),
         ], &[PATH, "output"]),
         run: export_pst_sqlite,
+    },
+    Tool {
+        name: "dbf_inspect_schema",
+        description: "Inspect field definitions, record count, and character encoding in a dBase / FoxPro (.dbf) file.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[("path", string("Path to a local .dbf file under an allowed folder."))], &[PATH]),
+        run: inspect_dbf_schema,
+    },
+    Tool {
+        name: "dbf_export_sqlite",
+        description: "Materialize a dBase / FoxPro (.dbf) file into a standalone SQLite file via Turso for fast repeated querying.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .dbf file under an allowed folder.")),
+            ("output", string("Destination .sqlite, .sqlite3, or .db file path under an allowed folder.")),
+            ("table", string("Optional SQLite table name (default: input file stem).")),
+            ("overwrite", boolean("Overwrite an existing output file (default false).")),
+        ], &[PATH, "output"]),
+        run: export_dbf_sqlite,
+    },
+    Tool {
+        name: "legacy_xml_inspect",
+        description: "Inspect Lotus Notes DXL (.dxl) or FileMaker DDR / fmresultset (.xml) exports into structured JSON.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[("path", string("Path to a local .dxl or .xml file under an allowed folder."))], &[PATH]),
+        run: inspect_legacy_xml,
     },
     Tool {
         name: "sqlite_describe_datasets",
@@ -613,6 +644,66 @@ fn export_jet_bundle(service: &mut Service, args: &Value) -> Result<Value, ToolE
         return Err(ToolError::new(
             "result_too_large",
             "Access bundle exceeds the response size limit; try mode='metadata' or lower max_rows_per_table",
+        ));
+    }
+    Ok(result)
+}
+
+fn inspect_dbf_schema(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, DBF_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select a dBase (.dbf) file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "dBase file exceeds the file size limit",
+        ));
+    }
+    dbf_inspect_schema(&path).map_err(sqlite_error)
+}
+
+fn export_dbf_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "output", "table", "overwrite"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, DBF_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select a dBase (.dbf) file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "dBase file exceeds the file size limit",
+        ));
+    }
+    let output = paths::resolve(&service.allow_dirs, args.str_arg("output")?, EXTENSIONS, false)?;
+    let table = args.opt_str("table")?;
+    let overwrite = args.opt_bool("overwrite")?.unwrap_or(false);
+    dbf_export_sqlite(&path, &output, table.as_deref(), overwrite).map_err(sqlite_error)
+}
+
+fn inspect_legacy_xml(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, LEGACY_XML_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select a Lotus Notes DXL or FileMaker XML file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "XML export exceeds the file size limit",
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(sqlite_error)?;
+    let result = ibis_formats::legacy_db_xml::inspect_legacy_db_xml(&bytes)
+        .map_err(|e| ToolError::new("extract_error", e.to_string()))?;
+    if result.to_string().len() > service.limits.page_bytes {
+        return Err(ToolError::new(
+            "result_too_large",
+            "Legacy XML inspection result exceeds the response size limit",
         ));
     }
     Ok(result)
@@ -1449,6 +1540,8 @@ fn source_kind(path: &Path) -> &'static str {
         "sqlite"
     } else if is_jet_extension(path) {
         "jet"
+    } else if is_dbf_extension(path) {
+        "dbf"
     } else if is_ese_extension(path) {
         "ese"
     } else if is_pst_extension(path) {
@@ -1919,7 +2012,7 @@ fn dataset_file_limit(limits: &Limits, kind: &str) -> u64 {
 }
 
 fn streamable_kind(kind: &str) -> bool {
-    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite" | "jet" | "ese" | "pst" | "csv" | "log")
+    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite" | "jet" | "dbf" | "ese" | "pst" | "csv" | "log")
 }
 
 fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) -> Result<SqliteQuerySession, ToolError> {
@@ -1967,6 +2060,7 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
                 .ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?.to_owned()),
             "jet" => DiskDataset::Jet(path, spec.opt_str("table")?
                 .ok_or_else(|| ToolError::invalid("Access datasets require a source table"))?.to_owned(), columns),
+            "dbf" => DiskDataset::Dbf(path, columns),
             "ese" => DiskDataset::Ese(path, spec.opt_str("table")?
                 .ok_or_else(|| ToolError::invalid("ESE datasets require a source table"))?.to_owned(), columns),
             "pst" => DiskDataset::Pst(path, spec.opt_str("table")?.unwrap_or("messages").to_owned(), columns),

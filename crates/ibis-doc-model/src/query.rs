@@ -28,6 +28,10 @@ mod jet_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use jet_source::{JetBundleMode, is_jet_extension, jet_dataset_columns, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, jet_tables, read_jet_table_bounded};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod dbf_source;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub use dbf_source::{dbf_export_sqlite, dbf_inspect_schema, is_dbf_extension};
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod ese_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub use ese_source::{ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, ese_tables, is_ese_extension, read_ese_table_bounded};
