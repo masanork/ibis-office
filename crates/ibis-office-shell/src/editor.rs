@@ -1753,7 +1753,10 @@ impl SlideEditor {
         cx.spawn_in(window, async move |this, cx| {
             let name: SharedString = name.into();
             let fail_open = |editor: &mut Self, name: &str, error: &str, cx: &mut Context<Self>| {
-                editor.fail_loading(crate::i18n::format("file.open-failed", &[("name", name), ("error", error)]), cx);
+                editor.fail_loading(
+                    crate::i18n::format("file.open-failed", &[("name", &name), ("error", &error)]),
+                    cx,
+                );
                 if initial {
                     crate::web::initial_open_failed(name, error);
                 }
