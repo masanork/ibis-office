@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, FixedWidthField, JetBundleMode, bson_export_sqlite, bson_inspect_schema, dataset_sql_type, dbf_export_sqlite, dbf_inspect_schema, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, fixed_width_export_sqlite, fixed_width_preview, is_bson_extension, is_dbf_extension, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
+    SqliteRows, SqliteScalar, FixedWidthField, JetBundleMode, bson_export_sqlite, bson_inspect_schema, dataset_sql_type, dbf_export_sqlite, dbf_inspect_schema, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, fixed_width_export_sqlite, fixed_width_preview, is_bson_extension, is_dbf_extension, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, jet_verify_sqlite, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_dataset_columns, sqlite_execute, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -97,6 +97,17 @@ const TOOLS: &[Tool] = &[
             ("max_rows_per_table", integer("Maximum rows per table in 'full' mode (default 100, maximum 1000).")),
         ], &[PATH]),
         run: export_jet_bundle,
+    },
+    Tool {
+        name: "jet_verify_sqlite",
+        description: "Verify an exported SQLite database against its source Access (.mdb/.accdb) database (row counts, primary keys, foreign keys, and view execution).",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to the source .mdb or .accdb file under an allowed folder.")),
+            ("sqlite_path", string("Path to the exported .sqlite, .sqlite3, or .db file under an allowed folder.")),
+        ], &[PATH, "sqlite_path"]),
+        run: verify_jet_sqlite,
     },
     Tool {
         name: "jet_export_sqlite",
@@ -734,6 +745,27 @@ fn export_jet_bundle(service: &mut Service, args: &Value) -> Result<Value, ToolE
         ));
     }
     Ok(result)
+}
+
+fn verify_jet_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "sqlite_path"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, JET_EXTENSIONS, true)?;
+    let sqlite_path = paths::resolve(&service.allow_dirs, args.str_arg("sqlite_path")?, EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an Access database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Access database exceeds the file size limit",
+        ));
+    }
+    let sqlite_meta = std::fs::metadata(&sqlite_path).map_err(sqlite_error)?;
+    if !sqlite_meta.is_file() {
+        return Err(ToolError::invalid("select an exported SQLite database file"));
+    }
+    jet_verify_sqlite(&path, &sqlite_path).map_err(sqlite_error)
 }
 
 fn inspect_dbf_schema(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
