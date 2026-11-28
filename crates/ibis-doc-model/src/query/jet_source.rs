@@ -322,6 +322,139 @@ pub fn read_jet_table_bounded(
     Ok(table_out)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JetQueryParam {
+    name: String,
+    jet_type: String,
+}
+
+fn parse_jet_parameters(sql: &str) -> (Vec<JetQueryParam>, &str) {
+    let trimmed = sql.trim_start();
+    if trimmed.len() < 11 || !trimmed[..10].eq_ignore_ascii_case("PARAMETERS") {
+        return (Vec::new(), sql);
+    }
+    if !trimmed[10..].chars().next().is_some_and(char::is_whitespace) {
+        return (Vec::new(), sql);
+    }
+    let Some(semi) = trimmed.find(';') else {
+        return (Vec::new(), sql);
+    };
+    let decl = trimmed[10..semi].trim();
+    let body = trimmed[semi + 1..].trim_start();
+    let mut params = Vec::new();
+    for part in split_top_level_args(decl) {
+        let item = part.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let (name, jet_type) = if let Some(rest) = item.strip_prefix('[') {
+            if let Some(end) = rest.find(']') {
+                (rest[..end].trim().to_owned(), rest[end + 1..].trim().to_owned())
+            } else {
+                continue;
+            }
+        } else {
+            let mut ws = item.splitn(2, char::is_whitespace);
+            let n = ws.next().unwrap_or("").trim().to_owned();
+            let t = ws.next().unwrap_or("").trim().to_owned();
+            (n, t)
+        };
+        if !name.is_empty() {
+            params.push(JetQueryParam { name, jet_type });
+        }
+    }
+    (params, body)
+}
+
+fn replace_param_placeholders(sqlite_sql: &str, params: &[JetQueryParam]) -> (String, Vec<String>) {
+    if params.is_empty() {
+        return (sqlite_sql.to_owned(), Vec::new());
+    }
+    let mut out = String::with_capacity(sqlite_sql.len());
+    let mut positional = Vec::new();
+    let bytes = sqlite_sql.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            out.push('\'');
+            i += 1;
+            while i < bytes.len() {
+                out.push(bytes[i] as char);
+                if bytes[i] == b'\'' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                        out.push('\'');
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'"' {
+            let mut end = i + 1;
+            let mut ident = String::new();
+            while end < bytes.len() {
+                if bytes[end] == b'"' {
+                    if end + 1 < bytes.len() && bytes[end + 1] == b'"' {
+                        ident.push('"');
+                        end += 2;
+                        continue;
+                    }
+                    break;
+                }
+                let ch = sqlite_sql[end..].chars().next().unwrap();
+                ident.push(ch);
+                end += ch.len_utf8();
+            }
+            if end < bytes.len()
+                && bytes[end] == b'"'
+                && let Some(matched) = params.iter().find(|p| p.name.eq_ignore_ascii_case(&ident))
+            {
+                out.push('?');
+                positional.push(matched.name.clone());
+                i = end + 1;
+                continue;
+            }
+        }
+        let ch = sqlite_sql[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+
+    (out, positional)
+}
+
+fn query_def_to_json(qdef: &jetdb::QueryDef) -> serde_json::Value {
+    let sql = query_to_sql(qdef);
+    let (params, body) = parse_jet_parameters(&sql);
+    let sqlite_sql = jet_sql_to_sqlite(body);
+    let (sqlite_parameterized_sql, positional_params) =
+        replace_param_placeholders(&sqlite_sql, &params);
+    let params_json: Vec<_> = params
+        .iter()
+        .map(|p| {
+            json!({
+                "name": p.name,
+                "jet_type": p.jet_type,
+            })
+        })
+        .collect();
+    json!({
+        "name": qdef.name,
+        "query_type": format!("{:?}", qdef.query_type),
+        "is_action_query": !matches!(qdef.query_type, jetdb::QueryType::Select),
+        "sql": sql,
+        "sqlite_sql": jet_sql_to_sqlite(&sql),
+        "parameters": params_json,
+        "sqlite_parameterized_sql": sqlite_parameterized_sql,
+        "positional_params": positional_params,
+    })
+}
+
 /// Inspect schema, relationships, saved queries, forms/reports, and VBA modules in an Access database.
 pub fn jet_inspect_schema(path: &Path) -> Result<serde_json::Value, String> {
     let mut reader = open_jet(path)?;
@@ -399,16 +532,7 @@ pub fn jet_inspect_schema(path: &Path) -> Result<serde_json::Value, String> {
     let queries = read_queries(&mut reader)
         .unwrap_or_default()
         .into_iter()
-        .map(|qdef| {
-            let sql = query_to_sql(&qdef);
-            let sqlite_sql = jet_sql_to_sqlite(&sql);
-            json!({
-                "name": qdef.name,
-                "query_type": format!("{:?}", qdef.query_type),
-                "sql": sql,
-                "sqlite_sql": sqlite_sql,
-            })
-        })
+        .map(|qdef| query_def_to_json(&qdef))
         .collect::<Vec<_>>();
 
     let forms = list_forms(&mut reader)
@@ -1036,16 +1160,7 @@ pub fn jet_export_bundle(
     let queries = read_queries(&mut reader)
         .unwrap_or_default()
         .into_iter()
-        .map(|qdef| {
-            let sql = query_to_sql(&qdef);
-            let sqlite_sql = jet_sql_to_sqlite(&sql);
-            json!({
-                "name": qdef.name,
-                "query_type": format!("{:?}", qdef.query_type),
-                "sql": sql,
-                "sqlite_sql": sqlite_sql,
-            })
-        })
+        .map(|qdef| query_def_to_json(&qdef))
         .collect::<Vec<_>>();
 
     fn macro_statements_to_json(stmts: &[MacroStatement]) -> Vec<serde_json::Value> {
@@ -1541,6 +1656,14 @@ pub fn jet_export_sqlite(
                 continue;
             }
             let raw_sql = query_to_sql(&qdef);
+            let (params, _) = parse_jet_parameters(&raw_sql);
+            if !params.is_empty() {
+                skipped_views.push(json!({
+                    "name": qdef.name,
+                    "error": "Parameterized query cannot be materialized as a SQLite VIEW; use sqlite_parameterized_sql from jet_inspect_schema / jet_export_bundle",
+                }));
+                continue;
+            }
             let sqlite_sql = jet_sql_to_sqlite(&raw_sql);
             let trimmed = sqlite_sql.trim().trim_end_matches(';').trim();
             if trimmed.is_empty() {
@@ -2307,6 +2430,23 @@ mod tests {
             jet_sql_to_sqlite("SELECT UCase(Trim([Name])), Len([Name]), Left([Code], 3), Mid([Code], 2, 4), Year([OrderDate]) FROM [Orders]"),
             "SELECT UPPER(TRIM(\"Name\")), LENGTH(\"Name\"), SUBSTR(\"Code\", 1, 3), SUBSTR(\"Code\", 2, 4), CAST(strftime('%Y', \"OrderDate\") AS INTEGER) FROM \"Orders\""
         );
+
+        let raw_param = "PARAMETERS [StartDate] DateTime, [MinAmt] Currency; SELECT * FROM [Orders] WHERE [OrderDate] >= [StartDate] AND [Amount] >= [MinAmt]";
+        let (params, body) = parse_jet_parameters(raw_param);
+        assert_eq!(params.len(), 2);
+        let sqlite_body = jet_sql_to_sqlite(body);
+        let (param_sql, pos) = replace_param_placeholders(&sqlite_body, &params);
+        assert_eq!(
+            param_sql,
+            "SELECT * FROM \"Orders\" WHERE \"OrderDate\" >= ? AND \"Amount\" >= ?"
+        );
+        assert_eq!(pos, vec!["StartDate", "MinAmt"]);
+
+        let raw_del = "PARAMETERS [TargetID] Long; DELETE * FROM [Orders] WHERE [ID] = [TargetID]";
+        let (dparams, dbody) = parse_jet_parameters(raw_del);
+        let (dsql, dpos) = replace_param_placeholders(&jet_sql_to_sqlite(dbody), &dparams);
+        assert_eq!(dsql, "DELETE FROM \"Orders\" WHERE \"ID\" = ?");
+        assert_eq!(dpos, vec!["TargetID"]);
     }
 
     #[test]
@@ -2403,7 +2543,18 @@ pub fn jet_sql_to_sqlite(sql: &str) -> String {
         i += 1;
     }
 
-    rewrite_jet_functions(&pass1)
+    let rewritten = rewrite_jet_functions(&pass1);
+    let trimmed = rewritten.trim_start();
+    if trimmed.len() >= 13 && trimmed[..6].eq_ignore_ascii_case("DELETE") {
+        let after_del = trimmed[6..].trim_start();
+        if let Some(after_star) = after_del.strip_prefix('*') {
+            let after_ws = after_star.trim_start();
+            if after_ws.len() >= 4 && after_ws[..4].eq_ignore_ascii_case("FROM") {
+                return format!("DELETE {after_ws}");
+            }
+        }
+    }
+    rewritten
 }
 
 fn is_ident_char(ch: char) -> bool {
