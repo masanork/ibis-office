@@ -733,6 +733,8 @@ pub struct SlideEditor {
     phone_view_only: bool,
     pub(crate) mobile_viewer_menu_open: bool,
     pub(crate) mobile_hud_hidden: bool,
+    pub(crate) mobile_page_picker_open: bool,
+    pub(crate) mobile_last_tap: Option<(crate::clock::Instant, Point<Pixels>)>,
     /// A Standard-encrypted document remains read-only until saved as a copy.
     pub standard_read_only: bool,
     pub(crate) structured_preview: bool,
@@ -1099,6 +1101,8 @@ impl SlideEditor {
             phone_view_only: false,
             mobile_viewer_menu_open: false,
             mobile_hud_hidden: false,
+            mobile_page_picker_open: false,
+            mobile_last_tap: None,
             vsdx_viewer,
             visio_draft: false,
             resumable_visio: Default::default(),
@@ -1203,7 +1207,9 @@ impl SlideEditor {
             self.phone_editing = editing;
             if editing {
                 self.mobile_hud_hidden = false;
+                self.mobile_page_picker_open = false;
             }
+            self.mobile_last_tap = None;
             self.update_phone_view(Self::narrow_phone_editor(window), window, cx);
             cx.notify();
         }
@@ -1240,6 +1246,8 @@ impl SlideEditor {
         } else {
             self.mobile_viewer_menu_open = false;
             self.mobile_hud_hidden = false;
+            self.mobile_page_picker_open = false;
+            self.mobile_last_tap = None;
         }
         self.phone_view_only = viewing;
         let model_read_only = viewing || self.read_only || self.standard_read_only || self.structured_preview || self.is_jtd_read_only();
@@ -1501,6 +1509,8 @@ impl SlideEditor {
         }
         self.mobile_viewer_menu_open = false;
         self.mobile_hud_hidden = false;
+        self.mobile_page_picker_open = false;
+        self.mobile_last_tap = None;
         #[cfg(not(target_family = "wasm"))]
         { self.standard_source_path = None; }
         self.jtd.gallery_generation = self.jtd.gallery_generation.wrapping_add(1);
@@ -5288,6 +5298,11 @@ impl SlideEditor {
         } else {
             None
         };
+        let mobile_page_picker = if !focus && sidebar.is_none() {
+            self.render_mobile_page_picker(cx)
+        } else {
+            None
+        };
         let main_area = if narrow_phone && sidebar.is_some() {
             div()
                 .flex()
@@ -5314,6 +5329,7 @@ impl SlideEditor {
                         .child(body)
                         .child(crate::input::input_region(cx))
                         .children(mobile_pill)
+                        .children(mobile_page_picker)
                         .children(mobile_menu),
                 )
                 .children(sidebar)

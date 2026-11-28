@@ -8,6 +8,7 @@
 //! and floating pill provide navigation, search, export/open, fit-to-width, and an
 //! explicit switch to editing mode.
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Icon, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -384,12 +385,26 @@ impl SlideEditor {
                         .border_color(theme.border)
                         .shadow_lg()
                         .child(
-                            div()
+                            h_flex()
+                                .id("mobile-page-picker-trigger")
+                                .h(px(34.))
                                 .px_2()
+                                .gap_1()
+                                .items_center()
+                                .rounded_full()
+                                .cursor_pointer()
+                                .when(self.mobile_page_picker_open, |d| d.bg(theme.list_hover))
                                 .text_xs()
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.muted_foreground)
-                                .child(position),
+                                .text_color(theme.popover_foreground)
+                                .hover(|s| s.bg(theme.list_hover))
+                                .child(position)
+                                .child(Icon::new(Material("expand_more")).size(px(14.)))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.mobile_page_picker_open = !this.mobile_page_picker_open;
+                                    this.mobile_viewer_menu_open = false;
+                                    cx.notify();
+                                })),
                         )
                         .child(div().w(px(1.)).h(px(18.)).bg(theme.border))
                         .child(
@@ -425,6 +440,7 @@ impl SlideEditor {
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.mobile_hud_hidden = true;
                                     this.mobile_viewer_menu_open = false;
+                                    this.mobile_page_picker_open = false;
                                     cx.notify();
                                 })),
                         )
@@ -446,6 +462,7 @@ impl SlideEditor {
                                     .child(crate::i18n::text("menu.edit"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.mobile_viewer_menu_open = false;
+                                        this.mobile_page_picker_open = false;
                                         this.set_phone_editing(true, window, cx);
                                     })),
                             )
@@ -454,18 +471,191 @@ impl SlideEditor {
                 .into_any_element(),
         )
     }
+
+    /// Bottom sheet listing pages, slides, or sheets for quick jumping in phone viewing mode.
+    pub(crate) fn render_mobile_page_picker(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.mobile_page_picker_open || !self.phone_view_only() || self.is_phone_editing() || !self.has_document {
+            return None;
+        }
+        let theme = cx.theme();
+        let slides = &self.presentation().slides;
+        let is_workbook = self.presentation().workbook.is_some();
+        let page_noun = crate::i18n::text(with_format!(self, page_noun()));
+        let title: SharedString = if is_workbook {
+            "シートを選択".into()
+        } else {
+            format!("{page_noun}を選択 ({})", slides.len()).into()
+        };
+
+        let mut rows = Vec::with_capacity(slides.len());
+        for (index, slide) in slides.iter().enumerate() {
+            let slide_id = slide.id;
+            let active = slide_id == self.current_slide;
+            let label: SharedString = match slide.name.as_deref().filter(|n| !n.is_empty()) {
+                Some(name) if is_workbook => name.to_string().into(),
+                Some(name) => format!("{} {} — {name}", page_noun, index + 1).into(),
+                None => format!("{} {}", page_noun, index + 1).into(),
+            };
+            rows.push(
+                h_flex()
+                    .id(("mobile-page-item", index))
+                    .w_full()
+                    .h(px(44.))
+                    .px_3()
+                    .items_center()
+                    .justify_between()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .when(active, |d| d.bg(theme.accent).text_color(theme.accent_foreground).font_weight(FontWeight::SEMIBOLD))
+                    .when(!active, |d| d.text_color(theme.popover_foreground).hover(|s| s.bg(theme.list_hover)))
+                    .text_sm()
+                    .child(div().flex_1().min_w_0().truncate().child(label))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.mobile_page_picker_open = false;
+                        this.select_slide(slide_id, window, cx);
+                    })),
+            );
+        }
+
+        Some(
+            div()
+                .id("mobile-page-picker-backdrop")
+                .absolute()
+                .inset_0()
+                .bg(gpui_kit::black().opacity(0.28))
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                    this.mobile_page_picker_open = false;
+                    cx.notify();
+                }))
+                .child(
+                    v_flex()
+                        .id("mobile-page-picker-sheet")
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .max_h(px(340.))
+                        .rounded_t_xl()
+                        .bg(theme.popover)
+                        .border_t_1()
+                        .border_color(theme.border)
+                        .shadow_lg()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            h_flex()
+                                .h(px(44.))
+                                .px_3()
+                                .items_center()
+                                .justify_between()
+                                .border_b_1()
+                                .border_color(theme.border)
+                                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(theme.popover_foreground).child(title))
+                                .child(
+                                    div()
+                                        .id("mobile-page-picker-close")
+                                        .size(px(36.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .text_color(theme.muted_foreground)
+                                        .child(Icon::new(Material("close")).size(px(18.)))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.mobile_page_picker_open = false;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            v_flex()
+                                .id("mobile-page-picker-list")
+                                .flex_1()
+                                .min_h_0()
+                                .p_2()
+                                .gap_0p5()
+                                .overflow_y_scrollbar()
+                                .children(rows),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Detects a double-tap on the document in phone viewing mode and toggles fit-to-width vs. 1.75x zoom.
+    pub(crate) fn on_mobile_viewer_mouse_down(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.phone_view_only()
+            || !self.is_touch_device()
+            || !self.has_document
+            || self.dialog_is_modal()
+            || self.mobile_viewer_menu_open
+            || self.mobile_page_picker_open
+            || self.open_menu.is_some()
+            || self.toolbar_search_open.is_some()
+            || !self.workspace_bounds.is_some_and(|b| b.contains(&position))
+        {
+            self.mobile_last_tap = None;
+            return false;
+        }
+        let now = crate::clock::Instant::now();
+        let is_double = self.mobile_last_tap.is_some_and(|(at, last)| is_double_tap(at.elapsed(), last, position));
+        if is_double {
+            self.mobile_last_tap = None;
+            self.toggle_mobile_double_tap_zoom(position, window, cx);
+            true
+        } else {
+            self.mobile_last_tap = Some((now, position));
+            false
+        }
+    }
+
+    fn toggle_mobile_double_tap_zoom(&mut self, anchor: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        if should_reset_zoom_on_double_tap(self.zoom, self.current_zoom()) {
+            self.set_zoom(None, window, cx);
+        } else {
+            self.set_zoom_at(Some(1.75), Some(anchor), window, cx);
+        }
+    }
+}
+
+const DOUBLE_TAP_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
+const DOUBLE_TAP_SLOP: f32 = 24.0;
+
+fn is_double_tap(elapsed: std::time::Duration, last: Point<Pixels>, current: Point<Pixels>) -> bool {
+    is_double_tap_xy(elapsed, f32::from(last.x), f32::from(last.y), f32::from(current.x), f32::from(current.y))
+}
+
+fn is_double_tap_xy(elapsed: std::time::Duration, last_x: f32, last_y: f32, cur_x: f32, cur_y: f32) -> bool {
+    let dx = cur_x - last_x;
+    let dy = cur_y - last_y;
+    elapsed <= DOUBLE_TAP_INTERVAL && (dx * dx + dy * dy).sqrt() <= DOUBLE_TAP_SLOP
+}
+
+fn should_reset_zoom_on_double_tap(explicit_zoom: Option<f32>, current_zoom: f32) -> bool {
+    explicit_zoom.is_some() && current_zoom > 1.25
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     #[test]
-    fn finger_drag_is_disabled_in_viewing_mode() {
+    fn mobile_viewer_scroll_and_double_tap_rules() {
         let should_drag = |is_touch: bool, phone_view_only: bool, modal: bool, in_bounds: bool, in_popup: bool| {
             is_touch && !phone_view_only && !modal && in_bounds && !in_popup
         };
         assert!(should_drag(true, false, false, true, false), "editing mode claims one-finger page drag");
         assert!(!should_drag(true, true, false, true, false), "viewing mode leaves one-finger drag to scroll");
         assert!(!should_drag(false, false, false, true, false), "non-touch device never claims touch drag");
+
+        assert!(super::is_double_tap_xy(Duration::from_millis(250), 100., 200., 110., 205.));
+        assert!(!super::is_double_tap_xy(Duration::from_millis(500), 100., 200., 100., 200.), "too slow");
+        assert!(!super::is_double_tap_xy(Duration::from_millis(200), 100., 200., 140., 200.), "too far");
+
+        assert!(!super::should_reset_zoom_on_double_tap(None, 0.8), "fit mode zooms in");
+        assert!(!super::should_reset_zoom_on_double_tap(Some(1.0), 1.0), "100% zooms in");
+        assert!(super::should_reset_zoom_on_double_tap(Some(1.75), 1.75), "zoomed resets to fit");
     }
 }
+
 

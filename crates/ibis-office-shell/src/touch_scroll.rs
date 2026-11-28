@@ -264,9 +264,18 @@ pub fn touch_scroll_listener(cx: &Context<SlideEditor>) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |_, _, window, _| {
-            let editor = editor.clone();
+            let drag_editor = editor.clone();
             window.on_mouse_event(move |event: &TouchDragEvent, phase, window, cx| {
-                if phase == DispatchPhase::Capture && editor.update(cx, |this, cx| this.on_touch_drag(event, window, cx)).unwrap_or(false) && event.phase == TouchPhase::Started {
+                if phase == DispatchPhase::Capture && drag_editor.update(cx, |this, cx| this.on_touch_drag(event, window, cx)).unwrap_or(false) && event.phase == TouchPhase::Started {
+                    window.prevent_default();
+                }
+            });
+            let tap_editor = editor.clone();
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                if phase == DispatchPhase::Capture
+                    && event.button == MouseButton::Left
+                    && tap_editor.update(cx, |this, cx| this.on_mobile_viewer_mouse_down(event.position, window, cx)).unwrap_or(false)
+                {
                     window.prevent_default();
                 }
             });
