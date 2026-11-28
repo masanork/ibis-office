@@ -122,17 +122,64 @@ pub struct PdfWriter {
     print_color: crate::export_print::PrintColor,
 }
 
+fn mime_type_for_filename(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("");
+    match ext.to_ascii_lowercase().as_str() {
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "doc" => "application/msword",
+        "xls" => "application/vnd.ms-excel",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" => "application/vnd.oasis.opendocument.presentation",
+        "csv" => "text/csv",
+        "tsv" | "tab" => "text/tab-separated-values",
+        "md" | "markdown" => "text/markdown",
+        "txt" => "text/plain",
+        "xml" => "application/xml",
+        "json" => "application/json",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
 impl PdfWriter {
     pub fn new(text_system: Arc<TextSystem>) -> Self {
         Self::with_document(text_system, Document::new())
     }
 
     pub(crate) fn new_pdfa2b(text_system: Arc<TextSystem>, title: &str) -> Result<Self, String> {
-        use krilla::configure::{Archival, ConfigurationBuilder};
+        Self::new_archival(text_system, title, krilla::configure::Archival::A2_B, "PDF/A-2b", None)
+    }
+
+    pub(crate) fn new_pdfa3b(
+        text_system: Arc<TextSystem>,
+        title: &str,
+        embedded_source: Option<(String, Vec<u8>)>,
+    ) -> Result<Self, String> {
+        Self::new_archival(
+            text_system,
+            title,
+            krilla::configure::Archival::A3_B,
+            "PDF/A-3b",
+            embedded_source,
+        )
+    }
+
+    fn new_archival(
+        text_system: Arc<TextSystem>,
+        title: &str,
+        archival: krilla::configure::Archival,
+        label: &str,
+        embedded_source: Option<(String, Vec<u8>)>,
+    ) -> Result<Self, String> {
+        use krilla::configure::ConfigurationBuilder;
         let configuration = ConfigurationBuilder::new()
-            .with_archival_validator(Archival::A2_B)
+            .with_archival_validator(archival)
             .finish()
-            .map_err(|error| format!("PDF/A-2b: {error:?}"))?;
+            .map_err(|error| format!("{label}: {error:?}"))?;
         let mut document = Document::new_with(krilla::SerializeSettings {
             configuration,
             ..Default::default()
@@ -153,6 +200,22 @@ impl PdfWriter {
                 .creator("ibisOffice".into())
                 .creation_date(created),
         );
+        if let Some((file_name, data)) = embedded_source {
+            let mime = mime_type_for_filename(&file_name);
+            let embedded = krilla::embed::EmbeddedFile {
+                path: file_name.clone(),
+                mime_type: krilla::embed::MimeType::new(mime),
+                description: Some(format!("Source document ({file_name})")),
+                association_kind: krilla::embed::AssociationKind::Source,
+                data: data.into(),
+                modification_date: Some(created),
+                compress: None,
+                location: None,
+            };
+            document
+                .embed_file(embedded)
+                .ok_or_else(|| format!("{label}: failed to embed source file {file_name}"))?;
+        }
         Ok(Self::with_document(text_system, document))
     }
 

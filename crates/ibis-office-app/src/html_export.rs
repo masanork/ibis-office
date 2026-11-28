@@ -53,6 +53,7 @@ pub(crate) fn rasterize(presentation: &Presentation, shape: &Shape, members: &[S
         notes_pages: false,
         outline_pages: false,
         notes_source: None,
+        embed_source: None,
         handout_marks: Default::default(),
     };
     export::export(mini, &options).ok()?;

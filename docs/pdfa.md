@@ -1,14 +1,16 @@
 # PDF/A 対応
 
-デスクトップ版の既存のベクターPDF出力を使い、PDF/A-2bプロファイルを
+デスクトップ版の既存のベクターPDF出力を使い、PDF/A-2b または PDF/A-3b プロファイルを
 指定して出力できます。
 
 ```sh
 ibisOffice --export pdfa-2b --out-dir ./archive document.docx
+ibisOffice --export pdfa-3b --out-dir ./archive document.docx
 ```
 
 入力は通常のベクターPDF出力と同じDOCX・XLSX・PPTXです。PDF/Aモードでは
-出力ライブラリにPDF/A-2bの条件を適用し、対応するXMP識別情報を付加します。
+出力ライブラリにPDF/A-2b / PDF/A-3bの条件を適用し、対応するXMP識別情報を付加します。
+`pdfa-3b` では変換元の入力ファイルを `AFRelationship /Source` としてPDF内に埋め込みます。
 ライブラリが条件違反を検出した場合は出力に失敗し、通常のPDFには切り替えません。
 
 LinuxのデスクトップCIでは、AppImage内のibisOfficeを使い、合成文書3形式の

@@ -454,7 +454,7 @@ pub fn init(cx: &mut App) {
 /// ibisOffice [--slide <number>] [<file.pptx|file.xlsx|file.docx>]
 /// ibisOffice --export pdfa-info <file.pdf>
 /// ibisOffice --export pdfa-validate --pdfa-profile 2b [--verapdf <program>] <file.pdf>
-/// ibisOffice --export png|pdf|pdfa-2b|pdf-image [--out-dir <dir>] [--width <px>] [--range 1,3-5] [--include-layout] <file.pptx|file.xlsx|file.docx>
+/// ibisOffice --export png|pdf|pdfa-2b|pdfa-3b|pdf-image [--out-dir <dir>] [--width <px>] [--range 1,3-5] [--include-layout] <file.pptx|file.xlsx|file.docx>
 /// ibisOffice --export ui [--out-dir <dir>] [--steps start,pagedown,end] [<file.pptx|file.xlsx|file.docx>]
 /// ibisOffice [--timing] [--quit-after-first-frame] [<file>]
 /// ```
@@ -727,7 +727,7 @@ fn export_options(args: &Args, format: export::Format, out_dir: std::path::PathB
         width: args.width.unwrap_or(1920),
         slides,
         layout: args.layout,
-        file_name,
+        file_name: file_name.clone(),
         print_backgrounds: args.print_backgrounds,
         print_hidden_text: args.print_hidden_text,
         print_markup: !args.no_print_markup,
@@ -745,6 +745,9 @@ fn export_options(args: &Args, format: export::Format, out_dir: std::path::PathB
         notes_pages: args.notes_pages,
         outline_pages: args.outline_pages,
         notes_source: args.notes_pages.then(|| data.to_vec()),
+        embed_source: (format == export::Format::PdfA3b)
+            .then(|| file_name.map(|name| (name, data.to_vec())))
+            .flatten(),
         handout_marks: handout_marks(args, data),
     })
 }
@@ -1142,8 +1145,9 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             "png" => export::Format::Png,
             "pdf" => export::Format::Pdf,
             "pdfa-2b" => export::Format::PdfA2b,
+            "pdfa-3b" => export::Format::PdfA3b,
             "pdf-image" => export::Format::PdfImage,
-            other => return Err(format!("--export takes png, pdf, pdfa-2b, pdfa-info, pdfa-validate, pdf-image, md, txt, row-heights or ui: {other}")),
+            other => return Err(format!("--export takes png, pdf, pdfa-2b, pdfa-3b, pdfa-info, pdfa-validate, pdf-image, md, txt, row-heights or ui: {other}")),
         };
         let path = args.path.as_deref().ok_or("name the .pptx, .xlsx or .docx file to export")?;
         let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());

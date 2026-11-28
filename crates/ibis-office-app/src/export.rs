@@ -56,13 +56,15 @@ pub enum Format {
     Pdf,
     /// Vector PDF with the PDF/A-2b archival profile.
     PdfA2b,
+    /// Vector PDF with the PDF/A-3b archival profile (supports embedding source files).
+    PdfA3b,
     /// A picture per page.
     PdfImage,
 }
 
 impl Format {
     fn is_vector_pdf(self) -> bool {
-        matches!(self, Self::Pdf | Self::PdfA2b)
+        matches!(self, Self::Pdf | Self::PdfA2b | Self::PdfA3b)
     }
 }
 
@@ -105,6 +107,8 @@ pub struct Options {
     pub outline_pages: bool,
     /// The file's bytes, for the notes' formatting (`notes_pages`).
     pub notes_source: Option<Vec<u8>>,
+    /// Source file `(file_name, bytes)` to embed when exporting `Format::PdfA3b`.
+    pub embed_source: Option<(String, Vec<u8>)>,
     pub handout_marks: crate::export_print::HandoutMarks,
 }
 
@@ -1660,10 +1664,14 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
     let link_positions: Rc<RefCell<Vec<(ibis_doc_model::ShapeId, crate::render::rich_text::TextPositions)>>> = Rc::new(RefCell::new(Vec::new()));
     let document_links = (options.format.is_vector_pdf()).then(|| presentation.flow.as_ref().map(|f| crate::docx::flow_layout::page_links(f, &resources))).flatten();
     let mut vector = if options.format.is_vector_pdf() {
-        let mut writer = if options.format == Format::PdfA2b {
-            crate::pdf_vector::PdfWriter::new_pdfa2b(ts.clone(), &options.name)?
-        } else {
-            crate::pdf_vector::PdfWriter::new(ts.clone())
+        let mut writer = match options.format {
+            Format::PdfA2b => crate::pdf_vector::PdfWriter::new_pdfa2b(ts.clone(), &options.name)?,
+            Format::PdfA3b => crate::pdf_vector::PdfWriter::new_pdfa3b(
+                ts.clone(),
+                &options.name,
+                options.embed_source.clone(),
+            )?,
+            _ => crate::pdf_vector::PdfWriter::new(ts.clone()),
         };
         writer.set_print_color(options.color);
         Some(writer)
@@ -1895,7 +1903,7 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
                 }
             }
             Format::PdfImage => pages.push((image, (area.width as f32 / 12_700.0, area.height as f32 / 12_700.0))),
-            Format::Pdf | Format::PdfA2b => {}
+            Format::Pdf | Format::PdfA2b | Format::PdfA3b => {}
         }
     }
     lap("all pages", &mut lap_at);

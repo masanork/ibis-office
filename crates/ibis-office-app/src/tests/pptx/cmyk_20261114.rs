@@ -61,7 +61,7 @@ fn white_page() {
         let options = crate::export::Options {
             format: crate::export::Format::Pdf, out_dir: dir.into(), name: "white".into(), width: 960, slides: vec![1], layout: false,
             file_name: None, print_backgrounds: true, print_hidden_text: false, print_markup: false, color: Default::default(), handout: None,
-            frame: false, handout_landscape: false, paper: None, fit_paper: true, notes_pages: false, outline_pages: false, notes_source: None, handout_marks: Default::default(),
+            frame: false, handout_landscape: false, paper: None, fit_paper: true, notes_pages: false, outline_pages: false, notes_source: None, embed_source: None, handout_marks: Default::default(),
         };
         crate::export::export(presentation, &options).expect("the PDF");
         let pdf = std::fs::read(dir.join("white.pdf")).unwrap();

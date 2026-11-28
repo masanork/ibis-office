@@ -89,6 +89,7 @@ fn dump_corpus_layout() {
                 notes_pages: false,
                 outline_pages: false,
                 notes_source: None,
+                embed_source: None,
                 handout_marks: Default::default(),
             };
             crate::export::export(again, &options).expect("the PDF");

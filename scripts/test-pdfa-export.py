@@ -26,7 +26,7 @@ def run(command):
     return result.stdout
 
 
-def verify_metadata(pdf, archival):
+def verify_metadata(pdf, part=None):
     data = run(["pdfinfo", "-meta", pdf]).strip()
     values = {}
     if data:
@@ -34,19 +34,19 @@ def verify_metadata(pdf, archival):
             if node.tag.startswith(PDF_A_ID):
                 values[node.tag] = node.text
             values.update({key: value for key, value in node.attrib.items() if key.startswith(PDF_A_ID)})
-    if archival:
-        assert values.get(PDF_A_ID + "part") == "2", values
+    if part is not None:
+        assert values.get(PDF_A_ID + "part") == part, values
         assert values.get(PDF_A_ID + "conformance") == "B", values
     else:
         assert not values, values
 
 
-def verify_identification(binary, pdf, archival):
+def verify_identification(binary, pdf, part=None):
     report = json.loads(run([binary, "--export", "pdfa-info", pdf]))
     assert report == {
-        "declared_profile": "PDF/A-2b" if archival else None,
-        "part": "2" if archival else None,
-        "conformance": "B" if archival else None,
+        "declared_profile": f"PDF/A-{part}b" if part else None,
+        "part": part,
+        "conformance": "B" if part else None,
         "revision": None,
         "validation": "not_run",
     }, report
@@ -94,22 +94,27 @@ def main():
         directory = Path(directory)
         for fixture in FIXTURES:
             source = root / fixture
-            run([binary, "--export", "pdfa-2b", "--out-dir", directory, source])
-            pdf = directory / (source.stem + ".pdf")
-            verify_metadata(pdf, archival=True)
-            verify_identification(binary, pdf, archival=True)
-            assert run(["pdftotext", pdf, "-"]).strip(), fixture
-            if args.verapdf:
-                verify_conformance(binary, args.verapdf, pdf, compliant=True)
-                if fixture == FIXTURES[0]:
-                    verify_conformance(binary, args.verapdf, pdf, compliant=False, profile="1b")
-            print(f"{source.suffix[1:]}: PDF/A-2b metadata and text OK"
-                  + ("; veraPDF compliant" if args.verapdf else ""))
+            for export_flag, part, profile in [("pdfa-2b", "2", "2b"), ("pdfa-3b", "3", "3b")]:
+                run([binary, "--export", export_flag, "--out-dir", directory, source])
+                pdf = directory / (source.stem + ".pdf")
+                verify_metadata(pdf, part=part)
+                verify_identification(binary, pdf, part=part)
+                assert run(["pdftotext", pdf, "-"]).strip(), fixture
+                if part == "3":
+                    raw = pdf.read_bytes()
+                    assert b"/AFRelationship/Source" in raw or b"/AFRelationship /Source" in raw, fixture
+                    assert source.name.encode("utf-8") in raw, fixture
+                if args.verapdf:
+                    verify_conformance(binary, args.verapdf, pdf, compliant=True, profile=profile)
+                    if fixture == FIXTURES[0]:
+                        verify_conformance(binary, args.verapdf, pdf, compliant=False, profile="1b")
+                print(f"{source.suffix[1:]}: PDF/A-{profile} metadata and text OK"
+                      + ("; veraPDF compliant" if args.verapdf else ""))
         source = root / FIXTURES[-1]
         run([binary, "--export", "pdf", "--out-dir", directory, source])
         pdf = directory / (source.stem + ".pdf")
-        verify_metadata(pdf, archival=False)
-        verify_identification(binary, pdf, archival=False)
+        verify_metadata(pdf, part=None)
+        verify_identification(binary, pdf, part=None)
         verify_validator_errors(binary, pdf)
         if args.verapdf:
             verify_conformance(binary, args.verapdf, pdf, compliant=False)

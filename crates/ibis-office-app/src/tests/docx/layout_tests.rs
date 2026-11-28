@@ -901,6 +901,7 @@ fn inline_picture_stretches_to_the_explicit_frame_when_rendered() {
         notes_pages: false,
         outline_pages: false,
         notes_source: None,
+        embed_source: None,
         handout_marks: Default::default(),
     };
     crate::export::export(presentation, &options).unwrap();
