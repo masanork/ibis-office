@@ -56,7 +56,7 @@ upstreamの作者情報は書き換えない。
 
 ```sh
 npm run test:web
-cargo test -p ibis-formats --lib jtd::
+cargo test -p ibis-jtd --lib
 python3 -m unittest discover -s scripts -p test_audit_jtd.py -v
 scripts/build-web.sh --release
 python3 scripts/check-web-assets.py

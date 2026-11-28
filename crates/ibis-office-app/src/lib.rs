@@ -16,6 +16,7 @@
 pub(crate) use ibis_office_base::clock;
 // The document screen is its own crate (tasks/doc/crate-split-plan.md, 15); the app and the tests name it `crate::docx`.
 pub(crate) use ibis_office_docx as docx;
+#[cfg(any(test, feature = "scenarios"))]
 pub(crate) use ibis_office_shell::jtd_preview;
 #[cfg(windows)]
 mod open_with;

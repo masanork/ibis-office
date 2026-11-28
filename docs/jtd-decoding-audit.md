@@ -148,7 +148,7 @@ python3 -m unittest discover -s scripts -p test_audit_jtd.py -v
 
 IBIS_JTD_SAMPLE='/path/to/sample.jtd' \
 IBIS_JTD_DOCX_OUT='/tmp/jtd-audit-current.docx' \
-cargo test -p ibis-formats --lib jtd::tests::local_sample_can_be_read -- --ignored --exact
+cargo test -p ibis-jtd --lib local_sample_can_be_read -- --ignored --exact
 
 python3 scripts/audit-jtd.py '/path/to/sample.jtd' \
   --pdf '/path/to/sample.pdf' --docx '/tmp/jtd-audit-current.docx'
@@ -165,7 +165,7 @@ python3 scripts/test_audit_jtd.py --write-probes /tmp/jtd-probes
 
 # 現実装ではFAILEDとなる。本文は「甲乙丙」だがDOCXは「甲」のみ。
 IBIS_JTD_SAMPLE=/tmp/jtd-probes/inline.jtd IBIS_JTD_EXPECT=甲乙丙 \
-cargo test -p ibis-formats --lib jtd::tests::local_sample_can_be_read -- --ignored --exact
+cargo test -p ibis-jtd --lib local_sample_can_be_read -- --ignored --exact
 ```
 
 同じ手順で`ordered`/`reordered`をDOCX出力して診断すると、独立診断は両方140文字、
