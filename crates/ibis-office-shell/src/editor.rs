@@ -1220,7 +1220,7 @@ impl SlideEditor {
         self.jtd.original.is_some()
     }
 
-    fn jtd_omission_notice(notice: &mut String, omissions: Option<ibis_formats::jtd::OmittedContent>) {
+    fn jtd_omission_notice(notice: &mut String, omissions: Option<ibis_jtd::OmittedContent>) {
         if let Some(omissions) = omissions {
             if omissions.additional_sheets > 0 {
                 notice.push_str(&crate::i18n::format("jtd.omitted-sheets", &[("count", &omissions.additional_sheets)]));
@@ -1233,7 +1233,7 @@ impl SlideEditor {
 
     pub fn load_jtd(&mut self, presentation: Presentation, name: SharedString, bytes: impl Into<std::sync::Arc<[u8]>>, gallery: bool, window: &mut Window, cx: &mut Context<Self>) {
         let bytes = bytes.into();
-        let omissions = (!gallery).then(|| ibis_formats::jtd::omitted_content(&bytes).ok()).flatten();
+        let omissions = (!gallery).then(|| ibis_jtd::omitted_content(&bytes).ok()).flatten();
         self.load(presentation, name, window, cx);
         self.jtd.original = Some(bytes);
         self.jtd.gallery = gallery;
@@ -1343,8 +1343,8 @@ impl SlideEditor {
     /// Convert the recognized preview into a separate editable Word document.
     pub fn edit_jtd_as_docx(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_edit_jtd_as_docx() { return; }
-        let omissions = self.jtd.original.as_deref().and_then(|bytes| ibis_formats::jtd::omitted_content(bytes).ok());
-        let result = ibis_formats::jtd::export_docx(self.presentation()).and_then(ibis_formats::open);
+        let omissions = self.jtd.original.as_deref().and_then(|bytes| ibis_jtd::omitted_content(bytes).ok());
+        let result = ibis_jtd::export_docx(self.presentation()).and_then(ibis_formats::open);
         match result {
             Ok(opened) => {
                 let name = self.file_name.as_deref().unwrap_or("document.jtd");

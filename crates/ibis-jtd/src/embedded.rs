@@ -29,8 +29,10 @@ pub struct EmbeddedMetafileInspection {
 /// Validating the WMF envelope does not establish that it can be rendered
 /// correctly, or determine which page and position it belongs to.
 pub fn inspect_embedded_metafiles(data: &[u8]) -> Result<EmbeddedMetafileInspection, Error> {
-    let document = super::source_document(data)?;
-    let entries = ibis_ooxml::cfb::directory(&document).map_err(|e| Error::new(e.to_string()))?;
+    let container = super::source_document(data)?.container;
+    let entries = container
+        .directory()
+        .map_err(|e| Error::new(e.to_string()))?;
     let mut result = EmbeddedMetafileInspection::default();
     let mut total = 0usize;
     for entry in entries {
@@ -52,7 +54,16 @@ pub fn inspect_embedded_metafiles(data: &[u8]) -> Result<EmbeddedMetafileInspect
         if result.metafiles.len() + result.rejected >= MAX_CANDIDATES {
             return Err(Error::new("埋め込み画像の数が多すぎます"));
         }
-        let stream = ibis_ooxml::cfb::stream_path(&document, &entry.path)
+        let remaining = MAX_TOTAL_BYTES - total;
+        if container
+            .stream_size(&entry.path)
+            .map_err(|e| Error::new(e.to_string()))?
+            > remaining as u64
+        {
+            return Err(Error::new("埋め込み画像が大きすぎます"));
+        }
+        let stream = container
+            .stream_path_bounded(&entry.path, remaining)
             .map_err(|e| Error::new(e.to_string()))?;
         total = total
             .checked_add(stream.len())
@@ -167,21 +178,42 @@ mod tests {
     #[test]
     fn preview_falls_back_only_for_a_decoded_empty_body() {
         use ibis_ooxml::cfb::Item;
-        let document = |units: &[u16]| ibis_ooxml::cfb::write(&[
-            Item::stream("DocumentText", crate::decode::fixture(units)),
-            Item::storage("EmbedItems"),
-            Item::storage("EmbedItems/Embedding 7"),
-            Item::stream("EmbedItems/Embedding 7/\u{3}EmbeddedPress", envelope()),
-        ]);
+        let document = |units: &[u16]| {
+            ibis_ooxml::cfb::write(&[
+                Item::stream("DocumentText", crate::decode::fixture(units)),
+                Item::storage("EmbedItems"),
+                Item::storage("EmbedItems/Embedding 7"),
+                Item::stream("EmbedItems/Embedding 7/\u{3}EmbeddedPress", envelope()),
+            ])
+        };
         let empty = document(&[10]);
         assert!(crate::read(&empty).is_err());
-        assert!(matches!(crate::read_preview(&empty), Ok(crate::Preview::UnplacedImages(_))));
-        let compressed = ibis_ooxml::cfb::write(&[Item::stream("JSCompDocument", crate::compressed::fixture(&empty))]);
-        assert!(matches!(crate::read_preview(&compressed), Ok(crate::Preview::UnplacedImages(_))));
-        assert!(matches!(crate::read_preview(&document(&[])), Ok(crate::Preview::UnplacedImages(_))));
-        let blank = ibis_ooxml::cfb::write(&[Item::stream("DocumentText", crate::decode::fixture(&[]))]);
-        assert!(matches!(crate::read_preview(&blank), Ok(crate::Preview::Document(_))));
-        assert!(matches!(crate::read_preview(&document(&[0x7532])), Ok(crate::Preview::Document(_))));
+        assert!(matches!(
+            crate::read_preview(&empty),
+            Ok(crate::Preview::UnplacedImages(_))
+        ));
+        let compressed = ibis_ooxml::cfb::write(&[Item::stream(
+            "JSCompDocument",
+            crate::compressed::fixture(&empty),
+        )]);
+        assert!(matches!(
+            crate::read_preview(&compressed),
+            Ok(crate::Preview::UnplacedImages(_))
+        ));
+        assert!(matches!(
+            crate::read_preview(&document(&[])),
+            Ok(crate::Preview::UnplacedImages(_))
+        ));
+        let blank =
+            ibis_ooxml::cfb::write(&[Item::stream("DocumentText", crate::decode::fixture(&[]))]);
+        assert!(matches!(
+            crate::read_preview(&blank),
+            Ok(crate::Preview::Document(_))
+        ));
+        assert!(matches!(
+            crate::read_preview(&document(&[0x7532])),
+            Ok(crate::Preview::Document(_))
+        ));
         let invalid = ibis_ooxml::cfb::write(&[
             Item::stream("DocumentText", b"not a document".to_vec()),
             Item::storage("EmbedItems"),

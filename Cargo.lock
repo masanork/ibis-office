@@ -7541,7 +7541,6 @@ dependencies = [
  "chrono",
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
- "delharc",
  "dicom-core",
  "dicom-object",
  "encoding_rs",
@@ -7606,6 +7605,7 @@ version = "0.8.0"
 dependencies = [
  "delharc",
  "ibis-doc-model",
+ "ibis-emf",
  "ibis-formats",
  "ibis-ooxml",
 ]
@@ -7893,6 +7893,7 @@ dependencies = [
  "ibis-doc-service",
  "ibis-emf",
  "ibis-formats",
+ "ibis-jtd",
  "ibis-lawtext",
  "ibis-mcp",
  "ibis-ocr",

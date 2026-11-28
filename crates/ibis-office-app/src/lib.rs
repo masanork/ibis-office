@@ -1040,6 +1040,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     )
                     .map_err(|e| format!("{}: {e}", path.display()))?
                     .presentation
+                } else if ibis_jtd::is_jtd(&data) {
+                    ibis_jtd::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 } else {
                     ibis_odf::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 };
@@ -1066,6 +1068,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                     )
                     .map_err(|e| format!("{}: {e}", path.display()))?
                     .presentation
+                } else if ibis_jtd::is_jtd(&data) {
+                    ibis_jtd::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 } else {
                     ibis_odf::read(&data).map_err(|e| format!("{}: {e}", path.display()))?
                 };

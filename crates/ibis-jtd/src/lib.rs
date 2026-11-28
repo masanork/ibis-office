@@ -9,25 +9,26 @@
 //! Rule data follows the independent observations documented in docs/jtd-format-notes.md.
 //! These are incomplete research notes, not a complete specification.
 use ibis_formats::{Error, Kind};
-mod decode;
-mod font;
 mod compressed;
+mod decode;
 mod embedded;
+mod font;
 mod frame;
 mod thumbnail;
-pub use embedded::{EmbeddedMetafile, EmbeddedMetafileInspection, inspect_embedded_metafiles};
-pub use frame::{FrameCandidate, FrameLink, inspect_frame_links};
-pub use thumbnail::{ThumbnailCandidate, decode_thumbnail_bmp, inspect_thumbnail};
 pub use decode::{DecodedText, Diagnostic, Piece, Record, RecordKind, StyleSpan};
+pub use embedded::{EmbeddedMetafile, EmbeddedMetafileInspection, inspect_embedded_metafiles};
 pub use font::FontRecord;
+pub use frame::{FrameCandidate, FrameLink, inspect_frame_links};
 use ibis_doc_model::{
     Block, BorderStyle, CellDirection, FlowBorder, FlowCell, FlowRow, FlowRowLine, FlowRun,
     FlowRunKind, FlowRunStyle, FlowTable, Presentation, Rgb, RowHeight, RubyAlign,
 };
+pub use thumbnail::{ThumbnailCandidate, decode_thumbnail_bmp, inspect_thumbnail};
 
 const MAX_FILE: usize = 64 * 1024 * 1024;
 const MAX_STREAM: usize = 32 * 1024 * 1024;
-const NO_VISIBLE_CONTENT: &str = "表示できる一太郎本文を読み取れませんでした。画像・図形・埋め込みは現在未対応です";
+const NO_VISIBLE_CONTENT: &str =
+    "表示できる一太郎本文を読み取れませんでした。画像・図形・埋め込みは現在未対応です";
 
 /// A text preview, or unplaced image candidates when the decoded body has no visible content.
 pub enum Preview {
@@ -42,20 +43,27 @@ pub fn read_preview(data: &[u8]) -> Result<Preview, Error> {
         Ok(document) => {
             // A truly empty text stream is accepted by the regular reader.
             // Only choose the gallery if it also contains known image candidates.
-            let empty = document.flow.as_ref().is_some_and(|flow| flow.body.iter().all(|block| {
+            let empty = document.flow.as_ref().is_some_and(|flow| {
+                flow.body.iter().all(|block| {
                 matches!(block, Block::Paragraph(paragraph) if paragraph.runs.is_empty())
-            }));
+            })
+            });
             if empty {
                 if let Ok(candidates) = inspect_embedded_metafiles(data) {
-                    if !candidates.metafiles.is_empty() { return Ok(Preview::UnplacedImages(candidates)); }
+                    if !candidates.metafiles.is_empty() {
+                        return Ok(Preview::UnplacedImages(candidates));
+                    }
                 }
             }
             Ok(Preview::Document(document))
         }
         Err(error) if error.to_string() == NO_VISIBLE_CONTENT => {
             let candidates = inspect_embedded_metafiles(data)?;
-            if candidates.metafiles.is_empty() { Err(error) }
-            else { Ok(Preview::UnplacedImages(candidates)) }
+            if candidates.metafiles.is_empty() {
+                Err(error)
+            } else {
+                Ok(Preview::UnplacedImages(candidates))
+            }
         }
         Err(error) => Err(error),
     }
@@ -63,7 +71,9 @@ pub fn read_preview(data: &[u8]) -> Result<Preview, Error> {
 
 /// Supported Ichitaro document or template extension (case-insensitive).
 pub fn is_extension(extension: &str) -> bool {
-    extension.eq_ignore_ascii_case("jtd") || extension.eq_ignore_ascii_case("jtt") || extension.eq_ignore_ascii_case("jttc")
+    extension.eq_ignore_ascii_case("jtd")
+        || extension.eq_ignore_ascii_case("jtt")
+        || extension.eq_ignore_ascii_case("jttc")
 }
 
 /// Never label a DOCX conversion as a native Ichitaro format, even if this
@@ -87,6 +97,7 @@ fn import_run(kind: FlowRunKind, style: FlowRunStyle) -> FlowRun {
         highlight: Some(style.highlight),
         spacing: Some(style.spacing),
         scale: Some(style.scale),
+        tate_chu_yoko: style.tate_chu_yoko.then_some(true),
         ..Default::default()
     };
     FlowRun {
@@ -97,37 +108,68 @@ fn import_run(kind: FlowRunKind, style: FlowRunStyle) -> FlowRun {
 
 /// Identify a supported JTD by its container and named document stream.
 pub fn is_jtd(data: &[u8]) -> bool {
-    checked_stream(data).is_ok_and(|s| s.starts_with(b"SsmgV.01"))
-        || (data.len() <= MAX_FILE && ibis_ooxml::cfb::stream_path(data, "JSCompDocument").is_ok_and(|s| compressed::is_wrapper(&s)))
+    if data.len() > MAX_FILE {
+        return false;
+    }
+    let Ok(container) = Container::new(std::borrow::Cow::Borrowed(data)) else {
+        return false;
+    };
+    checked_text(&container).is_ok_and(|s| s.starts_with(b"SsmgV.01"))
+        || container
+            .stream_path_bounded("JSCompDocument", MAX_STREAM)
+            .is_ok_and(|s| compressed::is_wrapper(&s))
 }
 
-fn source_document(data: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, Error> {
-    if data.len() > MAX_FILE { return Err(Error::new("一太郎ファイルが大きすぎます")); }
-    let entries = ibis_ooxml::cfb::directory(data).map_err(|_| Error::new("対応する一太郎コンテナではありません"))?;
-    if entries.iter().any(|entry| !entry.is_storage && entry.path == "DocumentText") {
-        // A malformed or over-limit root stream must not silently fall back
-        // to a second, unrelated compressed document in the same container.
-        checked_stream(data)?;
-        return Ok(std::borrow::Cow::Borrowed(data));
+type Container<'a> = ibis_ooxml::cfb::Reader<std::borrow::Cow<'a, [u8]>>;
+
+struct SourceDocument<'a> {
+    container: Container<'a>,
+    text: Vec<u8>,
+}
+
+fn source_document(data: &[u8]) -> Result<SourceDocument<'_>, Error> {
+    use std::borrow::Cow;
+    if data.len() > MAX_FILE {
+        return Err(Error::new("一太郎ファイルが大きすぎます"));
     }
-    let stream = ibis_ooxml::cfb::stream_path(data, "JSCompDocument")
-        .map_err(|_| Error::new("一太郎本文がないか、暗号化・未対応の形式です"))?;
-    if stream.len() > MAX_STREAM { return Err(Error::new("圧縮一太郎文書が大きすぎます")); }
-    let inner = compressed::decompress(&stream, MAX_FILE)?;
-    checked_stream(&inner)?;
-    Ok(std::borrow::Cow::Owned(inner))
+    let mut container = Container::new(Cow::Borrowed(data))
+        .map_err(|_| Error::new("対応する一太郎コンテナではありません"))?;
+    let entries = container
+        .directory()
+        .map_err(|_| Error::new("対応する一太郎コンテナではありません"))?;
+    if !entries
+        .iter()
+        .any(|entry| !entry.is_storage && entry.path == "DocumentText")
+    {
+        let name = "JSCompDocument";
+        let size = container
+            .stream_size(name)
+            .map_err(|_| Error::new("一太郎本文がないか、暗号化・未対応の形式です"))?;
+        if size > MAX_STREAM as u64 {
+            return Err(Error::new("圧縮一太郎文書が大きすぎます"));
+        }
+        let stream = container
+            .stream_path_bounded(name, MAX_STREAM)
+            .map_err(|_| Error::new("一太郎本文がないか、暗号化・未対応の形式です"))?;
+        let inner = compressed::decompress(&stream, MAX_FILE)?;
+        container = Container::new(Cow::Owned(inner))
+            .map_err(|_| Error::new("対応するJTDコンテナではありません"))?;
+    }
+    // A malformed root stream must retain its error, including when a
+    // second compressed document is present in the same container.
+    let text = checked_text(&container)?;
+    Ok(SourceDocument { container, text })
 }
 
 /// Decode the font table without assuming that inline character selectors
 /// use the same index namespace.
 pub fn inspect_fonts(data: &[u8]) -> Result<Vec<FontRecord>, Error> {
-    let data = source_document(data)?;
-    checked_stream(&data)?;
-    font_table(&data)
+    font_table(&source_document(data)?.container)
 }
 
-fn font_table(data: &[u8]) -> Result<Vec<FontRecord>, Error> {
-    let bytes = ibis_ooxml::cfb::stream_path(data, "Font")
+fn font_table(container: &Container<'_>) -> Result<Vec<FontRecord>, Error> {
+    let bytes = container
+        .stream_path_bounded("Font", MAX_STREAM)
         .map_err(|_| Error::new("JTDのフォント表がありません"))?;
     font::parse(&bytes)
 }
@@ -154,23 +196,25 @@ fn default_font<'a>(styles: &[u8], fonts: &'a [FontRecord]) -> Option<&'a FontRe
         .then_some(primary)
 }
 
+#[cfg(test)]
 fn checked_stream(data: &[u8]) -> Result<Vec<u8>, Error> {
     if data.len() > MAX_FILE {
         return Err(Error::new("JTDファイルが大きすぎます"));
     }
-    if data.len() < 512
-        || !ibis_ooxml::cfb::is_cfb(data)
-        || !matches!(u16::from_le_bytes([data[30], data[31]]), 9 | 12)
-        || u16::from_le_bytes([data[32], data[33]]) != 6
-    {
-        return Err(Error::new("対応するJTDコンテナではありません"));
-    }
-    let stream = ibis_ooxml::cfb::stream_path(data, "DocumentText")
-        .map_err(|_| Error::new("JTD本文がないか、暗号化・未対応の形式です"))?;
-    if stream.len() > MAX_STREAM {
+    let container = Container::new(std::borrow::Cow::Borrowed(data))
+        .map_err(|_| Error::new("対応するJTDコンテナではありません"))?;
+    checked_text(&container)
+}
+
+fn checked_text(container: &Container<'_>) -> Result<Vec<u8>, Error> {
+    const NAME: &str = "DocumentText";
+    let missing = |_| Error::new("JTD本文がないか、暗号化・未対応の形式です");
+    if container.stream_size(NAME).map_err(missing)? > MAX_STREAM as u64 {
         return Err(Error::new("JTD本文が大きすぎます"));
     }
-    Ok(stream)
+    container
+        .stream_path_bounded(NAME, MAX_STREAM)
+        .map_err(missing)
 }
 
 /// Known content that the preview cannot currently import. Counts report
@@ -182,18 +226,26 @@ pub struct OmittedContent {
 }
 
 pub fn omitted_content(data: &[u8]) -> Result<OmittedContent, Error> {
-    let data = source_document(data)?;
-    let entries = ibis_ooxml::cfb::directory(&data).map_err(|e| Error::new(e.to_string()))?;
+    let container = source_document(data)?.container;
+    let entries = container
+        .directory()
+        .map_err(|e| Error::new(e.to_string()))?;
     let mut result = OmittedContent::default();
     for entry in entries {
         let path = entry.path.as_str();
-        if !entry.is_storage && path.starts_with("ObjectSheets/DocSheet/") && path.ends_with("/DocumentText") {
+        if !entry.is_storage
+            && path.starts_with("ObjectSheets/DocSheet/")
+            && path.ends_with("/DocumentText")
+        {
             let sheet = &path["ObjectSheets/DocSheet/".len()..path.len() - "/DocumentText".len()];
-            if sheet.starts_with("DOCS_") && !sheet.contains('/') { result.additional_sheets += 1; }
+            if sheet.starts_with("DOCS_") && !sheet.contains('/') {
+                result.additional_sheets += 1;
+            }
         }
         if entry.is_storage {
             let name = path.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
-            if name.starts_with("embedding") || name.starts_with("oleitem") || name == "figuredata" {
+            if name.starts_with("embedding") || name.starts_with("oleitem") || name == "figuredata"
+            {
                 result.embedded_objects += 1;
             }
         }
@@ -204,10 +256,9 @@ pub fn omitted_content(data: &[u8]) -> Result<OmittedContent, Error> {
 /// Import only confirmed text into the existing document model. This is lossy
 /// and must never be used as the source of a JTD save.
 pub fn read(data: &[u8]) -> Result<Presentation, Error> {
-    let data = source_document(data)?;
-    let data = data.as_ref();
-    let stream = checked_stream(data)?;
-    let decoded = decode::decode(&stream)?;
+    let SourceDocument { container, text } = source_document(data)?;
+    let decoded = decode::decode(&text)?;
+    drop(text);
     let mut presentation = ibis_formats::read(&ibis_formats::blank_file(Kind::Document)?)?;
     let flow = std::sync::Arc::make_mut(
         presentation
@@ -221,15 +272,15 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     flow.page.bottom = 30 * 36_000;
     flow.page.left = 30 * 36_000;
     flow.page.right = 30 * 36_000;
-    let mut page_lines = 40;
     // Page geometry must be installed before table widths are derived.
-    if let Ok(styles) = ibis_ooxml::cfb::stream_path(data, "DocumentViewStyles") {
-        apply_view_page(&styles, &mut flow.page);
-        if observed_vertical(&styles) {
-            flow.page.direction = CellDirection::TbRl;
-        }
-        page_lines = view_style_lines(&styles).unwrap_or(40);
+    let typography = container
+        .stream_path_bounded("DocumentViewStyles", MAX_STREAM)
+        .unwrap_or_default();
+    apply_view_page(&typography, &mut flow.page);
+    if observed_vertical(&typography) {
+        flow.page.direction = CellDirection::TbRl;
     }
+    let page_lines = view_style_lines(&typography).unwrap_or(40);
     let cross_axis = if flow.page.direction.vertical() {
         flow.page.size.width - flow.page.left - flow.page.right
     } else {
@@ -237,9 +288,8 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     };
     flow.page.line_pitch = Some(cross_axis / i64::from(page_lines));
     flow.page.doc_grid_type = ibis_doc_model::DocGridType::Lines;
-    let typography = ibis_ooxml::cfb::stream_path(data, "DocumentViewStyles").unwrap_or_default();
     let mut defaults = view_typography(&typography, &mut flow.page);
-    if let Ok(fonts) = font_table(data) {
+    if let Ok(fonts) = font_table(&container) {
         if let Some(font) = default_font(&typography, &fonts) {
             defaults.font = Some(font.face.clone());
             defaults.east_asian_font = Some(font.face.clone());
@@ -250,14 +300,31 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     {
         let styles = std::sync::Arc::make_mut(&mut flow.styles);
         styles.defaults_run.size = Some(defaults.size);
+        // The imported runs do not request pair kerning. Drop the blank Word
+        // template's threshold so conversion does not squeeze pairs like 。」.
+        styles.defaults_run.kern = None;
         if defaults.font.is_some() {
             styles.defaults_run.font = defaults.font.clone();
             styles.defaults_run.east_asian_font = defaults.east_asian_font.clone();
+            // A resolved JTD face also covers the extended Latin slot. Keep
+            // Word's template face from replacing its ambiguous characters.
+            styles.defaults_run.h_ansi_font = defaults.font.clone();
             styles.defaults_run.bold = Some(defaults.bold);
             styles.defaults_run.italic = Some(defaults.italic);
         }
+        // Use the same font slots as the DOCX template in the directly
+        // rendered model, including when no JTD font reference resolved.
+        defaults.font = styles.defaults_run.font.clone();
+        defaults.east_asian_font = styles.defaults_run.east_asian_font.clone();
+        defaults.h_ansi_font = styles.defaults_run.h_ansi_font.clone();
+        defaults.cs_font = styles.defaults_run.cs_font.clone();
     }
-    let segments = table_candidates(extract_decoded(&decoded, &defaults, flow.page.line_pitch)?);
+    let segments = table_candidates(extract_decoded(
+        &decoded,
+        &defaults,
+        flow.page.line_pitch,
+        flow.page.direction.vertical(),
+    )?);
     let mut template = match flow.body.first() {
         Some(Block::Paragraph(p)) => p.clone(),
         _ => return Err(Error::new("文書の段落を作成できません")),
@@ -275,10 +342,15 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
         match segment {
             Segment::ParagraphFormat(format) => {
                 template.direct.overlay(&format);
+                // A JTD paragraph with its own layout uses start alignment
+                // unless it specifies another one. Record that choice so it
+                // does not inherit the blank DOCX template's justification.
+                template.direct.align.get_or_insert_default();
                 let direct = template.direct.clone();
                 direct.apply_to(&mut template);
                 if paragraph.runs.is_empty() {
                     paragraph.direct.overlay(&format);
+                    paragraph.direct.align.get_or_insert_default();
                     let direct = paragraph.direct.clone();
                     direct.apply_to(&mut paragraph);
                 }
@@ -444,18 +516,17 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
                     next_id += 1;
                 }
                 table.rows.push(row);
-                table.resolve_borders();
                 let mut combined = false;
                 if paragraph.runs.is_empty() {
                     if let Some(Block::Table(previous)) = flow.body.last_mut() {
                         if previous.columns == table.columns && previous.borders == table.borders {
-                            previous.rows.extend(table.rows.clone());
+                            previous.rows.append(&mut table.rows);
                             combined = true;
                         } else if table_key.is_some()
                             && table_key == last_table_key
                             && previous.borders == table.borders
                         {
-                            combined = merge_table_grids(previous, &table);
+                            combined = merge_table_grids_raw(previous, &table);
                         }
                     }
                 }
@@ -540,6 +611,11 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
         next_id
     };
     flow.body.push(Block::Paragraph(paragraph));
+    for block in &mut flow.body {
+        if let Block::Table(table) = block {
+            table.resolve_borders();
+        }
+    }
     flow.id_floor = next_id;
     Ok(presentation)
 }
@@ -756,13 +832,42 @@ fn view_style_lines(data: &[u8]) -> Option<u16> {
 
 /// Align two adjacent observed display-line grids using spans. This retains
 /// every original cell boundary; it does not infer logical JTD merges.
-fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
+///
+/// The new spans are planned before any cell changes. A long comparison
+/// table adds one ruled line at a time, so cloning the rows already
+/// accumulated would copy the whole table on every line.
+fn merge_table_grids_raw(previous: &mut FlowTable, next: &FlowTable) -> bool {
     fn edges(columns: &[i64]) -> Option<Vec<i64>> {
         let mut out = vec![0i64];
         for &width in columns {
             out.push(out.last()?.checked_add(width)?);
         }
         Some(out)
+    }
+    fn planned_spans(rows: &[FlowRow], old: &[i64], grid: &[i64]) -> Option<Vec<Vec<u32>>> {
+        let mut planned = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut spans = Vec::with_capacity(row.cells.len());
+            let mut at = 0usize;
+            for cell in &row.cells {
+                let end = at + cell.span.max(1) as usize;
+                if end >= old.len() {
+                    return None;
+                }
+                let (Ok(start), Ok(stop)) =
+                    (grid.binary_search(&old[at]), grid.binary_search(&old[end]))
+                else {
+                    return None;
+                };
+                spans.push((stop - start) as u32);
+                at = end;
+            }
+            if at != old.len() - 1 {
+                return None;
+            }
+            planned.push(spans);
+        }
+        Some(planned)
     }
     let Some(a) = edges(&previous.columns) else {
         return false;
@@ -780,38 +885,73 @@ fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
     if grid.len() > 1025 {
         return false;
     }
-    fn remap(rows: &mut [FlowRow], old: &[i64], grid: &[i64]) -> bool {
-        for row in rows {
-            let mut at = 0usize;
-            for cell in &mut row.cells {
-                let end = at + cell.span.max(1) as usize;
-                if end >= old.len() {
-                    return false;
-                }
-                let (Ok(start), Ok(stop)) =
-                    (grid.binary_search(&old[at]), grid.binary_search(&old[end]))
-                else {
-                    return false;
-                };
-                cell.span = (stop - start) as u32;
-                at = end;
-            }
-            if at != old.len() - 1 {
-                return false;
+    // Fast path: when `b`'s edges are already a subset of `a`, `previous.rows` spans do not change.
+    let grid_unchanged = grid == a;
+    let previous_spans = if grid_unchanged {
+        None
+    } else {
+        match planned_spans(&previous.rows, &a, &grid) {
+            Some(spans) => Some(spans),
+            None => return false,
+        }
+    };
+    let Some(incoming_spans) = planned_spans(&next.rows, &b, &grid) else {
+        return false;
+    };
+    if let Some(previous_spans) = previous_spans {
+        for (row, spans) in previous.rows.iter_mut().zip(previous_spans) {
+            for (cell, span) in row.cells.iter_mut().zip(spans) {
+                cell.span = span;
             }
         }
-        true
+        previous.columns = grid.windows(2).map(|pair| pair[1] - pair[0]).collect();
     }
-    let mut merged = previous.clone();
     let mut incoming = next.rows.clone();
-    if !remap(&mut merged.rows, &a, &grid) || !remap(&mut incoming, &b, &grid) {
+    for (row, spans) in incoming.iter_mut().zip(incoming_spans) {
+        for (cell, span) in row.cells.iter_mut().zip(spans) {
+            cell.span = span;
+        }
+    }
+    previous.rows.extend(incoming);
+    true
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn merge_table_grids(previous: &mut FlowTable, next: &FlowTable) -> bool {
+    if !merge_table_grids_raw(previous, next) {
         return false;
     }
-    merged.columns = grid.windows(2).map(|pair| pair[1] - pair[0]).collect();
-    merged.rows.extend(incoming);
-    merged.resolve_borders();
-    *previous = merged;
+    previous.resolve_borders();
     true
+}
+
+// DOCX stores page geometry and exact line feeds in twips. Round to the
+// closest one before the general writer serializes the already rounded values.
+fn nearest_twip(emu: i64) -> i64 {
+    (emu / 635 + emu % 635 / 318).saturating_mul(635)
+}
+
+fn round_docx_line_feeds(blocks: &mut [Block]) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                if let Some(ibis_doc_model::LineHeight::Exact(feed)) = &mut paragraph.direct.line {
+                    *feed = nearest_twip(*feed);
+                    paragraph.line = ibis_doc_model::LineHeight::Exact(*feed);
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    if let RowHeight::Exact(height) = &mut row.height {
+                        *height = nearest_twip(*height);
+                    }
+                    for cell in &mut row.cells {
+                        round_docx_line_feeds(&mut cell.blocks);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Export the currently recognized model as DOCX. Unsupported JTD features
@@ -821,6 +961,15 @@ pub fn export_docx(presentation: &Presentation) -> Result<Vec<u8>, Error> {
     let mut exported = presentation.clone();
     if let Some(flow) = exported.flow.as_mut() {
         let flow = std::sync::Arc::make_mut(flow);
+        let page = &mut flow.page;
+        page.size.width = nearest_twip(page.size.width);
+        page.size.height = nearest_twip(page.size.height);
+        page.top = nearest_twip(page.top);
+        page.right = nearest_twip(page.right);
+        page.bottom = nearest_twip(page.bottom);
+        page.left = nearest_twip(page.left);
+        page.line_pitch = page.line_pitch.map(nearest_twip);
+        round_docx_line_feeds(&mut flow.body);
         if let (Some(space), Some(size)) = (flow.page.char_space, flow.styles.defaults_run.size) {
             // Word stores the default size in half-points. Preserve the
             // source's full-width grid pitch after that unavoidable rounding.
@@ -828,7 +977,9 @@ pub fn export_docx(presentation: &Presentation) -> Result<Vec<u8>, Error> {
             flow.page.char_space = Some(space + (i64::from(size) - i64::from(rounded)) * 127);
         }
     }
-    blank.source.save(&exported, ibis_formats::SaveOptions::default())
+    blank
+        .source
+        .save(&exported, ibis_formats::SaveOptions::default())
 }
 
 /// Export the currently recognized model as standalone UTF-8 HTML.
@@ -1325,14 +1476,19 @@ fn rule_row_lines(
 /// Decode the logical store before interpreting any text or record.
 #[cfg(test)]
 fn extract(bytes: &[u8]) -> Result<Vec<Segment>, Error> {
-    extract_decoded(&decode::decode(bytes)?, &FlowRunStyle::default(), None)
+    extract_decoded(
+        &decode::decode(bytes)?,
+        &FlowRunStyle::default(),
+        None,
+        false,
+    )
 }
 
 /// Inspect original logical units and record ranges without applying table
 /// inference. Unknown properties and undecoded style tails remain available.
 pub fn inspect(data: &[u8]) -> Result<DecodedText, Error> {
     let data = source_document(data)?;
-    decode::decode(&checked_stream(&data)?)
+    decode::decode(&data.text)
 }
 
 fn run_style(document: &DecodedText, position: usize, defaults: &FlowRunStyle) -> FlowRunStyle {
@@ -1415,10 +1571,40 @@ fn append_text(
     Ok(())
 }
 
+/// Cached table-of-contents page number, selector `(1, 0x0101)`.
+/// The payload is the digits Ichitaro stored, not a recomputed page.
+/// A unit below U+0020 is dropped, as with other numeric fields.
+/// Two or three ASCII digits become 縦中横 only when the page is vertical:
+/// layout squeezes a run whenever `tate_chu_yoko` is set.
+fn append_cached_page_number(
+    document: &DecodedText,
+    text: std::ops::Range<usize>,
+    defaults: &FlowRunStyle,
+    vertical: bool,
+    out: &mut Vec<Segment>,
+) -> Result<(), Error> {
+    let units = &document.units[text.clone()];
+    if units.iter().any(|unit| *unit < 0x20) {
+        return Ok(());
+    }
+    let value = document.text(text.clone())?;
+    let upright = vertical
+        && (2..=3).contains(&value.chars().count())
+        && value.bytes().all(|byte| byte.is_ascii_digit());
+    if upright {
+        let mut style = run_style(document, text.start, defaults);
+        style.tate_chu_yoko = true;
+        out.push(Segment::StyledText(value, Box::new(style)));
+        return Ok(());
+    }
+    append_text(document, text, defaults, out)
+}
+
 fn extract_decoded(
     document: &DecodedText,
     defaults: &FlowRunStyle,
     normal_pitch: Option<i64>,
+    vertical: bool,
 ) -> Result<Vec<Segment>, Error> {
     use decode::RecordKind;
     let mut out = Vec::new();
@@ -1470,6 +1656,10 @@ fn extract_decoded(
                 }
                 append_text(document, text.clone(), defaults, &mut out)?;
             }
+            RecordKind::Inline {
+                selector: [1, 0x0101],
+                text,
+            } => append_cached_page_number(document, text.clone(), defaults, vertical, &mut out)?,
             RecordKind::Record {
                 class: 0x10,
                 payload,
@@ -1527,6 +1717,11 @@ fn extract_decoded(
                     }
                     let row_alignment = format.align;
                     if format != ibis_doc_model::ParaFormat::default() {
+                        // The preview's paragraph layout keeps at least two
+                        // lines together at a page boundary. Record this
+                        // explicitly: the blank DOCX's Normal style turns
+                        // widow/orphan control off.
+                        format.widow_control = Some(true);
                         out.push(Segment::ParagraphFormat(format));
                     }
                     for (tag, range) in items {
@@ -1761,12 +1956,21 @@ mod tests {
             Item::storage("ObjectSheets"),
             Item::storage("ObjectSheets/DocSheet"),
             Item::storage("ObjectSheets/DocSheet/DOCS_0001"),
-            Item::stream("ObjectSheets/DocSheet/DOCS_0001/DocumentText", decode::fixture(&[0x4e59])),
+            Item::stream(
+                "ObjectSheets/DocSheet/DOCS_0001/DocumentText",
+                decode::fixture(&[0x4e59]),
+            ),
             Item::stream("DocumentText", decode::fixture(&[0x7532])),
             Item::storage("Embedding 1"),
         ]);
         let omission = omitted_content(&data).unwrap();
-        assert_eq!(omission, OmittedContent { additional_sheets: 1, embedded_objects: 1 });
+        assert_eq!(
+            omission,
+            OmittedContent {
+                additional_sheets: 1,
+                embedded_objects: 1
+            }
+        );
         let decoded = inspect(&data).unwrap();
         assert!(decoded.units.contains(&0x7532));
         assert!(!decoded.units.contains(&0x4e59));
@@ -1788,7 +1992,14 @@ mod tests {
         let doc = read(&outer).unwrap();
         let docx = export_docx(&doc).unwrap();
         let reopened = ibis_formats::read(&docx).unwrap();
-        assert!(reopened.flow.unwrap().body.iter().any(|block| matches!(block, Block::Paragraph(p) if p.text().contains("甲乙"))));
+        assert!(
+            reopened
+                .flow
+                .unwrap()
+                .body
+                .iter()
+                .any(|block| matches!(block, Block::Paragraph(p) if p.text().contains("甲乙")))
+        );
     }
 
     #[test]
@@ -1798,15 +2009,20 @@ mod tests {
             Item::stream("DocumentText", decode::fixture(&[10, 10])),
             Item::storage("Embedding 1"),
         ]);
-        let outer = ibis_ooxml::cfb::write(&[Item::stream("JSCompDocument", compressed::fixture(&inner))]);
-        let error = match read(&outer) { Ok(_) => panic!("must not present a blank preview as a successful import"), Err(error) => error };
+        let outer =
+            ibis_ooxml::cfb::write(&[Item::stream("JSCompDocument", compressed::fixture(&inner))]);
+        let error = match read(&outer) {
+            Ok(_) => panic!("must not present a blank preview as a successful import"),
+            Err(error) => error,
+        };
         assert!(error.to_string().contains("埋め込み"));
     }
 
     #[test]
     fn oversized_root_text_does_not_fall_back_to_compressed_content() {
         use ibis_ooxml::cfb::Item;
-        let inner = ibis_ooxml::cfb::write(&[Item::stream("DocumentText", decode::fixture(&[0x7532]))]);
+        let inner =
+            ibis_ooxml::cfb::write(&[Item::stream("DocumentText", decode::fixture(&[0x7532]))]);
         let data = ibis_ooxml::cfb::write(&[
             Item::stream("DocumentText", vec![0; MAX_STREAM + 1]),
             Item::stream("JSCompDocument", compressed::fixture(&inner)),
@@ -1817,7 +2033,7 @@ mod tests {
     #[test]
     fn explicitly_agreeing_font_references_survive_word_export() {
         let data = ibis_ooxml::cfb::write(&[
-            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&[0x7532])),
+            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&[0x25cb, 0x7532])),
             ibis_ooxml::cfb::Item::stream(
                 "Font",
                 font::fixture(&[
@@ -1838,14 +2054,55 @@ mod tests {
             let Block::Paragraph(p) = &flow.body[0] else {
                 panic!("paragraph")
             };
+            for character in ['○', '甲', 'é'] {
+                assert_eq!(p.runs[0].style.font_for(character), Some("ＭＳ 明朝"));
+            }
             assert_eq!(
-                p.runs[0].style.east_asian_font.as_deref(),
+                flow.styles.defaults_run.h_ansi_font.as_deref(),
                 Some("ＭＳ 明朝")
             );
         }
         let fonts = inspect_fonts(&data).unwrap();
         assert!(default_font(&font_styles(0, 9), &fonts).is_none());
         assert!(default_font(&font_styles(9, 0xfffe), &fonts).is_none());
+    }
+
+    #[test]
+    fn missing_jtd_font_uses_same_typefaces_before_and_after_docx_conversion() {
+        let model = read(&fixture("甲Aéش")).unwrap();
+        let saved = ibis_formats::read(&export_docx(&model).unwrap()).unwrap();
+        let first_paragraph = |doc: &Presentation| {
+            let Block::Paragraph(p) = &doc.flow.as_ref().unwrap().body[0] else {
+                panic!("paragraph");
+            };
+            (p.mark.clone(), p.runs[0].style.clone())
+        };
+        let (original_mark, original_text) = first_paragraph(&model);
+        let (reopened_mark, reopened_text) = first_paragraph(&saved);
+        for character in ['甲', 'A', 'é', 'ش'] {
+            let expected_font = reopened_text.font_for(character);
+            assert!(expected_font.is_some());
+            assert_eq!(original_text.font_for(character), expected_font);
+            assert_eq!(
+                original_mark.font_for(character),
+                reopened_mark.font_for(character)
+            );
+        }
+    }
+
+    #[test]
+    fn docx_conversion_does_not_add_template_kerning_to_jtd() {
+        let original = read(&fixture("「甲。」乙")).unwrap();
+        let reopened = ibis_formats::read(&export_docx(&original).unwrap()).unwrap();
+        for model in [&original, &reopened] {
+            let flow = model.flow.as_ref().unwrap();
+            assert_eq!(flow.styles.defaults_run.kern, None);
+            let Block::Paragraph(paragraph) = &flow.body[0] else {
+                panic!("paragraph");
+            };
+            assert_eq!(paragraph.text(), "「甲。」乙");
+            assert!(paragraph.runs.iter().all(|run| run.style.kern.is_none()));
+        }
     }
 
     #[test]
@@ -1942,6 +2199,39 @@ mod tests {
             assert!(
                 matches!(p.line, ibis_doc_model::LineHeight::Exact(feed) if (feed - 180_000).abs() < 635)
             );
+        }
+    }
+
+    #[test]
+    fn fixed_feed_keeps_jtd_alignment_and_widow_control_after_conversion() {
+        use ibis_doc_model::{FlowAlign, LineHeight};
+
+        let payload = [0, 0x20, 4, 8, 599, 0, 0, 0xffff, 0];
+        let length = (payload.len() + 7) as u16;
+        let mut units = vec![0x1c, 0x10, length];
+        units.extend(payload);
+        units.extend([length, 0, 0x10, 0x1f, 0x7532]);
+        let data = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&units),
+        )]);
+
+        let original = read(&data).unwrap();
+        let reopened = ibis_formats::read(&export_docx(&original).unwrap()).unwrap();
+        let second = ibis_formats::read(&export_docx(&reopened).unwrap()).unwrap();
+        for (model, feed) in [
+            (&original, 215_640),
+            (&reopened, 215_900),
+            (&second, 215_900),
+        ] {
+            let flow = model.flow.as_ref().unwrap();
+            let Block::Paragraph(paragraph) = &flow.body[0] else {
+                panic!("paragraph")
+            };
+            assert_eq!(paragraph.align, FlowAlign::Left);
+            assert_eq!(paragraph.line, LineHeight::Exact(feed));
+            assert!(!paragraph.snap_to_grid);
+            assert!(paragraph.widow_control);
         }
     }
 
@@ -2043,6 +2333,132 @@ mod tests {
         assert_eq!(decoded.diagnostics.len(), 1);
         let reopened = ibis_formats::read(&export_docx(&read(&data).unwrap()).unwrap()).unwrap();
         assert!(matches!(&reopened.flow.unwrap().body[0], Block::Paragraph(p) if p.text() == "甲"));
+    }
+
+    fn page_field(text: &str) -> Vec<u16> {
+        let mut units = vec![0x1c, 1, 7, 0, 1, 0x0101, 0x1d];
+        units.extend(text.encode_utf16());
+        units.extend([0x1e, 5, 0, 1, 0x1f]);
+        units
+    }
+
+    fn segment_text(segments: &[Segment]) -> String {
+        segments
+            .iter()
+            .map(|segment| match segment {
+                Segment::Text(text) | Segment::StyledText(text, _) => text.as_str(),
+                _ => "",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cached_toc_page_number_follows_its_heading() {
+        let mut units: Vec<u16> = "第一条".encode_utf16().collect();
+        units.extend(page_field("30"));
+        let decoded = decode::decode(&decode::fixture(&units)).unwrap();
+        assert!(decoded.diagnostics.is_empty());
+        let segments = extract(&decode::fixture(&units)).unwrap();
+        assert_eq!(segment_text(&segments), "第一条30");
+        assert!(segments.iter().all(
+            |segment| !matches!(segment, Segment::StyledText(_, style) if style.tate_chu_yoko)
+        ));
+    }
+
+    #[test]
+    fn control_valued_toc_page_number_is_omitted() {
+        for control in [5u16, 9] {
+            let units = [
+                0x1c, 1, 7, 0, 1, 0x0101, 0x1d, control, 0x1e, 5, 0, 1, 0x1f, 0x7532,
+            ];
+            let decoded = decode::decode(&decode::fixture(&units)).unwrap();
+            assert_eq!(decoded.diagnostics.len(), 1);
+            assert_eq!(
+                decoded.diagnostics[0].message,
+                "未解読の本文要素を保持しました"
+            );
+            assert_eq!(
+                segment_text(&extract(&decode::fixture(&units)).unwrap()),
+                "甲"
+            );
+        }
+    }
+
+    #[test]
+    fn vertical_toc_page_numbers_are_tate_chu_yoko_and_horizontal_ones_are_not() {
+        let mut units = Vec::new();
+        units.extend("見出し".encode_utf16());
+        units.push(0x000a);
+        for digits in ["30", "1", "122", "1234", "ab"] {
+            units.extend(page_field(digits));
+            units.push(0x000a);
+        }
+        units.pop();
+        let text = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&units),
+        )]);
+        let mut view = vec![0, 1, 0, 2, 0x10, 0];
+        let record = [0x10u8, 2, 0, 4, 0, 0, 0x10, 1];
+        view.extend((record.len() as u32).to_be_bytes());
+        view.extend(record);
+        let vertical_bytes = ibis_ooxml::cfb::write(&[
+            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&units)),
+            ibis_ooxml::cfb::Item::stream("DocumentViewStyles", view),
+        ]);
+        let check = |data: &[u8], vertical: bool| {
+            let imported = read(data).unwrap();
+            assert_eq!(
+                imported.flow.as_ref().unwrap().page.direction.vertical(),
+                vertical
+            );
+            let saved = ibis_formats::read(&export_docx(&imported).unwrap()).unwrap();
+            for doc in [&imported, &saved] {
+                let flow = doc.flow.as_ref().unwrap();
+                let paragraphs: Vec<_> = flow
+                    .body
+                    .iter()
+                    .filter_map(|block| match block {
+                        Block::Paragraph(paragraph) if !paragraph.runs.is_empty() => {
+                            Some(paragraph.text())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(paragraphs, ["見出し", "30", "1", "122", "1234", "ab"]);
+                let mut runs = Vec::new();
+                for block in &flow.body {
+                    let Block::Paragraph(paragraph) = block else {
+                        continue;
+                    };
+                    for run in &paragraph.runs {
+                        let FlowRunKind::Text(text) = &run.kind else {
+                            continue;
+                        };
+                        runs.push((
+                            text.clone(),
+                            run.style.tate_chu_yoko,
+                            run.format.tate_chu_yoko,
+                        ));
+                    }
+                }
+                let flag = |text: &str| {
+                    runs.iter()
+                        .find(|(value, _, _)| value == text)
+                        .map(|(_, style, format)| (*style, *format))
+                };
+                let upright = Some((true, Some(true)));
+                let plain = Some((false, None));
+                assert_eq!(flag("見出し"), plain);
+                assert_eq!(flag("30"), if vertical { upright } else { plain });
+                assert_eq!(flag("122"), if vertical { upright } else { plain });
+                assert_eq!(flag("1"), plain);
+                assert_eq!(flag("1234"), plain);
+                assert_eq!(flag("ab"), plain);
+            }
+        };
+        check(&text, false);
+        check(&vertical_bytes, true);
     }
 
     #[test]
@@ -2290,6 +2706,7 @@ mod tests {
     fn reads_text_and_is_recognized_before_xls() {
         let bytes = fixture("日本語\nsecond");
         assert!(is_jtd(&bytes));
+        assert!(!ibis_formats::is_legacy_binary(&bytes));
         let result = read(&bytes).unwrap();
         let flow = result.flow.unwrap();
         assert_eq!(flow.body.len(), 2);
@@ -2312,8 +2729,15 @@ mod tests {
     #[test]
     fn html_preserves_combined_table_spans() {
         use ibis_doc_model::VerticalMerge::{Continue, None, Start};
-        let cell = |span, merge| FlowCell { span, merge, ..FlowCell::default() };
-        let row = |cells| FlowRow { cells, ..FlowRow::default() };
+        let cell = |span, merge| FlowCell {
+            span,
+            merge,
+            ..FlowCell::default()
+        };
+        let row = |cells| FlowRow {
+            cells,
+            ..FlowRow::default()
+        };
         let table = FlowTable {
             columns: vec![50, 50, 50, 50],
             rows: vec![
@@ -2322,7 +2746,12 @@ mod tests {
                 row(vec![cell(2, Continue), cell(1, None), cell(1, None)]),
                 row(vec![cell(2, None), cell(1, Start), cell(1, None)]),
                 // The merge starts at grid column 2, but its cell index changes.
-                row(vec![cell(0, None), cell(1, None), cell(1, Continue), cell(1, None)]),
+                row(vec![
+                    cell(0, None),
+                    cell(1, None),
+                    cell(1, Continue),
+                    cell(1, None),
+                ]),
                 row(vec![cell(2, None), cell(1, None), cell(1, None)]),
                 row(vec![cell(2, None), cell(1, Continue), cell(1, None)]),
             ],
@@ -2334,22 +2763,92 @@ mod tests {
         assert!(html.contains("<tr><td colspan=\"2\" rowspan=\"3\"></td><td></td><td></td></tr>"));
         assert_eq!(html.matches("<tr><td></td><td></td></tr>").count(), 2);
         assert!(html.contains("<tr><td colspan=\"2\"></td><td rowspan=\"2\"></td><td></td></tr>"));
-        assert_eq!(html.matches("rowspan=").count(), 2, "a merge stops at the first unmerged row");
+        assert_eq!(
+            html.matches("rowspan=").count(),
+            2,
+            "a merge stops at the first unmerged row"
+        );
         assert!(!html.contains("colspan=\"0\""));
+    }
+
+    #[test]
+    fn newly_exported_table_preserves_vertical_merges() {
+        use VerticalMerge::{Continue, Start};
+        use ibis_doc_model::{FlowParagraph, VerticalMerge};
+        let cell = |id, span, merge| FlowCell {
+            id,
+            span,
+            merge,
+            blocks: vec![Block::Paragraph(FlowParagraph {
+                id: id + 10,
+                ..FlowParagraph::default()
+            })],
+            ..FlowCell::default()
+        };
+        let table = FlowTable {
+            id: 2,
+            columns: vec![635_000, 635_000, 635_000],
+            rows: vec![
+                FlowRow {
+                    id: 3,
+                    cells: vec![cell(4, 2, Start), cell(5, 1, VerticalMerge::None)],
+                    ..FlowRow::default()
+                },
+                FlowRow {
+                    id: 6,
+                    cells: vec![cell(7, 2, Continue), cell(8, 1, VerticalMerge::None)],
+                    ..FlowRow::default()
+                },
+            ],
+            ..FlowTable::default()
+        };
+        let mut doc = read(&fixture("end")).unwrap();
+        let flow = std::sync::Arc::make_mut(doc.flow.as_mut().unwrap());
+        flow.body.insert(0, Block::Table(table));
+        let saved = ibis_formats::read(&export_docx(&doc).unwrap()).unwrap();
+        let flow = saved.flow.unwrap();
+        let table = flow
+            .body
+            .iter()
+            .find_map(|b| {
+                if let Block::Table(t) = b {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            (table.rows[0].cells[0].span, table.rows[0].cells[0].merge),
+            (2, Start)
+        );
+        assert_eq!(
+            (table.rows[1].cells[0].span, table.rows[1].cells[0].merge),
+            (2, Continue)
+        );
+        assert_eq!(table.rows[0].cells[1].merge, VerticalMerge::None);
+        assert_eq!(table.rows[1].cells[1].merge, VerticalMerge::None);
     }
 
     #[test]
     fn html_escapes_ruby_and_keeps_its_style_and_link() {
         let mut model = read(&fixture("ruby")).unwrap();
         let flow = std::sync::Arc::make_mut(model.flow.as_mut().unwrap());
-        let Block::Paragraph(paragraph) = &mut flow.body[0] else { panic!("paragraph") };
+        let Block::Paragraph(paragraph) = &mut flow.body[0] else {
+            panic!("paragraph")
+        };
         let run = &mut paragraph.runs[0];
         run.kind = FlowRunKind::Ruby {
-            base: "<&".into(), text: ">&".into(), size: 500, raise: 1000,
+            base: "<&".into(),
+            text: ">&".into(),
+            size: 500,
+            raise: 1000,
             align: RubyAlign::Center,
         };
         run.style.bold = true;
-        run.link = Some(ibis_doc_model::Link::Url("https://example.com/?a=1&b=2".into()));
+        run.link = Some(ibis_doc_model::Link::Url(
+            "https://example.com/?a=1&b=2".into(),
+        ));
         let html = String::from_utf8(export_html(&model).unwrap()).unwrap();
         assert!(html.contains("<a href=\"https://example.com/?a=1&amp;b=2\"><strong><ruby>&lt;&amp;<rt>&gt;&amp;</rt></ruby></strong></a>"));
     }
@@ -2403,6 +2902,22 @@ mod tests {
             .expect("table");
         assert_eq!(table.rows[0].cells.len(), 3);
         assert!(table.borders.iter().all(|b| *b == Some(None)));
+        // Exercise the new-table writer used by JTD export: upright East
+        // Asian cell direction must be serialized as tbRlV, not tbRl.
+        let mut doc = doc;
+        let flow = std::sync::Arc::make_mut(doc.flow.as_mut().unwrap());
+        let table = flow
+            .body
+            .iter_mut()
+            .find_map(|b| {
+                if let Block::Table(t) = b {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        table.rows[0].cells[0].direction = CellDirection::TbRlV;
         let reopened = ibis_formats::read(&export_docx(&doc).unwrap()).unwrap();
         let saved = reopened.flow.unwrap();
         let table = saved
@@ -2414,6 +2929,7 @@ mod tests {
             })
             .expect("saved table");
         assert_eq!(table.rows[0].cells.len(), 3);
+        assert_eq!(table.rows[0].cells[0].direction, CellDirection::TbRlV);
         assert!(
             matches!(&table.rows[0].cells[0].blocks[0], Block::Paragraph(p) if p.text() == "甲")
         );
@@ -2446,18 +2962,50 @@ mod tests {
         let flow = doc.flow.as_ref().unwrap();
         assert_eq!(flow.page.direction, CellDirection::TbRl);
         let pitch = flow.page.line_pitch.unwrap();
-        let table = flow.body.iter().find_map(|b| if let Block::Table(t) = b { Some(t) } else { None }).unwrap();
+        let table = flow
+            .body
+            .iter()
+            .find_map(|b| {
+                if let Block::Table(t) = b {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(table.rows[0].height, RowHeight::Exact(pitch));
         for cell in &table.rows[0].cells {
-            let Block::Paragraph(p) = &cell.blocks[0] else { panic!("cell paragraph") };
+            let Block::Paragraph(p) = &cell.blocks[0] else {
+                panic!("cell paragraph")
+            };
             assert_eq!(p.line, ibis_doc_model::LineHeight::Exact(pitch));
-            assert_eq!(p.direct.line, Some(ibis_doc_model::LineHeight::Exact(pitch)));
+            assert_eq!(
+                p.direct.line,
+                Some(ibis_doc_model::LineHeight::Exact(pitch))
+            );
         }
         let reopened = ibis_formats::read(&export_docx(&doc).unwrap()).unwrap();
-        let table = reopened.flow.as_ref().unwrap().body.iter().find_map(|b| if let Block::Table(t) = b { Some(t) } else { None }).unwrap();
+        let table = reopened
+            .flow
+            .as_ref()
+            .unwrap()
+            .body
+            .iter()
+            .find_map(|b| {
+                if let Block::Table(t) = b {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         for cell in &table.rows[0].cells {
-            let Block::Paragraph(p) = &cell.blocks[0] else { panic!("saved cell paragraph") };
-            assert!(matches!(p.line, ibis_doc_model::LineHeight::Exact(value) if (value - pitch).abs() < 635));
+            let Block::Paragraph(p) = &cell.blocks[0] else {
+                panic!("saved cell paragraph")
+            };
+            assert!(
+                matches!(p.line, ibis_doc_model::LineHeight::Exact(value) if (value - pitch).abs() < 635)
+            );
         }
 
         // An explicit source line feed still controls both row and paragraph.
@@ -2472,9 +3020,24 @@ mod tests {
             ibis_ooxml::cfb::Item::stream("DocumentViewStyles", view),
         ]);
         let explicit_doc = read(&input).unwrap();
-        let table = explicit_doc.flow.as_ref().unwrap().body.iter().find_map(|b| if let Block::Table(t) = b { Some(t) } else { None }).unwrap();
+        let table = explicit_doc
+            .flow
+            .as_ref()
+            .unwrap()
+            .body
+            .iter()
+            .find_map(|b| {
+                if let Block::Table(t) = b {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
         assert_eq!(table.rows[0].height, RowHeight::Exact(180_000));
-        let Block::Paragraph(p) = &table.rows[0].cells[0].blocks[0] else { panic!("explicit cell paragraph") };
+        let Block::Paragraph(p) = &table.rows[0].cells[0].blocks[0] else {
+            panic!("explicit cell paragraph")
+        };
         assert_eq!(p.line, ibis_doc_model::LineHeight::Exact(180_000));
     }
 
@@ -2493,8 +3056,12 @@ mod tests {
         }
         fn row(alignment: Option<u16>) -> Vec<u16> {
             let mut items = Vec::new();
-            if let Some(value) = alignment { items.extend([0x24, 1, value]); }
-            items.extend([0x8f, 15, 100, 0, 3, 0x23, 0, 0, 45, 0x23, 0, 0, 45, 0x23, 0, 0, 0]);
+            if let Some(value) = alignment {
+                items.extend([0x24, 1, value]);
+            }
+            items.extend([
+                0x8f, 15, 100, 0, 3, 0x23, 0, 0, 45, 0x23, 0, 0, 45, 0x23, 0, 0, 0,
+            ]);
             let mut out = header(&items);
             out.extend([0x1c, 0x30, 12, 0, 0, 48, 0xff, 0, 12, 0, 0x30, 0x1f]);
             out.extend("甲".encode_utf16());
@@ -2521,23 +3088,53 @@ mod tests {
         for doc in [&model, &reopened] {
             let flow = doc.flow.as_ref().unwrap();
             assert!(matches!(&flow.body[0], Block::Paragraph(p) if p.align == FlowAlign::Right));
-            let rows: Vec<_> = flow.body.iter().filter_map(|b| if let Block::Table(t) = b { Some(t.rows.iter()) } else { None }).flatten().collect();
+            let rows: Vec<_> = flow
+                .body
+                .iter()
+                .filter_map(|b| {
+                    if let Block::Table(t) = b {
+                        Some(t.rows.iter())
+                    } else {
+                        None
+                    }
+                })
+                .flatten()
+                .collect();
             assert_eq!(rows.len(), 3);
-            for (row, expected) in rows.iter().zip([FlowAlign::Left, FlowAlign::Center, FlowAlign::Right]) {
-                let Block::Paragraph(p) = &row.cells[0].blocks[0] else { panic!("cell paragraph") };
+            for (row, expected) in
+                rows.iter()
+                    .zip([FlowAlign::Left, FlowAlign::Center, FlowAlign::Right])
+            {
+                let Block::Paragraph(p) = &row.cells[0].blocks[0] else {
+                    panic!("cell paragraph")
+                };
                 assert_eq!(p.align, expected);
             }
         }
         // The correction is specific to a vertical page. Horizontal ruled
         // rows keep their existing inherited paragraph alignment.
-        let horizontal = ibis_ooxml::cfb::write(&[
-            ibis_ooxml::cfb::Item::stream("DocumentText", decode::fixture(&units)),
-        ]);
+        let horizontal = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            decode::fixture(&units),
+        )]);
         let horizontal = read(&horizontal).unwrap();
-        let table = horizontal.flow.as_ref().unwrap().body.iter().find_map(|b| {
-            if let Block::Table(t) = b { Some(t) } else { None }
-        }).unwrap();
-        let Block::Paragraph(first) = &table.rows[0].cells[0].blocks[0] else { panic!("cell paragraph") };
+        let table = horizontal
+            .flow
+            .as_ref()
+            .unwrap()
+            .body
+            .iter()
+            .find_map(|b| {
+                if let Block::Table(t) = b {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        let Block::Paragraph(first) = &table.rows[0].cells[0].blocks[0] else {
+            panic!("cell paragraph")
+        };
         assert_eq!(first.align, FlowAlign::Right);
     }
 
@@ -2654,6 +3251,80 @@ mod tests {
     }
 
     #[test]
+    fn successive_merges_keep_cell_text_on_the_union_grid() {
+        fn row(columns: &[i64], text: &str) -> FlowTable {
+            FlowTable {
+                columns: columns.to_vec(),
+                rows: vec![FlowRow {
+                    cells: columns
+                        .iter()
+                        .map(|_| FlowCell {
+                            span: 1,
+                            blocks: vec![Block::Paragraph(ibis_doc_model::FlowParagraph {
+                                runs: vec![FlowRun::new(
+                                    FlowRunKind::Text(text.into()),
+                                    FlowRunStyle::default(),
+                                )],
+                                ..ibis_doc_model::FlowParagraph::default()
+                            })],
+                            ..FlowCell::default()
+                        })
+                        .collect(),
+                    ..FlowRow::default()
+                }],
+                ..FlowTable::default()
+            }
+        }
+        let text_of = |table: &FlowTable, row: usize, cell: usize| match &table.rows[row].cells
+            [cell]
+            .blocks[0]
+        {
+            Block::Paragraph(paragraph) => match &paragraph.runs[0].kind {
+                FlowRunKind::Text(text) => text.clone(),
+                _ => panic!("cell text"),
+            },
+            _ => panic!("cell paragraph"),
+        };
+        let mut merged = row(&[50, 50], "left");
+        assert!(merge_table_grids(&mut merged, &row(&[25, 25, 50], "right")));
+        assert!(merge_table_grids(&mut merged, &row(&[25, 75], "third")));
+        assert_eq!(merged.columns, [25, 25, 50]);
+        assert_eq!(merged.rows.len(), 3);
+        assert_eq!(text_of(&merged, 0, 0), "left");
+        assert_eq!(text_of(&merged, 0, 1), "left");
+        assert_eq!(text_of(&merged, 1, 2), "right");
+        assert_eq!(text_of(&merged, 2, 0), "third");
+        assert_eq!(text_of(&merged, 2, 1), "third");
+        assert_eq!(
+            merged.rows[0]
+                .cells
+                .iter()
+                .map(|cell| cell.span)
+                .collect::<Vec<_>>(),
+            [2, 1]
+        );
+        assert_eq!(
+            merged.rows[1]
+                .cells
+                .iter()
+                .map(|cell| cell.span)
+                .collect::<Vec<_>>(),
+            [1, 1, 1]
+        );
+        assert_eq!(
+            merged.rows[2]
+                .cells
+                .iter()
+                .map(|cell| cell.span)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        let before = merged.clone();
+        assert!(!merge_table_grids(&mut merged, &row(&[40, 40], "rejected")));
+        assert_eq!(merged, before);
+    }
+
+    #[test]
     fn view_direction_needs_valid_evidence() {
         let mut record = vec![0, 1, 0, 2, 0x10, 0, 0, 0, 0, 6, 0x10, 1, 0, 2, 0, 0];
         assert!(!observed_vertical(&record));
@@ -2748,10 +3419,19 @@ mod tests {
         }
         assert_eq!(view_style_lines(&styles(&[0x02, 0, 26])), Some(26));
         assert_eq!(view_style_lines(&styles(&[0x03, 7, 0, 45])), Some(45));
-        assert_eq!(view_style_lines(&styles(&[0x0a, 0, 25, 0, 0, 0, 2])), Some(25));
-        assert_eq!(view_style_lines(&styles(&[0x0b, 7, 0, 25, 0, 0, 0, 2])), Some(25));
+        assert_eq!(
+            view_style_lines(&styles(&[0x0a, 0, 25, 0, 0, 0, 2])),
+            Some(25)
+        );
+        assert_eq!(
+            view_style_lines(&styles(&[0x0b, 7, 0, 25, 0, 0, 0, 2])),
+            Some(25)
+        );
         assert_eq!(view_style_lines(&styles(&[0x0a, 0, 25, 0, 0, 0])), None);
-        assert_eq!(view_style_lines(&styles(&[0x0a, 0, 25, 0, 0, 0, 2, 0])), None);
+        assert_eq!(
+            view_style_lines(&styles(&[0x0a, 0, 25, 0, 0, 0, 2, 0])),
+            None
+        );
         assert_eq!(view_style_lines(&styles(&[0x02, 0, 0])), None);
         assert_eq!(view_style_lines(&styles(&[0x06, 0, 26])), None);
         assert_eq!(view_style_lines(&styles(&[0x03, 7, 0])), None);

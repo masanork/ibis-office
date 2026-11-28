@@ -522,7 +522,7 @@ impl SlideEditor {
         if self.is_csv_streaming { return Err(crate::i18n::text("file.csv-loading-blocked").to_string()); }
         if self.is_jtd_read_only() {
             if self.jtd.gallery { return Err(crate::i18n::text("jtd.gallery-export-disabled").to_string()); }
-            return ibis_formats::jtd::export_docx(self.presentation()).map_err(|e| e.to_string());
+            return ibis_jtd::export_docx(self.presentation()).map_err(|e| e.to_string());
         }
         if let Some(why) = crate::format::with_format!(self, save_refused(self)) {
             return Err(why);
@@ -561,7 +561,7 @@ impl SlideEditor {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());
         }
         if self.is_jtd_read_only() { return Err(crate::i18n::text("jtd.read-only").to_string()); }
-        if self.jtd.source_path.as_deref().is_some_and(|original| crate::save::same_file(original, path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::jtd::is_native_extension)) {
+        if self.jtd.source_path.as_deref().is_some_and(|original| crate::save::same_file(original, path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_jtd::is_native_extension)) {
             return Err(crate::i18n::text("jtd.source-protected").to_string());
         }
         if let Some(why) = crate::format::with_format!(self, save_refused(self)) {
@@ -605,7 +605,7 @@ impl SlideEditor {
             || self.path.as_deref().is_some_and(|original| crate::save::same_file(original, path)) {
             return Err(crate::i18n::text("jtd.read-only").to_string());
         }
-        let bytes = ibis_formats::jtd::export_docx(self.presentation()).map_err(|e| e.to_string())?;
+        let bytes = ibis_jtd::export_docx(self.presentation()).map_err(|e| e.to_string())?;
         crate::save::write_replacing(path, &bytes).map_err(|e| e.to_string())
     }
 
@@ -628,7 +628,7 @@ impl SlideEditor {
             || self.path.as_deref().is_some_and(|original| crate::save::same_file(original, path)) {
             return Err(crate::i18n::text("jtd.read-only").to_string());
         }
-        let bytes = ibis_formats::jtd::export_html(self.presentation()).map_err(|e| e.to_string())?;
+        let bytes = ibis_jtd::export_html(self.presentation()).map_err(|e| e.to_string())?;
         crate::save::write_replacing(path, &bytes).map_err(|e| e.to_string())
     }
 

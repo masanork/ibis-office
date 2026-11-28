@@ -12,3 +12,6 @@ ibis-formats.workspace = true
 ibis-ooxml.workspace = true
 # LHA (LH5) decompression for the compressed .jttc / .jtdc form (MIT OR Apache-2.0).
 delharc = { version = "0.8", default-features = false }
+
+[dev-dependencies]
+ibis-emf.workspace = true
