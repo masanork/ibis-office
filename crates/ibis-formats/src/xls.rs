@@ -107,6 +107,29 @@ impl XlsStrings {
         }
     }
 
+    fn with_font(self, font: Option<&Font>) -> Self {
+        let Self::Biff5(_) = self else { return self };
+        // In BIFF5 the cell's font can override the workbook's code page (§5.45).
+        let code_page = match font.map(|font| font.charset) {
+            Some(77) => 10000,
+            Some(128) => 932,
+            Some(129) => 949,
+            Some(134) => 936,
+            Some(136) => 950,
+            Some(161) => 1253,
+            Some(162) => 1254,
+            Some(163) => 1258,
+            Some(177) => 1255,
+            Some(178) => 1256,
+            Some(186) => 1257,
+            Some(204) => 1251,
+            Some(222) => 874,
+            Some(238) => 1250,
+            _ => return self,
+        };
+        biff5_encoding(code_page).map(Self::Biff5).unwrap_or(self)
+    }
+
     fn is_biff5(self) -> bool {
         matches!(self, Self::Biff5(_))
     }
@@ -244,6 +267,7 @@ struct Font {
     underline: u8,
     /// `bFamily`: 0 none, 1 Roman, 2 Swiss, 3 Modern, 4 Script, 5 Decorative (Excel draws a typeface the PC lacks by it).
     family: u8,
+    charset: u8,
     name: String,
 }
 
@@ -548,6 +572,7 @@ fn to_xlsx_stream(stream: &[u8]) -> Result<Vec<u8>, Error> {
                     script: u16_at(d, 8).unwrap_or(0),
                     underline: d.get(10).copied().unwrap_or(0),
                     family: d.get(11).copied().unwrap_or(0),
+                    charset: d.get(12).copied().unwrap_or(0),
                     name,
                 });
             }
@@ -733,7 +758,7 @@ fn to_xlsx_stream(stream: &[u8]) -> Result<Vec<u8>, Error> {
         if strings.is_biff5() && (recs[start].id != 0x0809 || u16_at(recs[start].data, 2) != Some(0x0010)) {
             return Err(bad("ワークシートの先頭レコード"));
         }
-        read_sheet(&recs[start..], &mut sheet, strings);
+        read_sheet(&recs[start..], &mut sheet, strings, &book);
         book.sheets[k] = sheet;
     }
     emit(&book)
@@ -815,7 +840,14 @@ fn read_chart_drawing(records: &[&Record<'_>]) -> ChartDrawing {
     out
 }
 
-fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet, strings: XlsStrings) {
+fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet, strings: XlsStrings, book: &Book) {
+    let cell_strings = |xf| {
+        let font = book.xfs.get(xf as usize).and_then(|xf| {
+            // Excel skips FONT index 4.
+            book.fonts.get(if xf.font >= 5 { xf.font as usize - 1 } else { xf.font as usize })
+        });
+        strings.with_font(font)
+    };
     let mut depth = 0;
     let mut pending_string: Option<(u32, u32)> = None;
     let mut frozen_flag = false;
@@ -901,8 +933,9 @@ fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet, strings: XlsStrings) {
                 }
             }
             0x0207 => {
-                if let (Some((row, col)), Some(s)) = (pending_string.take(), strings.read(d, 0, true))
-                    && let Some(cell) = sheet.cells.get_mut(&(row, col))
+                if let Some(location) = pending_string.take()
+                    && let Some(cell) = sheet.cells.get_mut(&location)
+                    && let Some(s) = cell_strings(cell.xf).read(d, 0, true)
                 {
                     cell.value = Some(Value::Text(s));
                 }
@@ -935,7 +968,9 @@ fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet, strings: XlsStrings) {
                 }
             }
             0x0204 | 0x00D6 => {
-                if let (Some(row), Some(col), Some(xf), Some(s)) = (u16_at(d, 0), u16_at(d, 2), u16_at(d, 4), strings.read(d, 6, true)) {
+                if let (Some(row), Some(col), Some(xf)) = (u16_at(d, 0), u16_at(d, 2), u16_at(d, 4))
+                    && let Some(s) = cell_strings(xf).read(d, 6, true)
+                {
                     sheet.cells.insert((row as u32, col as u32), Cell { xf, value: Some(Value::Text(s)), formula: None });
                 }
             }
@@ -2082,6 +2117,14 @@ mod biff5_tests {
         let mut stream = Vec::new();
         record(&mut stream, 0x0809, &[0, 5, 5, 0, 0, 0, 0, 0]); // Workbook globals BOF
         record(&mut stream, 0x0042, &code_page.to_le_bytes());
+        let mut font = [0u8; 15];
+        font[12] = 204; // ANSI Cyrillic
+        record(&mut stream, 0x0031, &[0; 15]);
+        record(&mut stream, 0x0031, &font);
+        record(&mut stream, 0x00E0, &[0; 16]);
+        let mut xf = [0u8; 16];
+        xf[0] = 1;
+        record(&mut stream, 0x00E0, &xf);
         let boundsheet = stream.len();
         record(&mut stream, 0x0085, &[0, 0, 0, 0, 0, 0, 2, 0x95, 0x5c]); // 表
         record(&mut stream, 0x000A, &[]);
@@ -2094,6 +2137,7 @@ mod biff5_tests {
         formula[6..14].copy_from_slice(&42.5f64.to_le_bytes());
         formula[20..].copy_from_slice(&[3, 0, 0x1E, 42, 0]);
         record(&mut stream, 0x0006, &formula);
+        record(&mut stream, 0x0204, &[0, 0, 2, 0, 1, 0, 2, 0, 0xdf, 0xf4]); // C1: Яф
         record(&mut stream, 0x000A, &[]);
         ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream("Book", stream)])
     }
@@ -2107,6 +2151,7 @@ mod biff5_tests {
         assert!(xml("xl/workbook.xml").contains("name=\"表\""));
         let sheet = xml("xl/worksheets/sheet1.xml");
         assert!(sheet.contains("<t xml:space=\"preserve\">表</t>"), "{sheet}");
+        assert!(sheet.contains("Яф"), "{sheet}");
         assert!(sheet.contains("<v>42.5</v>") && !sheet.contains("<f>"), "{sheet}");
         assert!(crate::read(&xls).is_ok());
     }
