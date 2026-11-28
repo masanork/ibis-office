@@ -675,6 +675,7 @@ pub enum DiskDataset {
     Sqlite(std::path::PathBuf, String),
     Jet(std::path::PathBuf, String, Vec<String>),
     Dbf(std::path::PathBuf, Vec<String>),
+    FixedWidth(std::path::PathBuf, Vec<super::FixedWidthField>, Option<String>, usize),
     Ese(std::path::PathBuf, String, Vec<String>),
     Pst(std::path::PathBuf, String, Vec<String>),
     Csv(std::path::PathBuf),
@@ -736,6 +737,16 @@ impl DiskDataset {
             }
             Self::Dbf(path, selected) => {
                 super::dbf_source::visit_dbf(path, selected, schema_only, visit)
+            }
+            Self::FixedWidth(path, fields, encoding, skip) => {
+                super::fixed_width_source::visit_fixed_width(
+                    path,
+                    fields,
+                    encoding.as_deref(),
+                    *skip,
+                    schema_only,
+                    visit,
+                )
             }
             Self::Ese(path, table, selected) => {
                 super::ese_source::visit_ese_table(path, table, selected, schema_only, visit)
@@ -1160,7 +1171,7 @@ impl SqliteQuerySession {
                     width = names.len();
                     let batch = matches!(
                         source,
-                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::RecoverableJsonLines(..) | DiskDataset::JsonLinesPaths(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Jet(..) | DiskDataset::Dbf(..) | DiskDataset::Ese(..) | DiskDataset::Pst(..) | DiskDataset::Csv(..) | DiskDataset::Log(..)
+                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::RecoverableJsonLines(..) | DiskDataset::JsonLinesPaths(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Jet(..) | DiskDataset::Dbf(..) | DiskDataset::FixedWidth(..) | DiskDataset::Ese(..) | DiskDataset::Pst(..) | DiskDataset::Csv(..) | DiskDataset::Log(..)
                     );
                     #[cfg(feature = "report-profiling")]
                     let batch = batch && !super::report_profile::single_row_inserts_forced();
