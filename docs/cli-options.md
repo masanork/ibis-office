@@ -242,6 +242,17 @@ ibisOffice timing: document-second-frame 68.40
 
 ---
 
+## JetEngine / Outlook Database Batch Conversion
+
+Headless conversion for Microsoft Access (`.mdb`, `.accdb`), ESE / JET Blue (`.edb`, `.sdb`), and Outlook (`.ost`, `.pst`) files:
+
+| Option | Description |
+|---|---|
+| `--jet-to-sqlite <input> <output.sqlite> [--overwrite]` | Materializes tables (and Access saved `SELECT` views) into a standalone SQLite database via Turso, printing a JSON summary. |
+| `--jet-migration-md <input.mdb\|accdb> [output.md]` | Generates a Markdown migration specification with a Mermaid `erDiagram`, SQLite-translated queries, and Google Workspace type mapping. |
+
+---
+
 ## Cookbook & Practical Examples
 
 ### 1. Batch Convert Documents to PDF (CI/CD / Shell)

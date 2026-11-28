@@ -557,7 +557,22 @@ pub fn jet_migration_markdown(path: &Path) -> Result<String, String> {
             let kind = m["module_type"].as_str().unwrap_or("Module");
             let _ = writeln!(md, "- [VBA {kind}] `{name}`");
         }
+        let _ = writeln!(md);
     }
+
+    let _ = writeln!(md, "## Google Workspace Migration Notes\n");
+    let _ = writeln!(md, "| Access / JET Type | Turso / SQLite | Google Sheets / AppSheet | BigQuery |");
+    let _ = writeln!(md, "| --- | --- | --- | --- |");
+    let _ = writeln!(md, "| Text / Memo / GUID | `TEXT` | Text | `STRING` |");
+    let _ = writeln!(md, "| Byte / Integer / Long / AutoNumber | `INTEGER` | Number | `INT64` |");
+    let _ = writeln!(md, "| Single / Double | `REAL` | Number | `FLOAT64` |");
+    let _ = writeln!(md, "| Currency / Numeric | `TEXT` (exact) | Currency / Number | `NUMERIC` |");
+    let _ = writeln!(md, "| Date/Time | `REAL` (OLE serial) | Date / DateTime | `DATETIME` |");
+    let _ = writeln!(md, "| Yes/No | `INTEGER` (0/1) | Checkbox (Boolean) | `BOOL` |");
+    let _ = writeln!(md, "| MultiValue / Attachment | `TEXT` (JSON array) | Text / Drive link | `ARRAY<STRING>` |\n");
+    let _ = writeln!(md, "- Export tables & views to SQLite: `jet_export_sqlite`");
+    let _ = writeln!(md, "- Export query results to `.xlsx` (Google Sheets): `sqlite_query_to_table`");
+    let _ = writeln!(md, "- Extract VBA for Apps Script translation: `jet_inspect_vba`");
 
     Ok(md)
 }
@@ -766,6 +781,33 @@ pub fn jet_export_sqlite(
         }));
     }
 
+    let mut views = Vec::new();
+    let mut skipped_views = Vec::new();
+    if let Ok(mut reader) = open_jet(input_path)
+        && let Ok(queries) = read_queries(&mut reader)
+    {
+        for qdef in queries {
+            if !matches!(qdef.query_type, jetdb::QueryType::Select) {
+                continue;
+            }
+            let raw_sql = query_to_sql(&qdef);
+            let sqlite_sql = jet_sql_to_sqlite(&raw_sql);
+            let trimmed = sqlite_sql.trim().trim_end_matches(';').trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let view_ident = super::sqlite_source::sql_identifier(&qdef.name);
+            let create_sql = format!("CREATE VIEW IF NOT EXISTS {view_ident} AS {trimmed}");
+            match execute(&create_sql) {
+                Ok(()) => views.push(qdef.name),
+                Err(error) => skipped_views.push(json!({
+                    "name": qdef.name,
+                    "error": error,
+                })),
+            }
+        }
+    }
+
     execute("PRAGMA wal_checkpoint(TRUNCATE)")?;
     drop(connection);
     drop(database);
@@ -780,6 +822,8 @@ pub fn jet_export_sqlite(
     Ok(json!({
         "output": output_path.display().to_string(),
         "tables": exported,
+        "views": views,
+        "skipped_views": skipped_views,
         "total_rows": total_rows,
     }))
 }
