@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, FixedWidthField, JetBundleMode, bson_export_sqlite, bson_inspect_schema, dataset_sql_type, dbf_export_sqlite, dbf_inspect_schema, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, fixed_width_export_sqlite, fixed_width_preview, is_bson_extension, is_dbf_extension, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, jet_verify_sqlite, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
+    SqliteRows, SqliteScalar, FixedWidthField, JetBundleMode, bson_export_sqlite, bson_inspect_schema, dataset_sql_type, dbf_export_sqlite, dbf_inspect_schema, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, fixed_width_export_sqlite, fixed_width_preview, is_bson_extension, is_dbf_extension, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_attachments, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, jet_verify_sqlite, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_dataset_columns, sqlite_execute, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -121,6 +121,19 @@ const TOOLS: &[Tool] = &[
             ("overwrite", boolean("Overwrite an existing output file (default false).")),
         ], &[PATH, "output"]),
         run: export_jet_sqlite,
+    },
+    Tool {
+        name: "jet_export_attachments",
+        description: "Export Access Attachment and Binary/OLE column payloads to an output directory along with manifest.json.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .mdb or .accdb file under an allowed folder.")),
+            ("output_dir", string("Destination directory path under an allowed folder.")),
+            ("tables", json!({"type": "array", "minItems": 1, "maxItems": 256, "items": string("Exact table name from jet_inspect_schema.")})),
+            ("overwrite", boolean("Overwrite existing exported files (default false).")),
+        ], &[PATH, "output_dir"]),
+        run: export_jet_attachments,
     },
     Tool {
         name: "ese_inspect_schema",
@@ -766,6 +779,42 @@ fn verify_jet_sqlite(service: &mut Service, args: &Value) -> Result<Value, ToolE
         return Err(ToolError::invalid("select an exported SQLite database file"));
     }
     jet_verify_sqlite(&path, &sqlite_path).map_err(sqlite_error)
+}
+
+fn export_jet_attachments(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "output_dir", "tables", "overwrite"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, JET_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an Access database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Access database exceeds the file size limit",
+        ));
+    }
+    let output_dir = paths::resolve_output_dir(&service.allow_dirs, args.str_arg("output_dir")?)?;
+    let tables = match args.get("tables") {
+        None => None,
+        Some(Value::Array(items)) => {
+            if items.is_empty() || items.len() > 256 {
+                return Err(ToolError::invalid("tables must have 1 to 256 entries"));
+            }
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(
+                    item.as_str()
+                        .ok_or_else(|| ToolError::invalid("tables entries must be strings"))?
+                        .to_owned(),
+                );
+            }
+            Some(out)
+        }
+        Some(_) => return Err(ToolError::invalid("tables must be an array of table names")),
+    };
+    let overwrite = args.opt_bool("overwrite")?.unwrap_or(false);
+    jet_export_attachments(&path, &output_dir, tables.as_deref(), overwrite).map_err(sqlite_error)
 }
 
 fn inspect_dbf_schema(service: &mut Service, args: &Value) -> Result<Value, ToolError> {

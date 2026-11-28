@@ -42,6 +42,29 @@ pub fn resolve(allow: &[PathBuf], path: &str, extensions: &[&str], must_exist: b
     Ok(real)
 }
 
+/// Resolve an output directory path inside one of `allow` (creating or checking parent existence).
+pub fn resolve_output_dir(allow: &[PathBuf], path: &str) -> Result<PathBuf, ToolError> {
+    if allow.is_empty() {
+        return Err(ToolError::new("not_allowed_path", "no folder is allowed: start the server with --allow-dir"));
+    }
+    if path.is_empty() || path.contains('\0') {
+        return Err(ToolError::invalid("path is empty"));
+    }
+    let given = Path::new(path);
+    let real = if given.exists() {
+        given.canonicalize().map_err(|e| ToolError::new("not_allowed_path", format!("{path}: {e}")))?
+    } else {
+        let name = given.file_name().ok_or_else(|| ToolError::invalid("path has no directory name"))?;
+        let parent = given.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let parent = parent.canonicalize().map_err(|_| ToolError::new("not_allowed_path", format!("the parent folder of {path} does not exist")))?;
+        parent.join(name)
+    };
+    if !allow.iter().any(|dir| real.starts_with(dir)) {
+        return Err(ToolError::new("not_allowed_path", format!("{path} is not under an allowed folder")));
+    }
+    Ok(real)
+}
+
 /// Where a document is: its real path and the folder it is shown relative to.
 pub struct Located {
     pub real: PathBuf,
