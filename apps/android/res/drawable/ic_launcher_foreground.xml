@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- White D-page with integrated dog-ear cutout, scaled 1/16 into 30..78 safe zone -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M30,30 H63 L78,45 V64 A14,14 0 0,1 64,78 H30 Z M40.5,40.5 H55 A13.5,13.5 0 0,1 55,67.5 H40.5 Z" />
+    <!-- Dog-ear fold -->
+    <path
+        android:fillColor="#D9E4F8"
+        android:pathData="M63,30 L78,45 H66.75 A3.75,3.75 0 0,1 63,41.25 Z" />
+    <!-- Document line 1 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M46.125,48.5 H55.5 A1.875,1.875 0 0,1 55.5,52.25 H46.125 A1.875,1.875 0 0,1 46.125,48.5 Z" />
+    <!-- Document line 2 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M46.125,55.75 H51.375 A1.875,1.875 0 0,1 51.375,59.5 H46.125 A1.875,1.875 0 0,1 46.125,55.75 Z" />
+</vector>
