@@ -26,7 +26,7 @@ pub use avro_source::read_avro;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod jet_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-pub use jet_source::{JetBundleMode, is_jet_extension, jet_dataset_columns, jet_export_attachments, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, jet_tables, jet_verify_sqlite, read_jet_table_bounded};
+pub use jet_source::{JetBundleMode, is_jet_extension, jet_dataset_columns, jet_export_attachments, jet_export_bundle, jet_export_html, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, jet_tables, jet_verify_sqlite, read_jet_table_bounded};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod dbf_source;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]

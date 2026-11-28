@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, FixedWidthField, JetBundleMode, bson_export_sqlite, bson_inspect_schema, dataset_sql_type, dbf_export_sqlite, dbf_inspect_schema, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, fixed_width_export_sqlite, fixed_width_preview, is_bson_extension, is_dbf_extension, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_attachments, jet_export_bundle, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, jet_verify_sqlite, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
+    SqliteRows, SqliteScalar, FixedWidthField, JetBundleMode, bson_export_sqlite, bson_inspect_schema, dataset_sql_type, dbf_export_sqlite, dbf_inspect_schema, ese_dataset_columns, ese_export_sqlite, ese_inspect_schema, fixed_width_export_sqlite, fixed_width_preview, is_bson_extension, is_dbf_extension, is_ese_extension, is_jet_extension, is_pst_extension, jet_dataset_columns, jet_export_attachments, jet_export_bundle, jet_export_html, jet_export_sqlite, jet_inspect_form, jet_inspect_schema, jet_inspect_vba, jet_migration_markdown, jet_verify_sqlite, pst_dataset_columns, pst_export_sqlite, pst_list_folders, read_arrow_ipc_dataset, parquet_dataset_columns, read_ese_table_bounded, read_jet_table_bounded, read_parquet_filtered, read_pst_table_bounded, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_dataset_columns, sqlite_execute, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -20,6 +20,7 @@ pub const DESKTOP_TEXT_DATASET_LIMIT: u64 = 512 * 1024 * 1024;
 pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "jsonl", "ndjson", "avro", "sqlite", "sqlite3", "db", "log", "syslog", "mdb", "accdb", "mde", "accde", "dbf", "bson", "edb", "sdb", "ost", "pst"];
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
 const JET_EXTENSIONS: &[&str] = &["mdb", "accdb", "mde", "accde"];
+const HTML_EXTENSIONS: &[&str] = &["html", "htm"];
 const ESE_EXTENSIONS: &[&str] = &["edb", "sdb", "dat"];
 const PST_EXTENSIONS: &[&str] = &["ost", "pst"];
 const DBF_EXTENSIONS: &[&str] = &["dbf"];
@@ -134,6 +135,19 @@ const TOOLS: &[Tool] = &[
             ("overwrite", boolean("Overwrite existing exported files (default false).")),
         ], &[PATH, "output_dir"]),
         run: export_jet_attachments,
+    },
+    Tool {
+        name: "jet_export_html",
+        description: "Generate a self-contained interactive HTML explorer (schema, relationships, data browser, form wireframes, queries, macros, VBA) for an Access database.",
+        access: Access::Edit,
+        returns_content: true,
+        schema: &|| object(&[
+            ("path", string("Path to a local .mdb or .accdb file under an allowed folder.")),
+            ("output", string("Destination .html or .htm file path under an allowed folder.")),
+            ("max_rows_per_table", integer("Maximum sample rows per table embedded in the HTML viewer (default 200, maximum 1000).")),
+            ("overwrite", boolean("Overwrite an existing HTML file (default false).")),
+        ], &[PATH, "output"]),
+        run: export_jet_html,
     },
     Tool {
         name: "ese_inspect_schema",
@@ -815,6 +829,29 @@ fn export_jet_attachments(service: &mut Service, args: &Value) -> Result<Value, 
     };
     let overwrite = args.opt_bool("overwrite")?.unwrap_or(false);
     jet_export_attachments(&path, &output_dir, tables.as_deref(), overwrite).map_err(sqlite_error)
+}
+
+fn export_jet_html(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH, "output", "max_rows_per_table", "overwrite"])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, JET_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an Access database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Access database exceeds the file size limit",
+        ));
+    }
+    let output = paths::resolve(&service.allow_dirs, args.str_arg("output")?, HTML_EXTENSIONS, false)?;
+    let max_rows_per_table = args
+        .get("max_rows_per_table")
+        .and_then(Value::as_u64)
+        .map(|v| (v as usize).clamp(1, 1_000))
+        .unwrap_or(200);
+    let overwrite = args.opt_bool("overwrite")?.unwrap_or(false);
+    jet_export_html(&path, &output, max_rows_per_table, overwrite).map_err(sqlite_error)
 }
 
 fn inspect_dbf_schema(service: &mut Service, args: &Value) -> Result<Value, ToolError> {

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Access Reverse-Engineering Explorer</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --panel-2: #263348; --border: #334155;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8; --accent-2: #818cf8;
+    --ok: #34d399; --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--panel); }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: var(--panel-2); border: 1px solid var(--border); color: var(--accent); }
+  nav { display: flex; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
+  nav button { background: transparent; color: var(--muted); border: 1px solid transparent; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  nav button.active { background: var(--panel-2); color: var(--text); border-color: var(--border); }
+  main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  .card .label { font-size: 12px; color: var(--muted); }
+  .card .val { font-size: 24px; font-weight: 700; margin-top: 4px; color: var(--accent); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+  .box { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+  .box h3 { margin: 0 0 10px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; background: var(--panel-2); position: sticky; top: 0; }
+  .table-wrap { max-height: 520px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+  .controls-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  select, input[type="search"] { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+  pre { background: #0b1220; border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow: auto; font-size: 12px; line-height: 1.5; margin: 8px 0 0; }
+  .wireframe { position: relative; background: #0b1220; border: 1px solid var(--border); border-radius: 8px; min-height: 360px; overflow: auto; margin-top: 10px; }
+  .wf-ctrl { position: absolute; border: 1px solid var(--accent-2); background: rgba(129, 140, 248, 0.12); border-radius: 4px; padding: 3px 6px; font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .wf-ctrl small { color: var(--muted); display: block; font-size: 10px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1 id="title">Access Reverse-Engineering Explorer</h1>
+    <div class="muted" id="subtitle"></div>
+  </div>
+  <span class="badge" id="format-badge">Jet</span>
+</header>
+<nav id="tabs">
+  <button data-tab="overview" class="active">概要・依存関係</button>
+  <button data-tab="schema">テーブル・リレーション</button>
+  <button data-tab="data">データブラウザ</button>
+  <button data-tab="forms">フォーム・レイアウト</button>
+  <button data-tab="code">クエリ・マクロ・VBA</button>
+</nav>
+<main>
+  <section id="tab-overview"></section>
+  <section id="tab-schema" class="hidden"></section>
+  <section id="tab-data" class="hidden"></section>
+  <section id="tab-forms" class="hidden"></section>
+  <section id="tab-code" class="hidden"></section>
+</main>
+<script id="bundle-data" type="application/json">__JET_BUNDLE_JSON__</script>
+<script>
+const BUNDLE = JSON.parse(document.getElementById('bundle-data').textContent);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+document.getElementById('format-badge').textContent = BUNDLE.format || 'Access';
+document.getElementById('subtitle').textContent = `Mode: ${BUNDLE.mode} | Tables: ${BUNDLE.summary?.tables ?? 0} | Queries: ${BUNDLE.summary?.queries ?? 0} | Forms: ${BUNDLE.summary?.forms ?? 0}`;
+
+for (const btn of document.querySelectorAll('#tabs button')) {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#tabs button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const target = btn.dataset.tab;
+    document.querySelectorAll('main section').forEach(s => s.classList.toggle('hidden', s.id !== 'tab-' + target));
+  });
+}
+
+// 1. Overview
+(() => {
+  const s = BUNDLE.summary || {};
+  const cards = [
+    ['テーブル', s.tables ?? 0], ['リレーション', s.relationships ?? 0],
+    ['クエリ', s.queries ?? 0], ['フォーム/レポート', s.forms ?? 0],
+    ['マクロ', s.macros ?? 0], ['VBA モジュール', s.vba_modules ?? 0],
+  ].map(([k, v]) => `<div class="card"><div class="label">${k}</div><div class="val">${v}</div></div>`).join('');
+  const xrefForms = (BUNDLE.cross_references?.forms || []).map(f =>
+    `<tr><td>${esc(f.name)}</td><td>${esc(f.record_source ?? '-')}</td><td>${(f.bound_controls||[]).length}</td><td>${Object.keys(f.events||{}).length}</td></tr>`
+  ).join('');
+  document.getElementById('tab-overview').innerHTML = `
+    <div class="cards">${cards}</div>
+    <div class="box"><h3>フォーム × データ × イベント一覧</h3>
+      ${xrefForms ? `<table><thead><tr><th>フォーム</th><th>RecordSource</th><th>バインド列数</th><th>イベント数</th></tr></thead><tbody>${xrefForms}</tbody></table>` : '<p class="muted">フォーム定義はありません</p>'}
+    </div>`;
+})();
+
+// 2. Schema
+(() => {
+  const relRows = (BUNDLE.relationships || []).map(r =>
+    `<tr><td>${esc(r.name)}</td><td>${esc(r.from_table)}</td><td>${esc(r.to_table)}</td><td>${(r.columns||[]).map(c => `${esc(c.from)} -> ${esc(c.to)}`).join(', ')}</td></tr>`
+  ).join('');
+  const tableCards = (BUNDLE.tables || []).map(t => {
+    const cols = (t.columns || []).map(c =>
+      `<tr><td>${esc(c.name)}</td><td>${esc(c.jet_type)}</td><td>${esc(c.sql_type)}${c.auto_number ? ' (Auto)' : ''}</td></tr>`
+    ).join('');
+    return `<div class="box"><h3><span>${esc(t.name)}</span><span class="badge">${t.row_count} rows</span></h3>
+      <table><thead><tr><th>カラム</th><th>Jet型</th><th>SQL型</th></tr></thead><tbody>${cols}</tbody></table></div>`;
+  }).join('');
+  document.getElementById('tab-schema').innerHTML = `
+    <div class="box"><h3>リレーションシップ</h3>
+      ${relRows ? `<table><thead><tr><th>名前</th><th>元テーブル</th><th>先テーブル</th><th>結合キー</th></tr></thead><tbody>${relRows}</tbody></table>` : '<p class="muted">リレーション定義はありません</p>'}
+    </div>
+    <div class="grid">${tableCards}</div>`;
+})();
+
+// 3. Data Browser
+(() => {
+  const el = document.getElementById('tab-data');
+  const names = Object.keys(BUNDLE.table_data || {});
+  if (!names.length) { el.innerHTML = '<div class="box"><p class="muted">テーブルデータはありません</p></div>'; return; }
+  el.innerHTML = `<div class="controls-bar">
+    <select id="data-table-select">${names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select>
+    <input id="data-search" type="search" placeholder="行をフィルタ...">
+    <span id="data-meta" class="muted"></span>
+  </div><div class="table-wrap" id="data-grid"></div>`;
+  const sel = document.getElementById('data-table-select');
+  const search = document.getElementById('data-search');
+  const render = () => {
+    const t = BUNDLE.table_data[sel.value];
+    if (!t || t.error) { document.getElementById('data-grid').innerHTML = `<p class="muted">${esc(t?.error || 'Error')}</p>`; return; }
+    const q = search.value.trim().toLowerCase();
+    const rows = (t.rows || []).filter(r => !q || r.some(c => String(c ?? '').toLowerCase().includes(q)));
+    document.getElementById('data-meta').textContent = `${rows.length} / ${t.total_rows} 行${t.truncated ? ' (抜粋)' : ''}`;
+    const head = `<thead><tr>${(t.columns || []).map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>`;
+    const body = `<tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</tbody>`;
+    document.getElementById('data-grid').innerHTML = `<table>${head}${body}</table>`;
+  };
+  sel.addEventListener('change', render);
+  search.addEventListener('input', render);
+  render();
+})();
+
+// 4. Forms Wireframe
+(() => {
+  const el = document.getElementById('tab-forms');
+  const forms = BUNDLE.forms || [];
+  if (!forms.length) { el.innerHTML = '<div class="box"><p class="muted">フォーム/レポートはありません</p></div>'; return; }
+  el.innerHTML = `<div class="controls-bar">
+    <select id="form-select">${forms.map((f, i) => `<option value="${i}">${esc(f.name)} (${esc(f.object_type)})</option>`).join('')}</select>
+    <span id="form-meta" class="muted"></span>
+  </div><div id="form-view"></div>`;
+  const sel = document.getElementById('form-select');
+  const render = () => {
+    const f = forms[Number(sel.value)];
+    if (!f || f.error) { document.getElementById('form-view').innerHTML = `<div class="box"><p class="muted">${esc(f?.error || 'Read error')}</p></div>`; return; }
+    const lay = f.layout || {};
+    document.getElementById('form-meta').textContent = `RecordSource: ${lay.record_source ?? '-'} | Controls: ${(f.controls||[]).length}`;
+    let maxH = 360, maxW = Math.max(600, lay.width_px || 640);
+    const items = (f.controls || []).map((c, idx) => {
+      const cl = c.layout || {};
+      const x = cl.left_px ?? 12;
+      const y = cl.top_px ?? (12 + idx * 34);
+      const w = cl.width_px ?? 160;
+      const h = cl.height_px ?? 28;
+      maxW = Math.max(maxW, x + w + 24);
+      maxH = Math.max(maxH, y + h + 24);
+      const label = cl.caption || cl.control_source || c.name;
+      return `<div class="wf-ctrl" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px" title="${esc(c.name)} (${esc(c.type)})">${esc(label)}<small>${esc(c.type)} · ${esc(c.name)}</small></div>`;
+    }).join('');
+    document.getElementById('form-view').innerHTML = `<div class="wireframe" style="min-width:${maxW}px;height:${maxH}px">${items}</div>`;
+  };
+  sel.addEventListener('change', render);
+  render();
+})();
+
+// 5. Queries, Macros & VBA
+(() => {
+  const qs = (BUNDLE.queries || []).map(q =>
+    `<div class="box"><h3><span>${esc(q.name)}</span><span class="badge">${esc(q.query_type)}</span></h3>
+      <div class="muted">SQLite SQL</div><pre>${esc(q.sqlite_parameterized_sql || q.sqlite_sql)}</pre></div>`
+  ).join('');
+  const ms = (BUNDLE.macros || []).map(m =>
+    `<div class="box"><h3><span>${esc(m.name)}</span><span class="badge">Macro</span></h3><pre>${esc(JSON.stringify(m.statements || [], null, 2))}</pre></div>`
+  ).join('');
+  const vbas = (BUNDLE.vba_modules || []).map(v =>
+    `<div class="box"><h3><span>${esc(v.name)}</span><span class="badge">${esc(v.module_type)}</span></h3><pre>${esc(v.source || '')}</pre></div>`
+  ).join('');
+  document.getElementById('tab-code').innerHTML = (qs + ms + vbas) || '<div class="box"><p class="muted">クエリ・マクロ・VBA はありません</p></div>';
+})();
+</script>
+</body>
+</html>

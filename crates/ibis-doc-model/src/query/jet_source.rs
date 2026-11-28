@@ -2155,6 +2155,36 @@ pub fn jet_export_attachments(
     Ok(manifest)
 }
 
+/// Export a self-contained interactive HTML reverse-engineering viewer (ER/schema, data browser,
+/// form layout wireframes, queries, macros, and VBA) for an Access database.
+pub fn jet_export_html(
+    jet_path: &Path,
+    output_path: &Path,
+    max_rows_per_table: usize,
+    overwrite: bool,
+) -> Result<serde_json::Value, String> {
+    if output_path.exists() && !overwrite {
+        return Err(format!(
+            "Output HTML file already exists: {}",
+            output_path.display()
+        ));
+    }
+    let bundle = jet_export_bundle(jet_path, JetBundleMode::Full, max_rows_per_table)?;
+    let bundle_json = serde_json::to_string(&bundle)
+        .map_err(|e| e.to_string())?
+        .replace("</", "<\\/");
+    let html = include_str!("jet_html_template.html").replace("__JET_BUNDLE_JSON__", &bundle_json);
+    if let Some(parent) = output_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(output_path, html.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(json!({
+        "output": output_path.display().to_string(),
+        "bytes": html.len(),
+        "summary": bundle["summary"].clone(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2355,6 +2385,13 @@ mod tests {
         let att_res = jet_export_attachments(&mdb_path, &att_dir, None, false).unwrap();
         assert_eq!(att_res["exported_count"], 0);
         assert!(att_dir.join("manifest.json").is_file());
+
+        let html_out = dir.path().join("explorer.html");
+        let html_res = jet_export_html(&mdb_path, &html_out, 50, false).unwrap();
+        assert_eq!(html_res["summary"]["tables"], 1);
+        let html_body = std::fs::read_to_string(&html_out).unwrap();
+        assert!(html_body.contains("Access Reverse-Engineering Explorer"));
+        assert!(html_body.contains("\"Orders\""));
 
         // 4. Generate Markdown + Mermaid ER migration spec
         let md = jet_migration_markdown(&mdb_path).unwrap();
