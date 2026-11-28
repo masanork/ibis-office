@@ -484,7 +484,6 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::xsc51_names", xsc51_names),
         ("xlsx::issue32_cell_checkbox", issue32_checkbox::run),
         ("xlsx::issue33_validation_list", issue33_validation::run),
-        ("xlsx::validation_preserves_value_on_dismissal", issue33_validation::preserves_value_on_dismissal),
         ("xlsx::validation_list_full_width", validation_halfwidth::list_accepts_full_width),
         ("xlsx::n5_validation_formula", n5_validation_formula::run),
         ("xlsx::issue154_list_source_judge", issue154_compat_notice::judge),

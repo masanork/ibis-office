@@ -51,6 +51,7 @@ fn fade_in(shape: ibis_doc_model::ShapeId, start: AnimationStart, delay: u32, du
         dgm_element: None,
         dgm_build: None,
         behaviors: Vec::new(),
+        group_pivot: None,
     }
 }
 
@@ -194,6 +195,7 @@ fn p5_group_times() {
         dgm_element: None,
         dgm_build: None,
         behaviors: Vec::new(),
+        group_pivot: None,
     };
     let animations = [
         anim(AnimationStart::AfterPrevious, 0, 1000),
