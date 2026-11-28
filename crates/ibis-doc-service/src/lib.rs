@@ -16,6 +16,7 @@ mod paths;
 mod picture_file;
 mod service;
 mod tools_app;
+mod tools_extract;
 mod tools_docx;
 mod tools_docx_layout;
 mod tools_docx_more;

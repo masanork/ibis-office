@@ -76,6 +76,7 @@ mod docx;
 pub mod docx_convert;
 pub mod design_system;
 pub mod html_export;
+pub mod extract;
 pub mod markdown;
 pub mod epub;
 pub mod okf;
