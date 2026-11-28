@@ -962,7 +962,6 @@ fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet, strings: XlsStrings) {
             }
             0x0006 => {
                 if let (Some(row), Some(col), Some(xf), Some(cce)) = (u16_at(d, 0), u16_at(d, 2), u16_at(d, 4), u16_at(d, 20)) {
-                    let rgce = d.get(22..22 + cce as usize).unwrap_or(&[]).to_vec();
                     let value = if u16_at(d, 12) == Some(0xFFFF) {
                         match d.get(6) {
                             Some(0) => {
@@ -978,7 +977,8 @@ fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet, strings: XlsStrings) {
                         f64_at(d, 6).map(Value::Number)
                     };
                     // BIFF5 reference tokens have a different layout. Keep their cached results.
-                    let formula = (!strings.is_biff5()).then_some(rgce);
+                    let formula = (!strings.is_biff5())
+                        .then(|| d.get(22..22 + cce as usize).unwrap_or(&[]).to_vec());
                     sheet.cells.insert((row as u32, col as u32), Cell { xf, value, formula });
                 }
             }
@@ -988,7 +988,7 @@ fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet, strings: XlsStrings) {
                     sheet.shared.insert((r1 as u32, c1 as u32), ([r1, r2, c1 as u16, c2 as u16], rgce));
                 }
             }
-            0x0221 => {
+            0x0221 if !strings.is_biff5() => {
                 if let (Some(r1), Some(r2), Some(&c1), Some(&c2), Some(cce)) = (u16_at(d, 0), u16_at(d, 2), d.get(4), d.get(5), u16_at(d, 12)) {
                     let rgce = d.get(14..14 + cce as usize).unwrap_or(&[]).to_vec();
                     sheet.arrays.insert((r1 as u32, c1 as u32), ([r1, r2, c1 as u16, c2 as u16], rgce));
@@ -1096,8 +1096,8 @@ fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet, strings: XlsStrings) {
             0x009E => sheet.filters.extend(crate::xls_features::read_autofilter(d)),
             0x01BE => sheet.dv.extend(crate::xls_features::read_dv(d)),
             0x01B8 => sheet.links.extend(crate::xls_features::read_hlink(d)),
-            0x0014 => sheet.header = unicode_string(d, 0, true).map(|(s, _)| s),
-            0x0015 => sheet.footer = unicode_string(d, 0, true).map(|(s, _)| s),
+            0x0014 => sheet.header = strings.read(d, 0, !strings.is_biff5()),
+            0x0015 => sheet.footer = strings.read(d, 0, !strings.is_biff5()),
             _ => {}
         }
         // The text of a formula's result comes in the record after it (past a shared or array formula's).
