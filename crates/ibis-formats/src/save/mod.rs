@@ -278,6 +278,8 @@ pub fn open_progressive_with_options(
             Some(crate::etax::to_markdown(&data)?)
         } else if crate::citygml::is_citygml(&data) {
             Some(crate::citygml::to_markdown(&data)?)
+        } else if crate::ifc::is_ifc(&data) {
+            Some(crate::ifc::to_markdown(&data)?)
         } else if crate::cals_xml::is_cals_xml(&data) {
             Some(crate::cals_xml::to_markdown(&data)?)
         } else if crate::cad::is_cad(&data) {
