@@ -274,6 +274,8 @@ pub fn open_progressive_with_options(
         // 2D CAD・GIS・GTFS・CALS/EC・メール・アーカイブ・Access を Markdown 文書として開く
         let md_opt = if crate::email::is_tnef(&data) || crate::email::is_eml(&data) {
             Some(crate::email::to_markdown(&data)?)
+        } else if crate::etax::is_etax(&data) {
+            Some(crate::etax::to_markdown(&data)?)
         } else if crate::cals_xml::is_cals_xml(&data) {
             Some(crate::cals_xml::to_markdown(&data)?)
         } else if crate::cad::is_cad(&data) {

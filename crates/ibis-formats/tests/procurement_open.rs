@@ -79,8 +79,13 @@ fn opens_procurement_formats_via_ibis_formats_open() {
     assert_eq!(Kind::of(&opened.presentation), Kind::Presentation);
     assert!(!opened.presentation.slides[0].shapes.is_empty());
 
-    // 7. Extension registration checks
-    for ext in ["dxf", "sfc", "jww", "geojson", "shp", "eml", "lzh", "7z", "mdb"] {
+    // 7. e-Tax XML (.xtx) -> Document
+    let etax_bytes = include_bytes!("../../../test/fixtures/structured-preview/etax/life-insurance.xml");
+    let opened = open(etax_bytes.to_vec()).expect("etax xml opens");
+    assert_eq!(Kind::of(&opened.presentation), Kind::Document);
+
+    // 8. Extension registration checks
+    for ext in ["dxf", "sfc", "jww", "geojson", "shp", "eml", "lzh", "7z", "mdb", "xtx"] {
         assert_eq!(Kind::from_extension(ext), Some(Kind::Document), "ext {ext}");
         assert!(Kind::OPENABLE_EXTENSIONS.contains(&ext), "openable {ext}");
     }

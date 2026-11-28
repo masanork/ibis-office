@@ -150,6 +150,7 @@ pub mod access;
 pub mod gis;
 pub mod gtfs;
 pub mod just_legacy;
+pub mod etax;
 pub mod repair;
 pub use repair::{RepairLogEntry, RepairLogLevel, RepairMode, RepairReport, RepairedWorkbook, RepairedDocument, repair_workbook, repair_document};
 pub mod chart_template;
@@ -290,14 +291,14 @@ impl Kind {
         match extension.to_ascii_lowercase().as_str() {
             "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "pps" | "pot" | "odp" | "otp" | "jhd" | "jhb" => Some(Kind::Presentation),
             "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" | "ots" | "csv" | "tsv" | "tab" | "xltx" | "xltm" | "xlk" | "jsd" | "jst" | "dbf" => Some(Kind::Workbook),
-            "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "hwp" | "hwpx" | "epub" | "uot" | "wpd" | "wp6" | "jtd" | "jtt" | "jttc" | "md" | "markdown" | "cin" | "dpx" | "exr" | "psd" | "tga" | "tif" | "tiff" | "jp2" | "j2k" | "j2c" | "dxf" | "sfc" | "p21" | "jww" | "geojson" | "shp" | "eml" | "lzh" | "7z" | "mdb" | "accdb" => Some(Kind::Document),
+            "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "hwp" | "hwpx" | "epub" | "uot" | "wpd" | "wp6" | "jtd" | "jtt" | "jttc" | "md" | "markdown" | "cin" | "dpx" | "exr" | "psd" | "tga" | "tif" | "tiff" | "jp2" | "j2k" | "j2c" | "dxf" | "sfc" | "p21" | "jww" | "geojson" | "shp" | "eml" | "lzh" | "7z" | "mdb" | "accdb" | "xtx" => Some(Kind::Document),
             "pdf" | "ofd" | "xps" | "oxps" | "xdw" | "xbd" | "vsdx" => Some(Kind::Pdf),
             _ => None,
         }
     }
 
     /// The extensions of the files that can be opened (what `from_extension` knows), for the file dialog.
-    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "jsd", "jst", "dbf", "docx", "docm", "dotx", "dotm", "doc", "dot", "hwp", "hwpx", "epub", "uot", "wpd", "wp6", "jtd", "jtt", "jttc", "json", "xml", "sd-jwt", "mdoc", "md", "markdown", "pdf", "ofd", "xps", "oxps", "xdw", "xbd", "vsdx", "cin", "dpx", "exr", "psd", "tga", "tif", "tiff", "jp2", "j2k", "j2c", "dxf", "sfc", "p21", "jww", "geojson", "shp", "jhd", "jhb", "eml", "lzh", "7z", "mdb", "accdb"];
+    pub const OPENABLE_EXTENSIONS: &[&str] = &["pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "pps", "pot", "odp", "otp", "xlsx", "xlsm", "xlsb", "xls", "ods", "ots", "csv", "tsv", "tab", "xltx", "xltm", "xlk", "jsd", "jst", "dbf", "docx", "docm", "dotx", "dotm", "doc", "dot", "hwp", "hwpx", "epub", "uot", "wpd", "wp6", "jtd", "jtt", "jttc", "json", "xml", "sd-jwt", "mdoc", "md", "markdown", "pdf", "ofd", "xps", "oxps", "xdw", "xbd", "vsdx", "cin", "dpx", "exr", "psd", "tga", "tif", "tiff", "jp2", "j2k", "j2c", "dxf", "sfc", "p21", "jww", "geojson", "shp", "jhd", "jhb", "eml", "lzh", "7z", "mdb", "accdb", "xtx"];
 
     /// The kind of document contained in `presentation`.
     pub fn of(presentation: &Presentation) -> Self {
