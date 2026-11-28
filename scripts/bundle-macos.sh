@@ -19,7 +19,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 QUICK=
-[[ "${1:-}" == "--quick" ]] && QUICK=1
+MAS=
+for arg in "$@"; do
+  case "$arg" in
+    --quick) QUICK=1 ;;
+    --mas) MAS=1 ;;
+  esac
+done
 # The distribution keeps the release defaults (no incremental, default LTO); Cargo.toml's release profile is for development.
 source scripts/dist-profile.sh
 # --quick builds the everyday target/release, with the development profile (Cargo.toml) and the planned menu lines shown.
@@ -27,7 +33,9 @@ source scripts/dist-profile.sh
 
 PROFILE=debug
 FLAGS=()
-if [[ "${1:-}" == "--release" || -n $QUICK ]]; then PROFILE=release; FLAGS=(--release); fi
+for arg in "$@"; do
+  if [[ "$arg" == "--release" || -n $QUICK ]]; then PROFILE=release; FLAGS=(--release); fi
+done
 
 # The paths of this machine (the home folder, the repository) are not to go
 # into the executable (Rust keeps source paths for panics and the like): they
@@ -38,14 +46,18 @@ export IBIS_THIRD_PARTY_NOTICES="$PWD/target/third-party-macos.md"
 python3 scripts/check-gpui-hazards.py --self-test
 python3 scripts/check-gpui-hazards.py
 python3 scripts/gen-web-licenses.py macos
+BUILD_PKGS=(-p ibis-office-app)
+if [[ -z $MAS ]]; then
+  BUILD_PKGS+=(-p ibis-office-updater)
+fi
 if [[ -n $QUICK ]]; then
-  cargo build --release --locked -p ibis-office-app -p ibis-office-updater
+  cargo build --release --locked "${BUILD_PKGS[@]}"
   BIN_DIR=target/release
 elif [[ "$PROFILE" == release ]]; then
-  RUSTFLAGS="$REMAP" CARGO_TARGET_DIR=target/dist cargo build --release --locked -p ibis-office-app -p ibis-office-updater
+  RUSTFLAGS="$REMAP" CARGO_TARGET_DIR=target/dist cargo build --release --locked "${BUILD_PKGS[@]}"
   BIN_DIR=target/dist/release
 else
-  cargo build --locked -p ibis-office-app -p ibis-office-updater
+  cargo build --locked "${BUILD_PKGS[@]}"
   BIN_DIR=target/debug
 fi
 
@@ -53,15 +65,18 @@ fi
 # version, per line).
 VERSION=$(awk -F'\t' '$1 == "macOS" { sub(/\r$/, "", $2); print $2 }' crates/build-version.txt)
 [[ -n $VERSION ]] || { echo "build-version.txt has no macOS line" >&2; exit 1; }
+BUNDLE_VERSION="${MAS_BUNDLE_VERSION:-$VERSION}"
 
 APP="target/$PROFILE/Docs.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/ibisOffice" "$APP/Contents/MacOS/ibisOffice"
-# The automatic update (todo-fix #35): ibisOffice starts the ibisOfficeUpdater of
-# the NEW app it downloaded, which swaps the apps. It is inside the signed (and
-# notarized) app, so it cannot be swapped for another.
-cp "$BIN_DIR/ibisOfficeUpdater" "$APP/Contents/MacOS/ibisOfficeUpdater"
+if [[ -z $MAS ]]; then
+  # The automatic update (todo-fix #35): ibisOffice starts the ibisOfficeUpdater of
+  # the NEW app it downloaded, which swaps the apps. It is inside the signed (and
+  # notarized) app, so it cannot be swapped for another.
+  cp "$BIN_DIR/ibisOfficeUpdater" "$APP/Contents/MacOS/ibisOfficeUpdater"
+fi
 cp crates/ibis-office-app/macos/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # The icons of the files ibisOffice opens (K0048): the blue document, green spreadsheet and orange presentation icons, which the
 # document types below name (made by scripts/gen-doc-icons.py).
@@ -97,9 +112,11 @@ cat > "$APP/Contents/Info.plist" <<EOF
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleVersion</key>
-	<string>$VERSION</string>
+	<string>$BUNDLE_VERSION</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$VERSION</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
 	<key>NSHighResolutionCapable</key>
@@ -266,10 +283,28 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-# Ad-hoc signature so Apple Silicon runs the copied executables (the updater is
-# signed on its own first, then the app seals it).
-codesign --force --sign - "$APP/Contents/MacOS/ibisOfficeUpdater"
-codesign --force --sign - "$APP"
+if [[ -n $MAS ]]; then
+  if [[ -n "${MAS_PROVISIONING_PROFILE:-}" ]]; then
+    cp "$MAS_PROVISIONING_PROFILE" "$APP/Contents/embedded.provisionprofile"
+  fi
+  SIGN_ID="${MAS_APP_SIGN_IDENTITY:--}"
+  SIGN_OPTS=(--force --sign "$SIGN_ID" --entitlements crates/ibis-office-app/macos/mas.entitlements)
+  if [[ "$SIGN_ID" != "-" ]]; then
+    SIGN_OPTS+=(--options runtime --timestamp)
+  fi
+  codesign "${SIGN_OPTS[@]}" "$APP"
+  if [[ -n "${MAS_INSTALLER_SIGN_IDENTITY:-}" ]]; then
+    PKG="target/$PROFILE/Docs-mas.pkg"
+    rm -f "$PKG"
+    productbuild --component "$APP" /Applications --sign "$MAS_INSTALLER_SIGN_IDENTITY" "$PKG"
+    echo "Built signed Mac App Store package: $PKG"
+  fi
+else
+  # Ad-hoc signature so Apple Silicon runs the copied executables (the updater is
+  # signed on its own first, then the app seals it).
+  codesign --force --sign - "$APP/Contents/MacOS/ibisOfficeUpdater"
+  codesign --force --sign - "$APP"
+fi
 
 # Tell Finder and the Dock the app changed, so they show the current icon
 # instead of a cached (or blank) one after a rebuild in the same place.

@@ -1,0 +1,128 @@
+name: Mac App Store CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload signed .pkg to App Store Connect"
+        required: true
+        type: boolean
+        default: false
+      build_number:
+        description: "CFBundleVersion override (defaults to github.run_number)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  mas-build:
+    name: macOS App Store (arm64)
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-28
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: mas-macos-arm64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: mas-macos-arm64-
+
+      - name: Import Apple signing certificates and provisioning profile
+        id: signing
+        env:
+          MAS_APP_CERT_P12_BASE64: ${{ secrets.MAS_APP_CERT_P12_BASE64 }}
+          MAS_APP_CERT_PASSWORD: ${{ secrets.MAS_APP_CERT_PASSWORD }}
+          MAS_INSTALLER_CERT_P12_BASE64: ${{ secrets.MAS_INSTALLER_CERT_P12_BASE64 }}
+          MAS_INSTALLER_CERT_PASSWORD: ${{ secrets.MAS_INSTALLER_CERT_PASSWORD }}
+          MAS_PROVISIONING_PROFILE_BASE64: ${{ secrets.MAS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MAS_APP_CERT_P12_BASE64}" || -z "${MAS_INSTALLER_CERT_P12_BASE64}" ]]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "Signing secrets not configured; running unsigned --mas bundle verification only."
+            exit 0
+          fi
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/mas-signing.keychain-db"
+          KEYCHAIN_PASS="$(openssl rand -hex 24)"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          echo "$MAS_APP_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/mas-app.p12"
+          security import "$RUNNER_TEMP/mas-app.p12" -k "$KEYCHAIN_PATH" -P "$MAS_APP_CERT_PASSWORD" -T /usr/bin/codesign
+          echo "$MAS_INSTALLER_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/mas-installer.p12"
+          security import "$RUNNER_TEMP/mas-installer.p12" -k "$KEYCHAIN_PATH" -P "$MAS_INSTALLER_CERT_PASSWORD" -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          APP_ID=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/.*"\(Apple Distribution:.*\|3rd Party Mac Developer Application:.*\)"/\1/p' | head -n 1)
+          INST_ID=$(security find-identity -v "$KEYCHAIN_PATH" | sed -n 's/.*"\(Mac Installer Distribution:.*\|3rd Party Mac Developer Installer:.*\)"/\1/p' | head -n 1)
+          [[ -n "$APP_ID" && -n "$INST_ID" ]] || { echo "Required MAS identities not found in keychain" >&2; exit 1; }
+
+          if [[ -n "$MAS_PROVISIONING_PROFILE_BASE64" ]]; then
+            echo "$MAS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/Docs.provisionprofile"
+            echo "profile_path=$RUNNER_TEMP/Docs.provisionprofile" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          echo "app_identity=$APP_ID" >> "$GITHUB_OUTPUT"
+          echo "installer_identity=$INST_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build Mac App Store bundle and package
+        env:
+          MAS_BUNDLE_VERSION: ${{ inputs.build_number != '' && inputs.build_number || github.run_number }}
+          MAS_APP_SIGN_IDENTITY: ${{ steps.signing.outputs.app_identity }}
+          MAS_INSTALLER_SIGN_IDENTITY: ${{ steps.signing.outputs.installer_identity }}
+          MAS_PROVISIONING_PROFILE: ${{ steps.signing.outputs.profile_path }}
+        run: |
+          set -euo pipefail
+          scripts/bundle-macos.sh --release --mas
+          app="target/release/Docs.app"
+          test ! -e "$app/Contents/MacOS/ibisOfficeUpdater"
+          plutil -lint "$app/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -d --entitlements :- "$app" | grep -q "com.apple.security.app-sandbox"
+          if [[ "${{ steps.signing.outputs.signed }}" == "true" ]]; then
+            pkgutil --check-signature "target/release/Docs-mas.pkg"
+          fi
+
+      - name: Upload MAS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sorane-docs-mas-arm64
+          path: |
+            target/release/Docs.app
+            target/release/Docs-mas.pkg
+          if-no-files-found: warn
+
+      - name: Upload to App Store Connect
+        if: ${{ inputs.upload && steps.signing.outputs.signed == 'true' }}
+        env:
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          echo "$ASC_API_KEY_P8_BASE64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_API_KEY_ID}.p8"
+          xcrun altool --upload-app \
+            --type macos \
+            --file target/release/Docs-mas.pkg \
+            --apiKey "$ASC_API_KEY_ID" \
+            --apiIssuer "$ASC_API_ISSUER_ID"
+          rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_API_KEY_ID}.p8"
