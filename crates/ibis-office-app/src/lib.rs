@@ -454,7 +454,7 @@ pub fn init(cx: &mut App) {
 /// ibisOffice [--slide <number>] [<file.pptx|file.xlsx|file.docx>]
 /// ibisOffice --export pdfa-info <file.pdf>
 /// ibisOffice --export pdfa-validate --pdfa-profile 2b [--verapdf <program>] <file.pdf>
-/// ibisOffice --export png|pdf|pdfa-2b|pdfa-3b|pdf-image [--out-dir <dir>] [--width <px>] [--range 1,3-5] [--include-layout] <file.pptx|file.xlsx|file.docx>
+/// ibisOffice --export png|tif|tiff|pdf|pdfa-2b|pdfa-3b|pdf-image [--out-dir <dir>] [--width <px>] [--range 1,3-5] [--include-layout] <file.pptx|file.xlsx|file.docx>
 /// ibisOffice --export ui [--out-dir <dir>] [--steps start,pagedown,end] [<file.pptx|file.xlsx|file.docx>]
 /// ibisOffice [--timing] [--quit-after-first-frame] [<file>]
 /// ```
@@ -1143,11 +1143,12 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 return Ok(());
             }
             "png" => export::Format::Png,
+            "tif" | "tiff" => export::Format::Tiff,
             "pdf" => export::Format::Pdf,
             "pdfa-2b" => export::Format::PdfA2b,
             "pdfa-3b" => export::Format::PdfA3b,
             "pdf-image" => export::Format::PdfImage,
-            other => return Err(format!("--export takes png, pdf, pdfa-2b, pdfa-3b, pdfa-info, pdfa-validate, pdf-image, md, txt, row-heights or ui: {other}")),
+            other => return Err(format!("--export takes png, tif, tiff, pdf, pdfa-2b, pdfa-3b, pdfa-info, pdfa-validate, pdf-image, md, txt, row-heights or ui: {other}")),
         };
         let path = args.path.as_deref().ok_or("name the .pptx, .xlsx or .docx file to export")?;
         let out_dir = args.out_dir.clone().unwrap_or_else(|| ".".into());

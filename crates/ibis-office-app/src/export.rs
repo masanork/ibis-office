@@ -60,6 +60,8 @@ pub enum Format {
     PdfA3b,
     /// A picture per page.
     PdfImage,
+    /// Multi-page TIFF (LZW compressed RGB8).
+    Tiff,
 }
 
 impl Format {
@@ -1902,7 +1904,7 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
                     std::fs::write(&path, points).map_err(|e| format!("{}: {e}", path.display()))?;
                 }
             }
-            Format::PdfImage => pages.push((image, (area.width as f32 / 12_700.0, area.height as f32 / 12_700.0))),
+            Format::PdfImage | Format::Tiff => pages.push((image, (area.width as f32 / 12_700.0, area.height as f32 / 12_700.0))),
             Format::Pdf | Format::PdfA2b | Format::PdfA3b => {}
         }
     }
@@ -1953,7 +1955,44 @@ pub(crate) fn render(mut presentation: Presentation, options: &Options) -> Resul
         write_pdf(&path, &pages, options.paper.filter(|_| handout_paper(options).is_none()).map(|p| (p, options.fit_paper)))?;
         println!("{}", path.display());
     }
+    if options.format == Format::Tiff {
+        let path = options.out_dir.join(format!("{}.tif", options.name));
+        write_multipage_tiff(&path, &pages)?;
+        println!("{}", path.display());
+    }
     Ok(Rendered { writer: pdf_writer })
+}
+
+fn write_multipage_tiff(path: &Path, pages: &[(image::RgbaImage, (f32, f32))]) -> Result<(), String> {
+    use tiff::encoder::{Compression, Predictor, TiffEncoder, colortype::RGB8};
+    if pages.is_empty() {
+        return Err(format!("{}: no pages to export to TIFF", path.display()));
+    }
+    let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut encoder = TiffEncoder::new(std::io::BufWriter::new(file))
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .with_compression(Compression::Lzw)
+        .with_predictor(Predictor::Horizontal);
+    for (img, _) in pages {
+        let (w, h) = (img.width(), img.height());
+        let mut rgb = Vec::with_capacity((w as usize) * (h as usize) * 3);
+        for p in img.pixels() {
+            let [r, g, b, a] = p.0;
+            if a == 255 {
+                rgb.extend_from_slice(&[r, g, b]);
+            } else {
+                let alpha = a as u16;
+                let inv = 255 - alpha;
+                rgb.push(((r as u16 * alpha + 255 * inv) / 255) as u8);
+                rgb.push(((g as u16 * alpha + 255 * inv) / 255) as u8);
+                rgb.push(((b as u16 * alpha + 255 * inv) / 255) as u8);
+            }
+        }
+        encoder
+            .write_image::<RGB8>(w, h, &rgb)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Add the pages of a worksheet to `writer`: each `pages` part of the
