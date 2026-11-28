@@ -222,7 +222,7 @@ fn mcp_jet_inspect_schema_is_available_in_read_only_mode() {
         tool["name"] == "fixed_width_preview" && tool["annotations"]["readOnlyHint"] == true
     }));
     assert!(!tools.iter().any(|tool| {
-        matches!(tool["name"].as_str(), Some("jet_export_sqlite" | "dbf_export_sqlite" | "fixed_width_export_sqlite" | "ese_export_sqlite" | "pst_export_sqlite"))
+        matches!(tool["name"].as_str(), Some("sqlite_execute" | "jet_export_sqlite" | "dbf_export_sqlite" | "fixed_width_export_sqlite" | "ese_export_sqlite" | "pst_export_sqlite"))
     }));
     assert_eq!(answers[1]["result"]["isError"], true);
 }

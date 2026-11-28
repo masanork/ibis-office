@@ -267,6 +267,73 @@ pub fn sqlite_count(
     Ok(json!({"groups": groups, "truncated": result.truncated}))
 }
 
+/// Execute write/DDL statements (`INSERT`, `UPDATE`, `DELETE`, `CREATE`, `ALTER`, `DROP`)
+/// inside a single transaction against a local SQLite file via Turso.
+pub fn sqlite_execute(
+    path: &Path,
+    statements: &[(&str, &[Option<SqliteScalar<'_>>])],
+    foreign_keys: bool,
+) -> Result<serde_json::Value, String> {
+    use serde_json::json;
+
+    if statements.is_empty() || statements.len() > 256 {
+        return Err("statements must have 1 to 256 entries".into());
+    }
+    let path_str = path
+        .to_str()
+        .ok_or("SQLite path is not valid UTF-8")?;
+    let io = Arc::new(PlatformIO::new().map_err(|e| e.to_string())?);
+    let database =
+        Database::open_file(io, path_str, Arc::new(SqliteDialect)).map_err(|e| e.to_string())?;
+    let connection = database.connect().map_err(|e| e.to_string())?;
+    let exec_raw = |sql: &str| {
+        connection
+            .prepare(sql)
+            .and_then(|mut stmt| stmt.run_ignore_rows())
+            .map_err(|e| e.to_string())
+    };
+    if foreign_keys {
+        exec_raw("PRAGMA foreign_keys = ON")?;
+    }
+    exec_raw("BEGIN")?;
+    let mut results = Vec::with_capacity(statements.len());
+    let mut total_changes = 0i64;
+    for (sql, params) in statements {
+        let mut stmt = match connection.prepare(*sql) {
+            Ok(s) => s,
+            Err(err) => {
+                let _ = exec_raw("ROLLBACK");
+                return Err(err.to_string());
+            }
+        };
+        for (index, value) in params.iter().enumerate() {
+            let bound = value.as_ref().map_or(Value::Null, SqliteScalar::to_sql);
+            if let Err(err) = stmt.bind_at(NonZeroUsize::new(index + 1).unwrap(), bound) {
+                let _ = exec_raw("ROLLBACK");
+                return Err(err.to_string());
+            }
+        }
+        if let Err(err) = stmt.run_ignore_rows() {
+            let _ = exec_raw("ROLLBACK");
+            return Err(err.to_string());
+        }
+        let changes = connection.changes();
+        let last_insert_rowid = connection.last_insert_rowid();
+        total_changes += changes;
+        results.push(json!({
+            "changes": changes,
+            "last_insert_rowid": last_insert_rowid,
+        }));
+    }
+    exec_raw("COMMIT")?;
+    exec_raw("PRAGMA wal_checkpoint(TRUNCATE)")?;
+    Ok(json!({
+        "statements_executed": results.len(),
+        "total_changes": total_changes,
+        "results": results,
+    }))
+}
+
 pub fn read_sqlite_table(path: &Path, table: &str) -> Result<QTable, String> {
     read_sqlite_table_bounded(path, table, MAX_CELLS, MAX_TEXT_BYTES)
 }
@@ -1428,6 +1495,83 @@ mod tests {
             sqlite_tables(&path)
                 .unwrap_err()
                 .contains("pending journal")
+        );
+    }
+
+    #[test]
+    fn executes_transactional_writes_and_rolls_back_on_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.sqlite");
+        {
+            let database = Database::open_file(
+                Arc::new(PlatformIO::new().unwrap()),
+                path.to_str().unwrap(),
+                Arc::new(SqliteDialect),
+            )
+            .unwrap();
+            let connection = database.connect().unwrap();
+            connection
+                .prepare("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)")
+                .unwrap()
+                .run_ignore_rows()
+                .unwrap();
+            connection
+                .prepare("PRAGMA wal_checkpoint(TRUNCATE)")
+                .unwrap()
+                .run_ignore_rows()
+                .unwrap();
+        }
+
+        let res = sqlite_execute(
+            &path,
+            &[
+                (
+                    "INSERT INTO items (name) VALUES (?)",
+                    &[Some(SqliteScalar::Text("alpha"))],
+                ),
+                (
+                    "INSERT INTO items (name) VALUES (?)",
+                    &[Some(SqliteScalar::Text("beta"))],
+                ),
+                (
+                    "UPDATE items SET name = ? WHERE name = ?",
+                    &[
+                        Some(SqliteScalar::Text("beta2")),
+                        Some(SqliteScalar::Text("beta")),
+                    ],
+                ),
+            ],
+            true,
+        )
+        .unwrap();
+        assert_eq!(res["statements_executed"], 3);
+        assert_eq!(res["total_changes"], 3);
+
+        // Error in second statement rolls back first statement
+        let err = sqlite_execute(
+            &path,
+            &[
+                (
+                    "INSERT INTO items (name) VALUES (?)",
+                    &[Some(SqliteScalar::Text("gamma"))],
+                ),
+                ("INSERT INTO missing_table VALUES (1)", &[]),
+            ],
+            true,
+        );
+        assert!(err.is_err());
+
+        let rows = sqlite_query(
+            &path,
+            "SELECT id, name FROM items ORDER BY id",
+            &[],
+            10,
+            64 * 1024,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::json!(rows.rows),
+            serde_json::json!([[1, "alpha"], [2, "beta2"]])
         );
     }
 }
