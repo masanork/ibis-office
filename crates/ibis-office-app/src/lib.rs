@@ -980,6 +980,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 || ibis_formats::cals_xml::is_cals_xml(&raw_data)
                 || ibis_formats::cad::is_cad(&raw_data)
                 || ibis_formats::gis::is_gis(&raw_data)
+                || ibis_formats::gtfs::is_gtfs(&raw_data)
                 || ibis_formats::access::is_access(&raw_data)
                 || ibis_formats::archive::is_lzh(&raw_data)
                 || ibis_formats::archive::is_7z(&raw_data))
@@ -992,6 +993,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 ibis_formats::cad::to_markdown(&raw_data)
             } else if ibis_formats::gis::is_gis(&raw_data) {
                 ibis_formats::gis::to_markdown(&raw_data)
+            } else if ibis_formats::gtfs::is_gtfs(&raw_data) {
+                ibis_formats::gtfs::to_markdown(&raw_data)
             } else if ibis_formats::access::is_access(&raw_data) {
                 ibis_formats::access::to_markdown(&raw_data)
             } else {
