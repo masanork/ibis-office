@@ -790,6 +790,9 @@ impl SlideEditor {
             "json_lines" => &["jsonl", "ndjson"],
             "avro" => &["avro"],
             "sqlite" => &["sqlite", "sqlite3", "db"],
+            "jet" => &["mdb", "accdb", "mde", "accde"],
+            "ese" => &["edb", "sdb", "dat"],
+            "pst" => &["ost", "pst"],
             _ => ibis_doc_service::DATASET_EXTENSIONS,
         };
         let picked = cx.prompt_for_paths(PathPromptOptions {

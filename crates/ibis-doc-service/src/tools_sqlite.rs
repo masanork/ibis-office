@@ -325,7 +325,10 @@ fn selected_sources(paths: &[PathBuf], args: &mut Value) -> Result<Service, Tool
                     .ok_or_else(|| ToolError::invalid("path is not valid UTF-8"))?
             );
         }
-    } else if let Some(path) = paths.iter().find(|path| is_sqlite(path)) {
+    } else if let Some(path) = paths
+        .iter()
+        .find(|path| is_sqlite(path) || is_jet_extension(path) || is_ese_extension(path) || is_pst_extension(path))
+    {
         object.insert(
             PATH.into(),
             json!(
