@@ -154,8 +154,8 @@ impl StructuredCodeView {
 
     fn token_color(kind: TokenKind, is_dark: bool, fg: Hsla, muted: Hsla) -> Hsla {
         match (kind, is_dark) {
-            (TokenKind::Key | TokenKind::TagName, true) => rgb(0x7dd3fc).into(),
-            (TokenKind::Key | TokenKind::TagName, false) => rgb(0x0369a1).into(),
+            (TokenKind::Key | TokenKind::TagName | TokenKind::Heading, true) => rgb(0x7dd3fc).into(),
+            (TokenKind::Key | TokenKind::TagName | TokenKind::Heading, false) => rgb(0x0369a1).into(),
             (TokenKind::AttrName, true) => rgb(0xfdba74).into(),
             (TokenKind::AttrName, false) => rgb(0xb45309).into(),
             (TokenKind::String | TokenKind::AttrValue, true) => rgb(0x86efac).into(),

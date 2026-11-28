@@ -13,6 +13,7 @@ pub enum CodeFormat {
     Xml,
     Yaml,
     Toml,
+    Markdown,
 }
 
 impl CodeFormat {
@@ -23,6 +24,7 @@ impl CodeFormat {
             "xml" | "rdf" | "owl" => Some(Self::Xml),
             "yaml" | "yml" => Some(Self::Yaml),
             "toml" => Some(Self::Toml),
+            "md" | "markdown" => Some(Self::Markdown),
             _ => None,
         }
     }
@@ -34,6 +36,7 @@ impl CodeFormat {
             Self::Xml => "XML",
             Self::Yaml => "YAML",
             Self::Toml => "TOML",
+            Self::Markdown => "MARKDOWN",
         }
     }
 }
@@ -45,6 +48,7 @@ pub enum TokenKind {
     TagName,
     AttrName,
     AttrValue,
+    Heading,
     String,
     Number,
     Boolean,
@@ -147,6 +151,11 @@ impl CodeDocument {
                     .map_err(|_| "Structured code view requires UTF-8 text".to_string())?;
                 let value = super::notebook_schema::parse_toml_to_value(text)?;
                 builder.emit_json_value(None, &value, "$", 0, false);
+            }
+            CodeFormat::Markdown => {
+                let text = std::str::from_utf8(bytes)
+                    .map_err(|_| "Structured code view requires UTF-8 text".to_string())?;
+                builder.emit_markdown(text);
             }
         }
 
@@ -512,6 +521,221 @@ impl Builder {
         self.lines[open_idx].close_line_index = Some(close_idx);
         Ok(())
     }
+
+    fn emit_markdown(&mut self, text: &str) {
+        struct OpenHeading {
+            level: usize,
+            line_idx: usize,
+            title: String,
+        }
+        let mut heading_stack: Vec<OpenHeading> = Vec::new();
+        let mut in_frontmatter = false;
+        let mut frontmatter_open_idx: Option<usize> = None;
+        let mut fence: Option<(char, usize, usize)> = None; // (char, len, open_line_idx)
+
+        let md_path = |stack: &[OpenHeading]| -> String {
+            if stack.is_empty() {
+                "/".to_string()
+            } else {
+                format!(
+                    "/{}",
+                    stack
+                        .iter()
+                        .map(|h| h.title.as_str())
+                        .collect::<Vec<_>>()
+                        .join("/")
+                )
+            }
+        };
+        let close_headings_to = |stack: &mut Vec<OpenHeading>,
+                                 lines: &mut [CodeLine],
+                                 target_level: usize,
+                                 end_idx: usize| {
+            while let Some(top) = stack.last() {
+                if top.level < target_level {
+                    break;
+                }
+                let popped = stack.pop().unwrap();
+                if end_idx > popped.line_idx {
+                    lines[popped.line_idx].close_line_index = Some(end_idx);
+                    let count = end_idx - popped.line_idx;
+                    lines[popped.line_idx].summary = Some(format!(" … {count} lines"));
+                }
+            }
+        };
+
+        let raw_lines: Vec<&str> = text.lines().collect();
+        for (raw_idx, line) in raw_lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+
+            // YAML frontmatter at line 0
+            if raw_idx == 0 && line.trim() == "---" {
+                let node_id = self.alloc_node();
+                let open_idx = self.push_line(
+                    0,
+                    "/frontmatter".to_string(),
+                    Some(node_id),
+                    None,
+                    vec![CodeToken::new(TokenKind::Comment, *line)],
+                );
+                in_frontmatter = true;
+                frontmatter_open_idx = Some(open_idx);
+                continue;
+            }
+            if in_frontmatter {
+                let cur_idx = self.push_line(
+                    1,
+                    "/frontmatter".to_string(),
+                    None,
+                    None,
+                    vec![CodeToken::new(
+                        if line.trim() == "---" {
+                            TokenKind::Comment
+                        } else {
+                            TokenKind::AttrName
+                        },
+                        *line,
+                    )],
+                );
+                if line.trim() == "---" {
+                    if let Some(open_idx) = frontmatter_open_idx.take()
+                        && cur_idx > open_idx
+                    {
+                        self.lines[open_idx].close_line_index = Some(cur_idx);
+                        self.lines[open_idx].summary =
+                            Some(format!(" … {} lines ---", cur_idx - open_idx));
+                    }
+                    in_frontmatter = false;
+                }
+                continue;
+            }
+
+            // Inside fenced code block
+            if let Some((fchar, flen, open_idx)) = fence {
+                let body_depth = heading_stack.len();
+                let path = md_path(&heading_stack);
+                if is_closing_fence(trimmed, fchar, flen) {
+                    let close_idx = self.push_line(
+                        body_depth,
+                        path,
+                        None,
+                        None,
+                        vec![CodeToken::new(TokenKind::Comment, *line)],
+                    );
+                    if close_idx > open_idx {
+                        self.lines[open_idx].close_line_index = Some(close_idx);
+                        self.lines[open_idx].summary =
+                            Some(format!(" … {} lines", close_idx - open_idx));
+                    }
+                    fence = None;
+                } else {
+                    self.push_line(
+                        body_depth + 1,
+                        path,
+                        None,
+                        None,
+                        vec![CodeToken::new(TokenKind::String, *line)],
+                    );
+                }
+                continue;
+            }
+
+            // Opening fenced code block
+            if let Some((fchar, flen)) = parse_opening_fence(trimmed) {
+                let body_depth = heading_stack.len();
+                let path = md_path(&heading_stack);
+                let node_id = self.alloc_node();
+                let open_idx = self.push_line(
+                    body_depth,
+                    path,
+                    Some(node_id),
+                    None,
+                    vec![CodeToken::new(TokenKind::Comment, *line)],
+                );
+                fence = Some((fchar, flen, open_idx));
+                continue;
+            }
+
+            // ATX Heading (# .. ######)
+            if let Some((level, title)) = parse_atx_heading(trimmed) {
+                let end_idx = self.lines.len().saturating_sub(1);
+                if !self.lines.is_empty() {
+                    close_headings_to(&mut heading_stack, &mut self.lines, level, end_idx);
+                }
+                let depth = level.saturating_sub(1).min(MAX_TREE_DEPTH);
+                let mut path_parts: Vec<&str> =
+                    heading_stack.iter().map(|h| h.title.as_str()).collect();
+                path_parts.push(&title);
+                let path = format!("/{}", path_parts.join("/"));
+                let node_id = self.alloc_node();
+                let line_idx = self.push_line(
+                    depth,
+                    path,
+                    Some(node_id),
+                    None,
+                    vec![CodeToken::new(TokenKind::Heading, *line)],
+                );
+                heading_stack.push(OpenHeading {
+                    level,
+                    line_idx,
+                    title,
+                });
+                continue;
+            }
+
+            // Regular Markdown line
+            let depth = heading_stack.len().min(MAX_TREE_DEPTH);
+            let path = md_path(&heading_stack);
+            let tokens = tokenize_markdown_line(line);
+            self.push_line(depth, path, None, None, tokens);
+        }
+
+        if let Some(last_idx) = self.lines.len().checked_sub(1) {
+            close_headings_to(&mut heading_stack, &mut self.lines, 1, last_idx);
+        }
+    }
+}
+
+fn parse_atx_heading(trimmed: &str) -> Option<(usize, String)> {
+    let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    let rest = &trimmed[hashes..];
+    if !rest.is_empty() && !rest.starts_with(' ') && !rest.starts_with('\t') {
+        return None;
+    }
+    let title = rest.trim().trim_end_matches('#').trim().to_string();
+    Some((hashes, title))
+}
+
+fn parse_opening_fence(trimmed: &str) -> Option<(char, usize)> {
+    let first = trimmed.chars().next()?;
+    if first != '`' && first != '~' {
+        return None;
+    }
+    let count = trimmed.chars().take_while(|&c| c == first).count();
+    (count >= 3).then_some((first, count))
+}
+
+fn is_closing_fence(trimmed: &str, fchar: char, min_len: usize) -> bool {
+    let count = trimmed.chars().take_while(|&c| c == fchar).count();
+    count >= min_len && trimmed[count..].trim().is_empty()
+}
+
+fn tokenize_markdown_line(line: &str) -> Vec<CodeToken> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('>') {
+        return vec![CodeToken::new(TokenKind::Comment, line)];
+    }
+    if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+        let indent_len = line.len() - trimmed.len();
+        return vec![
+            CodeToken::new(TokenKind::Punctuation, &line[..indent_len + 2]),
+            CodeToken::new(TokenKind::Text, &line[indent_len + 2..]),
+        ];
+    }
+    vec![CodeToken::new(TokenKind::Text, line)]
 }
 
 fn xml_qname(node: roxmltree::Node<'_, '_>) -> String {
@@ -566,5 +790,27 @@ mod tests {
         let visible = doc.visible_lines();
         // Root open + <components> + Root close = 3 lines
         assert_eq!(visible.len(), 3);
+    }
+
+    #[test]
+    fn markdown_heading_and_fence_folding() {
+        let raw = b"# Top\nintro\n## Sub\n```rust\n# not a heading\nfn main() {}\n```\n# Second\ntail\n";
+        let mut doc = CodeDocument::parse("md", raw).unwrap();
+        let total = doc.lines.len();
+        assert_eq!(total, 9);
+
+        // Collapse depth >= 1 folds `## Sub` and the code fence, keeping `# Top` and `# Second` open.
+        doc.collapse_all();
+        let visible = doc.visible_lines();
+        assert!(visible.len() < total);
+        assert!(visible.iter().any(|&i| doc.lines[i].plain_text == "# Top"));
+        assert!(visible.iter().any(|&i| doc.lines[i].plain_text == "## Sub"));
+        assert!(visible.iter().any(|&i| doc.lines[i].plain_text == "# Second"));
+        assert!(!visible.iter().any(|&i| doc.lines[i].plain_text == "fn main() {}"));
+
+        let hits = doc.search_matches("fn main");
+        assert_eq!(hits.len(), 1);
+        doc.reveal_line(hits[0]);
+        assert!(doc.visible_lines().contains(&hits[0]));
     }
 }

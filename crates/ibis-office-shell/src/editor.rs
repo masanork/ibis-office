@@ -1843,16 +1843,23 @@ impl SlideEditor {
                     opened_import = editable_import;
                     if is_law {
                         law_source = Some(std::sync::Arc::new(data));
-                    } else if bom_format.is_some()
-                        && let Some(ext) = extension
+                    } else if let Some(ext) = extension
+                        && (bom_format.is_some()
+                            || ext.eq_ignore_ascii_case("md")
+                            || ext.eq_ignore_ascii_case("markdown"))
                     {
                         let modes = Self::available_structured_modes(ext, &data);
+                        let active_mode = if bom_format.is_some() {
+                            crate::structured_code_view::StructuredViewMode::Table
+                        } else {
+                            crate::structured_code_view::StructuredViewMode::Document
+                        };
                         structured_source = Some(crate::structured_code_view::StructuredSource {
                             name: name.clone(),
                             extension: ext.to_string(),
                             bytes: std::sync::Arc::new(data),
                             available_modes: modes,
-                            active_mode: crate::structured_code_view::StructuredViewMode::Table,
+                            active_mode,
                         });
                     }
                     Ok((opened, None))
@@ -1972,6 +1979,9 @@ impl SlideEditor {
     ) -> Vec<crate::structured_code_view::StructuredViewMode> {
         use crate::structured_code_view::StructuredViewMode;
         use ibis_formats::structured_preview::code_tree::CodeFormat;
+        if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
+            return vec![StructuredViewMode::Document, StructuredViewMode::Code];
+        }
         let mut modes = Vec::new();
         if CodeFormat::from_extension(extension).is_some() {
             modes.push(StructuredViewMode::Code);
@@ -2061,6 +2071,27 @@ impl SlideEditor {
                 }
             }
             StructuredViewMode::Document => {
+                let is_md = source.extension.eq_ignore_ascii_case("md")
+                    || source.extension.eq_ignore_ascii_case("markdown");
+                if is_md {
+                    match crate::read_file::open_document_bytes(
+                        source.name.as_ref(),
+                        None,
+                        &source.bytes,
+                    ) {
+                        Ok(Some(crate::read_file::CommonOpen::Standard { opened, .. })) => {
+                            self.structured_code_view = None;
+                            self.load(opened.presentation, source.name.clone(), window, cx);
+                            self.set_opened_source(std::sync::Arc::new(opened.source), false);
+                            self.structured_source = Some(source);
+                            with_format!(self, file_opened(self));
+                            cx.notify();
+                        }
+                        Ok(_) => self.set_status("ドキュメント表示を開けませんでした".to_string(), cx),
+                        Err(err) => self.set_status(err, cx),
+                    }
+                    return;
+                }
                 match crate::structured_preview::open(&source.extension, &source.bytes, None) {
                     Ok(opened) => {
                         self.structured_code_view = None;
@@ -2361,25 +2392,34 @@ impl SlideEditor {
                             || crate::format::info(ibis_formats::Kind::of(&loaded.presentation)).extension,
                             crate::read_file::EditableImport::save_extension,
                         );
+                        let structured_name = name.clone();
                         this.load(loaded.presentation, format!("{stem}.{extension}").into(), window, cx);
                         this.set_opened_source(loaded.source, production_image);
-                        if loaded.bom_source.is_some()
-                            && let Some(bytes) = loaded.structured_bytes
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+                        if let Some(bytes) = loaded.structured_bytes
+                            && (loaded.bom_source.is_some()
+                                || ext.eq_ignore_ascii_case("md")
+                                || ext.eq_ignore_ascii_case("markdown"))
                         {
-                            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("json");
                             let modes = Self::available_structured_modes(ext, &bytes);
+                            let active_mode = if loaded.bom_source.is_some() {
+                                crate::structured_code_view::StructuredViewMode::Table
+                            } else {
+                                crate::structured_code_view::StructuredViewMode::Document
+                            };
                             this.structured_source = Some(crate::structured_code_view::StructuredSource {
-                                name: name.clone(),
+                                name: structured_name,
                                 extension: ext.to_string(),
                                 bytes,
                                 available_modes: modes,
-                                active_mode: crate::structured_code_view::StructuredViewMode::Table,
+                                active_mode,
                             });
                         }
                         this.bom_source = loaded.bom_source;
                         this.path = None;
                         this.document.set_file(None);
                     } else {
+                        let structured_name = name.clone();
                         this.load(loaded.presentation, name, window, cx);
                         // A sheet read in chunks is saved as changes from the empty sheet it starts as.
                         if loaded.csv_stream.is_some() {
@@ -2389,6 +2429,19 @@ impl SlideEditor {
                             this.source = Some(loaded.source);
                         } else {
                             this.set_loaded_source(loaded.source);
+                        }
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+                        if let Some(bytes) = loaded.structured_bytes
+                            && (ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+                        {
+                            let modes = Self::available_structured_modes(ext, &bytes);
+                            this.structured_source = Some(crate::structured_code_view::StructuredSource {
+                                name: structured_name,
+                                extension: ext.to_string(),
+                                bytes,
+                                available_modes: modes,
+                                active_mode: crate::structured_code_view::StructuredViewMode::Document,
+                            });
                         }
                         this.set_file_path(Some(path.clone()));
                         this.watch.known = stamp_before_read;

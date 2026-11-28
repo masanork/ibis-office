@@ -643,7 +643,10 @@ fn read_file_data(
         }
         Some(CommonOpen::Standard { opened, editable_import, bom_format, .. }) => {
             opened_import = editable_import;
-            if bom_format.is_some() {
+            let is_md = extension.is_some_and(|e| {
+                e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown")
+            });
+            if bom_format.is_some() || is_md {
                 structured_bytes = Some(std::sync::Arc::new(data.clone()));
             }
             if bom_format == Some(ibis_formats::sbom_review::ReportFormat::CycloneDx) {
