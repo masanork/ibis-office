@@ -2407,6 +2407,8 @@ impl SlideEditor {
         .size_full();
         // The text of this slide and the next is rasterized ahead, at each subpixel position, once (the first frames of the show): an
         // entrance animation moves it smoothly and would rasterize a glyph at a new position in nearly every frame (issue 128).
+        // On native platforms glyph rasterization is fast and prewarming 16 subpixel variants synchronously causes a frame-0 hitch.
+        #[cfg(target_family = "wasm")]
         let prewarm: Vec<AnyElement> = {
             let presentation = self.presentation();
             let index = presentation.slide_index(current_id).unwrap_or(0);
@@ -2415,12 +2417,14 @@ impl SlideEditor {
             [Some(slide), next]
                 .into_iter()
                 .flatten()
-                .filter(|s| done.insert(s.id))
+                .filter(|s| !s.animations.is_empty() && done.insert(s.id))
                 .map(|s| {
                     crate::glyph_prewarm::GlyphPrewarm::new(div().absolute().top_0().left_0().size_full().opacity(0.0).child(page_layers(s, zoomed_scale, false, true))).into_any_element()
                 })
                 .collect()
         };
+        #[cfg(not(target_family = "wasm"))]
+        let prewarm: Vec<AnyElement> = Vec::new();
         Some(
             root.child(
                 div()

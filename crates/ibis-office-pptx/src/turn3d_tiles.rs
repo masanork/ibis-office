@@ -162,8 +162,7 @@ fn lattice_random(i: i32, j: i32, salt: u64) -> f32 {
 }
 
 /// `polygon` (points) clipped to the rectangle 0..w x 0..h (Sutherland-Hodgman; the polygon is convex).
-fn clip_to_slide(polygon: Vec<(f32, f32)>, w: f32, h: f32) -> Vec<(f32, f32)> {
-    let mut out = polygon;
+fn clip_to_slide_into(out: &mut Vec<(f32, f32)>, scratch: &mut Vec<(f32, f32)>, w: f32, h: f32) {
     for edge in 0..4 {
         let inside = |p: (f32, f32)| match edge {
             0 => p.0 >= 0.0,
@@ -180,9 +179,10 @@ fn clip_to_slide(polygon: Vec<(f32, f32)>, w: f32, h: f32) -> Vec<(f32, f32)> {
             };
             (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
         };
-        let input = std::mem::take(&mut out);
-        for (n, &cur) in input.iter().enumerate() {
-            let prev = input[(n + input.len() - 1) % input.len()];
+        std::mem::swap(out, scratch);
+        out.clear();
+        for (n, &cur) in scratch.iter().enumerate() {
+            let prev = scratch[(n + scratch.len() - 1) % scratch.len()];
             match (inside(prev), inside(cur)) {
                 (true, true) => out.push(cur),
                 (true, false) => out.push(cut(prev, cur)),
@@ -197,6 +197,12 @@ fn clip_to_slide(polygon: Vec<(f32, f32)>, w: f32, h: f32) -> Vec<(f32, f32)> {
             break;
         }
     }
+}
+
+fn clip_to_slide(polygon: Vec<(f32, f32)>, w: f32, h: f32) -> Vec<(f32, f32)> {
+    let mut out = polygon;
+    let mut scratch = Vec::with_capacity(8);
+    clip_to_slide_into(&mut out, &mut scratch, w, h);
     out
 }
 
@@ -277,14 +283,16 @@ pub(crate) fn honeycomb(q: f32, w: f32, h: f32) -> Vec<Card> {
         place(0.00078 * m * m, 0.0150 * m * m, -0.0070 * m * m, -0.0229 * m * m * m)
     });
     let mut cards = Vec::new();
+    let mut outer_buf = Vec::with_capacity(8);
+    let mut shown_buf = Vec::with_capacity(8);
+    let mut scratch_buf = Vec::with_capacity(8);
+    let (half_a, two_third_b) = (a / 2.0, 2.0 * b / 3.0);
     for (face, plane) in [(Face::Old, old_plane), (Face::New, new_plane)] {
         let Some(transform) = plane else { continue };
         for i in -14..=24 {
             for j in -6..=16 {
                 let c = (origin.0 + i as f32 * a + j as f32 * a / 2.0, origin.1 + j as f32 * b);
-                let shape = |scale: f32| clip_to_slide(corners.iter().map(|p| (c.0 + p.0 * scale, c.1 + p.1 * scale)).collect(), w, h);
-                let outer = shape(1.0);
-                if outer.len() < 3 {
+                if c.0 + half_a <= 0.0 || c.0 - half_a >= w || c.1 + two_third_b <= 0.0 || c.1 - two_third_b >= h {
                     continue;
                 }
                 let (alpha, gap) = if face == Face::Old {
@@ -297,11 +305,26 @@ pub(crate) fn honeycomb(q: f32, w: f32, h: f32) -> Vec<Card> {
                 if alpha <= 0.0 {
                     continue;
                 }
+                let inside_all = c.0 - half_a >= 0.0 && c.0 + half_a <= w && c.1 - two_third_b >= 0.0 && c.1 + two_third_b <= h;
                 if gap < 0.997 {
-                    cards.extend(polygon_card(face, &outer, transform, alpha * (1.0 - gap), w, h));
+                    outer_buf.clear();
+                    outer_buf.extend(corners.iter().map(|p| (c.0 + p.0, c.1 + p.1)));
+                    if !inside_all {
+                        clip_to_slide_into(&mut outer_buf, &mut scratch_buf, w, h);
+                    }
+                    if outer_buf.len() >= 3 {
+                        cards.extend(polygon_card(face, &outer_buf, transform, alpha * (1.0 - gap), w, h));
+                    }
                 }
                 if gap > 0.003 {
-                    cards.extend(polygon_card(face, &shape(SHOWN), transform, alpha, w, h));
+                    shown_buf.clear();
+                    shown_buf.extend(corners.iter().map(|p| (c.0 + p.0 * SHOWN, c.1 + p.1 * SHOWN)));
+                    if !inside_all {
+                        clip_to_slide_into(&mut shown_buf, &mut scratch_buf, w, h);
+                    }
+                    if shown_buf.len() >= 3 {
+                        cards.extend(polygon_card(face, &shown_buf, transform, alpha, w, h));
+                    }
                 }
             }
         }
