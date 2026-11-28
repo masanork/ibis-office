@@ -8,9 +8,7 @@
 extern void ibis_ios_start(void *ui_view, float logical_width, float logical_height, float scale_factor);
 extern void ibis_ios_tick(void);
 extern void ibis_ios_resize(float logical_width, float logical_height, float scale_factor);
-extern void ibis_ios_touch_began(float x, float y);
-extern void ibis_ios_touch_moved(float x, float y);
-extern void ibis_ios_touch_ended(float x, float y, bool cancelled);
+extern void ibis_ios_touch(uint64_t id, uint8_t phase, float x, float y);
 extern void ibis_ios_pinch(float x, float y, float delta, uint8_t phase);
 extern void ibis_ios_lifecycle(uint8_t phase);
 extern void ibis_ios_memory_warning(void);
@@ -82,33 +80,31 @@ static NSMutableDictionary<NSString *, NSURL *> *g_exportUrlByTempPath = nil;
 }
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (event.allTouches.count > 1) return;
-    UITouch *touch = [touches anyObject];
-    if (!touch) return;
-    CGPoint pt = [touch locationInView:self];
-    ibis_ios_touch_began((float)pt.x, (float)pt.y);
+    for (UITouch *touch in touches) {
+        CGPoint pt = [touch locationInView:self];
+        ibis_ios_touch((uint64_t)(uintptr_t)touch, 0, (float)pt.x, (float)pt.y);
+    }
 }
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (event.allTouches.count > 1) return;
-    UITouch *touch = [touches anyObject];
-    if (!touch) return;
-    CGPoint pt = [touch locationInView:self];
-    ibis_ios_touch_moved((float)pt.x, (float)pt.y);
+    for (UITouch *touch in touches) {
+        CGPoint pt = [touch locationInView:self];
+        ibis_ios_touch((uint64_t)(uintptr_t)touch, 1, (float)pt.x, (float)pt.y);
+    }
 }
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    if (event.allTouches.count > 1) return;
-    UITouch *touch = [touches anyObject];
-    if (!touch) return;
-    CGPoint pt = [touch locationInView:self];
-    ibis_ios_touch_ended((float)pt.x, (float)pt.y, false);
+    for (UITouch *touch in touches) {
+        CGPoint pt = [touch locationInView:self];
+        ibis_ios_touch((uint64_t)(uintptr_t)touch, 2, (float)pt.x, (float)pt.y);
+    }
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-    UITouch *touch = [touches anyObject];
-    CGPoint pt = touch ? [touch locationInView:self] : CGPointZero;
-    ibis_ios_touch_ended((float)pt.x, (float)pt.y, true);
+    for (UITouch *touch in touches) {
+        CGPoint pt = [touch locationInView:self];
+        ibis_ios_touch((uint64_t)(uintptr_t)touch, 3, (float)pt.x, (float)pt.y);
+    }
 }
 
 - (void)handlePinch:(UIPinchGestureRecognizer *)gesture {
