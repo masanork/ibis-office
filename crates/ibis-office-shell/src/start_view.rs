@@ -683,12 +683,19 @@ impl SlideEditor {
                 .child(section_title("start.recent", 0.0, TITLE_GAP))
                 .child(self.mobile_recent_rows(&recent_paths, foreground, muted, border, hover, cx));
         }
+        #[cfg(target_family = "wasm")]
+        if !web_recents.is_empty() {
+            body = body
+                .child(section_title("start.recent", 0.0, TITLE_GAP))
+                .child(self.web_recent_rows(&web_recents, foreground, muted, border, hover, true, cx))
+                .child(self.web_recents_clear_link(muted, cx));
+        }
 
         body = body.child(self.mobile_action_button(
             "start-open",
             "folder_open",
             crate::i18n::text("start.open-file"),
-            None,
+            Some(SharedString::from("Word・Excel・PowerPoint・PDF・一太郎・DocuWorks・Markdown など")),
             foreground,
             muted,
             border,
@@ -775,14 +782,6 @@ impl SlideEditor {
             if samples_open {
                 body = body.child(self.mobile_web_item_rows(sample_items, foreground, muted, border, hover, cx));
             }
-        }
-
-        #[cfg(target_family = "wasm")]
-        if !web_recents.is_empty() {
-            body = body
-                .child(section_title("start.recent", 0.0, TITLE_GAP))
-                .child(self.web_recent_rows(&web_recents, foreground, muted, border, hover, true, cx))
-                .child(self.web_recents_clear_link(muted, cx));
         }
 
         body = body.when_some(self.status.clone(), |d, status| {
@@ -1082,6 +1081,11 @@ impl SlideEditor {
                 .into();
             let dir: SharedString = path.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default().into();
             let exists = self.recent_exists.get(path).copied().unwrap_or(true);
+            let ext: Option<SharedString> = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .filter(|e| !e.is_empty())
+                .map(|e| e.to_ascii_uppercase().into());
             let path = path.clone();
             div()
                 .id(("start-mobile-recent", index))
@@ -1090,9 +1094,9 @@ impl SlideEditor {
                 .px_3()
                 .py_2()
                 .flex()
-                .flex_col()
-                .justify_center()
-                .gap_1()
+                .flex_row()
+                .items_center()
+                .gap_3()
                 .border_b_1()
                 .border_color(border)
                 .text_color(if exists { foreground } else { muted })
@@ -1101,8 +1105,29 @@ impl SlideEditor {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_path_or_raise(path.clone(), window, cx);
                 }))
-                .child(div().text_sm().font_weight(FontWeight::MEDIUM).truncate().child(name))
-                .when(!dir.is_empty(), |d| d.child(div().text_xs().text_color(muted).truncate().child(dir)))
+                .when_some(ext, |row, ext| {
+                    row.child(
+                        div()
+                            .min_w(px(42.))
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(px(6.))
+                            .bg(hover)
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(muted)
+                            .text_center()
+                            .child(ext),
+                    )
+                })
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_0p5()
+                        .child(div().text_sm().font_weight(FontWeight::MEDIUM).truncate().child(name))
+                        .when(!dir.is_empty(), |d| d.child(div().text_xs().text_color(muted).truncate().child(dir))),
+                )
         });
         v_flex()
             .w_full()
