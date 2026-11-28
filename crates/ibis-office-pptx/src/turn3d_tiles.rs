@@ -688,6 +688,7 @@ pub(crate) fn vortex(motion: (f64, f64), q: f32, w: f32, h: f32) -> Vec<Card> {
     };
     let focal = VORTEX_FOCAL * w;
     let (cw, ch) = (w / VORTEX_COLS as f32, h / VORTEX_ROWS as f32);
+    let mut grown_cache: [Option<f32>; 64] = [None; 64];
     let mut cards: Vec<(f32, Card)> = Vec::new();
     for tile in vortex_pieces(token, f64::from(q)) {
         let n = tile.row * VORTEX_COLS + tile.col;
@@ -696,7 +697,21 @@ pub(crate) fn vortex(motion: (f64, f64), q: f32, w: f32, h: f32) -> Vec<Card> {
             let progress = (age as f32 / VORTEX_LIFE as f32).clamp(0.0, 1.0);
             // The share of the video's pixels a tile age shows already has the tiles' growth in it (they cover more as they come): so only the share of tiles that, grown, cover
             // that much are drawn (1 over the mean area of a tile of that age).
-            let grown: f32 = (0..20).map(|k| { let u = (k as f32 + 0.5) / 20.0; let z = (0.1 + 0.8 * ((u - 0.5).max(0.0) * 2.0).powf(1.6)) * progress * progress; 1.0 / ((1.0 - z) * (1.0 - z)) }).sum::<f32>() / 20.0;
+            let compute_grown = || {
+                (0..20)
+                    .map(|k| {
+                        let u = (k as f32 + 0.5) / 20.0;
+                        let z = (0.1 + 0.8 * ((u - 0.5).max(0.0) * 2.0).powf(1.6)) * progress * progress;
+                        1.0 / ((1.0 - z) * (1.0 - z))
+                    })
+                    .sum::<f32>()
+                    / 20.0
+            };
+            let grown = if (age as usize) < grown_cache.len() {
+                *grown_cache[age as usize].get_or_insert_with(compute_grown)
+            } else {
+                compute_grown()
+            };
             if lattice_random(n as i32, salt as i32 + 3, 0x51ee + salt) >= 1.0 / grown {
                 continue;
             }

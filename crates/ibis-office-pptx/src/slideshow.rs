@@ -1803,6 +1803,27 @@ impl SlideEditor {
         };
         let page_at = |slide: &ibis_doc_model::Slide, zoomed_scale: f32| page_layers(slide, zoomed_scale, true, false);
         let page = |slide: &ibis_doc_model::Slide| page_at(slide, zoomed_scale);
+        let slide_offscreen = |id: OffscreenId, s: &ibis_doc_model::Slide, backdrop: bool| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            let is_current = s.id == current_id;
+            (
+                s.id,
+                if is_current { show.step } else { usize::MAX },
+                if is_current { show.played } else { 0 },
+                show.changes,
+                if is_current { show.anim_at.map(f32::to_bits) } else { None },
+                zoomed_scale.to_bits(),
+                zw.to_bits(),
+                zh.to_bits(),
+                backdrop,
+            )
+                .hash(&mut hasher);
+            div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(
+                offscreen(id, div().relative().w(px(zw)).h(px(zh)).child(page_layers(s, zoomed_scale, backdrop, false)))
+                    .cached(hasher.finish()),
+            )
+        };
         let before = show.came_from.and_then(|id| self.presentation().slide(id));
         let transition = slide.transition.as_ref().filter(|t| t.played_ms() > 0);
         // A ズーム being played: the card's rectangle grows into the slide (or the slide shrinks into it), the slide that is
@@ -1902,7 +1923,7 @@ impl SlideEditor {
                             // plain mix of the two; the same through black).
                             let shown = if !through_black || new_shown { slide } else { old };
                             let fade_id = OffscreenId(0x5312);
-                            let texture = div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(offscreen(fade_id, div().relative().w(px(zw)).h(px(zh)).child(page_layers(shown, zoomed_scale, true, false))));
+                            let texture = slide_offscreen(fade_id, shown, true);
                             let base = div().absolute().top_0().left_0().size_full();
                             let base = if through_black { base.bg(black()) } else { base.child(page(old)) };
                             base.child(texture)
@@ -1946,7 +1967,7 @@ impl SlideEditor {
                         // turned about it, at its opacity as a whole (see `plan`).
                         TransitionPlan::Spin { scale, turn, opacity } => {
                             let spin_id = OffscreenId(0x5323);
-                            let texture = div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(offscreen(spin_id, div().relative().w(px(zw)).h(px(zh)).child(page_layers(slide, zoomed_scale, true, false))));
+                            let texture = slide_offscreen(spin_id, slide, true);
                             div()
                                 .absolute()
                                 .top_0()
@@ -1980,7 +2001,7 @@ impl SlideEditor {
                         // first shows the old slide whole again, so that the new slide laid over it at `k` adds to the dimmed old one.
                         TransitionPlan::Dolly { old: old_look, new: new_look, new_on_top, additive, backdrop } => {
                             let (old_id, new_id) = (OffscreenId(0x5324), OffscreenId(0x5325));
-                            let texture = |id: OffscreenId, s: &ibis_doc_model::Slide| div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(offscreen(id, div().relative().w(px(zw)).h(px(zh)).child(page_layers(s, zoomed_scale, true, false))));
+                            let texture = |id: OffscreenId, s: &ibis_doc_model::Slide| slide_offscreen(id, s, true);
                             div()
                                 .absolute()
                                 .top_0()
@@ -2035,7 +2056,7 @@ impl SlideEditor {
                             };
                             // The slide keeps its size; it is seen through a hole that shrinks (old) or grows (new), measured on PowerPoint's frames.
                             let pieces = ibis_doc_model::transition_plan::soft_masked_pieces(k);
-                            let texture = div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(offscreen(id, div().relative().w(px(zw)).h(px(zh)).child(page_layers(scaling, zoomed_scale, true, false))));
+                            let texture = slide_offscreen(id, scaling, true);
                             div()
                                 .absolute()
                                 .top_0()
@@ -2110,8 +2131,12 @@ impl SlideEditor {
                             // Black behind the cube, the box, the flip, the gallery and the switch (as in PowerPoint's video), white behind the others.
                             let dark_background = !content_only && rigid.map_or(matches!(kind, Turn3dKind::Cube | Turn3dKind::Box | Turn3dKind::Flip | Turn3dKind::Gallery | Turn3dKind::Ripple | Turn3dKind::Crush | Turn3dKind::Fracture | Turn3dKind::Checker | Turn3dKind::Honeycomb | Turn3dKind::Glitter { .. } | Turn3dKind::Shred { .. } | Turn3dKind::Vortex | Turn3dKind::Doors { .. }), turn3d::Rigid::dark_background);
                             let (old_id, new_id, white_id) = (OffscreenId(0x5301), OffscreenId(0x5302), OffscreenId(0x5303));
-                            let texture = |id: OffscreenId, s: &ibis_doc_model::Slide| {
-                                div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(offscreen(id, div().relative().w(px(zw)).h(px(zh)).child(page_layers(s, zoomed_scale, !content_only, false))))
+                            let texture = |id: OffscreenId, s: &ibis_doc_model::Slide| slide_offscreen(id, s, !content_only);
+                            let white_key = {
+                                use std::hash::{Hash, Hasher};
+                                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                                (zw.to_bits(), zh.to_bits()).hash(&mut hasher);
+                                hasher.finish()
                             };
                             // Behind the cards of rotate and orbit: the slide's own background (the new one's from the middle of the turn).
                             let behind = if content_only && q < 0.5 { old } else { slide };
@@ -2148,7 +2173,7 @@ impl SlideEditor {
                                 .when(content_only && backdrop_mix.is_none(), |d| d.child(div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(slide_backdrop(behind, zoomed_scale, &self.resources))))
                                 .child(texture(old_id, old))
                                 .child(texture(new_id, slide))
-                                .child(div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(offscreen(white_id, div().w(px(zw)).h(px(zh)).bg(white()))))
+                                .child(div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(offscreen(white_id, div().w(px(zw)).h(px(zh)).bg(white())).cached(white_key)))
                                 .child(
                                     canvas(
                                         |_, _, _| (),
@@ -2203,7 +2228,7 @@ impl SlideEditor {
                             // Both slides are painted once to a texture; each vertical strip of them is drawn over a flat backdrop at its own
                             // weights (as a texture's opacity is the slide's as a whole, not each of its elements').
                             let (old_id, new_id) = (OffscreenId(0x5313), OffscreenId(0x5314));
-                            let texture = |id: OffscreenId, s: &ibis_doc_model::Slide| div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(offscreen(id, div().relative().w(px(zw)).h(px(zh)).child(page_layers(s, zoomed_scale, true, false))));
+                            let texture = |id: OffscreenId, s: &ibis_doc_model::Slide| slide_offscreen(id, s, true);
                             let grey = backdrop as f32;
                             div()
                                 .absolute()
@@ -2245,7 +2270,7 @@ impl SlideEditor {
                             // opacity (a soft edge). Opacity on the slide's own elements would apply to each of them (the paper and its
                             // fill both, which lightens the band); a texture's is the slide's as a whole.
                             let new_id = OffscreenId(0x5311);
-                            let texture = div().absolute().top_0().left_0().w(px(zw)).h(px(zh)).child(offscreen(new_id, div().relative().w(px(zw)).h(px(zh)).child(page_layers(slide, zoomed_scale, true, false))));
+                            let texture = slide_offscreen(new_id, slide, true);
                             div()
                                 .absolute()
                                 .top_0()
@@ -2351,7 +2376,6 @@ impl SlideEditor {
                             .w(px(zw))
                             .h(px(zh))
                             .children(prewarm)
-                            .children(before.filter(|_| transition.is_some()).map(page))
                             .child(shown)
                             .child(ink_canvas),
                     ),
@@ -3676,6 +3700,9 @@ fn animated_view(
                 }
             }
             let (m, reveal, styles) = state(ms);
+            if m.opacity <= 0.0 && reveal.is_none() {
+                return div().into_any_element();
+            }
             if reveal.is_some() || m.grow != (1.0, 1.0) {
                 // Resized or uncovered: the shape and its text are painted once, as they are at their own size (nothing is laid out
                 // again at the new size), and that picture is what is scaled (a negative factor turns it over, as the turn effect's
@@ -3684,15 +3711,13 @@ fn animated_view(
                     return div().absolute().top_0().left_0().size_full().into_any_element();
                 }
                 let flat = ShapeMotion { turn: 0.0, grow: (1.0, 1.0), ..m };
-                let (shown, shear) = styled_shape(shape, flat, &styles);
+                let (shown, shear) = if styles.is_empty() {
+                    (std::borrow::Cow::Borrowed(shape), 0.0f32)
+                } else {
+                    let (s, sh) = styled_shape(shape, flat, &styles);
+                    (std::borrow::Cow::Owned(s), sh)
+                };
                 let id = OffscreenId(0x6000_0000 | ((shape.id.0 as u32).wrapping_mul(2_654_435_761) ^ target.key() as u32) & 0x0FFF_FFFF);
-                let picture = div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .w(px(w))
-                    .h(px(h))
-                    .child(offscreen(id, div().relative().w(px(w)).h(px(h)).child(crate::render::shape_view::with_shear(shear, || element(&shown)))));
                 // The windows, as fractions of the picture (the slide's size); the frame's own fractions are those of the shape.
                 // What the line draws outside the frame (half its width) is part of the shape: the windows at the frame's own edges reach it, as the
                 // shape's whole look is what a filter uncovers (PowerPoint's first frame of a blinds exit has the line whole; clipped to the frame it
@@ -3701,6 +3726,43 @@ fn animated_view(
                     ibis_doc_model::ShapeKind::Auto(auto) => auto.stroke.as_ref().map_or(0.0, |st| st.width as f32 * scale / 2.0),
                     _ => 0.0,
                 };
+                let diag = frame.2.hypot(frame.3) * 0.5;
+                let rot_margin = if shape.rotation != 0 { (diag - frame.2.min(frame.3) * 0.5).max(0.0) } else { 0.0 };
+                let margin = (ink * 2.0 + 8.0 + rot_margin).ceil();
+                let bx = (frame.0 - margin).floor().max(0.0);
+                let by = (frame.1 - margin).floor().max(0.0);
+                let bx1 = (frame.0 + frame.2 + margin).ceil().min(w);
+                let by1 = (frame.1 + frame.3 + margin).ceil().min(h);
+                let bw = (bx1 - bx).max(1.0);
+                let bh = (by1 - by).max(1.0);
+                let inner = div()
+                    .relative()
+                    .w(px(bw))
+                    .h(px(bh))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(-bx))
+                            .top(px(-by))
+                            .w(px(w))
+                            .h(px(h))
+                            .child(crate::render::shape_view::with_shear(shear, || element(&shown))),
+                    );
+                let mut off = offscreen(id, inner);
+                if styles.is_empty() && shear == 0.0 {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    (shape.id, target.key(), played, step, triggered_played, scale.to_bits(), bx.to_bits(), by.to_bits(), bw.to_bits(), bh.to_bits()).hash(&mut hasher);
+                    off = off.cached(hasher.finish());
+                }
+                let picture = div()
+                    .absolute()
+                    .left(px(bx))
+                    .top(px(by))
+                    .w(px(bw))
+                    .h(px(bh))
+                    .child(off);
                 let windows: Vec<([f32; 4], f32)> = match &reveal {
                     None => vec![([0.0, 0.0, 1.0, 1.0], 1.0)],
                     Some(rects) => rects
@@ -3729,8 +3791,15 @@ fn animated_view(
                             let o = bounds.origin;
                             let transform = Transform3D::translate(-f32::from(o.x), -f32::from(o.y), 0.0).then(local).then(Transform3D::translate(f32::from(o.x), f32::from(o.y), 0.0));
                             for (r, level) in &windows {
-                                let quad = Bounds { origin: gpui_kit::point(o.x + px(r[0] * w), o.y + px(r[1] * h)), size: gpui_kit::size(px((r[2] - r[0]) * w), px((r[3] - r[1]) * h)) };
-                                window.paint_textured_quad(id, quad, transform, opacity * level, 1.0, [r[0], r[1], r[2] - r[0], r[3] - r[1]], false);
+                                let rx0 = (r[0] * w).max(bx);
+                                let ry0 = (r[1] * h).max(by);
+                                let rx1 = (r[2] * w).min(bx + bw);
+                                let ry1 = (r[3] * h).min(by + bh);
+                                if rx1 > rx0 && ry1 > ry0 {
+                                    let quad = Bounds { origin: gpui_kit::point(o.x + px(rx0), o.y + px(ry0)), size: gpui_kit::size(px(rx1 - rx0), px(ry1 - ry0)) };
+                                    let uv = [(rx0 - bx) / bw, (ry0 - by) / bh, (rx1 - rx0) / bw, (ry1 - ry0) / bh];
+                                    window.paint_textured_quad(id, quad, transform, opacity * level, 1.0, uv, false);
+                                }
                             }
                         },
                     )
@@ -3739,9 +3808,13 @@ fn animated_view(
                 );
                 return place(holder, ShapeMotion { opacity: 1.0, ..m }).into_any_element();
             }
-            let (shown, shear) = styled_shape(shape, m, &styles);
-            let element = |s: &ibis_doc_model::Shape| crate::render::shape_view::with_shear(shear, || element(s));
-            let holder = div().absolute().top_0().left_0().size_full().child(element(&shown));
+            let holder = if m.turn == 0.0 && styles.is_empty() {
+                div().absolute().top_0().left_0().size_full().child(element(shape))
+            } else {
+                let (shown, shear) = styled_shape(shape, m, &styles);
+                let element = |s: &ibis_doc_model::Shape| crate::render::shape_view::with_shear(shear, || element(s));
+                div().absolute().top_0().left_0().size_full().child(element(&shown))
+            };
             return place(holder, ShapeMotion { opacity: m.opacity, ..m }).into_any_element();
         }
         let start = state(0.0).0;

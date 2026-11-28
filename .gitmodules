@@ -9,7 +9,7 @@
 	url = https://github.com/sorane-dev/gpui-pre.git
 [submodule "forks/gpui-pre-apple"]
 	path = forks/gpui-pre-apple
-	url = https://github.com/ibisjp/gpui-pre-apple.git
+	url = https://github.com/sorane-dev/gpui-pre-apple.git
 [submodule "forks/gpui-pre-macos"]
 	path = forks/gpui-pre-macos
 	url = https://github.com/sorane-dev/gpui-pre-macos.git
