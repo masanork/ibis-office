@@ -964,6 +964,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 || ibis_formats::gis::is_geojson(&raw_data)
             {
                 ibis_formats::gis::to_svg(&raw_data)
+            } else if ibis_formats::citygml::is_citygml(&raw_data) {
+                ibis_formats::citygml::to_svg(&raw_data)
             } else if ibis_formats::just_legacy::is_hanako(&raw_data) {
                 ibis_formats::just_legacy::to_svg(&raw_data)
             } else {
@@ -980,6 +982,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             && (ibis_formats::email::is_tnef(&raw_data)
                 || ibis_formats::email::is_eml(&raw_data)
                 || ibis_formats::etax::is_etax(&raw_data)
+                || ibis_formats::citygml::is_citygml(&raw_data)
                 || ibis_formats::cals_xml::is_cals_xml(&raw_data)
                 || ibis_formats::cad::is_cad(&raw_data)
                 || ibis_formats::gis::is_gis(&raw_data)
@@ -993,6 +996,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 ibis_formats::email::to_markdown(&raw_data)
             } else if ibis_formats::etax::is_etax(&raw_data) {
                 ibis_formats::etax::to_markdown(&raw_data)
+            } else if ibis_formats::citygml::is_citygml(&raw_data) {
+                ibis_formats::citygml::to_markdown(&raw_data)
             } else if ibis_formats::cals_xml::is_cals_xml(&raw_data) {
                 ibis_formats::cals_xml::to_markdown(&raw_data)
             } else if ibis_formats::cad::is_cad(&raw_data) {
