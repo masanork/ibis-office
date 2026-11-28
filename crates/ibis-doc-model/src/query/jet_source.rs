@@ -400,10 +400,12 @@ pub fn jet_inspect_schema(path: &Path) -> Result<serde_json::Value, String> {
         .into_iter()
         .map(|qdef| {
             let sql = query_to_sql(&qdef);
+            let sqlite_sql = jet_sql_to_sqlite(&sql);
             json!({
                 "name": qdef.name,
                 "query_type": format!("{:?}", qdef.query_type),
                 "sql": sql,
+                "sqlite_sql": sqlite_sql,
             })
         })
         .collect::<Vec<_>>();
@@ -534,8 +536,12 @@ pub fn jet_migration_markdown(path: &Path) -> Result<String, String> {
             let name = q["name"].as_str().unwrap_or("Query");
             let qtype = q["query_type"].as_str().unwrap_or("Select");
             let sql = q["sql"].as_str().unwrap_or("");
+            let sqlite_sql = q["sqlite_sql"].as_str().unwrap_or("");
             let _ = writeln!(md, "### `{name}` ({qtype})\n");
             let _ = writeln!(md, "```sql\n{sql}\n```\n");
+            if !sqlite_sql.is_empty() && sqlite_sql != sql {
+                let _ = writeln!(md, "Turso / SQLite equivalent:\n\n```sql\n{sqlite_sql}\n```\n");
+            }
         }
     }
 
@@ -1051,5 +1057,277 @@ mod tests {
         assert!(md.contains("```mermaid\nerDiagram"));
         // Non-ASCII characters are sanitized to '_' for Mermaid identifier safety
         assert!(md.contains("TEXT ___"));
+
+        // VBA/Form inspection on a database without VBA/forms returns empty/FormNotFound cleanly
+        let vba = jet_inspect_vba(&mdb_path, None).unwrap();
+        assert_eq!(vba["modules"], json!([]));
+        assert!(jet_inspect_form(&mdb_path, "MissingForm").is_err());
     }
+
+    #[test]
+    fn transpiles_jet_sql_idioms_to_sqlite() {
+        assert_eq!(
+            jet_sql_to_sqlite("SELECT [Orders].[Order ID], Nz([Amount], 0) FROM [Orders] WHERE [OrderDate] >= #2026/01/15#"),
+            "SELECT \"Orders\".\"Order ID\", COALESCE(\"Amount\", 0) FROM \"Orders\" WHERE \"OrderDate\" >= '2026-01-15'"
+        );
+        assert_eq!(
+            jet_sql_to_sqlite("SELECT IIf([Paid] = True, 'Yes', IIf(IsNull([Note]), 'Pending', [Note])) FROM [Orders]"),
+            "SELECT CASE WHEN \"Paid\" = True THEN 'Yes' ELSE CASE WHEN (\"Note\" IS NULL) THEN 'Pending' ELSE \"Note\" END END FROM \"Orders\""
+        );
+    }
+}
+
+/// Best-effort translation of Access JET SQL idioms into Turso / SQLite-compatible SQL.
+pub fn jet_sql_to_sqlite(sql: &str) -> String {
+    let mut pass1 = String::with_capacity(sql.len());
+    let chars: Vec<char> = sql.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '\'' {
+            pass1.push('\'');
+            i += 1;
+            while i < chars.len() {
+                pass1.push(chars[i]);
+                if chars[i] == '\'' {
+                    if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                        pass1.push('\'');
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if ch == '[' {
+            i += 1;
+            pass1.push('"');
+            while i < chars.len() && chars[i] != ']' {
+                if chars[i] == '"' {
+                    pass1.push('"');
+                }
+                pass1.push(chars[i]);
+                i += 1;
+            }
+            pass1.push('"');
+            if i < chars.len() && chars[i] == ']' {
+                i += 1;
+            }
+            continue;
+        }
+        if ch == '#' {
+            let start = i + 1;
+            let mut end = start;
+            while end < chars.len() && chars[end] != '#' && !chars[end].is_whitespace() {
+                end += 1;
+            }
+            if end < chars.len() && chars[end] == '#' && end > start {
+                let inner: String = chars[start..end].iter().collect();
+                let normalized = inner.replace('/', "-");
+                pass1.push('\'');
+                pass1.push_str(&normalized);
+                pass1.push('\'');
+                i = end + 1;
+                continue;
+            }
+        }
+        pass1.push(ch);
+        i += 1;
+    }
+
+    rewrite_jet_functions(&pass1)
+}
+
+fn is_ident_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn split_top_level_args(inner: &str) -> Vec<&str> {
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut start = 0usize;
+    let bytes = inner.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            if b == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+        } else if in_double {
+            if b == b'"' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                    i += 2;
+                    continue;
+                }
+                in_double = false;
+            }
+        } else {
+            match b {
+                b'\'' => in_single = true,
+                b'"' => in_double = true,
+                b'(' => depth += 1,
+                b')' => depth = depth.saturating_sub(1),
+                b',' if depth == 0 => {
+                    args.push(inner[start..i].trim());
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    args.push(inner[start..].trim());
+    args
+}
+
+fn find_matching_paren(s: &str, open_idx: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut i = open_idx;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            if b == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+        } else if in_double {
+            if b == b'"' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                    i += 2;
+                    continue;
+                }
+                in_double = false;
+            }
+        } else {
+            match b {
+                b'\'' => in_single = true,
+                b'"' => in_double = true,
+                b'(' => depth += 1,
+                b')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn rewrite_jet_functions(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    let bytes = input.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            out.push(b as char);
+            if b == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    out.push('\'');
+                    i += 2;
+                    continue;
+                }
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            out.push(b as char);
+            if b == b'"' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                    out.push('"');
+                    i += 2;
+                    continue;
+                }
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' {
+            in_single = true;
+            out.push('\'');
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_double = true;
+            out.push('"');
+            i += 1;
+            continue;
+        }
+
+        let prev_is_ident = i > 0 && is_ident_char(bytes[i - 1] as char);
+        if !prev_is_ident {
+            let rest = &input[i..];
+            if rest.len() >= 3 && rest[..3].eq_ignore_ascii_case("nz(") {
+                if let Some(close) = find_matching_paren(input, i + 2) {
+                    let inner = rewrite_jet_functions(&input[i + 3..close]);
+                    out.push_str("COALESCE(");
+                    out.push_str(&inner);
+                    out.push(')');
+                    i = close + 1;
+                    continue;
+                }
+            } else if rest.len() >= 4 && rest[..4].eq_ignore_ascii_case("iif(") {
+                if let Some(close) = find_matching_paren(input, i + 3) {
+                    let inner = &input[i + 4..close];
+                    let args = split_top_level_args(inner);
+                    if args.len() == 3 {
+                        let cond = rewrite_jet_functions(args[0]);
+                        let then_v = rewrite_jet_functions(args[1]);
+                        let else_v = rewrite_jet_functions(args[2]);
+                        out.push_str("CASE WHEN ");
+                        out.push_str(&cond);
+                        out.push_str(" THEN ");
+                        out.push_str(&then_v);
+                        out.push_str(" ELSE ");
+                        out.push_str(&else_v);
+                        out.push_str(" END");
+                        i = close + 1;
+                        continue;
+                    }
+                }
+            } else if rest.len() >= 7 && rest[..7].eq_ignore_ascii_case("isnull(") {
+                if let Some(close) = find_matching_paren(input, i + 6) {
+                    let inner = rewrite_jet_functions(input[i + 7..close].trim());
+                    out.push('(');
+                    out.push_str(&inner);
+                    out.push_str(" IS NULL)");
+                    i = close + 1;
+                    continue;
+                }
+            }
+        }
+
+        let ch = input[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
