@@ -1,8 +1,8 @@
 # JetEngine 系データベース（Access / ESE / OST）× Turso 統合設計（RFC）
 
 - 対象リポジトリ: `sorane-dev/docs`（`ibis-doc-model`, `ibis-doc-service`, `ibis-mcp`）
-- ブランチ: `feat/jet-engine-turso`
-- ステータス: Draft / Design Review
+- 統合先ブランチ: `sorane`
+- ステータス: Implemented（Access / ESE / Outlook OST-PST × Turso × MCP 統合完了）
 
 ## 1. 背景と目的
 
