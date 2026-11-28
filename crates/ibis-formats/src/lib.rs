@@ -288,9 +288,9 @@ impl Kind {
     /// without running the macros).
     pub fn from_extension(extension: &str) -> Option<Self> {
         match extension.to_ascii_lowercase().as_str() {
-            "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "pps" | "pot" | "odp" | "otp" => Some(Kind::Presentation),
+            "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "pps" | "pot" | "odp" | "otp" | "jhd" | "jhb" => Some(Kind::Presentation),
             "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" | "ots" | "csv" | "tsv" | "tab" | "xltx" | "xltm" | "xlk" | "jsd" | "jst" | "dbf" => Some(Kind::Workbook),
-            "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "hwp" | "hwpx" | "epub" | "uot" | "wpd" | "wp6" | "jtd" | "jtt" | "jttc" | "md" | "markdown" | "cin" | "dpx" | "exr" | "psd" | "tga" | "tif" | "tiff" | "jp2" | "j2k" | "j2c" | "dxf" | "sfc" | "p21" | "jww" | "geojson" | "shp" | "jhd" | "jhb" | "eml" | "lzh" | "7z" | "mdb" | "accdb" => Some(Kind::Document),
+            "docx" | "docm" | "dotx" | "dotm" | "doc" | "dot" | "odt" | "ott" | "hwp" | "hwpx" | "epub" | "uot" | "wpd" | "wp6" | "jtd" | "jtt" | "jttc" | "md" | "markdown" | "cin" | "dpx" | "exr" | "psd" | "tga" | "tif" | "tiff" | "jp2" | "j2k" | "j2c" | "dxf" | "sfc" | "p21" | "jww" | "geojson" | "shp" | "eml" | "lzh" | "7z" | "mdb" | "accdb" => Some(Kind::Document),
             "pdf" | "ofd" | "xps" | "oxps" | "xdw" | "xbd" | "vsdx" => Some(Kind::Pdf),
             _ => None,
         }

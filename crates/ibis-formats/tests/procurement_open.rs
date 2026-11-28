@@ -54,13 +54,38 @@ fn opens_procurement_formats_via_ibis_formats_open() {
     let jsd = ibis_ooxml::cfb::write(&[
         ibis_ooxml::cfb::Item::stream("Book", book),
         ibis_ooxml::cfb::Item::stream("WorkSheet1", ws),
+        ibis_ooxml::cfb::Item::stream("WorkSheet2", vec![0u8; 8]),
     ]);
     let opened = open(jsd).expect("sanshiro opens as workbook");
     assert_eq!(Kind::of(&opened.presentation), Kind::Workbook);
+    let sheet_count = opened
+        .presentation
+        .workbook
+        .as_ref()
+        .map(|w| w.sheets.len())
+        .unwrap_or(opened.presentation.slides.len());
+    assert_eq!(sheet_count, 2);
 
-    // 6. Extension registration checks
-    for ext in ["dxf", "sfc", "jww", "geojson", "shp", "jhd", "eml", "lzh", "7z", "mdb"] {
+    // 6. Synthetic Hanako (.jhd) -> Presentation with shapes
+    let mut vec_rec = vec![0u8; 32];
+    vec_rec[0..4].copy_from_slice(&[0x01, 0x00, 0x01, 0x60]);
+    vec_rec[4..6].copy_from_slice(&32u16.to_be_bytes());
+    vec_rec[16..20].copy_from_slice(&100i32.to_be_bytes());
+    vec_rec[20..24].copy_from_slice(&200i32.to_be_bytes());
+    vec_rec[24..28].copy_from_slice(&500i32.to_be_bytes());
+    vec_rec[28..32].copy_from_slice(&400i32.to_be_bytes());
+    let jhd = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream("FDMVector", vec_rec)]);
+    let opened = open(jhd).expect("hanako opens as presentation");
+    assert_eq!(Kind::of(&opened.presentation), Kind::Presentation);
+    assert!(!opened.presentation.slides[0].shapes.is_empty());
+
+    // 7. Extension registration checks
+    for ext in ["dxf", "sfc", "jww", "geojson", "shp", "eml", "lzh", "7z", "mdb"] {
         assert_eq!(Kind::from_extension(ext), Some(Kind::Document), "ext {ext}");
+        assert!(Kind::OPENABLE_EXTENSIONS.contains(&ext), "openable {ext}");
+    }
+    for ext in ["jhd", "jhb"] {
+        assert_eq!(Kind::from_extension(ext), Some(Kind::Presentation), "ext {ext}");
         assert!(Kind::OPENABLE_EXTENSIONS.contains(&ext), "openable {ext}");
     }
     for ext in ["jsd", "jst", "dbf"] {

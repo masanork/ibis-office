@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use ibis_ooxml::cfb;
 
-use crate::Error;
+use crate::{Error, Opened};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JustLegacyKind {
@@ -50,6 +50,7 @@ pub enum HanakoShape {
     Polyline {
         points: Vec<(i32, i32)>,
         closed: bool,
+        smooth: bool,
         color: String,
         width: f64,
     },
@@ -400,6 +401,106 @@ pub fn to_delimited_cp932(data: &[u8], delimiter: char) -> Result<Vec<u8>, Error
     Ok(cow.into_owned())
 }
 
+/// 花子 (`.jhd`/`.jhb`) を SVG 変換してプレゼンテーション図形として開く（図形がない場合は Markdown へフォールバック）。
+pub fn open_hanako(data: &[u8]) -> Result<Opened, Error> {
+    let report = inspect_just_legacy(data)?;
+    if report.kind != JustLegacyKind::Hanako {
+        return Err(Error::new("not a Hanako (.jhd/.jhb) file"));
+    }
+    if report.hanako_shapes.is_empty() && report.hanako_texts.is_empty() {
+        let md = to_markdown(data)?;
+        return crate::markdown::open_markdown(md.into_bytes());
+    }
+    let svg = to_svg(data)?;
+    let mut opened = crate::save::open(crate::blank::blank_file(crate::Kind::Presentation)?)?;
+    let slide_size = opened.presentation.slide_size;
+    let frame = ibis_doc_model::EmuRect {
+        x: 0,
+        y: 0,
+        width: slide_size.width,
+        height: slide_size.height,
+    };
+    let mut next_id = 1000u64;
+    let shapes = crate::svg_convert::convert_svg_to_shapes(
+        || {
+            let id = next_id;
+            next_id += 1;
+            ibis_doc_model::ShapeId(id)
+        },
+        svg.as_bytes(),
+        frame,
+    );
+    match shapes {
+        Ok(shapes) if !shapes.is_empty() => {
+            if let Some(slide) = opened.presentation.slides.first_mut() {
+                slide.shapes = shapes;
+                if let Ok(md) = to_markdown(data) {
+                    slide.notes = md;
+                }
+            }
+            Ok(opened)
+        }
+        _ => {
+            let md = to_markdown(data)?;
+            crate::markdown::open_markdown(md.into_bytes())
+        }
+    }
+}
+
+/// 三四郎 (`.jsd`/`.jst`) を全シート付きのマルチシート Workbook として開く。
+pub fn open_sanshiro(data: &[u8]) -> Result<Opened, Error> {
+    let report = inspect_just_legacy(data)?;
+    if report.kind != JustLegacyKind::Sanshiro {
+        return Err(Error::new("not a Sanshiro (.jsd/.jst) file"));
+    }
+    if report.sanshiro_sheets.is_empty() {
+        let md = to_markdown(data)?;
+        return crate::markdown::open_markdown(md.into_bytes());
+    }
+
+    let mut wb_md = String::new();
+    for (idx, sheet) in report.sanshiro_sheets.iter().enumerate() {
+        let safe_name = sheet.name.replace('"', "'");
+        wb_md.push_str(&format!("<!-- xlsx-sheet {{\"name\":\"{safe_name}\"}} -->\n\n"));
+        if sheet.cells.is_empty() {
+            wb_md.push_str("| A |\n| --- |\n| |\n\n");
+            continue;
+        }
+        let max_row = sheet.cells.iter().map(|c| c.row).max().unwrap_or(0) as usize;
+        let max_col = sheet.cells.iter().map(|c| c.col).max().unwrap_or(0) as usize;
+        if max_col > 64 || max_row > 1000 {
+            // 巨大シートの場合は先頭シート CSV フォールバック
+            if idx == 0 {
+                let csv = to_delimited(data, ',')?;
+                return crate::save::open(csv.into_bytes());
+            }
+            wb_md.push_str("| セル | 内容 |\n| --- | --- |\n");
+            for c in sheet.cells.iter().take(500) {
+                let a1 = format!("{}{}", col_to_a1(c.col), c.row + 1);
+                wb_md.push_str(&format!("| `{}` | {} |\n", a1, escape_md(&c.value)));
+            }
+            wb_md.push('\n');
+            continue;
+        }
+        let mut grid = vec![vec![String::new(); max_col + 1]; max_row + 1];
+        for c in &sheet.cells {
+            grid[c.row as usize][c.col as usize] = escape_md(&c.value);
+        }
+        let header: Vec<String> = (0..=max_col).map(|c| col_to_a1(c as u16)).collect();
+        wb_md.push_str(&format!("| {} |\n", header.join(" | ")));
+        wb_md.push_str(&format!("| {} |\n", vec!["---"; max_col + 1].join(" | ")));
+        for row in grid {
+            wb_md.push_str(&format!("| {} |\n", row.join(" | ")));
+        }
+        wb_md.push('\n');
+    }
+
+    crate::markdown::open_markdown_workbook(wb_md.into_bytes()).or_else(|_| {
+        let md = to_markdown(data)?;
+        crate::markdown::open_markdown(md.into_bytes())
+    })
+}
+
 /// 花子 (`.jhd`/`.jhb`) のベクター図形・テキストを SVG 文字列として出力する。
 pub fn to_svg(data: &[u8]) -> Result<String, Error> {
     let report = inspect_just_legacy(data)?;
@@ -477,10 +578,31 @@ pub fn to_svg(data: &[u8]) -> Result<String, Error> {
             HanakoShape::Polyline {
                 points,
                 closed,
+                smooth,
                 color,
                 width,
             } => {
-                if points.len() >= 2 {
+                if *smooth && points.len() >= 3 && !*closed {
+                    let pts: Vec<(f64, f64)> = points.iter().map(|&(x, y)| (tx(x), ty(y))).collect();
+                    let mut d = format!("M {:.2} {:.2}", pts[0].0, pts[0].1);
+                    for i in 0..pts.len() - 1 {
+                        let p0 = if i == 0 { pts[0] } else { pts[i - 1] };
+                        let p1 = pts[i];
+                        let p2 = pts[i + 1];
+                        let p3 = if i + 2 < pts.len() { pts[i + 2] } else { pts[i + 1] };
+                        let c1x = p1.0 + (p2.0 - p0.0) / 6.0;
+                        let c1y = p1.1 + (p2.1 - p0.1) / 6.0;
+                        let c2x = p2.0 - (p3.0 - p1.0) / 6.0;
+                        let c2y = p2.1 - (p3.1 - p1.1) / 6.0;
+                        d.push_str(&format!(
+                            " C {c1x:.2} {c1y:.2}, {c2x:.2} {c2y:.2}, {:.2} {:.2}",
+                            p2.0, p2.1
+                        ));
+                    }
+                    out.push_str(&format!(
+                        "<path d=\"{d}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{width:.2}\"/>\n"
+                    ));
+                } else if points.len() >= 2 {
                     let pts: Vec<String> = points
                         .iter()
                         .map(|&(x, y)| format!("{:.2},{:.2}", tx(x), ty(y)))
@@ -799,6 +921,7 @@ fn parse_vector_record(kind: u8, rec: &[u8], out: &mut Vec<HanakoShape>) {
                 out.push(HanakoShape::Polyline {
                     points: pts,
                     closed,
+                    smooth: matches!(kind, 0x05 | 0x09),
                     color,
                     width,
                 });

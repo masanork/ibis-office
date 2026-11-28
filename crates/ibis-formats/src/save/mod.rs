@@ -209,42 +209,32 @@ pub fn open_progressive_with_options(
     if crate::is_opendocument(&data) {
         return Err(Error::new(crate::ODF_MESSAGE));
     }
-    // 三四郎 (.jsd/.jst) は `Book` ストリームを持つため .xls より先に判定し、CSV 変換してスプレッドシートとして開く
-    let mut forced_csv = false;
     if crate::just_legacy::is_sanshiro(&data) {
-        let csv_text = crate::just_legacy::to_delimited(&data, ',')?;
-        if !csv_text.trim().is_empty() {
-            data = csv_text.into_bytes().into();
-            forced_csv = true;
-        } else {
-            let md = crate::just_legacy::to_markdown(&data)?;
-            let opened = crate::markdown::open_markdown(md.into_bytes())?;
-            crate::progress::fraction(1.0);
-            return Ok((opened, None));
-        }
+        let opened = crate::just_legacy::open_sanshiro(&data)?;
+        crate::progress::fraction(1.0);
+        return Ok((opened, None));
     }
-    if !forced_csv && crate::just_legacy::is_hanako(&data) {
-        let md = crate::just_legacy::to_markdown(&data)?;
-        let opened = crate::markdown::open_markdown(md.into_bytes())?;
+    if crate::just_legacy::is_hanako(&data) {
+        let opened = crate::just_legacy::open_hanako(&data)?;
         crate::progress::fraction(1.0);
         return Ok((opened, None));
     }
     // An old workbook (.xls): read into the .xlsx the rest reads.
-    if !forced_csv && crate::ppt::is_ppt(&data) {
+    if crate::ppt::is_ppt(&data) {
         data = crate::ppt_write::to_pptx(&data)?.into();
     }
-    if !forced_csv && crate::xls::is_xls(&data) {
+    if crate::xls::is_xls(&data) {
         data = crate::xls::to_xlsx(&data)?.into();
     }
     // A binary workbook (.xlsb) likewise.
-    if !forced_csv && crate::xlsb::is_xlsb(&data) {
+    if crate::xlsb::is_xlsb(&data) {
         data = crate::xlsb::to_xlsx(&data)?.into();
     }
     // An old Word document (.doc) likewise.
-    if !forced_csv && crate::docx_convert::is_doc(&data) {
+    if crate::docx_convert::is_doc(&data) {
         data = crate::docx_convert::import_doc_to_docx_bytes(&data)?.into();
     }
-    if !forced_csv && crate::markdown::is_markdown(&data) {
+    if crate::markdown::is_markdown(&data) {
         let opened = crate::markdown::open_markdown(data.to_vec())?;
         crate::progress::fraction(1.0);
         return Ok((opened, None));
@@ -256,7 +246,7 @@ pub fn open_progressive_with_options(
     #[allow(unused_mut)]
     let mut csv_rx = None;
 
-    if !forced_csv {
+    {
         if let Some(dicom_md) = crate::dicom::input_to_markdown(&data)? {
             let opened = crate::markdown::open_markdown(dicom_md.into_bytes())?;
             crate::progress::fraction(1.0);
@@ -306,7 +296,7 @@ pub fn open_progressive_with_options(
         }
     }
 
-    if forced_csv || crate::csv::is_csv(&data) {
+    if crate::csv::is_csv(&data) {
         original_csv_bytes = Some(data.clone());
         let (decoded, encoding) = crate::csv::decode_with_choice(&data, csv_encoding)?;
         let text: std::sync::Arc<str> = std::sync::Arc::from(decoded);
