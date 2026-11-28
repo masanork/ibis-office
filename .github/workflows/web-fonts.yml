@@ -2,6 +2,7 @@
 name: Web CI
 on:
   push:
+    branches: [sorane]
   pull_request:
   workflow_dispatch:
 permissions:

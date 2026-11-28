@@ -1002,9 +1002,16 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
             } else if ibis_formats::just_legacy::is_just_legacy(&raw_data) {
                 ibis_formats::just_legacy::to_markdown(&raw_data)
             } else if ibis_formats::access::is_access(&raw_data) {
-                ibis_doc_model::query::jet_migration_markdown(path)
-                    .or_else(|_| ibis_formats::access::to_markdown(&raw_data).map_err(|e| e.to_string()))
-                    .map_err(ibis_formats::Error::new)
+                #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+                {
+                    ibis_doc_model::query::jet_migration_markdown(path)
+                        .or_else(|_| ibis_formats::access::to_markdown(&raw_data).map_err(|e| e.to_string()))
+                        .map_err(ibis_formats::Error::new)
+                }
+                #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+                {
+                    ibis_formats::access::to_markdown(&raw_data)
+                }
             } else {
                 ibis_formats::archive::to_markdown(&raw_data)
             }
