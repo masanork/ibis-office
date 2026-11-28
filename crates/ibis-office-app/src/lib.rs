@@ -973,6 +973,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 || ibis_formats::email::is_eml(&raw_data)
                 || ibis_formats::cals_xml::is_cals_xml(&raw_data)
                 || ibis_formats::cad::is_cad(&raw_data)
+                || ibis_formats::access::is_access(&raw_data)
                 || ibis_formats::archive::is_lzh(&raw_data)
                 || ibis_formats::archive::is_7z(&raw_data))
         {
@@ -982,6 +983,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 ibis_formats::cals_xml::to_markdown(&raw_data)
             } else if ibis_formats::cad::is_cad(&raw_data) {
                 ibis_formats::cad::to_markdown(&raw_data)
+            } else if ibis_formats::access::is_access(&raw_data) {
+                ibis_formats::access::to_markdown(&raw_data)
             } else {
                 ibis_formats::archive::to_markdown(&raw_data)
             }
