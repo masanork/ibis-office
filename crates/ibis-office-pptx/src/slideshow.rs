@@ -3189,7 +3189,26 @@ pub(crate) fn animated_shapes_timed<'a>(
     clock: PlayClock<'a>,
     element: impl Fn(&ibis_doc_model::Shape) -> AnyElement + 'a,
 ) -> impl Iterator<Item = AnyElement> + 'a {
-    let groups = animation_groups(&slide.animations);
+    thread_local! {
+        static GROUPS_CACHE: std::cell::RefCell<Option<((ibis_doc_model::SlideId, usize), std::rc::Rc<Vec<AnimationGroup>>)>> = const { std::cell::RefCell::new(None) };
+        static CHARS_CACHE: std::cell::RefCell<std::collections::HashMap<(ibis_doc_model::SlideId, ibis_doc_model::ShapeId, usize), (ibis_doc_model::Shape, Vec<(Target, ibis_doc_model::Shape)>)>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    let groups = if clock.is_some() {
+        GROUPS_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let key = (slide.id, slide.animations.len());
+            if let Some((k, g)) = cache.as_ref() {
+                if *k == key {
+                    return g.clone();
+                }
+            }
+            let g = std::rc::Rc::new(animation_groups(&slide.animations));
+            *cache = Some((key, g.clone()));
+            g
+        })
+    } else {
+        std::rc::Rc::new(animation_groups(&slide.animations))
+    };
     let step = step.min(groups.len());
     slide.shown_shapes().flat_map(move |shape| {
         // SmartArt diagram frame itself draws nothing
@@ -3249,6 +3268,28 @@ pub(crate) fn animated_shapes_timed<'a>(
             let parts = animated_parts(slide, shape);
             if parts.is_empty() {
                 return vec![animated_view(slide, shape, Target::Whole, (size, scale, step, played, triggered_played, clock), &groups, &element)];
+            }
+            if clock.is_some() {
+                return CHARS_CACHE.with(|cache| {
+                    let mut cache = cache.borrow_mut();
+                    if cache.len() > 256 {
+                        cache.clear();
+                    }
+                    let key = (slide.id, shape.id, slide.animations.len());
+                    let (base, unit_shapes) = cache.entry(key).or_insert_with(|| {
+                        let base = chars_view(shape, &|c| parts.iter().any(|(_, (first, last))| (*first..=*last).contains(&c)), false);
+                        let unit_shapes = parts
+                            .iter()
+                            .map(|(target, (first, last))| (target.clone(), chars_view(shape, &|c| !(*first..=*last).contains(&c), true)))
+                            .collect();
+                        (base, unit_shapes)
+                    });
+                    let mut views = vec![animated_view(slide, base, Target::Whole, (size, scale, step, played, triggered_played, clock), &groups, &element)];
+                    for (target, only) in unit_shapes {
+                        views.push(animated_view(slide, only, target.clone(), (size, scale, step, played, triggered_played, clock), &groups, &element));
+                    }
+                    views
+                });
             }
             // The text taken in parts (characters, words, letters): the shape with those characters transparent, and each part over
             // it, alone, with its own effects.
@@ -3775,7 +3816,7 @@ fn animated_view(
             if m.opacity <= 0.0 && reveal.is_none() {
                 return div().into_any_element();
             }
-            if reveal.is_some() || m.grow != (1.0, 1.0) {
+            if reveal.is_some() || m.grow != (1.0, 1.0) || m.turn != 0.0 {
                 // Resized or uncovered: the shape and its text are painted once, as they are at their own size (nothing is laid out
                 // again at the new size), and that picture is what is scaled (a negative factor turns it over, as the turn effect's
                 // middle does), turned and shown through windows. A resize of the text's frame would break its lines.
@@ -3880,18 +3921,17 @@ fn animated_view(
                 );
                 return place(holder, ShapeMotion { opacity: 1.0, ..m }).into_any_element();
             }
-            let holder = if m.turn == 0.0 && styles.is_empty() {
+            if m.turn == 0.0 && styles.is_empty() {
                 let inner = div().absolute().top_0().left_0().size_full().child(element(shape));
-                if can_cache_paint && m.opacity == 1.0 {
-                    div().absolute().top_0().left_0().size_full().child(gpui_kit::cached_paint(paint_cache_id, paint_cache_key(), inner))
-                } else {
-                    inner
+                if can_cache_paint {
+                    let holder = div().absolute().top_0().left_0().size_full().child(gpui_kit::cached_paint(paint_cache_id, paint_cache_key(), inner).opacity(m.opacity));
+                    return place(holder, ShapeMotion { opacity: 1.0, ..m }).into_any_element();
                 }
-            } else {
-                let (shown, shear) = styled_shape(shape, m, &styles);
-                let element = |s: &ibis_doc_model::Shape| crate::render::shape_view::with_shear(shear, || element(s));
-                div().absolute().top_0().left_0().size_full().child(element(&shown))
-            };
+                return place(inner, ShapeMotion { opacity: m.opacity, ..m }).into_any_element();
+            }
+            let (shown, shear) = styled_shape(shape, m, &styles);
+            let element = |s: &ibis_doc_model::Shape| crate::render::shape_view::with_shear(shear, || element(s));
+            let holder = div().absolute().top_0().left_0().size_full().child(element(&shown));
             return place(holder, ShapeMotion { opacity: m.opacity, ..m }).into_any_element();
         }
         let start = state(0.0).0;
