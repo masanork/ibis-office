@@ -12,6 +12,13 @@ export const openInNewTab = (q) => {
 /** The `?new=` of this page's address (`docx`, `xlsx`, `pptx`), or `null`. */
 export const newKindOfAddress = () => new URLSearchParams(location.search).get('new');
 
+/** Report a failed initial open after the editor has released its update context. */
+export const initialOpenFailed = (name, error) => {
+  queueMicrotask(() => {
+    window.dispatchEvent(new CustomEvent('ibisoffice:open-error', { detail: { name, error } }));
+  });
+};
+
 /** Copies `text` to the clipboard: `true` when it was written, `false` when the browser refused (no permission, not a secure context, no focus). */
 export const copyText = async (text) => {
   try {

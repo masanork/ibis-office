@@ -467,6 +467,8 @@ extern "C" {
     fn open_in_new_tab_js(query: &str);
     #[wasm_bindgen(js_name = newKindOfAddress)]
     fn new_kind_of_address_js() -> Option<String>;
+    #[wasm_bindgen(js_name = initialOpenFailed)]
+    pub(crate) fn initial_open_failed(name: &str, error: &str);
     #[wasm_bindgen(js_name = copyText)]
     fn copy_text_js(text: &str) -> js_sys::Promise;
 }

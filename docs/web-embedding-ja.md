@@ -340,6 +340,15 @@ ibisOffice に渡し、ibisOffice はその関数だけを呼びます。ibisOff
 - `?view=1`・`?menuBar=0`・`?toolBar=0`・`?close=1`・`?download=1`・`?fd=0`・`?origin=` と、上のイベントは今までどおりです。`attachIframe`
   に渡したオプションが、アドレスの同じ項目より優先されます。
 
+### 低レベル API `run()` で渡した文書を開けなかった場合
+
+`run(base, name, bytes)` を呼ぶ前にエディターの `window` で
+`ibisoffice:open-error` を購読してください。初期文書を開けない場合、
+`detail.name` にファイル名、`detail.error` にエラーの説明が入ります。
+`await run()` が待つのはエディターの起動までです。sandbox 付き iframe
+内のスクリプトから `run()` を呼ぶ場合は、iframe 内でイベントを受け取り、
+送信先のオリジンを指定して `postMessage` で親に転送できます。
+
 ## 版を固定する
 
 公開したリリースのファイルは後から変わらないので、確かめた版（[ブラウザー版を入手する](#ブラウザー版を入手する)）はずっと同じです。
