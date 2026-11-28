@@ -140,6 +140,7 @@ mod xlsx_pivot;
 mod xlsx_slicer;
 mod xml;
 pub mod zip;
+pub mod archive;
 pub mod repair;
 pub use repair::{RepairLogEntry, RepairLogLevel, RepairMode, RepairReport, RepairedWorkbook, RepairedDocument, repair_workbook, repair_document};
 pub mod chart_template;
