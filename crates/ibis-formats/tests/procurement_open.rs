@@ -84,8 +84,24 @@ fn opens_procurement_formats_via_ibis_formats_open() {
     let opened = open(etax_bytes.to_vec()).expect("etax xml opens");
     assert_eq!(Kind::of(&opened.presentation), Kind::Document);
 
-    // 8. Extension registration checks
-    for ext in ["dxf", "sfc", "jww", "geojson", "shp", "eml", "lzh", "7z", "mdb", "xtx"] {
+    // 8. CityGML / PLATEAU GML (.gml) -> Document
+    let gml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<core:CityModel xmlns:core="http://www.opengis.net/citygml/2.0" xmlns:bldg="http://www.opengis.net/citygml/building/2.0" xmlns:gml="http://www.opengis.net/gml">
+  <gml:name>Sample PLATEAU</gml:name>
+  <core:cityObjectMember>
+    <bldg:Building gml:id="bldg_1"><bldg:measuredHeight uom="m">12.0</bldg:measuredHeight></bldg:Building>
+  </core:cityObjectMember>
+</core:CityModel>"#;
+    let opened = open(gml.as_bytes().to_vec()).expect("citygml opens");
+    assert_eq!(Kind::of(&opened.presentation), Kind::Document);
+
+    // 9. BIM/CIM IFC (.ifc) -> Document
+    let ifc = "ISO-10303-21;\nHEADER;\nFILE_SCHEMA(('IFC4'));\nENDSEC;\nDATA;\n#1=IFCPROJECT('01',$,'Bridge',$,$,$,$,$,$);\nENDSEC;\nEND-ISO-10303-21;\n";
+    let opened = open(ifc.as_bytes().to_vec()).expect("ifc opens");
+    assert_eq!(Kind::of(&opened.presentation), Kind::Document);
+
+    // 10. Extension registration checks
+    for ext in ["dxf", "sfc", "jww", "geojson", "shp", "eml", "lzh", "7z", "mdb", "xtx", "gml", "ifc", "idml"] {
         assert_eq!(Kind::from_extension(ext), Some(Kind::Document), "ext {ext}");
         assert!(Kind::OPENABLE_EXTENSIONS.contains(&ext), "openable {ext}");
     }
