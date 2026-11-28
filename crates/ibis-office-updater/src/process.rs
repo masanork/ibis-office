@@ -94,10 +94,8 @@ pub fn wait_for_exit(pid: u32, timeout: Duration) -> Exit {
     if wait(Duration::from_secs(5)) { Exit::Ended } else { Exit::Running }
 }
 
-/// Whether a process runs the program `exe` (the full path; macOS: the
-/// executable inside the .app).
 #[cfg(target_os = "macos")]
-pub fn is_running(exe: &std::path::Path) -> bool {
+fn pgrep_matches_exe(exe: &std::path::Path) -> bool {
     // pgrep -f matches the whole command line with a regular expression: the
     // path, then the end of the line or the first argument.
     let mut pattern = String::from("^");
@@ -109,4 +107,14 @@ pub fn is_running(exe: &std::path::Path) -> bool {
     }
     pattern.push_str("( |$)");
     Command::new("pgrep").args(["-f", &pattern]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+/// Whether a process runs the program `exe` (the full path; macOS: the
+/// executable inside the .app, resolving symlinks such as `/var` or aliases).
+#[cfg(target_os = "macos")]
+pub fn is_running(exe: &std::path::Path) -> bool {
+    if pgrep_matches_exe(exe) {
+        return true;
+    }
+    std::fs::canonicalize(exe).is_ok_and(|resolved| resolved != exe && pgrep_matches_exe(&resolved))
 }
