@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
-//! An old workbook (`.xls`, Excel 97–2003, BIFF8 in a compound file),
+//! An old workbook (`.xls`, BIFF5 and BIFF8 in a compound file),
 //! read from the public specifications (MS-XLS, MS-CFB) into the `.xlsx`
 //! the rest of the program reads: values, strings, formulas (as text,
 //! with the cached value), number formats, fonts, fills, borders,
@@ -82,6 +82,57 @@ pub(crate) fn unicode_string(d: &[u8], at: usize, long: bool) -> Option<(String,
     };
     p += rich_runs * 4 + ext;
     Some((text, p - at))
+}
+
+/// BIFF5 byte strings use the workbook CODEPAGE (OpenOffice Excel File Format, §2.5.2).
+#[derive(Clone, Copy)]
+enum XlsStrings {
+    Biff5(&'static encoding_rs::Encoding),
+    Biff8,
+}
+
+impl XlsStrings {
+    fn read(self, data: &[u8], at: usize, long: bool) -> Option<String> {
+        match self {
+            Self::Biff8 => unicode_string(data, at, long).map(|(text, _)| text),
+            Self::Biff5(encoding) => {
+                let (len, start) = if long {
+                    (u16_at(data, at)? as usize, at + 2)
+                } else {
+                    (*data.get(at)? as usize, at + 1)
+                };
+                let bytes = data.get(start..start + len)?;
+                Some(encoding.decode_without_bom_handling(bytes).0.into_owned())
+            }
+        }
+    }
+
+    fn is_biff5(self) -> bool {
+        matches!(self, Self::Biff5(_))
+    }
+}
+
+fn biff5_encoding(code_page: u16) -> Result<&'static encoding_rs::Encoding, Error> {
+    use encoding_rs::*;
+    Ok(match code_page {
+        367 | 1252 | 32769 => WINDOWS_1252,
+        866 => IBM866,
+        874 => WINDOWS_874,
+        932 => SHIFT_JIS,
+        936 => GBK,
+        949 => EUC_KR,
+        950 => BIG5,
+        1250 => WINDOWS_1250,
+        1251 => WINDOWS_1251,
+        1253 => WINDOWS_1253,
+        1254 => WINDOWS_1254,
+        1255 => WINDOWS_1255,
+        1256 => WINDOWS_1256,
+        1257 => WINDOWS_1257,
+        1258 => WINDOWS_1258,
+        10000 | 32768 => MACINTOSH,
+        _ => return Err(bad(&format!("未対応のコードページ: {code_page}"))),
+    })
 }
 
 /// The shared strings (`SST`), the record and its `CONTINUE`s: a string may run over the
@@ -443,6 +494,18 @@ pub fn to_xlsx(data: &[u8]) -> Result<Vec<u8>, Error> {
 
 fn to_xlsx_stream(stream: &[u8]) -> Result<Vec<u8>, Error> {
     let recs = records(stream);
+    let Some(bof) = recs.first().filter(|r| r.id == 0x0809) else {
+        return Err(bad("ブックの先頭レコード"));
+    };
+    let strings = match u16_at(bof.data, 0) {
+        Some(0x0600) => XlsStrings::Biff8,
+        Some(0x0500) => {
+            let code_page = recs.iter().take_while(|r| r.id != 0x000A)
+                .find(|r| r.id == 0x0042).and_then(|r| u16_at(r.data, 0)).unwrap_or(1252);
+            XlsStrings::Biff5(biff5_encoding(code_page)?)
+        }
+        _ => return Err(bad("未対応の Excel 形式です")),
+    };
     let mut book = Book { date1904: false, fonts: Vec::new(), formats: BTreeMap::new(), xfs: Vec::new(), palette: DEFAULT_PALETTE.to_vec(), strings: Vec::new(), string_runs: Vec::new(), sheets: Vec::new(), sheet_offsets: Vec::new(), cx: Context::default(), names: Vec::new(), theme: None, blips: Vec::new(), shape_defaults: Default::default() };
     // Offsets of each record, for finding the sheets' streams.
     let mut offsets = Vec::with_capacity(recs.len());
@@ -464,13 +527,7 @@ fn to_xlsx_stream(stream: &[u8]) -> Result<Vec<u8>, Error> {
     while i < recs.len() {
         let r = &recs[i];
         match r.id {
-            0x0809 => {
-                depth += 1;
-                // Only BIFF8 (Excel 97 and later) is read.
-                if depth == 1 && u16_at(r.data, 0) != Some(0x0600) {
-                    return Err(bad("Excel 95 以前の形式です"));
-                }
-            }
+            0x0809 => depth += 1,
             0x002F => {}
             0x000A => {
                 depth -= 1;
@@ -481,7 +538,7 @@ fn to_xlsx_stream(stream: &[u8]) -> Result<Vec<u8>, Error> {
             0x0022 => book.date1904 = r.data.first() == Some(&1),
             0x0031 => {
                 let d = r.data;
-                let name = d.get(14..).and_then(|n| unicode_string(n, 0, false)).map(|(s, _)| s).unwrap_or_default();
+                let name = strings.read(d, 14, false).unwrap_or_default();
                 book.fonts.push(Font {
                     height: u16_at(d, 0).unwrap_or(200),
                     italic: u16_at(d, 2).unwrap_or(0) & 2 != 0,
@@ -495,10 +552,11 @@ fn to_xlsx_stream(stream: &[u8]) -> Result<Vec<u8>, Error> {
                 });
             }
             0x041E => {
-                if let (Some(id), Some((code, _))) = (u16_at(r.data, 0), unicode_string(r.data, 2, true)) {
+                if let (Some(id), Some(code)) = (u16_at(r.data, 0), strings.read(r.data, 2, !strings.is_biff5())) {
                     book.formats.insert(id, code);
                 }
             }
+            0x00E0 if strings.is_biff5() => book.xfs.push(biff5_xf(r.data)),
             0x00E0 => {
                 let d = r.data;
                 let flags = u16_at(d, 4).unwrap_or(0);
@@ -603,7 +661,7 @@ fn to_xlsx_stream(stream: &[u8]) -> Result<Vec<u8>, Error> {
                 let offset = u32_at(d, 0).unwrap_or(0) as usize;
                 let state = d.get(4).copied().unwrap_or(0) & 3;
                 let kind = d.get(5).copied().unwrap_or(0);
-                let name = unicode_string(d, 6, false).map(|(s, _)| s).unwrap_or_default();
+                let name = strings.read(d, 6, false).unwrap_or_default();
                 book.sheets.push(Sheet { name, state, show_grid: true, show_headings: true, ..Default::default() });
                 book.sheet_offsets.push(if kind == 0 { offset } else { usize::MAX });
             }
@@ -618,11 +676,11 @@ fn to_xlsx_stream(stream: &[u8]) -> Result<Vec<u8>, Error> {
                 // SUPBOOK: a workbook of itself has 0x0401 where the name's length is.
                 book.cx.internal_book.push(u16_at(r.data, 2) == Some(0x0401));
             }
-            0x0017 => {
+            0x0017 if !strings.is_biff5() => {
                 let n = u16_at(r.data, 0).unwrap_or(0) as usize;
                 book.cx.xti = (0..n).filter_map(|k| Some((u16_at(r.data, 2 + k * 6)?, u16_at(r.data, 4 + k * 6)?, u16_at(r.data, 6 + k * 6)?))).collect();
             }
-            0x0018 => {
+            0x0018 if !strings.is_biff5() => {
                 let d = r.data;
                 if let (Some(flags), Some(&cch), Some(cce), Some(itab)) = (u16_at(d, 0), d.get(3), u16_at(d, 4), u16_at(d, 8)) {
                     let (cch_menu, cch_desc, cch_help, cch_status) = (d.get(10).copied().unwrap_or(0) as usize, d.get(11).copied().unwrap_or(0) as usize, d.get(12).copied().unwrap_or(0) as usize, d.get(13).copied().unwrap_or(0) as usize);
@@ -661,6 +719,9 @@ fn to_xlsx_stream(stream: &[u8]) -> Result<Vec<u8>, Error> {
     // The names' texts for the formulas (a built-in name has none to refer to by).
     book.cx.sheets = book.sheets.iter().map(|s| s.name.clone()).collect();
     book.cx.names = book.names.iter().map(|(n, b, _, _)| if b.is_some() { String::new() } else { n.clone() }).collect();
+    if strings.is_biff5() && !book.sheet_offsets.iter().any(|&offset| offset != usize::MAX) {
+        return Err(bad("ワークシートがありません"));
+    }
     // Each worksheet's stream.
     for k in 0..book.sheets.len() {
         let offset = book.sheet_offsets[k];
@@ -669,10 +730,38 @@ fn to_xlsx_stream(stream: &[u8]) -> Result<Vec<u8>, Error> {
         }
         let start = offsets.iter().position(|&o| o == offset).ok_or_else(|| bad("シートの位置"))?;
         let mut sheet = std::mem::take(&mut book.sheets[k]);
-        read_sheet(&recs[start..], &mut sheet);
+        if strings.is_biff5() && (recs[start].id != 0x0809 || u16_at(recs[start].data, 2) != Some(0x0010)) {
+            return Err(bad("ワークシートの先頭レコード"));
+        }
+        read_sheet(&recs[start..], &mut sheet, strings);
         book.sheets[k] = sheet;
     }
     emit(&book)
+}
+
+/// BIFF5 packs its fill and border fields differently from BIFF8 (§5.115.2).
+fn biff5_xf(d: &[u8]) -> Xf {
+    let alignment = d.get(6).copied().unwrap_or(0x20);
+    let area = u32_at(d, 8).unwrap_or(0);
+    let borders = u32_at(d, 12).unwrap_or(0);
+    Xf {
+        font: u16_at(d, 0).unwrap_or(0),
+        format: u16_at(d, 2).unwrap_or(0),
+        horizontal: alignment & 7,
+        wrap: alignment & 8 != 0,
+        vertical: (alignment >> 4) & 7,
+        rotation: [0, 255, 90, 180][(d.get(7).copied().unwrap_or(0) & 3) as usize],
+        borders: [
+            (((borders >> 3) & 7) as u8, ((borders >> 16) & 0x7F) as u16),
+            (((borders >> 6) & 7) as u8, ((borders >> 23) & 0x7F) as u16),
+            ((borders & 7) as u8, ((borders >> 9) & 0x7F) as u16),
+            (((area >> 22) & 7) as u8, (area >> 25) as u16),
+        ],
+        pattern: ((area >> 16) & 0x3F) as u8,
+        fore: (area & 0x7F) as u16,
+        back: ((area >> 7) & 0x7F) as u16,
+        ..Default::default()
+    }
 }
 
 pub(crate) fn rk_value(rk: u32) -> f64 {
@@ -726,7 +815,7 @@ fn read_chart_drawing(records: &[&Record<'_>]) -> ChartDrawing {
     out
 }
 
-fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet) {
+fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet, strings: XlsStrings) {
     let mut depth = 0;
     let mut pending_string: Option<(u32, u32)> = None;
     let mut frozen_flag = false;
@@ -773,7 +862,7 @@ fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet) {
             }
             // OBJ: the shape before it is a chart when its object type (`ftCmo`) is 5. A chart in a group has only its place
             // in the group's own units (a ChildAnchor, in the frame of the group's FSPGR): the group's anchor places it.
-            0x005D => {
+            0x005D if !strings.is_biff5() => {
                 let kind = u16_at(d, 4);
                 if kind == Some(0)
                     && let (Some(anchor), Some(frame)) = (crate::xls_drawing::last_anchor(&shape), crate::xls_drawing::last_body(&shape, 0xF009).and_then(crate::xls_drawing::rect_of))
@@ -812,7 +901,7 @@ fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet) {
                 }
             }
             0x0207 => {
-                if let (Some((row, col)), Some((s, _))) = (pending_string.take(), unicode_string(d, 0, true))
+                if let (Some((row, col)), Some(s)) = (pending_string.take(), strings.read(d, 0, true))
                     && let Some(cell) = sheet.cells.get_mut(&(row, col))
                 {
                     cell.value = Some(Value::Text(s));
@@ -845,8 +934,8 @@ fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet) {
                     sheet.cells.insert((row as u32, col as u32), Cell { xf, value: Some(Value::Text(format!("\u{0}SST{}", u32_at(d, 6).unwrap_or(0)))), formula: None });
                 }
             }
-            0x0204 => {
-                if let (Some(row), Some(col), Some(xf), Some((s, _))) = (u16_at(d, 0), u16_at(d, 2), u16_at(d, 4), unicode_string(d, 6, true)) {
+            0x0204 | 0x00D6 => {
+                if let (Some(row), Some(col), Some(xf), Some(s)) = (u16_at(d, 0), u16_at(d, 2), u16_at(d, 4), strings.read(d, 6, true)) {
                     sheet.cells.insert((row as u32, col as u32), Cell { xf, value: Some(Value::Text(s)), formula: None });
                 }
             }
@@ -888,10 +977,12 @@ fn read_sheet(recs: &[Record<'_>], sheet: &mut Sheet) {
                     } else {
                         f64_at(d, 6).map(Value::Number)
                     };
-                    sheet.cells.insert((row as u32, col as u32), Cell { xf, value, formula: Some(rgce) });
+                    // BIFF5 reference tokens have a different layout. Keep their cached results.
+                    let formula = (!strings.is_biff5()).then_some(rgce);
+                    sheet.cells.insert((row as u32, col as u32), Cell { xf, value, formula });
                 }
             }
-            0x04BC => {
+            0x04BC if !strings.is_biff5() => {
                 if let (Some(r1), Some(r2), Some(&c1), Some(&c2), Some(cce)) = (u16_at(d, 0), u16_at(d, 2), d.get(4), d.get(5), u16_at(d, 8)) {
                     let rgce = d.get(10..10 + cce as usize).unwrap_or(&[]).to_vec();
                     sheet.shared.insert((r1 as u32, c1 as u32), ([r1, r2, c1 as u16, c2 as u16], rgce));
@@ -1974,5 +2065,54 @@ mod shape_tests {
         assert!(drawing.contains("<xdr:pic>"), "{drawing}");
         // Its crop (the left quarter: corpus 157's two pictures of one logo, each a part of it).
         assert!(drawing.contains("<a:srcRect l=\"25000\" t=\"0\" r=\"0\" b=\"0\"/>"), "{drawing}");
+    }
+}
+
+#[cfg(test)]
+mod biff5_tests {
+    use super::*;
+
+    fn record(stream: &mut Vec<u8>, id: u16, data: &[u8]) {
+        stream.extend_from_slice(&id.to_le_bytes());
+        stream.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        stream.extend_from_slice(data);
+    }
+
+    fn workbook(code_page: u16) -> Vec<u8> {
+        let mut stream = Vec::new();
+        record(&mut stream, 0x0809, &[0, 5, 5, 0, 0, 0, 0, 0]); // Workbook globals BOF
+        record(&mut stream, 0x0042, &code_page.to_le_bytes());
+        let boundsheet = stream.len();
+        record(&mut stream, 0x0085, &[0, 0, 0, 0, 0, 0, 2, 0x95, 0x5c]); // 表
+        record(&mut stream, 0x000A, &[]);
+        let sheet_offset = stream.len() as u32;
+        stream[boundsheet + 4..boundsheet + 8].copy_from_slice(&sheet_offset.to_le_bytes());
+        record(&mut stream, 0x0809, &[0, 5, 0x10, 0, 0, 0, 0, 0]); // Worksheet BOF
+        record(&mut stream, 0x0204, &[0, 0, 0, 0, 0, 0, 2, 0, 0x95, 0x5c]); // A1: 表
+        let mut formula = [0u8; 25];
+        formula[2] = 1; // B1
+        formula[6..14].copy_from_slice(&42.5f64.to_le_bytes());
+        formula[20..].copy_from_slice(&[3, 0, 0x1E, 42, 0]);
+        record(&mut stream, 0x0006, &formula);
+        record(&mut stream, 0x000A, &[]);
+        cfb::write(&[cfb::Item::stream("Book", stream)])
+    }
+
+    #[test]
+    fn opens_excel_95_book_with_cp932_text_and_cached_formula() {
+        let xls = workbook(932);
+        let xlsx = to_xlsx(&xls).unwrap();
+        let zip = crate::zip::Archive::new(&xlsx).unwrap();
+        let xml = |part| String::from_utf8(zip.read(part).unwrap().unwrap()).unwrap();
+        assert!(xml("xl/workbook.xml").contains("name=\"表\""));
+        let sheet = xml("xl/worksheets/sheet1.xml");
+        assert!(sheet.contains("<t xml:space=\"preserve\">表</t>"), "{sheet}");
+        assert!(sheet.contains("<v>42.5</v>") && !sheet.contains("<f>"), "{sheet}");
+        assert!(crate::read(&xls).is_ok());
+    }
+
+    #[test]
+    fn rejects_an_unknown_biff5_code_page() {
+        assert!(to_xlsx(&workbook(u16::MAX)).is_err());
     }
 }
