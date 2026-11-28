@@ -674,6 +674,7 @@ pub enum DiskDataset {
     Avro(std::path::PathBuf, Vec<String>),
     Sqlite(std::path::PathBuf, String),
     Jet(std::path::PathBuf, String, Vec<String>),
+    Dbf(std::path::PathBuf, Vec<String>),
     Ese(std::path::PathBuf, String, Vec<String>),
     Pst(std::path::PathBuf, String, Vec<String>),
     Csv(std::path::PathBuf),
@@ -732,6 +733,9 @@ impl DiskDataset {
             Self::Sqlite(path, table) => visit_sqlite_table(path, table, schema_only, visit),
             Self::Jet(path, table, selected) => {
                 super::jet_source::visit_jet_table(path, table, selected, schema_only, visit)
+            }
+            Self::Dbf(path, selected) => {
+                super::dbf_source::visit_dbf(path, selected, schema_only, visit)
             }
             Self::Ese(path, table, selected) => {
                 super::ese_source::visit_ese_table(path, table, selected, schema_only, visit)
@@ -1156,7 +1160,7 @@ impl SqliteQuerySession {
                     width = names.len();
                     let batch = matches!(
                         source,
-                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::RecoverableJsonLines(..) | DiskDataset::JsonLinesPaths(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Jet(..) | DiskDataset::Ese(..) | DiskDataset::Pst(..) | DiskDataset::Csv(..) | DiskDataset::Log(..)
+                        DiskDataset::ArrowIpc(..) | DiskDataset::JsonLines(..) | DiskDataset::RecoverableJsonLines(..) | DiskDataset::JsonLinesPaths(..) | DiskDataset::Avro(..) | DiskDataset::Parquet(..) | DiskDataset::Sqlite(..) | DiskDataset::Jet(..) | DiskDataset::Dbf(..) | DiskDataset::Ese(..) | DiskDataset::Pst(..) | DiskDataset::Csv(..) | DiskDataset::Log(..)
                     );
                     #[cfg(feature = "report-profiling")]
                     let batch = batch && !super::report_profile::single_row_inserts_forced();
