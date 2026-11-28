@@ -954,9 +954,9 @@ SPDX-License-Identifier: Unicode-3.0
 
 照合に使う異体字の対応表。より大きい完全版（CC BY-SA 2.1 JP）は同梱せず、ヘルプ > セットアップから利用者が選んで取得する。
 
-## GJS 異体字クラスタ 基本版 (SA 条件なし) — dict20260718
+## GJS 異体字クラスタ 基本版 (SA 条件なし) — dict20261128
 
-- 収録: 22,131 文字・8,462 クラスタ
+- 収録: 22,135 文字・8,463 クラスタ
 - ファイル: `clusters.csv` (member_codepoint, cluster_id, representative_codepoint)、`variant-clusters.zst` (ibis-variant-bitmap/1+zstd)
 - クラスタへの所属は「確認が必要な候補」を示すもので、同一人物や安全な置換を意味しない。
 - 現代日本語では別字として扱う組 (托/拓・愉/愈・伙/火・䄷/石) には辺を張らない。
@@ -973,6 +973,7 @@ SPDX-License-Identifier: Unicode-3.0
 | 国文学研究資料館 国書データベース異体字リスト (kokubunken/kokusho-itaiji-search) のうち他の資料と一致する組 | 異体字関係 | MIT, Copyright 2023 国文学研究資料館 (LICENSE-NIJL.txt) |
 | 常用漢字表 (平成22年内閣告示第2号) の括弧内康熙字典体、人名用漢字、誤字俗字・正字一覧表など | 新旧字体・俗字 | 告示・法令・通達 (著作権法第13条) |
 | デジタル庁「JIS X 0213への代替マップ 1.0版」のうちデジタル庁が独自に定義した区分1 | 行政事務標準文字 (GJ) と MJ 文字の代替 | 事務連絡 (通達に類するもの。著作権法第13条第2号) |
+| GJS 追記分 (GJS リポジトリ `data/sources/custom/v2n_annotated_jp.csv` の出典 GJS の行) | 氏名で問題になるのに上記の資料に無かった組 | CC0 1.0 |
 
 基本版は上記の各条件に従って再配布できる (SA 条件はない)。再配布時はこの NOTICE.md と LICENSE-*.txt を同梱すること。
 

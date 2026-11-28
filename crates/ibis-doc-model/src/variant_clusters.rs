@@ -285,10 +285,15 @@ mod tests {
             return;
         }
         let dict = embedded().expect("default gjs dictionary");
-        // The GJS basic edition (dict20260718; no share-alike sources). The full edition is downloaded with セットアップ.
-        assert_eq!(dict.len(), 22_131);
+        // The GJS basic edition (dict20261128; no share-alike sources). The full edition is downloaded with セットアップ.
+        assert_eq!(dict.len(), 22_135);
         let high = dict.cluster_index('高').expect("高 in bundled gjs dictionary");
         assert_eq!(dict.cluster_index('髙'), Some(high));
+        // Pairs GJS added in dict20261128 (none of the redistributable sources had them).
+        for (a, b) in [('𠮷', '吉'), ('﨔', '欅'), ('巗', '巌'), ('鎚', '槌')] {
+            assert_eq!(dict.cluster_index(a), dict.cluster_index(b), "{a} and {b}");
+            assert!(dict.cluster_index(a).is_some(), "{a} in bundled gjs dictionary");
+        }
         let book = crate::Presentation::empty(crate::geometry::EmuSize::WIDESCREEN);
         let view = crate::sheet_calc::BookView::new(&book);
         for (formula, rank) in [

@@ -29,7 +29,7 @@
 # Apache-2.0 and public-domain sources). The full edition adds IPA's MJ縮退マップ and is CC BY-SA 2.1 JP, a work of its own: GJS
 # distributes it beside its NOTICE (attribution, the changes, the licence), and the user chooses it here (it is offered unchecked).
 # Published by GJS at https://moji.sorane.dev/datasets/variant-clusters/ (latest.json names the newest revision).
-{"id":"gjs-variant-clusters-full","kind":"variant-dictionary","name_en":"Variant dictionary (GJS full edition)","name_ja":"\u7570\u4f53\u5b57\u8f9e\u66f8\uff08GJS \u5b8c\u5168\u7248\uff09","file":"variant-clusters.zst","size":170981,"sha256":"f3f9dec99efa3ef973373e5493c1aef9480791dcf4d306505b1f34c73722d32c","url":"https://moji.sorane.dev/datasets/variant-clusters/dict20260718/full/variant-clusters.zst","license":"CC BY-SA 2.1 JP","license_url":"https://moji.sorane.dev/datasets/variant-clusters/dict20260718/full/NOTICE.md"}
+{"id":"gjs-variant-clusters-full","kind":"variant-dictionary","name_en":"Variant dictionary (GJS full edition)","name_ja":"\u7570\u4f53\u5b57\u8f9e\u66f8\uff08GJS \u5b8c\u5168\u7248\uff09","file":"variant-clusters.zst","size":171011,"sha256":"169404e97ffaa6e15b15c681865569e8d24019d25e1270ce928904396a061b05","url":"https://moji.sorane.dev/datasets/variant-clusters/dict20261128/full/variant-clusters.zst","license":"CC BY-SA 2.1 JP","license_url":"https://moji.sorane.dev/datasets/variant-clusters/dict20261128/full/NOTICE.md"}
 #
 # BIZ UDGothic / BIZ UDMincho (Morisawa Inc., SIL OFL 1.1; Version 1.051 / 1.06; from the repository Google Fonts builds them from,
 # https://github.com/googlefonts/morisawa-biz-ud-gothic and -mincho, fonts/ttf/*-Regular.ttf): the file as distributed, not changed, with
