@@ -739,6 +739,7 @@ start.new-powerpoint	PowerPoint
 start.new-memo-sub	Markdown
 start.recent	Recent Files
 start.recent-none	No Recent Files
+start.recent.clear	Clear history
 start.request	We Need Your Help
 start.request-body	Docs is a free office suite. Its goal is complete accuracy with Word, Excel and PowerPoint files, both in the layout of what it draws and in the compatibility of the file structure.
 start.request-report	If you find a bug or have a request, we would be grateful if you could report it on {link}.

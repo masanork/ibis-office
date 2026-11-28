@@ -201,6 +201,7 @@ start.new-powerpoint	PowerPoint
 start.new-memo-sub	Markdown
 start.recent	最近開いたファイル
 start.recent-none	最近開いたファイルはありません
+start.recent.clear	履歴を消去
 start.request	協力のお願い
 start.request-body	Docs は無料のオフィス スイートです。Word・Excel・PowerPoint のファイルを、描画のレイアウトの精度とファイルの構造の互換性の両方で、完全に正確に扱えることを目標にしています。
 start.request-report	不具合やご要望がありましたら、{link} で報告していただけると幸いです。

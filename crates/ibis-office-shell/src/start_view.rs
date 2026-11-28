@@ -76,6 +76,21 @@ pub struct StartViewSelectAction {
     pub url: Option<String>,
 }
 
+/// One row in the Web recent-files history (`recents` in the start-view config).
+/// `action` is `open-recent:<id>`; clicking it is handled in `www/main.ts`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartViewRecent {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub subtitle: String,
+    pub name: String,
+    #[serde(default)]
+    pub badge: Option<String>,
+    pub action: String,
+}
+
 /// Host-supplied configuration for the Web start view (`set_start_view_config`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,6 +99,8 @@ pub struct StartViewConfig {
     pub list_title: Option<String>,
     #[serde(default)]
     pub items: Vec<StartViewItem>,
+    #[serde(default)]
+    pub recents: Vec<StartViewRecent>,
     #[serde(default)]
     pub select_action: Option<StartViewSelectAction>,
     #[serde(default)]
@@ -100,6 +117,24 @@ fn is_safe_same_origin_url(url: &str) -> bool {
 
 fn is_safe_link_url(url: &str) -> bool {
     is_safe_same_origin_url(url) || url.starts_with("https://") || url.starts_with("http://")
+}
+
+const WEB_RECENTS_SHOW_LIMIT: usize = 5;
+
+/// `open-recent:<id>` as supplied by the Web recent-files store.
+pub fn is_open_recent_action(action: &str) -> bool {
+    recent_action_id(action, "open-recent").is_some()
+}
+
+fn recent_action_id<'a>(action: &'a str, kind: &str) -> Option<&'a str> {
+    let (found, id) = action.split_once(':')?;
+    if found != kind || id.is_empty() || id.len() > 512 {
+        return None;
+    }
+    if id.chars().any(|c| c.is_control() || matches!(c, '<' | '>' | '"' | '\\')) {
+        return None;
+    }
+    Some(id)
 }
 
 /// Parse and install a Web start view configuration from JSON.
@@ -130,6 +165,13 @@ pub fn set_start_view_config(json: &str) -> Result<(), String> {
         panel.links.retain(|link| !link.label.trim().is_empty() && is_safe_link_url(&link.url));
         panel.links.truncate(12);
     }
+    config.recents.retain(|item| {
+        !item.id.trim().is_empty()
+            && !item.title.trim().is_empty()
+            && !item.name.trim().is_empty()
+            && is_open_recent_action(&item.action)
+    });
+    config.recents.truncate(WEB_RECENTS_SHOW_LIMIT);
     START_VIEW_CONFIG.with(|slot| *slot.borrow_mut() = Some(config));
     Ok(())
 }
@@ -180,8 +222,8 @@ pub fn is_sample_item_url(url: &str) -> bool {
 
 /// Whether the mobile sample list starts expanded. The user override wins.
 /// Auto-expand only when this platform has a recents source and that list is
-/// empty (first run). Web has no recents, so samples stay behind the link
-/// until the user opens them. A connected GitHub repo list also stays collapsed.
+/// empty (first run, including the Web IndexedDB history). A connected
+/// GitHub repo list also stays collapsed.
 pub fn mobile_samples_expanded(
     recents_empty: bool,
     has_recent_source: bool,
@@ -606,9 +648,15 @@ impl SlideEditor {
 
         #[cfg(not(target_family = "wasm"))]
         let (recent_paths, has_recent_source) = (self.recent_files.clone(), true);
-        #[cfg(target_family = "wasm")]
-        let (recent_paths, has_recent_source): (Vec<std::path::PathBuf>, bool) = (Vec::new(), false);
+        #[cfg(not(target_family = "wasm"))]
         let recents_empty = recent_paths.is_empty();
+        #[cfg(target_family = "wasm")]
+        let web_recents: Vec<StartViewRecent> =
+            config.as_ref().map(|c| c.recents.clone()).unwrap_or_default();
+        #[cfg(target_family = "wasm")]
+        let has_recent_source = true;
+        #[cfg(target_family = "wasm")]
+        let recents_empty = web_recents.is_empty();
         let samples_open = mobile_samples_expanded(
             recents_empty,
             has_recent_source,
@@ -629,6 +677,7 @@ impl SlideEditor {
             .track_scroll(&self.recent_scroll)
             .children(self.render_crash_report_banner(cx));
 
+        #[cfg(not(target_family = "wasm"))]
         if !recents_empty {
             body = body
                 .child(section_title("start.recent", 0.0, TITLE_GAP))
@@ -728,6 +777,14 @@ impl SlideEditor {
             }
         }
 
+        #[cfg(target_family = "wasm")]
+        if !web_recents.is_empty() {
+            body = body
+                .child(section_title("start.recent", 0.0, TITLE_GAP))
+                .child(self.web_recent_rows(&web_recents, foreground, muted, border, hover, true, cx))
+                .child(self.web_recents_clear_link(muted, cx));
+        }
+
         body = body.when_some(self.status.clone(), |d, status| {
             d.child(div().mt_2().text_sm().text_color(muted).child(status))
         });
@@ -812,6 +869,126 @@ impl SlideEditor {
                     }),
             )
             .on_click(cx.listener(on_click))
+    }
+
+
+    #[cfg(target_family = "wasm")]
+    fn web_recents_clear_link(&self, muted: Hsla, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("start-recents-clear")
+            .mt_1()
+            .py_1()
+            .flex()
+            .justify_center()
+            .cursor_pointer()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(crate::i18n::text("start.recent.clear")),
+            )
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.stop_propagation();
+                #[cfg(target_family = "wasm")]
+                crate::web::trigger_start_action("clear-recents");
+            }))
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn web_recent_rows(
+        &self,
+        recents: &[StartViewRecent],
+        foreground: Hsla,
+        muted: Hsla,
+        border: Hsla,
+        hover: Hsla,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let rows = recents.iter().cloned().enumerate().map(|(index, item)| {
+            let badge_label = item.badge.clone().unwrap_or_else(|| {
+                item.name
+                    .rsplit_once('.')
+                    .map(|(_, ext)| ext.to_ascii_uppercase())
+                    .unwrap_or_else(|| "FILE".to_string())
+            });
+            let badge_bg = badge_color(&badge_label);
+            let title: SharedString = item.title.into();
+            let subtitle: SharedString = item.subtitle.clone().into();
+            let has_subtitle = !item.subtitle.is_empty();
+            let open_action = item.action.clone();
+            let remove_action = format!("remove-recent:{}", item.id);
+            div()
+                .id(("start-web-recent", index))
+                .w_full()
+                .min_h(px(if compact { MOBILE_TOUCH - 8.0 } else { WEB_ITEM_ROW_HEIGHT }))
+                .px_3()
+                .py_1()
+                .flex()
+                .items_center()
+                .gap_3()
+                .border_b_1()
+                .border_color(border)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .on_click(cx.listener(move |_, _, _, _cx| {
+                    #[cfg(target_family = "wasm")]
+                    crate::web::trigger_start_action(&open_action);
+                    #[cfg(not(target_family = "wasm"))]
+                    let _ = &open_action;
+                }))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .w(px(40.))
+                        .py(px(2.))
+                        .rounded(px(4.))
+                        .bg(rgb(badge_bg))
+                        .text_color(crate::palette::doc(0xffffff))
+                        .text_size(px(10.))
+                        .font_weight(FontWeight::BOLD)
+                        .flex()
+                        .justify_center()
+                        .child(badge_label),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_sm().font_weight(FontWeight::MEDIUM).text_color(foreground).truncate().child(title))
+                        .when(has_subtitle, |d| {
+                            d.child(div().text_xs().text_color(muted).truncate().child(subtitle))
+                        }),
+                )
+                .child(
+                    div()
+                        .id(("start-web-recent-remove", index))
+                        .flex_shrink_0()
+                        .w(px(32.))
+                        .h(px(32.))
+                        .rounded(px(16.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .child(Icon::new(Material("close")).size(px(16.)).text_color(muted))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.stop_propagation();
+                            #[cfg(target_family = "wasm")]
+                            crate::web::trigger_start_action(&remove_action);
+                            #[cfg(not(target_family = "wasm"))]
+                            let _ = &remove_action;
+                        })),
+                )
+        });
+        v_flex()
+            .w_full()
+            .rounded(px(12.))
+            .border_1()
+            .border_color(border)
+            .overflow_hidden()
+            .children(rows)
     }
 
     fn mobile_web_item_rows(
@@ -1264,18 +1441,39 @@ impl SlideEditor {
     }
 
     /// Host-supplied items (samples or shortcuts) shown in the Web start view.
-    /// When no items are configured, the web build shows no history section.
+    /// When recents exist they appear above the sample / vault list, in the
+    /// same slot the desktop build uses for recently opened files.
     #[cfg(target_family = "wasm")]
     fn recent_files_list(&self, column: Div, cx: &mut Context<Self>) -> Div {
         let Some(config) = start_view_config() else {
             return column;
         };
-        if config.items.is_empty() {
+        if config.items.is_empty() && config.recents.is_empty() {
             return column;
         }
         let theme = cx.theme();
         let (foreground, muted, border, hover, background) =
             (theme.foreground, theme.muted_foreground, theme.border, theme.muted, theme.background);
+        let recents = config.recents.clone();
+        let column = if recents.is_empty() {
+            column
+        } else {
+            column
+                .child(
+                    div()
+                        .mt(px(BOTTOM_MARGIN - ICON_EDGE))
+                        .mb(px(TITLE_GAP))
+                        .text_sm()
+                        .line_height(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(crate::i18n::text("start.recent")),
+                )
+                .child(self.web_recent_rows(&recents, foreground, muted, border, hover, false, cx))
+                .child(self.web_recents_clear_link(muted, cx))
+        };
+        if config.items.is_empty() {
+            return column;
+        }
         let title_text: SharedString = config
             .list_title
             .filter(|t| !t.trim().is_empty())
@@ -1440,5 +1638,37 @@ mod tests {
 
         set_start_view_config("").expect("clear");
         assert!(start_view_config().is_none());
+    }
+
+    #[core::prelude::v1::test]
+    fn start_view_config_keeps_safe_recents_and_caps_them() {
+        let json = r#"{
+            "items": [],
+            "recents": [
+                { "id": "local:a.docx", "title": "a.docx", "subtitle": "1分前", "name": "a.docx", "badge": "DOCX", "action": "open-recent:local:a.docx" },
+                { "id": "github:acme/docs@main:b.md", "title": "b.md", "subtitle": "acme/docs · 昨日", "name": "b.md", "action": "open-recent:github:acme/docs@main:b.md" },
+                { "id": "bad", "title": "x", "name": "x", "action": "javascript:alert(1)" },
+                { "id": "empty", "title": "", "name": "z.md", "action": "open-recent:empty" }
+            ]
+        }"#;
+        set_start_view_config(json).expect("valid config");
+        let cfg = start_view_config().expect("stored");
+        assert_eq!(cfg.recents.len(), 2);
+        assert_eq!(cfg.recents[0].id, "local:a.docx");
+        assert!(is_open_recent_action(&cfg.recents[0].action));
+        assert_eq!(cfg.recents[1].name, "b.md");
+        assert!(!is_open_recent_action("javascript:alert(1)"));
+        assert!(!is_open_recent_action("open-recent:"));
+
+        let many = (0..12)
+            .map(|i| format!(
+                r#"{{ "id": "local:{i}.md", "title": "{i}.md", "name": "{i}.md", "action": "open-recent:local:{i}.md" }}"#
+            ))
+            .collect::<Vec<_>>()
+            .join(",");
+        set_start_view_config(&format!(r#"{{ "recents": [{many}] }}"#)).expect("cap");
+        assert_eq!(start_view_config().expect("stored").recents.len(), 5);
+
+        set_start_view_config("").expect("clear");
     }
 }
