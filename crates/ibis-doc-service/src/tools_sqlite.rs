@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use ibis_doc_model::query::{
     DATASET_MEMORY_LIMIT, DiskDataset, ParquetBound, ParquetPredicate, QColumn, QTable, QType, SqliteInputSchema, SqlitePredicate, SqliteQuerySession,
-    SqliteRows, SqliteScalar, dataset_sql_type, read_arrow_ipc_dataset, parquet_dataset_columns, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
+    SqliteRows, SqliteScalar, dataset_sql_type, is_jet_extension, jet_dataset_columns, jet_inspect_schema, read_arrow_ipc_dataset, parquet_dataset_columns, read_jet_table_bounded, read_parquet_filtered, read_sqlite_table_bounded, sqlite_columns,
     sqlite_count, sqlite_dataset_columns, sqlite_tables, validate_sqlite_select,
 };
 use serde_json::{Value, json};
@@ -17,8 +17,9 @@ use crate::{ToolError, paths};
 
 pub const DESKTOP_TEXT_DATASET_LIMIT: u64 = 512 * 1024 * 1024;
 
-pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "jsonl", "ndjson", "avro", "sqlite", "sqlite3", "db", "log", "syslog"];
+pub const DATASET_EXTENSIONS: &[&str] = &["csv", "parquet", "arrow", "ipc", "feather", "jsonl", "ndjson", "avro", "sqlite", "sqlite3", "db", "log", "syslog", "mdb", "accdb", "mde", "accde"];
 const EXTENSIONS: &[&str] = &["sqlite", "sqlite3", "db"];
+const JET_EXTENSIONS: &[&str] = &["mdb", "accdb", "mde", "accde"];
 const PATH: &str = "path";
 const MAX_FILTERS: usize = 16;
 const REPORT_DEFINITION_BYTES: usize = 32 * 1024;
@@ -39,6 +40,14 @@ const TOOLS: &[Tool] = &[
         returns_content: true,
         schema: &|| object(&[source_path(), table_name()], &[PATH, "table"]),
         run: describe_table,
+    },
+    Tool {
+        name: "jet_inspect_schema",
+        description: "Inspect tables, columns, indexes, relationships, saved query SQL, forms, and VBA module names in a Microsoft Access (.mdb/.accdb) database.",
+        access: Access::Read,
+        returns_content: true,
+        schema: &|| object(&[("path", string("Path to a local .mdb or .accdb file under an allowed folder."))], &[PATH]),
+        run: inspect_jet_schema,
     },
     Tool {
         name: "sqlite_describe_datasets",
@@ -308,6 +317,29 @@ fn database(service: &Service, args: &Value) -> Result<PathBuf, ToolError> {
 
 fn sqlite_error(error: impl ToString) -> ToolError {
     ToolError::new("sqlite_error", error.to_string())
+}
+
+fn inspect_jet_schema(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
+    crate::edit::only_known(args, &[PATH])?;
+    let path = paths::resolve(&service.allow_dirs, args.str_arg(PATH)?, JET_EXTENSIONS, true)?;
+    let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
+    if !metadata.is_file() {
+        return Err(ToolError::invalid("select an Access database file"));
+    }
+    if metadata.len() > service.limits.max_file_size {
+        return Err(ToolError::new(
+            "file_too_large",
+            "Access database exceeds the file size limit",
+        ));
+    }
+    let schema = jet_inspect_schema(&path).map_err(sqlite_error)?;
+    if schema.to_string().len() > service.limits.page_bytes {
+        return Err(ToolError::new(
+            "result_too_large",
+            "Access schema exceeds the response size limit",
+        ));
+    }
+    Ok(schema)
 }
 
 fn list_tables(service: &mut Service, args: &Value) -> Result<Value, ToolError> {
@@ -820,8 +852,8 @@ fn dataset_names(value: &Value, limit: usize) -> Option<Vec<String>> {
 fn dataset_columns(spec: &Value, kind: &str) -> Result<Vec<String>, ToolError> {
     match spec.get("columns") {
         None => Ok(Vec::new()),
-        Some(_) if !matches!(kind, "parquet" | "arrow_ipc" | "json_lines" | "avro") => Err(ToolError::invalid(
-            "columns is only used for Parquet, Arrow IPC, JSON Lines and Avro datasets",
+        Some(_) if !matches!(kind, "parquet" | "arrow_ipc" | "json_lines" | "avro" | "jet") => Err(ToolError::invalid(
+            "columns is only used for Parquet, Arrow IPC, JSON Lines, Avro and Access datasets",
         )),
         Some(value) => dataset_names(value, 256)
             .ok_or_else(|| ToolError::invalid("columns must contain 1 to 256 non-empty column names")),
@@ -898,8 +930,8 @@ fn visit_datasets(
         }
         let columns = dataset_columns(spec, kind)?;
         let filters = parquet_filters(spec, kind)?;
-        if kind != "sqlite" && table_name.is_some() {
-            return Err(ToolError::invalid("table is only used for SQLite datasets"));
+        if !matches!(kind, "sqlite" | "jet") && table_name.is_some() {
+            return Err(ToolError::invalid("table is only used for SQLite and Access datasets"));
         }
         let schema = |columns| QTable { columns, rows: Vec::new() };
         let table = if kind == "csv" {
@@ -917,6 +949,14 @@ fn visit_datasets(
                         sqlite_dataset_columns(&path, name).map(schema)
                     } else {
                         read_sqlite_table_bounded(&path, name, cells, text)
+                    }
+                }
+                ("jet", _) => {
+                    let name = table_name.ok_or_else(|| ToolError::invalid("Access datasets require a source table"))?;
+                    if schema_only {
+                        jet_dataset_columns(&path, name, &columns).map(schema)
+                    } else {
+                        read_jet_table_bounded(&path, name, &columns, cells, text)
                     }
                 }
                 ("parquet", true) => parquet_dataset_columns(&path, &columns, &filters).map(schema),
@@ -1065,6 +1105,8 @@ fn list_query_reports(service: &mut Service, args: &Value) -> Result<Value, Tool
 fn source_kind(path: &Path) -> &'static str {
     if is_sqlite(path) {
         "sqlite"
+    } else if is_jet_extension(path) {
+        "jet"
     } else if path.extension().is_some_and(|ext| {
         ["jsonl", "ndjson"].iter().any(|name| ext.eq_ignore_ascii_case(name))
     }) {
@@ -1531,7 +1573,7 @@ fn dataset_file_limit(limits: &Limits, kind: &str) -> u64 {
 }
 
 fn streamable_kind(kind: &str) -> bool {
-    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite" | "csv" | "log")
+    matches!(kind, "arrow_ipc" | "json_lines" | "avro" | "parquet" | "sqlite" | "jet" | "csv" | "log")
 }
 
 fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) -> Result<SqliteQuerySession, ToolError> {
@@ -1555,8 +1597,8 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
             continue;
         }
         let filters = parquet_filters(spec, kind)?;
-        if kind != "sqlite" && !spec["table"].is_null() {
-            return Err(ToolError::invalid("table is only used for SQLite datasets"));
+        if !matches!(kind, "sqlite" | "jet") && !spec["table"].is_null() {
+            return Err(ToolError::invalid("table is only used for SQLite and Access datasets"));
         }
         let metadata = std::fs::metadata(&path).map_err(sqlite_error)?;
         let limit = dataset_file_limit(&service.limits, kind);
@@ -1577,6 +1619,8 @@ fn disk_dataset_session(service: &Service, specs: &[Value], arrow_only: bool) ->
             "parquet" => DiskDataset::Parquet(path, columns, filters.into_iter().map(|(name, value)| (name.to_owned(), value)).collect()),
             "sqlite" => DiskDataset::Sqlite(path, spec.opt_str("table")?
                 .ok_or_else(|| ToolError::invalid("SQLite datasets require a source table"))?.to_owned()),
+            "jet" => DiskDataset::Jet(path, spec.opt_str("table")?
+                .ok_or_else(|| ToolError::invalid("Access datasets require a source table"))?.to_owned(), columns),
             "csv" => DiskDataset::Csv(path),
             "log" => DiskDataset::Log(path),
             _ => DiskDataset::Avro(path, columns),

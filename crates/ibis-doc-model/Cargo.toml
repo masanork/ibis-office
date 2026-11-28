@@ -29,6 +29,7 @@ arrow-schema = "60"
 parquet = { version = "60.1", default-features = false, features = ["snap", "flate2-zlib-rs", "lz4", "brotli", "zstd"] }
 # Select the Rust backend for the zstd dependency used by Parquet and Arrow IPC.
 zstd = { version = "0.14", default-features = false, features = ["rust-backend"] }
+jetdb = "0.4"
 turso_core = { version = "0.8.3", default-features = false, features = ["fs", "json", "uuid", "pure-rust-crypto"] }
 turso_parser = "0.8.3"
 # Turso uses branches without std by default; its no-std abort intrinsic is

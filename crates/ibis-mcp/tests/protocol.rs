@@ -176,6 +176,27 @@ fn mcp_sqlite_queries_are_available_in_read_only_mode() {
     ]}));
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[test]
+fn mcp_jet_inspect_schema_is_available_in_read_only_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad_mdb = dir.path().join("invalid.mdb");
+    std::fs::write(&bad_mdb, b"not a jet database").unwrap();
+    let service = Service::new(&[dir.path().to_path_buf()], true, Limits::default());
+    let answers = talk(service, &[
+        request(1, "tools/list", json!({})),
+        request(2, "tools/call", json!({
+            "name": "jet_inspect_schema",
+            "arguments": {"path": bad_mdb},
+        })),
+    ]);
+    let tools = answers[0]["result"]["tools"].as_array().unwrap();
+    assert!(tools.iter().any(|tool| {
+        tool["name"] == "jet_inspect_schema" && tool["annotations"]["readOnlyHint"] == true
+    }));
+    assert_eq!(answers[1]["result"]["isError"], true);
+}
+
 /// An existing file outside every allowed folder (`/etc/passwd` is not an absolute path on Windows).
 fn outside_path() -> &'static str {
     if cfg!(windows) { r"C:\Windows\win.ini" } else { "/etc/passwd" }
