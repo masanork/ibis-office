@@ -135,15 +135,59 @@ pub fn extract_zip(data: &[u8]) -> Result<Vec<ArchiveEntry>, Error> {
     Ok(entries)
 }
 
+pub fn extract_7z(data: &[u8]) -> Result<Vec<ArchiveEntry>, Error> {
+    let mut cursor = std::io::Cursor::new(data);
+    let mut reader = sevenz_rust2::ArchiveReader::new(&mut cursor, sevenz_rust2::Password::empty())
+        .map_err(|e| Error::new(format!("invalid 7z archive: {e}")))?;
+    let mut entries = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut limit_err: Option<Error> = None;
+
+    reader
+        .for_each_entries(|entry, r| {
+            if entry.is_directory() {
+                return Ok(true);
+            }
+            if entries.len() >= MAX_ENTRIES {
+                limit_err = Some(Error::new("7z archive exceeds 1024 entries"));
+                return Ok(false);
+            }
+            let Some(path) = sanitize_rel_path(entry.name()) else {
+                return Ok(true);
+            };
+            if entry.size() > MAX_ENTRY_BYTES as u64 {
+                limit_err = Some(Error::new(format!("7z entry {path} exceeds 64 MiB")));
+                return Ok(false);
+            }
+            let mut buf = Vec::with_capacity(entry.size() as usize);
+            std::io::Read::read_to_end(r, &mut buf)?;
+            if buf.len() > MAX_ENTRY_BYTES {
+                limit_err = Some(Error::new(format!("7z entry {path} exceeds 64 MiB")));
+                return Ok(false);
+            }
+            total_bytes = total_bytes.saturating_add(buf.len());
+            if total_bytes > MAX_TOTAL_BYTES {
+                limit_err = Some(Error::new("7z archive exceeds 128 MiB total extracted size"));
+                return Ok(false);
+            }
+            entries.push(ArchiveEntry { path, bytes: buf });
+            Ok(true)
+        })
+        .map_err(|e| Error::new(format!("7z read error: {e}")))?;
+
+    if let Some(err) = limit_err {
+        return Err(err);
+    }
+    Ok(entries)
+}
+
 pub fn extract(data: &[u8]) -> Result<Vec<ArchiveEntry>, Error> {
     if is_lzh(data) {
         extract_lzh(data)
     } else if is_zip(data) {
         extract_zip(data)
     } else if is_7z(data) {
-        Err(Error::new(
-            "7z extraction requires external 7z CLI (detected .7z signature)",
-        ))
+        extract_7z(data)
     } else {
         Err(Error::new("unsupported archive format"))
     }
@@ -155,7 +199,7 @@ pub fn to_markdown(data: &[u8]) -> Result<String, Error> {
     } else if is_zip(data) {
         "ZIP"
     } else if is_7z(data) {
-        return Ok("# 7z Archive\n\n`.7z` archive detected (use `7z x` to extract).\n".into());
+        "7z"
     } else {
         return Err(Error::new("not a supported archive"));
     };
@@ -211,5 +255,26 @@ mod tests {
         assert_eq!(entries[0].bytes, b"hello");
         let md = to_markdown(&bytes).unwrap();
         assert!(md.contains("docs/hello.txt"));
+    }
+
+    #[test]
+    fn extracts_7z_and_renders_markdown() {
+        let mut out = Vec::new();
+        {
+            let mut writer = sevenz_rust2::ArchiveWriter::new(std::io::Cursor::new(&mut out)).unwrap();
+            let entry = sevenz_rust2::ArchiveEntry::new_file("notes/info.txt");
+            writer
+                .push_archive_entry(entry, Some(std::io::Cursor::new(b"sevenz body".as_slice())))
+                .unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(is_7z(&out));
+        let entries = extract(&out).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "notes/info.txt");
+        assert_eq!(entries[0].bytes, b"sevenz body");
+        let md = to_markdown(&out).unwrap();
+        assert!(md.contains("# 7z Archive"));
+        assert!(md.contains("notes/info.txt"));
     }
 }
