@@ -984,6 +984,7 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 || ibis_formats::etax::is_etax(&raw_data)
                 || ibis_formats::citygml::is_citygml(&raw_data)
                 || ibis_formats::ifc::is_ifc(&raw_data)
+                || ibis_formats::idml::is_idml(&raw_data)
                 || ibis_formats::cals_xml::is_cals_xml(&raw_data)
                 || ibis_formats::cad::is_cad(&raw_data)
                 || ibis_formats::gis::is_gis(&raw_data)
@@ -1001,6 +1002,8 @@ fn run_export(args: &Args, format: &str) -> Result<(), String> {
                 ibis_formats::citygml::to_markdown(&raw_data)
             } else if ibis_formats::ifc::is_ifc(&raw_data) {
                 ibis_formats::ifc::to_markdown(&raw_data)
+            } else if ibis_formats::idml::is_idml(&raw_data) {
+                ibis_formats::idml::to_markdown(&raw_data)
             } else if ibis_formats::cals_xml::is_cals_xml(&raw_data) {
                 ibis_formats::cals_xml::to_markdown(&raw_data)
             } else if ibis_formats::cad::is_cad(&raw_data) {
