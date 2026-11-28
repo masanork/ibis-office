@@ -182,7 +182,7 @@ pub(crate) fn fracture(q: f32, w: f32, h: f32) -> Vec<Card> {
                 .then(Transform3D::rotate_x(turn))
                 .then(Transform3D::rotate_z(mid + spin))
                 .then(Transform3D::translate(hit.0, hit.1 + dy, 0.0));
-            cards.push(Card { face: Face::Old, transform: view(t), cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices: Arc::new(vertices), indices }), white: 0.0, opacity: 1.0 });
+            cards.push(Card { face: Face::Old, transform: view(t), cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices: Arc::new(vertices), indices: std::borrow::Cow::Owned(indices) }), white: 0.0, opacity: 1.0 });
         }
     }
     cards

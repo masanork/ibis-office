@@ -1943,25 +1943,44 @@ impl SlideEditor {
                         // カット through black: a black screen for the transition's length.
                         TransitionPlan::BlackScreen => div().absolute().top_0().left_0().size_full().bg(black()).into_any_element(),
                         TransitionPlan::Scaled { old: old_look, new: new_look, new_on_top } => {
-                            // Each slide at its size about the middle, clipped to the show's frame.
-                            let sized = |s: &ibis_doc_model::Slide, (k, alpha): (f64, f64)| {
-                                let k = k.max(0.001) as f32;
-                                let (w, h) = (zw * k, zh * k);
-                                div()
+                            let (old_id, new_id) = (OffscreenId(0x531b), OffscreenId(0x531c));
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .overflow_hidden()
+                                .child(slide_offscreen(old_id, old, true))
+                                .child(slide_offscreen(new_id, slide, true))
+                                .child(
+                                    canvas(
+                                        |_, _, _| (),
+                                        move |bounds, _, window, _| {
+                                            let draw_look = |window: &mut Window, id: OffscreenId, look: Option<(f64, f64)>| {
+                                                let (k, alpha) = match look {
+                                                    Some((k, a)) => (k.max(0.001) as f32, a.clamp(0.0, 1.0) as f32),
+                                                    None => (1.0, 1.0),
+                                                };
+                                                let (w, h) = (zw * k, zh * k);
+                                                let frame = Bounds {
+                                                    origin: gpui_kit::point(bounds.origin.x + px((zw - w) / 2.0), bounds.origin.y + px((zh - h) / 2.0)),
+                                                    size: gpui_kit::size(px(w), px(h)),
+                                                };
+                                                window.paint_textured_quad(id, frame, Transform3D::identity(), alpha, 1.0, [0.0, 0.0, 1.0, 1.0], false);
+                                            };
+                                            if new_on_top {
+                                                draw_look(window, old_id, old_look);
+                                                draw_look(window, new_id, new_look);
+                                            } else {
+                                                draw_look(window, new_id, new_look);
+                                                draw_look(window, old_id, old_look);
+                                            }
+                                        },
+                                    )
                                     .absolute()
-                                    .left(px((zw - w) / 2.0))
-                                    .top(px((zh - h) / 2.0))
-                                    .w(px(w))
-                                    .h(px(h))
-                                    .overflow_hidden()
-                                    .opacity(alpha.clamp(0.0, 1.0) as f32)
-                                    .child(page_at(s, zoomed_scale * k))
-                            };
-                            let old_el = old_look.map_or_else(|| page(old).into_any_element(), |l| sized(old, l).into_any_element());
-                            let new_el = new_look.map_or_else(|| page(slide).into_any_element(), |l| sized(slide, l).into_any_element());
-                            let mut stack = div().absolute().top_0().left_0().size_full().overflow_hidden();
-                            stack = if new_on_top { stack.child(old_el).child(new_el) } else { stack.child(new_el).child(old_el) };
-                            stack.into_any_element()
+                                    .size_full(),
+                                )
+                                .into_any_element()
                         }
                         // ニュース速報: the old slide stands whole; the new one is painted once to a texture and drawn grown out of the middle,
                         // turned about it, at its opacity as a whole (see `plan`).

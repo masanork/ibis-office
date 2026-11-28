@@ -169,7 +169,7 @@ pub(crate) fn crush(q: f32, w: f32, h: f32) -> Vec<Card> {
             transform,
             cull_back: false,
             shade: (band as f32 * SHADE_STEP).min(1.0),
-            mesh: Some(Mesh { vertices: vertices.clone(), indices }),
+            mesh: Some(Mesh { vertices: vertices.clone(), indices: indices.into() }),
             white: 0.0,
             opacity: 1.0,
         });

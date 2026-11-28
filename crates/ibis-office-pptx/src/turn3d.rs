@@ -120,12 +120,16 @@ pub(crate) struct Card {
     pub opacity: f32,
 }
 
+pub(crate) const TRI_INDICES: &[u32] = &[0, 1, 2];
+pub(crate) const QUAD_INDICES: &[u32] = &[0, 1, 2, 1, 3, 2];
+pub(crate) const QUAD_REV_INDICES: &[u32] = &[0, 2, 1, 2, 3, 1];
+
 /// A triangle mesh of a sheet that is not flat: the vertices (shared by the several draws of one sheet, each with the triangles it
 /// shows) and the triangles' corners.
 #[derive(Clone, Debug)]
 pub(crate) struct Mesh {
     pub vertices: Arc<Vec<MeshVertex>>,
-    pub indices: Vec<u32>,
+    pub indices: std::borrow::Cow<'static, [u32]>,
 }
 
 impl Card {
@@ -548,7 +552,7 @@ pub(crate) fn page_curl_single(motion: (f64, f64), t: f32, w: f32, h: f32) -> Ve
         transform: Transform3D::perspective(RIGID_FOCAL * w).then(Transform3D::translate(w / 2.0, h / 2.0, 0.0)),
         cull_back: false,
         shade: 1.0,
-        mesh: Some(Mesh { vertices: Arc::new(vertices), indices }),
+        mesh: Some(Mesh { vertices: Arc::new(vertices), indices: indices.into() }),
         white: 0.0,
         opacity: 1.0,
     });
@@ -668,7 +672,7 @@ pub(crate) fn rolled_sheet(c: f32, r: f32, theta: f32, mirror: bool, w: f32, h: 
             transform: Transform3D::perspective(ROLL_FOCAL * w).then(Transform3D::translate(w / 2.0, h / 2.0, 0.0)),
             cull_back: false,
             shade,
-            mesh: Some(Mesh { vertices: vertices.clone(), indices: tris }),
+            mesh: Some(Mesh { vertices: vertices.clone(), indices: tris.into() }),
             white: if band >= 5 { BACK_WHITE } else { 0.0 },
             opacity: 1.0,
         });
@@ -729,7 +733,7 @@ fn half_sheet(face: Face, left: bool, w: f32, h: f32) -> Card {
         transform: Transform3D::perspective(ROLL_FOCAL * w).then(Transform3D::translate(w / 2.0, h / 2.0, 0.0)),
         cull_back: false,
         shade: 1.0,
-        mesh: Some(Mesh { vertices: Arc::new(vertices), indices: vec![0, 1, 2, 1, 3, 2] }),
+        mesh: Some(Mesh { vertices: Arc::new(vertices), indices: std::borrow::Cow::Borrowed(QUAD_INDICES) }),
         white: 0.0,
         opacity: 1.0,
     }
@@ -789,7 +793,7 @@ pub(crate) fn page_curl_double(motion: (f64, f64), t: f32, w: f32, h: f32) -> Ve
         }
         // The vertices are (left top, left bottom, right top, right bottom).
         let face = if is_front { Face::Old } else { Face::New };
-        drawn.push(((z0 + z1) / 2.0, Card { face, transform, cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices: Arc::new(vertices), indices: vec![0, 2, 1, 2, 3, 1] }), white: 0.0, opacity: 1.0 }));
+        drawn.push(((z0 + z1) / 2.0, Card { face, transform, cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices: Arc::new(vertices), indices: std::borrow::Cow::Borrowed(QUAD_REV_INDICES) }), white: 0.0, opacity: 1.0 }));
     }
     drawn.sort_by(|p, q| p.0.total_cmp(&q.0));
     drawn.into_iter().map(|(_, c)| c).collect()
@@ -898,7 +902,7 @@ pub(crate) fn airplane(motion: (f64, f64), t: f32, w: f32, h: f32) -> Vec<Card> 
                 transform,
                 cull_back: false,
                 shade: 1.0 - AIRPLANE_SHADE * (1.0 - normal),
-                mesh: Some(Mesh { vertices: Arc::new(vertices), indices: vec![0, 1, 2] }),
+                mesh: Some(Mesh { vertices: Arc::new(vertices), indices: std::borrow::Cow::Borrowed(TRI_INDICES) }),
                 white: if front { 0.0 } else { 1.0 },
                 opacity: 1.0,
             },
@@ -971,7 +975,7 @@ pub(crate) fn origami(motion: (f64, f64), t: f32, w: f32, h: f32) -> Vec<Card> {
                 transform,
                 cull_back: false,
                 shade: if white { 0.93 } else { 1.0 },
-                mesh: Some(Mesh { vertices: Arc::new(vertices), indices }),
+                mesh: Some(Mesh { vertices: Arc::new(vertices), indices: indices.into() }),
                 white: if white { 1.0 } else { 0.0 },
                 opacity: 1.0,
             });

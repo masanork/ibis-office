@@ -27,7 +27,7 @@ fn tile(face: Face, src: [f32; 4], dx: f32, dy: f32, w: f32, h: f32) -> Card {
     let [x0, y0, x1, y1] = src;
     let at = |x: f32, y: f32| MeshVertex::new([x + dx - w / 2.0, y + dy - h / 2.0, 0.0], [x / w, y / h]);
     let vertices = Arc::new(vec![at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1)]);
-    Card { face, transform: Transform3D::translate(w / 2.0, h / 2.0, 0.0), cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices, indices: vec![0, 1, 2, 1, 3, 2] }), white: 0.0, opacity: 1.0 }
+    Card { face, transform: Transform3D::translate(w / 2.0, h / 2.0, 0.0), cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices, indices: std::borrow::Cow::Borrowed(crate::turn3d::QUAD_INDICES) }), white: 0.0, opacity: 1.0 }
 }
 
 /// One band of くし形 pulled by `s` (0 to 1) of the way: `band` is its range (x0, y0, x1, y1), `along_x` whether the old slide's band
@@ -88,7 +88,7 @@ fn turned_tile(face: Face, rect: [f32; 4], horizontal_axis: bool, angle: f32, fo
     let vertices = Arc::new(vec![at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1)]);
     let rot = if horizontal_axis { Transform3D::rotate_x(angle) } else { Transform3D::rotate_y(angle) };
     let transform = Transform3D::translate(-cx, -cy, 0.0).then(rot).then(Transform3D::translate(cx - w / 2.0, cy - h / 2.0, 0.0)).then(Transform3D::perspective(focal)).then(Transform3D::translate(w / 2.0, h / 2.0, 0.0));
-    Card { face, transform, cull_back: true, shade: 1.0, mesh: Some(Mesh { vertices, indices: vec![0, 1, 2, 1, 3, 2] }), white: 0.0, opacity: 1.0 }
+    Card { face, transform, cull_back: true, shade: 1.0, mesh: Some(Mesh { vertices, indices: std::borrow::Cow::Borrowed(crate::turn3d::QUAD_INDICES) }), white: 0.0, opacity: 1.0 }
 }
 
 /// ブラインド at `q` (0 to 1, linear): `n` slats, each turning over about its own middle line, the old slide on its front and the new one on its
@@ -218,7 +218,7 @@ fn polygon_card(face: Face, polygon: &[(f32, f32)], transform: Transform3D, opac
     vertices.extend(polygon.iter().map(|&(x, y)| at(x, y)));
     let count = polygon.len() as u32;
     let indices = (0..count).flat_map(|k| [0, 1 + k, 1 + (k + 1) % count]).collect();
-    Some(Card { face, transform, cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices: Arc::new(vertices), indices }), white: 0.0, opacity })
+    Some(Card { face, transform, cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices: Arc::new(vertices), indices: std::borrow::Cow::Owned(indices) }), white: 0.0, opacity })
 }
 
 /// ハニカム at `q` (0 to 1, linear): the slide is a plane of hexagons, each of its own on the lattice below, seen over black.
@@ -539,7 +539,7 @@ pub(crate) fn doors(window: bool, horizontal: bool, q: f32, w: f32, h: f32) -> V
     let focal = focal_w * w;
     let quad = |x0: f32, y0: f32, x1: f32, y1: f32| {
         let at = |x: f32, y: f32| MeshVertex::new([x, y, 0.0], [x / w, y / h]);
-        Mesh { vertices: Arc::new(vec![at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1)]), indices: vec![0, 1, 2, 1, 3, 2] }
+        Mesh { vertices: Arc::new(vec![at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1)]), indices: std::borrow::Cow::Borrowed(crate::turn3d::QUAD_INDICES) }
     };
     let mut cards = Vec::new();
     // The ground.
@@ -680,7 +680,7 @@ pub(crate) fn shred(particle: bool, q: f32, w: f32, h: f32) -> Vec<Card> {
             }
             let at = |x: f32, y: f32| MeshVertex::new([x, y, 0.0], [x / w, y / h]);
             let vertices = Arc::new(vec![at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1)]);
-            cards.push(Card { face, transform, cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices, indices: vec![0, 1, 2, 1, 3, 2] }), white: 0.0, opacity: 1.0 });
+            cards.push(Card { face, transform, cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices, indices: std::borrow::Cow::Borrowed(crate::turn3d::QUAD_INDICES) }), white: 0.0, opacity: 1.0 });
         }
     }
     cards
@@ -767,7 +767,7 @@ pub(crate) fn vortex(motion: (f64, f64), q: f32, w: f32, h: f32) -> Vec<Card> {
                 .then(whole)
                 .then(Transform3D::perspective(focal))
                 .then(Transform3D::translate(w / 2.0, h / 2.0, 0.0));
-            cards.push((z, Card { face, transform, cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices, indices: vec![0, 1, 2, 1, 3, 2] }), white: 0.0, opacity: 1.0 }));
+            cards.push((z, Card { face, transform, cull_back: false, shade: 1.0, mesh: Some(Mesh { vertices, indices: std::borrow::Cow::Borrowed(crate::turn3d::QUAD_INDICES) }), white: 0.0, opacity: 1.0 }));
         }
     }
     // The far ones first.
@@ -990,7 +990,7 @@ pub(crate) fn crush(q: f32, w: f32, h: f32) -> Vec<Card> {
                         transform: ball_transform,
                         cull_back: false,
                         shade: shade.clamp(0.35, 1.0),
-                        mesh: Some(Mesh { vertices, indices: vec![0, 1, 2] }),
+                        mesh: Some(Mesh { vertices, indices: std::borrow::Cow::Borrowed(crate::turn3d::TRI_INDICES) }),
                         white: (crumple * light * 0.14).clamp(0.0, 0.14),
                         opacity: 1.0,
                     },
