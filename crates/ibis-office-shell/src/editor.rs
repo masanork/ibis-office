@@ -4967,6 +4967,7 @@ impl Render for SlideEditor {
                 let _ = (editor, window, cx);
             }))
             .on_action(cx.listener(|_, _: &crate::actions::OpenStartWindow, _, cx| crate::app::open_editor(None, None, cx)))
+            .on_action(cx.listener(|_, _: &crate::actions::NewWorkspaceWindow, _, cx| crate::app::open_new_window(cx)))
             .on_action(cx.listener(|this, _: &crate::actions::NewDocument, window, cx| {
                 let kind = if this.kind() == ibis_formats::Kind::Pdf { ibis_formats::Kind::Document } else { this.kind() };
                 this.new_file(kind, window, cx);

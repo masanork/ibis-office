@@ -217,7 +217,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-alt-1", ToggleSlideGridView, context),
         KeyBinding::new("ctrl-alt-2", ToggleOutlineView, context),
         KeyBinding::new("ctrl-alt-3", ToggleNotesPageView, context),
-        KeyBinding::new(&secondary("shift-n"), NewEditorWindow, context),
+        KeyBinding::new(&secondary("shift-n"), NewWorkspaceWindow, context),
         KeyBinding::new(&secondary("alt-shift-c"), CopyAnimation, context),
         KeyBinding::new(&secondary("alt-shift-v"), PasteAnimation, context),
         KeyBinding::new("pagedown", NextSlide, context),
@@ -440,6 +440,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &OpenSettings, cx| crate::shell::settings_dialog::open(cx));
     cx.on_action(|_: &OpenAbout, cx| crate::shell::about::open(cx));
     cx.on_action(|_: &OpenStartWindow, cx| crate::open_editor(None, None, cx));
+    cx.on_action(|_: &NewWorkspaceWindow, cx| crate::shell::app::open_new_window(cx));
     // File > New with no window open (a window handles it itself otherwise): the start window.
     cx.on_action(|_: &NewDocument, cx| crate::open_editor(None, None, cx));
     set_app_menus(cx);

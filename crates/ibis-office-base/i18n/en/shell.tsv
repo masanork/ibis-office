@@ -119,6 +119,7 @@ format.options	Format Options
 format.clear	Clear Formatting
 tools.spelling	Spelling
 file.start-window	Start Window
+file.new-window	New Window
 file.new	New
 file.recent	Open Recent
 file.export	Export

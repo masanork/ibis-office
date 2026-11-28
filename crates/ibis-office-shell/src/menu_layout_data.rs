@@ -10,6 +10,7 @@ pub(super) const DOC: &[MenuSpec] = &[
     MenuSpec { id: MenuId::File, items: &[
         // The start window first (the user, K0002, 2026-11-12).
         LayoutItem::CmdOrPlanned { id: "file.start-window", key: "menu.planned.doc.file.2" },
+        LayoutItem::Cmd("file.new-window"),
         LayoutItem::Sep,
         LayoutItem::Sub { id: Some("file.new"), label_key: "file.new", items: &[
             LayoutItem::Cmd("file.new.document"),
@@ -631,6 +632,7 @@ pub(super) const SHEET: &[MenuSpec] = &[
     MenuSpec { id: MenuId::File, items: &[
         // The start window first (the user, K0002, 2026-11-12).
         LayoutItem::Cmd("file.start-window"),
+        LayoutItem::Cmd("file.new-window"),
         LayoutItem::Sep,
         LayoutItem::Sub { id: Some("file.new"), label_key: "file.new", items: &[
             LayoutItem::Cmd("file.new.workbook"),
@@ -1269,6 +1271,7 @@ pub(super) const SLIDE: &[MenuSpec] = &[
     MenuSpec { id: MenuId::File, items: &[
         // The start window first (the user, K0002, 2026-11-12).
         LayoutItem::Cmd("file.start-window"),
+        LayoutItem::Cmd("file.new-window"),
         LayoutItem::Sep,
         LayoutItem::Sub { id: Some("file.new"), label_key: "file.new", items: &[
             LayoutItem::Cmd("file.new.presentation"),

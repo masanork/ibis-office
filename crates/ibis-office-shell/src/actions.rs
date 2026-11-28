@@ -39,6 +39,8 @@ actions!(
         HideApp,
         /// Open the start window (ファイル > スタートウィンドウ).
         OpenStartWindow,
+        /// Open a new empty workspace/editor window (ファイル > 新しいウィンドウ, ⌘⇧N).
+        NewWorkspaceWindow,
         /// Make a new presentation from a template (ファイル > 新規 > テンプレートから新規作成…).
         NewFromTemplate,
         /// Close the open file and show the start screen (スタート画面).

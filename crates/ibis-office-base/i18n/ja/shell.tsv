@@ -119,6 +119,7 @@ format.options	書式設定オプション
 format.clear	書式をクリア
 tools.spelling	スペル
 file.start-window	スタートウィンドウ
+file.new-window	新しいウィンドウ
 file.new	新規作成
 file.recent	最近使ったファイル
 file.export	書き出し

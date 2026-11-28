@@ -146,6 +146,7 @@ pub(crate) fn start_app_menus() -> [Menu; 4] {
         application_menu(),
         Menu::new(text("menu.file")).items([
             MenuItem::action(text("file.start-window"), OpenStartWindow),
+            MenuItem::action(text("file.new-window"), NewWorkspaceWindow),
             MenuItem::separator(),
             MenuItem::action(text("file.new-document"), StartNewDocument),
             MenuItem::action(text("file.new-workbook"), StartNewWorkbook),
@@ -219,6 +220,17 @@ pub fn open_editor(document: Option<(ibis_doc_model::Presentation, SharedString)
 /// A new editor window, its editor set up by `setup`.
 pub fn open_window_with(cx: &mut App, setup: impl FnOnce(&mut SlideEditor, &mut Window, &mut Context<SlideEditor>) + 'static) {
     open_window_sized(1280., true, cx, setup);
+}
+
+/// Explicitly open a new empty workspace/editor window (or a new browser tab on WASM).
+pub fn open_new_window(cx: &mut App) {
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = cx;
+        crate::web::open_in_new_tab("");
+    }
+    #[cfg(not(target_family = "wasm"))]
+    open_window_with(cx, |_, _, _| {});
 }
 
 /// Open a new tab in an existing workspace window if available, otherwise fall back

@@ -183,6 +183,7 @@ fn file_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
     // A host with no start window (`ui.startWindow` off: ibisWorks) has neither this line nor the separator after it (K0037).
     if cfg!(not(target_arch = "wasm32")) && !(crate::host::is_connected() && !crate::host::options().start_window) {
         items.push(item("file.start-window", "grid_view").on(|_, _, cx| crate::app::open_editor(None, None, cx)).into());
+        items.push(item("file.new-window", "open_in_new").shortcut("⌘⇧N").on(|_, _, cx| crate::app::open_new_window(cx)).into());
         items.push(SEP);
     }
     items.extend(vec![
@@ -371,7 +372,7 @@ fn window_menu(editor: &SlideEditor) -> Vec<MenuEntry> {
         entries.push(SEP);
     }
     entries.extend([
-        item("window.new-window", "open_in_new").shortcut("⌘⇧N").on(|this, _, cx| this.new_window(cx)).into(),
+        item("window.new-window", "open_in_new").on(|this, _, cx| this.new_window(cx)).into(),
         // A workbook's `menus()` (`xlsx/toolbar.rs`) connects these two lines to its own: the panel of arranging the windows, and
         // the split of the sheet (with its check mark). A document's `menus()` (`docx/toolbar.rs`) takes them out for its own
         // lines below. In a presentation the split line does nothing (as it always did there).

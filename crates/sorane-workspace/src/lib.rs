@@ -43,6 +43,7 @@ pub mod actions {
             OpenVaultFolder,
             NewMarkdownNote,
             OpenDailyNote,
+            NewWindow,
         ]
     );
 }
@@ -167,6 +168,7 @@ pub fn install(cx: &mut App) {
         KeyBinding::new(&m("]"), actions::NavigateForward, ctx),
         KeyBinding::new(&m("shift-o"), actions::OpenVaultFolder, ctx),
         KeyBinding::new(&m("alt-n"), actions::NewMarkdownNote, ctx),
+        KeyBinding::new(&m("shift-n"), actions::NewWindow, ctx),
         KeyBinding::new("ctrl-pagedown", actions::NextTab, ctx),
         KeyBinding::new("ctrl-pageup", actions::PrevTab, ctx),
     ]);

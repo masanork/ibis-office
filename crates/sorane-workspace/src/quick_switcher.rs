@@ -57,6 +57,7 @@ pub(crate) enum WorkspaceCommand {
     ToggleInspectorPanel,
     ToggleMarkdownSource,
     SaveWorkspaceSession,
+    NewWindow,
 }
 
 #[derive(Clone, Debug)]
@@ -245,6 +246,12 @@ const ALL_COMMANDS: &[(WorkspaceCommand, &str, &str, Option<&str>)] = &[
         "ワークスペース状態を今すぐ保存 (Save Session)",
         "現在のタブ・分割・ドック配置を保存",
         None,
+    ),
+    (
+        WorkspaceCommand::NewWindow,
+        "新しいウィンドウを開く (New Window)",
+        "新しいワークスペースウィンドウを明示的に作成",
+        Some("⇧⌘N"),
     ),
 ];
 
@@ -519,6 +526,7 @@ impl SoraneWorkspace {
                 self.toggle_markdown_source_for_active_pane(window, cx)
             }
             WorkspaceCommand::SaveWorkspaceSession => self.save_workspace_session(),
+            WorkspaceCommand::NewWindow => ibis_office_shell::app::open_new_window(cx),
         }
     }
 

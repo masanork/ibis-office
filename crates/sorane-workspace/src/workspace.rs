@@ -4809,6 +4809,9 @@ impl Render for SoraneWorkspace {
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
                 this.open_command_palette(window, cx);
             }))
+            .on_action(cx.listener(|_, _: &NewWindow, _, cx| {
+                ibis_office_shell::app::open_new_window(cx);
+            }))
             .on_action(cx.listener(|this, _: &ToggleSplitPane, window, cx| {
                 this.toggle_split_pane(window, cx);
             }))
