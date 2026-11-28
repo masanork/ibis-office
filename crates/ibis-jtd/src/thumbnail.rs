@@ -34,15 +34,18 @@ pub fn decode_thumbnail_bmp(data: &[u8]) -> Result<Option<Vec<u8>>, Error> {
 }
 
 fn thumbnail_stream(data: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-    let document = super::source_document(data)?;
-    let entries = ibis_ooxml::cfb::directory(&document).map_err(|e| Error::new(e.to_string()))?;
+    let container = super::source_document(data)?.container;
+    let entries = container
+        .directory()
+        .map_err(|e| Error::new(e.to_string()))?;
     if !entries
         .iter()
         .any(|e| !e.is_storage && e.path == "Thumbnail")
     {
         return Ok(None);
     }
-    let bytes = ibis_ooxml::cfb::stream_path(&document, "Thumbnail")
+    let bytes = container
+        .stream_path_bounded("Thumbnail", MAX_THUMBNAIL)
         .map_err(|e| Error::new(e.to_string()))?;
     Ok(Some(bytes))
 }

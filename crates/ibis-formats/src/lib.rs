@@ -111,13 +111,11 @@ mod xlsb_formula;
 mod xls;
 pub mod xmlss;
 mod msdoc;
-/// Read-only Ichitaro text import.
 mod hangul_structure;
 pub mod hwp;
 pub mod hwpx;
 pub mod uot;
 pub mod wpd;
-pub mod jtd;
 pub mod slides_html;
 pub mod officeart_xml;
 pub mod ppt;
@@ -228,6 +226,9 @@ pub fn is_legacy_binary(data: &[u8]) -> bool {
 /// Why an OpenDocument file (`.odt`, `.ods`, `.odp`) is not read here: `ibis-odf` reads it (it sits above this crate).
 pub(crate) const ODF_MESSAGE: &str = "OpenDocument ファイルは ibis_odf（read・open）で読みます";
 
+/// Why an Ichitaro file (`.jtd`, `.jtt`, `.jttc`) is not read here: `ibis-jtd` reads it (it sits above this crate).
+pub(crate) const JTD_MESSAGE: &str = "一太郎ファイルは ibis_jtd（read・read_preview）で読みます";
+
 /// Whether `data` is an OpenDocument package (a zip whose `mimetype` is `application/vnd.oasis.opendocument.*`).
 pub(crate) fn is_opendocument(data: &[u8]) -> bool {
     if !data.starts_with(b"PK") {
@@ -237,6 +238,24 @@ pub(crate) fn is_opendocument(data: &[u8]) -> bool {
     archive.read_bounded("mimetype", crate::odf::MIMETYPE_LIMIT).ok().flatten().is_some_and(|m| m.starts_with(b"application/vnd.oasis.opendocument."))
 }
 
+/// Whether `data` is an Ichitaro compound file (`.jtd`, `.jtt`, `.jttc`).
+pub(crate) fn is_jtd(data: &[u8]) -> bool {
+    const MAX_FILE: usize = 64 * 1024 * 1024;
+    const MAX_STREAM: usize = 32 * 1024 * 1024;
+    if data.len() > MAX_FILE || !cfb::is_cfb(data) {
+        return false;
+    }
+    let Ok(container) = ibis_ooxml::cfb::Reader::new(std::borrow::Cow::Borrowed(data)) else {
+        return false;
+    };
+    container
+        .stream_path_bounded("DocumentText", MAX_STREAM)
+        .is_ok_and(|s| s.starts_with(b"SsmgV.01"))
+        || container
+            .stream_path_bounded("JSCompDocument", MAX_STREAM)
+            .is_ok_and(|s| s.starts_with(b"\x26\0JustCompressedDocument"))
+}
+
 /// Read a `.pptx` presentation, a `.xlsx` workbook (see [`read_xlsx`]) or a
 /// `.docx` document (see [`read_docx`]): which one is told by the package's
 /// main part.
@@ -244,7 +263,7 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     if let Some(format) = hwp::Format::detect(None, data) { return Ok(format.open(data)?.presentation); }
     if epub::is_epub(data) { return Ok(epub::open(data)?.presentation); }
     if uot::is_uot(data) { return Ok(uot::open(data)?.presentation); }
-    if jtd::is_jtd(data) { return jtd::read(data); }
+    if is_jtd(data) { return Err(Error::new(JTD_MESSAGE)); }
     if is_opendocument(data) { return Err(Error::new(ODF_MESSAGE)); }
     if markdown::is_markdown(data) { return markdown::read_markdown(data); }
     // An old workbook (.xls) is read as the .xlsx made from it.
@@ -419,3 +438,30 @@ pub fn read_xlsx(data: &[u8]) -> Result<Presentation, Error> {
 
 #[cfg(not(target_family = "wasm"))]
 pub mod pdfa_validation;
+
+#[cfg(test)]
+mod jtd_guard_tests {
+    use super::*;
+
+    #[test]
+    fn jtd_is_not_treated_as_xls_and_points_to_ibis_jtd() {
+        let jtd = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "DocumentText",
+            b"SsmgV.01".to_vec(),
+        )]);
+        assert!(is_jtd(&jtd));
+        assert!(!xls::is_xls(&jtd));
+        assert!(!is_legacy_binary(&jtd));
+        assert_eq!(read(&jtd).err(), Some(Error::new(JTD_MESSAGE)));
+        assert_eq!(open(jtd).err(), Some(Error::new(JTD_MESSAGE)));
+
+        let jttc = ibis_ooxml::cfb::write(&[ibis_ooxml::cfb::Item::stream(
+            "JSCompDocument",
+            b"\x26\0JustCompressedDocument".to_vec(),
+        )]);
+        assert!(is_jtd(&jttc));
+        assert!(!xls::is_xls(&jttc));
+        assert!(!is_legacy_binary(&jttc));
+        assert_eq!(read(&jttc).err(), Some(Error::new(JTD_MESSAGE)));
+    }
+}

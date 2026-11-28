@@ -447,7 +447,7 @@ impl SlideEditor {
             return Err(crate::i18n::text("file.standard-source-protected").to_string());
         }
         if self.is_jtd_read_only() { return Err(crate::i18n::text("jtd.read-only").to_string()); }
-        if self.jtd.source_path.as_deref().is_some_and(|original| same_file(original, &path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_formats::jtd::is_native_extension)) {
+        if self.jtd.source_path.as_deref().is_some_and(|original| same_file(original, &path) || path.extension().and_then(|ext| ext.to_str()).is_some_and(ibis_jtd::is_native_extension)) {
             return Err(crate::i18n::text("jtd.source-protected").to_string());
         }
         // The format may refuse for now (a presentation's master view is closed first: what is saved is the file, with what was made in it).

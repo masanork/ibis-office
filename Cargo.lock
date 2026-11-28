@@ -7492,6 +7492,7 @@ dependencies = [
  "ibis-calc",
  "ibis-doc-model",
  "ibis-formats",
+ "ibis-jtd",
  "ibis-odf",
  "ibis-pdf",
  "serde",
@@ -7608,6 +7609,7 @@ version = "0.8.0"
 dependencies = [
  "delharc",
  "ibis-doc-model",
+ "ibis-emf",
  "ibis-formats",
  "ibis-ooxml",
 ]
@@ -7896,6 +7898,7 @@ dependencies = [
  "ibis-doc-service",
  "ibis-emf",
  "ibis-formats",
+ "ibis-jtd",
  "ibis-lawtext",
  "ibis-mcp",
  "ibis-ocr",

@@ -246,10 +246,14 @@ pub fn decode(data: &[u8]) -> Result<DecodedText, Error> {
             RecordKind::Record { class, .. } => !matches!(class, 0 | 0x10 | 0x20 | 0x30),
             RecordKind::Control(n) => !matches!(n, 0 | 9 | 10 | 12 | 13 | 14),
             RecordKind::Inline { selector, text } => {
-                !matches!(selector, [0, 1 | 3] | [1, 0 | 0x82])
-                    || result.units[text.clone()]
-                        .iter()
-                        .any(|n| *n < 0x20 && !matches!(n, 9 | 10 | 13))
+                // `(1, 0x0101)` is a cached page number. Printable text is
+                // known. Any unit below U+0020 stays undecoded and is not shown.
+                let page_number = matches!(selector, [1, 0x0101]);
+                let known = matches!(selector, [0, 1 | 3] | [1, 0 | 0x82]) || page_number;
+                let control = result.units[text.clone()]
+                    .iter()
+                    .any(|n| *n < 0x20 && (page_number || !matches!(n, 9 | 10 | 13)));
+                !known || control
             }
             _ => false,
         };

@@ -98,6 +98,12 @@ fn extract_markdown(service: &mut Service, args: &Value) -> Result<Value, ToolEr
             let md = ibis_formats::markdown::export_presentation_to_markdown(&pres)
                 .map_err(|e| ToolError::new("extract_error", e.to_string()))?;
             ("odf", md, None)
+        } else if ext.is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "jtd" | "jtt" | "jttc")) {
+            let pres = ibis_jtd::read(&data)
+                .map_err(|e| ToolError::new("extract_error", e.to_string()))?;
+            let md = ibis_formats::markdown::export_presentation_to_markdown(&pres)
+                .map_err(|e| ToolError::new("extract_error", e.to_string()))?;
+            ("jtd", md, None)
         } else {
             let extracted = ibis_formats::extract::extract_to_markdown(ext, &data)
                 .map_err(|e| ToolError::new("extract_error", e.to_string()))?;
